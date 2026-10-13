@@ -76,6 +76,9 @@ test.describe.serial("real scoped production deployments", () => {
   test.setTimeout(12 * 60_000);
 
   test.beforeAll(async () => {
+    // This hook builds three full production sites and validates a fourth.
+    // Give setup the same bounded budget as the deployment test itself.
+    test.setTimeout(12 * 60_000);
     fixtureRoot = await realpath(
       await mkdtemp(join(tmpdir(), "kandelo-scoped-deployments-")),
     );

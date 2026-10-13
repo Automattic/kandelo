@@ -24,6 +24,7 @@ pub mod exec_target;
 pub mod fd;
 pub mod fifo;
 pub mod fork;
+pub mod fs_changes;
 pub mod guest_ptr;
 pub mod hostdir;
 pub mod image_build_determinism;

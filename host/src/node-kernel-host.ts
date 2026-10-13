@@ -1,3 +1,5 @@
+import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
+import type { VfsChangeEvent } from "./vfs/types";
 /**
  * NodeKernelHost — Main-thread proxy that communicates with a dedicated
  * kernel worker_thread via messages. The kernel worker owns the Wasm
@@ -32,6 +34,7 @@ import type {
   ResolveExecRequestMessage,
   DestroyProgressEvent,
 } from "./node-kernel-protocol";
+import type { OwnedJobRead } from "./owned-jobs";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
@@ -208,6 +211,8 @@ export interface NodeKernelHostOptions {
 }
 
 export interface SpawnOptions {
+  /** Own this process and its descendants as one cancellable command family. */
+  ownedJob?: { id: string; timeoutMs: number };
   env?: string[];
   cwd?: string;
   /** Initial real/effective user ID for the process. */
@@ -252,6 +257,7 @@ export class NodeKernelHost {
   private options: NodeKernelHostOptions;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
   private destroyProgress = createDestroyProgressFanout();
+  private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
 
   constructor(options?: NodeKernelHostOptions) {
     this.options = options ?? {};
@@ -510,6 +516,7 @@ export class NodeKernelHost {
 
     const pid = await this.request(requestId, {
       type: "spawn",
+      ownedJob: options?.ownedJob,
       requestId,
       ...program,
       // Avoid forwarding externally compiled WebAssembly.Module objects through
@@ -997,6 +1004,29 @@ export class NodeKernelHost {
   }
 
   /**
+   * Subscribe to changes of paths under `prefix` in the worker-owned VFS. The
+   * worker forwards events only while a prefix is watched, so nothing crosses
+   * the worker boundary when nobody's listening.
+   */
+  subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void {
+    assertVfsWatchPrefix(prefix);
+    let listeners = this.vfsChangeListeners.get(prefix);
+    if (!listeners) {
+      if (this.vfsChangeListeners.size >= MAX_VFS_WATCH_PREFIXES) throw new Error("Filesystem watch capacity reached (16 prefixes)");
+      listeners = new Set();
+      this.vfsChangeListeners.set(prefix, listeners);
+      this.sendToWorker({ type: "watch_vfs_changes", prefix, enabled: true });
+    }
+    listeners.add(cb);
+    return () => {
+      const current = this.vfsChangeListeners.get(prefix);
+      if (!current?.delete(cb) || current.size > 0) return;
+      this.vfsChangeListeners.delete(prefix);
+      this.sendToWorker({ type: "watch_vfs_changes", prefix, enabled: false });
+    };
+  }
+
+  /**
    * Read a regular file from the existing worker-owned VFS. This is the Node
    * peer of BrowserKernel.readFileFromVfs(); it never falls back to an ambient
    * host path and may materialize a deferred VFS entry.
@@ -1050,6 +1080,33 @@ export class NodeKernelHost {
       path,
     });
     return (result as VfsPathStat | null) ?? null;
+  }
+
+  /** Read bounded output and observed termination of a worker-owned command family. */
+  async readOwnedJob(
+    jobId: string,
+    offset?: number,
+    limit?: number,
+    cancel = false,
+  ): Promise<OwnedJobRead> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: cancel ? "cancel_owned_job" : "read_owned_job",
+      requestId,
+      jobId,
+      offset,
+      limit,
+    }) as OwnedJobRead;
+  }
+
+  /** Forget a finished job's record and free its slot. Rejects while the family is live. */
+  async releaseOwnedJob(jobId: string): Promise<void> {
+    const requestId = this._nextRequestId++;
+    await this.request(requestId, {
+      type: "release_owned_job",
+      requestId,
+      jobId,
+    });
   }
 
   /**
@@ -1176,6 +1233,7 @@ export class NodeKernelHost {
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
     this.destroyProgress.clear();
+    this.vfsChangeListeners.clear();
     if (gracefulDetachFailure || realmTerminationFailure) {
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -1335,6 +1393,9 @@ export class NodeKernelHost {
       case "destroy_progress":
         this.destroyProgress.emit(msg.event);
         break;
+      case "vfs_change":
+        this.emitVfsChange(msg.event);
+        break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol
         // grows. Runtime values still originate outside TypeScript, so make a
@@ -1360,6 +1421,19 @@ export class NodeKernelHost {
         listener(event);
       } catch {
         // One observer must not starve the remaining listeners.
+      }
+    }
+  }
+
+  private emitVfsChange(event: VfsChangeEvent): void {
+    for (const [prefix, listeners] of this.vfsChangeListeners) {
+      if (!vfsPathIsWithin(prefix, event.path)) continue;
+      for (const listener of listeners) {
+        try {
+          listener(event);
+        } catch {
+          // One observer must not starve the remaining listeners.
+        }
       }
     }
   }

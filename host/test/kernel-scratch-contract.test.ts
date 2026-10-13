@@ -903,6 +903,10 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelExecCommit::kernel-export-direct-use::cancel(pid, target)",
+    // Reviewed scalar-only uses: cancel a stale/interrupted caller, and
+    // cancel a target whose retained byte length changed. Neither carries
+    // a kernel pointer, scratch lease, or reservation authority.
+    2,
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.kernelExecCommit::kernel-export-direct-use::commit(pid, callerTid, target)",
@@ -1392,6 +1396,12 @@ const auditAllowances: AuditAllowance[] = [
     why: "This exact generated-name export takes no arguments and returns only the kernel ABI version scalar.",
   },
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#runNativeFsObservedOperation::kernel-export-direct-use::pending()",
+    disposition: "kernel-control",
+    count: 1,
+    why: "This exact zero-argument export returns only 0/1 notification readiness. The helper receives the live lexical entry, validates the result, consumes no hints, and passes no kernel-memory pointer.",
+  },
+  {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#createTestAuthority::kernel-pointer-export-bypass::drain( this.#kernelPointerWidth === 8 ? 0n : 0, capacity, )",
     disposition: "kernel-control",
     why: "An allocator-owned KernelScratchExportPointer cannot represent null. This secret-capability fixed mqueue companion is the only intentional direct null call to this export and verifies Rust rejects the missing destination before consuming notification state; guarded destinations still require opaque lease tokens.",
@@ -1828,11 +1838,12 @@ describe("kernel scratch static contract", () => {
       );
     }
     expect(formatAuditFailures(result)).toEqual([]);
-    // This intentionally builds one TypeScript program for every repository
-    // runtime source. Focused local runs take roughly 35 seconds, while the
-    // exact-head parallel CI run exceeded 60 seconds. Keep a finite two-minute
-    // watchdog without weakening the default-deny audit's scope or assertions.
-  }, 120_000);
+    // This builds one TypeScript program for every repository runtime source.
+    // The complete CI-shaped local run took 144 seconds under machine load;
+    // isolated runs took 87 seconds. Keep a finite three-minute watchdog for
+    // this CPU-bound source audit, preserving its scope and every assertion.
+    // Runtime behavior tests retain their own, separate timeout budgets.
+  }, 180_000);
 
   it("keeps variable-transfer parsing private and allocation-region-bearing", () => {
     const prefixOnlyFixture = kernelExportNamesFromSnapshot(

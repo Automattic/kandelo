@@ -4729,6 +4729,14 @@ fn release_ofd_reference_impl(
     };
 
 
+    // WHY: retain only a notification, never another copy of every closed
+    // file's path. The owner queues the borrowed canonical name before its
+    // OFD is retired; observers run only after this kernel call completes.
+    if file_type == FileType::Regular && status_flags & O_ACCMODE != O_RDONLY {
+        let ofd = proc.ofd_table.get(idx).ok_or(Errno::EBADF)?;
+        if ofd.ref_count == 1 { crate::fs_changes::publish_close(&ofd.path, host_handle); }
+    }
+
     let freed = proc.ofd_table.dec_ref(idx);
 
     if freed {

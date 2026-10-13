@@ -1,3 +1,4 @@
+import { OwnedJobs } from "./owned-jobs";
 /**
  * Kernel Worker Entry Point — Dedicated web worker that hosts the
  * CentralizedKernelWorker and manages all process lifecycle.
@@ -38,6 +39,7 @@ import type {
 import {
   readPreparedPlatformFile,
   VirtualPlatformIO,
+  vfsPathIsWithin,
 } from "./vfs/vfs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
@@ -98,6 +100,7 @@ import type {
 import { ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import {
+  DIRENT_TYPES,
   FILE_MODES,
   OPEN_FLAGS,
   PROCESS_FORK_MODE_VFORK,
@@ -147,6 +150,7 @@ import {
   isRootfsMissingFileError,
   readRootfsFileWithRetry,
   readNamespaceFileWithRetry,
+  retireSupersededExecGeneration,
   signalFromExitStatus,
   type ProcessGenerationOwnership,
   type VforkWorkspaceOwnership,
@@ -159,6 +163,7 @@ const O_WRONLY_CREAT_TRUNC =
 let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
 let io: VirtualPlatformIO;
+const vfsChangeSubscriptions = new Map<string, () => void>();
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let processMemoryAllocator: ProcessMemoryAllocator;
@@ -584,7 +589,16 @@ let bridgeTargetPort: number | null = null; // The specific HTTP port to route b
 let nextBridgeActivityId = 1;
 const activeBridgeRequests = new Set<number>();
 
+const ownedJobs = new OwnedJobs(pid => {
+  // A committed child can still be awaiting its Worker; let launch settle first.
+  if (processes.has(pid)) kernelWorker.signalProcess(pid, 9);
+}, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => {
+  terminatePoisonedKernelWorker(error instanceof Error ? error : new Error(String(error)));
+});
+
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
+  if (msg.type === "stdout" || msg.type === "stderr") ownedJobs.output(msg.pid, msg.type, msg.data);
+  if (msg.type === "exit") ownedJobs.exited(msg.pid, msg.status);
   (globalThis as any).postMessage(msg, transfer ?? []);
 }
 
@@ -982,6 +996,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         continuation,
         borrowedReplay,
       }) => {
+        ownedJobs.inherit(parentPid, childPid);
         const launch = (releaseCreatorAdmission?: () => void) => {
           // Tell the main thread a kernel-side fork happened so Inspector
           // panes can refresh their process table without polling.
@@ -1001,7 +1016,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
             releaseCreatorAdmission,
           );
         };
-        return mode === PROCESS_FORK_MODE_VFORK
+        return (mode === PROCESS_FORK_MODE_VFORK
           ? processMemoryCreators.runUntilCommitted(
               "a vfork process Worker",
               (commit) => launch(commit),
@@ -1009,7 +1024,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
           : processMemoryCreators.run(
               "a fork process Worker",
               () => launch(),
-            );
+            )).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
       },
       onExec: async (request) => {
         const creatorAdmission = processMemoryCreators.acquire(
@@ -1088,11 +1103,13 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         }
       },
       onResolveSpawn: handlePosixSpawnResolve,
-      onSpawn: (parentPid, childPid, program, envp) =>
-        processMemoryCreators.run(
+      onSpawn: (parentPid, childPid, program, envp) => {
+        ownedJobs.inherit(parentPid, childPid);
+        return processMemoryCreators.run(
           "a posix_spawn process Worker",
           () => handlePosixSpawn(parentPid, childPid, program, envp),
-        ),
+        ).catch(error => { if (!processes.has(childPid)) { ownedJobs.exited(childPid, 127); ownedJobs.detached(childPid); } throw error; });
+      },
       onClone: (attachment) => processMemoryCreators.run(
         "a pthread Worker",
         () => handleClone(attachment),
@@ -1341,10 +1358,11 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     );
     if (!programModule) return;
 
-    const pid = kernelWorker.createProcess(
+    const pid = await retryKernelEntryResult(() => kernelWorker.createProcess(
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
-    );
+    ));
     createdPid = pid;
+    if (msg.ownedJob) ownedJobs.create(msg.ownedJob.id, pid, msg.ownedJob.timeoutMs);
     const path = msg.programPath ?? msg.argv[0];
     const pages = msg.maxPages ?? maxPages;
     const ptrWidth = detectPtrWidth(programBytes);
@@ -1384,14 +1402,16 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     const secureExec = await retryKernelEntryResult(() =>
       kernelWorker.processSecureExec(pid));
     if (msg.cwd) {
-      kernelWorker.setCwd(pid, msg.cwd);
+      // Another launch can queue ingress during the awaited secure-exec query.
+      // A refused cwd setup queued no work, so retry before starting this guest.
+      await retryKernelEntryResult(() => kernelWorker.setCwd(pid, msg.cwd!));
     }
     if (msg.programPath !== undefined) {
       kernelWorker.setExecutablePath(pid, msg.programPath);
     }
 
     if (msg.pty) {
-      const ptyIdx = kernelWorker.setupPty(pid);
+      const ptyIdx = await retryKernelEntryResult(() => kernelWorker.setupPty(pid));
       ptyByPid.set(pid, ptyIdx);
       // Apply initial winsize before the wasm program starts. Without this,
       // the program's first TIOCGWINSZ returns the kernel default (80x24)
@@ -1528,6 +1548,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
         }
       }
     }
+    if (createdPid !== undefined && !processes.has(createdPid)) ownedJobs.abandon(createdPid);
     respondError(msg.requestId, String(e));
   } finally {
     releaseMutation?.();
@@ -2782,8 +2803,9 @@ async function handleExec(
       });
       preparedTransferred = true;
 
-      if (oldMemoryRetirementSafe) initiatingInfo.memoryLease.release();
-      else initiatingInfo.memoryLease.releaseAfterForcedTermination();
+      await retireSupersededExecGeneration(
+        processGenerationDetaches, pid, initiatingInfo, oldMemoryRetirementSafe,
+      );
       initiatingLeaseConsumed = true;
 
       // Wire post-exec error/exit handling. The handleFork listener (on the
@@ -2933,11 +2955,9 @@ async function handleExec(
         }
       }
       if (preparedTransferred && !initiatingLeaseConsumed) {
-        if (oldMemoryRetirementSafe) {
-          initiatingInfo.memoryLease.release();
-        } else {
-          initiatingInfo.memoryLease.releaseAfterForcedTermination();
-        }
+        await retireSupersededExecGeneration(
+          processGenerationDetaches, pid, initiatingInfo, oldMemoryRetirementSafe,
+        );
         initiatingLeaseConsumed = true;
       }
       if (
@@ -3603,6 +3623,8 @@ async function finishProcessExit(
           formatError(error),
       });
     }
+    // Exit was published earlier; completion also requires exact detachment.
+    ownedJobs.detached(pid);
   })();
   processTeardowns.set(expectedWorker, teardown);
 
@@ -3707,6 +3729,18 @@ async function handleStatVfsPath(
 // Mutate the mounted filesystem from inside its owning worker. This keeps the
 // VFS SAB off the persistent browser main thread while allowing harnesses to
 // stage transient files between process spawns.
+function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_vfs_changes" }>) {
+  if (msg.enabled) {
+    if (!vfsChangeSubscriptions.has(msg.prefix)) {
+      const off = kernelWorker.subscribeVfsChanges(msg.prefix, event => post({ type: "vfs_change", event }));
+      vfsChangeSubscriptions.set(msg.prefix, off);
+    }
+  } else {
+    vfsChangeSubscriptions.get(msg.prefix)?.();
+    vfsChangeSubscriptions.delete(msg.prefix);
+  }
+}
+
 function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
   if (!rootImage.has()) { respondError(msg.requestId, "VFS is not initialized"); return; }
   let releaseMutation: (() => void) | undefined;
@@ -3915,6 +3949,11 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
         `failed to detach exact process generation for pid ${pid}`,
       );
       return;
+    }
+    // A forced terminate posts no exit. A superseded pid belongs to its exec successor.
+    if (detachResult.detachDisposition === "removed-or-absent") {
+      ownedJobs.exited(pid, msg.status);
+      ownedJobs.detached(pid);
     }
   } else {
     try {
@@ -4404,6 +4443,19 @@ sw.onmessage = (e: MessageEvent) => {
         post({ type: "init_error", error });
       });
       break;
+    case "read_owned_job":
+    case "cancel_owned_job":
+      try {
+        if (msg.type === "cancel_owned_job") ownedJobs.cancel(msg.jobId);
+        respond(msg.requestId, ownedJobs.read(msg.jobId, msg.offset, msg.limit));
+      } catch (error) { respondError(msg.requestId, formatError(error)); }
+      break;
+    case "release_owned_job":
+      try {
+        ownedJobs.release(msg.jobId);
+        respond(msg.requestId, true);
+      } catch (error) { respondError(msg.requestId, formatError(error)); }
+      break;
     case "spawn":
       void processMemoryCreators
         .run("a host-spawned process Worker", () => handleSpawn(msg))
@@ -4493,6 +4545,7 @@ sw.onmessage = (e: MessageEvent) => {
       else kernelWorker.disableSyscallTrace();
       break;
     }
+    case "watch_vfs_changes": handleWatchVfsChanges(msg); break;
     case "drain_syscall_trace": {
       try {
         respond(msg.requestId, kernelWorker.drainSyscallTrace());

@@ -13,6 +13,7 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
+  HOST_INTERCEPTED_SYSCALLS,
   PROCESS_STATE_EXITED,
   PROCESS_STATE_RUNNING,
 } from "../src/generated/abi";
@@ -281,6 +282,13 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
       kernel_drain_wakeup_events: drain,
       kernel_exec_commit: commit,
     });
+    const memory = createSharedMemory();
+    const channel = createChannel(19, memory);
+    setChannelSyscall(channel, HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE, []);
+    Atomics.store(channel.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
+    const state = mutableState(worker);
+    state.processes = new Map([[19, { channels: [channel], memory, ptrWidth: 4 }]]);
+    state.activeChannels = [channel];
 
     expect(worker.kernelExecCommit(19, 19, 23)).toBe(-5);
 

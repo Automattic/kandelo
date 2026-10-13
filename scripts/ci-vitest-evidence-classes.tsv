@@ -197,6 +197,7 @@ host/test/node-kernel-fatal.test.ts	prepared-product
 host/test/node-kernel-host-diagnostic.test.ts	prepared-product
 host/test/node-kernel-pipe-proxy.test.ts	prepared-product
 host/test/node-lazy-archive-runtime.test.ts	prepared-product
+host/test/node-owned-jobs.test.ts	prepared-product
 host/test/node-pcm-driver.test.ts	source-only
 host/test/node-platform-io-uid-gid.test.ts	source-only
 host/test/node-process-teardown-ordering.test.ts	source-only
@@ -209,6 +210,8 @@ host/test/opfs-channel.test.ts	source-only
 host/test/opfs-readdir-atomicity.test.ts	source-only
 host/test/optional-demo-vfs.test.ts	source-only
 host/test/ordinary-process-exit.test.ts	prepared-product
+host/test/owned-job-reap.test.ts	source-only
+host/test/owned-jobs.test.ts	source-only
 host/test/package-runtime-file.test.ts	prepared-product
 host/test/pango-cairo-smoke.test.ts	prepared-product
 host/test/patch-wasm-for-thread-gc.test.ts	source-only
@@ -319,6 +322,7 @@ host/test/vfork-mechanism-trace.test.ts	source-only
 host/test/vfork-production-mechanism.test.ts	source-only
 host/test/vfork-side-module-fixture.test.ts	source-only
 host/test/vfork-workspace.test.ts	source-only
+host/test/vfs-changes.test.ts	prepared-product
 host/test/vfs-create-route.test.ts	source-only
 host/test/vfs-image-helpers.test.ts	prepared-product
 host/test/vfs-image-wasm-policy.test.ts	prepared-product
@@ -353,6 +357,10 @@ host/test/webgl-registry.test.ts	source-only
 host/test/webgl-shadow.test.ts	source-only
 host/test/webgl-submit-drain.test.ts	source-only
 host/test/webgl-submit-queue.test.ts	source-only
+host/test/webmcp-guest-listing.test.ts	source-only
+host/test/webmcp-launch.test.ts	source-only
+host/test/webmcp-observations.test.ts	source-only
+host/test/webmcp-preview.test.ts	source-only
 host/test/wlcompositor-decoration-smoke.test.ts	prepared-product
 host/test/wlcompositor-dmabuf-smoke.test.ts	prepared-product
 host/test/wlcompositor-keybind-smoke.test.ts	prepared-product

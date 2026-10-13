@@ -1,3 +1,4 @@
+import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
 export type {
@@ -171,9 +172,20 @@ export interface InitMessage {
   enableTcpNetwork?: boolean;
 }
 
+/** Read, cancel or release one worker-owned command family. */
+export interface OwnedJobMessage {
+  type: "read_owned_job" | "cancel_owned_job" | "release_owned_job";
+  requestId: number;
+  jobId: string;
+  offset?: number;
+  limit?: number;
+}
+
 export interface SpawnMessage {
   type: "spawn";
   requestId: number;
+  /** Own this process and its descendants as one cancellable command family. */
+  ownedJob?: { id: string; timeoutMs: number };
   /**
    * Supply exactly one program source. `programPath` resolves inside the
    * worker-owned VFS and is the Node peer of BrowserKernel.spawnFromVfs().
@@ -324,6 +336,7 @@ export type MainToKernelMessage =
   | ReadVfsDirMessage
   | StatVfsPathMessage
   | WriteVfsFileMessage
+  | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
@@ -334,6 +347,7 @@ export type MainToKernelMessage =
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
   | DrainSyscallTraceMessage
+  | WatchVfsChangesMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
@@ -395,4 +409,11 @@ export type KernelToMainMessage =
   | ResolveExecRequestMessage
   | ProcEventMessage
   | LazyDownloadMessage
-  | DestroyProgressMessage;
+  | DestroyProgressMessage
+  | VfsChangeMessage;
+
+export interface WatchVfsChangesMessage {
+  type: "watch_vfs_changes"; prefix: string; enabled: boolean;
+}
+
+export interface VfsChangeMessage { type: "vfs_change"; event: VfsChangeEvent; }

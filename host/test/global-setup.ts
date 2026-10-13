@@ -12,9 +12,10 @@
 
 import { execFileSync } from "node:child_process";
 import { statSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { readBrowserMemory64FixtureSources } from "../../scripts/check-browser-memory64-example-fixtures";
 import {
   captureProgramFixtureBuildContract,
   programFixtureNeedsRebuild,
@@ -144,7 +145,11 @@ const TEST_PROGRAMS = [
 ];
 
 /** Memory64 counterparts needed to prove pointer-width-neutral syscall input. */
-const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c", "int128_division_test.c"];
+const WASM64_TEST_PROGRAMS = [...new Set([
+  "lseek_invalid_test.c",
+  "int128_division_test.c",
+  ...readBrowserMemory64FixtureSources().map(source => basename(source)),
+])];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "sysv_shm_departed_peer_test.c",

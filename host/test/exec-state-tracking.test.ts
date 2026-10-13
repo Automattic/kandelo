@@ -32,6 +32,7 @@ import {
   PROCESS_STARTUP_MAX_ENVP_COUNT,
 } from "../src/generated/abi";
 import { EXEC_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
+import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 import { createKernelSharedMappingStub } from "./support/kernel-shared-mapping-stub";
@@ -68,6 +69,67 @@ function preparedExecExports(memory: WebAssembly.Memory) {
 }
 
 describe("opaque prepared exec target launch", () => {
+  it.each(["prepare", "interpreter", "size", "read", "cancel", "commit"])(
+    "retries %s contention without lending or repeating consumed authority",
+    async phase => {
+      const script = new TextEncoder().encode("#!/bin/exact\n");
+      const targets = new Map([[31, script], [32, preparedExecFixture]]);
+      let refused = false;
+      const attempt = (operation: string): void => {
+        if (phase === operation && !refused) {
+          refused = true;
+          throw new KernelReentrantEntryError(`test ${operation}`);
+        }
+      };
+      const events: string[] = [];
+      const cancel = vi.fn((_owner: number, target: number) => {
+        attempt("cancel");
+        expect(target).toBe(31);
+        return 0;
+      });
+      const start = vi.fn(async () => { events.push("start"); return 0; });
+      const discard = vi.fn();
+      const commit = vi.fn((_target: number, _size: number, consumed: () => void) => {
+        attempt("commit");
+        consumed();
+        events.push("commit");
+        queueMicrotask(() => events.push("after-commit microtask"));
+        return 0;
+      });
+      await expect(launchPreparedExecTarget({
+        kernel: {
+          execTargetSize: (_owner, target) => {
+            attempt("size");
+            return BigInt(targets.get(target)!.byteLength);
+          },
+          execTargetRead: (_owner, target, offset, destination) => {
+            attempt("read");
+            const bytes = targets.get(target)!;
+            const start = Number(offset);
+            const count = Math.min(destination.byteLength, bytes.byteLength - start);
+            destination.set(bytes.subarray(start, start + count));
+            return count;
+          },
+          execTargetCancel: cancel,
+        },
+        ownerPid: 7, pid: 7, callerTid: 7,
+        diagnosticPath: "/bin/script", argv: ["script"], envp: [],
+        expectedAbi: ABI_VERSION,
+        materializePath: async () => {},
+        prepareInitialTarget: () => { attempt("prepare"); return 31; },
+        prepareInterpreterTarget: () => { attempt("interpreter"); return 32; },
+        compileModule: bytes => WebAssembly.compile(bytes),
+        commitTarget: commit,
+      }, async () => ({ onCommitFailure: discard, startAfterCommit: start }))).resolves.toBe(0);
+      expect(refused).toBe(true);
+      expect(discard).not.toHaveBeenCalled();
+      expect(start).toHaveBeenCalledOnce();
+      expect(commit).toHaveBeenCalledTimes(phase === "commit" ? 2 : 1);
+      expect(cancel).toHaveBeenCalledTimes(phase === "cancel" ? 2 : 1);
+      expect(events).toEqual(["commit", "start", "after-commit microtask"]);
+    },
+  );
+
   it("reads exact short chunks and rejects an unsafe signed size with one cancel", async () => {
     const expected = Uint8Array.from([1, 2, 3, 4, 5]);
     const cancel = vi.fn(() => 0);
@@ -291,6 +353,14 @@ describe("opaque prepared exec target launch", () => {
       markTargetConsumed();
       throw new Error("host import threw after Rust consumed the target");
     })).rejects.toThrow("host import threw after Rust consumed the target");
+    expect(cancel).toHaveBeenCalledTimes(1);
+    const consumedFailure = new KernelReentrantEntryError("consumed target");
+    const consumedCommit = vi.fn((_target: number, _size: number, markTargetConsumed: () => void) => {
+      markTargetConsumed();
+      throw consumedFailure;
+    });
+    await expect(launch(44, consumedCommit)).rejects.toBe(consumedFailure);
+    expect(consumedCommit).toHaveBeenCalledOnce();
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 

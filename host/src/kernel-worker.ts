@@ -1,3 +1,5 @@
+import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
+import type { VfsChangeEvent } from "./vfs/types";
 /**
  * CentralizedKernelWorker — Manages a single kernel Wasm instance that
  * services syscalls from multiple process workers via channel IPC.
@@ -74,6 +76,7 @@ import {
 } from "./channel-scalar-contract";
 import {
   reapHostOwnedExitedProcess as reapHostOwnedExitedProcessFromKernel,
+  reapOwnedJobExitedProcesses as reapOwnedJobExitedProcessesFromKernel,
   type HostOwnedProcessReapResult,
 } from "./host-owned-process-reap";
 import {
@@ -6211,6 +6214,86 @@ export class CentralizedKernelWorker {
     return decodeInspectionStat(new DataView(statBytes!.buffer, statBytes!.byteOffset, statBytes!.byteLength));
   }
 
+  #vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
+  #nativeFsDrainPending = false;
+
+  subscribeVfsChanges(prefix: string, listener: (event: VfsChangeEvent) => void): () => void {
+    assertVfsWatchPrefix(prefix);
+    let listeners = this.#vfsChangeListeners.get(prefix);
+    if (!listeners) {
+      if (this.#vfsChangeListeners.size >= MAX_VFS_WATCH_PREFIXES) throw new Error("Filesystem watch capacity reached (16 prefixes)");
+      this.#watchNativeFsChanges(prefix, true);
+      listeners = new Set();
+      this.#vfsChangeListeners.set(prefix, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      const current = this.#vfsChangeListeners.get(prefix);
+      if (!current?.delete(listener) || current.size) return;
+      this.#watchNativeFsChanges(prefix, false);
+      this.#vfsChangeListeners.delete(prefix);
+    };
+  }
+
+  #watchNativeFsChanges(prefix: string, enabled: boolean): void {
+    const bytes = new TextEncoder().encode(prefix);
+    if (!bytes.length || bytes.length > POSIX_PATH_MAX_BYTES) throw new TypeError("Invalid filesystem watch prefix");
+    const watchEnabled = enabled ? 1 : 0;
+    let errno = 0;
+    this.#runImmediateKernelEntry("watch native filesystem", entry => {
+      this.#requireMainScratchRegion().withLease(lease => {
+        lease.copyFrom(bytes, 0, 0, bytes.length);
+        const pointer = lease.exportPointer(0, bytes.length);
+        const result = this.#invokeEntryScratchExport(entry, lease, "kernel_watch_fs_changes", [pointer, bytes.length, watchEnabled]);
+        if (result < 0) errno = -result;
+      });
+      return undefined;
+    });
+    if (errno) throw new KernelScratchError("Filesystem watch failed", errno);
+  }
+
+  #drainNativeFsChanges(entry: KernelWorkerEntryContext): void {
+    const region = this.#requireMainScratchRegion();
+    const events: VfsChangeEvent[] = [];
+    region.withLease(lease => {
+      for (;;) {
+        const capacity = region.capacity;
+        const pointer = lease.exportPointer(0, capacity);
+        const count = this.#invokeEntryScratchExport(entry, lease, "kernel_drain_fs_changes", [pointer, capacity]);
+        if (!Number.isSafeInteger(count) || count < 0 || count > capacity) {
+          throw new Error(`Invalid native filesystem notification result: ${count}`);
+        }
+        if (!count) break;
+        // Copy while the lease is live. Observers only receive detached data
+        // after the entry revokes all authority over kernel memory.
+        const bytes = lease.copyOut(0, count);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        for (let offset = 0; offset < count;) {
+          if (count - offset < 5) throw new Error("Truncated filesystem notification");
+          const kind = bytes[offset];
+          const length = view.getUint32(offset + 1, true);
+          offset += 5;
+          if ((kind !== 1 && kind !== 2) || length > count - offset) throw new Error("Invalid filesystem notification");
+          const path = new TextDecoder().decode(bytes.subarray(offset, offset + length));
+          events.push({ kind: kind === 1 ? "modify" : "delete", path, t: Date.now() });
+          offset += length;
+        }
+      }
+    });
+    if (!events.length) return;
+    entry.deferObserverEffect(() => {
+      for (const event of events) {
+        for (const [prefix, listeners] of this.#vfsChangeListeners) {
+          if (event.path !== prefix && !event.path.startsWith(prefix === "/" ? "/" : `${prefix}/`)) continue;
+          for (const listener of listeners) {
+            try { listener({ ...event }); } catch (error) { console.error("Filesystem change listener failed", error); }
+          }
+        }
+      }
+      return undefined;
+    });
+  }
+
   rootfsReadDirectory(path: string): VfsDirEntrySnapshot[] {
     return decodeInspectionDirectory(this.#readRootfsInspectionSnapshot(path));
   }
@@ -9103,6 +9186,9 @@ export class CentralizedKernelWorker {
   /**
    * Prepare one exact executable target through Rust's process-relative path
    * resolver. The path bytes exist only inside this entry-scoped lease.
+   * Result-bearing target operations must run immediately or refuse without
+   * queueing: a rejected prepare/cancel must never consume a token later,
+   * and a rejected read must not retain its caller's destination.
    */
   execTargetPrepare(
     pid: number,
@@ -9118,7 +9204,7 @@ export class CentralizedKernelWorker {
     if (encodedPath.byteLength > region.capacity) return -ENAMETOOLONG;
     let result = -EIO;
     let completed = false;
-    const deferred = this.#runOrDeferKernelEntry(
+    this.#runImmediateKernelEntry(
       `kernel exec target prepare pid=${pid}`,
       (entry) => {
         const previousPid = this.currentHandlePid;
@@ -9147,7 +9233,7 @@ export class CentralizedKernelWorker {
         return undefined;
       },
     );
-    if (deferred || !completed) {
+    if (!completed) {
       throw new KernelReentrantEntryError("kernel exec target prepare");
     }
     return result;
@@ -9166,7 +9252,7 @@ export class CentralizedKernelWorker {
     if (encodedPath.byteLength > region.capacity) return -ENAMETOOLONG;
     let result = -EIO;
     let completed = false;
-    const deferred = this.#runOrDeferKernelEntry(
+    this.#runImmediateKernelEntry(
       `kernel spawn exec target prepare child=${childPid}`,
       (entry) => {
         const previousPid = this.currentHandlePid;
@@ -9193,7 +9279,7 @@ export class CentralizedKernelWorker {
         return undefined;
       },
     );
-    if (deferred || !completed) {
+    if (!completed) {
       throw new KernelReentrantEntryError("kernel spawn exec target prepare");
     }
     return result;
@@ -9204,7 +9290,7 @@ export class CentralizedKernelWorker {
     let result = -EIO as number | bigint;
     let completed = false;
     let missingExportError: Error | undefined;
-    const deferred = this.#runOrDeferKernelEntry(
+    this.#runImmediateKernelEntry(
       `kernel exec target size pid=${ownerPid} target=${target}`,
       (entry) => {
         const size = this.#kernelInstanceForEntry(entry).exports
@@ -9228,7 +9314,7 @@ export class CentralizedKernelWorker {
       },
     );
     if (missingExportError) throw missingExportError;
-    if (deferred || !completed || typeof result !== "bigint") {
+    if (!completed || typeof result !== "bigint") {
       throw new KernelReentrantEntryError("kernel exec target size");
     }
     return result;
@@ -9250,7 +9336,7 @@ export class CentralizedKernelWorker {
     if (offset < 0n || offset > 0x7fff_ffff_ffff_ffffn) return -EOVERFLOW;
     let result = -EIO;
     let completed = false;
-    const deferred = this.#runOrDeferKernelEntry(
+    this.#runImmediateKernelEntry(
       `kernel exec target read pid=${ownerPid} target=${target}`,
       (entry) => {
         const previousPid = this.currentHandlePid;
@@ -9287,7 +9373,7 @@ export class CentralizedKernelWorker {
         return undefined;
       },
     );
-    if (deferred || !completed) {
+    if (!completed) {
       throw new KernelReentrantEntryError("kernel exec target read");
     }
     return result;
@@ -9298,7 +9384,7 @@ export class CentralizedKernelWorker {
     let result = -EIO;
     let completed = false;
     let missingExportError: Error | undefined;
-    const deferred = this.#runOrDeferKernelEntry(
+    this.#runImmediateKernelEntry(
       `kernel exec target cancel pid=${ownerPid} target=${target}`,
       (entry) => {
         const cancel = this.#kernelInstanceForEntry(entry).exports
@@ -9323,7 +9409,7 @@ export class CentralizedKernelWorker {
       },
     );
     if (missingExportError) throw missingExportError;
-    if (deferred || !completed) {
+    if (!completed) {
       throw new KernelReentrantEntryError("kernel exec target cancel");
     }
     return result;
@@ -9341,6 +9427,7 @@ export class CentralizedKernelWorker {
     target: number,
     expectedSize?: number,
     markTargetConsumed: () => void = () => {},
+    expectedMemory?: WebAssembly.Memory,
   ): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
@@ -9348,8 +9435,6 @@ export class CentralizedKernelWorker {
       // behind the caller that needs to decide whether the old image survives.
       throw new KernelReentrantEntryError("kernel exec commit");
     }
-    this.committedExecTransitions.delete(pid);
-    this.committedExecSecureExec.delete(pid);
     let result = 0;
     let transition: {
       readonly secureExec: boolean;
@@ -9371,6 +9456,39 @@ export class CentralizedKernelWorker {
           );
           return undefined;
         }
+        const registration = this.processes.get(pid);
+        if (!registration || (expectedMemory && registration.memory !== expectedMemory)
+          || !registration.channels.some(channel => {
+            if (channel.memory !== registration.memory) return false;
+            const words = new Int32Array(channel.memory.buffer, channel.channelOffset);
+            const syscall = Atomics.load(words, CH_SYSCALL / 4);
+            return Atomics.load(words, CH_STATUS / 4) === CH_PENDING
+              && (syscall === SYS_EXECVE || syscall === SYS_EXECVEAT);
+          })) {
+          // Compilation/allocation yielded. Teardown or another exec can
+          // retire the caller before this irreversible commit. Cancel its
+          // exact token without mutating the replacement's transition state.
+          const cancel = this.#kernelInstanceForEntry(entry).exports
+            .kernel_exec_target_cancel as ((ownerPid: number, target: number) => number) | undefined;
+          if (!cancel) {
+            missingExportError = new Error("Kernel missing required kernel_exec_target_cancel export");
+            return undefined;
+          }
+          const previousPid = this.currentHandlePid;
+          this.currentHandlePid = pid;
+          try {
+            markTargetConsumed();
+            cancel(pid, target);
+          } finally {
+            this.currentHandlePid = previousPid;
+          }
+          result = -ESRCH;
+          completed = true;
+          this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+          return undefined;
+        }
+        this.committedExecTransitions.delete(pid);
+        this.committedExecSecureExec.delete(pid);
         const previousPid = this.currentHandlePid;
         this.currentHandlePid = pid;
         let prunePlan: ExecFdMirrorPrunePlan | null = null;
@@ -11642,8 +11760,14 @@ export class CentralizedKernelWorker {
   ): boolean {
     return this.#kernelEntryGate.runOrDeferVoidIngress(
       label,
-      (scope, effects) =>
-        this.#runKernelEntryOperation(scope, effects, operation),
+      (scope, effects) => {
+        if (this.#vfsChangeListeners.size && !this.#nativeFsDrainPending) {
+          return this.#runKernelEntryOperation(scope, effects, (entry) =>
+            this.#runNativeFsObservedOperation(entry, operation),
+          );
+        }
+        return this.#runKernelEntryOperation(scope, effects, operation);
+      },
       dedupeKey,
     );
   }
@@ -11663,9 +11787,57 @@ export class CentralizedKernelWorker {
   ): void {
     this.#kernelEntryGate.runImmediateVoidIngress(
       label,
-      (scope, effects) =>
-        this.#runKernelEntryOperation(scope, effects, operation),
+      (scope, effects) => {
+        if (this.#vfsChangeListeners.size && !this.#nativeFsDrainPending) {
+          return this.#runKernelEntryOperation(scope, effects, (entry) =>
+            this.#runNativeFsObservedOperation(entry, operation),
+          );
+        }
+        return this.#runKernelEntryOperation(scope, effects, operation);
+      },
     );
+  }
+
+  /** Read readiness through an explicit live entry, never context construction. */
+  #runNativeFsObservedOperation(
+    entry: KernelWorkerEntryContext,
+    operation: (entry: KernelWorkerEntryContext) => undefined,
+  ): undefined {
+    let scheduleFsDrain = false;
+    // Register before the operation: a lifecycle transaction must remain the
+    // final detached effect. Inactive watches use the original operation
+    // directly, without this callback or its captured scheduling state.
+    entry.deferProtocolEffect(() => {
+      if (!scheduleFsDrain) return undefined;
+      // A lifecycle transaction starts in a microtask and may immediately read
+      // the filesystem. Open the drain's own entry on the next worker turn.
+      this.#registerImmediate(() => {
+        this.#runOrDeferKernelEntry("drain native filesystem changes", (entry) => {
+          entry.deferProtocolEffect(() => {
+            this.#nativeFsDrainPending = false;
+            return undefined;
+          });
+          this.#drainNativeFsChanges(entry);
+          return undefined;
+        });
+      });
+      return undefined;
+    });
+    operation(entry);
+    // Check after the operation so its final write is delivered even if no
+    // later syscall runs. This scalar read neither copies hints nor consumes
+    // them; observers still run after the separate drain's lease is revoked.
+    const pending = this.#kernelInstanceForEntry(entry).exports
+      .kernel_fs_changes_pending as () => number;
+    const ready = pending();
+    if (ready !== 0 && ready !== 1) {
+      throw new Error(`Invalid filesystem notification readiness: ${ready}`);
+    }
+    if (ready === 1) {
+      scheduleFsDrain = true;
+      this.#nativeFsDrainPending = true;
+    }
+    return undefined;
   }
 
   /**
@@ -22450,8 +22622,14 @@ export class CentralizedKernelWorker {
   ): void {
     this.#kernelEntryGate.runOrDeferVoidIngress(
       `${label} child=${childPid}`,
-      (scope, effects) =>
-        this.#runKernelEntryOperation(scope, effects, operation),
+      (scope, effects) => {
+        if (this.#vfsChangeListeners.size && !this.#nativeFsDrainPending) {
+          return this.#runKernelEntryOperation(scope, effects, (entry) =>
+            this.#runNativeFsObservedOperation(entry, operation),
+          );
+        }
+        return this.#runKernelEntryOperation(scope, effects, operation);
+      },
     );
   }
 
@@ -23124,6 +23302,8 @@ export class CentralizedKernelWorker {
   ): Promise<number> {
     const callback = this.callbacks.onExec;
     if (!callback) return -ENOSYS;
+    const expectedMemory = this.processes.get(pid)?.memory;
+    if (!expectedMemory) return -ESRCH;
     try {
       return await launchPreparedExecTarget({
         kernel: this as PreparedExecKernel,
@@ -23160,6 +23340,7 @@ export class CentralizedKernelWorker {
             target,
             expectedSize,
             markTargetConsumed,
+            expectedMemory,
           ),
         compileModule: (bytes) => this.wasmModules.programModule(bytes),
       }, callback);
@@ -30786,12 +30967,24 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Reap one exited top-level process through the serialized kernel entry.
+   * Reap a fully exited and detached job through the serialized kernel entry.
    *
    * WHY: the dedicated worker owns the kernel instance and its entry gate.
    * Exposing the raw instance to browser or Node teardown would bypass scratch
    * and reentrancy ownership; callers receive only the detached result.
    */
+  reapOwnedJobExitedProcesses(family: ReadonlySet<number>): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    this.#runImmediateKernelEntry(
+      "owned job process reap",
+      (entry) => {
+        reapOwnedJobExitedProcessesFromKernel(entry.instance, family);
+        return undefined;
+      },
+    );
+  }
+
+  /** Reap one exited top-level process through the serialized kernel entry. */
   reapHostOwnedExitedProcess(pid: number): HostOwnedProcessReapResult {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     let result: HostOwnedProcessReapResult | undefined;

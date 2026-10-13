@@ -1,3 +1,6 @@
+import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
+import type { VfsChangeEvent } from "./vfs/types";
+import type { OwnedJobRead } from "./owned-jobs";
 /**
  * BrowserKernel — Thin proxy that communicates with a dedicated kernel
  * web worker via MessagePort. The kernel worker owns the Wasm instance
@@ -332,6 +335,7 @@ export class BrowserKernel {
   private pendingPtyOutputFailure: Error | undefined;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
   private destroyProgress = createDestroyProgressFanout();
+  private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
   private pcmTransport: PcmTransportDescriptor | null = null;
   private pcmDriver: BrowserPcmDriver | null = null;
   private audioActivity: AudioActivityLatch | null = null;
@@ -799,6 +803,7 @@ export class BrowserKernel {
     programPath: string,
     argv: string[],
     options?: {
+      ownedJob?: { id: string; timeoutMs: number };
       env?: string[];
       cwd?: string;
       uid?: number;
@@ -813,6 +818,7 @@ export class BrowserKernel {
     const spawnStartedBeforeExitSequence = this.exitSequence;
     const pid = await this.request(requestId, {
       type: "spawn",
+      ownedJob: options?.ownedJob,
       requestId,
       programPath,
       argv,
@@ -973,6 +979,29 @@ export class BrowserKernel {
     cb: (event: DestroyProgressEvent) => void,
   ): () => void {
     return this.destroyProgress.subscribe(cb);
+  }
+
+  /**
+   * Subscribe to changes of paths under `prefix` in the worker-owned VFS. The
+   * worker forwards events only while a prefix is watched, so nothing crosses
+   * the worker boundary when nobody's listening.
+   */
+  subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void {
+    assertVfsWatchPrefix(prefix);
+    let listeners = this.vfsChangeListeners.get(prefix);
+    if (!listeners) {
+      if (this.vfsChangeListeners.size >= MAX_VFS_WATCH_PREFIXES) throw new Error("Filesystem watch capacity reached (16 prefixes)");
+      listeners = new Set();
+      this.vfsChangeListeners.set(prefix, listeners);
+      this.sendToKernel({ type: "watch_vfs_changes", prefix, enabled: true });
+    }
+    listeners.add(cb);
+    return () => {
+      const current = this.vfsChangeListeners.get(prefix);
+      if (!current?.delete(cb) || current.size > 0) return;
+      this.vfsChangeListeners.delete(prefix);
+      this.sendToKernel({ type: "watch_vfs_changes", prefix, enabled: false });
+    };
   }
 
   private syscallListeners = new Set<(event: SyscallTraceEvent) => void>();
@@ -1432,6 +1461,19 @@ export class BrowserKernel {
     if (resolver) resolver.resolve(status);
   }
 
+  /** Read bounded output and observed termination of a worker-owned command family. */
+  async readOwnedJob(jobId: string, offset?: number, limit?: number, cancel = false): Promise<OwnedJobRead> {
+    const requestId = this.nextRequestId++;
+    return await this.request(requestId, { type: cancel ? "cancel_owned_job" : "read_owned_job", requestId, jobId, offset, limit }) as OwnedJobRead;
+  }
+
+  /** Forget a finished job's record and free its slot. Rejects while the family is live. */
+  async releaseOwnedJob(jobId: string): Promise<void> {
+    const requestId = this.nextRequestId++;
+    await this.request(requestId, { type: "release_owned_job", requestId, jobId });
+  }
+
+
   /**
    * Read a file out of the kernel-owned VFS from the main thread. Returns the
    * bytes, or `null` if the path does not exist / is not readable. This is the
@@ -1638,6 +1680,7 @@ export class BrowserKernel {
     this.options.onHttpBridgePendingRequests?.(0);
     this.lazyDownloadListeners.clear();
     this.destroyProgress.clear();
+    this.vfsChangeListeners.clear();
     // Release every main-thread reference to shared buffers this kernel held.
     // `fbMemoryByPid`/`framebuffers` retain typed-array views over process
     // `WebAssembly.Memory` (up to 1 GiB max each) posted from the worker for
@@ -1755,6 +1798,15 @@ export class BrowserKernel {
     try { this.options.onLazyDownload?.(event); } catch { /* host callbacks should not break delivery */ }
     for (const cb of this.lazyDownloadListeners) {
       try { cb(event); } catch { /* listener errors don't break the loop */ }
+    }
+  }
+
+  private emitVfsChange(event: VfsChangeEvent): void {
+    for (const [prefix, listeners] of this.vfsChangeListeners) {
+      if (!vfsPathIsWithin(prefix, event.path)) continue;
+      for (const cb of listeners) {
+        try { cb(event); } catch { /* listener errors don't break the loop */ }
+      }
     }
   }
 
@@ -1994,6 +2046,9 @@ export class BrowserKernel {
         break;
       case "destroy_progress":
         this.destroyProgress.emit(msg.event);
+        break;
+      case "vfs_change":
+        this.emitVfsChange(msg.event);
         break;
       default: {
         // Keep this dispatch coupled to KernelToMainMessage as the protocol

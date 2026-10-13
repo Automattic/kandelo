@@ -92,8 +92,8 @@ Service Worker ──MessagePort──> Kernel Worker       │
   for UI code to fall back to; a kernel without these methods makes the call
   fail with an error naming the missing method. A missing path resolves
   `null` from the worker and surfaces as `ENOENT`, not as empty bytes or an
-  empty listing. `/proc` is kernel-virtual and is not visible through these
-  worker inspection reads; the process list comes from `enumProcs`.
+  empty listing. The process list comes from `enumProcs`; directory and
+  metadata inspection also expose live `/proc` and `/dev` entries.
   Files, directory snapshots and path metadata come from native inspection
   exports, using the same component-wise namespace walker as guest syscalls.
   This follows links across rootfs, tmpfs and Node foreign mounts. Directory
@@ -101,8 +101,12 @@ Service Worker ──MessagePort──> Kernel Worker       │
   follows the final link. Inspection uses root credentials from the immutable
   reserved init record without creating a process or borrowing guest file
   descriptors. Directory metadata larger than a scratch lease is streamed
-  inside one serialized kernel entry. Procfs/devfs directory streams remain
-  unsupported (`EOPNOTSUPP`), and their contents are not exposed by this UI.
+  inside one serialized kernel entry. This inspection API does not read
+  generated procfs file contents; normal guest reads still do.
+  `subscribeVfsChanges(prefix, cb)` reports native rootfs and scratch-storage
+  changes on both hosts. It is disabled until a prefix is watched. Events
+  invalidate current state after the kernel call ends, and a bounded queue
+  refreshes watched directories on overflow. See `docs/webmcp.md` for limits.
   A quiescent machine can return durable root-image bytes through
   `BrowserKernel.exportRootfsImage()`. The worker rejects export while a guest
   process or teardown is live, serializes it against the same staging and lazy
@@ -2350,6 +2354,8 @@ paths to each production build:
 The group producer pins one SourceOnly authority and captures, verifies and
 stages one body at a time. Each capture is limited to 512 MiB (callers may
 select a smaller budget); the complete on-disk deployment may be larger.
+When reusing a group, compare it within the total byte count verified from
+its manifest, rather than applying the per-capture memory ceiling to disk.
 Only byte counts and hashes remain in the manifest inventory. Every lazy
 body must match its image's size and archive digest before the completed
 group and private map are published. A failed capture removes unpublished

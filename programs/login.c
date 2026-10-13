@@ -40,8 +40,6 @@ static int read_field(const char *prompt, char *buf, size_t buflen, int hide) {
     int fd = fileno(stdin);
     int restore_echo = 0;
 
-    fputs(prompt, stdout);
-    fflush(stdout);
     if (hide && isatty(fd)) {
         if (tcgetattr(fd, &old_term) != 0) {
             perror("login: tcgetattr");
@@ -55,6 +53,10 @@ static int read_field(const char *prompt, char *buf, size_t buflen, int hide) {
         }
         restore_echo = 1;
     }
+    /* A visible password prompt means input will no longer echo or be
+     * discarded by the mode change's TCSAFLUSH. */
+    fputs(prompt, stdout);
+    fflush(stdout);
     if (!fgets(buf, buflen, stdin)) {
         if (restore_echo) {
             tcsetattr(fd, TCSAFLUSH, &old_term);
