@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,9 +14,8 @@ const imageModulePath = [publishedImageModulePath, directImageModulePath].find((
   if (!existsSync(path)) return false;
   return WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(path))).length === 0;
 }) ?? null;
-const probePath = process.env.KANDELO_TEST_PERSISTENCE_PROGRAM_WASM;
-const guestProgramPath = probePath ?? tryResolveBinary("programs/wasm32/dash.wasm");
-const guestProgramName = probePath === undefined ? "/bin/dash" : "/bin/write-probe";
+const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
+const guestProgramName = "/bin/persistence-overwrite";
 const encoder = new TextEncoder();
 
 async function makeImage(state: string): Promise<Uint8Array> {
@@ -81,10 +80,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       const image = await makeImage("abcdefgh");
       const host = await boot(image, path);
       try {
-        const argv = probePath === undefined
-          ? ["dash", "-c", "exec 3<>/state; printf 'XY' >&3; exec 3>&-"]
-          : ["write-probe"];
-        const { exit } = await host.spawnFromVfs(guestProgramName, argv);
+        const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
         expect(await exit).toBe(0);
         expect(new TextDecoder().decode((await host.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
       } finally {
@@ -96,6 +92,20 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       } finally {
         await recovered.destroy();
       }
+      const committed = readFileSync(path);
+      appendFileSync(path, Buffer.from("KTXN"));
+      const afterTail = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await afterTail.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await afterTail.destroy();
+      }
+      expect(readFileSync(path)).toEqual(committed);
+      const damaged = readFileSync(path);
+      damaged[damaged.length - 37] ^= 1;
+      writeFileSync(path, damaged);
+      await expect(boot(image, path)).rejects.toThrow(/errno 5/);
+      expect(readFileSync(path)).toEqual(damaged);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
