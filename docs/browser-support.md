@@ -2499,6 +2499,8 @@ claim that browser completion is working based on Node-only evidence.
 ### No external raw sockets
 Browser sandboxing prevents Kandelo from listening on real network ports or opening raw TCP/UDP sockets to arbitrary external peers. Local loopback sockets and `LocalVirtualNetwork` listeners are virtual sockets inside the browser session, so Kandelo machines can still communicate with each other using POSIX UDP/TCP. Browser-facing HTTP server demos use a service worker to intercept HTTP requests and inject them as kernel TCP connections via the connection pump.
 
+Outbound internet traffic leaves through the fetch and TLS bridges, which the guest sees as a NAT link: `eth0` is `10.0.2.15/24`, internet streams report that address from `getsockname`, and DNS names resolve to made-up addresses in `198.18.0.0/15`. The link carries TCP only, so a UDP datagram for anywhere beyond the machine fails with `EHOSTUNREACH` (see [architecture](architecture.md)).
+
 ### Purpose-checked browser peer connections
 
 The Kandelo app's dock has a network button for **network sessions** between
@@ -2522,8 +2524,9 @@ computer in the session, so LAN discovery works: in Chromium, a joiner's
 `fbdoom -localsearch` finds the hosting computer's server, and between two
 Node machines TyrQuake's Multiplayer → Join a Game search lists and joins a
 session's server. A LAN game should run as a private server
-(`fbdoom -privateserver`): a browser cannot send UDP to an internet master
-server, and fbdoom exits when its registration send fails. Node runs the
+(`fbdoom -privateserver`): the browser's internet egress carries TCP only,
+so UDP to Doom's internet master server fails with `EHOSTUNREACH`, and
+fbdoom stops with a fatal error when its registration send fails. Node runs the
 same segment over paired native ports; its built-in runtime has no WebRTC API,
 so creating RTC links remains a browser adapter capability.
 
