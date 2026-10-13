@@ -88,6 +88,7 @@ test("Kandelo page restores a guest-written computer after reload", async ({ pla
       page.on("pageerror", (error) => pageErrors.push(error.message));
       await page.goto(pageUrl.href, { waitUntil: "domcontentloaded" });
       await expectBootCount(page, 1, pageErrors);
+      rmSync(imagePath);
       await page.reload({ waitUntil: "domcontentloaded" });
       await expectBootCount(page, 2, pageErrors);
 

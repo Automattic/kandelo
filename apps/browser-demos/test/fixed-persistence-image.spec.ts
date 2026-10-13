@@ -30,8 +30,13 @@ test("experimental computer keeps exact base bytes and rejects damaged images", 
         const name = `image-${crypto.randomUUID()}`;
         const identity = "source A, profile A";
         const proposed = new Uint8Array([1, 2, 3, 4]);
+        const lazyAssets = {
+          deploymentBase: `${location.origin}/`,
+          directoryUrl: `${location.origin}/assets/`,
+          manifestUrl: `${location.origin}/assets/manifest.json`,
+        };
         const before = await loadFixedPersistenceImage(name, identity);
-        const saved = await saveFixedPersistenceImage(name, identity, proposed);
+        const saved = await saveFixedPersistenceImage(name, identity, proposed, lazyAssets);
         const restored = await loadFixedPersistenceImage(name, identity);
         let wrongIdentity = false;
         try {
@@ -40,6 +45,27 @@ test("experimental computer keeps exact base bytes and rejects damaged images", 
           wrongIdentity = true;
         }
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const manifestFile = await directory.getFileHandle(`${name}.base.json`);
+        const manifestText = await (await manifestFile.getFile()).text();
+        const writeManifest = async (value: string) => {
+          const writer = await manifestFile.createWritable();
+          await writer.write(value);
+          await writer.close();
+        };
+        const damagedManifest = JSON.parse(manifestText);
+        damagedManifest.lazyAssets.manifestUrl = `${location.origin}/wrong.json`;
+        await writeManifest(JSON.stringify(damagedManifest));
+        let damagedMetadata = false;
+        try {
+          await loadFixedPersistenceImage(name, identity);
+        } catch {
+          damagedMetadata = true;
+        }
+        const legacyManifest = JSON.parse(manifestText);
+        delete legacyManifest.lazyAssets;
+        delete legacyManifest.lazyAssetsSha256;
+        await writeManifest(JSON.stringify(legacyManifest));
+        const legacy = await loadFixedPersistenceImage(name, identity);
         const baseFile = await directory.getFileHandle(`${name}.base`);
         const writer = await baseFile.createWritable();
         await writer.write(new Uint8Array([9, 2, 3, 4]));
@@ -50,9 +76,33 @@ test("experimental computer keeps exact base bytes and rejects damaged images", 
         } catch {
           damaged = true;
         }
-        return { before, saved: Array.from(saved), restored: Array.from(restored ?? []), wrongIdentity, damaged };
+        return {
+          before,
+          saved: Array.from(saved.imageBytes),
+          restored: Array.from(restored?.imageBytes ?? []),
+          lazyAssets: restored?.lazyAssets,
+          recorded: restored?.lazyAssetsRecorded,
+          legacyRecorded: legacy?.lazyAssetsRecorded,
+          damagedMetadata,
+          wrongIdentity,
+          damaged,
+        };
       }, new URL(`/@fs/${modulePath}`, baseURL).href);
-      expect(result).toEqual({ before: null, saved: [1, 2, 3, 4], restored: [1, 2, 3, 4], wrongIdentity: true, damaged: true });
+      expect(result).toEqual({
+        before: null,
+        saved: [1, 2, 3, 4],
+        restored: [1, 2, 3, 4],
+        lazyAssets: {
+          deploymentBase: new URL("/", baseURL).href,
+          directoryUrl: new URL("/assets/", baseURL).href,
+          manifestUrl: new URL("/assets/manifest.json", baseURL).href,
+        },
+        recorded: true,
+        legacyRecorded: false,
+        damagedMetadata: true,
+        wrongIdentity: true,
+        damaged: true,
+      });
     } finally {
       await context.close();
     }

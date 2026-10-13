@@ -234,17 +234,21 @@ pipe pair.
   in OPFS and boots the existing kernel journal with the same name. Reloading
   with the same image URL, profile, and name reuses the exact saved bytes;
   a mismatched identity or damaged image fails boot instead of resetting it.
-  The OPFS image manifest records length and SHA-256. The page refuses
+  The OPFS manifest checks the image length and SHA-256, plus a SHA-256 for
+  saved lazy-asset transport metadata. The page refuses
   boot-link inputs and scripts in this mode, rather than auto-running a
   URL-supplied script against saved state. This is a developer smoke path,
   not a general persistent computer: only overwrites inside existing regular
   image files persist; create, append, truncate, rename, and metadata changes
-  are unsupported. It is not an offline image cache: each boot still fetches
-  the source image to resolve lazy asset URLs, although composition uses the
-  saved image bytes. There is no per-computer reset or upgrade UI; clearing
-  site data removes this origin's machines and other site data. The base
-  image is still loaded into memory and browser quota or eviction can remove
-  OPFS data. If the entire computer's OPFS state disappears, its name is
+  are unsupported. Restoring a newly saved custom image does not re-fetch its
+  VFS source; the OPFS manifest also retains lazy-asset transport metadata.
+  Older manifests may re-fetch the source, and scoped product activation may
+  still fetch product images. The app, kernel, and lazy assets can still need
+  the network, so this is not an offline computer. There is no per-computer
+  reset or upgrade UI; clearing site data removes this origin's machines
+  and other site data. The base image is still loaded into memory.
+  Browser quota or eviction can remove OPFS data. If the entire
+  computer's OPFS state disappears, its name is
   treated as new; this mode cannot detect a complete eviction. Do not use
   valuable data.
 - `OpfsFileSystem` — Origin Private File System for browser persistence. Its
