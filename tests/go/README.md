@@ -81,6 +81,14 @@ scripts/dev-shell.sh bash -c 'node --import tsx tests/go/syscall-stdlib/run.ts .
 
 The same selected cases are included in `go-port.spec.ts` for Chromium,
 Firefox, and WebKit. They are not the full upstream `os` or `syscall` suites.
+The Kandelo-specific `TestKandeloMmap` case in the Go fork's `syscall` test
+binary exercises anonymous, private, and shared Go mappings plus `Msync`
+writeback on Node and all three browser engines. Run it in Node with:
+
+```sh
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/syscall-stdlib/run.ts .context/go-browser/syscall-test.wasm "$(scripts/resolve-binary.sh kernel.wasm)" "^TestKandeloMmap$"'
+```
+
 The VFS-backed `run-full-vfs.ts` runner supplies Go source/testdata, account
 files, `/bin/pwd`, and a non-root CWD. With `-test.run=^Test`, the available
 upstream `os` suite passes 213 top-level tests in Node when excluding the two

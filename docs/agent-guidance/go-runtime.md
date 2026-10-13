@@ -48,6 +48,13 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
 
 ## Memory, threads, and syscalls
 
+- Go's public `syscall.Mmap`, `Munmap`, and `Msync` now use the same
+  Kandelo channel and mapping manager as the C SDK and Go runtime.
+  The `syscall` test covers anonymous, file-backed private, file-backed
+  shared, and explicit writeback mappings in Node and all three browsers.
+  Kandelo's file-backed `MAP_SHARED` coherence and `msync` remain partial
+  as described in `docs/posix-status.md`; do not infer database durability
+  or immediate cross-process visibility from this API gate.
 - The linker imports shared linear memory and declares a bounded pthread
   slot arena below the Go heap. The default is 32 slots; the per-program
   `-ldflags='-kandelothreadslots=N'` accepts 1–1024. Each slot reserves

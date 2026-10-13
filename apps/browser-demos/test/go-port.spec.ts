@@ -190,6 +190,14 @@ const probes: Probe[] = [
     stdout: ["--- PASS: TestGettimeofday", "PASS"],
   },
   {
+    name: "Go syscall file-backed mmap, msync, and munmap",
+    file: "syscall-test.wasm",
+    argv: ["go-syscall-test", "-test.run=^TestKandeloMmap$", "-test.v"],
+    stdout: ["--- PASS: TestKandeloMmap", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
+  },
+  {
     name: "upstream Go os.Root Chtimes nanosecond precision",
     file: "os-test.wasm",
     argv: ["go-os-test", "-test.run=^TestRootChtimes$", "-test.v"],

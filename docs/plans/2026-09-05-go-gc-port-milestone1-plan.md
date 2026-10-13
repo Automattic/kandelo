@@ -3279,3 +3279,19 @@ runtime tests before integrating FrankenPHP's Caddy `php_server`. The
 existing library-based WordPress profile remains a functional tech demo,
 not a production-representative Caddy deployment. No new compiler,
 standard-library, dependency, or package changes were made in this audit.
+
+**2026-10-13 — Public Go mmap binding, not a Caddy workaround.** The Go
+fork now exposes `syscall.Mmap`, `Munmap`, and `Msync` for Kandelo through
+its existing syscall channel and kernel mapping manager (fork
+`935d07526a83289221d3df22bf0d798430f1015f`). This is a Go-target
+platform API, not a Caddy or FrankenPHP source patch. The fork's focused
+`syscall` test covers anonymous mappings, file-backed private isolation,
+shared writeback through `msync`, exact unmap ownership, and invalid
+zero-length mapping. The test passes in Node and Chromium, Firefox, and
+WebKit with ABI-50 artifacts and no host diagnostics. `go-hello` rev16 and
+`frankenphp-classic` rev21 pin the fork commit; both source package builds
+pass, and the new FrankenPHP binary serves PHP and a static asset in a
+Chromium smoke test. These are bounded API and rebuild checks, not a new
+WordPress image test or a production Caddy build. Kandelo's documented
+`MAP_SHARED`/`msync` limits still apply, and Caddy still needs a reviewed
+`x/sys/unix` target port and the other dependency ports from the inventory.
