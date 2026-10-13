@@ -4635,6 +4635,7 @@
 .knetwork { width: min(520px, 100%); }
 .knetwork form { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .knetwork form .kshare-btn-primary { margin-left: 0; }
+.knetwork-actions { display: flex; gap: 8px; }
 .knetwork-status {
   display: flex;
   flex-wrap: wrap;

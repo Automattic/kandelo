@@ -94,7 +94,10 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; running: boolean 
                 <form onSubmit={(event) => { event.preventDefault(); void session.join(invitation.room, invitation.name); }}>
                   <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Invitation</div>
                   <p className="knetwork-note">Join “{invitation.name}”. The hosting computer will see this computer’s network address.</p>
-                  <button className="kshare-btn kshare-btn-primary" disabled={blocked}>Join session</button>
+                  <div className="knetwork-actions">
+                    <button className="kshare-btn kshare-btn-primary" disabled={blocked}>Join session</button>
+                    <button type="button" className="kshare-btn" onClick={session.dismissInvitation}>Dismiss</button>
+                  </div>
                 </form>
               )}
               <form onSubmit={(event) => { event.preventDefault(); void session.create(name); }}>

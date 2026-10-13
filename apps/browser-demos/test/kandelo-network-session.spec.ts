@@ -30,6 +30,10 @@ async function join(browser: Browser, link: string, expected: string) {
   const page = await context.newPage();
   await page.goto(link, { waitUntil: "domcontentloaded" });
   await running(page);
+  // The room token is read into memory and kept out of the address bar, so
+  // Share links and machine switches cannot carry it on.
+  expect(new URL(page.url()).searchParams.has("network")).toBe(false);
+  expect(new URL(page.url()).searchParams.get("profile")).toBe(new URL(link).searchParams.get("profile"));
   // The link opens the panel but never joins on its own.
   await expect(page.getByRole("button", { name: "Network session: not connected", exact: true })).toBeAttached();
   await page.getByRole("button", { name: "Join session", exact: true }).click();
@@ -99,4 +103,39 @@ test("a link to a session that does not exist fails visibly", async ({ page }) =
   await expect(page.locator(".knetwork-error")).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: "Join session", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Network session: failed", exact: true })).toBeAttached();
+});
+
+test("a joiner can pick a different computer before joining", async ({ browser, page, browserName }) => {
+  test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
+  test.setTimeout(480_000);
+  const link = await host(page, "Mixed machines");
+  const context = await browser.newContext();
+  const joiner = await context.newPage();
+  try {
+    await joiner.goto(link, { waitUntil: "domcontentloaded" });
+    await running(joiner);
+    await closePanel(joiner);
+    // Launch another computer from the gallery; the unjoined invitation stays.
+    await joiner.getByRole("button", { name: "New", exact: true }).click();
+    await joiner.locator(".kgal-row", { has: joiner.locator(".kgal-machine-title", { hasText: /^Node\.js$/ }) })
+      .getByRole("button", { name: "Launch" }).click();
+    await expect.poll(() => new URL(joiner.url()).searchParams.get("profile"), { timeout: 120_000 }).toBe("node");
+    await running(joiner);
+    await joiner.getByRole("button", { name: "Network session: not connected", exact: true }).click();
+    await joiner.getByRole("button", { name: "Join session", exact: true }).click();
+    await expect(joiner.locator(".knetwork-status")).toContainText("this computer is 10.89.0.2", { timeout: 90_000 });
+    await expect(members(page)).toHaveCount(2);
+  } finally {
+    await context.close();
+  }
+});
+
+test("an invitation can be dismissed without joining", async ({ page }) => {
+  test.setTimeout(240_000);
+  await page.goto("/?network=abcdefghijklmnopqrstuvwxyz&networkName=Party", { waitUntil: "domcontentloaded" });
+  await running(page);
+  expect(new URL(page.url()).searchParams.has("network")).toBe(false);
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Join session", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Create session", exact: true })).toBeVisible();
 });
