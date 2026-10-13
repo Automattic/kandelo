@@ -197,7 +197,7 @@ describe("Vite browser binary capabilities", () => {
     );
     expect(config.match(/sourceOnlyViteAssets\.plugin\(\)/g)).toHaveLength(2);
     expect(config).toContain(
-      "SourceOnly browser builds admit only the root main, kandelo, and network inputs",
+      "SourceOnly browser builds admit only the root main, kandelo, network, and peer-network inputs",
     );
     expect(config).toContain(
       'publicDir: sourceOnlyPublicSnapshot?.path ?? "public"',
