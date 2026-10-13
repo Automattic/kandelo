@@ -11,10 +11,22 @@ import { runTerminalCommand } from "./support/terminal-command";
 const running = (page: Page) =>
   expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
 const closePanel = (page: Page) => page.locator(".knetwork .kshare-x").click();
+const terminalText = (page: Page) => page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
+/** The last game Doom started, as it reports it on its terminal. */
+async function doomGame(page: Page): Promise<string> {
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  const games = (await terminalText(page)).match(/player \d+ of \d+ \(\d+ nodes\)/g) ?? [];
+  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  return games.at(-1) ?? "";
+}
+const pickLanEntry = async (page: Page, entry: string) => {
+  await page.getByTestId("fb-dock-action-lan").click();
+  await page.getByTestId(`fb-dock-menu-entry-${entry}`).click();
+};
 const members = (page: Page) => page.getByRole("list", { name: "Computers in this session" }).getByRole("listitem");
 
-async function host(page: Page, name: string): Promise<string> {
-  await gotoMachine(page, "shell");
+async function host(page: Page, name: string, profile = "shell"): Promise<string> {
+  await gotoMachine(page, profile);
   await running(page);
   await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
   await page.getByLabel("Session name").fill(name);
@@ -138,4 +150,31 @@ test("an invitation can be dismissed without joining", async ({ page }) => {
   await page.getByRole("button", { name: "Dismiss", exact: true }).click();
   await expect(page.getByRole("button", { name: "Join session", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Create session", exact: true })).toBeVisible();
+});
+
+test("the Doom machine's LAN menu starts a two-player game across the session", async ({ browser, page, browserName }) => {
+  test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
+  test.setTimeout(480_000);
+  const link = await host(page, "Doom night", "doom");
+  await closePanel(page);
+  // The host's game waits for its second player before it starts.
+  await pickLanEntry(page, "coop-2");
+  const { page: joiner, context } = await join(browser, link, "10.89.0.2");
+  try {
+    await closePanel(joiner);
+    // fbDOOM reads a raw-mode terminal, so Ctrl+C would not end it; the
+    // pane ends the display's owner and starts the joining game.
+    await pickLanEntry(joiner, "join");
+    await expect.poll(() => doomGame(page), { timeout: 90_000 }).toBe("player 1 of 2 (2 nodes)");
+    await expect.poll(() => doomGame(joiner), { timeout: 30_000 }).toBe("player 2 of 2 (2 nodes)");
+    await page.screenshot({ path: "../../.context/doom-lan-host.png" });
+    await joiner.screenshot({ path: "../../.context/doom-lan-joiner.png" });
+
+    // Single player still works on a computer that stays in the session.
+    await pickLanEntry(joiner, "single");
+    await expect.poll(() => doomGame(joiner), { timeout: 60_000 }).toBe("player 1 of 1 (1 nodes)");
+    await expect(joiner.getByRole("button", { name: "Network session: connected", exact: true })).toBeAttached();
+  } finally {
+    await context.close();
+  }
 });
