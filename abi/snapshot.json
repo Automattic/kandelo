@@ -1,5 +1,5 @@
 {
-  "abi_version": 49,
+  "abi_version": 50,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1152,7 +1152,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 49,
+      "abi_version": 50,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,

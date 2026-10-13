@@ -1,3 +1,4 @@
+import type { RemoteSegmentInit } from "./networking/remote-segment-port";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
@@ -39,6 +40,8 @@ export type {
   HttpRequestMessage,
   WriteVfsFileMessage,
   ProcEventMessage,
+  AttachRemotePeerMessage,
+  RemoteNetworkSnapshotMessage,
 } from "./kernel-protocol-shared";
 import type {
   SignalProcessMessage,
@@ -78,6 +81,8 @@ import type {
   HttpRequestMessage,
   WriteVfsFileMessage,
   ProcEventMessage,
+  AttachRemotePeerMessage,
+  RemoteNetworkSnapshotMessage,
 } from "./kernel-protocol-shared";
 
 /**
@@ -142,6 +147,8 @@ export function initializeBrowserCorsProxyForWorker<TLazyFetcher, TTlsBackend>(
 
 export interface InitMessage {
   type: "init";
+  /** Native port ownership passes to this kernel worker during init. */
+  remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
   /**
    * Decoded VFS image bytes (a `KandeloImageFs.saveImage()` result, or a
@@ -396,6 +403,8 @@ export interface ClipboardGuestWaitMessage {
 
 export type MainToKernelMessage =
   | InitMessage
+  | AttachRemotePeerMessage
+  | RemoteNetworkSnapshotMessage
   | OwnedJobMessage
   | SpawnMessage
   | TerminateProcessMessage
