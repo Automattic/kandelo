@@ -26,6 +26,14 @@ export interface RunDemoDockActionOptions {
   onPhase?: (phase: DockActionPhase) => void | Promise<void>;
   /** How long the foreground program has to exit after Ctrl+C. */
   stopTimeoutMs?: number;
+  /**
+   * End the foreground program another way than Ctrl+C. A program that puts
+   * its terminal in raw mode to read the keyboard (fbDOOM does) turns off the
+   * line discipline's signal keys, so Ctrl+C reaches it as a keypress and it
+   * keeps running, as it would on any Unix terminal. A pane that knows which
+   * process owns its display passes a stop that ends that process instead.
+   */
+  stop?: () => Promise<void>;
 }
 
 export async function runDemoDockAction(
@@ -33,9 +41,10 @@ export async function runDemoDockAction(
   action: DemoDockCommandConfig,
   options: RunDemoDockActionOptions = {},
 ): Promise<void> {
-  const { onPhase = () => {}, stopTimeoutMs = 10_000 } = options;
+  const { onPhase = () => {}, stopTimeoutMs = 10_000, stop } = options;
   await onPhase("stopping");
-  await host.interruptShellForeground({ timeoutMs: stopTimeoutMs });
+  if (stop) await stop();
+  else await host.interruptShellForeground({ timeoutMs: stopTimeoutMs });
   await onPhase("starting");
   // Like the machine's own command, the restart is usually a long-lived
   // foreground program: resolve on the PTY write, not on a later prompt.

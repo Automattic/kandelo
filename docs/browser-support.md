@@ -1219,32 +1219,32 @@ and Lua, which the build leaves out, and its 859 MB archive does not fit
 the machine's filesystem; Helga Deep in Trouble needs the Wintermute
 engine's JPEG support.
 
-The catalog is image content. `packages/registry/shell/scummvm-freeware-games.json`
-lists each game's archive URL on `downloads.scummvm.org`, its size, and the
-SHA-256 the ScummVM project publishes beside it; the image builder writes it
-to `/usr/local/share/scummvm-play/games.tsv`, and fails if the ScummVM
+The catalog is image content.
+`packages/registry/shell/scummvm-freeware-games.json` lists each game's
+archive URL on `downloads.scummvm.org`, its size, and the SHA-256 the
+ScummVM project publishes beside it; the image builder writes it to
+`/usr/local/share/scummvm-play/games.tsv`, and fails if the ScummVM
 profile's dock menu does not list exactly its games. Each button and menu
-entry is a `dockActions` command: it ends the running ScummVM with Ctrl+C,
-then runs `/usr/local/bin/scummvm-play <game>` in the machine's shell. That
-script downloads the archive with the machine's own `curl` — in the browser
-that goes through the CORS proxy described below, because the site grants
-no CORS — reporting a percentage against the catalog size (the guest
-receives downloads as chunked responses, so `curl` never learns the total),
-starts with one request for smaller archives or 32 MiB ranges above the
-proxy's 100 MiB response limit. If any request fails, it switches to
-16 MiB ranges with up to three attempts per range. Completed ranges stay
-downloaded; an incomplete attempt is discarded before retrying. If the
-server ignores ranges on a smaller archive, it retries the full request.
-It then checks the SHA-256, unzips into
-`/usr/share/scummvm-games/<game>`, and
-deletes the archive. ScummVM's own `--add --recursive` then finds the game
-and records it as a launcher target, and the script starts that target; a
-collection (the WAGE games) opens the launcher instead. A failed download
-or a digest mismatch stops there with a message in the machine's terminal;
-nothing is started from unverified data. `scummvm-play --list` prints the
-catalog in the terminal. A game stays unpacked for the rest of the session,
-so choosing it again starts it without downloading; nothing persists across
-a reboot.
+entry is a `dockActions` command: it ends the running ScummVM (the
+framebuffer pane signals the `/dev/fb0` owner, described below), then runs
+`/usr/local/bin/scummvm-play <game>` in the machine's shell. That script
+downloads the archive with the machine's own `curl` — in the browser that
+goes through the CORS proxy described below, because the site grants no CORS
+— reporting a percentage against the catalog size (the guest receives
+downloads as chunked responses, so `curl` never learns the total), starts
+with one request for smaller archives or 32 MiB ranges above the proxy's 100
+MiB response limit. If any request fails, it switches to 16 MiB ranges with
+up to three attempts per range. Completed ranges stay downloaded; an
+incomplete attempt is discarded before retrying. If the server ignores
+ranges on a smaller archive, it retries the full request. It then checks the
+SHA-256, unzips into `/usr/share/scummvm-games/<game>`, and deletes the
+archive. ScummVM's own `--add --recursive` then finds the game and records
+it as a launcher target, and the script starts that target; a collection
+(the WAGE games) opens the launcher instead. A failed download or a digest
+mismatch stops there with a message in the machine's terminal; nothing is
+started from unverified data. `scummvm-play --list` prints the catalog in
+the terminal. A game stays unpacked for the rest of the session, so choosing
+it again starts it without downloading; nothing persists across a reboot.
 
 No other game ships with the machine: no Kandelo package carries a commercial
 SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
@@ -2050,18 +2050,26 @@ knows about but cannot run declares `unavailable`, the reason, instead of
 `restart`; the menu shows it disabled with that reason, so the gap stays
 visible rather than silently missing.
 
-A display machine's command (its `init.shellCommand`) is a long-lived program
-that owns the machine's terminal and a single-owner display device, so running
-something else means ending that program first. A click does what a person at
-the terminal would: the host types the interrupt character (Ctrl+C) into the
-machine's shell PTY, which the kernel's line discipline delivers as `SIGINT`
-to the foreground process group, and waits for the shell's prompt to come
-back (`KernelHost.interruptShellForeground`). The prompt is the evidence the
-program exited and released its devices; if it does not appear within ten
-seconds the action fails visibly and the command is not sent. Only then is
-`restart` written to the shell, exactly as if typed. Like `ingest.onLoad`,
-`restart` is the image author's command, never user input. `id`s must be
-unique within the profile, and entry `id`s within their menu.
+A display machine's command (its `init.shellCommand`) is a long-lived
+program that owns the machine's terminal and a single-owner display device,
+so running something else means ending that program first. A click does what
+a person at the terminal would: the host types the interrupt character
+(Ctrl+C) into the machine's shell PTY, which the kernel's line discipline
+delivers as `SIGINT` to the foreground process group, and waits for the
+shell's prompt to come back (`KernelHost.interruptShellForeground`). The
+prompt is the evidence the program exited and released its devices; if it
+does not appear within ten seconds the action fails visibly and the command
+is not sent. A program that reads its keyboard from a raw-mode terminal, as
+fbDOOM does, has turned the line discipline's signal keys off, so Ctrl+C
+reaches it as an ordinary keypress and it keeps running, exactly as it would
+on any Unix terminal. The framebuffer pane therefore ends its display
+program the way `ingest.onLoad` does: it sends `SIGTERM` to the process
+bound to `/dev/fb0` and waits, for at most ten seconds, until that process
+has exited and the kernel has released the device; when nothing owns the
+device it falls back to Ctrl+C. Only then is `restart` written to the shell,
+exactly as if typed. Like `ingest.onLoad`, `restart` is the image author's
+command, never user input. `id`s must be unique within the profile, and
+entry `id`s within their menu.
 
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
@@ -2525,17 +2533,26 @@ connects machines it boots itself, with the same transport.
 
 Both use `purpose: "network"` peer connections. The main thread transfers
 framed bytes between RTC channels and bounded native MessagePorts. Guest
-programs use ordinary IPv4 UDP and TCP sockets; DNS names `host` and `peer-N`
-resolve through the worker's segment membership, and broadcasts reach every
-computer in the session, so LAN discovery works: in Chromium, a joiner's
-`fbdoom -localsearch` finds the hosting computer's server, and between two
-Node machines TyrQuake's Multiplayer → Join a Game search lists and joins a
-session's server. A LAN game should run as a private server
+programs use ordinary IPv4 UDP and TCP sockets; DNS names `host` and
+`peer-N` resolve through the worker's segment membership, and broadcasts
+reach every computer in the session, so LAN discovery works: in Chromium, a
+joiner's `fbdoom -localsearch` finds the hosting computer's server, and
+between two Node machines TyrQuake's Multiplayer → Join a Game search lists
+and joins a session's server. A LAN game should run as a private server
 (`fbdoom -privateserver`): the browser's internet egress carries TCP only,
 so UDP to Doom's internet master server fails with `EHOSTUNREACH`, and
-fbdoom stops with a fatal error when its registration send fails. Node runs the
-same segment over paired native ports; its built-in runtime has no WebRTC API,
-so creating RTC links remains a browser adapter capability.
+fbdoom stops with a fatal error when its registration send fails. The Doom
+machine's **LAN game** dock menu runs these commands for the player: a host
+co-op or deathmatch entry restarts the game as `fbdoom -server
+-privateserver -nodes N` (plus `-deathmatch`), so the host plays and the
+game starts once N players have joined; **Join a LAN game** runs `fbdoom
+-autojoin`, which searches the session by broadcast and stops with "No
+server found on local LAN" when none answers; and **Back to single player**
+restarts the ordinary game without leaving the session. Every player uses
+the shareware WAD the machine fetched at boot, so all computers load the
+same game data. Node runs the same segment over paired native ports; its
+built-in runtime has no WebRTC API, so creating RTC links remains a browser
+adapter capability.
 
 Computers find each other through the signalling piplet's rooms. The
 development server relays the real `apps/signalling/piplet.php` same-origin

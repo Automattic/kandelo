@@ -148,39 +148,13 @@ export async function runDemoIngest(
 
   if (targetPid !== null) {
     onPhase("stopping");
-    // Start watching before signalling, or a fast exit lands before we listen.
-    // The abort signal also guarantees bounded listener lifetime on timeout.
-    const releaseAbort = new AbortController();
-    let releasePromise: Promise<void>;
     try {
-      releasePromise = waitForRelease
-        ? waitForRelease(targetPid, releaseAbort.signal)
-        : waitForProcessExit(host, targetPid, {
-            signal: releaseAbort.signal,
-          });
-    } catch (error) {
-      releasePromise = Promise.reject(error);
-    }
-    const released = waitUntil(
-      releasePromise,
-      stopTimeoutMs,
-      `process ${targetPid} did not exit within ${stopTimeoutMs}ms`,
-    );
-    // If signalProcess throws we never await `released`; keep its eventual
-    // timeout rejection from surfacing as an unhandled rejection.
-    released.catch(() => {});
-    try {
-      // An already-dead pid resolves false. The subscribed-then-enumerated
-      // release wait still settles truthfully without requiring a future event.
-      await host.signalProcess(targetPid, SIGTERM);
-      await released;
+      await stopDeviceOwner(host, targetPid, { waitForRelease, timeoutMs: stopTimeoutMs });
     } catch (err) {
       throw new IngestError(
         "restart-failed",
         `wrote ${ingest.targetPath} but could not stop pid ${targetPid}: ${errorText(err)}`,
       );
-    } finally {
-      releaseAbort.abort();
     }
   }
 
@@ -196,6 +170,47 @@ export async function runDemoIngest(
     );
   }
   onPhase("done");
+}
+
+/**
+ * End the process that owns a single-owner device and wait until the device
+ * is free: SIGTERM, then the caller's release evidence (default: the pid's
+ * exit). The display panes stop their program this way because a program
+ * that reads its keyboard from a raw-mode terminal, as fbDOOM does, never
+ * sees Ctrl+C as a signal.
+ */
+export async function stopDeviceOwner(
+  host: KernelHost,
+  pid: number,
+  options: {
+    waitForRelease?: (pid: number, signal: AbortSignal) => Promise<void>;
+    timeoutMs: number;
+  },
+): Promise<void> {
+  const { waitForRelease, timeoutMs } = options;
+  // Start watching before signalling, or a fast exit lands before we listen.
+  // The abort signal also guarantees bounded listener lifetime on timeout.
+  const releaseAbort = new AbortController();
+  let releasePromise: Promise<void>;
+  try {
+    releasePromise = waitForRelease
+      ? waitForRelease(pid, releaseAbort.signal)
+      : waitForProcessExit(host, pid, { signal: releaseAbort.signal });
+  } catch (error) {
+    releasePromise = Promise.reject(error);
+  }
+  const released = waitUntil(releasePromise, timeoutMs, `process ${pid} did not exit within ${timeoutMs}ms`);
+  // If signalProcess throws we never await `released`; keep its eventual
+  // timeout rejection from surfacing as an unhandled rejection.
+  released.catch(() => {});
+  try {
+    // An already-dead pid resolves false. The subscribed-then-enumerated
+    // release wait still settles truthfully without requiring a future event.
+    await host.signalProcess(pid, SIGTERM);
+    await released;
+  } finally {
+    releaseAbort.abort();
+  }
 }
 
 /**

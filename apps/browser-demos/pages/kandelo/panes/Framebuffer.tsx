@@ -25,6 +25,7 @@ import type { FramebufferHandle } from "../../../../../web-libs/kandelo-session/
 import {
   IngestError,
   runDemoIngest,
+  stopDeviceOwner,
   waitForProcessExit,
   type IngestPhase,
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
@@ -55,7 +56,6 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   const host = useKernelHost();
   const status = useStatus();
   const ingest = useDemoIngest();
-  const dockActions = useDockActions("fb");
   const presentation = usePresentation();
   const coarsePointer = useCoarsePointer();
   const stageRef = React.useRef<HTMLDivElement>(null);
@@ -216,6 +216,23 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       unbound,
     ]).then(() => {});
   }, [host]);
+
+  // A dock action replaces the program on the display. A game reading its
+  // keyboard through a raw-mode terminal takes Ctrl+C as a keypress, so end
+  // the /dev/fb0 owner the way Load WAD does; with no owner, interrupt the
+  // shell's foreground program as other panes do.
+  const stopDisplayProgram = React.useCallback(async () => {
+    const pid = handleRef.current?.getBoundPid() ?? null;
+    if (pid === null) {
+      await host.interruptShellForeground({ timeoutMs: FRAMEBUFFER_REBIND_TIMEOUT_MS });
+      return;
+    }
+    await stopDeviceOwner(host, pid, {
+      waitForRelease: waitForFbRelease,
+      timeoutMs: FRAMEBUFFER_REBIND_TIMEOUT_MS,
+    });
+  }, [host, waitForFbRelease]);
+  const dockActions = useDockActions("fb", null, stopDisplayProgram);
 
   /** Resolve boundedly once some process has bound /dev/fb0 again. */
   const waitForFbBind = React.useCallback((): Promise<void> => {

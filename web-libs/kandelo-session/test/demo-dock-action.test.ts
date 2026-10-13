@@ -113,6 +113,20 @@ describe("runDemoDockAction", () => {
     expect(phases).toEqual(["stopping", "starting", "done"]);
   });
 
+  it("uses the pane's stop instead of Ctrl+C when one is given", async () => {
+    // A raw-mode terminal program takes Ctrl+C as a key, so the display
+    // pane ends its device owner itself.
+    const calls: string[] = [];
+    const host = {
+      interruptShellForeground: vi.fn(async () => { calls.push("interrupt"); }),
+      dispatchShellCommand: vi.fn(async (command: string) => { calls.push(command); }),
+    } as unknown as KernelHost;
+
+    await runDemoDockAction(host, ACTION, { stop: async () => { calls.push("stop"); } });
+
+    expect(calls).toEqual(["stop", "/usr/local/bin/play"]);
+  });
+
   it("does not dispatch when the foreground program never exits", async () => {
     const dispatchShellCommand = vi.fn(async () => {});
     const host = {
