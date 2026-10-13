@@ -309,8 +309,9 @@ export async function saveFixedPersistenceImage(
     if (proposed.byteLength === 0) throw new Error("cannot persist an empty base image");
     const names = fileNames(name);
     const imageFile = await parent.getFileHandle(names.image, { create: true });
-    const writer = await imageFile.createWritable();
+    let writer: FileSystemWritableFileStream | undefined;
     try {
+      writer = await imageFile.createWritable();
       for (let offset = 0; offset < proposed.byteLength; offset += CHUNK_BYTES) {
         await writer.write({
           type: "write",
@@ -320,7 +321,8 @@ export async function saveFixedPersistenceImage(
       }
       await writer.close();
     } catch (error) {
-      await writer.abort().catch(() => {});
+      await writer?.abort().catch(() => {});
+      await parent.removeEntry(names.image).catch(() => {});
       throw error;
     }
     const manifest: ImageManifest = {
@@ -347,12 +349,15 @@ export async function saveFixedPersistenceImage(
       new TextEncoder().encode(JSON.stringify(manifest.lazyAssets)),
     );
     const manifestFile = await parent.getFileHandle(names.manifest, { create: true });
-    const manifestWriter = await manifestFile.createWritable();
+    let manifestWriter: FileSystemWritableFileStream | undefined;
     try {
+      manifestWriter = await manifestFile.createWritable();
       await manifestWriter.write(JSON.stringify(manifest));
       await manifestWriter.close();
     } catch (error) {
-      await manifestWriter.abort().catch(() => {});
+      await manifestWriter?.abort().catch(() => {});
+      await parent.removeEntry(names.manifest).catch(() => {});
+      await parent.removeEntry(names.image).catch(() => {});
       throw error;
     }
     const verified = await readImage(parent, name, identity);
@@ -367,23 +372,31 @@ async function writeFixedPersistenceImageStream(
   chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   lazyAssets: ImageOwnedRuntimeLazyAssets | undefined,
   composition: StoredComposition,
-  publish: boolean,
+  assertCurrent?: () => void,
   onProgress?: (message: string) => void,
 ): Promise<FixedPersistenceImageHandle> {
   fileNames(name);
   onProgress?.("persistent image requesting lock");
   return locked(name, async () => {
     onProgress?.("persistent image lock acquired");
+    assertCurrent?.();
     const parent = await directory();
     onProgress?.("persistent image directory opened");
     if (await readSavedImage(parent, name, identity) !== null) {
       throw new Error("experimental persistence was initialized concurrently; restart the computer");
     }
     onProgress?.("persistent image absence checked");
+    const generationPattern = new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`);
+    const entries = (parent as FileSystemDirectoryHandle & {
+      entries(): AsyncIterable<[string, FileSystemHandle]>;
+    }).entries();
+    for await (const [entryName] of entries) {
+      if (generationPattern.test(entryName)) await parent.removeEntry(entryName);
+    }
     const imageFileName = `${name}.${crypto.randomUUID()}.base`;
     const imageFile = await parent.getFileHandle(imageFileName, { create: true });
     onProgress?.("persistent image file opened");
-    let retained = false;
+    let published = false;
     try {
       const chunkSha256: string[] = [];
       let length = 0;
@@ -393,6 +406,7 @@ async function writeFixedPersistenceImageStream(
       onProgress?.("persistent image writer opened");
       try {
         for await (const chunk of chunks) {
+          assertCurrent?.();
           if (
             chunk.byteLength === 0 ||
             !Number.isSafeInteger(length + pendingLength + chunk.byteLength)
@@ -447,11 +461,11 @@ async function writeFixedPersistenceImageStream(
         lazyAssets,
         composition,
       };
-      if (publish) await publishImage(parent, name, identity, result);
-      retained = true;
+      await publishImage(parent, name, identity, result, assertCurrent);
+      published = true;
       return result;
     } finally {
-      if (!retained) await parent.removeEntry(imageFileName).catch(() => {});
+      if (!published) await parent.removeEntry(imageFileName).catch(() => {});
     }
   });
 }
@@ -470,21 +484,9 @@ async function publishImage(
   const imageFileName = staged.imageFileName;
   if (
     imageFileName === undefined ||
-    !new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`).test(imageFileName) ||
-    !(await (await parent.getFileHandle(imageFileName)).isSameEntry(staged.file))
+    !new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`).test(imageFileName)
   ) {
     throw new Error("experimental persistence staged image is invalid");
-  }
-  const snapshot = await staged.file.getFile();
-  if (snapshot.size !== staged.length || staged.chunkSha256.length !== Math.ceil(staged.length / CHUNK_BYTES)) {
-    throw new Error("experimental persistence staged image is damaged");
-  }
-  for (let index = 0; index < staged.chunkSha256.length; index++) {
-    const start = index * CHUNK_BYTES;
-    const bytes = new Uint8Array(await snapshot.slice(start, start + CHUNK_BYTES).arrayBuffer());
-    if (await sha256(bytes) !== staged.chunkSha256[index]) {
-      throw new Error("experimental persistence staged image is damaged");
-    }
   }
   const savedLazyAssets = staged.lazyAssets === undefined ? null : { ...staged.lazyAssets };
   const savedComposition = { ...staged.composition };
@@ -502,8 +504,9 @@ async function publishImage(
   };
   assertCurrent?.();
   const manifestFile = await parent.getFileHandle(names.manifest, { create: true });
-  const writer = await manifestFile.createWritable();
+  let writer: FileSystemWritableFileStream | undefined;
   try {
+    writer = await manifestFile.createWritable();
     await writer.write(JSON.stringify(manifest));
     assertCurrent?.();
     await writer.close();
@@ -514,7 +517,7 @@ async function publishImage(
       throw error;
     }
   } catch (error) {
-    await writer.abort().catch(() => {});
+    await writer?.abort().catch(() => {});
     await parent.removeEntry(names.manifest).catch(() => {});
     throw error;
   }
@@ -526,47 +529,10 @@ export async function saveFixedPersistenceImageStream(
   chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
   lazyAssets: ImageOwnedRuntimeLazyAssets | undefined,
   composition: StoredComposition,
-): Promise<FixedPersistenceImageHandle> {
-  return writeFixedPersistenceImageStream(name, identity, chunks, lazyAssets, composition, true);
-}
-
-export async function stageFixedPersistenceImageStream(
-  name: string,
-  identity: string,
-  chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
-  lazyAssets: ImageOwnedRuntimeLazyAssets | undefined,
-  composition: StoredComposition,
+  assertCurrent?: () => void,
   onProgress?: (message: string) => void,
 ): Promise<FixedPersistenceImageHandle> {
-  return writeFixedPersistenceImageStream(name, identity, chunks, lazyAssets, composition, false, onProgress);
-}
-
-export async function publishFixedPersistenceImage(
-  name: string,
-  identity: string,
-  staged: FixedPersistenceImageHandle,
-  assertCurrent?: () => void,
-): Promise<void> {
-  return locked(name, async () => publishImage(await directory(), name, identity, staged, assertCurrent));
-}
-
-export async function discardStagedFixedPersistenceImage(
-  name: string,
-  identity: string,
-  staged: FixedPersistenceImageHandle,
-): Promise<void> {
-  fileNames(name);
-  const imageFileName = staged.imageFileName;
-  if (imageFileName === undefined || !new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`).test(imageFileName)) {
-    return;
-  }
-  await locked(name, async () => {
-    const parent = await directory();
-    const saved = await readSavedImage(parent, name, identity);
-    if (saved !== null && await saved.imageFile.isSameEntry(staged.file)) return;
-    const current = await existingFile(parent, imageFileName);
-    if (current !== null && await current.isSameEntry(staged.file)) {
-      await parent.removeEntry(imageFileName);
-    }
-  });
+  return writeFixedPersistenceImageStream(
+    name, identity, chunks, lazyAssets, composition, assertCurrent, onProgress,
+  );
 }

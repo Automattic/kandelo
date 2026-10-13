@@ -176,6 +176,12 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           requiredServices: [],
         };
         const first = new Uint8Array(1024 * 1024).fill(7);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const orphanName = `${name}.${crypto.randomUUID()}.base`;
+        const orphan = await directory.getFileHandle(orphanName, { create: true });
+        const orphanWriter = await orphan.createWritable();
+        await orphanWriter.write(Uint8Array.of(99));
+        await orphanWriter.close();
         const worker = new Worker(workerUrl, { type: "module" });
         const saved = await new Promise<{ file: FileSystemFileHandle; length: number }>((resolve, reject) => {
           worker.onmessage = (event: MessageEvent<{ type: string; file?: FileSystemFileHandle; length?: number; message?: string }>) => {
@@ -189,6 +195,12 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           worker.postMessage({ name, identity });
         }).finally(() => worker.terminate());
         const restored = await loadFixedPersistenceImageHandle(name, identity);
+        let orphanRemoved = false;
+        try {
+          await directory.getFileHandle(orphanName);
+        } catch (error) {
+          orphanRemoved = error instanceof DOMException && error.name === "NotFoundError";
+        }
         const readWorker = new Worker(workerUrl, { type: "module" });
         const positionedRead = await new Promise<{
           first: number[];
@@ -245,6 +257,7 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           clonedFileLength: (await saved.file.getFile()).size,
           restoredLength: restored?.length,
           digestCount: restored?.chunkSha256.length,
+          orphanRemoved,
           last,
           positionedRead,
           interruptedRejected,
@@ -259,6 +272,7 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         clonedFileLength: 1024 * 1024 + 3,
         restoredLength: 1024 * 1024 + 3,
         digestCount: 2,
+        orphanRemoved: true,
         last: [1, 2, 3],
         positionedRead: { first: [7, 7, 7], last: [1, 2, 3], firstRead: 3, lastRead: 3 },
         interruptedRejected: true,
