@@ -84,6 +84,11 @@ export function composeImageInWorker(
     const message: MainToComposerMessage = { job };
     // Transfer the fetched image rather than copying it. The caller has
     // already read everything it needs from these bytes.
-    worker.postMessage(message, [job.imageBytes.buffer as ArrayBuffer]);
+    worker.postMessage(message, [
+      job.imageBytes.buffer as ArrayBuffer,
+      ...(job.frozenImageBytes === undefined
+        ? []
+        : [job.frozenImageBytes.buffer as ArrayBuffer]),
+    ]);
   });
 }

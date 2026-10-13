@@ -696,7 +696,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
     # (sysroot/lib/libdrm.a, libgbm.a). EGL/GLES2 stubs are picked up
     # by build_program's header-based auto-detection.
     case "$(basename "$src")" in
-        login.c|sudo-lite.c|persistence-overwrite.c)
+        login.c|sudo-lite.c|persistence-overwrite.c|persistence-boot-counter.c)
             # Keep runtime-only test programs outside the ordinary resolver mirror.
             build_program "$src" "$TEST_FIXTURE_DIR/wasm32"
             ;;

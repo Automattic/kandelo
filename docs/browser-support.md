@@ -228,6 +228,25 @@ pipe pair.
 
 ### Filesystem
 - The in-kernel root filesystem and tmpfs hold `/`, the scratch mounts and `/dev/shm`; the browser host mounts no filesystem of its own beneath them (`resolveForBrowser` refuses a scratch mount the tmpfs does not serve).
+- The Kandelo page has a manual, experimental fixed-overwrite mode:
+  `?experimentalPersistence=<name>` (1–128 ASCII letters, digits, `_`, or
+  `-`). Confirming the warning freezes that computer's composed base image
+  in OPFS and boots the existing kernel journal with the same name. Reloading
+  with the same image URL, profile, and name reuses the exact saved bytes;
+  a mismatched identity or damaged image fails boot instead of resetting it.
+  The OPFS image manifest records length and SHA-256. The page refuses
+  boot-link inputs and scripts in this mode, rather than auto-running a
+  URL-supplied script against saved state. This is a developer smoke path,
+  not a general persistent computer: only overwrites inside existing regular
+  image files persist; create, append, truncate, rename, and metadata changes
+  are unsupported. It is not an offline image cache: each boot still fetches
+  the source image to resolve lazy asset URLs, although composition uses the
+  saved image bytes. There is no per-computer reset or upgrade UI; clearing
+  site data removes this origin's machines and other site data. The base
+  image is still loaded into memory and browser quota or eviction can remove
+  OPFS data. If the entire computer's OPFS state disappears, its name is
+  treated as new; this mode cannot detect a complete eviction. Do not use
+  valuable data.
 - `OpfsFileSystem` — Origin Private File System for browser persistence. Its
   worker assigns session-scoped inode tokens to regular files and uses
   `FileSystemHandle.isSameEntry()` to unify simultaneous opens. Tokens remain
