@@ -55,6 +55,7 @@ import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
+import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
 import {
   encodeClipboardText,
   type ClipboardOfferResult,
@@ -232,6 +233,15 @@ export interface BrowserKernelOwnedImageInitOptions {
   closedLazyAssets?: readonly ClosedLazyAsset[];
   /** Exact image/scratch mount contract for this boot. */
   rootfsMountSpec?: readonly MountSpec[];
+}
+
+export interface BrowserKernelOpfsImageInitOptions extends Omit<
+  BrowserKernelOwnedImageInitOptions,
+  "vfsImage"
+> {
+  vfsImageFile: FileSystemFileHandle;
+  integrity?: OpfsImageIntegrity;
+  lazyUrlMap?: Readonly<Record<string, string>>;
 }
 
 async function fetchDefaultBrowserKernelArtifact(
@@ -526,6 +536,24 @@ export class BrowserKernel {
     });
   }
 
+  async initFromOpfsImage(options: BrowserKernelOpfsImageInitOptions): Promise<void> {
+    const wasmBytes = options.kernelWasm
+      ? options.kernelWasm
+      : await fetchDefaultBrowserKernelArtifact("kernelWasm");
+    await this.bootWorker({
+      kernelWasmBytes: wasmBytes,
+      vfsImage: new Uint8Array(),
+      opfsImage: options.vfsImageFile,
+      opfsImageIntegrity: options.integrity,
+      lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
+      lazyUrlMap: options.lazyUrlMap,
+      closedLazyAssets: options.closedLazyAssets,
+      rootfsMountSpec: options.rootfsMountSpec,
+      experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
+      takeVfsImageOwnership: false,
+    });
+  }
+
   /**
    * Internal: set up the kernel worker, attach handlers, send the init
    * message (with the demo's `vfsImage`), and await ready.
@@ -534,6 +562,8 @@ export class BrowserKernel {
     experimentalFixedPersistenceName?: string;
     kernelWasmBytes: ArrayBuffer;
     vfsImage: Uint8Array;
+    opfsImage?: FileSystemFileHandle;
+    opfsImageIntegrity?: OpfsImageIntegrity;
     lazyUrlBase?: string;
     lazyUrlMap?: Readonly<Record<string, string>>;
     closedLazyAssets?: readonly ClosedLazyAsset[];
@@ -632,6 +662,8 @@ export class BrowserKernel {
           remoteNetwork: this.options.remoteNetwork,
           kernelWasmBytes: transferBuf,
           vfsImage: opts.vfsImage,
+          opfsImage: opts.opfsImage,
+          opfsImageIntegrity: opts.opfsImageIntegrity,
           lazyUrlBase: opts.lazyUrlBase,
           lazyUrlMap: opts.lazyUrlMap === undefined
             ? undefined

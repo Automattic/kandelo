@@ -151,6 +151,7 @@ pub struct OverlayJournal<S: OverlayStorage> {
     end: u64,
     failed: bool,
     block_cache: Vec<((u64, u64), Vec<u8>)>,
+    dirty_blocks: Vec<((u64, u64), Vec<u8>)>,
 }
 
 impl<S: OverlayStorage> OverlayJournal<S> {
@@ -251,6 +252,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             end,
             failed: false,
             block_cache: Vec::new(),
+            dirty_blocks: Vec::new(),
         })
     }
 
@@ -262,10 +264,39 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if self.failed {
             return Err(Errno::EIO);
         }
-        self.storage.flush()
+        if self.dirty_blocks.is_empty() {
+            self.storage.flush()
+        } else {
+            self.flush_dirty()
+        }
     }
 
     pub fn commit(&mut self, mutations: &[Mutation]) -> Result<(), Errno> {
+        self.flush_dirty()?;
+        self.commit_transaction(mutations)
+    }
+
+    fn flush_dirty(&mut self) -> Result<(), Errno> {
+        if self.dirty_blocks.is_empty() {
+            return Ok(());
+        }
+        let mutations: Vec<_> = self
+            .dirty_blocks
+            .iter()
+            .map(|((inode, block), bytes)| Mutation::Put {
+                key: OverlayKey::FileBlock {
+                    inode: *inode,
+                    block: *block,
+                },
+                value: bytes.clone(),
+            })
+            .collect();
+        self.commit_transaction(&mutations)?;
+        self.dirty_blocks.clear();
+        Ok(())
+    }
+
+    fn commit_transaction(&mut self, mutations: &[Mutation]) -> Result<(), Errno> {
         if self.failed {
             return Err(Errno::EIO);
         }
@@ -301,6 +332,97 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         self.end = following_end;
         self.next_sequence = following_sequence;
         Ok(())
+    }
+
+    pub fn write_fixed_file_at_buffered<F>(
+        &mut self,
+        inode: u64,
+        base_size: u64,
+        offset: u64,
+        src: &[u8],
+        mut read_base: F,
+    ) -> Result<usize, Errno>
+    where
+        F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
+    {
+        if self.failed {
+            return Err(Errno::EIO);
+        }
+        if src.is_empty() {
+            return Ok(0);
+        }
+        let end = offset.checked_add(src.len() as u64).ok_or(Errno::EFBIG)?;
+        if end > base_size {
+            return Err(Errno::EFBIG);
+        }
+        let block_count =
+            (end - 1) / FILE_BLOCK_BYTES as u64 - offset / FILE_BLOCK_BYTES as u64 + 1;
+        if block_count > CACHE_BLOCKS as u64 {
+            self.sync()?;
+            return self.write_file_at(inode, base_size, offset, src, read_base);
+        }
+        let mut prepared = Vec::new();
+        prepared
+            .try_reserve_exact(block_count as usize)
+            .map_err(|_| Errno::ENOMEM)?;
+        let mut done = 0usize;
+        while done < src.len() {
+            let position = offset + done as u64;
+            let block = position / FILE_BLOCK_BYTES as u64;
+            let block_start = block * FILE_BLOCK_BYTES as u64;
+            let within_block = position as usize % FILE_BLOCK_BYTES;
+            let chunk = (src.len() - done).min(FILE_BLOCK_BYTES - within_block);
+            let mut bytes = alloc::vec![0; FILE_BLOCK_BYTES];
+            if within_block != 0 || chunk != FILE_BLOCK_BYTES {
+                self.read_file_at(inode, base_size, block_start, &mut bytes, &mut read_base)?;
+            }
+            bytes[within_block..within_block + chunk].copy_from_slice(&src[done..done + chunk]);
+            prepared.push(((inode, block), bytes));
+            done += chunk;
+        }
+        let new_blocks = prepared
+            .iter()
+            .filter(|(key, _)| !self.dirty_blocks.iter().any(|(cached, _)| cached == key))
+            .count();
+        if self.dirty_blocks.len() + new_blocks > CACHE_BLOCKS {
+            let count = (self.dirty_blocks.len() + new_blocks - CACHE_BLOCKS)
+                .max(CACHE_BLOCKS / 4);
+            let victims: Vec<_> = self
+                .dirty_blocks
+                .iter()
+                .filter(|(key, _)| !prepared.iter().any(|(prepared_key, _)| prepared_key == key))
+                .take(count)
+                .map(|(key, bytes)| (*key, bytes.clone()))
+                .collect();
+            if victims.len() < count {
+                return Err(Errno::EIO);
+            }
+            let mutations: Vec<_> = victims
+                .iter()
+                .map(|(key, bytes)| Mutation::Put {
+                    key: OverlayKey::FileBlock {
+                        inode: key.0,
+                        block: key.1,
+                    },
+                    value: bytes.clone(),
+                })
+                .collect();
+            self.commit_transaction(&mutations)?;
+            self.dirty_blocks
+                .retain(|(key, _)| !victims.iter().any(|(victim, _)| victim == key));
+        }
+        for (key, bytes) in prepared {
+            self.block_cache.retain(|(cached, _)| *cached != key);
+            if let Some(index) = self
+                .dirty_blocks
+                .iter()
+                .position(|(cached, _)| *cached == key)
+            {
+                self.dirty_blocks.remove(index);
+            }
+            self.dirty_blocks.push((key, bytes));
+        }
+        Ok(src.len())
     }
 
     pub fn write_file_at<F>(
@@ -387,6 +509,17 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             let within_block = position as usize % FILE_BLOCK_BYTES;
             let chunk = (limit - done).min(FILE_BLOCK_BYTES - within_block);
             let target = &mut dst[done..done + chunk];
+            if let Some(index) = self
+                .dirty_blocks
+                .iter()
+                .position(|(cached, _)| *cached == (inode, block))
+            {
+                let cached = self.dirty_blocks.remove(index);
+                target.copy_from_slice(&cached.1[within_block..within_block + chunk]);
+                self.dirty_blocks.push(cached);
+                done += chunk;
+                continue;
+            }
             match self.state.blocks.get(&(inode, block)).copied() {
                 Some(Some(location)) => {
                     self.read_cached_block((inode, block), location, within_block, target)?;
@@ -1043,5 +1176,148 @@ mod tests {
         }
         assert_eq!(reopened.block_cache.len(), CACHE_BLOCKS);
         assert_eq!(bytes, [7; FILE_BLOCK_BYTES]);
+    }
+
+    #[test]
+    fn buffered_writes_are_visible_before_sync_but_lost_on_crash() {
+        let digest = [18; 32];
+        let base = vec![b'a'; FILE_BLOCK_BYTES];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        let durable_len = journal.storage.bytes.len();
+        assert_eq!(
+            journal.write_fixed_file_at_buffered(7, base.len() as u64, 1, b"new", |offset, dst| {
+                dst.copy_from_slice(&base[offset as usize..offset as usize + dst.len()]);
+                Ok(dst.len())
+            }),
+            Ok(3)
+        );
+        assert_eq!(journal.storage.bytes.len(), durable_len);
+        let mut visible = [0; 5];
+        assert_eq!(
+            journal.read_file_at(7, base.len() as u64, 0, &mut visible, |_, _| {
+                panic!("dirty block must satisfy the read")
+            }),
+            Ok(5)
+        );
+        assert_eq!(&visible, b"anewa");
+        let mut recovered = OverlayJournal::open(journal.into_storage(), digest).unwrap();
+        let mut after_crash = [0; 5];
+        recovered
+            .read_file_at(7, base.len() as u64, 0, &mut after_crash, |offset, dst| {
+                dst.copy_from_slice(&base[offset as usize..offset as usize + dst.len()]);
+                Ok(dst.len())
+            })
+            .unwrap();
+        assert_eq!(&after_crash, b"aaaaa");
+    }
+
+    #[test]
+    fn buffered_sync_recovers_and_eviction_stays_bounded() {
+        let digest = [19; 32];
+        let size = ((CACHE_BLOCKS + 1) * FILE_BLOCK_BYTES) as u64;
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        for block in 0..=CACHE_BLOCKS {
+            assert_eq!(
+                journal.write_fixed_file_at_buffered(
+                    7,
+                    size,
+                    (block * FILE_BLOCK_BYTES) as u64,
+                    &[block as u8; FILE_BLOCK_BYTES],
+                    |_, _| panic!("full blocks need no base read")
+                ),
+                Ok(FILE_BLOCK_BYTES)
+            );
+        }
+        assert_eq!(journal.dirty_blocks.len(), CACHE_BLOCKS - CACHE_BLOCKS / 4 + 1);
+        assert!(journal.state.blocks.contains_key(&(7, 0)));
+        assert!(!journal.state.blocks.contains_key(&(7, CACHE_BLOCKS as u64)));
+        journal.sync().unwrap();
+        assert!(journal.dirty_blocks.is_empty());
+        let mut recovered = OverlayJournal::open(journal.into_storage(), digest).unwrap();
+        for block in 0..=CACHE_BLOCKS {
+            let mut byte = [255];
+            assert_eq!(
+                recovered.read_file_at(
+                    7,
+                    size,
+                    (block * FILE_BLOCK_BYTES) as u64,
+                    &mut byte,
+                    |_, _| panic!("block must be journaled")
+                ),
+                Ok(1)
+            );
+            assert_eq!(byte[0], block as u8);
+        }
+    }
+
+    #[test]
+    fn buffered_sync_failure_preserves_dirty_data_and_rejects_durability() {
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [20; 32]).unwrap();
+        journal
+            .write_fixed_file_at_buffered(7, FILE_BLOCK_BYTES as u64, 0, b"data", |_, dst| {
+                dst.fill(0);
+                Ok(dst.len())
+            })
+            .unwrap();
+        journal.storage.fail_flush = true;
+        assert_eq!(journal.sync(), Err(Errno::EIO));
+        assert_eq!(journal.dirty_blocks.len(), 1);
+        let mut visible = [0; 4];
+        assert_eq!(
+            journal.read_file_at(7, FILE_BLOCK_BYTES as u64, 0, &mut visible, |_, _| {
+                panic!("dirty block must remain readable")
+            }),
+            Ok(4)
+        );
+        assert_eq!(&visible, b"data");
+        journal.storage.fail_flush = false;
+        assert_eq!(journal.sync(), Err(Errno::EIO));
+        assert_eq!(
+            journal.write_fixed_file_at_buffered(7, FILE_BLOCK_BYTES as u64, 0, b"no", |_, _| {
+                panic!("poisoned journal cannot write")
+            }),
+            Err(Errno::EIO)
+        );
+    }
+
+    #[test]
+    fn failed_eviction_never_acknowledges_a_new_write() {
+        let size = ((CACHE_BLOCKS + 1) * FILE_BLOCK_BYTES) as u64;
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [21; 32]).unwrap();
+        for block in 0..CACHE_BLOCKS {
+            journal
+                .write_fixed_file_at_buffered(
+                    7,
+                    size,
+                    (block * FILE_BLOCK_BYTES) as u64,
+                    &[block as u8; FILE_BLOCK_BYTES],
+                    |_, _| panic!("full block needs no base read"),
+                )
+                .unwrap();
+        }
+        journal.storage.fail_flush = true;
+        assert_eq!(
+            journal.write_fixed_file_at_buffered(
+                7,
+                size,
+                (CACHE_BLOCKS * FILE_BLOCK_BYTES) as u64,
+                b"new",
+                |_, dst| {
+                    dst.fill(0);
+                    Ok(dst.len())
+                }
+            ),
+            Err(Errno::EIO)
+        );
+        assert_eq!(journal.dirty_blocks.len(), CACHE_BLOCKS);
+        let mut previous = [0xff];
+        assert_eq!(
+            journal.read_file_at(7, size, 0, &mut previous, |_, _| {
+                panic!("previous dirty block must remain readable")
+            }),
+            Ok(1)
+        );
+        assert_eq!(previous, [0]);
+        assert!(!journal.dirty_blocks.iter().any(|(key, _)| key.1 == CACHE_BLOCKS as u64));
     }
 }

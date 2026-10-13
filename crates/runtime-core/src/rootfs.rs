@@ -2986,7 +2986,7 @@ where
             .lock()
             .as_mut()
             .ok_or(Errno::EIO)?
-            .write_file_at(ino, base_size, offset as u64, buf, |at, dst| {
+            .write_fixed_file_at_buffered(ino, base_size, offset as u64, buf, |at, dst| {
                 read_image_bytes(image_ino, at, dst, &mut byte_source)
             })?;
         if written > 0 {

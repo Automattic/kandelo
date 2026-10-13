@@ -2179,6 +2179,14 @@ pub extern "C" fn kernel_rootfs_enable_fixed_persistence(
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_sync_persistence() -> i32 {
+    match crate::rootfs::sync_persistence() {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Enable (nonzero) or disable (zero) in-kernel rootfs authority over `/`. The
 /// host calls this at boot after the kernel has loaded the image
 /// (`kernel_rootfs_load_image`); from then on the host only serves image and

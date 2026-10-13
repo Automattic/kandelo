@@ -29,6 +29,8 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
   filesystem.mkdir("/bin", 0o755);
   filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
   filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+  const cacheProbe = Uint8Array.from({ length: 5 * 1024 * 1024 }, (_, index) => index % 251);
+  filesystem.writeFile("/cache-probe", cacheProbe, 0o644);
   const image = await filesystem.saveImage();
   const kernelUrl = new URL("/fixed-rootfs-kernel.wasm", baseURL).href;
   const imageUrl = new URL("/fixed-rootfs-image.vfs", baseURL).href;
@@ -57,6 +59,11 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
         const imageBytes = new Uint8Array(await (await fetch(imageUrl)).arrayBuffer());
         const name = `fixed-rootfs-${crypto.randomUUID()}`;
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+        const imageWriter = await imageFile.createWritable();
+        await imageWriter.write(imageBytes);
+        await imageWriter.close();
         const control = new BrowserKernel({ kernelOwnedFs: true });
         try {
           await control.initFromImage({ kernelWasm: kernelBytes, vfsImage: imageBytes });
@@ -68,7 +75,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         const open = async (phase: string) => {
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
           try {
-            await kernel.initFromImage({ kernelWasm: kernelBytes, vfsImage: imageBytes, experimentalFixedPersistenceName: name });
+            await kernel.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
           } catch (error) {
             throw new Error(`${phase}: ${error}`);
           }
@@ -77,13 +84,19 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         const first = await open("first boot");
         let initial: string;
         let written: string;
+        let cacheProbeMatches: boolean;
         let rejected = false;
         let locked = false;
         try {
           initial = new TextDecoder().decode(await first.readFileFromVfs("/state"));
+          const cacheProbe = await first.readFileFromVfs("/cache-probe");
+          cacheProbeMatches = cacheProbe?.byteLength === 5 * 1024 * 1024
+            && cacheProbe[0] === 0
+            && cacheProbe[64 * 1024 + 1] === (64 * 1024 + 1) % 251
+            && cacheProbe[cacheProbe.byteLength - 1] === (cacheProbe.byteLength - 1) % 251;
           const competing = new BrowserKernel({ kernelOwnedFs: true });
           try {
-            await competing.initFromImage({ kernelWasm: kernelBytes, vfsImage: imageBytes, experimentalFixedPersistenceName: name });
+            await competing.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
           } catch {
             locked = true;
           } finally {
@@ -94,7 +107,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
           } catch {
             rejected = true;
           }
-          const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite"]);
+          const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "unsynced"]);
           if (await exit !== 0) throw new Error("guest overwrite failed");
           written = new TextDecoder().decode(await first.readFileFromVfs("/state"));
         } finally {
@@ -107,13 +120,14 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
             written,
             locked,
             rejected,
+            cacheProbeMatches,
             recovered: new TextDecoder().decode(await second.readFileFromVfs("/state")),
           };
         } finally {
           await second.destroy();
         }
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result).toEqual({ initial: "abcdefgh", written: "XYcdefgh", locked: true, rejected: true, recovered: "XYcdefgh" });
+      expect(result).toEqual({ initial: "abcdefgh", written: "XYcdefgh", locked: true, rejected: true, cacheProbeMatches: true, recovered: "XYcdefgh" });
     } finally {
       await context.close();
     }

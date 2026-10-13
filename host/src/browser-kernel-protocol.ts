@@ -2,6 +2,7 @@ import type { RemoteSegmentInit } from "./networking/remote-segment-port";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
+import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
 export type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
@@ -164,6 +165,9 @@ export interface InitMessage {
    * them into the image.
    */
   vfsImage: Uint8Array;
+  /** Positioned OPFS source in place of `vfsImage`; opened by the kernel worker. */
+  opfsImage?: FileSystemFileHandle;
+  opfsImageIntegrity?: OpfsImageIntegrity;
   experimentalFixedPersistenceName?: string;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];

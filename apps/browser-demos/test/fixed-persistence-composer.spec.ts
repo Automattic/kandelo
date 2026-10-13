@@ -1,5 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
@@ -12,6 +13,7 @@ const imageModulePath = [
 ].find((path) => existsSync(path) && WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(path))).length === 0) ?? null;
 const programPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
 const composerPath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/image-composer-client.ts");
+const persistenceModulePath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/fixed-persistence-image.ts");
 
 test.skip(imageModulePath === null || programPath === null, "image writer and guest fixture are required");
 
@@ -81,4 +83,109 @@ test("composer reuses exact frozen computer image despite a changed source", asy
     changedUrl,
   });
   expect(result).toEqual({ exact: true, differsFromChangedSource: true, profile: "probe" });
+});
+
+test("composer stages a persistent image in OPFS without returning its bytes", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(90_000);
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-composer-stream-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const page = context.pages()[0] ?? await context.newPage();
+      const image = await imageWithState("abcdefgh");
+      const imageUrl = new URL("/fixed-composer-stream.vfs", baseURL).href;
+      await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const result = await page.evaluate(async ({ composerUrl, persistenceUrl, imageUrl }) => {
+        const { composeImageInWorker } = await import(composerUrl);
+        const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
+        const name = `composer-${crypto.randomUUID()}`;
+        const identity = "composer stream probe";
+        const ticks: string[] = [];
+        const composed = await composeImageInWorker({
+          imageBytes: new Uint8Array(await (await fetch(imageUrl)).arrayBuffer()),
+          persistentImage: { name, identity },
+          maxVfsByteLength: 64 * 1024 * 1024,
+          imageLabel: "persistence probe",
+          requestedProfileId: "probe",
+          requestedProfileSource: "test",
+          hasCandidateEvidence: false,
+          descriptor: { boot: { inputs: [] } } as never,
+          appPath: "/pages/kandelo/",
+          proto: "http",
+          preforkServiceProcesses: 1,
+        }, {
+          onTick: (message) => ticks.push(message),
+          isCurrent: () => true,
+          supersededError: () => new Error("superseded"),
+        }).catch((error: unknown) => {
+          throw new Error(`${String(error)}; composer ticks: ${ticks.join(" | ")}`);
+        });
+        const restored = await loadFixedPersistenceImageHandle(name, identity);
+        const supersededName = `composer-${crypto.randomUUID()}`;
+        let current = true;
+        let superseded = false;
+        try {
+          await composeImageInWorker({
+            imageBytes: new Uint8Array(await (await fetch(imageUrl)).arrayBuffer()),
+            persistentImage: { name: supersededName, identity },
+            maxVfsByteLength: 64 * 1024 * 1024,
+            imageLabel: "persistence probe",
+            requestedProfileId: "probe",
+            requestedProfileSource: "test",
+            hasCandidateEvidence: false,
+            descriptor: { boot: { inputs: [] } } as never,
+            appPath: "/pages/kandelo/",
+            proto: "http",
+            preforkServiceProcesses: 1,
+          }, {
+            onTick: (message) => {
+              if (message === "persistent image readback verified") current = false;
+            },
+            isCurrent: () => current,
+            supersededError: () => new Error("superseded"),
+          });
+        } catch (error) {
+          superseded = String(error).includes("superseded");
+        }
+        return {
+          returnedBytes: composed.imageBytes.byteLength,
+          stagedLength: composed.imageFile?.length,
+          restoredLength: restored?.length,
+          profile: restored?.composition.profileId,
+          fileMatches: composed.imageFile !== undefined && restored !== null
+            ? await composed.imageFile.file.isSameEntry(restored.file)
+            : false,
+          superseded,
+          supersededUnpublished: await loadFixedPersistenceImageHandle(supersededName, identity) === null,
+        };
+      }, {
+        composerUrl: new URL(`/@fs/${composerPath}`, baseURL).href,
+        persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
+        imageUrl,
+      });
+      expect(result.returnedBytes).toBe(0);
+      expect(result.stagedLength).toBeGreaterThan(0);
+      expect(result.restoredLength).toBe(result.stagedLength);
+      expect(result.profile).toBe("probe");
+      expect(result.fileMatches).toBe(true);
+      expect(result.superseded).toBe(true);
+      expect(result.supersededUnpublished).toBe(true);
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
 });

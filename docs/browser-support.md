@@ -246,7 +246,16 @@ pipe pair.
   still fetch product images. The app, kernel, and lazy assets can still need
   the network, so this is not an offline computer. There is no per-computer
   reset or upgrade UI; clearing site data removes this origin's machines
-  and other site data. The base image is still loaded into memory.
+  and other site data. A newly composed base image is streamed into OPFS in
+  acknowledged 1 MiB chunks and published only by the current boot, but its
+  source still needs image-sized fetch and Wasm staging
+  allocations. A restored image is read from OPFS in positioned pages with a
+  bounded 4 MiB cache; boot verifies its 1 MiB chunk digests without a
+  whole-image JavaScript buffer. The 256 KiB dirty-block cache holds
+  unsynced fixed-size overwrites; `fsync`, `fdatasync`, eviction, and graceful
+  destroy flush it. An abrupt crash can lose unsynced writes. Image capacity,
+  runtime memory, and OPFS quota are distinct limits; this prototype has not
+  yet demonstrated an actual image larger than memory.
   Browser quota or eviction can remove OPFS data. If the entire
   computer's OPFS state disappears, its name is
   treated as new; this mode cannot detect a complete eviction. Do not use

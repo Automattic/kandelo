@@ -3079,6 +3079,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_sync_persistence",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_unlink_file",
       "signature": "(i32,i32) -> (i32)"
     },

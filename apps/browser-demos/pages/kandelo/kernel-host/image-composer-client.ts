@@ -9,6 +9,12 @@
  */
 
 import ComposerWorker from "./image-composer-worker.ts?worker";
+import {
+  discardStagedFixedPersistenceImage,
+  publishFixedPersistenceImage,
+  stageFixedPersistenceImageStream,
+  type FixedPersistenceImageHandle,
+} from "./fixed-persistence-image";
 import type { ComposeImageJob, ComposeImageResult } from "./image-composer";
 import type {
   ComposerToMainMessage,
@@ -40,9 +46,43 @@ export function composeImageInWorker(
   const worker = new ComposerWorker();
   return new Promise<ComposeImageResult>((resolve, reject) => {
     let settled = false;
+    let staged: FixedPersistenceImageHandle | undefined;
+    let published = false;
+    let stagePromise: Promise<FixedPersistenceImageHandle> | undefined;
+    const queuedChunks: Array<Uint8Array | null> = [];
+    let receiveChunk: ((chunk: Uint8Array | null) => void) | undefined;
+    const enqueue = (chunk: Uint8Array | null) => {
+      if (receiveChunk !== undefined) {
+        const receive = receiveChunk;
+        receiveChunk = undefined;
+        receive(chunk);
+      } else {
+        queuedChunks.push(chunk);
+      }
+    };
+    async function* imageChunks(): AsyncIterableIterator<Uint8Array> {
+      for (;;) {
+        const chunk = queuedChunks.length > 0
+          ? queuedChunks.shift()!
+          : await new Promise<Uint8Array | null>((receive) => { receiveChunk = receive; });
+        if (settled) throw options.supersededError();
+        if (chunk === null) return;
+        yield chunk;
+        if (settled) throw options.supersededError();
+        worker.postMessage({ type: "persistent-ack" } satisfies MainToComposerMessage);
+      }
+    }
     const finish = (run: () => void) => {
       if (settled) return;
       settled = true;
+      enqueue(null);
+      if (staged !== undefined && !published && job.persistentImage !== undefined) {
+        void discardStagedFixedPersistenceImage(
+          job.persistentImage.name,
+          job.persistentImage.identity,
+          staged,
+        ).catch(() => {});
+      }
       // Terminate before resolving so the staging buffer is already released
       // when the caller starts allocating the machine's own address spaces.
       worker.terminate();
@@ -68,8 +108,83 @@ export function composeImageInWorker(
         finish(() => reject(options.supersededError()));
         return;
       }
+      if (data.type === "persistent-start") {
+        if (job.persistentImage === undefined || stagePromise !== undefined) {
+          finish(() => reject(new Error("unexpected persistent image stream")));
+          return;
+        }
+        stagePromise = stageFixedPersistenceImageStream(
+          job.persistentImage.name,
+          job.persistentImage.identity,
+          imageChunks(),
+          job.persistentImage.lazyAssets,
+          data.composition,
+          (message) => {
+            if (!options.isCurrent()) throw options.supersededError();
+            options.onTick(message);
+          },
+        );
+        void stagePromise.catch((error: unknown) => finish(() => reject(error)));
+        return;
+      }
+      if (data.type === "persistent-chunk") {
+        if (stagePromise === undefined) {
+          finish(() => reject(new Error("persistent image chunk without stream")));
+        } else {
+          enqueue(data.bytes);
+        }
+        return;
+      }
+      if (data.type === "persistent-end") {
+        if (stagePromise === undefined) {
+          finish(() => reject(new Error("persistent image ended without stream")));
+          return;
+        }
+        enqueue(null);
+        void stagePromise.then((imageFile) => {
+          if (settled) {
+            void discardStagedFixedPersistenceImage(
+              job.persistentImage!.name,
+              job.persistentImage!.identity,
+              imageFile,
+            ).catch(() => {});
+            return;
+          }
+          if (!options.isCurrent()) {
+            staged = imageFile;
+            finish(() => reject(options.supersededError()));
+            return;
+          }
+          staged = imageFile;
+          worker.postMessage({ type: "persistent-ready" } satisfies MainToComposerMessage);
+        }, (error: unknown) => finish(() => reject(error)));
+        return;
+      }
       const { type: _type, ...result } = data;
-      finish(() => resolve(result));
+      if (job.persistentImage !== undefined) {
+        if (staged === undefined) {
+          finish(() => reject(new Error("persistent image was not staged")));
+          return;
+        }
+        result.imageFile = staged;
+        void publishFixedPersistenceImage(
+          job.persistentImage.name,
+          job.persistentImage.identity,
+          staged,
+          () => {
+            if (!options.isCurrent()) throw options.supersededError();
+          },
+        ).then(() => {
+          published = true;
+          if (!options.isCurrent()) {
+            finish(() => reject(options.supersededError()));
+          } else {
+            finish(() => resolve(result));
+          }
+        }, (error: unknown) => finish(() => reject(error)));
+      } else {
+        finish(() => resolve(result));
+      }
     };
     worker.onerror = (event: ErrorEvent) => {
       finish(() =>

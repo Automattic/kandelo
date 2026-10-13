@@ -2187,10 +2187,15 @@ The live kernel can opt into a narrow first integration with
 `NodeKernelHost.experimentalFixedPersistencePath` or
 `BrowserKernel.experimentalFixedPersistenceName` (on boot or init). It hashes
 the loaded VFS image, opens the corresponding journal, and replays changes to
-existing image-backed regular files. Writes within their original length are
-journaled and flushed before they return; reads consult the journal's bounded
-block cache and fall through to the unchanged image. `fsync` and `fdatasync`
-flush again. Creation, deletion, rename, truncation, explicit metadata changes,
+existing image-backed regular files. Writes within their original length enter
+a 64-block (256 KiB) dirty cache and are immediately visible to reads. Dirty
+eviction, `fsync`, `fdatasync`, and graceful destroy commit and flush these
+blocks. A crash may lose writes without a successful flush; a failed flush
+reports an error and poisons further writes rather than claiming durability.
+OPFS quota exhaustion reports `ENOSPC` at the flush or eviction that reaches
+storage, not necessarily at the earlier buffered write.
+The read cache is separately bounded to 64 blocks. Creation, deletion, rename,
+truncation, explicit metadata changes,
 growth past EOF,
 writes to deferred/digest-declared/set-ID files, and writes to files created
 in memory during boot fail with `EROFS` or `EFBIG`. This is an intentionally
@@ -2199,14 +2204,25 @@ Write-induced mtime/ctime updates are visible during a session but not replayed.
 The journal may describe inode and namespace changes, but this mode rejects
 them during recovery until rootfs can replay them accurately.
 
-Browser sessions use an OPFS `FileSystemSyncAccessHandle` in the kernel worker;
+Browser sessions can restore a saved OPFS image through positioned reads with
+a separate 4 MiB clean-page cache. First installation streams the composed
+image from the Rust writer to a generation file in OPFS in 1 MiB chunks,
+with one acknowledged chunk in flight between composer and page. The page
+checks each chunk from storage, then publishes a manifest only while that boot
+still owns the session. A superseded boot cannot publish its staged image.
+Initial source
+fetch and composition still require image-sized allocations, and journal
+recovery metadata is unbounded;
+this is not yet a general larger-than-memory filesystem. Browser sessions use
+an OPFS `FileSystemSyncAccessHandle` in the kernel worker;
 its exclusive handle provides the single-writer lease and is closed on destroy.
 Node sessions use an absolute journal path and a sibling `.lock` directory;
 concurrent Node sessions fail closed, and a crash may require manual removal
 of a stale lock after confirming no writer remains. Journal paths must be
 private; neither adapter protects against an external writer. Offsets must
 fit JavaScript's safe-integer range. The base image is still resident in host
-memory, and the journal's block-location index grows with changed blocks.
+memory on initial installation, and the journal's block-location index grows
+with changed blocks.
 There is no compaction or measured performance claim. The file helper rejects
 writes exceeding one 1 MiB transaction rather than implementing POSIX
 partial-write behavior.

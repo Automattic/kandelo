@@ -89,13 +89,22 @@ test("Kandelo page restores a guest-written computer after reload", async ({ pla
       await page.goto(pageUrl.href, { waitUntil: "domcontentloaded" });
       await expectBootCount(page, 1, pageErrors);
       rmSync(imagePath);
+      await page.addInitScript(() => {
+        const original = File.prototype.arrayBuffer;
+        File.prototype.arrayBuffer = function () {
+          if (this.name.endsWith(".base")) {
+            throw new Error("restored OPFS image was loaded as one ArrayBuffer");
+          }
+          return original.call(this);
+        };
+      });
       await page.reload({ waitUntil: "domcontentloaded" });
       await expectBootCount(page, 2, pageErrors);
 
       const competitor = await context.newPage();
       await competitor.goto(pageUrl.href, { waitUntil: "domcontentloaded" });
       await expect(competitor.locator('.kdock-status-text[data-status="error"]')).toBeAttached({ timeout: 60_000 });
-      await expect(competitor.locator(".ksys-line").last()).toContainText(/NoModificationAllowedError|InvalidStateError|another open Access Handle/i);
+      await expect(competitor.locator(".ksys-line").last()).toContainText(/NoModificationAllowedError|No modification allowed|InvalidStateError|invalid state|another open Access Handle/i);
       await competitor.close();
     } finally {
       await context.close();

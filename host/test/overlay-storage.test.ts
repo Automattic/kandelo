@@ -1,9 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { HostFileSystem } from "../src/vfs/host-fs";
-import { OverlayStorageFile } from "../src/vfs/overlay-storage";
+import { OpfsOverlayStorageFile, OverlayStorageFile } from "../src/vfs/overlay-storage";
 import type { FileSystemBackend } from "../src/vfs/types";
 
 describe("OverlayStorageFile", () => {
@@ -68,5 +68,35 @@ describe("OverlayStorageFile", () => {
     expect(() => storage.writeAllAt(2 ** 53, Uint8Array.of(1))).toThrow(/EOVERFLOW/);
     storage.close();
     expect(() => storage.len()).toThrow(/EBADF/);
+  });
+});
+
+describe("OpfsOverlayStorageFile", () => {
+  it("maps OPFS quota failures to ENOSPC", async () => {
+    const quotaFailure = new DOMException("quota exhausted", "QuotaExceededError");
+    const access = {
+      getSize: () => 0,
+      write: () => { throw quotaFailure; },
+      flush: () => { throw quotaFailure; },
+      truncate: () => { throw quotaFailure; },
+      close: () => {},
+    } as unknown as FileSystemSyncAccessHandle;
+    const file = { createSyncAccessHandle: async () => access };
+    const directory = { getFileHandle: async () => file };
+    const root = { getDirectoryHandle: async () => directory };
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => root } });
+    try {
+      const storage = await OpfsOverlayStorageFile.open("quota-test");
+      for (const operation of [
+        () => storage.writeAllAt(0, Uint8Array.of(1)),
+        () => storage.flush(),
+        () => storage.truncate(0),
+      ]) {
+        expect(operation).toThrowError(/ENOSPC/);
+      }
+      storage.close();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

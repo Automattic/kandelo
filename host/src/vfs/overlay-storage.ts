@@ -19,9 +19,16 @@ export interface PersistentOverlayStorage {
 
 const MAX_IO_BYTES = 1024 * 1024;
 
-function storageError(code: "EBADF" | "EIO" | "EOVERFLOW"): Error & { code: string } {
+function storageError(code: "EBADF" | "EIO" | "ENOSPC" | "EOVERFLOW"): Error & { code: string } {
   const error = new Error(`${code}: persistent overlay storage`) as Error & { code: string };
   error.code = code;
+  return error;
+}
+
+function opfsStorageError(error: unknown): unknown {
+  if (error instanceof DOMException && error.name === "QuotaExceededError") {
+    return storageError("ENOSPC");
+  }
   return error;
 }
 
@@ -154,14 +161,31 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
     let done = 0;
     while (done < source.byteLength) {
       const chunk = source.subarray(done, done + MAX_IO_BYTES);
-      const written = handle.write(chunk, { at: start + done });
+      let written: number;
+      try {
+        written = handle.write(chunk, { at: start + done });
+      } catch (error) {
+        throw opfsStorageError(error);
+      }
       if (!Number.isInteger(written) || written <= 0 || written > chunk.byteLength) throw storageError("EIO");
       done += written;
     }
   }
 
-  flush(): void { this.liveHandle().flush(); }
-  truncate(length: HostFileOffset): void { this.liveHandle().truncate(checkedPosition(length, 0)); }
+  flush(): void {
+    try {
+      this.liveHandle().flush();
+    } catch (error) {
+      throw opfsStorageError(error);
+    }
+  }
+  truncate(length: HostFileOffset): void {
+    try {
+      this.liveHandle().truncate(checkedPosition(length, 0));
+    } catch (error) {
+      throw opfsStorageError(error);
+    }
+  }
   close(): void {
     const handle = this.liveHandle();
     handle.close();

@@ -73,6 +73,30 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 90_000);
 
+  it.skipIf(guestProgramPath === null)("flushes an unsynced guest overwrite on graceful destroy", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const host = await boot(image, path);
+      try {
+        const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite", "unsynced"]);
+        expect(await exit).toBe(0);
+        expect(new TextDecoder().decode((await host.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await host.destroy();
+      }
+      const recovered = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await recovered.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await recovered.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it.skipIf(guestProgramPath === null)("replays a guest overwrite after a worker restart", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-"));
     const path = join(directory, "machine.journal");

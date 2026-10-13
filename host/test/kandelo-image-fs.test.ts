@@ -236,6 +236,9 @@ describe("KandeloImageFs", () => {
 
     const whole = fs.exportImage(1 << 20);
     const chunked = fs.exportImage(4096);
+    const streamed = [...fs.exportImageChunks(4096)];
+    expect(streamed.length).toBeGreaterThan(1);
+    expect(Buffer.concat(streamed.map((part) => Buffer.from(part)))).toEqual(Buffer.from(whole));
     expect(chunked.byteLength).toBe(whole.byteLength);
     expect(Array.from(chunked.subarray(0, 64))).toEqual(
       Array.from(whole.subarray(0, 64)),
