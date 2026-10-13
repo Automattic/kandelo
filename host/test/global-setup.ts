@@ -38,6 +38,10 @@ const C_TEST_FIXTURES = [
     forkInstrument: true,
   },
   {
+    src: join(fixturesDir, "udp-broadcast-observation.c"),
+    out: join(fixturesDir, "udp-broadcast-observation.wasm"),
+  },
+  {
     src: join(fixturesDir, "process-memory-reclamation-churn.c"),
     out: join(fixturesDir, "process-memory-reclamation-churn.wasm"),
   },

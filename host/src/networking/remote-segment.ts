@@ -19,6 +19,14 @@ import {RemoteTcpEngine} from './remote-tcp';
 import {type RemoteTcpFrame} from './remote-tcp-codec';
 const EOPNOTSUPP = 95;
 const EMSGSIZE = 90;
+/**
+ * The forwarding host copies one member's broadcast to every other member,
+ * so it meters what each member may originate: a burst, refilled per
+ * second. Excess broadcasts are dropped, as a congested link drops them,
+ * and counted in the snapshot.
+ */
+const BROADCAST_BURST = 64;
+const BROADCAST_PER_SECOND = 64;
 
 export interface RemoteSegmentMember {
   id: number;
@@ -60,6 +68,8 @@ export interface RemoteSegmentSnapshot {
   members: { address: string; hostname: string; maxPayload: number }[];
   bindings: { address: string; port: number; endpoint: string }[];
   tcpListeners: {address: string; port: number; endpoint: string}[];
+  /** Broadcasts this forwarding host dropped for exceeding a member's budget. */
+  droppedBroadcasts: number;
 }
 
 const address = (id: number) => new Uint8Array([10, 89, 0, id]);
@@ -67,6 +77,7 @@ const addressKey = (addr: Uint8Array | number[]) => Array.from(addr).join(".");
 const machineName = (id: number) => id === 1 ? "host" : `peer-${id}`;
 const endpointKey = (owner: number, id: string) => `${owner}:${id}`;
 const inSegment = (addr: Uint8Array) => addr.length === 4 && addr[0] === 10 && addr[1] === 89 && addr[2] === 0;
+const limitedBroadcast = (addr: Uint8Array) => addr.length === 4 && addr.every((part) => part === 255);
 const validId = (id: unknown): id is number => Number.isInteger(id) && Number(id) >= 1 && Number(id) <= 254;
 const validEndpoint = (id: unknown): id is string => typeof id === "string" && /^[a-zA-Z0-9:._-]{1,64}$/.test(id);
 const validPort = (port: unknown): port is number => Number.isInteger(port) && Number(port) > 0 && Number(port) <= 65535;
@@ -135,6 +146,8 @@ export class RemoteVirtualNetwork implements NetworkIO {
   private closed = false;
   private readonly connectErrors = new Map<number, number>();
   private readonly closedListeners = new Set<(reason: string) => void>();
+  private readonly broadcastBudgets = new Map<number, { tokens: number; at: number }>();
+  private droppedBroadcasts = 0;
   private closedReason?: string;
   private resolveReady!: () => void;
   private rejectReady!: (error: Error) => void;
@@ -182,7 +195,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
   }
 
   udpSourceAddress(destination: Uint8Array): Uint8Array | number {
-    if (this.localAddress && inSegment(destination)) return this.localAddress.slice();
+    if (this.localAddress && (inSegment(destination) || limitedBroadcast(destination))) return this.localAddress.slice();
     return this.fallback?.udpSourceAddress?.(destination) ?? ENETUNREACH;
   }
 
@@ -222,14 +235,20 @@ export class RemoteVirtualNetwork implements NetworkIO {
       transport.onDatagram((datagram) => {
         // A star's host authenticates the source on the ingress link. A
         // joiner receives forwarded sources from any member through the host.
+        const broadcast = limitedBroadcast(datagram.dstAddr);
         if (!this.localId || !inSegment(datagram.srcAddr)
           || !this.members.has(datagram.srcAddr[3])
           || (this.role === "host" && datagram.srcAddr[3] !== id)
-          || (this.role === "joiner" && addressKey(datagram.dstAddr) !== addressKey(this.localAddress!))) {
+          || (this.role === "joiner" && !broadcast && addressKey(datagram.dstAddr) !== addressKey(this.localAddress!))) {
           this.dropPeer(id, "the remote peer sent a datagram outside its address ownership");
           return;
         }
-        this.network.sendDatagram(datagram);
+        if (!broadcast) { this.network.sendDatagram(datagram); return; }
+        // A joiner already delivered its own copy, and a joiner's other
+        // members are mirrors of the host's: only this machine hears a
+        // forwarded broadcast here, and the host never echoes it back.
+        if (this.role === "joiner") this.network.broadcastDatagram(datagram, (machine) => machine === machineName(this.localId!));
+        else if (this.admitBroadcast(id)) this.network.broadcastDatagram(datagram, (machine) => machine !== machineName(id));
       }),
       transport.onTcp?.((frame) => {
         try { this.receiveTcp(id, frame); } catch (error) { this.dropPeer(id, String(error), true); }
@@ -349,6 +368,17 @@ export class RemoteVirtualNetwork implements NetworkIO {
     this.mirroredEndpoints.clear();
   }
 
+  private admitBroadcast(origin: number): boolean {
+    const now = Date.now();
+    const budget = this.broadcastBudgets.get(origin) ?? { tokens: BROADCAST_BURST, at: now };
+    budget.tokens = Math.min(BROADCAST_BURST, budget.tokens + (now - budget.at) * BROADCAST_PER_SECOND / 1000);
+    budget.at = now;
+    this.broadcastBudgets.set(origin, budget);
+    if (budget.tokens < 1) { this.droppedBroadcasts++; return false; }
+    budget.tokens--;
+    return true;
+  }
+
   private bindingCount(owner: number): number {
     let count = 0;
     for (const binding of [...this.bindings.values(), ...this.tcpBindings.values()]) if (binding.owner === owner) count++;
@@ -386,6 +416,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
     } else {
       this.network.detachMachine(machineName(id));
       this.members.delete(id);
+      this.broadcastBudgets.delete(id);
       for (const [key, binding] of this.bindings) if (binding.owner === id) {
         this.bindings.delete(key); this.mirroredEndpoints.delete(key);
       }
@@ -421,7 +452,27 @@ export class RemoteVirtualNetwork implements NetworkIO {
     if (!this.local || this.closed) return ENETUNREACH;
     if (addressKey(datagram.srcAddr) !== "0.0.0.0"
       && addressKey(datagram.srcAddr) !== addressKey(this.localAddress!)) return EADDRNOTAVAIL;
+    if (limitedBroadcast(datagram.dstAddr)) return this.sendBroadcast({ ...datagram, srcAddr: this.localAddress!.slice() });
     return this.local.sendDatagram(datagram);
+  }
+
+  /**
+   * A limited broadcast reaches every member with a wildcard socket on its
+   * port, this machine included, as Linux loops a broadcast back to its
+   * sender. A joiner delivers its own copy and sends one to the host; the
+   * host delivers to every member but the one it came from.
+   */
+  private sendBroadcast(datagram: UdpDatagram): number {
+    const self = machineName(this.localId!);
+    if (this.role === "host") {
+      if (this.admitBroadcast(this.localId!)) this.network.broadcastDatagram(datagram, () => true);
+      return 0;
+    }
+    const transport = this.peers.get(1);
+    if (!transport) return ENETUNREACH;
+    if (datagram.data.length > Math.min(transport.maxPayload, this.members.get(this.localId!)?.maxPayload ?? 0)) return EMSGSIZE;
+    this.network.broadcastDatagram(datagram, (machine) => machine === self);
+    return transport.sendDatagram(datagram);
   }
 
   getaddrinfo(hostname: string): Uint8Array {
@@ -537,6 +588,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
       members: [...this.members.values()].map((member) => ({ address: addressKey(address(member.id)), hostname: machineName(member.id), maxPayload: member.maxPayload })),
       tcpListeners: [...this.tcpBindings.values()].map(binding => ({address:addressKey(address(binding.owner)),port:binding.port,endpoint:binding.id})),
       bindings: [...this.bindings.values()].map((binding) => ({ address: addressKey(address(binding.owner)), port: binding.port, endpoint: binding.id })),
+      droppedBroadcasts: this.droppedBroadcasts,
     };
   }
 }
