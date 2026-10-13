@@ -11,18 +11,30 @@ import { runTerminalCommand } from "./support/terminal-command";
 const running = (page: Page) =>
   expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
 const closePanel = (page: Page) => page.locator(".knetwork .kshare-x").click();
-const terminalText = (page: Page) => page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
 /** The last game Doom started, as it reports it on its terminal. */
 async function doomGame(page: Page): Promise<string> {
-  await page.getByRole("button", { name: "Terminal", exact: true }).click();
-  const games = (await terminalText(page)).match(/player \d+ of \d+ \(\d+ nodes\)/g) ?? [];
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  const games = (await terminalLines(page)).match(/player \d+ of \d+ \(\d+ nodes\)/g) ?? [];
   return games.at(-1) ?? "";
 }
 const pickLanEntry = async (page: Page, entry: string) => {
   await page.getByTestId("fb-dock-action-lan").click();
   await page.getByTestId(`fb-dock-menu-entry-${entry}`).click();
 };
+/** Key presses into the display, as a player at the keyboard makes them. */
+async function pressKeys(page: Page, keys: string[]) {
+  await page.locator("canvas.kframebuffer-canvas").first().focus();
+  for (const key of keys) {
+    await page.keyboard.press(key);
+    await page.waitForTimeout(700);
+  }
+}
+/** The terminal's visible lines, for what a game prints. */
+async function terminalLines(page: Page): Promise<string> {
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  const text = await page.locator(".xterm-rows").first().evaluate((node) => [...node.children].map((row) => row.textContent).join("\n"));
+  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  return text;
+}
 const members = (page: Page) => page.getByRole("list", { name: "Computers in this session" }).getByRole("listitem");
 
 async function host(page: Page, name: string, profile = "shell"): Promise<string> {
@@ -174,6 +186,37 @@ test("the Doom machine's LAN menu starts a two-player game across the session", 
     await pickLanEntry(joiner, "single");
     await expect.poll(() => doomGame(joiner), { timeout: 60_000 }).toBe("player 1 of 1 (1 nodes)");
     await expect(joiner.getByRole("button", { name: "Network session: connected", exact: true })).toBeAttached();
+  } finally {
+    await context.close();
+  }
+});
+
+test("Quake's own multiplayer menu hosts a game another computer finds and joins", async ({ browser, page, browserName }) => {
+  test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
+  test.setTimeout(480_000);
+  // Quake is already running its demo loop when the session starts; nobody
+  // restarts it.
+  const link = await host(page, "Quake night", "quake");
+  await closePanel(page);
+  await expect.poll(() => terminalLines(page), { timeout: 120_000 }).toContain("Playing demo");
+  // Main menu → Multiplayer → New Game → OK → Begin game.
+  await pressKeys(page, ["Escape", "ArrowDown", "Enter", "ArrowDown", "Enter", "Enter", "Enter"]);
+  await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/entered the game/);
+
+  const { page: joiner, context } = await join(browser, link, "10.89.0.2");
+  try {
+    await closePanel(joiner);
+    await expect.poll(() => terminalLines(joiner), { timeout: 120_000 }).toContain("Playing demo");
+    // Main menu → Multiplayer → Join a Game → Search for local games.
+    await pressKeys(joiner, ["Escape", "ArrowDown", "Enter", "Enter", "ArrowUp", "Enter"]);
+    await joiner.waitForTimeout(5_000);
+    await joiner.screenshot({ path: "../../.context/quake-lan-search.png" });
+    // The list shows the hosting computer's game; Enter joins it.
+    await pressKeys(joiner, ["Enter"]);
+    await expect.poll(async () => ((await terminalLines(page)).match(/entered the game/g) ?? []).length, { timeout: 60_000 })
+      .toBeGreaterThanOrEqual(2);
+    await page.screenshot({ path: "../../.context/quake-lan-host.png" });
+    await joiner.screenshot({ path: "../../.context/quake-lan-joiner.png" });
   } finally {
     await context.close();
   }

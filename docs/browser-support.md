@@ -2537,8 +2537,13 @@ programs use ordinary IPv4 UDP and TCP sockets; DNS names `host` and
 `peer-N` resolve through the worker's segment membership, and broadcasts
 reach every computer in the session, so LAN discovery works: in Chromium, a
 joiner's `fbdoom -localsearch` finds the hosting computer's server, and
-between two Node machines TyrQuake's Multiplayer → Join a Game search lists
-and joins a session's server. A LAN game should run as a private server
+TyrQuake's own menus find each other: on the Quake machine, Multiplayer →
+New Game on one computer and Multiplayer → Join a Game → Search for local
+games on another list and join the game, with no restart, even though Quake
+was already running when the session started. (Upstream TyrQuake 0.71 never
+registers its network console commands, so New Game could only start a
+one-player game that never listened; the package's
+`0005-register-network-console-commands.patch` registers them.) A LAN game should run as a private server
 (`fbdoom -privateserver`): the browser's internet egress carries TCP only,
 so UDP to Doom's internet master server fails with `EHOSTUNREACH`, and
 fbdoom stops with a fatal error when its registration send fails. The Doom
