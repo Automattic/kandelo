@@ -1,0 +1,56 @@
+TyrQuake v0.71 refactored retry transmission through SendPacket, which
+increments sendSequence even for a retry. A lost or delayed acknowledgement
+then causes the same reliable payload to acquire a new sequence and makes
+its earlier acknowledgement stale. Restore the original Quake protocol:
+a retry keeps the outstanding packet's sequence; only new packets advance.
+This is an upstream reliability defect, independent of Kandelo sockets.
+
+Reference: id-Software/Quake WinQuake/net_dgrm.c, ReSendMessage.
+
+--- a/NQ/net_dgrm.c
++++ b/NQ/net_dgrm.c
+@@ -111,7 +111,7 @@
+ }
+ 
+ static int
+-SendPacket(qsocket_t *sock)
++SendPacket(qsocket_t *sock, unsigned int sequence)
+ {
+     unsigned int packetLen;
+     unsigned int dataLen;
+@@ -127,7 +127,7 @@
+     packetLen = NET_HEADERSIZE + dataLen;
+ 
+     packetBuffer.length = BigLong(packetLen | (NETFLAG_DATA | eom));
+-    packetBuffer.sequence = BigLong(sock->sendSequence++);
++    packetBuffer.sequence = BigLong(sequence);
+     memcpy(packetBuffer.data, sock->sendMessage, dataLen);
+ 
+     if (sock->landriver->Write(sock->socket, &packetBuffer, packetLen, &sock->addr) == -1)
+@@ -157,7 +157,7 @@
+     sock->sendMessageLength = data->cursize;
+     sock->canSend = false;
+ 
+-    return SendPacket(sock);
++    return SendPacket(sock, sock->sendSequence++);
+ }
+ 
+ static int
+@@ -165,7 +165,7 @@
+ {
+     sock->sendNext = false;
+ 
+-    return SendPacket(sock);
++    return SendPacket(sock, sock->sendSequence++);
+ }
+ 
+ static int
+@@ -173,7 +173,7 @@
+ {
+     sock->sendNext = false;
+ 
+-    return SendPacket(sock);
++    return SendPacket(sock, sock->sendSequence - 1);
+ }
+ 
+ 
