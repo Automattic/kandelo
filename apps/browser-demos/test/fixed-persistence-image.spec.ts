@@ -234,6 +234,20 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         const last = file === undefined
           ? []
           : [...new Uint8Array(await file.slice(file.size - 3).arrayBuffer())];
+        const damagedFirst = first.slice();
+        damagedFirst[0] = 8;
+        const damageWriter = await restored!.file.createWritable();
+        await damageWriter.write(damagedFirst);
+        await damageWriter.write(Uint8Array.of(1, 2, 3));
+        await damageWriter.close();
+        const corruptWorker = new Worker(workerUrl, { type: "module" });
+        const corruptionRejected = await new Promise<boolean>((resolve, reject) => {
+          corruptWorker.onmessage = (event: MessageEvent<{ type: string; message?: string }>) => {
+            resolve(event.data.type === "error" && /damaged/.test(event.data.message ?? ""));
+          };
+          corruptWorker.onerror = (event) => reject(new Error(event.message));
+          corruptWorker.postMessage({ file: restored!.file, length: restored!.length, chunkSha256: restored!.chunkSha256 });
+        }).finally(() => corruptWorker.terminate());
         const interruptedName = `stream-${crypto.randomUUID()}`;
         function* interrupted(): IterableIterator<Uint8Array> {
           yield first;
@@ -260,6 +274,7 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           orphanRemoved,
           last,
           positionedRead,
+          corruptionRejected,
           interruptedRejected,
           incomplete: incomplete === null,
         };
@@ -275,6 +290,7 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         orphanRemoved: true,
         last: [1, 2, 3],
         positionedRead: { first: [7, 7, 7], last: [1, 2, 3], firstRead: 3, lastRead: 3 },
+        corruptionRejected: true,
         interruptedRejected: true,
         incomplete: true,
       });

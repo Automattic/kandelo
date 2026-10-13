@@ -2194,7 +2194,10 @@ private; neither adapter protects against an external writer. Offsets must
 fit JavaScript's safe-integer range. The base image is still resident in host
 memory on initial installation, and the journal's block-location index grows
 with changed blocks.
-There is no compaction or measured performance claim. The file helper rejects
+The Rust journal can stage a compacted copy in separate storage after
+verifying every live block, but the live host has no generation handoff yet;
+its journal still grows and its recovery index is not bounded. There is no
+measured performance claim. The file helper rejects
 writes exceeding one 1 MiB transaction rather than implementing POSIX
 partial-write behavior.
 

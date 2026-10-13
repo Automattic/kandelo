@@ -146,6 +146,7 @@ impl OverlayState {
 
 pub struct OverlayJournal<S: OverlayStorage> {
     storage: S,
+    base_digest: [u8; 32],
     state: OverlayState,
     next_sequence: u64,
     end: u64,
@@ -247,6 +248,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         }
         Ok(Self {
             storage,
+            base_digest,
             state,
             next_sequence,
             end,
@@ -258,6 +260,57 @@ impl<S: OverlayStorage> OverlayJournal<S> {
 
     pub fn state(&self) -> &OverlayState {
         &self.state
+    }
+
+    pub fn compact_into<T: OverlayStorage>(
+        &mut self,
+        mut target: T,
+    ) -> Result<OverlayJournal<T>, Errno> {
+        self.sync()?;
+        if target.len()? != 0 {
+            return Err(Errno::EEXIST);
+        }
+        let mut compacted = OverlayJournal::open(target, self.base_digest)?;
+        let mut batch = Vec::new();
+        batch.try_reserve_exact(128).map_err(|_| Errno::ENOMEM)?;
+        for (key, value) in &self.state.entries {
+            let mutation = match value {
+                Some(bytes) => Mutation::Put {
+                    key: key.clone(),
+                    value: bytes.clone(),
+                },
+                None => Mutation::Delete { key: key.clone() },
+            };
+            batch.push(mutation);
+            if batch.len() == 128 {
+                compacted.commit_transaction(&batch)?;
+                batch.clear();
+            }
+        }
+        for ((inode, block), location) in &self.state.blocks {
+            let key = OverlayKey::FileBlock {
+                inode: *inode,
+                block: *block,
+            };
+            let mutation = match location {
+                Some(location) => {
+                    let mut bytes = alloc::vec![0; FILE_BLOCK_BYTES];
+                    self.storage.read_exact_at(location.offset, &mut bytes)?;
+                    if Sha256::digest(&bytes)[..] != location.digest {
+                        return Err(Errno::EIO);
+                    }
+                    Mutation::Put { key, value: bytes }
+                }
+                None => Mutation::Delete { key },
+            };
+            batch.push(mutation);
+            if batch.len() == 128 {
+                compacted.commit_transaction(&batch)?;
+                batch.clear();
+            }
+        }
+        compacted.commit_transaction(&batch)?;
+        Ok(compacted)
     }
 
     pub fn sync(&mut self) -> Result<(), Errno> {
@@ -766,6 +819,7 @@ mod tests {
         bytes: Vec<u8>,
         flushes: usize,
         fail_flush: bool,
+        fail_after_flushes: Option<usize>,
     }
 
     impl OverlayStorage for MemoryStorage {
@@ -789,7 +843,7 @@ mod tests {
         }
 
         fn flush(&mut self) -> Result<(), Errno> {
-            if self.fail_flush {
+            if self.fail_flush || self.fail_after_flushes == Some(self.flushes) {
                 return Err(Errno::EIO);
             }
             self.flushes += 1;
@@ -859,6 +913,167 @@ mod tests {
             Ok(FILE_BLOCK_BYTES)
         );
         assert_eq!(block, vec![3; FILE_BLOCK_BYTES]);
+    }
+
+    #[test]
+    fn compaction_stages_only_live_records_and_preserves_the_source() {
+        let digest = [23; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        journal
+            .commit(&[
+                Mutation::Put {
+                    key: inode_key(),
+                    value: b"inode".to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileSize(7),
+                    value: (FILE_BLOCK_BYTES as u64).to_le_bytes().to_vec(),
+                },
+                Mutation::Delete {
+                    key: directory_key(b"removed"),
+                },
+            ])
+            .unwrap();
+        for value in 0..10 {
+            journal
+                .commit(&[Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                    value: vec![value; FILE_BLOCK_BYTES],
+                }])
+                .unwrap();
+        }
+        let source_bytes = journal.storage.bytes.clone();
+        let compacted = journal.compact_into(MemoryStorage::default()).unwrap();
+        let compacted_bytes = compacted.into_storage().bytes;
+        assert!(compacted_bytes.len() < source_bytes.len() / 2);
+        assert_eq!(journal.storage.bytes, source_bytes);
+        assert!(matches!(
+            OverlayJournal::open(
+                MemoryStorage {
+                    bytes: compacted_bytes.clone(),
+                    ..MemoryStorage::default()
+                },
+                [24; 32]
+            ),
+            Err(Errno::EIO)
+        ));
+        let mut reopened = OverlayJournal::open(
+            MemoryStorage {
+                bytes: compacted_bytes,
+                ..MemoryStorage::default()
+            },
+            digest,
+        )
+        .unwrap();
+        assert_eq!(reopened.state().lookup(&inode_key()), Some(Some(&b"inode"[..])));
+        assert_eq!(reopened.state().lookup(&directory_key(b"removed")), Some(None));
+        assert_eq!(reopened.state().file_size(7, 0), Ok(FILE_BLOCK_BYTES as u64));
+        let mut block = vec![0; FILE_BLOCK_BYTES];
+        assert_eq!(
+            reopened.read_file_at(7, 0, 0, &mut block, |_, _| panic!("block is journaled")),
+            Ok(FILE_BLOCK_BYTES)
+        );
+        assert_eq!(block, vec![9; FILE_BLOCK_BYTES]);
+    }
+
+    #[test]
+    fn compaction_refuses_corrupt_source_or_existing_target() {
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [25; 32]).unwrap();
+        journal
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                value: vec![1; FILE_BLOCK_BYTES],
+            }])
+            .unwrap();
+        let old_length = journal.storage.bytes.len();
+        assert!(matches!(
+            journal.compact_into(MemoryStorage {
+                fail_flush: true,
+                ..MemoryStorage::default()
+            }),
+            Err(Errno::EIO)
+        ));
+        assert_eq!(journal.storage.bytes.len(), old_length);
+        assert!(matches!(
+            journal.compact_into(MemoryStorage {
+                fail_after_flushes: Some(1),
+                ..MemoryStorage::default()
+            }),
+            Err(Errno::EIO)
+        ));
+        assert_eq!(journal.storage.bytes.len(), old_length);
+        assert!(matches!(
+            journal.compact_into(MemoryStorage {
+                bytes: vec![1],
+                ..MemoryStorage::default()
+            }),
+            Err(Errno::EEXIST)
+        ));
+        let offset = journal.state.blocks.get(&(7, 0)).unwrap().unwrap().offset as usize;
+        journal.storage.bytes[offset] ^= 1;
+        assert!(matches!(
+            journal.compact_into(MemoryStorage::default()),
+            Err(Errno::EIO)
+        ));
+        assert_eq!(journal.storage.bytes.len(), old_length);
+    }
+
+    #[test]
+    fn compaction_batches_across_transaction_boundaries() {
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [26; 32]).unwrap();
+        let mut mutations = Vec::new();
+        for block in 0..129 {
+            mutations.push(Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block },
+                value: vec![block as u8; FILE_BLOCK_BYTES],
+            });
+        }
+        journal.commit(&mutations).unwrap();
+        let compacted = journal.compact_into(MemoryStorage::default()).unwrap();
+        assert_eq!(compacted.next_sequence, 3);
+        let mut reopened = OverlayJournal::open(compacted.into_storage(), [26; 32]).unwrap();
+        let mut block = vec![0; FILE_BLOCK_BYTES];
+        assert_eq!(
+            reopened.read_file_at(
+                7,
+                129 * FILE_BLOCK_BYTES as u64,
+                128 * FILE_BLOCK_BYTES as u64,
+                &mut block,
+                |_, _| panic!("block is journaled"),
+            ),
+            Ok(FILE_BLOCK_BYTES)
+        );
+        assert_eq!(block, vec![128; FILE_BLOCK_BYTES]);
+    }
+
+    #[test]
+    fn compaction_flushes_pending_dirty_blocks_before_copying() {
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [27; 32]).unwrap();
+        assert_eq!(
+            journal.write_fixed_file_at_buffered(
+                7,
+                FILE_BLOCK_BYTES as u64,
+                0,
+                b"xy",
+                |_, destination| {
+                    destination.fill(b'a');
+                    Ok(destination.len())
+                },
+            ),
+            Ok(2)
+        );
+        assert_eq!(journal.dirty_blocks.len(), 1);
+        let compacted = journal.compact_into(MemoryStorage::default()).unwrap();
+        assert!(journal.dirty_blocks.is_empty());
+        let mut reopened = OverlayJournal::open(compacted.into_storage(), [27; 32]).unwrap();
+        let mut bytes = [0; 4];
+        assert_eq!(
+            reopened.read_file_at(7, FILE_BLOCK_BYTES as u64, 0, &mut bytes, |_, _| {
+                panic!("block is journaled")
+            }),
+            Ok(4)
+        );
+        assert_eq!(&bytes, b"xyaa");
     }
 
     #[test]
