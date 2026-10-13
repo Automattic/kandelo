@@ -1223,7 +1223,7 @@ async function handleInit(msg: InitMessage) {
     const rootfsContainer = new Uint8Array(msg.rootfsImage!);
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
       imageRead: imageReadFromContainer(rootfsContainer),
-      imageBytes: rootfsContainer,
+      imageLength: rootfsContainer.byteLength,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
@@ -3594,6 +3594,15 @@ async function performDestroy() {
   pcmDriver = null;
   remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
+  let persistenceSyncFailure: string | undefined;
+  if (persistentOverlay !== null) {
+    try {
+      kernelWorker.syncRootfsPersistence();
+    } catch (error) {
+      persistenceSyncFailure = `rootfs persistence shutdown sync failed: ${error}`;
+      console.error(persistenceSyncFailure);
+    }
+  }
   persistentOverlay?.close();
   persistentOverlay = null;
   if (persistentOverlayLockDir !== null) {
@@ -3619,7 +3628,7 @@ async function performDestroy() {
     );
   }
   cleanupSessionDir();
-  return kernelRealmDestroyResult(gracefulDetachComplete);
+  return kernelRealmDestroyResult(gracefulDetachComplete, persistenceSyncFailure);
 }
 
 async function handleDestroy(msg: { requestId: number }) {

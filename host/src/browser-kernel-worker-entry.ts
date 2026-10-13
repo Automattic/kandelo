@@ -48,6 +48,7 @@ import * as rootImage from "./vfs/root-image-facts";
 import { DEFAULT_MOUNT_SPEC } from "./vfs/default-mounts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
+import { OpfsImageReader } from "./vfs/opfs-image-reader";
 import { BrowserTimeProvider } from "./vfs/time";
 import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
@@ -164,6 +165,7 @@ const O_WRONLY_CREAT_TRUNC =
 // State
 let kernelWorker: CentralizedKernelWorker;
 let persistentOverlay: OpfsOverlayStorageFile | null = null;
+let opfsImageReader: OpfsImageReader | null = null;
 let workerAdapter: BrowserWorkerAdapter;
 let io: VirtualPlatformIO;
 const vfsChangeSubscriptions = new Map<string, () => void>();
@@ -867,6 +869,12 @@ const remoteSegmentRuntime = new RemoteSegmentRuntime();
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = false;
   initFailure = null;
+  if (msg.opfsImage !== undefined) {
+    if (msg.vfsImage.byteLength !== 0) {
+      throw new Error("rootfs image cannot have both OPFS and in-memory sources");
+    }
+    opfsImageReader = await OpfsImageReader.open(msg.opfsImage, msg.opfsImageIntegrity);
+  }
   // WHY: structured cloning strips the host-side freeze. Revalidate into one
   // worker-owned immutable copy before either browser network path sees it.
   const {
@@ -1150,8 +1158,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   let finalizeRootfsTransport: (() => void) | undefined;
   if (rootImage.has()) {
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
-      imageRead: imageReadFromContainer(msg.vfsImage),
-      imageBytes: msg.vfsImage,
+      imageRead: opfsImageReader === null
+        ? imageReadFromContainer(msg.vfsImage)
+        : (at, destination) => opfsImageReader!.readAt(at, destination),
+      imageLength: opfsImageReader?.length ?? msg.vfsImage.byteLength,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
@@ -4217,8 +4227,19 @@ async function performDestroy() {
   }
   remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
+  let persistenceSyncFailure: string | undefined;
+  if (persistentOverlay !== null) {
+    try {
+      kernelWorker.syncRootfsPersistence();
+    } catch (error) {
+      persistenceSyncFailure = `rootfs persistence shutdown sync failed: ${formatError(error)}`;
+      console.error(persistenceSyncFailure);
+    }
+  }
   persistentOverlay?.close();
   persistentOverlay = null;
+  opfsImageReader?.close();
+  opfsImageReader = null;
   initReady = false;
   initFailure = "kernel worker destroyed";
   if (gracefulDetachComplete) {
@@ -4239,7 +4260,7 @@ async function performDestroy() {
       "fallback",
     );
   }
-  return kernelRealmDestroyResult(gracefulDetachComplete);
+  return kernelRealmDestroyResult(gracefulDetachComplete, persistenceSyncFailure);
 }
 
 async function handleDestroy(
@@ -4460,6 +4481,8 @@ sw.onmessage = (e: MessageEvent) => {
   switch (msg.type) {
     case "init":
       void handleInit(msg).catch((err) => {
+        opfsImageReader?.close();
+        opfsImageReader = null;
         const error = formatError(err);
         remoteSegmentRuntime.close();
         initReady = false;

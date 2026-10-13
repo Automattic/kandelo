@@ -61,11 +61,9 @@ const ENOSYS = -38;
 /**
  * Serve container-offset reads straight from the container bytes.
  *
- * The only reader left, and the simplest one it could be: a caller holding
- * the whole container answers in container coordinates without subtracting
- * anything. Both worker entries already hold those bytes — they are what the
- * kernel is handed as `imageBytes` — so nothing has to be a filesystem for the
- * overlay to read its own image.
+ * A caller holding the whole container answers in container coordinates
+ * without subtracting anything. OPFS-backed browser boots instead provide a
+ * positioned reader directly to the kernel worker.
  */
 export function imageReadFromContainer(
   container: Uint8Array,

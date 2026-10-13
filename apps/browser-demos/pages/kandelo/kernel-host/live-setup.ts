@@ -6,11 +6,11 @@ import { setWebMcpSession, type WebMcpIdentity } from "../webmcp/runtime";
 import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
 import { connectorModeSize } from "@host/dri/kms-registry";
 import { composeImageInWorker } from "./image-composer-client";
-import { imageMachine, type ImageMachine } from "./image-composer";
+import { imageMachine, type ComposeImageResult, type ImageMachine } from "./image-composer";
 import {
   assertFixedPersistenceBootAllowed,
   loadFixedPersistenceImage,
-  saveFixedPersistenceImage,
+  loadFixedPersistenceImageHandle,
 } from "./fixed-persistence-image";
 import {
   initialDestroyProgress,
@@ -1303,7 +1303,10 @@ async function bootProfile(
         mounts: requestedDescriptor.mounts,
       }),
     };
-  const restoredImage = persistence === null
+  const restoredHandle = persistence === null
+    ? null
+    : await loadFixedPersistenceImageHandle(persistence.name, persistence.identity);
+  const restoredImage = persistence === null || restoredHandle !== null
     ? null
     : await loadFixedPersistenceImage(persistence.name, persistence.identity);
   const frozenImageBytes = restoredImage?.imageBytes ?? null;
@@ -1311,7 +1314,7 @@ async function bootProfile(
 
   tick("service worker active and cross-origin isolated");
   const vfsImageLabel = imageLabel(profile);
-  tick(restoredImage === null
+  tick(restoredImage === null && restoredHandle === null
     ? `loading ${vfsImageLabel}...`
     : `restoring ${vfsImageLabel} from OPFS...`);
   const reportVfsImageProgress: VfsImageProgressReport = (report) => {
@@ -1331,25 +1334,26 @@ async function bootProfile(
     fetch(kernelWasmUrl)
       .then(failOn("kernel.wasm"))
       .then((r) => r.arrayBuffer()),
-    restoredImage === null || !restoredImage.lazyAssetsRecorded
+    restoredHandle === null && (restoredImage === null || !restoredImage.lazyAssetsRecorded)
       ? loadVfsImage(profile, reportVfsImageProgress)
       : Promise.resolve({
         imageBytes: new ArrayBuffer(0),
-        lazyAssets: restoredImage.lazyAssets,
+        lazyAssets: restoredHandle?.lazyAssets ?? restoredImage?.lazyAssets,
       }),
   ]);
   assertCurrent();
-  if (frozenImageBytes !== null && restoredImage?.lazyAssetsRecorded) {
+  if (restoredHandle !== null || (frozenImageBytes !== null && restoredImage?.lazyAssetsRecorded)) {
+    const length = restoredHandle?.length ?? frozenImageBytes!.byteLength;
     reportVfsImageProgress({
-      loadedBytes: frozenImageBytes.byteLength,
-      totalBytes: frozenImageBytes.byteLength,
+      loadedBytes: length,
+      totalBytes: length,
       status: "complete",
     });
   }
 
   tick(
     `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(
-      frozenImageBytes?.byteLength ?? loadedVfs.imageBytes.byteLength
+      restoredHandle?.length ?? frozenImageBytes?.byteLength ?? loadedVfs.imageBytes.byteLength
     )}`,
   );
   // Compose the boot image in a DISPOSABLE worker, never on this thread.
@@ -1358,17 +1362,27 @@ async function bootProfile(
   // reclaims such memory deterministically — memory this persistent thread
   // merely dropped waits on a GC that reserved memory rarely provokes,
   // accumulating across machine switches until Safari throws "Out of memory".
-  // The worker returns plain transferable bytes plus the image-read machine
-  // data; the kernel worker then rebuilds and owns the live VFS
+  // The worker returns plain transferable bytes for ephemeral boots or streams
+  // bounded chunks into OPFS for persistent boots. The kernel worker then
+  // rebuilds and owns the live VFS
   // (kernelOwnedFs). Supersession is enforced by terminating the worker,
   // which also frees its staging memory. See image-composer.ts for the
   // composition itself.
-  const composed = await composeImageInWorker(
+  const composed: ComposeImageResult = restoredHandle === null ? await composeImageInWorker(
     {
       imageBytes: frozenImageBytes === null
         ? new Uint8Array(loadedVfs.imageBytes)
         : new Uint8Array(),
       ...(frozenImageBytes === null ? {} : { frozenImageBytes }),
+      ...(persistence !== null && frozenImageBytes === null
+        ? {
+          persistentImage: {
+            name: persistence.name,
+            identity: persistence.identity,
+            lazyAssets: loadedVfs.lazyAssets,
+          },
+        }
+        : {}),
       maxVfsByteLength: profile.maxVfsByteLength,
       imageLabel: imageLabel(profile),
       requestedProfileId: profile.requestedProfileId,
@@ -1384,18 +1398,12 @@ async function bootProfile(
       isCurrent,
       supersededError: () => new BootSuperseded(),
     },
-  );
+  ) : { ...restoredHandle.composition, imageBytes: new Uint8Array() };
   assertCurrent();
   const { imageConfig, profileId, terminalSession, bootInputManifest } =
     composed;
-  const vfsImageBytes = persistence !== null && frozenImageBytes === null
-    ? (await saveFixedPersistenceImage(
-      persistence.name,
-      persistence.identity,
-      composed.imageBytes,
-      loadedVfs.lazyAssets,
-    )).imageBytes
-    : composed.imageBytes;
+  const vfsImageBytes = composed.imageBytes;
+  const opfsImage = restoredHandle ?? composed.imageFile;
   assertCurrent();
   // The image keeps its canonical lazy addresses: nothing rewrites them. WHERE
   // this deployment serves them is transport policy, which travels beside the
@@ -1544,22 +1552,36 @@ async function bootProfile(
     // Typed against the host's own init contract, so an option the host does
     // not accept (the lazy URL table above) is a type error, never a field the
     // host silently drops.
-    const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =
-      profile.candidateEvidence === undefined
-      ? {
+    if (opfsImage !== undefined && opfsImage !== null && persistence !== null) {
+      await kernel.initFromOpfsImage({
         kernelWasm: kernelBytes,
-        vfsImage: vfsImageBytes,
+        vfsImageFile: opfsImage.file,
+        integrity: {
+          length: opfsImage.length,
+          chunkBytes: 1024 * 1024,
+          chunkSha256: opfsImage.chunkSha256,
+        },
         lazyUrlMap,
-        ...(experimentalPersistenceName === undefined
-          ? {}
-          : { experimentalFixedPersistenceName: experimentalPersistenceName }),
-      }
-      : candidateEvidenceKernelInitOptions(
-        profile.candidateEvidence,
-        kernelBytes,
-        vfsImageBytes,
-      );
-    await kernel.initFromImage(kernelInitOptions);
+        experimentalFixedPersistenceName: persistence.name,
+      });
+    } else {
+      const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =
+        profile.candidateEvidence === undefined
+        ? {
+          kernelWasm: kernelBytes,
+          vfsImage: vfsImageBytes,
+          lazyUrlMap,
+          ...(experimentalPersistenceName === undefined
+            ? {}
+            : { experimentalFixedPersistenceName: experimentalPersistenceName }),
+        }
+        : candidateEvidenceKernelInitOptions(
+          profile.candidateEvidence,
+          kernelBytes,
+          vfsImageBytes,
+        );
+      await kernel.initFromImage(kernelInitOptions);
+    }
     assertCurrent();
     host.attachKernel(kernel);
     setWebMcpSession(host, agentIdentity());

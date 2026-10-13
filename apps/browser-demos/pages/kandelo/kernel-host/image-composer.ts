@@ -9,7 +9,7 @@
  * so every boot's staging memory accumulates until Safari throws
  * `Out of memory`. Running composition inside
  * a disposable worker makes the staging filesystem die with its realm, and
- * hands the main thread nothing but plain transferable bytes. (This replaced
+ * hands the main thread only plain transferable bytes or bounded chunks. (This replaced
  * the `trackTransientImageBuffer`/`settleWebKitReclaim` GC nudge, which was
  * best-effort with a deadline; terminating a realm is not.)
  *
@@ -22,6 +22,8 @@
  */
 
 import { KandeloImageFs } from "../../../../../images/vfs/lib/kandelo-image-fs";
+import type { ImageOwnedRuntimeLazyAssets } from "../../../lib/init/image-owned-runtime-urls";
+import type { FixedPersistenceImageHandle } from "./fixed-persistence-image";
 import { ensureImageWriterInstalled } from "../../../lib/kernel-owned-boot";
 import {
   ensureDirRecursive,
@@ -133,6 +135,11 @@ export interface ComposeImageJob {
   /** Raw fetched image bytes (transferred in, not copied). */
   imageBytes: Uint8Array;
   frozenImageBytes?: Uint8Array;
+  persistentImage?: {
+    name: string;
+    identity: string;
+    lazyAssets?: ImageOwnedRuntimeLazyAssets;
+  };
   /** Host filesystem budget; the image's own capacity still governs. */
   maxVfsByteLength: number;
   /** Human-readable image name for error messages. */
@@ -157,8 +164,9 @@ export interface ComposeImageJob {
 }
 
 export interface ComposeImageResult {
-  /** Serialized image, ready to hand to the kernel worker. */
+  /** Serialized image for nonpersistent boots; persistent boots return no bytes. */
   imageBytes: Uint8Array;
+  imageFile?: FixedPersistenceImageHandle;
   /** Image-declared demo config; composition fails when the image has none. */
   imageConfig: KandeloDemoConfig;
   /** The profile actually selected (requested, or the image's default). */
@@ -201,7 +209,9 @@ export function imageMachine(
 /**
  * Build the demo's image in a filesystem this realm owns, then serialize it.
  *
- * The caller aborts by terminating the realm. That is why there is no
+ * The caller aborts by terminating the realm. Persistent chunks cross to the
+ * page one at a time with acknowledgement; the page owns OPFS publication.
+ * That is why there is no
  * supersession check threaded through the staging steps: the staged
  * filesystem is private to this worker and dies with it, so a superseded
  * composition cannot leak partially-staged state anywhere observable. On the
@@ -211,6 +221,10 @@ export function imageMachine(
 export async function composeKandeloImage(
   job: ComposeImageJob,
   tick: (message: string) => void,
+  persistImage?: (
+    chunks: Iterable<Uint8Array>,
+    composition: Pick<ComposeImageResult, "imageConfig" | "profileId" | "terminalSession" | "requiredServices">,
+  ) => Promise<void>,
 ): Promise<ComposeImageResult> {
   const sourceImage = job.frozenImageBytes ?? job.imageBytes;
   // BEFORE the first use of the bridge, not before the first WRITE to it:
@@ -338,9 +352,18 @@ export async function composeKandeloImage(
   // canonical addresses and the page hands the deployment's URL table to the
   // kernel worker beside the image (see `imageOwnedRuntimeUrlTable`).
   tick("assembling kernel-owned VFS image...");
-  // `saveImage()` emits plain bytes the kernel worker restores directly;
+  // Nonpersistent boots emit plain bytes; persistent boots stream bounded
+  // chunks to the page, which verifies and publishes the OPFS generation.
   // buildFs and its module memory die with this realm.
-  const imageBytes = job.frozenImageBytes ?? await buildFs.saveImage();
+  if (job.persistentImage !== undefined) {
+    if (persistImage === undefined) throw new Error("persistent image stream has no writer");
+    await persistImage(
+      buildFs.exportImageChunks(),
+      { imageConfig, profileId, terminalSession, requiredServices },
+    );
+  }
+  const imageBytes = job.frozenImageBytes
+    ?? (job.persistentImage === undefined ? await buildFs.saveImage() : new Uint8Array());
   return {
     imageBytes,
     imageConfig,

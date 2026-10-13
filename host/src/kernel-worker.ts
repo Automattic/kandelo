@@ -3078,9 +3078,9 @@ export class CentralizedKernelWorker {
    */
   #rootfsNosuid = false;
   /**
-   * Raw bytes of the `/` VFS image, and the source of the whole `/` tree.
+   * Length of the `/` VFS image, whose positioned reader supplies its bytes.
    *
-   * `#maybeLoadKernelRootfs` installs a positioned window onto these bytes and
+   * `#maybeLoadKernelRootfs` installs the positioned byte reader and
    * asks the kernel to parse the image itself (`kernel_rootfs_load_image`). The
    * host resolves no names: the kernel mounts the image's own filesystem, walks
    * it, and reads the image's own deferred-file section (`SDEF`, or the older
@@ -3092,26 +3092,21 @@ export class CentralizedKernelWorker {
    * JSON I cannot read". That failure is loud and the fix is to rebuild the
    * image; there is no host-walked fallback to absorb it.
    *
-   * Null when the entry supplied no image, which is the no-`/` boot — and null
-   * again once the load succeeds: the load is the only reader of the whole
-   * container (header, trailing JSON sections, `KLZY`). The filesystem body
-   * the kernel keeps reading after that is served through
-   * {@link #rootfsImageRead}, which the entry backs with the same bytes.
+   * Zero when the entry supplied no image, which is the no-`/` boot. The
+   * reader remains available after load for image-backed file content.
    */
-  #rootfsImage: Uint8Array | null = null;
   #rootfsImageLength = 0;
   /**
    * A positioned reader over the `/` image, in container coordinates. The
-   * worker entry backs it with the image bytes it was handed at boot
-   * (`imageReadFromContainer`), which is the only copy the host keeps.
+   * worker entry backs it with memory or a positioned storage handle.
    *
    * KERNEL_IMAGE_WINDOW. The kernel reads base-file CONTENT out of the image
    * for the life of the session, so `host_image_read` stays installed after
    * boot. Two properties make that correct:
    *
-   *  - *One copy.* The host never decodes the image into a filesystem of its
-   *    own; the kernel's in-memory tree holds metadata and copy-on-written
-   *    data, and unmodified file content stays in these bytes.
+   *  - *One authority.* The host never decodes the image into a filesystem of
+   *    its own; the kernel's in-memory tree holds metadata and copy-on-written
+   *    data, and unmodified file content stays in the image source.
    *  - *Immutable bytes.* Nothing on the host writes to the image after boot.
    *    Guest writes land in the kernel's copy-on-write overlay, and a
    *    URL-backed lazy file's bytes come from `host_fetch_deferred` because
@@ -5495,11 +5490,11 @@ export class CentralizedKernelWorker {
 
   /**
    * Hand the kernel's rootfs the `/` image and its byte provider. Called by the
-   * worker entry, which holds the image bytes, before {@link init}.
+   * worker entry, which owns the image byte source, before {@link init}.
    * `#maybeLoadKernelRootfs` applies them once the kernel instance exists. A no-op path when there is no `/` image (the
    * entry simply never calls this).
    *
-   * The kernel parses `image` itself. The host supplies bytes, not a tree.
+   * The kernel parses the image itself. The host supplies bytes, not a tree.
    */
   configureRootfsOverlay(
     deferredProvider: (
@@ -5509,7 +5504,7 @@ export class CentralizedKernelWorker {
     ) => number,
     foreignMountPrefixes: string[] | undefined,
     rootNosuid: boolean | undefined,
-    image: Uint8Array,
+    imageLength: number,
     /** Read at a CONTAINER offset; `0` at or past the end. Positioned rather
      *  than a whole-body callback, so a backend need not hold the body as one
      *  addressable buffer. */
@@ -5524,8 +5519,10 @@ export class CentralizedKernelWorker {
     this.#rootfsDeferredInvalidator = deferredInvalidator;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
-    this.#rootfsImage = image;
-    this.#rootfsImageLength = image.byteLength;
+    if (!Number.isSafeInteger(imageLength) || imageLength <= 0) {
+      throw new Error("rootfs image length must be a positive safe integer");
+    }
+    this.#rootfsImageLength = imageLength;
     this.#rootfsImageRead = imageRead;
   }
 
@@ -5552,6 +5549,19 @@ export class CentralizedKernelWorker {
     }
   }
 
+  syncRootfsPersistence(): void {
+    if (this.#rootfsImageLength === 0) return;
+    let status: number | undefined;
+    this.#runImmediateKernelEntry("sync rootfs persistence", (entry) => {
+      const sync = this.#kernelInstanceForEntry(entry).exports
+        .kernel_rootfs_sync_persistence as (() => number) | undefined;
+      if (typeof sync !== "function") throw new Error("kernel lacks rootfs persistence sync export");
+      status = sync();
+      return undefined;
+    });
+    if (status !== 0) throw new Error(`rootfs persistence sync failed (errno ${-(status ?? 5)})`);
+  }
+
   /**
    * If a rootfs overlay image was configured, have the kernel parse it and
    * install the byte provider before any guest filesystem op runs: publish the
@@ -5564,9 +5574,11 @@ export class CentralizedKernelWorker {
    * become a `/`-less boot: it throws, and the boot fails at the real cause.
    */
   #maybeLoadKernelRootfs(instance: WebAssembly.Instance): void {
-    const image = this.#rootfsImage;
+    const imageLength = this.#rootfsImageLength;
+    const imageRead = this.#rootfsImageRead;
     const provider = this.#rootfsDeferredProvider;
-    if (image === null || provider === null) return;
+    if (imageLength === 0 || provider === null) return;
+    if (imageRead === null) throw new Error("rootfs image has no byte reader");
     const memory = this.#kernelMemory;
     if (memory === null) return;
 
@@ -5608,13 +5620,11 @@ export class CentralizedKernelWorker {
     this.#kernel.setRootfsImageProvider((offset, dest) => {
       const start = Number(offset);
       if (!Number.isSafeInteger(start) || start < 0) return -22; // EINVAL
-      if (start >= image.byteLength) return 0; // end of image
-      const n = Math.min(dest.byteLength, image.byteLength - start);
-      dest.set(image.subarray(start, start + n));
-      return n;
+      if (start >= imageLength) return 0; // end of image
+      return imageRead(start, dest);
     });
-    const imageLenLo = image.byteLength >>> 0;
-    const imageLenHi = Math.floor(image.byteLength / 0x1_0000_0000);
+    const imageLenLo = imageLength >>> 0;
+    const imageLenHi = Math.floor(imageLength / 0x1_0000_0000);
     const loaded = loadImage(imageLenLo, imageLenHi);
     if (loaded < 0) {
       // `-EINVAL` here is most often an image that declares neither deferred-
@@ -5663,27 +5673,8 @@ export class CentralizedKernelWorker {
     }
     enable(1);
 
-    // Drop the direct load-time container reference, retaining its positioned
-    // reader for the full container.
-    //
-    // The kernel serves image-backed files through its KIFS reader for the
-    // session's life. Fixed persistence also hashes the complete container
-    // after load, so this positioned provider must retain its header bytes.
-    //
-    // Container coordinates are preserved: KIFS reads address the body and
-    // the persistence digest addresses the whole container.
-    const imageRead = this.#rootfsImageRead;
-    this.#rootfsImage = null;
-    if (imageRead === null) {
-      this.#kernel.setRootfsImageProvider(() => -38); // ENOSYS
-      return;
-    }
-    this.#kernel.setRootfsImageProvider((offset, dest) => {
-      const at = Number(offset);
-      if (!Number.isSafeInteger(at) || at < 0) return -22; // EINVAL
-      // The backend owns where its bytes live; this stays the guard only.
-      return imageRead(at, dest);
-    });
+    // The positioned reader remains installed for image-backed files and
+    // the fixed-persistence digest of the complete container.
   }
 
   /**

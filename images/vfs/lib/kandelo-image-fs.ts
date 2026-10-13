@@ -1567,12 +1567,13 @@ export class KandeloImageFs {
     }
   }
 
-  exportImage(chunkBytes = 1 << 20): Uint8Array {
+  *exportImageChunks(chunkBytes = 1 << 20): IterableIterator<Uint8Array> {
+    if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0) {
+      throw new Error("kandelo-image-module: invalid export chunk size");
+    }
     const ptr = this.exports.sm_alloc(chunkBytes);
     if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
-      const parts: Uint8Array[] = [];
-      let total = 0;
       let offset = 0n;
       for (;;) {
         const n = this.check(
@@ -1583,20 +1584,28 @@ export class KandeloImageFs {
         if (n === 0) break;
         // A fresh view per chunk: the module may have grown its memory while
         // building the image, which detaches any view taken before.
-        parts.push(this.mem.slice(ptr, ptr + n));
-        total += n;
+        yield this.mem.slice(ptr, ptr + n);
         offset += BigInt(n);
       }
-      const out = new Uint8Array(total);
-      let at = 0;
-      for (const part of parts) {
-        out.set(part, at);
-        at += part.byteLength;
-      }
-      return out;
     } finally {
       this.exports.sm_free(ptr, chunkBytes);
     }
+  }
+
+  exportImage(chunkBytes = 1 << 20): Uint8Array {
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    for (const part of this.exportImageChunks(chunkBytes)) {
+      parts.push(part);
+      total += part.byteLength;
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const part of parts) {
+      out.set(part, at);
+      at += part.byteLength;
+    }
+    return out;
   }
 }
 

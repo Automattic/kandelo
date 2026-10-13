@@ -22,10 +22,9 @@ const VFSI_HEADER: usize = 16;
 
 /// A positioned, read-only byte source for one image.
 ///
-/// Every read must answer synchronously: the decompressed image already lives
-/// in the kernel worker's own memory on both hosts, so an image read is a
-/// `memcpy`, never a parked syscall. A source that could park would make the
-/// whole tree build restartable, which is a much larger design than this.
+/// Every read must answer synchronously. Resident images use a `memcpy`;
+/// browser OPFS images use positioned reads from a worker-owned sync handle.
+/// A source that could park would make the whole tree build restartable.
 pub trait BlockSource {
     /// Total length of the image in bytes.
     fn len(&self) -> u64;

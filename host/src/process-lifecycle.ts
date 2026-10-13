@@ -388,7 +388,7 @@ export function configureRootfsOverlayFromImage(
   options: {
     /** Read the image at a CONTAINER offset; `0` at or past the end. */
     imageRead: (at: number, dest: Uint8Array) => number;
-    imageBytes: Uint8Array;
+    imageLength: number;
     /** Report lazy transfer progress. The fetch is the host's, so its progress is too. */
     onLazyProgress?: DeferredProgress;
     foreignPrefixes: string[];
@@ -440,7 +440,7 @@ export function configureRootfsOverlayFromImage(
     deferredProvider,
     options.foreignPrefixes,
     options.nosuid,
-    options.imageBytes,
+    options.imageLength,
     options.imageRead,
     whenFetchSettles,
     discardDeferred,
