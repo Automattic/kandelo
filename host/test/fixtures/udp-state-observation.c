@@ -80,18 +80,18 @@ int main(int argc, char **argv) {
             || socket_error != ECONNREFUSED) {
             fprintf(stderr, "unbound UDP destination: expected pending ECONNREFUSED, got %d\n", socket_error); return 1;
         }
-        int sockets[32];
-        for (int i = 0; i < 32; i++) {
+        int sockets[16];
+        for (int i = 0; i < 16; i++) {
             sockets[i] = socket(AF_INET, SOCK_DGRAM, 0);
             if (sockets[i] < 0) return 1;
             int bound = bind(sockets[i], (struct sockaddr *)&local, sizeof(local));
-            if (i == 31) {
+            if (i == 15) {
                 if (bound != -1 || errno != ENOBUFS) {
                     fprintf(stderr, "UDP binding cap: expected ENOBUFS, got %d\n", errno); return 1;
                 }
             } else if (bound != 0) { perror("bind below cap"); return 1; }
         }
-        for (int i = 0; i < 32; i++) close(sockets[i]);
+        for (int i = 0; i < 16; i++) close(sockets[i]);
         close(receiver);
         puts("UDP preserves unreachable, refused, and buffer exhaustion errnos");
         return 0;

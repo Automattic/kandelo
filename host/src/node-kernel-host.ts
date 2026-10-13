@@ -1,5 +1,5 @@
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
-import type { RemoteSegmentSnapshot } from "./networking/remote-segment";
+import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
 /**
@@ -1210,7 +1210,6 @@ export class NodeKernelHost {
     return result;
   }
 
-  /** Destroy the kernel and release all resources */
   /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
   async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> {
     const requestId = this._nextRequestId++;
@@ -1222,12 +1221,38 @@ export class NodeKernelHost {
     }
   }
 
-  /** Inspect actual worker-owned membership and UDP bindings. */
-  remoteNetworkSnapshot(): Promise<RemoteSegmentSnapshot> {
+  /** Inspect the worker-owned session: state, membership and endpoints. */
+  remoteNetworkSnapshot(): Promise<RemoteSessionSnapshot> {
     const requestId = this._nextRequestId++;
     return this.request(requestId, { type: "remote_network_snapshot", requestId });
   }
 
+  /** Start a network session hosted by this running machine; resolves with
+   *  its session address. */
+  hostRemoteNetwork(): Promise<string> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, { type: "remote_network_host", requestId });
+  }
+
+  /** Join a session over a connected peer's byte bridge to its host;
+   *  resolves with the address the host assigned. */
+  async joinRemoteNetwork(peer: RemoteSegmentPeer): Promise<string> {
+    const requestId = this._nextRequestId++;
+    try {
+      return await this.request(requestId, { type: "remote_network_join", requestId, peer }, [peer.port as import("node:worker_threads").MessagePort]);
+    } catch (error) {
+      this.pendingRequests.delete(requestId);
+      throw error;
+    }
+  }
+
+  /** Leave the session. Its address disappears and its streams reset. */
+  async leaveRemoteNetwork(): Promise<void> {
+    const requestId = this._nextRequestId++;
+    await this.request(requestId, { type: "remote_network_leave", requestId });
+  }
+
+  /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
     this.attachedInputSource?.stop();
     this.attachedInputSource = null;
