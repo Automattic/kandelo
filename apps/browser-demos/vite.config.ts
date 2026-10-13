@@ -40,6 +40,7 @@ import {
 } from "./vite-binary-resolution";
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
+import { devSignallingServer } from "./vite/dev-signalling";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -984,6 +985,7 @@ export default defineConfig(() => {
       forceFreshDevWorkerResponses(),
       injectCorsProxyConfig(),
       devCorsProxyMiddleware(),
+      devSignallingServer(repoRoot),
     ],
     server: {
       host: "127.0.0.1",

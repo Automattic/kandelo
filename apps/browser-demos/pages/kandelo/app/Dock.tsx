@@ -1,11 +1,20 @@
 import * as React from "react";
 import markUrl from "../assets/kandelo-mark.png";
 import type { MachineStatus } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { SessionPhase } from "../../../lib/network-session";
 
 export type DockPaneId = "gallery";
 export type DockViewId = "demo" | "terminal";
 
 const REPOSITORY_URL = "https://github.com/Automattic/kandelo";
+
+export const NETWORK_PHASE_LABEL: Record<SessionPhase, string> = {
+  offline: "not connected",
+  hosting: "starting",
+  joining: "joining",
+  connected: "connected",
+  error: "failed",
+};
 
 interface DockItem<T extends string> {
   id: T;
@@ -92,6 +101,8 @@ export type DockLayoutState = {
 };
 
 export const Dock: React.FC<{
+  networkPhase?: SessionPhase;
+  onOpenNetwork?: () => void;
   activePane: DockPaneId | null;
   activeView: DockViewId | null;
   viewControls?: React.ReactNode;
@@ -119,6 +130,8 @@ export const Dock: React.FC<{
   onHeightChange: (height: number) => void;
   onLayoutChange?: (layout: DockLayoutState) => void;
 }> = ({
+  networkPhase = "offline",
+  onOpenNetwork,
   activePane,
   activeView,
   viewControls,
@@ -401,6 +414,21 @@ export const Dock: React.FC<{
               {viewControls}
             </div>
             <div className="kdock-toggle-pill" aria-label="Dock layout controls">
+              {onOpenNetwork && (
+                <button
+                  type="button"
+                  className="kdock-header-btn knetwork-button"
+                  data-state={networkPhase}
+                  aria-label={`Network session: ${NETWORK_PHASE_LABEL[networkPhase]}`}
+                  title={`Network session: ${NETWORK_PHASE_LABEL[networkPhase]}`}
+                  onClick={onOpenNetwork}
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <circle cx="8" cy="4" r="2" /><circle cx="3" cy="12" r="2" /><circle cx="13" cy="12" r="2" />
+                    <path d="M7 6l-3 4m5-4 3 4M5 12h6" />
+                  </svg>
+                </button>
+              )}
               <a
                 className="kdock-header-btn kdock-github-link"
                 href={REPOSITORY_URL}

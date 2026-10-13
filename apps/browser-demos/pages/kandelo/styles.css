@@ -4615,3 +4615,64 @@
   height: 6px;
   accent-color: var(--k-accent, currentColor);
 }
+
+/* Network session button and panel. The panel reuses the share dialog. */
+.knetwork-button { position: relative; }
+.knetwork-button::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+}
+.knetwork-button[data-state="connected"]::after { background: var(--k-ok); }
+.knetwork-button[data-state="hosting"]::after,
+.knetwork-button[data-state="joining"]::after { background: var(--k-warn); }
+.knetwork-button[data-state="error"]::after { background: var(--k-err); }
+.knetwork { width: min(520px, 100%); }
+.knetwork form { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.knetwork form .kshare-btn-primary { margin-left: 0; }
+.knetwork-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-surface-sunk);
+  font-size: 13px;
+}
+.knetwork-status > span:last-child { margin-left: auto; color: var(--k-text-muted); font-size: 12px; }
+.knetwork-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--k-text-faint); flex-shrink: 0; }
+.knetwork-status[data-phase="connected"] .knetwork-dot { background: var(--k-ok); }
+.knetwork-status[data-phase="hosting"] .knetwork-dot,
+.knetwork-status[data-phase="joining"] .knetwork-dot { background: var(--k-warn); }
+.knetwork-status[data-phase="error"] .knetwork-dot { background: var(--k-err); }
+.knetwork-error { color: var(--k-err); font-size: 12.5px; }
+.knetwork-note { margin: 0; color: var(--k-text-muted); font-size: 12px; line-height: 1.45; }
+.knetwork-field { display: flex; flex-direction: column; gap: 4px; width: 100%; color: var(--k-text-muted); font-size: 12px; }
+.knetwork-field input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-surface-sunk);
+  color: var(--k-text);
+  font: 13px var(--k-font-ui);
+}
+.knetwork-members { list-style: none; margin: 0; padding: 0; }
+.knetwork-members li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--k-border);
+  font-size: 13px;
+}
+.knetwork-members code { font-family: var(--k-font-mono); min-width: 7.5em; }
+.knetwork-members small { margin-left: auto; color: var(--k-text-faint); font-size: 11px; }
