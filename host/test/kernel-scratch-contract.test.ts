@@ -1590,9 +1590,9 @@ const auditAllowances: AuditAllowance[] = [
     why: "The connector physical-size import binds its exact pointer formal to the two-u32 capacity the kernel lends before inspecting display state.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, 4, "host_network_local_address destination", )',
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, 8, "host_network_interface destination", )',
     disposition: "rust-lent",
-    why: "The host_network_local_address import binds its pointer formal to a fixed four-byte capacity, and the single write that follows is guarded by an exact four-byte length check on the host-owned address.",
+    why: "The host_network_interface import binds its pointer formal to a fixed eight-byte capacity, and the single write that follows is an eight-byte buffer assembled from the host-owned address and netmask, each checked to be exactly four bytes.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#hostFutexWake::kernel-view::new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory))",
