@@ -182,6 +182,44 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
       expect(compacted.state).toBe("XYcdefgh");
       expect(compacted.sealed).toBe(true);
       expect(compacted.compactBytes).toBeLessThan(original.byteLength + repeated.byteLength / 2);
+      const recovery = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const sealFile = await directory.getFileHandle(`${name}.g0.seal`);
+        const tearSeal = async () => {
+          const writer = await sealFile.createWritable();
+          await writer.write(new Uint8Array([1, 2, 3]));
+          await writer.close();
+        };
+        await tearSeal();
+        const imageFile = await directory.getFileHandle(`${name}.base`);
+        const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
+        const fallback = new BrowserKernel({ kernelOwnedFs: true });
+        let state: string;
+        try {
+          await fallback.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          state = new TextDecoder().decode(await fallback.readFileFromVfs("/state"));
+        } finally {
+          await fallback.destroy();
+        }
+        await directory.removeEntry(`${name}.journal`);
+        await tearSeal();
+        const missing = new BrowserKernel({ kernelOwnedFs: true });
+        let rejected = false;
+        try {
+          await missing.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+        } catch (error) {
+          rejected = String(error).includes("refusing to reset the computer");
+        } finally {
+          await missing.destroy();
+        }
+        return { state, rejected };
+      }, {
+        moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        name: result.name,
+      });
+      expect(recovery).toEqual({ state: "XYcdefgh", rejected: true });
     } finally {
       await context.close();
     }
