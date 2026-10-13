@@ -132,6 +132,7 @@ request_slowlog_trace_depth = 0
 export interface ComposeImageJob {
   /** Raw fetched image bytes (transferred in, not copied). */
   imageBytes: Uint8Array;
+  frozenImageBytes?: Uint8Array;
   /** Host filesystem budget; the image's own capacity still governs. */
   maxVfsByteLength: number;
   /** Human-readable image name for error messages. */
@@ -211,6 +212,7 @@ export async function composeKandeloImage(
   job: ComposeImageJob,
   tick: (message: string) => void,
 ): Promise<ComposeImageResult> {
+  const sourceImage = job.frozenImageBytes ?? job.imageBytes;
   // BEFORE the first use of the bridge, not before the first WRITE to it:
   // `readImageMetadata` and `readImageCapacity` instantiate the module to read
   // the image, because the module is what knows the layout.
@@ -220,7 +222,7 @@ export async function composeKandeloImage(
   // (EPROTO), so a separate assert after it could never fire.
   let vfsMetadata: ReturnType<typeof KandeloImageFs.readImageMetadata>;
   try {
-    vfsMetadata = KandeloImageFs.readImageMetadata(job.imageBytes);
+    vfsMetadata = KandeloImageFs.readImageMetadata(sourceImage);
   } catch (error) {
     if ((error as { errno?: number } | null)?.errno === ERRNO.EPROTO) {
       throw new Error(
@@ -234,8 +236,8 @@ export async function composeKandeloImage(
     // `byteLength` is the image as fetched; `maxByteLength` is what it
     // DECLARES it may grow to.
     {
-      byteLength: job.imageBytes.byteLength,
-      ...KandeloImageFs.readImageCapacity(job.imageBytes),
+      byteLength: sourceImage.byteLength,
+      ...KandeloImageFs.readImageCapacity(sourceImage),
     },
     job.maxVfsByteLength,
     declaredVfsMaxByteLength(vfsMetadata),
@@ -252,10 +254,10 @@ export async function composeKandeloImage(
   // `seal::verify_cohorts` and unloads the image if it fails, so an
   // unverified loaded image is unrepresentable.
   const buildFs = KandeloImageFs.create();
-  buildFs.loadImage(job.imageBytes);
-  buildFs.setImageCapacity(job.maxVfsByteLength);
+  buildFs.loadImage(sourceImage);
+  if (job.frozenImageBytes === undefined) buildFs.setImageCapacity(job.maxVfsByteLength);
   const terminalSession = readImageExperimentalTerminalSession(buildFs);
-  if (!job.hasCandidateEvidence) {
+  if (!job.hasCandidateEvidence && job.frozenImageBytes === undefined) {
     // Keyed on what the image ACTUALLY CONTAINS, never on a machine id: an
     // image that ships a PHP-FPM config gets the host's worker-pool patch, and
     // one that ships WordPress gets the runtime wp-config this page's prefix
@@ -309,7 +311,7 @@ export async function composeKandeloImage(
       ...dinitServiceClosure(buildFs, machine.init.target),
     );
   }
-  if (!job.hasCandidateEvidence) {
+  if (!job.hasCandidateEvidence && job.frozenImageBytes === undefined) {
     const assets = resolveDemoAssets(imageConfig, profileId);
     // Supersession is enforced by terminating this worker, so the per-await
     // ownership check the main-thread path needed is a no-op here.
@@ -323,7 +325,7 @@ export async function composeKandeloImage(
   // materialization failure must fail the boot loudly rather than silently
   // continue without the input the link promised.
   let bootInputManifest: BootInputManifest | undefined;
-  if (job.descriptor.boot.inputs?.length) {
+  if (job.descriptor.boot.inputs?.length && job.frozenImageBytes === undefined) {
     tick("materializing boot inputs...");
     bootInputManifest = await materializeBootInputs(job.descriptor, {
       resolvers: {},
@@ -338,7 +340,7 @@ export async function composeKandeloImage(
   tick("assembling kernel-owned VFS image...");
   // `saveImage()` emits plain bytes the kernel worker restores directly;
   // buildFs and its module memory die with this realm.
-  const imageBytes = await buildFs.saveImage();
+  const imageBytes = job.frozenImageBytes ?? await buildFs.saveImage();
   return {
     imageBytes,
     imageConfig,

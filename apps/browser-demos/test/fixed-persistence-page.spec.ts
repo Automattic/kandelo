@@ -1,0 +1,106 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { expect, test, type Page } from "@playwright/test";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+
+const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
+const imageModulePath = [
+  resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm"),
+  resolve(repoRoot, "target/wasm32-unknown-unknown/release/kandelo_image_module.wasm"),
+].find((path) => existsSync(path) && WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(path))).length === 0) ?? null;
+const fixturePath = resolve(repoRoot, "local-binaries/test-fixtures/wasm32/persistence-boot-counter.wasm");
+const programPath = existsSync(fixturePath) ? fixturePath : null;
+
+test.skip(imageModulePath === null || programPath === null, "image writer and boot-counter fixture are required");
+
+async function probeImage(): Promise<Uint8Array> {
+  const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.setImageCapacity(64 * 1024 * 1024);
+  filesystem.mkdir("/etc", 0o755);
+  filesystem.mkdir("/etc/kandelo", 0o755);
+  filesystem.mkdir("/bin", 0o755);
+  filesystem.writeFile("/state", new TextEncoder().encode("0"), 0o644);
+  filesystem.writeFile("/bin/persistence-boot-counter", new Uint8Array(readFileSync(programPath!)), 0o755);
+  filesystem.writeFile("/etc/kandelo/demo.json", new TextEncoder().encode(JSON.stringify({
+    version: 1,
+    defaultProfile: "probe",
+    profiles: { probe: { identity: { title: "Persistence probe", summary: "Real page reboot test", accent: "#123456", glyph: "sh" } } },
+  })), 0o644);
+  filesystem.writeFile("/etc/kandelo/experimental-terminal-session.json", new TextEncoder().encode(JSON.stringify({
+    kind: "kandelo-experimental-terminal-session",
+    version: 1,
+    initial: { path: "/bin/persistence-boot-counter", argv: ["persistence-boot-counter"], uid: 0, gid: 0 },
+  })), 0o644);
+  return filesystem.saveImage();
+}
+
+async function terminalText(page: Page): Promise<string> {
+  return (await page.locator(".xterm-rows").allInnerTexts()).join("\n");
+}
+
+async function expectBootCount(page: Page, count: number, errors: string[]): Promise<void> {
+  await expect.poll(async () => {
+    if (errors.length > 0) throw new Error(errors.join("\n"));
+    const viteError = page.locator("vite-error-overlay");
+    if (await viteError.count()) {
+      throw new Error(`Vite rejected the page: ${await viteError.first().innerText()}`);
+    }
+    const failure = await page.locator('.kdock-status-text[data-status="error"]').count();
+    if (failure > 0) {
+      const lines = await page.locator(".ksys-line").allInnerTexts();
+      throw new Error(`machine boot failed:\n${lines.join("\n")}`);
+    }
+    return terminalText(page);
+  }, { timeout: 120_000 }).toContain(`PERSISTENCE_BOOT_${count}`);
+}
+
+test("Kandelo page restores a guest-written computer after reload", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(180_000);
+  const image = await probeImage();
+  const fixtureDirectory = resolve(repoRoot, ".context");
+  mkdirSync(fixtureDirectory, { recursive: true });
+  const imagePath = resolve(fixtureDirectory, `persistence-page-probe-${crypto.randomUUID()}.vfs`);
+  writeFileSync(imagePath, image);
+  const sourceUrl = new URL(`/@fs/${imagePath}`, baseURL).href;
+  const pageUrl = new URL("/", baseURL);
+  pageUrl.searchParams.set("vfs", sourceUrl);
+  pageUrl.searchParams.set("experimentalPersistence", `page-${crypto.randomUUID()}`);
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-persistence-page-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      await context.addInitScript(() => { window.confirm = () => true; });
+      const page = context.pages()[0] ?? await context.newPage();
+      const pageErrors: string[] = [];
+      page.on("pageerror", (error) => pageErrors.push(error.message));
+      await page.goto(pageUrl.href, { waitUntil: "domcontentloaded" });
+      await expectBootCount(page, 1, pageErrors);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expectBootCount(page, 2, pageErrors);
+
+      const competitor = await context.newPage();
+      await competitor.goto(pageUrl.href, { waitUntil: "domcontentloaded" });
+      await expect(competitor.locator('.kdock-status-text[data-status="error"]')).toBeAttached({ timeout: 60_000 });
+      await expect(competitor.locator(".ksys-line").last()).toContainText(/NoModificationAllowedError|InvalidStateError|another open Access Handle/i);
+      await competitor.close();
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+    rmSync(imagePath, { force: true });
+  }
+});

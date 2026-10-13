@@ -8,6 +8,11 @@ import { connectorModeSize } from "@host/dri/kms-registry";
 import { composeImageInWorker } from "./image-composer-client";
 import { imageMachine, type ImageMachine } from "./image-composer";
 import {
+  assertFixedPersistenceBootAllowed,
+  loadFixedPersistenceImage,
+  saveFixedPersistenceImage,
+} from "./fixed-persistence-image";
+import {
   initialDestroyProgress,
   subscribeDestroyProgress,
 } from "./machine-progress";
@@ -544,6 +549,7 @@ const FBTEST_ENV: string[] = [
 export type FbDemo = "none" | "test";
 
 export interface CreateLiveHostOptions {
+  experimentalPersistenceName?: string | null;
   /**
    * `&profile=<id>` — which machine inside the image to boot. The app knows
    * no profile names; an id the image does not declare is a loud boot error,
@@ -768,6 +774,7 @@ export async function createLiveHost(
         () => seq === bootSeq,
         requireServiceWorker,
         legacyScriptIgnored,
+        opts.experimentalPersistenceName ?? undefined,
       );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
@@ -1175,6 +1182,7 @@ async function bootProfile(
     tick?: (msg: string) => void,
   ) => Promise<ServiceWorker>,
   legacyScriptIgnored = false,
+  experimentalPersistenceName?: string,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1193,6 +1201,13 @@ async function bootProfile(
       ...requestedDescriptor.boot.env,
     },
   };
+  if (experimentalPersistenceName !== undefined) {
+    assertFixedPersistenceBootAllowed(
+      experimentalPersistenceName,
+      profile.candidateEvidence !== undefined,
+      effectiveBoot,
+    );
+  }
   host.setDescriptor({
     ...profile.descriptor,
     title: requestedDescriptor.title || profile.descriptor.title,
@@ -1275,6 +1290,24 @@ async function bootProfile(
   profile = await bindVfsProduct(profile);
   assertCurrent();
 
+  const persistence = experimentalPersistenceName === undefined
+    ? null
+    : {
+      name: experimentalPersistenceName,
+      identity: JSON.stringify({
+        vfsUrl: profile.vfsUrl,
+        profileId: profile.requestedProfileId,
+        appPath: APP_PATH,
+        proto: PROTO,
+        preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
+        mounts: requestedDescriptor.mounts,
+      }),
+    };
+  const frozenImageBytes = persistence === null
+    ? null
+    : await loadFixedPersistenceImage(persistence.name, persistence.identity);
+  assertCurrent();
+
   tick("service worker active and cross-origin isolated");
   const vfsImageLabel = imageLabel(profile);
   tick(`loading ${vfsImageLabel}...`);
@@ -1316,6 +1349,7 @@ async function bootProfile(
   const composed = await composeImageInWorker(
     {
       imageBytes: new Uint8Array(loadedVfs.imageBytes),
+      ...(frozenImageBytes === null ? {} : { frozenImageBytes }),
       maxVfsByteLength: profile.maxVfsByteLength,
       imageLabel: imageLabel(profile),
       requestedProfileId: profile.requestedProfileId,
@@ -1335,7 +1369,14 @@ async function bootProfile(
   assertCurrent();
   const { imageConfig, profileId, terminalSession, bootInputManifest } =
     composed;
-  const vfsImageBytes = composed.imageBytes;
+  const vfsImageBytes = persistence !== null && frozenImageBytes === null
+    ? await saveFixedPersistenceImage(
+      persistence.name,
+      persistence.identity,
+      composed.imageBytes,
+    )
+    : composed.imageBytes;
+  assertCurrent();
   // The image keeps its canonical lazy addresses: nothing rewrites them. WHERE
   // this deployment serves them is transport policy, which travels beside the
   // image as a table for the kernel worker's lazy fetcher, so the deferred
@@ -1489,6 +1530,9 @@ async function bootProfile(
         kernelWasm: kernelBytes,
         vfsImage: vfsImageBytes,
         lazyUrlMap,
+        ...(experimentalPersistenceName === undefined
+          ? {}
+          : { experimentalFixedPersistenceName: experimentalPersistenceName }),
       }
       : candidateEvidenceKernelInitOptions(
         profile.candidateEvidence,
@@ -1709,14 +1753,9 @@ async function bootProfile(
               + machineShellCommand,
           );
         }
-        // ⚠️ CONSENT REQUIRED BEFORE PERSISTENT MACHINES ⚠️
-        // This auto-runs a URL-supplied script with no confirmation, which is
-        // acceptable ONLY because every machine this app boots is ephemeral: a
-        // hostile link can at worst waste the visitor's own tab. The moment
-        // Kandelo restores persistent machines (OPFS-backed images, restored
-        // snapshots), auto-run becomes a drive-by attack on user data. Any
-        // persistence feature MUST first add an explicit show-the-script
-        // Run/Skip consent step here. See
+        // Experimental persistence refuses boot-link scripts before boot.
+        // Do not allow one into this branch for a restored machine without
+        // first adding a show-the-script Run/Skip consent step here. See
         // docs/superpowers/specs/2026-09-21-script-bearing-links-design.md.
         const runScriptShell = requestedDescriptor.boot.parameters.runScriptShell;
         void runLinkScript(host, scriptInput.path, runScriptShell, tick).catch((err) => {
