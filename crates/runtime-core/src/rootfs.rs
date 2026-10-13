@@ -671,6 +671,14 @@ pub fn sync_persistence() -> Result<(), Errno> {
     }
 }
 
+pub fn compact_persistence(storage: Box<dyn OverlayStorage + Send>) -> Result<(), Errno> {
+    let mut active = PERSISTENT_ROOTFS.lock();
+    let source = active.as_mut().ok_or(Errno::EINVAL)?;
+    let compacted = source.compact_into(storage)?;
+    *active = Some(compacted);
+    Ok(())
+}
+
 fn reject_fixed_persistence_mutation() -> Result<(), Errno> {
     if fixed_persistence_enabled() {
         Err(Errno::EROFS)

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -115,7 +116,10 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         }
         const second = await open("second boot");
         try {
+          const journal = await (await directory.getFileHandle(`${name}.journal`)).getFile();
           return {
+            name,
+            journalBytes: Array.from(new Uint8Array(await journal.arrayBuffer())),
             initial,
             written,
             locked,
@@ -127,7 +131,57 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
           await second.destroy();
         }
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result).toEqual({ initial: "abcdefgh", written: "XYcdefgh", locked: true, rejected: true, cacheProbeMatches: true, recovered: "XYcdefgh" });
+      expect(result).toMatchObject({ initial: "abcdefgh", written: "XYcdefgh", locked: true, rejected: true, cacheProbeMatches: true, recovered: "XYcdefgh" });
+
+      const original = Buffer.from(result.journalBytes);
+      const transactionLength = original.readUInt32LE(76);
+      expect(original.byteLength).toBe(72 + transactionLength);
+      const count = Math.ceil((32 * 1024 * 1024 - original.byteLength) / transactionLength) + 1;
+      const repeated = Buffer.allocUnsafe(count * transactionLength);
+      for (let index = 0; index < count; index++) {
+        const offset = index * transactionLength;
+        original.copy(repeated, offset, 72);
+        repeated.writeBigUInt64LE(BigInt(index + 2), offset + 8);
+        createHash("sha256")
+          .update(repeated.subarray(offset, offset + transactionLength - 36))
+          .digest()
+          .copy(repeated, offset + transactionLength - 36);
+      }
+      const journalUrl = new URL("/fixed-rootfs-large-journal.bin", baseURL).href;
+      await page.route(journalUrl, (route) => route.fulfill({ body: Buffer.concat([original, repeated]) }));
+      const compacted = await page.evaluate(async ({ moduleUrl, kernelUrl, journalUrl, name }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const journalFile = await directory.getFileHandle(`${name}.journal`);
+        const response = await fetch(journalUrl);
+        if (!response.ok) throw new Error(`large journal fetch failed: ${response.status}`);
+        const writer = await journalFile.createWritable();
+        await writer.write(await response.arrayBuffer());
+        await writer.close();
+        const imageFile = await directory.getFileHandle(`${name}.base`);
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: imageFile,
+            experimentalFixedPersistenceName: name,
+          });
+          const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          const sealed = await (await directory.getFileHandle(`${name}.g0.seal`)).getFile();
+          const compactJournal = await (await directory.getFileHandle(`${name}.g0.journal`)).getFile();
+          return { state, sealed: sealed.size > 88, compactBytes: compactJournal.size };
+        } finally {
+          await kernel.destroy();
+        }
+      }, {
+        moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        journalUrl,
+        name: result.name,
+      });
+      expect(compacted.state).toBe("XYcdefgh");
+      expect(compacted.sealed).toBe(true);
+      expect(compacted.compactBytes).toBeLessThan(original.byteLength + repeated.byteLength / 2);
     } finally {
       await context.close();
     }

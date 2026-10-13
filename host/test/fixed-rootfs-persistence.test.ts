@@ -50,6 +50,25 @@ async function boot(image: Uint8Array, path: string): Promise<NodeKernelHost> {
   }
 }
 
+function expandJournalToCompactionThreshold(path: string): number {
+  const original = readFileSync(path);
+  const transactionLength = original.readUInt32LE(72 + 4);
+  expect(original.byteLength).toBe(72 + transactionLength);
+  const count = Math.ceil((32 * 1024 * 1024 - original.byteLength) / transactionLength) + 1;
+  const repeated = Buffer.allocUnsafe(count * transactionLength);
+  for (let index = 0; index < count; index++) {
+    const offset = index * transactionLength;
+    original.copy(repeated, offset, 72);
+    repeated.writeBigUInt64LE(BigInt(index + 2), offset + 8);
+    createHash("sha256")
+      .update(repeated.subarray(offset, offset + transactionLength - 36))
+      .digest()
+      .copy(repeated, offset + transactionLength - 36);
+  }
+  writeFileSync(path, Buffer.concat([original, repeated]));
+  return original.byteLength + repeated.byteLength;
+}
+
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
   it.skipIf(guestProgramPath === null)("boots a sealed slot and falls back from a torn newer slot", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-slot-"));
@@ -97,6 +116,46 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       writeFileSync(path, legacy);
       const fallback = await boot(image, path);
       await fallback.destroy();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it.skipIf(guestProgramPath === null)("compacts an oversized journal before serving the computer", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-compact-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      const sourceLength = expandJournalToCompactionThreshold(path);
+      const compacted = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await compacted.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await compacted.destroy();
+      }
+      expect(readFileSync(path).byteLength).toBe(sourceLength);
+      expect(existsSync(`${path}.g0.seal`)).toBe(true);
+      expect(readFileSync(`${path}.g0.journal`).byteLength).toBeLessThan(sourceLength / 2);
+      const firstSlotLength = expandJournalToCompactionThreshold(`${path}.g0.journal`);
+      const reopened = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await reopened.destroy();
+      }
+      expect(readFileSync(`${path}.g0.journal`).byteLength).toBe(firstSlotLength);
+      expect(existsSync(`${path}.g1.seal`)).toBe(true);
+      expect(readFileSync(`${path}.g1.journal`).byteLength).toBeLessThan(firstSlotLength / 2);
+      const secondSlot = await boot(image, path);
+      await secondSlot.destroy();
+      expect(readFileSync(`${path}.g1.journal`).byteLength).toBeLessThan(firstSlotLength / 2);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

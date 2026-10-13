@@ -39,7 +39,7 @@ import type {
 import { NodePlatformIO } from "./platform/node";
 import { OverlayStorageFile } from "./vfs/overlay-storage";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
+import { compactOverlayGenerationAtBoot, enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
@@ -1268,18 +1268,23 @@ async function handleInit(msg: InitMessage) {
     mkdirSync(lockDir, { mode: 0o700 });
     try {
       const backend = new HostFileSystem(dirname(path));
-      const selected = await enableBestOverlayGeneration({
+      const files = {
         open: async (slot, file, create) => {
           const name = slot === "legacy" ? basename(path) : `${basename(path)}.${slot}.${file}`;
-          if (slot === "legacy" && file === "journal") {
-            if (!create && !existsSync(join(dirname(path), name))) return null;
-            return OverlayStorageFile.open(backend, `/${name}`, create);
-          }
-          if (!existsSync(join(dirname(path), name))) return null;
-          return OverlayStorageFile.open(backend, `/${name}`, false);
+          if (!create && !existsSync(join(dirname(path), name))) return null;
+          return OverlayStorageFile.open(backend, `/${name}`, create);
         },
-      }, (storage) => kernelWorker.enableFixedRootfsPersistence(storage));
-      persistentOverlay = selected.journal;
+      } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
+      const selected = await enableBestOverlayGeneration(
+        files,
+        (storage) => kernelWorker.enableFixedRootfsPersistence(storage),
+      );
+      const active = await compactOverlayGenerationAtBoot(
+        selected,
+        files,
+        (storage) => kernelWorker.compactRootfsPersistence(storage),
+      );
+      persistentOverlay = active.journal;
       persistentOverlayLockDir = lockDir;
     } catch (error) {
       rmdirSync(lockDir);

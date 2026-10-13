@@ -56,7 +56,7 @@ import { OpfsImageReader } from "./vfs/opfs-image-reader";
 import { BrowserTimeProvider } from "./vfs/time";
 import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
+import { compactOverlayGenerationAtBoot, enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -1292,12 +1292,21 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   if (msg.experimentalFixedPersistenceName !== undefined) {
     if (!rootImage.has()) throw new Error("fixed rootfs persistence requires a rootfs image");
-    const selected = await enableBestOverlayGeneration({
+    const files = {
       open: (slot, file, create) => OpfsOverlayStorageFile.openFile(
         msg.experimentalFixedPersistenceName!, slot, file, create,
       ),
-    }, (storage) => kernelWorker.enableFixedRootfsPersistence(storage));
-    persistentOverlay = selected.journal;
+    } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
+    const selected = await enableBestOverlayGeneration(
+      files,
+      (storage) => kernelWorker.enableFixedRootfsPersistence(storage),
+    );
+    const active = await compactOverlayGenerationAtBoot(
+      selected,
+      files,
+      (storage) => kernelWorker.compactRootfsPersistence(storage),
+    );
+    persistentOverlay = active.journal;
   }
 
   initReady = true;
