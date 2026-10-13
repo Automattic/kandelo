@@ -55,6 +55,13 @@ export interface SessionState {
   /** The link that lets another computer join. Only the host shares it. */
   link: string | null;
   error: string | null;
+  /** The kernel worker's own words for why a session ended, when it did. */
+  errorDetail: string | null;
+  /**
+   * The room this computer used is gone (expired, closed, or never there),
+   * so its invitation cannot be joined again.
+   */
+  roomClosed: boolean;
   snapshot: RemoteSessionSnapshot | null;
 }
 
@@ -94,7 +101,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 }
 
 export class NetworkSessionController {
-  private state: SessionState = { phase: "offline", name: null, room: null, link: null, error: null, snapshot: null };
+  private state: SessionState = { phase: "offline", name: null, room: null, link: null, error: null, errorDetail: null, roomClosed: false, snapshot: null };
+  private joined = false;
   private readonly listeners = new Set<(state: SessionState) => void>();
   private generation = 0;
   private hostKey: string | null = null;
@@ -150,7 +158,8 @@ export class NetworkSessionController {
       const { machine, server } = this.requirements();
       const room = this.api.randomRoomToken();
       this.hostKey = this.api.randomRoomToken();
-      this.set({ phase: "hosting", name: trimmed, room, link: null, error: null });
+      this.set({ phase: "hosting", name: trimmed, room, link: null, error: null, errorDetail: null, roomClosed: false });
+      this.joined = false;
       await machine.hostRemoteNetwork();
       try {
         await this.api.hostRoom(server, room, this.hostKey, trimmed);
@@ -224,7 +233,7 @@ export class NetworkSessionController {
     try {
       if (!this.api.validRoomToken(room)) throw new Error("This network link is not valid.");
       const { machine, server } = this.requirements();
-      this.set({ phase: "joining", room, name, link: null, error: null });
+      this.set({ phase: "joining", room, name, link: null, error: null, errorDetail: null, roomClosed: false });
       const hosted = await this.api.readRoom(server, room);
       this.set({ name: hosted.name });
       const invite = await this.transport.createInvite();
@@ -239,10 +248,15 @@ export class NetworkSessionController {
         await this.adopt(link, (bridge) => machine.joinRemoteNetwork(bridge.peer));
       } finally { this.cancels.delete(invite.cancel); }
       if (generation !== this.generation) return;
+      this.joined = true;
       this.set({ phase: "connected" });
       this.pollSnapshot(generation);
     } catch (error) {
-      if (generation === this.generation) { await this.teardown(); this.fail(error); }
+      if (generation === this.generation) {
+        await this.teardown();
+        this.fail(error);
+        if (error instanceof this.api.RoomClosedError) this.set({ roomClosed: true });
+      }
     }
   }
 
@@ -254,11 +268,16 @@ export class NetworkSessionController {
         const snapshot = await machine.remoteNetworkSnapshot();
         if (generation !== this.generation) return;
         if (snapshot.state === "offline") {
-          // The session ended under this computer: its host left or the
-          // link failed. Say why instead of showing a stale connection.
+          // The session ended under this computer. A joiner cannot tell its
+          // host leaving from the link failing — both close the link — so
+          // say exactly that, with the worker's own reason as detail. The
+          // host closes its room when it leaves, so a joiner's room is gone.
           await this.teardown();
-          this.set({ phase: "error", snapshot, link: null, error: snapshot.lastDisconnect
-            ? `The network session ended: ${snapshot.lastDisconnect}` : "The network session ended." });
+          this.set({ phase: "error", snapshot, link: null, roomClosed: this.joined,
+            error: this.joined
+              ? "The network session ended: the connection to the hosting computer closed. The host left, or the link between you failed."
+              : "The network session ended.",
+            errorDetail: snapshot.lastDisconnect });
           return;
         }
         this.set({ snapshot });
@@ -271,7 +290,7 @@ export class NetworkSessionController {
   }
 
   private fail(error: unknown): void {
-    this.set({ phase: "error", error: describe(error), link: null });
+    this.set({ phase: "error", error: describe(error), errorDetail: null, link: null });
   }
 
   private async teardown(): Promise<void> {
@@ -292,6 +311,7 @@ export class NetworkSessionController {
   /** Leave the session. A host leaving ends it for every member. */
   async leave(): Promise<void> {
     await this.teardown();
-    this.set({ phase: "offline", name: null, room: null, link: null, error: null, snapshot: null });
+    this.joined = false;
+    this.set({ phase: "offline", name: null, room: null, link: null, error: null, errorDetail: null, roomClosed: false, snapshot: null });
   }
 }

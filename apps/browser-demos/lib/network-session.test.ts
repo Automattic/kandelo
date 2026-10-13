@@ -36,12 +36,12 @@ function fakeSignalling() {
     async closeRoom(_server, room) { rooms.delete(room); },
     async readRoom(_server, room) {
       const entry = rooms.get(room);
-      if (!entry) throw new Error("no such room");
+      if (!entry) throw new realSignalling.RoomClosedError("no such room");
       return { room, name: entry.name };
     },
     async postRoomJoin(_server, room, join, offer) {
       const entry = rooms.get(room);
-      if (!entry) throw new Error("no such room");
+      if (!entry) throw new realSignalling.RoomClosedError("no such room");
       entry.joins.set(join, { offer, answer: null, refused: null });
     },
     async waitForRoomAnswer(_server, room, join, stillWanted) {
@@ -161,7 +161,13 @@ test("a joiner reports the session ending under it", async () => {
   joinerMachine.state = "offline";
   joinerMachine.lastDisconnect = "the hosting computer closed the session";
   await until(() => joiner.getState().phase === "error", "the joiner to notice");
-  assert.match(joiner.getState().error!, /hosting computer closed/);
+  // It cannot tell the host leaving from the link failing, and says so; the
+  // worker's own reason stays available as detail.
+  assert.match(joiner.getState().error!, /The host left, or the link between you failed/);
+  assert.equal(joiner.getState().errorDetail, "the hosting computer closed the session");
+  assert.equal(joiner.getState().roomClosed, true, "the host's room closes with the session");
+  await joiner.leave();
+  assert.equal(joiner.getState().roomClosed, false);
   await host.leave();
 });
 
@@ -177,6 +183,7 @@ test("a full session refuses the next computer truthfully", async () => {
   await joiner.join(room, name);
   assert.equal(joiner.getState().phase, "error");
   assert.match(joiner.getState().error!, /session is full/);
+  assert.equal(joiner.getState().roomClosed, false, "a full room may have space later");
   await host.leave();
 });
 
@@ -187,6 +194,7 @@ test("joining a room that does not exist fails without touching the machine", as
   await joiner.join("abcdefghijklmnopqrstuvwxyz", "Gone");
   assert.equal(joiner.getState().phase, "error");
   assert.match(joiner.getState().error!, /no such room/);
+  assert.equal(joiner.getState().roomClosed, true, "a missing room's invitation is spent");
   assert.equal(machine.joined, 0);
 });
 

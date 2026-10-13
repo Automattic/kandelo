@@ -54,7 +54,12 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; running: boolean 
             <strong>{state.name ?? "No session"}</strong>
             <span>{NETWORK_PHASE_LABEL[state.phase]}{self ? ` · this computer is ${self}` : ""}</span>
           </div>
-          {state.error && <div className="knetwork-error" role="alert">{state.error}</div>}
+          {state.error && (
+            <div className="knetwork-error" role="alert">
+              {state.error}
+              {state.errorDetail && <div className="knetwork-detail">{state.errorDetail}</div>}
+            </div>
+          )}
           {!session.available && (
             <p className="knetwork-note">No signalling server is configured for this deployment, so computers cannot find each other.</p>
           )}

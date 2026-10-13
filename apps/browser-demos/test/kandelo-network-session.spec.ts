@@ -80,6 +80,8 @@ test("computers join one hosted session from its link and talk over guest TCP", 
     await page.getByRole("button", { name: "Leave session", exact: true }).click();
     await second.page.getByRole("button", { name: /^Network session:/ }).click();
     await expect(second.page.locator(".knetwork-error")).toContainText("The network session ended", { timeout: 15_000 });
+    // The host's room closed with it, so its invitation is not offered again.
+    await expect(second.page.getByRole("button", { name: "Join session", exact: true })).toHaveCount(0);
   } finally {
     await first.context.close();
     await second.context.close();
@@ -92,5 +94,6 @@ test("a link to a session that does not exist fails visibly", async ({ page }) =
   await running(page);
   await page.getByRole("button", { name: "Join session", exact: true }).click();
   await expect(page.locator(".knetwork-error")).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Join session", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Network session: failed", exact: true })).toBeAttached();
 });

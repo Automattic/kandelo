@@ -30,7 +30,9 @@ export function useNetworkSession(host: KernelHost) {
   );
   // A link only names a session. Joining it waits for the person's click,
   // because joining reveals this computer's network address to the host.
-  const [invitation] = React.useState(() => sessionInvitation(location.href));
+  const [invitation, setInvitation] = React.useState(() => sessionInvitation(location.href));
+  // An invitation is spent once its room is gone or this computer leaves.
+  React.useEffect(() => { if (state.roomClosed) setInvitation(null); }, [state.roomClosed]);
   const [open, setOpen] = React.useState(invitation !== null);
 
   React.useEffect(() => {
@@ -45,6 +47,7 @@ export function useNetworkSession(host: KernelHost) {
 
   const leave = React.useCallback(async () => {
     await controller.leave();
+    setInvitation(null);
     const url = new URL(location.href);
     if (url.searchParams.has("network")) {
       url.searchParams.delete("network"); url.searchParams.delete("networkName");
