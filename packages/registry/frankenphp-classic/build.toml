@@ -1,0 +1,24 @@
+script_path = "packages/registry/frankenphp-classic/build-frankenphp-classic.sh"
+inputs = [
+  "packages/registry/frankenphp-classic/build-frankenphp-classic.sh",
+  "packages/registry/frankenphp-classic/main.go",
+  "packages/registry/frankenphp-classic/frankenphp-kandelo.patch",
+  "scripts/install-local-binary.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/build-programs-abi-stamp.sh",
+  "scripts/package-build-roots.sh",
+  "sdk/activate.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 22
+
+[[git_inputs]]
+name = "go_toolchain"
+repository = "https://github.com/kandelo-dev/go.git"
+commit = "ee2c1b39515cc4b2215db302d07b3efff491c6a1"
+
+[[git_inputs]]
+name = "xsys"
+repository = "https://github.com/kandelo-dev/sys.git"
+commit = "9619e743cfc817e3a67db8c1a10124675cd80e89"

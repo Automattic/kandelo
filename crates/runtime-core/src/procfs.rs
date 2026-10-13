@@ -860,16 +860,10 @@ pub fn procfs_readlink(
                 ProcfsEntry::FdLink(_, fd) => {
                     let fe = proc.fd_table.get(*fd).map_err(|_| Errno::EBADF)?;
                     let ofd = proc.ofd_table.get(fe.ofd_ref.0).ok_or(Errno::EBADF)?;
-                    ofd.path.clone()
+                    ofd.current_path()?
                 }
                 ProcfsEntry::Cwd(_) => proc.cwd.clone(),
-                ProcfsEntry::Exe(_) => {
-                    if !proc.argv.is_empty() {
-                        proc.argv[0].clone()
-                    } else {
-                        b"/usr/bin/unknown".to_vec()
-                    }
-                }
+                ProcfsEntry::Exe(_) => proc.executable_path.clone().ok_or(Errno::ENOENT)?,
                 ProcfsEntry::Root_(_) => b"/".to_vec(),
                 _ => unreachable!(),
             }
@@ -1733,6 +1727,19 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = procfs_readlink(&proc, &entry, &mut buf).unwrap();
         assert_eq!(&buf[..n], b"/");
+    }
+
+    #[test]
+    fn test_procfs_exe_uses_selected_path_not_argv() {
+        let mut proc = Process::new(1);
+        proc.argv.push(b"display-name".to_vec());
+        let entry = ProcfsEntry::Exe(1);
+        let mut buf = [0u8; 64];
+        assert_eq!(procfs_readlink(&proc, &entry, &mut buf), Err(Errno::ENOENT));
+
+        proc.executable_path = Some(b"/bin/actual-program".to_vec());
+        let length = procfs_readlink(&proc, &entry, &mut buf).unwrap();
+        assert_eq!(&buf[..length], b"/bin/actual-program");
     }
 
     #[test]

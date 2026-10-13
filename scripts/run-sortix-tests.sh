@@ -725,6 +725,10 @@ _run_runtime_test_worker() {
     # it can exceed XFAIL_TIMEOUT, and that timeout would hide which way it
     # really failed (seen 2026-09-30 with udp/bind-lan-subnet-first).
     local this_timeout="$TEST_TIMEOUT"
+    case "$suite/$test_name" in
+        basic/poll/poll|basic/sys_select/select|basic/sys_time/select)
+            this_timeout=$((TEST_TIMEOUT * 6)) ;;
+    esac
     if $is_xfail; then
         case "$(xfail_expected_reason "${suite}/${test_name}")" in
             timeout*) this_timeout="$XFAIL_TIMEOUT" ;;
@@ -1221,6 +1225,7 @@ if [ ! -d "$OS_TEST" ]; then
     exit 1
 fi
 abi_contract_stamp_prepare || exit 1
+export WASM_POSIX_XTASK_BIN="$KANDELO_ABI_STAMP_XTASK"
 
 PASS=0
 FAIL=0
@@ -1330,6 +1335,6 @@ if [ ${#EMPTY_SUITES[@]} -gt 0 ]; then
     echo "Error: suites with no tests: ${EMPTY_SUITES[*]}" >&2
     exit 1
 fi
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi

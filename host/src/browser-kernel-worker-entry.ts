@@ -488,13 +488,13 @@ async function terminateThreadWorkers(
   for (const thread of threads) {
     intentionallyTerminated.add(thread.worker as object);
   }
-  for (const t of threads) {
+  await Promise.all(threads.map(async (thread) => {
     await (
-      t.termination ??
-      terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
+      thread.termination ??
+      terminateTrackedWorker(thread.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
     );
-    threadExits.release(pid, t.channelOffset);
-  }
+    threadExits.release(pid, thread.channelOffset);
+  }));
   return allQuiescent;
 }
 const ptyByPid = new Map<number, number>();
@@ -1405,6 +1405,9 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       // Another launch can queue ingress during the awaited secure-exec query.
       // A refused cwd setup queued no work, so retry before starting this guest.
       await retryKernelEntryResult(() => kernelWorker.setCwd(pid, msg.cwd!));
+    }
+    if (msg.programPath !== undefined) {
+      kernelWorker.setExecutablePath(pid, msg.programPath);
     }
 
     if (msg.pty) {
@@ -3900,16 +3903,16 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
   if (threads) {
-    for (const t of threads) {
+    await Promise.all(threads.map(async (thread) => {
       await (
-        t.termination ??
-        terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
+        thread.termination ??
+        terminateTrackedWorker(thread.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
       );
       try {
-        kernelWorker.notifyThreadExit(pid, t.tid);
-        kernelWorker.removeChannel(pid, t.channelOffset);
+        kernelWorker.notifyThreadExit(pid, thread.tid);
+        kernelWorker.removeChannel(pid, thread.channelOffset);
       } catch {}
-    }
+    }));
     threadWorkers.delete(pid);
   }
 
@@ -4153,14 +4156,12 @@ async function performDestroy() {
     }
   };
   await retireCurrentGenerations();
-  for (const threads of threadWorkers.values()) {
-    for (const t of threads) {
-      await (
-        t.termination ??
-        terminateTrackedWorker(t.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
-      );
-    }
-  }
+  await Promise.all([...threadWorkers.values()].flatMap((threads) =>
+    threads.map((thread) =>
+      thread.termination ??
+      terminateTrackedWorker(thread.worker, THREADED_WORKER_TERMINATION_SETTLE_MS)
+    )
+  ));
   await waitForProcessTeardowns();
   // A process teardown can yield while exec installs a successor. Sweep the
   // exact current objects and retry only transactions whose phase threw.

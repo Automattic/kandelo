@@ -32,6 +32,7 @@ import {
 } from "../native-positioned-write";
 import { NativeMetadataOverlay } from "../platform/native-metadata";
 import { backendPathconf } from "../pathconf";
+import { linkSymlinkInode } from "./native-linkat";
 import {
   DIRENT_TYPES,
   OPEN_FLAGS,
@@ -555,7 +556,7 @@ export class HostFileSystem implements FileSystemBackend {
     this.fstat(handle);
     return backendPathconf(name, {
       supportsSymlinks: true,
-      timestampResolutionNs: 1_000_000,
+      timestampResolutionNs: 1,
     });
   }
 
@@ -602,7 +603,7 @@ export class HostFileSystem implements FileSystemBackend {
     fs.statSync(this.safePath(path), { bigint: true });
     return backendPathconf(name, {
       supportsSymlinks: true,
-      timestampResolutionNs: 1_000_000,
+      timestampResolutionNs: 1,
     });
   }
 
@@ -638,13 +639,13 @@ export class HostFileSystem implements FileSystemBackend {
   }
 
   link(existingPath: string, newPath: string): void {
-    // Resolve intermediate components ourselves, but leave the final source
-    // component to native link(2). POSIX permits link() either to follow a
-    // final symlink or to link the symlink inode; native hosts differ here.
-    fs.linkSync(
-      this.safePath(existingPath, false),
-      this.safePath(newPath, false),
-    );
+    const sourcePath = this.safePath(existingPath, false);
+    const destinationPath = this.safePath(newPath, false);
+    if (process.platform === "darwin" && fs.lstatSync(sourcePath).isSymbolicLink()) {
+      linkSymlinkInode(sourcePath, destinationPath);
+      return;
+    }
+    fs.linkSync(sourcePath, destinationPath);
   }
 
   symlink(target: string, path: string): void {
@@ -703,11 +704,23 @@ export class HostFileSystem implements FileSystemBackend {
         : mtimeNsec === UTIME_NOW
           ? nowMs
           : mtimeSec * 1000 + Math.floor(mtimeNsec / 1_000_000);
+    const atimeNs = atimeNsec === UTIME_OMIT
+      ? current.atimeNs ?? stat.atimeNs
+      : atimeNsec === UTIME_NOW
+        ? BigInt(nowMs) * 1_000_000n
+        : BigInt(atimeSec) * 1_000_000_000n + BigInt(atimeNsec);
+    const mtimeNs = mtimeNsec === UTIME_OMIT
+      ? current.mtimeNs ?? stat.mtimeNs
+      : mtimeNsec === UTIME_NOW
+        ? BigInt(nowMs) * 1_000_000n
+        : BigInt(mtimeSec) * 1_000_000_000n + BigInt(mtimeNsec);
     fs.utimesSync(nativePath, atimeMs / 1000, mtimeMs / 1000);
     this.metadata.utimens(
       stat,
       atimeMs,
       mtimeMs,
+      atimeNs,
+      mtimeNs,
       fs.statSync(nativePath, { bigint: true }),
     );
   }

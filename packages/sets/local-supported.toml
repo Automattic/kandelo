@@ -158,6 +158,10 @@ name = "foot"
 class = "user-software"
 
 [[packages]]
+name = "frankenphp-classic"
+class = "user-software"
+
+[[packages]]
 name = "freetype"
 class = "platform"
 
@@ -184,6 +188,10 @@ class = "platform"
 [[packages]]
 name = "glibmm"
 class = "platform"
+
+[[packages]]
+name = "go-hello"
+class = "user-software"
 
 [[packages]]
 name = "grep"
@@ -477,6 +485,10 @@ class = "browser-product"
 
 [[packages]]
 name = "php"
+class = "user-software"
+
+[[packages]]
+name = "php-zts"
 class = "user-software"
 
 [[packages]]

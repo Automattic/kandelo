@@ -579,6 +579,10 @@ test("Kandelo WordPress SQLite demo is preinstalled and logs into wp-admin", asy
   await runWordPressPreinstalledLogin(page, "wordpress-sqlite", "WordPress SQLite");
 });
 
+test("Kandelo WordPress FrankenPHP demo is preinstalled and logs into wp-admin", async ({ page }) => {
+  await runWordPressPreinstalledLogin(page, "wordpress-frankenphp", "WordPress on FrankenPHP");
+});
+
 test("Kandelo WordPress MariaDB demo is preinstalled and logs into wp-admin", async ({ page }) => {
   await runWordPressPreinstalledLogin(page, "wordpress-mariadb", "WordPress MariaDB");
 });

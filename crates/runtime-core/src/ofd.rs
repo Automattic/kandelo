@@ -2,7 +2,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::Rc;
+use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell, UnsafeCell};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -445,6 +445,54 @@ struct SharedOfdStateInner {
     offset: Cell<i64>,
     owner_pid: Cell<u32>,
     position_generation: Cell<u64>,
+    directory_path: RefCell<DirectoryPath>,
+}
+
+enum DirectoryPath {
+    Untracked,
+    Linked(Vec<u8>),
+    Unlinked,
+}
+
+#[derive(Default)]
+struct DirectoryPathRegistry {
+    entries: Vec<Weak<SharedOfdStateInner>>,
+}
+
+impl DirectoryPathRegistry {
+    fn register(&mut self, state: &SharedOfdState) {
+        self.entries.retain(|entry| entry.strong_count() != 0);
+        let reference = Rc::downgrade(&state.0);
+        if !self.entries.iter().any(|entry| entry.ptr_eq(&reference)) {
+            self.entries.push(reference);
+        }
+    }
+
+    fn rename(&mut self, old: &[u8], new: &[u8]) {
+        if old == new {
+            return;
+        }
+        self.entries.retain(|entry| {
+            let Some(state) = entry.upgrade() else {
+                return false;
+            };
+            let mut path = state.directory_path.borrow_mut();
+            if let DirectoryPath::Linked(current) = &*path {
+                if path_is_within(current, old) {
+                    let mut updated = new.to_vec();
+                    updated.extend_from_slice(&current[old.len()..]);
+                    *path = DirectoryPath::Linked(updated);
+                } else if path_is_within(current, new) {
+                    *path = DirectoryPath::Unlinked;
+                }
+            }
+            true
+        });
+    }
+}
+
+fn path_is_within(path: &[u8], prefix: &[u8]) -> bool {
+    path == prefix || (path.starts_with(prefix) && path.get(prefix.len()) == Some(&b'/'))
 }
 
 /// Exact-ownership handle for the mutable POSIX portion of an OFD.
@@ -460,7 +508,22 @@ impl SharedOfdState {
             offset: Cell::new(offset),
             owner_pid: Cell::new(owner_pid),
             position_generation: Cell::new(0),
+            directory_path: RefCell::new(DirectoryPath::Untracked),
         }))
+    }
+
+    fn track_directory_path(&self, path: &[u8]) {
+        if matches!(*self.0.directory_path.borrow(), DirectoryPath::Untracked) {
+            *self.0.directory_path.borrow_mut() = DirectoryPath::Linked(path.to_vec());
+        }
+    }
+
+    fn directory_path(&self) -> Result<Option<Vec<u8>>, Errno> {
+        match &*self.0.directory_path.borrow() {
+            DirectoryPath::Untracked => Ok(None),
+            DirectoryPath::Linked(path) => Ok(Some(path.clone())),
+            DirectoryPath::Unlinked => Err(Errno::ENOENT),
+        }
     }
 
     fn status_flags(&self) -> u32 {
@@ -504,6 +567,15 @@ pub struct PendingDirEntry {
 }
 
 impl OpenFileDesc {
+    pub fn current_path(&self) -> Result<Vec<u8>, Errno> {
+        if self.file_type == FileType::Directory {
+            if let Some(path) = self.shared_state.directory_path()? {
+                return Ok(path);
+            }
+        }
+        Ok(self.path.clone())
+    }
+
     pub fn status_flags(&self) -> u32 {
         self.shared_state.status_flags()
     }
@@ -678,13 +750,30 @@ impl OpenFileDesc {
 #[derive(Clone)]
 pub struct OfdTable {
     entries: Vec<Option<OpenFileDesc>>,
+    directory_paths: Rc<RefCell<DirectoryPathRegistry>>,
 }
 
 impl OfdTable {
     pub fn new() -> Self {
         OfdTable {
             entries: Vec::new(),
+            directory_paths: Rc::new(RefCell::new(DirectoryPathRegistry::default())),
         }
+    }
+
+    pub fn share_directory_paths_from(&mut self, source: &OfdTable) {
+        self.directory_paths = source.directory_paths.clone();
+        for (_, ofd) in self.iter() {
+            if ofd.file_type == FileType::Directory {
+                self.directory_paths
+                    .borrow_mut()
+                    .register(&ofd.shared_state);
+            }
+        }
+    }
+
+    pub fn rename_directory_paths(&self, old: &[u8], new: &[u8]) {
+        self.directory_paths.borrow_mut().rename(old, new);
     }
 
     /// Create a new open file description. Returns the OFD index.
@@ -757,6 +846,12 @@ impl OfdTable {
     }
 
     fn insert(&mut self, ofd: OpenFileDesc) -> usize {
+        if ofd.file_type == FileType::Directory {
+            ofd.shared_state.track_directory_path(&ofd.path);
+            self.directory_paths
+                .borrow_mut()
+                .register(&ofd.shared_state);
+        }
         // Search for a free (None) slot to reuse.
         for i in 0..self.entries.len() {
             if self.entries[i].is_none() {
@@ -880,7 +975,20 @@ impl OfdTable {
         for ofd in entries.iter().flatten() {
             observe_ofd_id(ofd.ofd_id);
         }
-        OfdTable { entries }
+        let table = OfdTable {
+            entries,
+            directory_paths: Rc::new(RefCell::new(DirectoryPathRegistry::default())),
+        };
+        for (_, ofd) in table.iter() {
+            if ofd.file_type == FileType::Directory {
+                ofd.shared_state.track_directory_path(&ofd.path);
+                table
+                    .directory_paths
+                    .borrow_mut()
+                    .register(&ofd.shared_state);
+            }
+        }
+        table
     }
 
     /// Update status flags with F_SETFL semantics.
@@ -918,6 +1026,7 @@ impl OfdTable {
                 child_input.ring = source_input.ring.clone();
             }
         }
+        self.share_directory_paths_from(source);
         Ok(())
     }
 }
@@ -942,6 +1051,47 @@ mod tests {
         assert_eq!(ofd.offset(), 0);
         assert_eq!(ofd.ref_count, 1);
         assert_eq!(ofd.path, b"/test");
+    }
+
+    #[test]
+    fn directory_paths_follow_rename_across_tables_and_fork() {
+        let mut first = OfdTable::new();
+        let first_index = first.create(FileType::Directory, O_RDONLY, 10, b"/tmp/a".to_vec());
+        let forked = first.clone();
+        let mut second = OfdTable::new();
+        second.share_directory_paths_from(&first);
+        let second_index = second.create(FileType::Directory, O_RDONLY, 11, b"/tmp/a/sub".to_vec());
+
+        second.rename_directory_paths(b"/tmp/a", b"/tmp/b");
+        assert_eq!(
+            first.get(first_index).unwrap().current_path(),
+            Ok(b"/tmp/b".to_vec())
+        );
+        assert_eq!(
+            forked.get(first_index).unwrap().current_path(),
+            Ok(b"/tmp/b".to_vec())
+        );
+        assert_eq!(
+            second.get(second_index).unwrap().current_path(),
+            Ok(b"/tmp/b/sub".to_vec())
+        );
+    }
+
+    #[test]
+    fn replaced_directory_path_does_not_alias_new_occupant() {
+        let mut table = OfdTable::new();
+        let old_index = table.create(FileType::Directory, O_RDONLY, 10, b"/tmp/old".to_vec());
+        let displaced_index = table.create(FileType::Directory, O_RDONLY, 11, b"/tmp/new".to_vec());
+
+        table.rename_directory_paths(b"/tmp/old", b"/tmp/new");
+        assert_eq!(
+            table.get(old_index).unwrap().current_path(),
+            Ok(b"/tmp/new".to_vec())
+        );
+        assert_eq!(
+            table.get(displaced_index).unwrap().current_path(),
+            Err(Errno::ENOENT)
+        );
     }
 
     #[test]

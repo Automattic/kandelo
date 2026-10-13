@@ -3,6 +3,7 @@ import {
   PROCESS_MEMORY_DEFAULT_MAX_PAGES,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
+  PROCESS_MEMORY_THREAD_SLOT_PREALLOCATE_EXPORT,
   PROCESS_MEMORY_WASM_PAGE_SIZE,
   WPK_FORK_CAPABILITIES_SECTION,
   WPK_FORK_CAPABILITIES_VERSION,
@@ -2992,6 +2993,13 @@ export function extractThreadSlotDeclaration(programBytes: ArrayBuffer): number 
   return extractI32ConstFunctionExport(
     programBytes,
     PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
+  );
+}
+
+export function extractThreadSlotPreallocation(programBytes: ArrayBuffer): number | null {
+  return extractI32ConstFunctionExport(
+    programBytes,
+    PROCESS_MEMORY_THREAD_SLOT_PREALLOCATE_EXPORT,
   );
 }
 

@@ -248,6 +248,7 @@ run_test() {
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM="$fixture_program" \
         KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_BUILTINS=explicit \
         TIMEOUT="$((TEST_TIMEOUT * 1000))" \
         timeout "$((TEST_TIMEOUT + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
@@ -393,6 +394,18 @@ if [ ! -f "$KERNEL_WASM" ]; then
     echo "Error: kernel wasm not found. Run build.sh first." >&2
     exit 1
 fi
+RUST_HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+if [ -z "$RUST_HOST_TARGET" ]; then
+    echo "Error: could not determine the Rust host target." >&2
+    exit 1
+fi
+cargo build --release -p xtask --target "$RUST_HOST_TARGET" --quiet
+WASM_POSIX_XTASK_BIN="$REPO_ROOT/target/$RUST_HOST_TARGET/release/xtask"
+if [ ! -f "$WASM_POSIX_XTASK_BIN" ]; then
+    echo "Error: prepared xtask was not found at $WASM_POSIX_XTASK_BIN" >&2
+    exit 1
+fi
+export WASM_POSIX_XTASK_BIN
 abi_contract_stamp_prepare || exit 1
 
 PASS=0

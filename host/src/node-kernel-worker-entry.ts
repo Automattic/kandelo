@@ -449,10 +449,10 @@ async function terminateThreadWorkers(
   for (const thread of threads) {
     intentionallyTerminated.add(thread.worker as object);
   }
-  for (const t of threads) {
-    await (t.termination ?? terminateTrackedWorker(t.worker));
-    threadExits.release(pid, t.channelOffset);
-  }
+  await Promise.all(threads.map(async (thread) => {
+    await (thread.termination ?? terminateTrackedWorker(thread.worker));
+    threadExits.release(pid, thread.channelOffset);
+  }));
   return quiescence.every(Boolean);
 }
 
@@ -1349,6 +1349,9 @@ async function handleSpawn(msg: SpawnMessage) {
       // Another launch can queue ingress during the awaited secure-exec query.
       // A refused cwd setup queued no work, so retry before starting this guest.
       await retryKernelEntryResult(() => kernelWorker.setCwd(pid, msg.cwd!));
+    }
+    if (msg.programPath !== undefined) {
+      kernelWorker.setExecutablePath(pid, msg.programPath);
     }
 
     if (msg.maxAddr != null) {
@@ -3356,15 +3359,15 @@ async function handleTerminate(msg: TerminateProcessMessage) {
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
   if (threads) {
-    for (const t of threads) {
-      intentionallyTerminated.add(t.worker as object);
-      forkHostImportsByWorker.get(t.worker as object)?.close();
-      await t.worker.terminate().catch(() => {});
+    await Promise.all(threads.map(async (thread) => {
+      intentionallyTerminated.add(thread.worker as object);
+      forkHostImportsByWorker.get(thread.worker as object)?.close();
+      await thread.worker.terminate().catch(() => {});
       try {
-        kernelWorker.notifyThreadExit(pid, t.tid);
-        kernelWorker.removeChannel(pid, t.channelOffset);
+        kernelWorker.notifyThreadExit(pid, thread.tid);
+        kernelWorker.removeChannel(pid, thread.channelOffset);
       } catch {}
-    }
+    }));
     threadWorkers.delete(pid);
   }
 

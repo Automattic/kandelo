@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { Socket } from "node:net";
 import { join } from "node:path";
-import { NodeKernelHost } from "../../host/src/node-kernel-host";
+import { NodeKernelHost, type NodeKernelHostOptions } from "../../host/src/node-kernel-host";
 import { findRepoRoot, tryResolveBinary } from "../../host/src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { ensureDirRecursive, writeVfsFile } from "../../host/src/vfs/image-helpers";
@@ -22,8 +22,9 @@ export interface ServiceVfsImageRef {
   buildHint: string;
 }
 
-export interface BootDinitServiceOptions {
+export interface BootDinitServiceOptions extends Pick<NodeKernelHostOptions, "onHostDiagnostic"> {
   image: ServiceVfsImageRef;
+  imagePath?: string;
   target?: string;
   maxWorkers?: number;
   maxPages?: number;
@@ -34,11 +35,12 @@ export interface BootDinitServiceOptions {
 
 export interface BootedDinitService {
   host: NodeKernelHost;
+  pid: number;
   exitPromise: Promise<number>;
 }
 
 export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Promise<BootedDinitService> {
-  const imagePath = resolveServiceVfsImage(options.image);
+  const imagePath = options.imagePath ?? resolveServiceVfsImage(options.image);
   const image = readFileSync(imagePath);
   // WHY: configuration rewrites are host-side effects derived from imported
   // image state, so reject forged lazy-tree seals before reading or writing it.
@@ -62,6 +64,7 @@ export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Pro
     rootfsImage,
     onStdout: (_pid, data) => process.stdout.write(data),
     onStderr: (_pid, data) => process.stderr.write(data),
+    onHostDiagnostic: options.onHostDiagnostic,
   });
   await host.init();
 
@@ -71,12 +74,12 @@ export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Pro
   // WHY: dinit belongs to the imported image. Resolve it through the
   // worker-owned VFS so the Node demo exercises the same executable lookup
   // path as every service dinit starts, without a second host-side byte copy.
-  const { exit: exitPromise } = await host.spawnFromVfs("/sbin/dinit", argv, {
+  const { pid, exit: exitPromise } = await host.spawnFromVfs("/sbin/dinit", argv, {
     env: options.env ?? SERVICE_DEMO_ENV,
     cwd: options.cwd ?? "/",
   });
 
-  return { host, exitPromise };
+  return { host, pid, exitPromise };
 }
 
 export function resolveServiceVfsImage(image: ServiceVfsImageRef): string {
@@ -196,6 +199,7 @@ export function configureWordPressRuntime(
     "mariadb",
     "php-fpm",
     "nginx",
+    "frankenphp-classic",
   ]);
 }
 

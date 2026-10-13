@@ -30,6 +30,10 @@
       "profile": "wordpress-sqlite"
     },
     {
+      "product": "browser-wordpress",
+      "profile": "wordpress-frankenphp"
+    },
+    {
       "product": "browser-lamp",
       "profile": "wordpress-mariadb"
     },

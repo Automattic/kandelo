@@ -1043,6 +1043,7 @@ pub struct Process {
     pub terminal: TerminalState,
     pub environ: Vec<Vec<u8>>,
     pub argv: Vec<Vec<u8>>,
+    pub executable_path: Option<Vec<u8>>,
     /// In-progress host replacement, invisible until one token-bound commit
     /// swaps the complete argv/environment pair.
     metadata_replacement: Option<ProcessMetadataReplacement>,
@@ -1348,6 +1349,7 @@ impl Process {
             terminal,
             environ: Vec::new(),
             argv: Vec::new(),
+            executable_path: None,
             metadata_replacement: None,
             next_metadata_replacement_token: 1,
             umask: 0o022,

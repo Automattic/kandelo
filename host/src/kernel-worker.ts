@@ -195,11 +195,21 @@ import {
   SPAWN_MAX_ARGV_COUNT,
   SPAWN_MAX_ENVP_COUNT,
   SPAWN_WIRE_ACTION_RECORD_BYTES,
+  SPAWN_WIRE_ACTION_FD_OFFSET,
+  SPAWN_WIRE_ACTION_NEWFD_OFFSET,
+  SPAWN_WIRE_ACTION_OP_OFFSET,
+  SPAWN_WIRE_ACTION_PATH_LEN_OFFSET,
+  SPAWN_WIRE_ACTION_PATH_OFF_OFFSET,
   SPAWN_WIRE_HEADER_ACTION_COUNT_OFFSET,
   SPAWN_WIRE_HEADER_ARGC_OFFSET,
   SPAWN_WIRE_HEADER_BYTES,
   SPAWN_WIRE_HEADER_ENVC_OFFSET,
   SPAWN_WIRE_MAX_BYTES,
+  SPAWN_WIRE_OP_CLOSE,
+  SPAWN_WIRE_OP_CHDIR,
+  SPAWN_WIRE_OP_DUP2,
+  SPAWN_WIRE_OP_FCHDIR,
+  SPAWN_WIRE_OP_OPEN,
   SPAWN_WIRE_STRING_OFFSET_BYTES,
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   STRUCT_SIZE_WASM_POLL_FD,
@@ -1683,6 +1693,71 @@ function decodeSpawnBlobStrings(
   const argv = argvRanges.map(decode);
   const envp = envpRanges.map(decode);
   return { argv, envp };
+}
+
+function resolveSpawnPreflightPath(
+  blob: Uint8Array,
+  rawPath: string,
+  parentPath: string,
+  parentCwd: string,
+  directoryPathForFd: (fd: number) => string | null,
+): string {
+  if (rawPath.startsWith("/")) return rawPath;
+  const view = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
+  const argc = view.getUint32(SPAWN_WIRE_HEADER_ARGC_OFFSET, true);
+  const envc = view.getUint32(SPAWN_WIRE_HEADER_ENVC_OFFSET, true);
+  const actionCount = view.getUint32(SPAWN_WIRE_HEADER_ACTION_COUNT_OFFSET, true);
+  const actionsAt = SPAWN_WIRE_HEADER_BYTES +
+    (argc + envc) * SPAWN_WIRE_STRING_OFFSET_BYTES;
+  const stringsAt = actionsAt + actionCount * SPAWN_WIRE_ACTION_RECORD_BYTES;
+  if (stringsAt > blob.byteLength) return parentPath;
+  let cwd = parentCwd;
+  const modifiedFds = new Set<number>();
+  const decoder = new TextDecoder();
+  for (let index = 0; index < actionCount; index++) {
+    const actionAt = actionsAt + index * SPAWN_WIRE_ACTION_RECORD_BYTES;
+    const op = view.getUint32(actionAt + SPAWN_WIRE_ACTION_OP_OFFSET, true);
+    const fd = view.getInt32(actionAt + SPAWN_WIRE_ACTION_FD_OFFSET, true);
+    if (op === SPAWN_WIRE_OP_OPEN || op === SPAWN_WIRE_OP_CLOSE) {
+      modifiedFds.add(fd);
+      continue;
+    }
+    if (op === SPAWN_WIRE_OP_DUP2) {
+      modifiedFds.add(view.getInt32(actionAt + SPAWN_WIRE_ACTION_NEWFD_OFFSET, true));
+      continue;
+    }
+    if (op === SPAWN_WIRE_OP_FCHDIR) {
+      if (modifiedFds.has(fd)) return parentPath;
+      const directoryPath = directoryPathForFd(fd);
+      if (directoryPath === null) return parentPath;
+      cwd = directoryPath;
+      continue;
+    }
+    if (op !== SPAWN_WIRE_OP_CHDIR) continue;
+    const offset = view.getUint32(actionAt + SPAWN_WIRE_ACTION_PATH_OFF_OFFSET, true);
+    const length = view.getUint32(actionAt + SPAWN_WIRE_ACTION_PATH_LEN_OFFSET, true);
+    if (length < 2 || offset + length > blob.byteLength - stringsAt) return parentPath;
+    const bytes = blob.subarray(stringsAt + offset, stringsAt + offset + length);
+    if (bytes[length - 1] !== 0 || bytes.subarray(0, length - 1).includes(0)) {
+      return parentPath;
+    }
+    const actionPath = decoder.decode(bytes.subarray(0, length - 1));
+    cwd = normalizeExecPath(actionPath.startsWith("/") ? actionPath : cwd + "/" + actionPath);
+  }
+  return normalizeExecPath(cwd + "/" + rawPath);
+}
+
+function normalizeExecPath(path: string): string {
+  const parts: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "." || part === "") continue;
+    if (part === "..") {
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return "/" + parts.join("/");
 }
 
 /** Syscall number → name mapping for logging */
@@ -8433,6 +8508,46 @@ export class CentralizedKernelWorker {
     }
     if (result < 0) {
       throw new Error(`setCwd failed for pid ${pid}: errno ${-result}`);
+    }
+  }
+
+  setExecutablePath(pid: number, path: string): void {
+    if (!this.#initialized) throw new Error("Kernel not initialized");
+    const encoded = new TextEncoder().encode(path);
+    if (encoded.byteLength === 0 || encoded.byteLength >= POSIX_PATH_MAX_BYTES) {
+      throw new Error(`setExecutablePath failed for pid ${pid}: invalid path length`);
+    }
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError("initial executable path setup");
+    }
+    let result: number | undefined;
+    const deferred = this.#runOrDeferKernelEntry(
+      `initial executable path setup pid=${pid}`,
+      (entry) => {
+        const setPath = this.#kernelInstanceForEntry(entry).exports
+          .kernel_set_executable_path as
+          ((pid: number, ptr: KernelPointer, len: number) => number) | undefined;
+        if (typeof setPath !== "function") {
+          throw new Error("Kernel missing required kernel_set_executable_path export");
+        }
+        result = this.#requireMainScratchRegion().withLease((scratch) => {
+          scratch.copyFrom(encoded);
+          return this.#invokeEntryScratchExport(
+            entry,
+            scratch,
+            "kernel_set_executable_path",
+            [pid, scratch.exportPointer(0, encoded.byteLength), encoded.byteLength],
+          );
+        });
+        return undefined;
+      },
+    );
+    if (deferred || result === undefined) {
+      throw new KernelReentrantEntryError("initial executable path setup");
+    }
+    if (result !== 0) {
+      throw new Error(`setExecutablePath failed for pid ${pid}: errno ${-result}`);
     }
   }
 
@@ -22116,6 +22231,29 @@ export class CentralizedKernelWorker {
     // Preserve the blob's original vector so the authoritative child-state
     // target parser performs that rewrite exactly once.
     const originalArgv = [...argv];
+    let preflightPath = path;
+    if (rawPath && !rawPath.startsWith("/")) {
+      const parentCwd = this.resolveExecPathAgainstCwd(parentPid, ".", entry);
+      if (parentCwd.kind === "error") {
+        this.completeChannel(
+          channel, SYS_SPAWN, origArgs, undefined, -1, parentCwd.errno,
+          [], undefined, entry,
+        );
+        return;
+      }
+      preflightPath = resolveSpawnPreflightPath(
+        blobBytes,
+        rawPath,
+        path,
+        parentCwd.value,
+        (fd) => {
+          const result = this.#readKernelOwnedPath(parentPid, fd, entry, true);
+          return result.kind === "ok" && result.value.byteLength > 0
+            ? new TextDecoder().decode(result.value)
+            : null;
+        },
+      );
+    }
 
     // ── PRE-FLIGHT: resolve and compile BEFORE calling the kernel ──
     // POSIX requires file_actions to run "exactly once." `posix_spawnp`'s
@@ -22126,11 +22264,11 @@ export class CentralizedKernelWorker {
     // side-effect-free preflight first; only call the kernel if the
     // program actually exists and compiles.
     const resolveSpawnProgram = async (): Promise<SpawnProgramResolution | null> => {
-      const resolved = await this.callbacks.onResolveSpawn!(path, argv);
+      const resolved = await this.callbacks.onResolveSpawn!(preflightPath, argv);
       let selected = resolved;
       if (
         !selected
-        && rawPath !== path
+        && rawPath !== preflightPath
         && rawPath
         && !rawPath.startsWith("/")
       ) {
@@ -23441,15 +23579,7 @@ export class CentralizedKernelWorker {
     }
     const cwd = new TextDecoder().decode(output.value);
     const joined = cwd.endsWith("/") ? cwd + path : cwd + "/" + path;
-    // Normalize . and .. components (e.g. /data/spawn/./prog → /data/spawn/prog)
-    const parts = joined.split("/");
-    const normalized: string[] = [];
-    for (const part of parts) {
-      if (part === "." || part === "") continue;
-      if (part === ".." && normalized.length > 0) { normalized.pop(); continue; }
-      normalized.push(part);
-    }
-    return { kind: "ok", value: "/" + normalized.join("/") };
+    return { kind: "ok", value: normalizeExecPath(joined) };
   }
 
   /**
@@ -25070,7 +25200,10 @@ export class CentralizedKernelWorker {
         i++;
         continue;
       }
-      if (!this.isRegisteredChannel(waiter.channel)) {
+      if (
+        this.hostReaped.has(parentPid)
+        || !this.isRegisteredChannel(waiter.channel)
+      ) {
         this.waitingForChild.splice(i, 1);
         continue;
       }

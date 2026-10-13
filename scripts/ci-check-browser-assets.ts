@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import {
   findRepoRoot,
   resolveBinary,
+  tryResolveBinaries,
   tryResolveBinary,
 } from "../host/src/binary-resolver";
 import {
@@ -82,8 +83,20 @@ function main(): void {
     throw new Error("no browser asset imports found");
   }
 
+  const binarySpecs = specs.filter((spec) => spec.startsWith("@binaries/"));
+  let resolvedBinaries: Array<string | null> | undefined;
+  try {
+    resolvedBinaries = tryResolveBinaries(
+      binarySpecs.map((spec) => spec.slice("@binaries/".length)),
+    );
+  } catch {}
+
   const failures: string[] = [];
+  let binaryIndex = 0;
   for (const spec of specs) {
+    if (spec.startsWith("@binaries/")) {
+      if (resolvedBinaries?.[binaryIndex++]) continue;
+    }
     try {
       resolveAssetImport(spec);
     } catch (error) {
