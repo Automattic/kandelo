@@ -26,6 +26,7 @@ type Probe = {
   file: string;
   argv: string[];
   stdout: string[];
+  stderrPattern?: RegExp;
   absentStdout?: string[];
   directories?: string[];
   imageCapacity?: number;
@@ -204,6 +205,20 @@ const probes: Probe[] = [
     stdout: ["--- PASS: TestKandeloFlock", "PASS"],
     directories: ["/tmp"],
     imageCapacity: 8 * 1024 * 1024,
+  },
+  {
+    name: "Go terminal attributes and window size use Kandelo PTY state",
+    file: "syscall-test.wasm",
+    argv: ["go-syscall-test", "-test.run=^TestKandeloTerminal$", "-test.v"],
+    stdout: ["--- PASS: TestKandeloTerminal", "PASS"],
+    directories: ["/tmp"],
+    imageCapacity: 8 * 1024 * 1024,
+  },
+  {
+    name: "Go resource limits use Kandelo process state",
+    file: "syscall-test.wasm",
+    argv: ["go-syscall-test", "-test.run=^TestKandeloRlimit$", "-test.v"],
+    stdout: ["--- PASS: TestKandeloRlimit", "PASS"],
   },
   {
     name: "upstream Go os.Root Chtimes nanosecond precision",
@@ -444,6 +459,42 @@ if (process.env.KANDELO_XSYS_BROWSER_TESTS === "1") {
     directories: ["/tmp"],
     imageCapacity: 8 * 1024 * 1024,
   });
+}
+
+if (process.env.KANDELO_GO_DEPENDENCY_BROWSER_TESTS === "1") {
+  probes.push(
+    {
+      name: "bbolt reopens a Kandelo VFS database",
+      file: "bbolt-test.wasm",
+      argv: ["go-bbolt-test", "-test.run=^TestKandeloReopen$", "-test.v"],
+      stdout: ["--- PASS: TestKandeloReopen", "PASS"],
+      stderrPattern: /^seed: \d+\nquick settings: count=\d+, items=\d+, ksize=\d+, vsize=\d+\n$/,
+      directories: ["/tmp"],
+      imageCapacity: 8 * 1024 * 1024,
+    },
+    {
+      name: "readline uses Kandelo PTY terminal state",
+      file: "readline-test.wasm",
+      argv: ["go-readline-test", "-test.run=^TestKandeloTerminal$", "-test.v"],
+      stdout: ["--- PASS: TestKandeloTerminal", "PASS"],
+      stderrPattern: /^tmpdir: \/tmp\n$/,
+      directories: ["/tmp"],
+    },
+    {
+      name: "logrus detects a Kandelo PTY",
+      file: "logrus-test.wasm",
+      argv: ["go-logrus-test", "-test.run=^TestKandeloTerminalCheck$", "-test.v"],
+      stdout: ["--- PASS: TestKandeloTerminalCheck", "PASS"],
+      directories: ["/tmp"],
+    },
+    {
+      name: "certificate transparency loads Kandelo VFS roots",
+      file: "ct-x509-test.wasm",
+      argv: ["go-ct-x509-test", "-test.run=^TestKandeloSystemRoots$", "-test.v"],
+      stdout: ["--- PASS: TestKandeloSystemRoots", "PASS"],
+      directories: ["/tmp"],
+    },
+  );
 }
 
 if (process.env.KANDELO_GO_CGO_LINK_TESTS === "1") {
@@ -715,6 +766,8 @@ test.describe("native Go port milestones", () => {
           probe.threadMarkers,
         );
         expect(result.stderr.replaceAll("M2 alive via kernel_clone\n", "")).toBe("");
+      } else if (probe.stderrPattern) {
+        expect(result.stderr).toMatch(probe.stderrPattern);
       } else {
         expect(result.stderr).toBe("");
       }

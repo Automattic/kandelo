@@ -64,6 +64,30 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   in that fork. Pin both forks in package recipes and test the API in Node
   and browsers before extending it for a consumer. Do not mistake the
   currently small unix surface for general Linux compatibility.
+- Caddy's terminal consumers require real PTY state, not a constant
+  `isTerminal` answer. The Go fork exposes Kandelo's 60-byte musl
+  `termios` layout, `tcgetattr`/`tcsetattr`, `TIOCGWINSZ`, and
+  `getrlimit` through typed channel calls. The direct readline and
+  logrus ports select those APIs; tests exercise raw-mode restoration,
+  window-size reads, and positive/negative terminal detection in Node
+  and all three browsers. `RLIMIT_NOFILE` is resource 7 and
+  `RLIMIT_MEMLOCK` is resource 8, matching the kernel. The direct
+  bbolt port adds conservative Wasm mapping bounds; the direct
+  certificate-transparency-go port loads roots from the VFS rather
+  than assuming a host trust store. A small bbolt reopen test passes,
+  but it does not establish durable `MAP_SHARED` persistence.
+- Kandelo's kernel currently treats `mlock`/`munlock` as resident-Wasm
+  hints, with an existing fixed 1 GiB bounds check. Go and x/sys
+  expose that existing behavior; do not claim full POSIX memory-lock
+  semantics or use the bbolt smoke test as proof of durability.
+- The source-built Caddy v2.10.2 package pins six direct forks and
+  serves static HTTP from the VFS on Node, Chromium, and Firefox.
+  WebKit currently fails before listener readiness with a native Wasm
+  call-stack overflow in `regexp_syntax.__compiler_.compile`. Do not
+  silently skip that engine or patch the regexp library to make Caddy
+  appear portable. Diagnose the WebKit call-stack boundary separately
+  before claiming browser parity. This standalone Caddy binary does
+  not include FrankenPHP or PHP execution.
 - The linker imports shared linear memory and declares a bounded pthread
   slot arena below the Go heap. The default is 32 slots; the per-program
   `-ldflags='-kandelothreadslots=N'` accepts 1–1024. Each slot reserves

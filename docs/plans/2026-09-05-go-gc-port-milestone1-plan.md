@@ -3318,3 +3318,31 @@ FrankenPHP serves PHP and a static asset in a Chromium HTTP smoke test.
 The ABI snapshot check passes. This does not rebuild the WordPress
 image or retest the logged-in editor workflow, and is not a Caddy
 or production-readiness claim.
+
+**2026-10-13 — Direct Caddy dependency ports.** Four independently
+pinned target ports now cover bbolt's Wasm mapping bounds
+(`6accd6ff6ff9122aa6db6398ae381b2fe2e2663a`), readline's PTY
+terminal path (`cd55beaf2b93d4becc3100a4a06e186b5e69d85d`),
+logrus's terminal detection (`179e7a7ca539075feb85112492d10d9b43e14fe6`),
+and certificate-transparency-go's VFS root selection
+(`c990f3c1f5e54d4e69b7b7479c30176387dab20c`). The Go fork
+`7f6127f51939f64026f0aa2658fd772100899e17` adds typed terminal
+and resource-limit syscalls and existing kernel `mlock`/`munlock`
+bindings; x/sys `2b06cffea3dd9037ae3d2742e6f092913a88583f`
+exposes those APIs. These are target implementations in direct forks,
+not changes to Caddy's or FrankenPHP's source. Stock Caddy v2.10.2
+`cmd/caddy` now cross-compiles with `CGO_ENABLED=0` in the local
+six-module workspace. Focused package tests pass in Node and 18/18
+Chromium/Firefox/WebKit cases: bbolt VFS reopen, readline PTY raw
+mode, logrus terminal detection, certificate loading, and Go PTY
+state. This does not prove database durability, `mlock` residency,
+Caddy runtime behavior, or FrankenPHP's cgo link. A source-only Caddy
+package recipe pins all six forks and builds successfully. The
+fork-instrumented, ABI-50 Caddy binary serves a VFS static file over
+HTTP 200 in Node, Chromium, and Firefox. WebKit fails before readiness
+with a `Maximum call stack size exceeded` diagnostic in
+`regexp_syntax.__compiler_.compile`; this is a browser Wasm call-stack
+boundary to investigate, not evidence of a missing Caddy dependency
+API. The full FrankenPHP/Caddy entry point still requires the separate
+PHP/cgo link and `php_server` runtime validation before a Caddy-backed
+WordPress profile can replace the classic profile.

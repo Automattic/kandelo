@@ -100,6 +100,23 @@ if [ -n "${GO_KANDELO_XSYS_SOURCE_DIR:-}" ]; then
   record_built_program_output "$output_dir/xsys-unix-test.wasm"
 fi
 
+if [ -n "${GO_KANDELO_DEPENDENCY_WORKFILE:-}" ]; then
+  if [ ! -f "$GO_KANDELO_DEPENDENCY_WORKFILE" ]; then
+    echo "Go dependency workfile not found: $GO_KANDELO_DEPENDENCY_WORKFILE" >&2
+    exit 1
+  fi
+  for entry in \
+    "bbolt go.etcd.io/bbolt" \
+    "readline github.com/chzyer/readline" \
+    "logrus github.com/sirupsen/logrus" \
+    "ct-x509 github.com/google/certificate-transparency-go/x509"; do
+    read -r fixture_name package_name <<< "$entry"
+    GOWORK="$GO_KANDELO_DEPENDENCY_WORKFILE" GOOS=kandelo GOARCH=wasm CGO_ENABLED=0 \
+      "$go_bin" test -c -o "$output_dir/$fixture_name-test.wasm" "$package_name"
+    record_built_program_output "$output_dir/$fixture_name-test.wasm"
+  done
+fi
+
 stamp_built_program_outputs
 
 mkdir -p "$publish_dir"

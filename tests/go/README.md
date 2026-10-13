@@ -100,6 +100,35 @@ mapped writeback, memory advice, lock contention, access checks, and a
 `SO_REUSEPORT` option round-trip. They do not prove duplicate-listener
 behavior or database durability.
 
+The direct bbolt, readline, logrus, and certificate-transparency-go
+ports have opt-in package test fixtures. Create a Go workspace file
+that lists the five local fork checkouts (`x/sys` plus those four
+modules), then set its absolute path in
+`GO_KANDELO_DEPENDENCY_WORKFILE` when running
+`tests/go/build-browser-fixtures.sh`. Set
+`KANDELO_GO_DEPENDENCY_BROWSER_TESTS=1` alongside
+`KANDELO_GO_BROWSER_TESTS=1` to run their focused probes in Chromium,
+Firefox, and WebKit. The tests check a bbolt VFS reopen, readline raw
+mode on a PTY, logrus terminal detection, and certificate roots loaded
+from a VFS file. They do not exercise Caddy's full runtime, PHP, or
+WordPress.
+After building the fixtures, run the same four cases on Node with:
+
+```sh
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/dependency-port/run.ts .context/go-browser "$(scripts/resolve-binary.sh kernel.wasm)"'
+```
+
+The `caddy` source package pins those forks for a real Caddy v2.10.2
+build. After resolving it, run the Node static-HTTP smoke with
+`tests/go/caddy/run.ts <caddy.wasm> <kernel.wasm>`. For the browser
+smoke, copy the resolved 99 MB `caddy.wasm` into `.context/` and pass
+that path as `KANDELO_CADDY_WASM` to `test/caddy.spec.ts`; direct
+Playwright route fulfillment exceeds its 100 MB protocol message cap,
+and Vite deliberately blocks arbitrary package-cache paths. Node,
+Chromium, and Firefox serve the VFS file; WebKit currently exits before
+readiness with a native Wasm call-stack overflow in regexp compilation.
+Keep the WebKit test enabled so the limitation remains visible.
+
 The VFS-backed `run-full-vfs.ts` runner supplies Go source/testdata, account
 files, `/bin/pwd`, and a non-root CWD. With `-test.run=^Test`, the available
 upstream `os` suite passes 213 top-level tests in Node when excluding the two
