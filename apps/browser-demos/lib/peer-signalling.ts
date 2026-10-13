@@ -154,8 +154,12 @@ function roomUrl(server: string, room: string, query: Record<string, string> = {
   return url.href;
 }
 
+/** The room is gone: it never existed, expired, or its host closed it. */
+export class RoomClosedError extends Error {}
+
 async function roomRequest<T>(url: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(url, { cache: "no-store", ...init });
+  if (response.status === 404) throw new RoomClosedError(await refusal(response));
   if (!response.ok) throw new Error(await refusal(response));
   return (await response.json()) as T;
 }
