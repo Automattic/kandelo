@@ -116,9 +116,12 @@ function controller(machine: SessionMachine | null, api: SessionSignalling, pair
   });
 }
 
-test("a shared link names only the room and session, never the page's boot recipe", () => {
-  const link = sessionLink("https://kandelo.test/app/?vfs=https://evil.test/x.vfs#boot", "abcdefghijklmnopqrstuvwxyz", "LAN party");
-  assert.equal(link, "https://kandelo.test/app/?network=abcdefghijklmnopqrstuvwxyz&networkName=LAN+party");
+test("a shared link names the machine and the session, never scripts or other state", () => {
+  const link = sessionLink("https://kandelo.test/app/?vfs=https://images.test/doom.vfs.zst&profile=doom&debug=1#k1=script", "abcdefghijklmnopqrstuvwxyz", "LAN party");
+  assert.equal(link, "https://kandelo.test/app/?vfs=https%3A%2F%2Fimages.test%2Fdoom.vfs.zst&profile=doom&network=abcdefghijklmnopqrstuvwxyz&networkName=LAN+party");
+  // A page that runs the default machine names none.
+  assert.equal(sessionLink("https://kandelo.test/app/", "abcdefghijklmnopqrstuvwxyz", "LAN party"),
+    "https://kandelo.test/app/?network=abcdefghijklmnopqrstuvwxyz&networkName=LAN+party");
   assert.deepEqual(sessionInvitation(link), { room: "abcdefghijklmnopqrstuvwxyz", name: "LAN party" });
   assert.equal(sessionInvitation("https://kandelo.test/app/?network=SHORT"), null);
   assert.equal(sessionInvitation("https://kandelo.test/app/?network=abcdefghijklmnopqrstuvwxyz&networkName=a%00b")?.name, "ab");

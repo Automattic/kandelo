@@ -42,7 +42,10 @@ test("computers join one hosted session from its link and talk over guest TCP", 
   test.setTimeout(480_000);
   const link = await host(page, "LAN party");
   const shared = new URL(link);
-  expect([...shared.searchParams.keys()].sort()).toEqual(["network", "networkName"]);
+  // The invitation opens the host's machine, and carries no script.
+  expect([...shared.searchParams.keys()].sort()).toEqual(["network", "networkName", "profile", "vfs"]);
+  expect(shared.searchParams.get("profile")).toBe("shell");
+  expect(shared.searchParams.get("vfs")).toBe(new URL(page.url()).searchParams.get("vfs"));
   expect(shared.searchParams.get("networkName")).toBe("LAN party");
   expect(shared.hash).toBe("");
 

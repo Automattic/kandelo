@@ -2512,9 +2512,10 @@ Outbound internet traffic leaves through the fetch and TLS bridges, which the gu
 The Kandelo app's dock has a network button for **network sessions** between
 independent computers that are already running. Creating a session makes this
 computer the host of a `10.89.0.0/24` link (`10.89.0.1`) and shows an invite
-link carrying only a random room token and the session's name, never the
-page's boot image or scripts. Opening the link opens the panel with a Join
-button; joining always waits for that click, because it shows the hosting
+link carrying a random room token, the session's name, and the machine the
+host runs (its `vfs` image and `profile`, as a Share link names them), never
+the fragment where startup scripts travel. Opening the link boots that machine
+and opens the panel with a Join button; joining always waits for that click, because it shows the hosting
 computer this computer's network address. A session admits up to 31 joiners;
 the host forwards their traffic in its dedicated kernel worker, and the panel
 lists the computers and addresses the worker reports. Booting another machine
