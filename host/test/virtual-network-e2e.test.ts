@@ -197,7 +197,7 @@ async function sendAfterPeerFin(
 
 describe.skipIf(!udpServerPath || !udpClientPath)("virtual network guest socket integration", () => {
   it("routes POSIX UDP sendto/recvfrom between two Kandelo machines", async () => {
-    const network = new LocalVirtualNetwork();
+    const network = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const serverIO = machineIO(network, "server", [10, 88, 0, 2]);
     const clientIO = machineIO(network, "client", [10, 88, 0, 3]);
     const events: string[] = [];
@@ -255,7 +255,7 @@ describe.skipIf(!udpServerPath || !udpClientPath)("virtual network guest socket 
 
 describe.skipIf(!tcpServerPath || !tcpClientPath)("virtual network TCP guest socket integration", () => {
   it("routes POSIX TCP connect/accept/read/write between two Kandelo machines", async () => {
-    const network = new LocalVirtualNetwork();
+    const network = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const serverIO = machineIO(network, "server", [10, 88, 0, 2]);
     const clientIO = machineIO(network, "client", [10, 88, 0, 3]);
     const port = 24124;
@@ -413,7 +413,7 @@ describe.skipIf(!tcpServerPath)("Node TCP guest socket integration", () => {
 
 describe.skipIf(!ncPath)("virtual network nc integration", () => {
   it("uses the packaged nc over the local virtual TCP network", async () => {
-    const network = new LocalVirtualNetwork();
+    const network = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const serverIO = machineIO(network, "server", [10, 88, 0, 2]);
     const clientIO = machineIO(network, "client", [10, 88, 0, 3]);
     const port = 24125;
@@ -454,7 +454,7 @@ describe.skipIf(!ncPath)("virtual network nc integration", () => {
   }, 15_000);
 
   it("uses the packaged nc over the local virtual UDP network", async () => {
-    const network = new LocalVirtualNetwork();
+    const network = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const serverIO = machineIO(network, "server", [10, 88, 0, 2]);
     const clientIO = machineIO(network, "client", [10, 88, 0, 3]);
     const port = 24126;

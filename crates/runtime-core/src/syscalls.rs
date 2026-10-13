@@ -11888,6 +11888,18 @@ fn is_virtual_network_addr(addr: [u8; 4]) -> bool {
     addr[0] == 10 && addr[1] == 88
 }
 
+/// A destination that names every host on a link: the limited broadcast
+/// address, or the configured interface's directed (subnet) broadcast
+/// address. Sending to either needs `SO_BROADCAST`. Only a destination that
+/// would leave the machine is checked against the host's interface.
+fn requires_broadcast_permission(addr: [u8; 4], host: &mut dyn HostIO) -> bool {
+    addr == [255, 255, 255, 255]
+        || (addr != [0, 0, 0, 0]
+            && !is_loopback_addr(addr)
+            && !is_ipv4_multicast_addr(addr)
+            && crate::netif::is_interface_broadcast(addr, host))
+}
+
 fn is_ipv4_multicast_addr(addr: [u8; 4]) -> bool {
     (224..=239).contains(&addr[0])
 }
@@ -12394,7 +12406,7 @@ fn udp_send_datagram(
     if state == SocketState::Connected {
         udp_take_socket_error(proc, sock_idx)?;
     }
-    if dst_addr == [255, 255, 255, 255] {
+    if requires_broadcast_permission(dst_addr, host) {
         use wasm_posix_shared::socket::{SOL_SOCKET, SO_BROADCAST};
 
         let broadcast_enabled = proc
@@ -14540,7 +14552,7 @@ pub fn sys_connect(
                 if raw_ip == [0, 0, 0, 0] && port == 0 {
                     return Err(Errno::EADDRNOTAVAIL);
                 }
-                if ip == [255, 255, 255, 255] {
+                if requires_broadcast_permission(ip, host) {
                     use wasm_posix_shared::socket::{SOL_SOCKET, SO_BROADCAST};
 
                     let broadcast_enabled =
@@ -16967,6 +16979,41 @@ pub fn sys_ioctl(
         buf[ns..].fill(0);
         buf[ns..ns + 2].copy_from_slice(&crate::netif::AF_INET.to_le_bytes());
         buf[ns + 4..ns + 8].copy_from_slice(&addr);
+        return Ok(());
+    }
+    // The address family queries share SIOCGIFADDR's `struct sockaddr_in`
+    // reply. An interface without the address reports EADDRNOTAVAIL.
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFNETMASK
+        || request == wasm_posix_shared::ioctl_contract::SIOCGIFBRDADDR
+    {
+        if buf.len() < crate::netif::IF_NAMESIZE + 8 {
+            return Err(Errno::EINVAL);
+        }
+        let (name_buf, name_len) = crate::netif::read_name_bytes(buf);
+        let iface =
+            crate::netif::find_by_name(&name_buf[..name_len]).ok_or(Errno::ENODEV)?;
+        let addr = if request == wasm_posix_shared::ioctl_contract::SIOCGIFNETMASK {
+            crate::netif::interface_config(iface, host).map(|config| config.netmask)
+        } else {
+            crate::netif::interface_broadcast(iface, host)
+        }
+        .ok_or(Errno::EADDRNOTAVAIL)?;
+        let ns = crate::netif::IF_NAMESIZE;
+        buf[ns..].fill(0);
+        buf[ns..ns + 2].copy_from_slice(&crate::netif::AF_INET.to_le_bytes());
+        buf[ns + 4..ns + 8].copy_from_slice(&addr);
+        return Ok(());
+    }
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFFLAGS {
+        if buf.len() < crate::netif::IF_NAMESIZE + 2 {
+            return Err(Errno::EINVAL);
+        }
+        let (name_buf, name_len) = crate::netif::read_name_bytes(buf);
+        let iface =
+            crate::netif::find_by_name(&name_buf[..name_len]).ok_or(Errno::ENODEV)?;
+        let ns = crate::netif::IF_NAMESIZE;
+        let flags = crate::netif::interface_flags(iface, host);
+        buf[ns..ns + 2].copy_from_slice(&flags.to_le_bytes());
         return Ok(());
     }
     if request == wasm_posix_shared::ioctl_contract::SIOCGIFINDEX {
@@ -21632,6 +21679,8 @@ mod tests {
         /// returns the same owners host_stat would for the path.
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
         handle_paths: std::collections::HashMap<i64, Vec<u8>>,
+        /// What `host_network_interface` reports; `None` is no address.
+        network_interface: Option<crate::netif::InterfaceConfig>,
         freeze_exec_handles: bool,
         frozen_handle_stats: std::collections::HashMap<i64, WasmStat>,
         frozen_handle_bytes: std::collections::HashMap<i64, Vec<u8>>,
@@ -21786,6 +21835,7 @@ mod tests {
                 file_times: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
                 handle_paths: std::collections::HashMap::new(),
+                network_interface: None,
                 freeze_exec_handles: false,
                 frozen_handle_stats: std::collections::HashMap::new(),
                 frozen_handle_bytes: std::collections::HashMap::new(),
@@ -22233,6 +22283,9 @@ mod tests {
     impl HostIO for MockHostIO {
         fn host_udp_source_address(&mut self, _dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
             self.udp_source_result
+        }
+        fn host_network_interface(&mut self) -> Option<crate::netif::InterfaceConfig> {
+            self.network_interface
         }
 
         fn host_close(&mut self, handle: i64) -> Result<(), Errno> {
@@ -40415,6 +40468,37 @@ impl HostIO for NetMock {
             Errno::EPIPE,
             "write shutdown must precede broadcast permission",
         );
+    }
+
+    #[test]
+    fn test_subnet_broadcast_requires_so_broadcast() {
+        let mut proc = Process::new(9061);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        host.network_interface = crate::netif::InterfaceConfig::validated([10, 89, 0, 2], [255, 255, 255, 0]);
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut dest = [0u8; 16];
+        dest[0] = AF_INET as u8;
+        dest[3] = 9;
+        dest[4..8].copy_from_slice(&[10, 89, 0, 255]);
+        assert_eq!(sys_sendto(&mut proc, &mut host, fd, b"x", 0, &dest).unwrap_err(), Errno::EACCES);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &dest).unwrap_err(), Errno::EACCES);
+        sys_setsockopt(&mut proc, fd, SOL_SOCKET, SO_BROADCAST, 1).unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, fd, b"x", 0, &dest).unwrap_err(),
+            Errno::ENETUNREACH,
+            "with SO_BROADCAST the subnet broadcast reaches HostIO",
+        );
+
+        // An ordinary member of the subnet is unicast and needs no permission,
+        // and without an assignment the address is no broadcast at all.
+        let plain = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut member = dest;
+        member[4..8].copy_from_slice(&[10, 89, 0, 3]);
+        assert_eq!(sys_sendto(&mut proc, &mut host, plain, b"x", 0, &member).unwrap_err(), Errno::ENETUNREACH);
+        host.network_interface = None;
+        assert_eq!(sys_sendto(&mut proc, &mut host, plain, b"x", 0, &dest).unwrap_err(), Errno::ENETUNREACH);
     }
 
     #[test]
