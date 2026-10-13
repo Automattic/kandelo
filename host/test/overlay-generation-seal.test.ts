@@ -6,6 +6,7 @@ import {
   writeOverlayGenerationSeal,
 } from "../src/vfs/overlay-generation-seal";
 import {
+  compactOverlayGenerationAtBoot,
   enableBestOverlayGeneration,
   type OverlayGenerationFiles,
 } from "../src/vfs/overlay-generation-selection";
@@ -157,5 +158,32 @@ describe("overlay generation boot selection", () => {
     await expect(enableBestOverlayGeneration(files(entries), () => {}))
       .rejects.toThrow("refusing to reset");
     expect(Object.keys(entries)).toEqual(["g0.journal"]);
+  });
+
+  it("stages and seals a compacted slot before selecting it", async () => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
+    const compacted = await compactOverlayGenerationAtBoot(selected, files(entries), (target) => {
+      target.writeAllAt(0, source.bytes);
+      target.flush();
+    }, 0);
+    expect(compacted.slot).toBe("g0");
+    expect(compacted.generation).toBe(1);
+    expect(entries["g0.seal"]!.len()).toBeGreaterThan(88);
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
+    expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
+  });
+
+  it("leaves the source intact when target compaction fails", async () => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
+    await expect(compactOverlayGenerationAtBoot(selected, files(entries), (target) => {
+      target.writeAllAt(0, Uint8Array.of(1, 2));
+      throw new Error("injected target failure");
+    }, 0)).rejects.toThrow("injected target failure");
+    expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
+    expect(entries["g0.seal"]!.len()).toBe(0);
   });
 });

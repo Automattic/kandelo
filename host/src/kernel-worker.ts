@@ -5543,8 +5543,35 @@ export class CentralizedKernelWorker {
         return undefined;
       });
       if (status !== 0) throw new Error(`kernel refused fixed rootfs persistence (errno ${-(status ?? 5)})`);
+      this.#persistentOverlayImportSlot = 0;
     } catch (error) {
       this.#kernel.setPersistentOverlayStorage(null);
+      throw error;
+    }
+  }
+
+  #persistentOverlayImportSlot: 0 | 1 = 0;
+
+  compactRootfsPersistence(target: PersistentOverlayStorage): void {
+    const targetSlot = this.#persistentOverlayImportSlot === 0 ? 1 : 0;
+    if (targetSlot === 0) this.#kernel.setPersistentOverlayStorage(target);
+    else this.#kernel.setPersistentOverlayTargetStorage(target);
+    let status: number | undefined;
+    try {
+      this.#runImmediateKernelEntry("compact rootfs persistence", (entry) => {
+        const compact = this.#kernelInstanceForEntry(entry).exports
+          .kernel_rootfs_compact_persistence as ((targetSlot: number) => number) | undefined;
+        if (typeof compact !== "function") throw new Error("kernel lacks rootfs persistence compaction export");
+        status = compact(targetSlot);
+        return undefined;
+      });
+      if (status !== 0) throw new Error(`rootfs persistence compaction failed (errno ${-(status ?? 5)})`);
+      if (targetSlot === 0) this.#kernel.setPersistentOverlayTargetStorage(null);
+      else this.#kernel.setPersistentOverlayStorage(null);
+      this.#persistentOverlayImportSlot = targetSlot;
+    } catch (error) {
+      if (targetSlot === 0) this.#kernel.setPersistentOverlayStorage(null);
+      else this.#kernel.setPersistentOverlayTargetStorage(null);
       throw error;
     }
   }

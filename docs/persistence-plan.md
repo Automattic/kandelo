@@ -55,12 +55,13 @@ installation reclaims abandoned generation files. Reopening uses positioned OPFS
 reads and a bounded clean cache; fixed overwrites use a bounded dirty cache.
 Initial source fetch, zstd decode, and image-writer loading still materialize
 the source image. Journal block locations and recovery work still grow with
-the number of distinct changed blocks. Rust can stage a verified compacted
-copy without changing the source, but the host cannot yet atomically hand off
-between journal generations. A prototype generation seal records the base
-digest and per-MiB journal digests and can verify a candidate with bounded
-reads, but no host selects sealed generations yet. Crash-safe live compaction
-and persistent
+the number of distinct changed blocks. On Node and browser boots, a journal
+with at least 32 MiB of unsealed tail is compacted into the alternate slot
+before processes start. The old generation stays intact until the new journal
+is flushed, sealed, and verified. This resets accumulated transaction history
+for later boots, but the first recovery still scans that history; every boot
+also scans the entire sealed prefix and holds an in-memory index for every
+changed block. Live compaction and persistent
 namespace mutations remain separate milestones, not implicit guarantees of
 the current fixed-overwrite mode.
 
@@ -70,6 +71,5 @@ the compacted prefix while the active journal may append later transactions;
 the kernel still validates and replays those transactions. If a slot is torn or
 its journal is rejected, boot tries the previous valid slot and then the
 legacy journal. If generation files exist without any valid journal, boot
-refuses to create an empty replacement. No live compaction handoff writes these
-slots yet, so this is a recovery prerequisite rather than a completed
-compaction milestone.
+refuses to create an empty replacement. Boot-time handoff writes these slots;
+live compaction does not.
