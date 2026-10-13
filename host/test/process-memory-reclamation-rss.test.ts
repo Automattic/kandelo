@@ -45,7 +45,12 @@ describe("process-memory reclamation under real sequential spawn churn", () => {
             ...process.env,
             KANDELO_RECLAIM_WARMUP_CHILDREN: "4",
             KANDELO_RECLAIM_WAVE_CHILDREN: "8",
-            KANDELO_RECLAIM_WAVES: "6",
+            // The calibrated window (docs/measurements/2026-07-28-process-
+            // memory-retirement-rss.md): 12 waves, so the late window spans
+            // children 32-96. Over a 4-wave window, one wave that is not
+            // collected yet, or the climb before a collection cycle, moved
+            // the slope and growth past their bounds with nothing retained.
+            KANDELO_RECLAIM_WAVES: "12",
             KANDELO_RECLAIM_CHILD_MIB: "8",
           },
           maxBuffer: 8 * MIB,
@@ -65,7 +70,7 @@ describe("process-memory reclamation under real sequential spawn churn", () => {
       const result = JSON.parse(lines.at(-1) ?? "") as HarnessResult;
       expect(result.stderr).toEqual([]);
       expect(result.diagnostics).toEqual([]);
-      expect(result.samples).toHaveLength(7);
+      expect(result.samples).toHaveLength(13);
       expect(result.pressureBytes).toBe(4 * MIB);
 
       // A stale listener, Worker, lease, or process-table reference would keep
