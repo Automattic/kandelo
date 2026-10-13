@@ -253,7 +253,8 @@ pipe pair.
   bounded 4 MiB cache; boot verifies its 1 MiB chunk digests without a
   whole-image JavaScript buffer. The 256 KiB dirty-block cache holds
   unsynced fixed-size overwrites; `fsync`, `fdatasync`, eviction, and graceful
-  destroy flush it. An abrupt crash can lose unsynced writes. Image capacity,
+  destroy flush it. Browser termination loses unsynced writes without changing
+  the last durable image; an abrupt crash can do the same. Image capacity,
   runtime memory, and OPFS quota are distinct limits; this prototype has not
   yet demonstrated an actual image larger than memory.
   Browser quota or eviction can remove OPFS data. If the entire

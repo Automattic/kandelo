@@ -12,7 +12,7 @@ semantics. Node and browser must expose the same guest-visible behavior.
   complete transactions after a crash.
 - [x] Boot an opt-in browser computer from its saved image and journal, with
   a guest write surviving reload.
-- [ ] Define and test the durability contract. A successful write is visible
+- [x] Define and test the durability contract. A successful write is visible
   immediately; `fsync`/`fdatasync` must make preceding writes durable or
   report failure. Document what a crash may lose without a successful sync,
   and how writeback errors are surfaced. Keep the disk capacity, resident
