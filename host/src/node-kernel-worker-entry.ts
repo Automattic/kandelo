@@ -38,6 +38,8 @@ import type {
 } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import { OverlayStorageFile } from "./vfs/overlay-storage";
+import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
+import { enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
@@ -178,7 +180,7 @@ const port = parentPort;
 // --- State ---
 
 let kernelWorker: CentralizedKernelWorker;
-let persistentOverlay: OverlayStorageFile | null = null;
+let persistentOverlay: PersistentOverlayStorage | null = null;
 let persistentOverlayLockDir: string | null = null;
 let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
@@ -1264,18 +1266,20 @@ async function handleInit(msg: InitMessage) {
     const lockDir = `${path}.lock`;
     mkdirSync(lockDir, { mode: 0o700 });
     try {
-      const storage = OverlayStorageFile.open(
-        new HostFileSystem(dirname(path)),
-        `/${basename(path)}`,
-      );
-      try {
-        kernelWorker.enableFixedRootfsPersistence(storage);
-        persistentOverlay = storage;
-        persistentOverlayLockDir = lockDir;
-      } catch (error) {
-        storage.close();
-        throw error;
-      }
+      const backend = new HostFileSystem(dirname(path));
+      const selected = await enableBestOverlayGeneration({
+        open: async (slot, file, create) => {
+          const name = slot === "legacy" ? basename(path) : `${basename(path)}.${slot}.${file}`;
+          if (slot === "legacy" && file === "journal") {
+            if (!create && !existsSync(join(dirname(path), name))) return null;
+            return OverlayStorageFile.open(backend, `/${name}`, create);
+          }
+          if (!existsSync(join(dirname(path), name))) return null;
+          return OverlayStorageFile.open(backend, `/${name}`, false);
+        },
+      }, (storage) => kernelWorker.enableFixedRootfsPersistence(storage));
+      persistentOverlay = selected.journal;
+      persistentOverlayLockDir = lockDir;
     } catch (error) {
       rmdirSync(lockDir);
       throw error;
