@@ -4,15 +4,14 @@ import { answerNetworkInvite, attachNetworkBridge, createNetworkInvite } from ".
 import { NetworkSessionController, sessionInvitation, type SessionState } from "../../../lib/network-session";
 
 /**
- * Where rooms live. A deployment names its piplet with
- * VITE_KANDELO_SIGNALLING_URL; the dev server relays a local one. Without
- * either, sessions are unavailable and the panel says so.
+ * Production uses signalling/piplet.php under the deployment base unless
+ * overridden with VITE_KANDELO_SIGNALLING_URL; dev relays a local piplet.
  */
 function signallingServer(): string | null {
   const configured = import.meta.env.VITE_KANDELO_SIGNALLING_URL as string | undefined;
   if (configured) return new URL(configured, location.href).href;
   if (import.meta.env.DEV) return new URL(`${import.meta.env.BASE_URL}__kandelo_signalling`, location.href).href;
-  return null;
+  return new URL(`${import.meta.env.BASE_URL}signalling/piplet.php`, location.href).href;
 }
 
 const transport = { createInvite: createNetworkInvite, answerInvite: answerNetworkInvite, bridge: attachNetworkBridge };

@@ -2566,10 +2566,22 @@ adapter capability.
 Computers find each other through the signalling piplet's rooms. The
 development server relays the real `apps/signalling/piplet.php` same-origin
 at `<base>__kandelo_signalling`, run by PHP from `apps/signalling/tools.nix`
-(or `KANDELO_SIGNALLING_PHP`, or `php` on `PATH`). A deployment names its
-piplet with `VITE_KANDELO_SIGNALLING_URL`; serve it same-origin or with CORS.
-Without either, the panel says sessions are unavailable rather than offering
-a button that cannot work.
+(or `KANDELO_SIGNALLING_PHP`, or `php` on `PATH`). Production defaults to
+the same-origin `<base>signalling/piplet.php`: a build for `/kandelo/` uses
+`/kandelo/signalling/piplet.php`. Override it with
+`VITE_KANDELO_SIGNALLING_URL` when building; serve a
+cross-origin endpoint with CORS. For example:
+
+```bash
+VITE_KANDELO_SIGNALLING_URL=/custom/piplet.php ./run.sh build-browser
+```
+
+The build forwards this deployment setting into its isolated dev shell.
+The endpoint is embedded in the browser bundle; changing it requires a rebuild.
+Deploy the PHP piplet separately on a PHP-capable server; the static browser
+output does not start or deploy a signalling service.
+If the endpoint is unavailable, session creation or joining reports the request
+failure in the panel.
 
 UDP uses an unordered channel with zero retransmissions; directory control is
 ordered and reliable. The payload cap is the lesser of 65,507 bytes and the
