@@ -76,7 +76,9 @@ the journal, and before any guest starts, the page verifies its flushed header
 against a streamed whole-image SHA-256 digest and marks the manifest ready.
 Reopening a pending image may initialize an absent journal because no guest
 has yet run; reopening a ready image refuses an absent or empty journal rather
-than silently resetting it. Node exposes the same strict reopen option.
+than silently resetting it. Node exposes the same strict reopen option. An
+empty strict journal now reports the typed no-valid-generation condition so
+the page can try its verified prior image before launching guests.
 Chromium, Firefox, and WebKit now exercise a page reload between manifest
 publication and the first kernel boot, followed by a guest write, a ready-state
 transition, and a strict reboot that recovers the write.
@@ -215,8 +217,10 @@ the kernel still validates and replays those transactions. If a slot is torn or
 its journal or indexed checkpoint is rejected with `EIO`, boot tries the
 previous valid slot and then the legacy journal. Other kernel refusals and
 errors thrown directly by the host propagate rather than triggering fallback.
-If generation files exist without any valid journal, boot
-refuses to create an empty replacement. Compaction prepares a
+If generation files exist without any valid journal, boot refuses to create
+or reuse an empty legacy journal as a replacement, even for a non-strict
+low-level caller. Node and Chromium, Firefox, and WebKit exercise that torn
+slot plus empty-legacy case. Compaction prepares a
 compacted journal without switching the kernel's active handle, writes and
 verifies the target seal, and only then activates it. Failure cancels the
 prepared target and invalidates its seal. The kernel refuses activation if

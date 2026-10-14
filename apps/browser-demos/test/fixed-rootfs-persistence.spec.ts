@@ -528,8 +528,21 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         } finally {
           await fallback.destroy();
         }
-        await directory.removeEntry(`${name}.journal`);
         await tearSeal();
+        const legacyFile = await directory.getFileHandle(`${name}.journal`);
+        const emptyWriter = await legacyFile.createWritable();
+        await emptyWriter.close();
+        const empty = new BrowserKernel({ kernelOwnedFs: true });
+        let emptyRejected = false;
+        try {
+          await empty.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+        } catch (error) {
+          emptyRejected = isNoValidOverlayGenerationError(error);
+        } finally {
+          await empty.destroy();
+        }
+        const emptyStillEmpty = (await legacyFile.getFile()).size === 0;
+        await directory.removeEntry(`${name}.journal`);
         const missing = new BrowserKernel({ kernelOwnedFs: true });
         let rejected = false;
         try {
@@ -539,14 +552,14 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         } finally {
           await missing.destroy();
         }
-        return { indexedState, state, rejected };
+        return { indexedState, state, emptyRejected, emptyStillEmpty, rejected };
       }, {
         moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
         overlaySelectionUrl: new URL(`/@fs/${overlaySelectionPath}`, baseURL).href,
         kernelUrl,
         name: result.name,
       });
-      expect(recovery).toEqual({ indexedState: "XYcdefgh", state: "XYcdefgh", rejected: true });
+      expect(recovery).toEqual({ indexedState: "XYcdefgh", state: "XYcdefgh", emptyRejected: true, emptyStillEmpty: true, rejected: true });
     } finally {
       await context.close();
     }

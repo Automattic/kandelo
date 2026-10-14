@@ -93,7 +93,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       await expect(boot(image, path, false, true)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       expect(existsSync(path)).toBe(false);
       writeFileSync(path, new Uint8Array());
-      await expect(boot(image, path, false, true)).rejects.toThrow("refusing to reset");
+      await expect(boot(image, path, false, true)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       expect(readFileSync(path).byteLength).toBe(0);
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -227,6 +227,9 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       }
       writeFileSync(`${path}.g0.seal`, Buffer.from("torn"));
       await expect(boot(image, path)).rejects.toThrow(/errno 5/);
+      writeFileSync(path, new Uint8Array());
+      await expect(boot(image, path)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
+      expect(readFileSync(path).byteLength).toBe(0);
       writeFileSync(path, legacy);
       const fallback = await boot(image, path);
       await fallback.destroy();

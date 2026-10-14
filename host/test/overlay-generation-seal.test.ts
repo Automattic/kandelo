@@ -261,6 +261,17 @@ describe("overlay generation boot selection", () => {
     expect(Object.keys(entries)).toEqual(["g0.journal"]);
   });
 
+  it("refuses an empty legacy journal when all generation slots are invalid", async () => {
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": new MemoryStorage(),
+      "g0.journal": new MemoryStorage(Uint8Array.of(1)),
+      "g0.seal": new MemoryStorage(Uint8Array.of(2)),
+    };
+    await expect(enableBestOverlayGeneration(files(entries), () => {}))
+      .rejects.toBeInstanceOf(NoValidOverlayGenerationError);
+    expect(entries["legacy.journal"]!.len()).toBe(0);
+  });
+
   it("does not create a missing journal for a restored computer", async () => {
     const entries: Record<string, MemoryStorage> = {};
     await expect(enableBestOverlayGeneration(files(entries), () => {}, true))
@@ -268,7 +279,7 @@ describe("overlay generation boot selection", () => {
     expect(Object.keys(entries)).toEqual([]);
     expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("legacy");
     await expect(enableBestOverlayGeneration(files(entries), () => {}, true))
-      .rejects.toThrow("refusing to reset");
+      .rejects.toBeInstanceOf(NoValidOverlayGenerationError);
   });
 
   it("stages and seals a compacted slot before selecting it", async () => {
