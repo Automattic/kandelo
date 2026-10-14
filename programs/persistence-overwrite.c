@@ -3,12 +3,29 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    int set_metadata = argc >= 2 && strcmp(argv[1], "set-metadata") == 0;
+    int verify_metadata = argc >= 2 && strcmp(argv[1], "verify-metadata") == 0;
+    if (set_metadata || verify_metadata) {
+        if (set_metadata) {
+            int fd = open("/created-link", O_RDONLY);
+            if (fd < 0) return 94;
+            if (fchmod(fd, 0600) != 0 || close(fd) != 0) return 95;
+            const struct timespec times[2] = {{123456, 234}, {234567, 345}};
+            return utimensat(AT_FDCWD, "/created-link", times, 0) == 0 ? 0 : 96;
+        }
+        struct stat metadata;
+        if (stat("/created-link", &metadata) != 0) return 97;
+        if ((metadata.st_mode & 0777) != 0600 || metadata.st_atim.tv_sec != 123456 || metadata.st_atim.tv_nsec != 234) return 98;
+        if (metadata.st_mtim.tv_sec != 234567 || metadata.st_mtim.tv_nsec != 345) return 99;
+        return 0;
+    }
     int create_tree = argc >= 2 && strcmp(argv[1], "create-tree") == 0;
     int verify_tree = argc >= 2 && strcmp(argv[1], "verify-tree") == 0;
     int verify_tree_moved = argc >= 2 && strcmp(argv[1], "verify-tree-moved") == 0;

@@ -80,7 +80,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     const path = join(directory, "machine.journal");
     try {
       const image = await makeImage("abcdefgh");
-      for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed"] as const) {
+      for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed", "set-metadata", "verify-metadata"] as const) {
         const host = await boot(image, path, true);
         try {
           const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);

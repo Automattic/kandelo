@@ -62,7 +62,7 @@ test("browser reopens sparse image and created files after namespace changes", a
         await writer.write(imageBytes);
         await writer.close();
         const statuses = [];
-        for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed"]) {
+        for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed", "set-metadata", "verify-metadata"]) {
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
           try {
             await kernel.initFromOpfsImage({
@@ -79,7 +79,7 @@ test("browser reopens sparse image and created files after namespace changes", a
         const journal = await (await directory.getFileHandle(`${name}.journal`)).getFile();
         return { statuses, journalSize: journal.size };
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result.statuses).toEqual(Array(18).fill(0));
+      expect(result.statuses).toEqual(Array(20).fill(0));
       expect(result.journalSize).toBeLessThan(32_768);
     } finally {
       await context.close();
