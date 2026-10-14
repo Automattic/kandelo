@@ -123,6 +123,7 @@ const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
   : createPagesVfsProductLoader(
     CANONICAL_PAGES_VFS_PRODUCTS,
     (url, init) => fetch(url, init),
+    { prefetchEager: false },
   );
 
 const OPTIONAL_BINARY_URLS = {
@@ -576,7 +577,7 @@ export interface CreateLiveHostOptions {
 export async function createLiveHost(
   opts: CreateLiveHostOptions = {},
 ): Promise<LiveKernelHost> {
-  if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
+  if (CANONICAL_PAGES_VFS_LOADER !== undefined && !opts.experimentalPersistenceName) {
     // WHY only the shell: this prefetches the default boot image. The platform
     // rootfs is a lazy product now — a supporting artifact that on-demand paths
     // activate for themselves — so awaiting it here would make every boot,
@@ -2043,6 +2044,19 @@ async function loadVfsImage(
       reportProgress(progress);
     });
     try {
+      if (persistentInstall) {
+        const stagingDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle(
+          "kandelo-persistent-overlay", { create: true },
+        );
+        const activation = await CANONICAL_PAGES_VFS_LOADER.activatePositioned(productId, stagingDirectory);
+        return {
+          imageBytes: new ArrayBuffer(0),
+          positionedSource: activation.source,
+          lazyAssets: activation.lazyAssets === undefined
+            ? undefined
+            : Object.freeze({ ...activation.lazyAssets }),
+        };
+      }
       const activation = await CANONICAL_PAGES_VFS_LOADER.activate(productId);
       return {
         imageBytes: activation.imageBytes.slice(0),
@@ -2498,7 +2512,7 @@ function localProductBuildCommand(source: VfsProductSource): string | undefined 
 async function resolveVfsProductUrl(source: VfsProductSource): Promise<string> {
   if (source.kind === "url") {
     if (CANONICAL_PAGES_VFS_LOADER === undefined) return source.url;
-    return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
+    return (await CANONICAL_PAGES_VFS_LOADER.resolve(source.productId)).imageUrl;
   }
   if (source.kind === "optional-demo") {
     return resolveOptionalDemoVfsUrl(
@@ -2507,11 +2521,11 @@ async function resolveVfsProductUrl(source: VfsProductSource): Promise<string> {
       undefined,
       CANONICAL_PAGES_VFS_LOADER === undefined
         ? undefined
-        : async () => (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl,
+        : async () => (await CANONICAL_PAGES_VFS_LOADER.resolve(source.productId)).imageUrl,
     );
   }
   if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
-    return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
+    return (await CANONICAL_PAGES_VFS_LOADER.resolve(source.productId)).imageUrl;
   }
   return optionalBinaryUrl(source.relPaths, source.label);
 }
@@ -2520,7 +2534,7 @@ async function resolveTrustedVfsProductUrl(
   source: VfsProductSource,
 ): Promise<string> {
   if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
-    return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
+    return (await CANONICAL_PAGES_VFS_LOADER.resolve(source.productId)).imageUrl;
   }
   return resolveVfsProductUrl(source);
 }

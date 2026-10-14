@@ -17,7 +17,7 @@ semantics. Node and browser must expose the same guest-visible behavior.
   report failure. Document what a crash may lose without a successful sync,
   and how writeback errors are surfaced. Keep the disk capacity, resident
   cache budget, and OPFS quota as distinct limits.
-- [ ] Install a decoded, composed image into OPFS incrementally. Verify its
+- [x] Install a decoded, composed image into OPFS incrementally. Verify its
   identity and digest before publishing a generation. An interrupted install
   must leave the previous bootable generation untouched. Do not allocate an
   image-sized JavaScript or Wasm buffer while installing.
@@ -61,12 +61,14 @@ can be composed with a 64 MiB VFS profile budget without returning source or
 composed image bytes to the page. A separate read-only test boots a 772 MiB
 decoded image under the constrained 768 MiB kernel memory ceiling on Chromium,
 Firefox, and WebKit, with no image-sized page or kernel-worker allocation. The
-temporary source is removed after composition; an interrupted browser process
-may leave an orphaned source file. Pages products and protected
-candidate placements still materialize their source bytes, so the incremental
-install milestone is not complete. The browser writer's positioned import is
-isolated in a separate Wasm artifact; the default image writer remains
-import-free. Journal block locations and recovery work still grow with
+temporary source is removed after composition. The next install reclaims
+orphaned source files while preserving active sources held by another tab's
+Web Lock. Pages products now authenticate compressed source bytes incrementally
+against the grouped product digest before staging and composing them. Protected
+candidate boots explicitly reject experimental persistence. Ordinary
+nonpersistent boots still use resident image bytes. The browser writer's
+positioned import is isolated in a separate Wasm artifact; the default writer
+remains import-free. Journal block locations and recovery work still grow with
 the number of distinct changed blocks. On Node and browser boots, a journal
 with at least 32 MiB of unsealed tail is compacted into the alternate slot
 before processes start. The old generation stays intact until the new journal

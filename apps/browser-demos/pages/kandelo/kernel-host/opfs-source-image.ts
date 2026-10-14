@@ -1,4 +1,5 @@
 import { Decompress } from "fzstd";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { VFS_IMAGE_MAX_DECOMPRESSED_BYTES } from "../../../../../host/src/vfs/vfs-image-transport";
 import type { OpfsImageIntegrity } from "../../../../../host/src/vfs/opfs-image-reader";
 import { identityEncodedContentLength } from "../../../../../web-libs/kandelo-session/src/sized-download";
@@ -7,6 +8,48 @@ const CHUNK_BYTES = 1024 * 1024;
 const MAX_ZSTD_WINDOW_BYTES = 16 * 1024 * 1024;
 const MAX_ZSTD_BLOCK_BYTES = 128 * 1024;
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
+const SOURCE_FILE_PATTERN = /^source-[0-9a-f-]{36}\.vfs$/;
+
+function sourceLockName(name: string): string {
+  return `kandelo-persistent-source-${name}`;
+}
+
+async function reclaimAbandonedSources(directory: FileSystemDirectoryHandle): Promise<void> {
+  if (!navigator.locks) throw new Error("persistent VFS source staging requires Web Locks");
+  const names: string[] = [];
+  for await (const name of directory.keys()) {
+    if (SOURCE_FILE_PATTERN.test(name)) names.push(name);
+  }
+  for (const name of names) {
+    await navigator.locks.request(sourceLockName(name), { ifAvailable: true }, async (lock) => {
+      if (lock !== null) await directory.removeEntry(name).catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+      });
+    });
+  }
+}
+
+async function holdSourceLock(name: string): Promise<() => Promise<void>> {
+  if (!navigator.locks) throw new Error("persistent VFS source staging requires Web Locks");
+  let signalRelease!: () => void;
+  const released = new Promise<void>((resolve) => { signalRelease = resolve; });
+  let signalAcquired!: () => void;
+  let signalFailed!: (error: unknown) => void;
+  const acquired = new Promise<void>((resolve, reject) => {
+    signalAcquired = resolve;
+    signalFailed = reject;
+  });
+  const holding = navigator.locks.request(sourceLockName(name), async () => {
+    signalAcquired();
+    await released;
+  });
+  void holding.catch(signalFailed);
+  await acquired;
+  return async () => {
+    signalRelease();
+    await holding;
+  };
+}
 
 class StreamBytes {
   private current: Uint8Array<ArrayBufferLike> = new Uint8Array();
@@ -16,7 +59,7 @@ class StreamBytes {
 
   constructor(
     prefix: Uint8Array[],
-    private readonly reader: ReadableStreamDefaultReader<Uint8Array>,
+    private readonly readSource: () => Promise<ReadableStreamReadResult<Uint8Array>>,
     private readonly onProgress: (loadedBytes: number, totalBytes: number | undefined) => void,
     private readonly totalBytes: number | undefined,
   ) {
@@ -33,7 +76,7 @@ class StreamBytes {
         if (pending !== undefined) {
           this.current = pending;
         } else {
-          const next = await this.reader.read();
+          const next = await this.readSource();
           if (next.done) {
             if (allowEnd && copied === 0) return null;
             throw new Error(`zstd VFS image has a truncated ${label}`);
@@ -64,12 +107,12 @@ class StreamBytes {
 
 async function decodeZstdToSource(
   prefix: Uint8Array[],
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  readSource: () => Promise<ReadableStreamReadResult<Uint8Array>>,
   onProgress: (loadedBytes: number, totalBytes: number | undefined) => void,
   totalBytes: number | undefined,
   write: (bytes: Uint8Array) => Promise<void>,
 ): Promise<void> {
-  const input = new StreamBytes(prefix, reader, onProgress, totalBytes);
+  const input = new StreamBytes(prefix, readSource, onProgress, totalBytes);
   const outputs: Uint8Array[] = [];
   const decompressor = new Decompress((bytes) => {
     if (bytes.byteLength > 0) outputs.push(bytes);
@@ -166,19 +209,47 @@ export interface StagedSourceImage {
   remove(): Promise<void>;
 }
 
+export interface VfsSourceIdentity {
+  bytes: number;
+  sha256: string;
+}
+
 export async function stageRawVfsSourceImage(
   response: Response,
   onProgress: (loadedBytes: number, totalBytes: number | undefined) => void,
   stagingDirectory?: FileSystemDirectoryHandle,
+  sourceIdentity?: VfsSourceIdentity,
 ): Promise<StagedSourceImage> {
+  if (sourceIdentity !== undefined && (
+    !Number.isSafeInteger(sourceIdentity.bytes) || sourceIdentity.bytes < 1 ||
+    !/^[0-9a-f]{64}$/.test(sourceIdentity.sha256)
+  )) {
+    throw new Error("VFS source identity is invalid");
+  }
   if (response.body === null) throw new Error("VFS image has no response body");
   const reader = response.body.getReader();
   const totalBytes = identityEncodedContentLength(response);
+  const sourceDigest = sourceIdentity === undefined ? null : sha256.create();
+  let sourceLength = 0;
+  const readSource = async () => {
+    const next = await reader.read();
+    if (!next.done) {
+      sourceLength += next.value.byteLength;
+      if (sourceIdentity !== undefined && sourceLength > sourceIdentity.bytes) {
+        throw new Error("VFS source exceeds its authenticated byte length");
+      }
+      sourceDigest?.update(next.value);
+    }
+    return next;
+  };
   const prefix: Uint8Array[] = [];
   let prefixLength = 0;
   try {
+    if (sourceIdentity !== undefined && totalBytes !== undefined && totalBytes !== sourceIdentity.bytes) {
+      throw new Error("VFS source content-length differs from its authenticated byte length");
+    }
     while (prefixLength < 4) {
-      const next = await reader.read();
+      const next = await readSource();
       if (next.done) break;
       prefix.push(next.value);
       prefixLength += next.value.byteLength;
@@ -197,9 +268,23 @@ export async function stageRawVfsSourceImage(
     const directory = stagingDirectory ?? await (await navigator.storage.getDirectory()).getDirectoryHandle(
       "kandelo-persistent-overlay", { create: true },
     );
+    await reclaimAbandonedSources(directory);
     const name = `source-${crypto.randomUUID()}.vfs`;
-    const file = await directory.getFileHandle(name, { create: true });
-    const remove = () => directory.removeEntry(name);
+    const release = await holdSourceLock(name);
+    let file: FileSystemFileHandle;
+    try {
+      file = await directory.getFileHandle(name, { create: true });
+    } catch (error) {
+      await release();
+      throw error;
+    }
+    const remove = async () => {
+      try {
+        await directory.removeEntry(name);
+      } finally {
+        await release();
+      }
+    };
     let writable: FileSystemWritableFileStream | undefined;
     try {
       writable = await file.createWritable();
@@ -227,11 +312,11 @@ export async function stageRawVfsSourceImage(
         }
       };
       if (compressed) {
-        await decodeZstdToSource(prefix, reader, onProgress, totalBytes, write);
+        await decodeZstdToSource(prefix, readSource, onProgress, totalBytes, write);
       } else {
         for (const bytes of prefix) await write(bytes);
         for (;;) {
-          const next = await reader.read();
+          const next = await readSource();
           if (next.done) break;
           await write(next.value);
           onProgress(length, totalBytes);
@@ -242,6 +327,15 @@ export async function stageRawVfsSourceImage(
         await writable.write(tail);
         const digest = await crypto.subtle.digest("SHA-256", tail);
         chunkSha256.push(Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""));
+      }
+      if (sourceIdentity !== undefined) {
+        if (sourceLength !== sourceIdentity.bytes) {
+          throw new Error("VFS source differs from its authenticated byte length");
+        }
+        const actualSha256 = Array.from(sourceDigest!.digest(), (byte) => byte.toString(16).padStart(2, "0")).join("");
+        if (actualSha256 !== sourceIdentity.sha256) {
+          throw new Error("VFS source SHA-256 differs from its authenticated digest");
+        }
       }
       await writable.close();
       writable = undefined;

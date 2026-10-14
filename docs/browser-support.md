@@ -234,29 +234,33 @@ pipe pair.
   in OPFS and boots the existing kernel journal with the same name. Reloading
   with the same image URL, profile, and name reuses the exact saved bytes;
   a mismatched identity or damaged image fails boot instead of resetting it.
-  The OPFS manifest checks the image length and SHA-256, plus a SHA-256 for
-  saved lazy-asset transport metadata. The page refuses
+  The OPFS manifest checks image length and per-MiB chunk digests, plus a
+  SHA-256 for saved lazy-asset transport metadata. The page refuses
   boot-link inputs and scripts in this mode, rather than auto-running a
   URL-supplied script against saved state. This is a developer smoke path,
   not a general persistent computer: only overwrites inside existing regular
   image files persist; create, append, truncate, rename, and metadata changes
   are unsupported. Restoring a newly saved custom image does not re-fetch its
   VFS source; the OPFS manifest also retains lazy-asset transport metadata.
-  Older manifests may re-fetch the source, and scoped product activation may
-  still fetch product images. The app, kernel, and lazy assets can still need
+  Older manifests may re-fetch the source. Scoped Pages products authenticate
+  their compressed source digest while staging into OPFS. The app, kernel, and
+  lazy assets can still need
   the network, so this is not an offline computer. There is no per-computer
   reset or upgrade UI; clearing site data removes this origin's machines
   and other site data. A newly composed base image is streamed into OPFS in
-  acknowledged 1 MiB chunks and published only by the current boot, but its
-  source still needs image-sized fetch and Wasm staging
-  allocations. A restored image is read from OPFS in positioned pages with a
+  acknowledged 1 MiB chunks and published only by the current boot. Direct
+  VFS URLs and scoped Pages products stage source bytes incrementally in OPFS;
+  zstd decoding uses at most a 16 MiB window. The image writer reads that
+  source through positioned calls rather than an image-sized staging buffer.
+  A restored image is read from OPFS in positioned pages with a
   bounded 4 MiB cache; boot verifies its 1 MiB chunk digests without a
   whole-image JavaScript buffer. The 256 KiB dirty-block cache holds
   unsynced fixed-size overwrites; `fsync`, `fdatasync`, eviction, and graceful
   destroy flush it. Browser termination loses unsynced writes without changing
   the last durable image; an abrupt crash can do the same. Image capacity,
-  runtime memory, and OPFS quota are distinct limits; this prototype has not
-  yet demonstrated an actual image larger than memory.
+  runtime memory, and OPFS quota are distinct limits. A 772 MiB decoded image
+  boots under the constrained 768 MiB kernel ceiling in browser tests; this
+  does not make mutable POSIX persistence complete.
   Browser quota or eviction can remove OPFS data. If the entire
   computer's OPFS state disappears, its name is
   treated as new; this mode cannot detect a complete eviction. Do not use

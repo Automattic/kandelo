@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createReadStream, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { once } from "node:events";
@@ -17,6 +18,7 @@ const imageModulePath = [
 const programPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
 const composerPath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/image-composer-client.ts");
 const sourceStagePath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/opfs-source-image.ts");
+const pagesLoaderPath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-loader.ts");
 const persistenceModulePath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/fixed-persistence-image.ts");
 const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
 const kernelPath = [
@@ -268,6 +270,125 @@ test("truncated compressed source removes its partial OPFS stage", async ({ play
   });
   expect(result.error).toContain("truncated");
   expect(result.after).toEqual(result.before);
+});
+
+test("source staging reclaims abandoned files without deleting an active source", async ({ playwright, browserName, baseURL }, testInfo) => {
+  const image = await imageWithState("source-lock");
+  const imageUrl = new URL("/fixed-composer-source-lock.vfs", baseURL).href;
+  const result = await withOpfsPage(playwright, browserName, baseURL!, testInfo, async (page) => {
+    await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+    return page.evaluate(async ({ sourceStageUrl, imageUrl }) => {
+      const { stageRawVfsSourceImage } = await import(sourceStageUrl);
+      const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle(
+        "kandelo-persistent-overlay", { create: true },
+      );
+      const orphanName = `source-${crypto.randomUUID()}.vfs`;
+      const orphan = await directory.getFileHandle(orphanName, { create: true });
+      const writable = await orphan.createWritable();
+      await writable.write(new Uint8Array([1, 2, 3]));
+      await writable.close();
+      const first = await stageRawVfsSourceImage(await fetch(imageUrl), () => {}, directory);
+      try {
+        const second = await stageRawVfsSourceImage(await fetch(imageUrl), () => {}, directory);
+        try {
+          const names: string[] = [];
+          for await (const name of directory.keys()) names.push(name);
+          return {
+            orphanPresent: names.includes(orphanName),
+            activeSources: names.filter((name) => name.startsWith("source-")).length,
+            firstLength: (await first.file.getFile()).size,
+            secondLength: (await second.file.getFile()).size,
+          };
+        } finally {
+          await second.remove();
+        }
+      } finally {
+        await first.remove();
+      }
+    }, {
+      sourceStageUrl: new URL(`/@fs/${sourceStagePath}`, baseURL).href,
+      imageUrl,
+    });
+  });
+  expect(result).toEqual({
+    orphanPresent: false,
+    activeSources: 2,
+    firstLength: image.byteLength,
+    secondLength: image.byteLength,
+  });
+});
+
+test("Pages product streams authenticated compressed bytes without eager activation", async ({ playwright, browserName, baseURL }, testInfo) => {
+  const image = await imageWithState("pages-positioned");
+  const compressed = zstdCompressSync(Buffer.from(image));
+  const digest = createHash("sha256").update(compressed).digest("hex");
+  const productPath = `/products/browser-main-shell/sha256-${digest}/browser-main-shell-1.vfs.zst`;
+  const badDigest = "0".repeat(64);
+  const badPath = `/products/browser-main-shell/sha256-${badDigest}/browser-main-shell-1.vfs.zst`;
+  const result = await withOpfsPage(playwright, browserName, baseURL!, testInfo, async (page) => {
+    await page.route(new URL(productPath, baseURL).href, (route) => route.fulfill({ body: compressed }));
+    await page.route(new URL(badPath, baseURL).href, (route) => route.fulfill({ body: compressed }));
+    return page.evaluate(async ({ loaderUrl, productPath, badPath, digest, badDigest, encodedLength }) => {
+      const { createPagesVfsProductLoaderForBase } = await import(loaderUrl);
+      const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle(
+        "kandelo-persistent-overlay", { create: true },
+      );
+      const makeEntry = (path: string, sha256: string) => ({
+        id: "browser-main-shell", load: "eager" as const,
+        path, sha256, bytes: encodedLength,
+      });
+      let requests = 0;
+      const loader = createPagesVfsProductLoaderForBase(
+        [makeEntry(productPath, digest)],
+        (url: string, init: RequestInit) => { requests++; return fetch(url, init); },
+        "/",
+        { prefetchEager: false },
+      );
+      const resolved = await loader.resolve("browser-main-shell");
+      const beforeActivation = requests;
+      const activation = await loader.activatePositioned("browser-main-shell", directory);
+      const length = activation.source.integrity.length;
+      const fileLength = (await activation.source.file.getFile()).size;
+      await activation.source.remove();
+      const badLoader = createPagesVfsProductLoaderForBase(
+        [makeEntry(badPath, badDigest)],
+        (url: string, init: RequestInit) => fetch(url, init),
+        "/",
+        { prefetchEager: false },
+      );
+      let error = "";
+      try {
+        await badLoader.activatePositioned("browser-main-shell", directory);
+      } catch (caught) {
+        error = String(caught);
+      }
+      const names: string[] = [];
+      for await (const name of directory.keys()) names.push(name);
+      return {
+        resolvedUrl: resolved.imageUrl,
+        beforeActivation,
+        requests,
+        length,
+        fileLength,
+        error,
+        sourceFiles: names.filter((name) => name.startsWith("source-")),
+      };
+    }, {
+      loaderUrl: new URL(`/@fs/${pagesLoaderPath}`, baseURL).href,
+      productPath,
+      badPath,
+      digest,
+      badDigest,
+      encodedLength: compressed.byteLength,
+    });
+  });
+  expect(result.resolvedUrl).toBe(new URL(productPath, baseURL).href);
+  expect(result.beforeActivation).toBe(0);
+  expect(result.requests).toBe(1);
+  expect(result.length).toBe(image.byteLength);
+  expect(result.fileLength).toBe(image.byteLength);
+  expect(result.error).toContain("SHA-256");
+  expect(result.sourceFiles).toEqual([]);
 });
 
 for (const scenario of [
