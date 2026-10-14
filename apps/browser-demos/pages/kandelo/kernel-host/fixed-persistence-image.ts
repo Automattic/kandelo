@@ -1,5 +1,6 @@
 import type { ImageOwnedRuntimeLazyAssets } from "../../../lib/init/image-owned-runtime-urls";
 import type { ComposeImageResult } from "./image-composer";
+import type { OpfsImageIntegrity } from "../../../../../host/src/vfs/opfs-image-reader";
 import { parseKandeloDemoConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { parseExperimentalTerminalSession } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 
@@ -534,5 +535,43 @@ export async function saveFixedPersistenceImageStream(
 ): Promise<FixedPersistenceImageHandle> {
   return writeFixedPersistenceImageStream(
     name, identity, chunks, lazyAssets, composition, assertCurrent, onProgress,
+  );
+}
+
+export async function publishFixedPersistenceSnapshot(
+  name: string,
+  identity: string,
+  stagedFile: FileSystemFileHandle,
+  integrity: OpfsImageIntegrity,
+  lazyAssets: ImageOwnedRuntimeLazyAssets | undefined,
+  composition: StoredComposition,
+  assertCurrent?: () => void,
+): Promise<FixedPersistenceImageHandle> {
+  if (
+    !Number.isSafeInteger(integrity.length) || integrity.length <= 0 ||
+    integrity.chunkBytes !== CHUNK_BYTES ||
+    !Array.isArray(integrity.chunkSha256) ||
+    integrity.chunkSha256.length !== Math.ceil(integrity.length / CHUNK_BYTES) ||
+    !integrity.chunkSha256.every((digest) => typeof digest === "string" && SHA256_PATTERN.test(digest))
+  ) {
+    throw new Error("experimental persistence snapshot integrity is invalid");
+  }
+  const snapshot = await stagedFile.getFile();
+  if (snapshot.size !== integrity.length) {
+    throw new Error("experimental persistence snapshot length is invalid");
+  }
+  async function* verifiedChunks(): AsyncIterable<Uint8Array> {
+    for (let index = 0; index < integrity.chunkSha256.length; index++) {
+      assertCurrent?.();
+      const offset = index * CHUNK_BYTES;
+      const bytes = new Uint8Array(await snapshot.slice(offset, offset + CHUNK_BYTES).arrayBuffer());
+      if (await sha256(bytes) !== integrity.chunkSha256[index]) {
+        throw new Error("experimental persistence snapshot is damaged; refusing to publish");
+      }
+      yield bytes;
+    }
+  }
+  return saveFixedPersistenceImageStream(
+    name, identity, verifiedChunks(), lazyAssets, composition, assertCurrent,
   );
 }
