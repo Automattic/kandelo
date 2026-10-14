@@ -1025,6 +1025,11 @@ fn enable_persistence_internal(
             }
         }
     }
+    let namespace_replay = !created.is_empty()
+        || journal
+            .state()
+            .metadata_entries()
+            .any(|(key, _)| matches!(key, OverlayKey::Dirent { .. }));
     let mut eligible_sizes = ROOTFS.with(|state| {
         let mut sizes = Vec::new();
         for inode in state.inodes.iter().flatten() {
@@ -1061,7 +1066,9 @@ fn enable_persistence_internal(
     };
     if resizable {
         journal.validate_resizable_image_blocks(&mut base_size)?;
-        ROOTFS.with(|state| validate_persistent_dirents(state, &journal, &created))?;
+        if namespace_replay {
+            ROOTFS.with(|state| validate_persistent_dirents(state, &journal, &created))?;
+        }
     } else {
         journal.validate_fixed_image_blocks(&mut base_size)?;
     }
@@ -1127,7 +1134,9 @@ fn enable_persistence_internal(
             }
             Ok::<_, Errno>(())
         })?;
-        ROOTFS.with(|state| apply_persistent_dirents(state, &journal))?;
+        if namespace_replay {
+            ROOTFS.with(|state| apply_persistent_dirents(state, &journal))?;
+        }
     }
     *active = Some(PersistentMount {
         journal,
@@ -1143,52 +1152,60 @@ fn validate_persistent_dirents(
     created: &[(u64, Inode)],
 ) -> Result<(), Errno> {
     let mut known = BTreeMap::new();
-    let mut directories = BTreeMap::new();
     for inode in state.inodes.iter().flatten() {
-        if known.insert(inode.ino, inode.is_dir()).is_some() {
+        let entries = match &inode.kind {
+            InodeKind::Dir(entries) => Some(entries),
+            _ => None,
+        };
+        if known.insert(inode.ino, entries).is_some() {
             return Err(Errno::EIO);
-        }
-        if let InodeKind::Dir(entries) = &inode.kind {
-            let mut children = BTreeMap::new();
-            for (name, &index) in entries {
-                children.insert(name.clone(), state.get(index).ok_or(Errno::EIO)?.ino);
-            }
-            directories.insert(inode.ino, children);
         }
     }
     for (ino, inode) in created {
-        if known.insert(*ino, inode.is_dir()).is_some() {
+        let entries = match &inode.kind {
+            InodeKind::Dir(entries) => Some(entries),
+            _ => None,
+        };
+        if known.insert(*ino, entries).is_some() {
             return Err(Errno::EIO);
         }
-        if inode.is_dir() {
-            directories.insert(*ino, BTreeMap::new());
-        }
     }
+    let mut changes = BTreeMap::<u64, BTreeMap<&[u8], Option<u64>>>::new();
     for (key, value) in journal.state().metadata_entries() {
         let OverlayKey::Dirent { parent, name } = key else {
             continue;
         };
-        let entries = directories.get_mut(parent).ok_or(Errno::EIO)?;
-        if let Some(bytes) = value {
-            let ino = u64::from_le_bytes(bytes.try_into().map_err(|_| Errno::EIO)?);
-            known.get(&ino).ok_or(Errno::EIO)?;
-            entries.insert(name.clone(), ino);
-        } else {
-            entries.remove(name);
+        if known.get(parent).ok_or(Errno::EIO)?.is_none() {
+            return Err(Errno::EIO);
         }
+        let target = value
+            .map(|bytes| {
+                let ino = u64::from_le_bytes(bytes.try_into().map_err(|_| Errno::EIO)?);
+                known.get(&ino).ok_or(Errno::EIO)?;
+                Ok::<_, Errno>(ino)
+            })
+            .transpose()?;
+        changes.entry(*parent).or_default().insert(name, target);
     }
-    let root = state.get(state.root.ok_or(Errno::EIO)?).ok_or(Errno::EIO)?.ino;
+    let root = state
+        .get(state.root.ok_or(Errno::EIO)?)
+        .ok_or(Errno::EIO)?
+        .ino;
     let mut incoming = BTreeMap::<u64, u32>::new();
-    for entries in directories.values() {
-        for child in entries.values() {
-            if *known.get(child).ok_or(Errno::EIO)? {
-                let count = incoming.entry(*child).or_default();
+    for (&directory, entries) in &known {
+        let Some(entries) = entries else {
+            continue;
+        };
+        visit_persistent_children(state, entries, changes.get(&directory), |child| {
+            if known.get(&child).ok_or(Errno::EIO)?.is_some() {
+                let count = incoming.entry(child).or_default();
                 *count = count.checked_add(1).ok_or(Errno::EIO)?;
-                if *count > 1 || *child == root {
+                if *count > 1 || child == root {
                     return Err(Errno::EIO);
                 }
             }
-        }
+            Ok(())
+        })?;
     }
     let mut reached = alloc::collections::BTreeSet::new();
     let mut pending = vec![root];
@@ -1196,22 +1213,67 @@ fn validate_persistent_dirents(
         if !reached.insert(directory) {
             return Err(Errno::EIO);
         }
-        for child in directories.get(&directory).ok_or(Errno::EIO)?.values() {
-            if *known.get(child).ok_or(Errno::EIO)? {
-                pending.push(*child);
+        let entries = known
+            .get(&directory)
+            .and_then(|entries| *entries)
+            .ok_or(Errno::EIO)?;
+        visit_persistent_children(state, entries, changes.get(&directory), |child| {
+            if known.get(&child).ok_or(Errno::EIO)?.is_some() {
+                pending.push(child);
             }
-        }
+            Ok(())
+        })?;
     }
-    for (directory, entries) in &directories {
-        let count = incoming.get(directory).copied().unwrap_or(0);
-        if *directory == root {
+    for (&directory, entries) in &known {
+        let Some(entries) = entries else {
+            continue;
+        };
+        if directory == root {
             continue;
         }
-        if (count == 1 && !reached.contains(directory)) || (count == 0 && !entries.is_empty()) {
+        let count = incoming.get(&directory).copied().unwrap_or(0);
+        if count == 1 && !reached.contains(&directory) {
+            return Err(Errno::EIO);
+        }
+        if count == 0
+            && visit_persistent_children(state, entries, changes.get(&directory), |_| Ok(()))?
+        {
             return Err(Errno::EIO);
         }
     }
     Ok(())
+}
+
+fn visit_persistent_children(
+    state: &RootfsState,
+    base: &BTreeMap<Vec<u8>, u32>,
+    changes: Option<&BTreeMap<&[u8], Option<u64>>>,
+    mut visit: impl FnMut(u64) -> Result<(), Errno>,
+) -> Result<bool, Errno> {
+    let mut nonempty = false;
+    for (name, &index) in base {
+        let base_ino = state.get(index).ok_or(Errno::EIO)?.ino;
+        let child = match changes.and_then(|changes| changes.get(name.as_slice())) {
+            Some(target) => *target,
+            None => Some(base_ino),
+        };
+        if let Some(child) = child {
+            nonempty = true;
+            visit(child)?;
+        }
+    }
+    if let Some(changes) = changes {
+        for (&name, &child) in changes {
+            if base.contains_key(name) {
+                continue;
+            }
+            if let Some(child) = child {
+                nonempty = true;
+                visit(child)?;
+            }
+        }
+    }
+    Ok(nonempty)
 }
 
 fn apply_persistent_dirents(
@@ -10203,6 +10265,63 @@ mod tests {
         let reopened = lstat(b"/hello.txt").unwrap();
         assert_eq!(reopened.st_size, 0);
         assert_eq!((reopened.st_mtime_sec, reopened.st_mtime_nsec), (truncated.st_mtime_sec, truncated.st_mtime_nsec));
+    }
+
+    #[test]
+    fn persistent_graph_validation_merges_changes_in_wide_base_directory() {
+        let mut state = RootfsState::new();
+        let root_index = state.mount_root();
+        for number in 0..4096 {
+            let ino = state.alloc_ino();
+            let index = state.insert_inode(Inode::new(
+                InodeKind::Regular(Vec::new()),
+                0o644,
+                0,
+                0,
+                1,
+                ino,
+            ));
+            let InodeKind::Dir(entries) = &mut state.get_mut(root_index).unwrap().kind else {
+                panic!("root must be a directory");
+            };
+            entries.insert(alloc::format!("base-{number:04}").into_bytes(), index);
+        }
+        let created_ino = state.next_ino;
+        let created = vec![(
+            created_ino,
+            Inode::new(InodeKind::PersistentRegular, 0o644, 0, 0, 1, created_ino),
+        )];
+        let storage: Box<dyn OverlayStorage + Send> =
+            Box::new(SharedJournalStorage(Arc::new(Mutex::new(Vec::new()))));
+        let mut journal = OverlayJournal::open(storage, [0; 32]).unwrap();
+        journal
+            .commit(&[
+                Mutation::Put {
+                    key: OverlayKey::Dirent {
+                        parent: 1,
+                        name: b"base-0001".to_vec(),
+                    },
+                    value: created_ino.to_le_bytes().to_vec(),
+                },
+                Mutation::Delete {
+                    key: OverlayKey::Dirent {
+                        parent: 1,
+                        name: b"base-0002".to_vec(),
+                    },
+                },
+                Mutation::Put {
+                    key: OverlayKey::Dirent {
+                        parent: 1,
+                        name: b"new-link".to_vec(),
+                    },
+                    value: created_ino.to_le_bytes().to_vec(),
+                },
+            ])
+            .unwrap();
+        assert_eq!(
+            validate_persistent_dirents(&state, &journal, &created),
+            Ok(())
+        );
     }
 
     #[test]

@@ -247,9 +247,16 @@ does not publish the new inode or name; every byte offset of a torn
 inode-plus-dirent transaction replays both records or neither. Created
 directories and symlinks also use versioned inode records. Recovery validates
 the final directory graph, rejecting cycles, multiple parents, and non-empty
-orphan directories before publishing it. Guest restart tests create, move, and
-remove a nested directory tree and symlink. Explicit chmod/chown/utimensat
-changes to base and created inodes survive restart and indexed compaction;
+orphan directories before publishing it. Graph validation now borrows base
+directory entries and overlay names instead of cloning every base directory
+entry into a second tree; a wide-directory Rust regression covers replacements,
+deletions, and new links. This reduces temporary boot allocations but does not
+bound the resident inode and journal metadata maps. Data-only or
+base-metadata-only restarts skip namespace graph validation and link-count
+reconstruction entirely; inode creation or any dirent record still takes the
+validated replay path. Guest restart tests create, move, and remove a nested
+directory tree and symlink. Explicit chmod/chown/utimensat changes to base and
+created inodes survive restart and indexed compaction;
 the first such update to a base inode uses a versioned metadata-only record.
 Write and truncate timestamps are staged in memory and committed in batches
 on fsync, graceful shutdown, or compaction. Sync now visits only inodes with
