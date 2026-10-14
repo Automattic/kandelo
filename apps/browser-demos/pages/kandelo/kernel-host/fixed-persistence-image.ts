@@ -5,6 +5,7 @@ import { sha256 as incrementalSha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { parseKandeloDemoConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { parseExperimentalTerminalSession } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
+import { acquireBrowserPersistenceComputerLease, type BrowserPersistenceComputerLease } from "../../../../../host/src/browser-persistence-computer-lease";
 
 const DIRECTORY_NAME = "kandelo-persistent-overlay";
 const FORMAT_V1 = "kandelo-fixed-rootfs-image-v1";
@@ -411,36 +412,9 @@ async function whenRuntimeIdle<T>(name: string, operation: () => Promise<T>): Pr
   });
 }
 
-export async function acquireFixedPersistenceRuntimeLease(name: string): Promise<() => Promise<void>> {
+export async function acquireFixedPersistenceRuntimeLease(name: string): Promise<BrowserPersistenceComputerLease> {
   fileNames(name);
-  if (!navigator.locks) throw new Error("experimental persistence requires Web Locks");
-  let signalRelease!: () => void;
-  const released = new Promise<void>((resolve) => { signalRelease = resolve; });
-  let signalAcquired!: () => void;
-  let signalFailed!: (error: unknown) => void;
-  const acquired = new Promise<void>((resolve, reject) => {
-    signalAcquired = resolve;
-    signalFailed = reject;
-  });
-  const holding = navigator.locks.request(
-    runtimeLockName(name),
-    { mode: "exclusive", ifAvailable: true },
-    async (lock) => {
-      if (lock === null) throw new Error("experimental persistence computer is already running in another tab");
-      signalAcquired();
-      await released;
-    },
-  );
-  void holding.catch(signalFailed);
-  await acquired;
-  let didRelease = false;
-  return async () => {
-    if (!didRelease) {
-      didRelease = true;
-      signalRelease();
-    }
-    await holding;
-  };
+  return acquireBrowserPersistenceComputerLease(name);
 }
 
 export async function loadFixedPersistenceImage(

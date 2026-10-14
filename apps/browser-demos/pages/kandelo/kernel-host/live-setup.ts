@@ -603,7 +603,7 @@ export async function createLiveHost(
     await CANONICAL_PAGES_VFS_LOADER.activate("browser-main-shell");
   }
   let currentKernel: BrowserKernel | null = null;
-  let currentPersistenceLease: (() => Promise<void>) | null = null;
+  let currentPersistenceLease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null;
   let bootInFlight: Promise<void> = Promise.resolve();
   let bootSeq = 0;
   const persistenceName = opts.experimentalPersistenceName ?? undefined;
@@ -807,7 +807,7 @@ export async function createLiveHost(
       }
       await previousLease?.();
 
-      let persistenceLease: (() => Promise<void>) | null = null;
+      let persistenceLease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null;
       try {
         if (persistenceName !== undefined) {
           persistenceLease = await acquireFixedPersistenceRuntimeLease(persistenceName);
@@ -816,7 +816,7 @@ export async function createLiveHost(
         const boot = (preferred?: FixedPersistenceImageHandle) => bootProfile(
           h, profile, descriptor, bootStartedAt, () => seq === bootSeq,
           requireServiceWorker, legacyScriptIgnored,
-          persistenceName, preferred,
+          persistenceName, persistenceLease ?? undefined, preferred,
         );
         let kernel: BrowserKernel;
         try {
@@ -1249,6 +1249,7 @@ async function bootProfile(
   ) => Promise<ServiceWorker>,
   legacyScriptIgnored = false,
   experimentalPersistenceName?: string,
+  experimentalPersistenceLease?: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>>,
   preferredPersistenceImage?: FixedPersistenceImageHandle,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
@@ -1269,6 +1270,9 @@ async function bootProfile(
     },
   };
   if (experimentalPersistenceName !== undefined) {
+    if (experimentalPersistenceLease === undefined) {
+      throw new Error("persistent computer boot requires its runtime lease");
+    }
     assertFixedPersistenceBootAllowed(
       experimentalPersistenceName,
       profile.candidateEvidence !== undefined,
@@ -1648,6 +1652,8 @@ async function bootProfile(
           },
           lazyUrlMap,
           experimentalFixedPersistenceName: opfsImage.journalName,
+          persistentComputerName: experimentalPersistenceName,
+          persistenceComputerLease: experimentalPersistenceLease,
           requireExistingRootfsPersistence: opfsImage.journalInitialized,
         });
       } catch (error) {

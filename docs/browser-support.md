@@ -259,9 +259,10 @@ pipe pair.
   destroy flush it. Once initialized, a persistent browser kernel retains its
   exclusive journal Web Lock until the worker acknowledges storage closure and
   terminates; a timed-out destroy retains the lock until the tab closes.
-  The page also leases the computer name across boot and kernel lifetime.
-  These locks do not coordinate low-level callers using different journal
-  names for one computer.
+  The page also leases the computer name across boot and kernel lifetime and
+  passes that lease into BrowserKernel. Low-level callers can acquire the same
+  computer lock by naming the computer; callers that omit or misname it can
+  still fork one computer across different journal names.
   Larger guest writes are split into cache-sized chunks and
   may return a short count after a later writeback failure. Browser termination
   loses unsynced writes without changing
@@ -2318,7 +2319,8 @@ The command set includes jq 1.8.2 at `/usr/bin/jq` (also `/bin/jq`),
 with its bundled Oniguruma regular expressions and decimal-number support.
 Its executable stays lazy until first use, including for commands such as
 `printf '%s\n' '{"answer":42}' | jq '.answer'`.
-`./run.sh --fetch-only build shell-vfs` refuses source fallback.
+`./run.sh build shell-vfs` builds the declared package closure; `run.sh` has
+no `--fetch-only` option.
 
 Shell-derived packages consume that resolved image as a declared dependency.
 Their builders preserve capacity, ABI identity, package-backed lazy transports

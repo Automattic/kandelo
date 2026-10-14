@@ -19,6 +19,7 @@ const imageModulePath = [publishedImageModulePath, directImageModulePath].find((
   return WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(path))).length === 0;
 }) ?? null;
 const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
+const persistenceImagePath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/fixed-persistence-image.ts");
 const overlaySelectionPath = resolve(repoRoot, "host/src/vfs/overlay-generation-selection.ts");
 const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
 
@@ -52,8 +53,9 @@ test("browser retains a persistent journal lease after an unacknowledged destroy
       await context.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
       const page = context.pages()[0] ?? await context.newPage();
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const before = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, faultWorkerUrl }) => {
+      const before = await page.evaluate(async ({ moduleUrl, persistenceUrl, kernelUrl, imageUrl, faultWorkerUrl }) => {
         const { BrowserKernel } = await import(moduleUrl);
+        const { acquireFixedPersistenceRuntimeLease } = await import(persistenceUrl);
         const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
         const name = `destroy-timeout-${crypto.randomUUID()}`;
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
@@ -73,9 +75,22 @@ test("browser retains a persistent journal lease after an unacknowledged destroy
             }
           }
         };
+        const computerLease = await acquireFixedPersistenceRuntimeLease(name);
         const kernel = new BrowserKernel({ kernelOwnedFs: true });
-        await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+        await kernel.initFromOpfsImage({
+          kernelWasm,
+          vfsImageFile: imageFile,
+          experimentalFixedPersistenceName: name,
+          persistentComputerName: name,
+          persistenceComputerLease: computerLease,
+        });
         await kernel.destroy();
+        let leaseReleaseRejected = false;
+        try {
+          await computerLease();
+        } catch (error) {
+          leaseReleaseRejected = String(error).includes("still owned by a kernel");
+        }
         let retryRejected = false;
         try {
           await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
@@ -90,14 +105,28 @@ test("browser retains a persistent journal lease after an unacknowledged destroy
           competingRejected = String(error).includes("journal is already open");
         }
         await competing.destroy();
-        return { name, redirected, unconfirmed: kernel.hasUnconfirmedKernelQuiescence(), retryRejected, competingRejected };
+        const otherJournal = new BrowserKernel({ kernelOwnedFs: true });
+        let otherJournalRejected = false;
+        try {
+          await otherJournal.initFromOpfsImage({
+            kernelWasm,
+            vfsImageFile: imageFile,
+            experimentalFixedPersistenceName: `${name}-other`,
+            persistentComputerName: name,
+          });
+        } catch (error) {
+          otherJournalRejected = String(error).includes("computer is already running");
+        }
+        await otherJournal.destroy();
+        return { name, redirected, unconfirmed: kernel.hasUnconfirmedKernelQuiescence(), leaseReleaseRejected, retryRejected, competingRejected, otherJournalRejected };
       }, {
         moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        persistenceUrl: new URL(`/@fs/${persistenceImagePath}`, baseURL).href,
         kernelUrl,
         imageUrl,
         faultWorkerUrl: new URL(`/@fs/${faultWorkerPath}`, baseURL).href,
       });
-      expect(before).toMatchObject({ redirected: 1, unconfirmed: true, retryRejected: true, competingRejected: true });
+      expect(before).toMatchObject({ redirected: 1, unconfirmed: true, leaseReleaseRejected: true, retryRejected: true, competingRejected: true, otherJournalRejected: true });
       await page.close();
       const reopened = await context.newPage();
       await reopened.goto(new URL("/trap-signal-test.html", baseURL).href);
@@ -108,7 +137,7 @@ test("browser retains a persistent journal lease after an unacknowledged destroy
         const imageFile = await directory.getFileHandle(`${name}.base`);
         const kernel = new BrowserKernel({ kernelOwnedFs: true });
         try {
-          await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
           return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
         } finally {
           await kernel.destroy();
