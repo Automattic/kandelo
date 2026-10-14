@@ -4,8 +4,10 @@ import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
   parseKandeloDemoConfig,
+  resolveDemoInit,
   validateKandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import { MAX_DINIT_SERVICE_CLOSURE, parseDinitBootTargets } from "../../../../../web-libs/kandelo-session/src/dinit-boot-targets";
 import {
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
   MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES,
@@ -56,6 +58,25 @@ export async function assertPersistentImageBootMetadata(
   );
   if (JSON.stringify(session) !== JSON.stringify(composition.terminalSession)) {
     throw new Error("persistent image terminal session changed after composition");
+  }
+  const init = resolveDemoInit(config, composition.profileId);
+  const pending = init !== null && "target" in init ? [init.target] : [];
+  const seen = new Set<string>();
+  const services: string[] = [];
+  while (pending.length > 0) {
+    const name = pending.pop()!;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    services.push(name);
+    if (seen.size > MAX_DINIT_SERVICE_CLOSURE) {
+      throw new Error(`persistent image dinit tree exceeds ${MAX_DINIT_SERVICE_CLOSURE} services`);
+    }
+    const bytes = await kernel.readFileFromVfs(`/etc/dinit.d/${name}`);
+    if (bytes === null) throw new Error(`persistent image dinit service is missing: ${name}`);
+    for (const dependency of parseDinitBootTargets(bytes, name)) pending.push(dependency);
+  }
+  if (JSON.stringify(services) !== JSON.stringify(composition.requiredServices)) {
+    throw new Error("persistent image dinit service closure changed after composition");
   }
 }
 

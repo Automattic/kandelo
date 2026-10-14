@@ -30,7 +30,9 @@ int main(int argc, char **argv) {
         if (pwrite(fd, change_config ? "other" : "probe", 5, offset) != 5) return 155;
         return fsync(fd) == 0 && close(fd) == 0 ? 0 : 156;
     }
-    if (argc >= 2 && strcmp(argv[1], "change-terminal-session") == 0) {
+    int change_session = argc >= 2 && strcmp(argv[1], "change-terminal-session") == 0;
+    int restore_session = argc >= 2 && strcmp(argv[1], "restore-terminal-session") == 0;
+    if (change_session || restore_session) {
         int fd = open("/etc/kandelo/experimental-terminal-session.json", O_RDWR);
         if (fd < 0) return 157;
         char bytes[4096];
@@ -38,11 +40,25 @@ int main(int argc, char **argv) {
         if (count <= 0) return 158;
         bytes[count] = '\0';
         char *path = strstr(bytes, "persistence-overwrite");
-        char *argv = path == NULL ? NULL : strstr(path + 1, "persistence-overwrite");
+        char *argv = path == NULL ? NULL : strstr(path + 1,
+            change_session ? "persistence-overwrite" : "persistence-overwritE");
         if (argv == NULL) return 159;
         off_t offset = argv - bytes + strlen("persistence-overwrite") - 1;
-        if (pwrite(fd, "E", 1, offset) != 1) return 160;
+        if (pwrite(fd, change_session ? "E" : "e", 1, offset) != 1) return 160;
         return fsync(fd) == 0 && close(fd) == 0 ? 0 : 161;
+    }
+    if (argc >= 2 && strcmp(argv[1], "change-dinit-closure") == 0) {
+        int fd = open("/etc/dinit.d/boot", O_RDWR);
+        if (fd < 0) return 162;
+        char bytes[4096];
+        ssize_t count = pread(fd, bytes, sizeof(bytes) - 1, 0);
+        if (count <= 0) return 163;
+        bytes[count] = '\0';
+        char *match = strstr(bytes, "depends-on = alpha");
+        if (match == NULL) return 164;
+        off_t offset = match - bytes + strlen("depends-on = ");
+        if (pwrite(fd, "bravo", 5, offset) != 5) return 165;
+        return fsync(fd) == 0 && close(fd) == 0 ? 0 : 166;
     }
     if (argc >= 2 && strcmp(argv[1], "create-socket") == 0) {
         int fd = socket(AF_UNIX, SOCK_STREAM, 0);

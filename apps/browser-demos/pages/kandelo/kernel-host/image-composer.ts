@@ -62,7 +62,7 @@ import {
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
-import { readDinitBootTargets } from "../../../../../web-libs/kandelo-session/src/dinit-boot-targets";
+import { MAX_DINIT_SERVICE_CLOSURE, readDinitBootTargets } from "../../../../../web-libs/kandelo-session/src/dinit-boot-targets";
 import {
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
   MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES,
@@ -445,9 +445,6 @@ function resolveImageProfileId(
   }
   return defaultProfileId;
 }
-
-/** Far above any real service tree; a hostile image cannot spin this. */
-const MAX_DINIT_SERVICE_CLOSURE = 256;
 
 /**
  * The readiness service list, derived from the image's own dinit tree
