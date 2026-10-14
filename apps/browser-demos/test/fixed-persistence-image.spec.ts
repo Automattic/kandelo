@@ -526,6 +526,118 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
   }
 });
 
+for (const cut of ["before", "after"] as const) {
+test(`closing a tab ${cut} replacement manifest commit selects the right generation`, async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(90_000);
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-replacement-tab-close-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const page = context.pages()[0] ?? await context.newPage();
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const primaryClosed = page.waitForEvent("console", {
+        predicate: (message) => message.text() === `replacement primary manifest ${cut} close`,
+        timeout: 30_000,
+      });
+      const { name, identity, stagedJournalName, previousJournalName } = await page.evaluate(async ({ url, cut }) => {
+        const {
+          loadFixedPersistenceImageHandle,
+          markFixedPersistenceJournalInitialized,
+          publishFixedPersistenceReplacement,
+          saveFixedPersistenceImageStream,
+          stageFixedPersistenceReplacement,
+        } = await import(url);
+        const name = `crash-replacement-${crypto.randomUUID()}`;
+        const identity = "replacement crash boundary";
+        const composition = {
+          imageConfig: { version: 1 as const, defaultProfile: "probe", profiles: { probe: {} } },
+          profileId: "probe",
+          terminalSession: {
+            kind: "kandelo-experimental-terminal-session" as const,
+            version: 1 as const,
+            initial: { path: "/bin/probe", argv: ["probe"], uid: 0, gid: 0 },
+          },
+          requiredServices: [],
+        };
+        const previous = await saveFixedPersistenceImageStream(
+          name, identity, [new Uint8Array(1024).fill(1)], undefined, composition,
+        );
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const writeJournalHeader = async (journalName: string, imageSha256: string) => {
+          const header = new Uint8Array(72);
+          header.set(new TextEncoder().encode("KOVL"));
+          new DataView(header.buffer).setUint32(4, 1, true);
+          header.set(Uint8Array.from(imageSha256.match(/../g)!, (byte) => Number.parseInt(byte, 16)), 8);
+          header.set(new Uint8Array(await crypto.subtle.digest("SHA-256", header.subarray(0, 40))), 40);
+          const file = await directory.getFileHandle(`${journalName}.journal`, { create: true });
+          const writer = await file.createWritable();
+          await writer.write(header);
+          await writer.close();
+        };
+        await writeJournalHeader(previous.journalName, previous.imageSha256!);
+        await markFixedPersistenceJournalInitialized(name, identity, previous);
+        const ready = await loadFixedPersistenceImageHandle(name, identity);
+        if (ready === null) throw new Error("prior generation did not become ready");
+        const staged = await stageFixedPersistenceReplacement(
+          name, identity, [new Uint8Array(1024).fill(2)], undefined, composition,
+        );
+        await writeJournalHeader(staged.journalName, staged.imageSha256!);
+        const filePrototype = Object.getPrototypeOf(staged.file) as FileSystemFileHandle;
+        const originalCreateWritable = filePrototype.createWritable;
+        filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
+          const writer = await originalCreateWritable.call(this, options);
+          if (this.name !== `${name}.base.json`) return writer;
+          return {
+            write: (...args: Parameters<typeof writer.write>) => writer.write(...args),
+            close: async () => {
+              if (cut === "after") await writer.close();
+              console.log(`replacement primary manifest ${cut} close`);
+              await new Promise<never>(() => {});
+            },
+            abort: () => writer.abort(),
+          } as FileSystemWritableFileStream;
+        };
+        void publishFixedPersistenceReplacement(name, identity, ready, staged);
+        return { name, identity, stagedJournalName: staged.journalName, previousJournalName: ready.journalName };
+      }, { url: new URL(`/@fs/${modulePath}`, baseURL).href, cut });
+      await primaryClosed;
+      await page.close();
+      const reopened = await context.newPage();
+      try {
+        await reopened.goto(new URL("/trap-signal-test.html", baseURL).href);
+        const recovered = await reopened.evaluate(async ({ url, name, identity }) => {
+          const { loadFixedPersistenceImageHandle, loadPreviousFixedPersistenceImageHandle } = await import(url);
+          const current = await loadFixedPersistenceImageHandle(name, identity);
+          if (current === null) throw new Error("committed replacement disappeared after tab close");
+          const previous = await loadPreviousFixedPersistenceImageHandle(name, identity, current);
+          return { current: current.journalName, previous: previous?.journalName ?? null };
+        }, { url: new URL(`/@fs/${modulePath}`, baseURL).href, name, identity });
+        expect(recovered).toEqual(cut === "after"
+          ? { current: stagedJournalName, previous: previousJournalName }
+          : { current: previousJournalName, previous: null });
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+}
+
 test("experimental computer refuses URL scripts and invalid names", async ({ page, baseURL }) => {
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
   const rejected = await page.evaluate(async (url) => {
