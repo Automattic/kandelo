@@ -247,20 +247,23 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             checkpoint_end,
         )?;
         let mut state = OverlayState::default();
-        if replay_metadata {
-            let (replayed_end, next_sequence) = replay_transactions(
-                &mut storage,
-                HEADER_BYTES as u64,
-                checkpoint_end,
-                1,
-                &mut state,
-                false,
-                false,
-                false,
-            )?;
-            if replayed_end != checkpoint_end || next_sequence != checkpoint.next_sequence() {
-                return Err(Errno::EIO);
-            }
+        let filter = if replay_metadata {
+            ReplayFilter::MetadataOnly
+        } else {
+            ReplayFilter::RejectMetadata
+        };
+        let (replayed_end, next_sequence) = replay_transactions(
+            &mut storage,
+            HEADER_BYTES as u64,
+            checkpoint_end,
+            1,
+            &mut state,
+            filter,
+            false,
+            false,
+        )?;
+        if replayed_end != checkpoint_end || next_sequence != checkpoint.next_sequence() {
+            return Err(Errno::EIO);
         }
         Self::open_internal(storage, base_digest, Some(checkpoint), state)
     }
@@ -312,7 +315,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             size,
             next_sequence,
             &mut state,
-            true,
+            ReplayFilter::All,
             true,
             checkpoint.is_some(),
         )?;
@@ -1284,13 +1287,20 @@ fn encode_key(out: &mut Vec<u8>, key: &OverlayKey) {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ReplayFilter {
+    All,
+    MetadataOnly,
+    RejectMetadata,
+}
+
 fn replay_transactions<S: OverlayStorage>(
     storage: &mut S,
     mut end: u64,
     size: u64,
     mut next_sequence: u64,
     state: &mut OverlayState,
-    include_blocks: bool,
+    filter: ReplayFilter,
     allow_torn_tail: bool,
     has_checkpoint: bool,
 ) -> Result<(u64, u64), Errno> {
@@ -1345,11 +1355,16 @@ fn replay_transactions<S: OverlayStorage>(
             return Err(Errno::EIO);
         }
         for (mutation, relative_offset) in mutations {
-            if include_blocks || !matches!(mutation_key(&mutation), OverlayKey::FileBlock { .. }) {
-                let value_offset =
-                    relative_offset.map(|offset| end + TRANSACTION_HEADER_BYTES as u64 + offset);
-                state.apply(mutation, value_offset, has_checkpoint);
+            let is_block = matches!(mutation_key(&mutation), OverlayKey::FileBlock { .. });
+            if matches!(filter, ReplayFilter::RejectMetadata) && !is_block {
+                return Err(Errno::EIO);
             }
+            if !matches!(filter, ReplayFilter::All) && is_block {
+                continue;
+            }
+            let value_offset =
+                relative_offset.map(|offset| end + TRANSACTION_HEADER_BYTES as u64 + offset);
+            state.apply(mutation, value_offset, has_checkpoint);
         }
         next_sequence = next_sequence.checked_add(1).ok_or(Errno::EOVERFLOW)?;
         end = end.checked_add(length as u64).ok_or(Errno::EOVERFLOW)?;
@@ -2288,8 +2303,25 @@ mod tests {
             .unwrap()
             .into_storage();
         assert_eq!(first_index.bytes.len(), 160 + 2 * 56);
+        assert_eq!(u32::from_le_bytes(first_index.bytes[4..8].try_into().unwrap()), 1);
+        let first_storage = first.into_storage();
+        assert!(matches!(
+            OverlayJournal::open_with_checkpoint(
+                MemoryStorage {
+                    bytes: first_storage.bytes.clone(),
+                    ..MemoryStorage::default()
+                },
+                MemoryStorage {
+                    bytes: first_index.bytes.clone(),
+                    ..MemoryStorage::default()
+                },
+                digest,
+                first_end,
+            ),
+            Err(Errno::EIO)
+        ));
         let mut reopened = OverlayJournal::open_with_checkpoint_metadata(
-            first.into_storage(),
+            first_storage,
             first_index,
             digest,
             first_end,
