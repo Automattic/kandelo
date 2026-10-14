@@ -75,6 +75,43 @@ function expandJournalToCompactionThreshold(path: string): number {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
+  it("exports a composed resizable snapshot that boots without its journal", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-export-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path, true);
+      try {
+        await first.writeFileToVfs("/state", encoder.encode("SNAP"));
+        await first.writeFileToVfs("/created", encoder.encode("created"));
+      } finally {
+        await first.destroy();
+      }
+      const reopened = await boot(image, path, true);
+      let snapshot: Uint8Array;
+      try {
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("SNAP");
+        snapshot = await reopened.exportRootfsImage();
+      } finally {
+        await reopened.destroy();
+      }
+      const withoutJournal = new NodeKernelHost({ rootfsImage: snapshot });
+      try {
+        const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
+        await withoutJournal.init(kernelBytes.buffer.slice(
+          kernelBytes.byteOffset,
+          kernelBytes.byteOffset + kernelBytes.byteLength,
+        ) as ArrayBuffer);
+        expect(new TextDecoder().decode((await withoutJournal.readFileFromVfs("/state"))!)).toBe("SNAP");
+        expect(new TextDecoder().decode((await withoutJournal.readFileFromVfs("/created"))!)).toBe("created");
+      } finally {
+        await withoutJournal.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it.skipIf(guestProgramPath === null)("reopens sparse image and created files across namespace changes", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-rootfs-"));
     const path = join(directory, "machine.journal");

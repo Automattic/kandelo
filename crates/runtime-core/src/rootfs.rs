@@ -5656,6 +5656,11 @@ enum ImageContent {
     Image(u32),
     /// Bytes the overlay owns, at arena index N. Already resident.
     Overlay(u32),
+    Persistent {
+        inode: u64,
+        image_inode: Option<u32>,
+        base_size: u64,
+    },
 }
 
 /// A built image: its structure, plus how to resolve each content reference.
@@ -5712,6 +5717,24 @@ where
                 dst.copy_from_slice(data.get(start..end).ok_or(Errno::EIO)?);
                 Ok(())
             }),
+            ImageContent::Persistent { inode, image_inode, base_size } => {
+                let mut byte_source = self.byte_source.borrow_mut();
+                let read = PERSISTENT_ROOTFS
+                    .lock()
+                    .as_mut()
+                    .ok_or(Errno::EIO)?
+                    .journal
+                    .read_file_at(*inode, *base_size, offset, dst, |at, bytes| {
+                        match image_inode {
+                            Some(image_inode) => read_image_bytes(*image_inode, at, bytes, &mut **byte_source),
+                            None => Err(Errno::EIO),
+                        }
+                    })?;
+                if read != dst.len() {
+                    return Err(Errno::EIO);
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -5729,6 +5752,12 @@ enum ExportNode {
     Dir,
     ImageFile(u32, u64),
     OverlayFile(u32, u64),
+    PersistentFile {
+        inode: u64,
+        image_inode: Option<u32>,
+        base_size: u64,
+        size: u64,
+    },
     /// A deferred file the export can DESCRIBE: an archive member, whose real
     /// size, backing archive and member path the overlay already holds. Written
     /// as a zero-length body inode plus a record in the image's deferred
@@ -5873,10 +5902,7 @@ fn apply_export_metadata(
 /// recurses because it predates that rule; a new walk should not adopt it.
 pub fn build_export_image() -> Result<ExportPlan, Errno> {
     use crate::kandelo_image_write::{Content, KandeloImageConfig, KandeloImageWriter};
-
-    if fixed_persistence_enabled() {
-        return Err(Errno::EOPNOTSUPP);
-    }
+    let persistent = fixed_persistence_enabled();
 
     // Pass one: size the image, under a single borrow so the tree cannot be
     // observed in two states.
@@ -5905,7 +5931,11 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 }
                 InodeKind::BaseRegular { size, source, .. } => {
                     if matches!(source, BaseSource::Image) {
-                        data_blocks += blocks_for_file(*size);
+                        data_blocks += blocks_for_file(if persistent {
+                            inode.persistent_size.unwrap_or(*size)
+                        } else {
+                            *size
+                        });
                     }
                     // A `Host`-sourced base file stays a lazy stub: no blocks.
                 }
@@ -6015,6 +6045,14 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     size,
                     source,
                 } => match source {
+                    BaseSource::Image if persistent
+                        && inode.deferred_digest == crate::sdef::DIGEST_NONE
+                        && inode.mode & 0o6000 == 0 => ExportNode::PersistentFile {
+                            inode: inode.ino,
+                            image_inode: Some(image_ino(*blob_id)?),
+                            base_size: *size,
+                            size: inode.persistent_size.unwrap_or(*size),
+                        },
                     BaseSource::Image => ExportNode::ImageFile(image_ino(*blob_id)?, *size),
                     // The image does not carry these bytes; the host owns the
                     // transport. Keep the file lazy rather than force-fetching
@@ -6044,7 +6082,12 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     ExportNode::OverlayFile(item.overlay, data.len() as u64)
                 }
                 InodeKind::PersistentRegular => {
-                    ExportNode::OverlayFile(item.overlay, inode.persistent_size.unwrap_or(0))
+                    ExportNode::PersistentFile {
+                        inode: inode.ino,
+                        image_inode: None,
+                        base_size: 0,
+                        size: inode.persistent_size.unwrap_or(0),
+                    }
                 }
                 InodeKind::Symlink(target) => ExportNode::Symlink(target.clone()),
                 InodeKind::Special(_) => ExportNode::Special,
@@ -6175,6 +6218,16 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
             ExportNode::OverlayFile(overlay_idx, size) => {
                 let id = contents.len() as u64;
                 contents.push(ImageContent::Overlay(overlay_idx));
+                writer.create_file(
+                    item.parent_out,
+                    &item.name,
+                    mode,
+                    Content::Deferred { id, len: size },
+                )?
+            }
+            ExportNode::PersistentFile { inode, image_inode, base_size, size } => {
+                let id = contents.len() as u64;
+                contents.push(ImageContent::Persistent { inode, image_inode, base_size });
                 writer.create_file(
                     item.parent_out,
                     &item.name,
@@ -9467,7 +9520,6 @@ mod tests {
         let mut image_bytes = image_host(&image);
         load_image(image.len() as u64, &mut image_bytes).unwrap();
         enable_fixed_persistence(Box::new(storage.clone()), base_digest).unwrap();
-        assert!(matches!(build_export_image(), Err(Errno::EOPNOTSUPP)));
 
         let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
         assert_eq!(write(handle, 6, b"KIFS", &mut image_bytes).unwrap(), 4);
@@ -9498,6 +9550,66 @@ mod tests {
         let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
         assert_eq!(&changed[..count], b"hello KIFS\n");
         release_handle(handle);
+    }
+
+    #[test]
+    fn fixed_persistence_exports_unsynced_visible_image_bytes() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_fixed_persistence(Box::new(storage), base_digest).unwrap();
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(handle, 6, b"KIFS", &mut image_bytes), Ok(4));
+        release_handle(handle);
+
+        let exported = drain_container(4096, &mut image_bytes);
+        reset();
+        let mut exported_bytes = image_host(&exported);
+        load_image(exported.len() as u64, &mut exported_bytes).unwrap();
+        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        let mut bytes = [0u8; 16];
+        let read_len = read(handle, 0, &mut bytes, &mut exported_bytes).unwrap();
+        assert_eq!(&bytes[..read_len], b"hello KIFS\n");
+        release_handle(handle);
+    }
+
+    #[test]
+    fn resizable_persistence_exports_created_and_zero_fenced_bytes() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        let hello = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        truncate_handle(hello, 3, &mut image_bytes).unwrap();
+        truncate_handle(hello, 11, &mut image_bytes).unwrap();
+        assert_eq!(write(hello, 10, b"!", &mut image_bytes), Ok(1));
+        release_handle(hello);
+        let fresh = open(b"/fresh", O_CREAT | O_RDWR, 0o640, 0, 0).unwrap();
+        assert_eq!(write(fresh, 8192, b"TAIL", &mut image_bytes), Ok(4));
+        sync_persistence().unwrap();
+        release_handle(fresh);
+
+        let exported = drain_container(4096, &mut image_bytes);
+        reset();
+        let mut exported_bytes = image_host(&exported);
+        load_image(exported.len() as u64, &mut exported_bytes).unwrap();
+        let hello = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        let mut hello_bytes = [0u8; 11];
+        assert_eq!(read(hello, 0, &mut hello_bytes, &mut exported_bytes), Ok(11));
+        assert_eq!(&hello_bytes, b"hel\0\0\0\0\0\0\0!");
+        release_handle(hello);
+        let fresh = open(b"/fresh", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(fstat(fresh).unwrap().st_size, 8196);
+        let mut fresh_bytes = [0u8; 7];
+        assert_eq!(read(fresh, 8189, &mut fresh_bytes, &mut exported_bytes), Ok(7));
+        assert_eq!(&fresh_bytes, b"\0\0\0TAIL");
+        release_handle(fresh);
     }
 
     #[test]
