@@ -207,6 +207,7 @@ struct Inode {
     /// Bumped by every content mutation (see [`content_generation`]).
     content_gen: u64,
     ino: u64,
+    persistent_size: Option<u64>,
     atime_sec: u64,
     atime_nsec: u32,
     mtime_sec: u64,
@@ -232,6 +233,7 @@ impl Inode {
             map_pins: 0,
             content_gen: 0,
             ino,
+            persistent_size: None,
             atime_sec: sec,
             atime_nsec: nsec,
             mtime_sec: sec,
@@ -252,7 +254,7 @@ impl Inode {
         };
         let size = match &self.kind {
             InodeKind::Dir(entries) => entries.len() as u64,
-            InodeKind::BaseRegular { size, .. } => *size,
+            InodeKind::BaseRegular { size, .. } => self.persistent_size.unwrap_or(*size),
             InodeKind::Regular(data) => data.len() as u64,
             InodeKind::Symlink(target) => target.len() as u64,
             InodeKind::Special(_) => 0,
@@ -624,10 +626,15 @@ unsafe impl Sync for RootfsGlobal {}
 static ROOTFS: RootfsGlobal = RootfsGlobal::new();
 
 type PersistentJournal = OverlayJournal<Box<dyn OverlayStorage + Send>>;
-static PERSISTENT_ROOTFS: Mutex<Option<PersistentJournal>> = Mutex::new(None);
+struct PersistentMount {
+    journal: PersistentJournal,
+    resizable: bool,
+}
+static PERSISTENT_ROOTFS: Mutex<Option<PersistentMount>> = Mutex::new(None);
 struct PreparedPersistence {
     journal: PersistentJournal,
     source_revision: (u64, u64),
+    resizable: bool,
 }
 static PREPARED_PERSISTENCE: Mutex<Option<PreparedPersistence>> = Mutex::new(None);
 
@@ -635,7 +642,7 @@ pub fn enable_fixed_persistence(
     storage: Box<dyn OverlayStorage + Send>,
     base_digest: [u8; 32],
 ) -> Result<(), Errno> {
-    enable_fixed_persistence_internal(storage, None, base_digest)
+    enable_persistence_internal(storage, None, base_digest, false)
 }
 
 pub fn enable_fixed_persistence_indexed(
@@ -644,15 +651,40 @@ pub fn enable_fixed_persistence_indexed(
     base_digest: [u8; 32],
     checkpoint_end: u64,
 ) -> Result<(), Errno> {
-    enable_fixed_persistence_internal(storage, Some((index, checkpoint_end)), base_digest)
+    enable_persistence_internal(storage, Some((index, checkpoint_end)), base_digest, false)
 }
 
-fn enable_fixed_persistence_internal(
+pub fn enable_resizable_persistence(
+    storage: Box<dyn OverlayStorage + Send>,
+    base_digest: [u8; 32],
+) -> Result<(), Errno> {
+    enable_persistence_internal(storage, None, base_digest, true)
+}
+
+pub fn enable_resizable_persistence_indexed(
+    storage: Box<dyn OverlayStorage + Send>,
+    index: Box<dyn OverlayStorage + Send>,
+    base_digest: [u8; 32],
+    checkpoint_end: u64,
+) -> Result<(), Errno> {
+    enable_persistence_internal(storage, Some((index, checkpoint_end)), base_digest, true)
+}
+
+fn enable_persistence_internal(
     storage: Box<dyn OverlayStorage + Send>,
     checkpoint: Option<(Box<dyn OverlayStorage + Send>, u64)>,
     base_digest: [u8; 32],
+    resizable: bool,
 ) -> Result<(), Errno> {
     let mut journal = match checkpoint {
+        Some((index, checkpoint_end)) if resizable => {
+            OverlayJournal::open_with_checkpoint_metadata(
+                storage,
+                index,
+                base_digest,
+                checkpoint_end,
+            )?
+        }
         Some((index, checkpoint_end)) => {
             OverlayJournal::open_with_checkpoint(storage, index, base_digest, checkpoint_end)?
         }
@@ -667,7 +699,7 @@ fn enable_fixed_persistence_internal(
                 ..
             } = inode.kind
             {
-                if inode.deferred_digest == crate::sdef::DIGEST_NONE {
+                if inode.deferred_digest == crate::sdef::DIGEST_NONE && inode.mode & 0o6000 == 0 {
                     sizes.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
                     sizes.push((inode.ino, size));
                 }
@@ -676,23 +708,47 @@ fn enable_fixed_persistence_internal(
         Ok::<_, Errno>(sizes)
     })?;
     eligible_sizes.sort_unstable_by_key(|&(ino, _)| ino);
-    journal.validate_fixed_image_blocks(|ino| {
+    let mut base_size = |ino| {
         eligible_sizes
             .binary_search_by_key(&ino, |&(candidate, _)| candidate)
             .ok()
             .map(|index| eligible_sizes[index].1)
-    })?;
+    };
+    if resizable {
+        journal.validate_resizable_image_blocks(&mut base_size)?;
+    } else {
+        journal.validate_fixed_image_blocks(&mut base_size)?;
+    }
     journal.limit_active_tail();
     let mut active = PERSISTENT_ROOTFS.lock();
     if active.is_some() {
         return Err(Errno::EBUSY);
     }
-    *active = Some(journal);
+    if resizable {
+        ROOTFS.with(|state| {
+            for inode in state.inodes.iter_mut().flatten() {
+                if let InodeKind::BaseRegular { size, .. } = inode.kind {
+                    if base_size(inode.ino).is_some() {
+                        inode.persistent_size = Some(journal.visible_file_size(inode.ino, size)?);
+                    }
+                }
+            }
+            Ok::<_, Errno>(())
+        })?;
+    }
+    *active = Some(PersistentMount { journal, resizable });
     Ok(())
 }
 
 pub fn fixed_persistence_enabled() -> bool {
     PERSISTENT_ROOTFS.lock().is_some()
+}
+
+fn resizable_persistence_enabled() -> bool {
+    PERSISTENT_ROOTFS
+        .lock()
+        .as_ref()
+        .is_some_and(|mount| mount.resizable)
 }
 
 pub fn image_length() -> Option<u64> {
@@ -701,7 +757,7 @@ pub fn image_length() -> Option<u64> {
 
 pub fn sync_persistence() -> Result<(), Errno> {
     match PERSISTENT_ROOTFS.lock().as_mut() {
-        Some(journal) => journal.sync(),
+        Some(mount) => mount.journal.sync(),
         None => Ok(()),
     }
 }
@@ -710,11 +766,12 @@ pub fn checkpoint_prepared_persistence(
     storage: Box<dyn OverlayStorage + Send>,
 ) -> Result<(), Errno> {
     let mut pending = PREPARED_PERSISTENCE.lock();
-    pending
-        .as_mut()
-        .ok_or(Errno::EINVAL)?
-        .journal
-        .install_fixed_block_checkpoint(storage)
+    let pending = pending.as_mut().ok_or(Errno::EINVAL)?;
+    if pending.resizable {
+        pending.journal.install_metadata_block_checkpoint(storage)
+    } else {
+        pending.journal.install_fixed_block_checkpoint(storage)
+    }
 }
 
 pub fn prepare_persistence_compaction(
@@ -726,10 +783,15 @@ pub fn prepare_persistence_compaction(
     }
     let mut active = PERSISTENT_ROOTFS.lock();
     let source = active.as_mut().ok_or(Errno::EINVAL)?;
-    let compacted = source.compact_fixed_into(storage)?;
+    let compacted = if source.resizable {
+        source.journal.compact_metadata_into(storage)?
+    } else {
+        source.journal.compact_fixed_into(storage)?
+    };
     *pending = Some(PreparedPersistence {
         journal: compacted,
-        source_revision: source.compaction_revision(),
+        source_revision: source.journal.compaction_revision(),
+        resizable: source.resizable,
     });
     Ok(())
 }
@@ -739,13 +801,20 @@ pub fn activate_persistence_compaction() -> Result<(), Errno> {
     let prepared = pending.as_ref().ok_or(Errno::EINVAL)?;
     let mut active = PERSISTENT_ROOTFS.lock();
     let source = active.as_ref().ok_or(Errno::EINVAL)?;
-    if !source.can_activate_compaction(prepared.source_revision) {
+    if !source
+        .journal
+        .can_activate_compaction(prepared.source_revision)
+    {
         *pending = None;
         return Err(Errno::EBUSY);
     }
-    let mut next = pending.take().ok_or(Errno::EIO)?.journal;
-    next.limit_active_tail();
-    *active = Some(next);
+    let prepared = pending.take().ok_or(Errno::EIO)?;
+    let mut journal = prepared.journal;
+    journal.limit_active_tail();
+    *active = Some(PersistentMount {
+        journal,
+        resizable: prepared.resizable,
+    });
     Ok(())
 }
 
@@ -3030,6 +3099,7 @@ where
         if declares_digest(idx) {
             return Err(Errno::EROFS);
         }
+        let resizable = resizable_persistence_enabled();
         let (ino, image_ino, base_size) = ROOTFS.with(|state| {
             let inode = state.get(idx).ok_or(Errno::EBADF)?;
             match inode.kind {
@@ -3044,19 +3114,36 @@ where
         let end = (offset as u64)
             .checked_add(buf.len() as u64)
             .ok_or(Errno::EFBIG)?;
-        if end > base_size {
+        if resizable && end > i64::MAX as u64 {
             return Err(Errno::EFBIG);
         }
-        let written = PERSISTENT_ROOTFS
-            .lock()
-            .as_mut()
-            .ok_or(Errno::EIO)?
-            .write_fixed_file_at_buffered(ino, base_size, offset as u64, buf, |at, dst| {
-                read_image_bytes(image_ino, at, dst, &mut byte_source)
-            })?;
+        if !resizable && end > base_size {
+            return Err(Errno::EFBIG);
+        }
+        let (written, visible_size) = {
+            let mut active = PERSISTENT_ROOTFS.lock();
+            let journal = &mut active.as_mut().ok_or(Errno::EIO)?.journal;
+            let written = if resizable {
+                journal.write_file_at_buffered(ino, base_size, offset as u64, buf, |at, dst| {
+                    read_image_bytes(image_ino, at, dst, &mut byte_source)
+                })?
+            } else {
+                journal.write_fixed_file_at_buffered(
+                    ino,
+                    base_size,
+                    offset as u64,
+                    buf,
+                    |at, dst| read_image_bytes(image_ino, at, dst, &mut byte_source),
+                )?
+            };
+            (written, journal.visible_file_size(ino, base_size)?)
+        };
         if written > 0 {
             ROOTFS.with(|state| {
                 if let Some(inode) = state.get_mut(idx) {
+                    if resizable {
+                        inode.persistent_size = Some(visible_size);
+                    }
                     inode.touch_modified();
                 }
             });
@@ -3111,8 +3198,47 @@ pub fn truncate_handle<F>(handle: i64, length: i64, mut byte_source: F) -> Resul
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
-    reject_fixed_persistence_mutation()?;
     let idx = file_handle_to_inode(handle)?;
+    if fixed_persistence_enabled() {
+        if !resizable_persistence_enabled() || declares_digest(idx) {
+            return Err(Errno::EROFS);
+        }
+        let new_size = u64::try_from(length).map_err(|_| Errno::EINVAL)?;
+        let (ino, image_ino, base_size, old_size) = ROOTFS.with(|state| {
+            let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            match inode.kind {
+                InodeKind::BaseRegular {
+                    blob_id,
+                    size,
+                    source: BaseSource::Image,
+                } if inode.mode & 0o6000 == 0 => Ok((
+                    inode.ino,
+                    image_ino(blob_id)?,
+                    size,
+                    inode.persistent_size.unwrap_or(size),
+                )),
+                _ => Err(Errno::EROFS),
+            }
+        })?;
+        PERSISTENT_ROOTFS
+            .lock()
+            .as_mut()
+            .ok_or(Errno::EIO)?
+            .journal
+            .truncate_file_at(ino, base_size, new_size, |at, dst| {
+                read_image_bytes(image_ino, at, dst, &mut byte_source)
+            })?;
+        ROOTFS.with(|state| {
+            let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+            inode.persistent_size = Some(new_size);
+            if new_size != old_size {
+                inode.clear_setid_on_modify();
+            }
+            inode.touch_modified();
+            Ok(())
+        })?;
+        return Ok(());
+    }
     let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
     if new_len == 0 {
         return ROOTFS.with(|state| {
@@ -3189,6 +3315,7 @@ where
                 .lock()
                 .as_mut()
                 .ok_or(Errno::EIO)?
+                .journal
                 .read_file_at(ino, base_size, offset as u64, buf, |at, dst| {
                     read_image_bytes(image_ino, at, dst, &mut byte_source)
                 });
@@ -8156,6 +8283,7 @@ mod tests {
             .lock()
             .as_mut()
             .unwrap()
+            .journal
             .checkpoint_fixed_blocks_into(index.clone())
             .unwrap();
         let prefix_digest: [u8; 32] =
@@ -8185,6 +8313,140 @@ mod tests {
         let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
         assert_eq!(&changed[..count], b"hello live\n");
         release_handle(handle);
+    }
+
+    #[test]
+    fn resizable_persistence_reopens_sparse_growth_and_truncate() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source.clone()), base_digest).unwrap();
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(
+            write(handle, i64::MAX - 1, b"overflow", &mut image_bytes),
+            Err(Errno::EFBIG)
+        );
+        let far_offset = 8 * 1024 * 1024 * 1024i64 + 7;
+        assert_eq!(write(handle, far_offset, b"hello", &mut image_bytes), Ok(5));
+        assert_eq!(fstat(handle).unwrap().st_size, (far_offset + 5) as u64);
+        let mut visible = [0; 8];
+        assert_eq!(
+            read(handle, far_offset - 3, &mut visible, &mut image_bytes),
+            Ok(8)
+        );
+        assert_eq!(&visible, b"\0\0\0hello");
+        sync_persistence().unwrap();
+        release_handle(handle);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source.clone()), base_digest).unwrap();
+        assert_eq!(lstat(b"/hello.txt").unwrap().st_size, (far_offset + 5) as u64);
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(truncate_handle(handle, 6, &mut image_bytes), Ok(()));
+        assert_eq!(fstat(handle).unwrap().st_size, 6);
+        assert_eq!(
+            read(handle, 0, &mut visible, &mut image_bytes),
+            Ok(6)
+        );
+        assert_eq!(&visible[..6], b"hello ");
+        assert_eq!(truncate_handle(handle, far_offset + 5, &mut image_bytes), Ok(()));
+        assert_eq!(
+            read(handle, far_offset + 4, &mut visible, &mut image_bytes),
+            Ok(1)
+        );
+        assert_eq!(visible[0], 0);
+        sync_persistence().unwrap();
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        release_handle(handle);
+
+        let checkpoint_end = target.0.lock().len() as u64;
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        assert_eq!(
+            enable_fixed_persistence_indexed(
+                Box::new(target.clone()),
+                Box::new(index.clone()),
+                base_digest,
+                checkpoint_end,
+            ),
+            Err(Errno::EIO)
+        );
+        enable_resizable_persistence_indexed(
+            Box::new(target),
+            Box::new(index),
+            base_digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        assert_eq!(lstat(b"/hello.txt").unwrap().st_size, (far_offset + 5) as u64);
+        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(
+            read(handle, far_offset + 4, &mut visible, &mut image_bytes),
+            Ok(1)
+        );
+        assert_eq!(visible[0], 0);
+        release_handle(handle);
+    }
+
+    #[test]
+    fn resizable_persistence_rejects_namespace_and_unknown_file_records() {
+        use crate::persistent_overlay::{Mutation, OverlayKey};
+
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+
+        let namespace = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut journal = OverlayJournal::open(namespace.clone(), base_digest).unwrap();
+        journal
+            .commit(&[Mutation::Put {
+                key: OverlayKey::Dirent {
+                    parent: 1,
+                    name: b"new".to_vec(),
+                },
+                value: 7u64.to_le_bytes().to_vec(),
+            }])
+            .unwrap();
+        assert_eq!(
+            enable_resizable_persistence(Box::new(namespace), base_digest),
+            Err(Errno::EIO)
+        );
+
+        let unknown = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut journal = OverlayJournal::open(unknown.clone(), base_digest).unwrap();
+        journal
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileSize(99_999),
+                value: 1u64.to_le_bytes().to_vec(),
+            }])
+            .unwrap();
+        assert_eq!(
+            enable_resizable_persistence(Box::new(unknown), base_digest),
+            Err(Errno::EIO)
+        );
+
+        let oversized = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut journal = OverlayJournal::open(oversized.clone(), base_digest).unwrap();
+        journal
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileSize(lstat(b"/hello.txt").unwrap().st_ino),
+                value: (i64::MAX as u64 + 1).to_le_bytes().to_vec(),
+            }])
+            .unwrap();
+        assert_eq!(
+            enable_resizable_persistence(Box::new(oversized), base_digest),
+            Err(Errno::EIO)
+        );
     }
 
     #[test]
