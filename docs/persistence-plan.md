@@ -57,14 +57,20 @@ Writes spanning more than 64 cache blocks are split into bounded chunks;
 later writeback failure returns a short count rather than claiming the entire
 write succeeded. A 2 MiB guest `pwrite` followed by `fsync` survives a Node
 worker restart and Chromium, Firefox, and WebKit page reloads.
+The positioned-install browser test also runs a guest overwrite and a 2 MiB
+write near the end of a large file, then reopens the saved image after a page
+reload and verifies both writes through guest reads. Its 68 MiB and 772 MiB
+decoded-image cases pass on Chromium, Firefox, and WebKit; the 772 MiB case
+uses the constrained 768 MiB kernel memory ceiling. This establishes a narrow
+writable >RAM workflow, not general persistent POSIX support.
 For a first install from a direct VFS URL, the page now stages bounded
 chunks into a temporary OPFS file and the image writer reads that file through
 positioned calls. Zstd sources are decoded block-by-block with at most a
 16 MiB decompression window and staged as decoded bytes. A 68 MiB raw image
 can be composed with a 64 MiB VFS profile budget without returning source or
-composed image bytes to the page. A separate read-only test boots a 772 MiB
-decoded image under the constrained 768 MiB kernel memory ceiling on Chromium,
-Firefox, and WebKit, with no image-sized page or kernel-worker allocation. The
+composed image bytes to the page. The 772 MiB constrained-memory test boots,
+writes, and reopens the image on Chromium, Firefox, and WebKit, with no
+image-sized page or kernel-worker allocation. The
 temporary source is removed after composition. The next install reclaims
 orphaned source files while preserving active sources held by another tab's
 Web Lock. Pages products now authenticate compressed source bytes incrementally

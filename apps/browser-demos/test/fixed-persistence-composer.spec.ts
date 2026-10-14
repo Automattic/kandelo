@@ -395,7 +395,7 @@ for (const scenario of [
   { title: "composer VFS budget", fileBytes: 68 * 1024 * 1024, budgetBytes: 64 * 1024 * 1024, memoryProfile: undefined },
   { title: "@slow constrained kernel memory budget", fileBytes: 772 * 1024 * 1024, budgetBytes: 768 * 1024 * 1024, memoryProfile: "constrained" },
 ] as const) {
-  test(`positioned install boots an image larger than the ${scenario.title}`, async ({ playwright, browserName, baseURL }, testInfo) => {
+  test(`positioned install persists writes to an image larger than the ${scenario.title}`, async ({ playwright, browserName, baseURL }, testInfo) => {
     test.setTimeout(scenario.memoryProfile === undefined ? 180_000 : 600_000);
     test.skip(kernelPath === null, "kernel artifact is required");
     const image = await imageWithState("large-image", scenario.fileBytes);
@@ -488,12 +488,21 @@ for (const scenario of [
             vfsImageFile: restored.file,
             experimentalFixedPersistenceName: name,
           });
+          const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          const largeFileSize = (await kernel.statVfsPath("/large"))?.size;
+          const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite"]);
+          if (await exit !== 0) throw new Error("large-image guest overwrite failed");
+          const tailWrite = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "large-tail"]);
+          if (await tailWrite.exit !== 0) throw new Error("large-image guest tail write failed");
           return {
+            name,
+            identity,
             sourceLength: source.integrity.length,
             composedLength: composed.imageFile?.length,
             returnedBytes: composed.imageBytes.byteLength,
-            state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
-            largeFileSize: (await kernel.statVfsPath("/large"))?.size,
+            state,
+            written: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+            largeFileSize,
           };
         } finally {
           await kernel.destroy();
@@ -511,7 +520,39 @@ for (const scenario of [
       expect(result.composedLength).toBeGreaterThan(scenario.budgetBytes);
       expect(result.returnedBytes).toBe(0);
       expect(result.state).toBe("large-image");
+      expect(result.written).toBe("XYrge-image");
       expect(result.largeFileSize).toBe(scenario.fileBytes);
+      await page.reload();
+      const recovered = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, name, identity, memoryProfile }) => {
+        const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
+        const { BrowserKernel } = await import(browserKernelUrl);
+        const restored = await loadFixedPersistenceImageHandle(name, identity);
+        if (restored === null) throw new Error("large image was not retained across page reload");
+        const kernel = new BrowserKernel({ kernelOwnedFs: true, memoryProfile });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: restored.file,
+            experimentalFixedPersistenceName: name,
+          });
+          const tailVerify = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
+          return {
+            state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+            largeFileSize: (await kernel.statVfsPath("/large"))?.size,
+            tailVerified: await tailVerify.exit === 0,
+          };
+        } finally {
+          await kernel.destroy();
+        }
+      }, {
+        persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        name: result.name,
+        identity: result.identity,
+        memoryProfile: scenario.memoryProfile,
+      });
+      expect(recovered).toEqual({ state: "XYrge-image", largeFileSize: scenario.fileBytes, tailVerified: true });
     } finally {
       await context.close();
       rmSync(userDataDir, { recursive: true, force: true });
