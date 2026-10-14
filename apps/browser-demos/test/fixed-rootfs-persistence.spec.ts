@@ -600,90 +600,116 @@ test("browser replays 8192 distinct blocks after live compaction", async ({ play
   }
 });
 
-test("browser resizable compaction drops closed orphan blocks", async ({ playwright, browserName, baseURL }, testInfo) => {
-  test.setTimeout(180_000);
-  const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
-  filesystem.mkdir("/bin", 0o755);
-  filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
-  filesystem.writeFile("/large", new Uint8Array(32 * 1024 * 1024), 0o644);
-  const image = await filesystem.saveImage();
-  const kernelUrl = new URL("/resizable-orphan-kernel.wasm", baseURL).href;
-  const imageUrl = new URL("/resizable-orphan-image.vfs", baseURL).href;
-  const projectUse = testInfo.project.use as {
-    channel?: string;
-    launchOptions?: Record<string, unknown>;
-    proxy?: Record<string, unknown>;
-    extraHTTPHeaders?: Record<string, string>;
-  };
-  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-resizable-orphan-browser-"));
-  try {
-    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
-      channel: projectUse.channel,
-      proxy: projectUse.proxy as never,
-      extraHTTPHeaders: projectUse.extraHTTPHeaders,
-      ...(projectUse.launchOptions ?? {}),
-    });
+for (const keepOpen of [false, true]) {
+  test(`browser resizable compaction ${keepOpen ? "preserves open-unlinked data" : "drops closed orphan blocks"}`, async ({ playwright, browserName, baseURL }, testInfo) => {
+    test.setTimeout(180_000);
+    const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+    filesystem.mkdir("/bin", 0o755);
+    filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+    filesystem.writeFile("/large", new Uint8Array(32 * 1024 * 1024), 0o644);
+    const image = await filesystem.saveImage();
+    const kernelUrl = new URL("/resizable-orphan-kernel.wasm", baseURL).href;
+    const imageUrl = new URL("/resizable-orphan-image.vfs", baseURL).href;
+    const projectUse = testInfo.project.use as {
+      channel?: string;
+      launchOptions?: Record<string, unknown>;
+      proxy?: Record<string, unknown>;
+      extraHTTPHeaders?: Record<string, string>;
+    };
+    const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-resizable-orphan-browser-"));
     try {
-      const page = context.pages()[0] ?? (await context.newPage());
-      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
-      await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
-      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
-        const { BrowserKernel } = await import(moduleUrl);
-        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
-        const name = `resizable-orphan-${crypto.randomUUID()}`;
-        const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
-        const writer = await imageFile.createWritable();
-        await writer.write(await (await fetch(imageUrl)).arrayBuffer());
-        await writer.close();
-        const launch = async () => {
-          const kernel = new BrowserKernel({ kernelOwnedFs: true });
-          await kernel.initFromOpfsImage({
-            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
-            vfsImageFile: imageFile,
-            experimentalResizablePersistenceName: name,
-          });
-          return kernel;
-        };
-        const first = await launch();
-        try {
-          const write = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "orphan-many"]);
-          if (await write.exit !== 0) throw new Error("orphan guest write failed");
-          const deadline = Date.now() + 60_000;
-          let blockCount = -1n;
-          while (Date.now() < deadline) {
-            try {
-              const seal = await (await directory.getFileHandle(`${name}.g0.seal`)).getFile();
-              if (seal.size > 96) {
-                const index = await (await directory.getFileHandle(`${name}.g0.index`)).getFile();
-                blockCount = new DataView(await index.slice(0, 88).arrayBuffer()).getBigUint64(80, true);
-                break;
+      const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+        channel: projectUse.channel,
+        proxy: projectUse.proxy as never,
+        extraHTTPHeaders: projectUse.extraHTTPHeaders,
+        ...(projectUse.launchOptions ?? {}),
+      });
+      try {
+        const page = context.pages()[0] ?? (await context.newPage());
+        await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+        await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+        await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+        const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, keepOpen }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+          const name = `resizable-orphan-${crypto.randomUUID()}`;
+          const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+          const writer = await imageFile.createWritable();
+          await writer.write(await (await fetch(imageUrl)).arrayBuffer());
+          await writer.close();
+          const launch = async () => {
+            const kernel = new BrowserKernel({ kernelOwnedFs: true });
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: imageFile,
+              experimentalResizablePersistenceName: name,
+            });
+            return kernel;
+          };
+          const first = await launch();
+          try {
+            const write = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", keepOpen ? "open-orphan-many" : "orphan-many"]);
+            if (!keepOpen && await write.exit !== 0) throw new Error("orphan guest write failed");
+            const deadline = Date.now() + 60_000;
+            let blockCount = -1n;
+            while (Date.now() < deadline) {
+              try {
+                const seal = await (await directory.getFileHandle(`${name}.g0.seal`)).getFile();
+                if (seal.size > 96) {
+                  const index = await (await directory.getFileHandle(`${name}.g0.index`)).getFile();
+                  blockCount = new DataView(await index.slice(0, 88).arrayBuffer()).getBigUint64(80, true);
+                  break;
+                }
+              } catch {
+                blockCount = -1n;
               }
-            } catch {
-              blockCount = -1n;
+              await new Promise((resolve) => setTimeout(resolve, 100));
             }
-            await new Promise((resolve) => setTimeout(resolve, 100));
+            if (blockCount !== (keepOpen ? 8193n : 8192n)) throw new Error(`orphan checkpoint block count: ${blockCount}`);
+            if (keepOpen) {
+              await first.writeFileToVfs("/release", Uint8Array.of(1));
+              if (await write.exit !== 0) throw new Error("open-orphan guest read failed");
+              const next = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "many"]);
+              const nextExit = await next.exit;
+              if (nextExit !== 0) throw new Error(`second guest write failed: ${nextExit}`);
+              const nextDeadline = Date.now() + 60_000;
+              let nextBlockCount = -1n;
+              while (Date.now() < nextDeadline) {
+                try {
+                  const seal = await (await directory.getFileHandle(`${name}.g1.seal`)).getFile();
+                  if (seal.size > 96) {
+                    const index = await (await directory.getFileHandle(`${name}.g1.index`)).getFile();
+                    nextBlockCount = new DataView(await index.slice(0, 88).arrayBuffer()).getBigUint64(80, true);
+                    break;
+                  }
+                } catch {
+                  nextBlockCount = -1n;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 100));
+              }
+              if (nextBlockCount !== 8192n) throw new Error(`closed orphan checkpoint block count: ${nextBlockCount}`);
+            }
           }
-          if (blockCount !== 8192n) throw new Error(`orphan checkpoint block count: ${blockCount}`);
-        } finally {
-          await first.destroy();
-        }
-        const reopened = await launch();
-        try {
-          const verification = await reopened.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-orphan-many"]);
-          return await verification.exit;
-        } finally {
-          await reopened.destroy();
-        }
-      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result).toBe(0);
+          } finally {
+            await first.destroy();
+          }
+          const reopened = await launch();
+          try {
+            const verification = await reopened.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-orphan-many"]);
+            return await verification.exit;
+          } finally {
+            await reopened.destroy();
+          }
+        }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl, keepOpen });
+        expect(result).toBe(0);
+      } finally {
+        await context.close();
+      }
     } finally {
-      await context.close();
+      rmSync(userDataDir, { recursive: true, force: true });
     }
-  } finally {
-    rmSync(userDataDir, { recursive: true, force: true });
-  }
-});
+  });
+}
 
 test("browser termination loses unsynced writes without damaging the last durable image", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);

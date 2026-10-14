@@ -393,6 +393,43 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 180_000);
 
+  it.skipIf(guestProgramPath === null)("keeps an open-unlinked file readable through live compaction", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-open-orphan-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh", true, 32 * 1024 * 1024);
+      const first = await boot(image, path, true);
+      try {
+        const guest = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "open-orphan-many"]);
+        await vi.waitFor(() => expect(readFileSync(`${path}.g0.seal`).byteLength).toBeGreaterThan(96), {
+          timeout: 60_000,
+          interval: 100,
+        });
+        expect(readFileSync(`${path}.g0.index`).readBigUInt64LE(80)).toBe(8193n);
+        await first.writeFileToVfs("/release", Uint8Array.of(1));
+        expect(await guest.exit).toBe(0);
+        const next = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "many"]);
+        expect(await next.exit).toBe(0);
+        await vi.waitFor(() => expect(readFileSync(`${path}.g1.seal`).byteLength).toBeGreaterThan(96), {
+          timeout: 60_000,
+          interval: 100,
+        });
+        expect(readFileSync(`${path}.g1.index`).readBigUInt64LE(80)).toBe(8192n);
+      } finally {
+        await first.destroy();
+      }
+      const reopened = await boot(image, path, true);
+      try {
+        const { exit } = await reopened.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-orphan-many"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 180_000);
+
   it.skipIf(guestProgramPath === null)("compacts an indexed journal twice while guests keep writing", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-live-"));
     const path = join(directory, "machine.journal");
