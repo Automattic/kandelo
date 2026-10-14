@@ -42,7 +42,7 @@ use spin::Mutex;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::WasmStat;
 use wasm_posix_shared::WasmStatfs;
-use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
+use wasm_posix_shared::mode::{S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
 
 // Open-file creation flags we honor here (mirrors syscalls.rs / tmpfs.rs).
 const O_ACCMODE: u32 = 0o3;
@@ -709,7 +709,10 @@ impl PreparedPersistentMetadataChange {
             InodeKind::PersistentRegular => 1,
             InodeKind::Dir(_) => 2,
             InodeKind::Symlink(_) => 3,
-            InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. } | InodeKind::Special(_) => 4,
+            InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. } => 4,
+            InodeKind::Special(S_IFIFO) => 5,
+            InodeKind::Special(S_IFSOCK) => 6,
+            InodeKind::Special(_) => return Err(Errno::EINVAL),
             InodeKind::Regular(_) => return Err(Errno::EROFS),
         };
         let target = match &inode.kind {
@@ -853,6 +856,8 @@ fn encode_persistent_inode(inode: &Inode) -> Vec<u8> {
         InodeKind::PersistentRegular => (1, &[][..]),
         InodeKind::Dir(_) => (2, &[][..]),
         InodeKind::Symlink(target) => (3, target.as_slice()),
+        InodeKind::Special(S_IFIFO) => (5, &[][..]),
+        InodeKind::Special(S_IFSOCK) => (6, &[][..]),
         _ => unreachable!(),
     };
     encode_inode_record(kind, target, PersistentInodeMetadata::from_inode(inode))
@@ -896,6 +901,8 @@ fn decode_persistent_inode(ino: u64, value: &[u8]) -> Result<Inode, Errno> {
         3 if value.len() > PERSISTENT_REGULAR_RECORD_BYTES => {
             InodeKind::Symlink(value[PERSISTENT_REGULAR_RECORD_BYTES..].to_vec())
         }
+        5 if value.len() == PERSISTENT_REGULAR_RECORD_BYTES => InodeKind::Special(S_IFIFO),
+        6 if value.len() == PERSISTENT_REGULAR_RECORD_BYTES => InodeKind::Special(S_IFSOCK),
         _ => return Err(Errno::EIO),
     };
     if metadata.mode & !(if matches!(kind, InodeKind::Dir(_) | InodeKind::Symlink(_)) { 0o7777 } else { 0o1777 }) != 0
@@ -1118,6 +1125,9 @@ fn enable_persistence_internal(
         return Err(Errno::EBUSY);
     }
     if resizable {
+        if namespace_replay {
+            clear_fifo_registry();
+        }
         ROOTFS.with(|state| {
             for (ino, inode) in created {
                 state.bump_next_ino(ino);
@@ -1137,6 +1147,7 @@ fn enable_persistence_internal(
             ROOTFS.with(|state| apply_persistent_dirents(state, &mut journal))?;
         }
     }
+    restore_fifo_registry()?;
     *active = Some(PersistentMount {
         journal,
         resizable,
@@ -2034,6 +2045,7 @@ fn iter_to_dir_handle(idx: u32) -> i64 {
 /// Clear the whole overlay (drops every inode and open stream). Used before
 /// repopulating from a fresh image or manifest and by tests for isolation.
 pub fn reset() {
+    clear_fifo_registry();
     *PREPARED_PERSISTENCE.lock() = None;
     *PERSISTENT_ROOTFS.lock() = None;
     ROOTFS.with(|state| *state = RootfsState::new());
@@ -2043,6 +2055,67 @@ pub fn reset() {
     // reset must drop it rather than let the next chunk serve a tree that is
     // no longer there.
     reset_image_export();
+}
+
+fn fifo_paths() -> Vec<(u32, Vec<u8>, WasmStat)> {
+    ROOTFS.with(|state| {
+        let mut paths = Vec::new();
+        let Some(root) = state.root else {
+            return paths;
+        };
+        let mut pending = vec![(root, Vec::new())];
+        while let Some((index, path)) = pending.pop() {
+            let Some(inode) = state.get(index) else {
+                continue;
+            };
+            match &inode.kind {
+                InodeKind::Dir(entries) => {
+                    for (name, child) in entries {
+                        let mut child_path = path.clone();
+                        child_path.push(b'/');
+                        child_path.extend_from_slice(name);
+                        pending.push((*child, child_path));
+                    }
+                }
+                InodeKind::Special(S_IFIFO) => paths.push((index, path, inode.stat())),
+                _ => {}
+            }
+        }
+        paths
+    })
+}
+
+fn clear_fifo_registry() {
+    for (_, path, _) in fifo_paths() {
+        if let Some(index) = unsafe { crate::fifo::global_fifo_table() }.remove(&path) {
+            unsafe { crate::pipe::global_pipe_table() }.remove_fifo_name(index);
+        }
+    }
+}
+
+fn restore_fifo_registry() -> Result<(), Errno> {
+    let mut pipes = BTreeMap::new();
+    for (inode, path, metadata) in fifo_paths() {
+        if unsafe { crate::fifo::global_fifo_table() }.lookup(&path).is_some() {
+            continue;
+        }
+        let index = if let Some(&index) = pipes.get(&inode) {
+            unsafe { crate::pipe::global_pipe_table() }
+                .get_mut(index)
+                .ok_or(Errno::EIO)?
+                .add_fifo_name();
+            index
+        } else {
+            let pipe = crate::pipe::PipeBuffer::new_fifo(crate::pipe::DEFAULT_PIPE_CAPACITY, metadata);
+            let index = unsafe { crate::pipe::global_pipe_table() }.alloc(pipe);
+            pipes.insert(inode, index);
+            index
+        };
+        if !unsafe { crate::fifo::global_fifo_table() }.register(path, index) {
+            return Err(Errno::EIO);
+        }
+    }
+    Ok(())
 }
 
 /// Split an absolute path into (parent components, final component). Returns
@@ -2293,6 +2366,37 @@ pub fn insert_base_symlink(
             state.inodes[child as usize] = None;
             state.free_inodes.push(child);
             return Err(e);
+        }
+        Ok(())
+    })
+}
+
+pub fn insert_base_special(
+    path: &[u8],
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    ino: u64,
+    type_bits: u32,
+) -> Result<(), Errno> {
+    if type_bits != S_IFIFO && type_bits != S_IFSOCK {
+        return Err(Errno::EINVAL);
+    }
+    ROOTFS.with(|state| {
+        state.bump_next_ino(ino);
+        let (parent_comps, last) = parent_and_last(path).ok_or(Errno::EINVAL)?;
+        let child = state.insert_inode(Inode::new(
+            InodeKind::Special(type_bits),
+            mode & 0o7777,
+            uid,
+            gid,
+            1,
+            ino,
+        ));
+        if let Err(error) = link_into_parent(state, &parent_comps, last, child) {
+            state.inodes[child as usize] = None;
+            state.free_inodes.push(child);
+            return Err(error);
         }
         Ok(())
     })
@@ -2841,7 +2945,10 @@ where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
     reset();
-    let result = load_image_inner(image_len, byte_source);
+    let result = load_image_inner(image_len, byte_source).and_then(|count| {
+        restore_fifo_registry()?;
+        Ok(count)
+    });
     if result.is_err() {
         reset();
     }
@@ -3247,11 +3354,12 @@ where
                     set_base_times_from_ms(&abs, stat.mtime_ms);
                     count += 1;
                 }
-                _ => {
-                    // Sockets/FIFOs/device nodes have no place in a `/` image; a
-                    // real one is a build defect. Skipped, exactly as the host
-                    // walk skips it, rather than absorbed as another type.
+                S_IFIFO | S_IFSOCK => {
+                    insert_base_special(&abs, stat.mode, stat.uid, stat.gid, ino, file_type(stat.mode))?;
+                    set_base_times_from_ms(&abs, stat.mtime_ms);
+                    count += 1;
                 }
+                _ => {}
             }
         }
         for subdirectory in subdirectories.into_iter().rev() {
@@ -5400,11 +5508,47 @@ pub fn mknod_special(
     gid: u32,
     type_bits: u32,
 ) -> Result<(), Errno> {
-    reject_fixed_persistence_mutation()?;
+    if type_bits != S_IFIFO && type_bits != S_IFSOCK {
+        return Err(Errno::EINVAL);
+    }
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EEXIST);
     }
+    if resizable_persistence_enabled() {
+        let (parent, name, parent_ino, inode) = ROOTFS.with(|state| {
+            let (parent, last, existing) = state.resolve(&comps)?;
+            if existing.is_some() {
+                return Err(Errno::EEXIST);
+            }
+            let ino = state.next_ino;
+            if ino == u64::MAX {
+                return Err(Errno::ENOSPC);
+            }
+            let inode = Inode::new(InodeKind::Special(type_bits), mode & 0o7777, uid, gid, 1, ino);
+            Ok::<_, Errno>((parent, last.ok_or(Errno::ENOENT)?.to_vec(), state.get(parent).ok_or(Errno::EIO)?.ino, inode))
+        })?;
+        commit_persistent_namespace(&[
+            Mutation::Put {
+                key: OverlayKey::Inode(inode.ino),
+                value: encode_persistent_inode(&inode),
+            },
+            Mutation::Put {
+                key: OverlayKey::Dirent { parent: parent_ino, name: name.clone() },
+                value: inode.ino.to_le_bytes().to_vec(),
+            },
+        ], &[(parent, NamespaceTimestamp::Modified)])?;
+        return ROOTFS.with(|state| {
+            state.bump_next_ino(inode.ino);
+            let index = state.insert_inode(inode);
+            let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|node| &mut node.kind) else {
+                return Err(Errno::EIO);
+            };
+            entries.insert(name, index);
+            Ok(())
+        });
+    }
+    reject_fixed_persistence_mutation()?;
     ROOTFS.with(|state| {
         let (parent, last, existing) = state.resolve(&comps)?;
         if existing.is_some() {
@@ -5670,10 +5814,6 @@ enum ImageContent {
 pub struct ExportPlan {
     image: crate::kandelo_image_write::KandeloImage,
     contents: Vec<ImageContent>,
-    /// Sockets and FIFOs have no representation in a `/` image. The base-image
-    /// builder skips them too, so they are counted and reported rather than
-    /// fabricated — the same lossy boundary the host reconciler documents.
-    pub skipped_special: u32,
 }
 
 impl ExportPlan {
@@ -5798,7 +5938,7 @@ enum ExportNode {
     /// file this export cannot serialize at all. It still writes an empty file.
     LazyStub,
     Symlink(Vec<u8>),
-    Special,
+    Special(u32),
 }
 
 /// The `data_start` `KandeloImageWriter::mkfs` will derive from `max_blocks`.
@@ -6018,7 +6158,6 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
     writer.declare_deferred_section();
 
     let mut contents: Vec<ImageContent> = Vec::new();
-    let mut skipped_special = 0u32;
     // Overlay arena index -> the KIFS inode it became, so the second and later
     // names for a hard-linked inode become a `link` rather than a second copy.
     let mut emitted: BTreeMap<u32, u32> = BTreeMap::new();
@@ -6093,7 +6232,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     }
                 }
                 InodeKind::Symlink(target) => ExportNode::Symlink(target.clone()),
-                InodeKind::Special(_) => ExportNode::Special,
+                InodeKind::Special(type_bits) => ExportNode::Special(*type_bits),
                 InodeKind::LazyMember {
                     archive_id,
                     source_path,
@@ -6117,9 +6256,8 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
         }
 
         let out_ino = match node {
-            ExportNode::Special => {
-                skipped_special += 1;
-                continue;
+            ExportNode::Special(type_bits) => {
+                writer.mknod_special(item.parent_out, &item.name, mode, type_bits)?
             }
             ExportNode::Dir => {
                 let ino = writer.mkdir(item.parent_out, &item.name, mode)?;
@@ -6247,7 +6385,6 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
     Ok(ExportPlan {
         image: writer.finish()?,
         contents,
-        skipped_special,
     })
 }
 
@@ -10415,6 +10552,53 @@ mod tests {
     }
 
     #[test]
+    fn resizable_persistence_reopens_special_nodes_after_indexed_compaction_and_export() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source), base_digest).unwrap();
+        mknod_special(b"/created-fifo", 0o640, 7, 8, S_IFIFO).unwrap();
+        link(b"/created-fifo", b"/fifo-alias").unwrap();
+        mknod_special(b"/created-socket", 0o755, 9, 10, S_IFSOCK).unwrap();
+        assert_eq!(lstat(b"/created-fifo").unwrap().st_mode, S_IFIFO | 0o640);
+        sync_persistence().unwrap();
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let checkpoint_end = target.0.lock().len() as u64;
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(Box::new(target), Box::new(index), base_digest, checkpoint_end).unwrap();
+        let fifo = lstat(b"/created-fifo").unwrap();
+        assert_eq!(fifo.st_mode, S_IFIFO | 0o640);
+        assert_eq!(fifo.st_nlink, 2);
+        assert_eq!((fifo.st_uid, fifo.st_gid), (7, 8));
+        assert_eq!(lstat(b"/fifo-alias").unwrap().st_ino, fifo.st_ino);
+        assert_eq!(
+            unsafe { crate::fifo::global_fifo_table() }.lookup(b"/created-fifo"),
+            unsafe { crate::fifo::global_fifo_table() }.lookup(b"/fifo-alias"),
+        );
+        assert!(unsafe { crate::fifo::global_fifo_table() }.lookup(b"/created-fifo").is_some());
+        let socket = lstat(b"/created-socket").unwrap();
+        assert_eq!(socket.st_mode, S_IFSOCK | 0o755);
+        assert_eq!((socket.st_uid, socket.st_gid), (9, 10));
+
+        let snapshot = drain_container(8192, &mut image_bytes);
+        reset();
+        load_image(snapshot.len() as u64, image_host(&snapshot)).unwrap();
+        assert_eq!(lstat(b"/created-fifo").unwrap().st_mode, S_IFIFO | 0o640);
+        assert_eq!(lstat(b"/fifo-alias").unwrap().st_ino, lstat(b"/created-fifo").unwrap().st_ino);
+        assert!(unsafe { crate::fifo::global_fifo_table() }.lookup(b"/created-fifo").is_some());
+        assert_eq!(lstat(b"/created-socket").unwrap().st_mode, S_IFSOCK | 0o755);
+    }
+
+    #[test]
     fn resizable_persistence_reopens_created_symlink_after_indexed_compaction() {
         let _guard = TestGuard::acquire();
         let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
@@ -12465,24 +12649,25 @@ mod tests {
     }
 
     #[test]
-    fn special_nodes_are_skipped_rather_than_fabricated() {
-        // A `/` image has no representation for a socket or FIFO. Inventing
-        // one would be worse than losing it, so the export counts them.
+    fn special_nodes_survive_image_export_and_reload() {
         let _guard = TestGuard::acquire();
         write_file_at(b"/keep", 0, b"k", 0o644, true, no_bytes()).expect("write");
         mknod_special(b"/sock", 0o755, 0, 0, S_IFSOCK).expect("special");
-
-        let plan = build_export_image().expect("build");
-        assert_eq!(plan.skipped_special, 1);
-        drop(plan);
+        mknod_special(b"/fifo", 0o640, 7, 8, S_IFIFO).expect("fifo");
 
         let bytes = drain_export(8192, &mut no_bytes());
         let fs = crate::kandelo_image_fs::KandeloImageFs::mount(bytes.as_slice()).expect("mount");
         assert!(fs.resolve(b"/keep", true).is_ok());
-        assert!(
-            fs.resolve(b"/sock", false).is_err(),
-            "a socket must not appear as some other kind of file"
-        );
+        assert_eq!(fs.stat_ino(fs.resolve(b"/sock", false).unwrap()).unwrap().mode, S_IFSOCK | 0o755);
+        let fifo = fs.stat_ino(fs.resolve(b"/fifo", false).unwrap()).unwrap();
+        assert_eq!(fifo.mode, S_IFIFO | 0o640);
+        assert_eq!((fifo.uid, fifo.gid), (7, 8));
+
+        let container = drain_container(8192, &mut no_bytes());
+        reset();
+        load_image(container.len() as u64, image_host(&container)).unwrap();
+        assert_eq!(lstat(b"/sock").unwrap().st_mode & S_IFMT, S_IFSOCK);
+        assert_eq!(lstat(b"/fifo").unwrap().st_mode & S_IFMT, S_IFIFO);
     }
 
     #[test]

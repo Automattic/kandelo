@@ -155,6 +155,8 @@ test("browser retains a persistent journal lease after an unacknowledged destroy
 test("browser streams a composed resizable snapshot to OPFS and reboots without its journal", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.mkdir("/bin", 0o755);
+  filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
   filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
   const image = await filesystem.saveImage();
   const kernelUrl = new URL("/resizable-export-kernel.wasm", baseURL).href;
@@ -201,6 +203,8 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
         try {
           await first.writeFileToVfs("/state", new TextEncoder().encode("SNAP"));
           await first.writeFileToVfs("/created", new TextEncoder().encode("created"));
+          const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "create-fifo"]);
+          if (await exit !== 0) throw new Error("guest could not create FIFO");
         } finally {
           await first.destroy();
         }
@@ -224,10 +228,13 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
         const restored = new BrowserKernel({ kernelOwnedFs: true });
         let state: string;
         let created: string;
+        let fifoExit: number;
         try {
           await restored.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile, integrity: snapshotIntegrity });
           state = new TextDecoder().decode((await restored.readFileFromVfs("/state"))!);
           created = new TextDecoder().decode((await restored.readFileFromVfs("/created"))!);
+          const { exit } = await restored.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-fifo"]);
+          fifoExit = await exit;
         } finally {
           await restored.destroy();
         }
@@ -243,9 +250,9 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
         } finally {
           await damaged.destroy();
         }
-        return { state, created, snapshotBytes: snapshotIntegrity.length, damageRejected };
+        return { state, created, fifoExit, snapshotBytes: snapshotIntegrity.length, damageRejected };
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result).toEqual({ state: "SNAP", created: "created", snapshotBytes: expect.any(Number), damageRejected: true });
+      expect(result).toEqual({ state: "SNAP", created: "created", fifoExit: 0, snapshotBytes: expect.any(Number), damageRejected: true });
       expect(result.snapshotBytes).toBeGreaterThan(0);
     } finally {
       await context.close();
@@ -294,7 +301,7 @@ test("browser reopens sparse image and created files after namespace changes", a
         await writer.write(imageBytes);
         await writer.close();
         const statuses = [];
-        for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed", "set-metadata", "verify-metadata", "replace-open", "verify-replacement"]) {
+        for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed", "set-metadata", "verify-metadata", "replace-open", "verify-replacement", "create-fifo", "verify-fifo"]) {
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
           try {
             await kernel.initFromOpfsImage({
@@ -312,7 +319,7 @@ test("browser reopens sparse image and created files after namespace changes", a
         const journal = await (await directory.getFileHandle(`${name}.journal`)).getFile();
         return { statuses, journalSize: journal.size };
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result.statuses).toEqual(Array(22).fill(0));
+      expect(result.statuses).toEqual(Array(24).fill(0));
       expect(result.journalSize).toBeLessThan(64 * 1024);
     } finally {
       await context.close();

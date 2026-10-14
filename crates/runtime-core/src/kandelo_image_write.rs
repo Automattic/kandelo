@@ -111,6 +111,8 @@ const S_IFMT: u32 = 0xf000;
 const S_IFREG: u32 = 0x8000;
 const S_IFDIR: u32 = 0x4000;
 const S_IFLNK: u32 = 0xa000;
+const S_IFIFO: u32 = 0x1000;
+const S_IFSOCK: u32 = 0xc000;
 const S_ISUID: u32 = 0o4000;
 const S_ISGID: u32 = 0o2000;
 
@@ -1039,6 +1041,29 @@ impl KandeloImageWriter {
         self.dir_add_entry(parent, name, ino)?;
         self.truncate_to_zero(ino);
         self.write_content(ino, content)?;
+        Ok(ino)
+    }
+
+    pub fn mknod_special(
+        &mut self,
+        parent: u32,
+        name: &[u8],
+        mode: u32,
+        type_bits: u32,
+    ) -> Result<u32, Errno> {
+        if type_bits != S_IFIFO && type_bits != S_IFSOCK {
+            return Err(Errno::EINVAL);
+        }
+        self.precheck(parent, name)?;
+        let ino = self.inode_alloc()?;
+        let now = self.now_ms;
+        self.ino_w32(ino, INO_MODE, type_bits | (mode & 0o7777));
+        self.ino_w32(ino, INO_LINK_COUNT, 1);
+        self.ino_w64(ino, INO_SIZE, 0);
+        self.ino_w64(ino, INO_ATIME, now);
+        self.ino_w64(ino, INO_MTIME, now);
+        self.ino_w64(ino, INO_CTIME, now);
+        self.dir_add_entry(parent, name, ino)?;
         Ok(ino)
     }
 
