@@ -93,6 +93,9 @@ manifests identify different generations, selection verifies the new base in
 bounded chunks and its journal header before choosing it; a damaged base or
 header selects the verified prior generation. Chromium, Firefox, and WebKit
 exercise that handoff and fallback after image, header, and manifest damage.
+The browser replacement workflow now injects cancellation at every publish
+checkpoint before the primary manifest closes, and checks that the prior
+generation remains selected before a later successful publication.
 The selected prior manifest carries the exact primary and fallback manifest
 digests observed at selection. Only after the prior kernel initializes, and
 before guest processes launch, the page checks those digests under the
