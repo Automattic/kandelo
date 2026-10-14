@@ -138,6 +138,12 @@ guest-write and reload test on Chromium, Firefox, and WebKit, but the full
 page transition test is authored and currently skipped without the shell
 package artifacts, so page-driven replacement is implemented but not yet
 validated end to end here.
+Before checkpoint publication or page guest launch, the browser compares the
+kernel's live demo configuration and experimental terminal session with the
+composition saved beside the image. If a guest changed either file, it fails
+closed rather than booting from stale host policy or publishing a snapshot
+with misleading composition. This does not yet rederive the required dinit
+service closure from guest-edited service files.
 The selected prior manifest carries the exact primary and fallback manifest
 digests observed at selection. Only after the prior kernel initializes, and
 before guest processes launch, the page checks those digests under the
