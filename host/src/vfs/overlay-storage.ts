@@ -125,7 +125,7 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
   static async openFile(
     name: string,
     slot: "legacy" | "g0" | "g1",
-    suffix: "journal" | "seal",
+    suffix: "journal" | "seal" | "index",
     create: boolean,
   ): Promise<OpfsOverlayStorageFile | null> {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name)) throw storageError("EIO");

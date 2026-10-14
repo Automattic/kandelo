@@ -81,6 +81,36 @@ describe("overlay generation seal", () => {
     const seal = new MemoryStorage();
     await expect(writeOverlayGenerationSeal(journal, seal, 1, new Uint8Array(32))).rejects.toThrow("injected");
     expect(seal.len()).toBe(0);
+    journal.failFlush = false;
+    const index = new MemoryStorage(Uint8Array.of(4, 5, 6));
+    index.failFlush = true;
+    await expect(writeOverlayGenerationSeal(journal, seal, 1, new Uint8Array(32), index)).rejects.toThrow("injected");
+    expect(seal.len()).toBe(0);
+  });
+
+  it("binds an indexed generation without materializing its whole sidecar", async () => {
+    const journal = new MemoryStorage(Uint8Array.of(1, 2, 3));
+    const index = new MemoryStorage(Uint8Array.from(
+      { length: 2 * 1024 * 1024 + 3 },
+      (_, position) => position % 251,
+    ));
+    const seal = new MemoryStorage();
+    const baseDigest = new Uint8Array(32).fill(9);
+    await writeOverlayGenerationSeal(journal, seal, 2, baseDigest, index);
+    expect(seal.len()).toBe(96 + 4 * 32);
+    expect(await verifyOverlayGenerationSeal(journal, seal, baseDigest, false, index)).toEqual({
+      generation: 2,
+      journalLength: 3,
+      baseDigest,
+      indexLength: index.len(),
+    });
+    expect(index.maxRead).toBeLessThanOrEqual(1024 * 1024);
+    await expect(verifyOverlayGenerationSeal(journal, seal, baseDigest)).rejects.toThrow("invalid");
+    index.bytes[1024 * 1024 + 1] ^= 1;
+    await expect(verifyOverlayGenerationSeal(journal, seal, baseDigest, false, index)).rejects.toThrow("invalid");
+    index.bytes[1024 * 1024 + 1] ^= 1;
+    index.truncate(index.len() - 1);
+    await expect(verifyOverlayGenerationSeal(journal, seal, baseDigest, false, index)).rejects.toThrow("invalid");
   });
 
   it("can verify a sealed immutable prefix before an active append tail", async () => {
@@ -151,6 +181,24 @@ describe("overlay generation boot selection", () => {
         throw new Error("kernel refused fixed rootfs persistence (errno 5)");
       }
     })).slot).toBe("legacy");
+  });
+
+  it("falls back when a newer indexed generation is damaged", async () => {
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(Uint8Array.of(1)),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(Uint8Array.of(2)),
+      "g1.seal": new MemoryStorage(),
+      "g1.index": new MemoryStorage(Uint8Array.of(3, 4, 5)),
+    };
+    const digest = new Uint8Array(32);
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, digest);
+    await writeOverlayGenerationSeal(entries["g1.journal"]!, entries["g1.seal"]!, 2, digest, entries["g1.index"]!);
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g1");
+    entries["g1.index"]!.bytes[1] ^= 1;
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
+    entries["g0.seal"]!.truncate(0);
+    await expect(enableBestOverlayGeneration(files(entries), () => {})).rejects.toThrow("refusing to reset");
   });
 
   it("refuses a silent reset when only incomplete generation files remain", async () => {

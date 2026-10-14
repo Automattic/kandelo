@@ -273,6 +273,137 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
   }
 });
 
+test("browser rejects a damaged indexed generation and restores the prior slot", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(90_000);
+  const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.mkdir("/bin", 0o755);
+  filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+  filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+  const image = await filesystem.saveImage();
+  const kernelUrl = new URL("/fixed-index-kernel.wasm", baseURL).href;
+  const imageUrl = new URL("/fixed-index-image.vfs", baseURL).href;
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-fixed-index-browser-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const name = `fixed-index-${crypto.randomUUID()}`;
+        const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+        const imageWriter = await imageFile.createWritable();
+        await imageWriter.write(await (await fetch(imageUrl)).arrayBuffer());
+        await imageWriter.close();
+        const boot = async () => {
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: imageFile,
+              experimentalFixedPersistenceName: name,
+            });
+            return kernel;
+          } catch (error) {
+            await kernel.destroy();
+            throw error;
+          }
+        };
+        const first = await boot();
+        try {
+          const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite"]);
+          if (await exit !== 0) throw new Error("guest write failed");
+        } finally {
+          await first.destroy();
+        }
+        const legacyFile = await directory.getFileHandle(`${name}.journal`);
+        const committed = new Uint8Array(await (await legacyFile.getFile()).arrayBuffer());
+        const baseDigest = committed.slice(8, 40);
+        const writeBytes = async (suffix: string, bytes: Uint8Array) => {
+          const file = await directory.getFileHandle(`${name}.${suffix}`, { create: true });
+          const writer = await file.createWritable();
+          await writer.write(bytes);
+          await writer.close();
+        };
+        const hash = async (bytes: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice().buffer));
+        const seal = async (journal: Uint8Array, generation: number, index?: Uint8Array) => {
+          const indexed = index !== undefined;
+          const headerDataBytes = indexed ? 64 : 56;
+          const header = new Uint8Array(headerDataBytes + 32);
+          header.set(new TextEncoder().encode("KOGS"));
+          const view = new DataView(header.buffer);
+          view.setUint32(4, indexed ? 2 : 1, true);
+          view.setBigUint64(8, BigInt(generation), true);
+          view.setBigUint64(16, BigInt(journal.length), true);
+          header.set(baseDigest, 24);
+          if (index) view.setBigUint64(56, BigInt(index.length), true);
+          header.set(await hash(header.subarray(0, headerDataBytes)), headerDataBytes);
+          const sources = index ? [journal, index] : [journal];
+          const chunks = sources.reduce((total, source) => total + Math.ceil(source.length / (1024 * 1024)), 0);
+          const bytes = new Uint8Array(header.length + chunks * 32);
+          bytes.set(header);
+          let position = header.length;
+          for (const source of sources) {
+            for (let offset = 0; offset < source.length; offset += 1024 * 1024) {
+              bytes.set(await hash(source.subarray(offset, offset + 1024 * 1024)), position);
+              position += 32;
+            }
+          }
+          return bytes;
+        };
+        const priorJournal = committed.slice(0, 72);
+        const index = Uint8Array.of(1, 2, 3);
+        await writeBytes("g0.journal", priorJournal);
+        await writeBytes("g0.seal", await seal(priorJournal, 1));
+        await writeBytes("g1.journal", committed);
+        await writeBytes("g1.index", index);
+        await writeBytes("g1.seal", await seal(committed, 2, index));
+        const legacyWriter = await legacyFile.createWritable();
+        await legacyWriter.write(new TextEncoder().encode("damaged legacy"));
+        await legacyWriter.close();
+        const readState = async () => {
+          const kernel = await boot();
+          try {
+            return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          } finally {
+            await kernel.destroy();
+          }
+        };
+        const newest = await readState();
+        await writeBytes("g1.index", Uint8Array.of(0, 2, 3));
+        const fallback = await readState();
+        await writeBytes("g0.seal", Uint8Array.of(0));
+        let refused = false;
+        try {
+          await readState();
+        } catch (error) {
+          refused = String(error).includes("kernel refused fixed rootfs persistence");
+        }
+        return { newest, fallback, refused };
+      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
+      expect(result).toEqual({ newest: "XYcdefgh", fallback: "abcdefgh", refused: true });
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
 test("browser replays a guest write larger than its bounded dirty cache", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const projectUse = testInfo.project.use as {

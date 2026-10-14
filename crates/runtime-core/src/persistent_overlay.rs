@@ -305,6 +305,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             self.base_digest,
             digest.finalize().into(),
             self.end,
+            self.next_sequence,
             records,
         )
     }

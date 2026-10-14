@@ -87,14 +87,20 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       }
       copyFileSync(path, `${path}.g0.journal`);
       copyFileSync(path, `${path}.g1.journal`);
+      writeFileSync(`${path}.g0.journal`, readFileSync(path).subarray(0, 72));
       const backend = new HostFileSystem(directory);
       const digest = new Uint8Array(createHash("sha256").update(image).digest());
       for (const [slot, generation] of [["g0", 1], ["g1", 2]] as const) {
         const journal = OverlayStorageFile.open(backend, `/machine.journal.${slot}.journal`, false);
         const seal = OverlayStorageFile.open(backend, `/machine.journal.${slot}.seal`);
+        const index = slot === "g1"
+          ? OverlayStorageFile.open(backend, `/machine.journal.${slot}.index`)
+          : null;
         try {
-          await writeOverlayGenerationSeal(journal, seal, generation, digest);
+          index?.writeAllAt(0, Uint8Array.of(1, 2, 3));
+          await writeOverlayGenerationSeal(journal, seal, generation, digest, index ?? undefined);
         } finally {
+          index?.close();
           seal.close();
           journal.close();
         }
@@ -107,10 +113,21 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       } finally {
         await latest.destroy();
       }
+      const goodIndex = readFileSync(`${path}.g1.index`);
+      const damagedIndex = Buffer.from(goodIndex);
+      damagedIndex[0] ^= 1;
+      writeFileSync(`${path}.g1.index`, damagedIndex);
+      const priorIndex = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await priorIndex.readFileFromVfs("/state"))!)).toBe("abcdefgh");
+      } finally {
+        await priorIndex.destroy();
+      }
+      writeFileSync(`${path}.g1.index`, goodIndex);
       writeFileSync(`${path}.g1.seal`, Buffer.from("torn"));
       const prior = await boot(image, path);
       try {
-        expect(new TextDecoder().decode((await prior.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+        expect(new TextDecoder().decode((await prior.readFileFromVfs("/state"))!)).toBe("abcdefgh");
       } finally {
         await prior.destroy();
       }
