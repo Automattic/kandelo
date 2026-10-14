@@ -143,13 +143,17 @@ either journal namespace blocks publication. Raw OPFS writers that bypass
 these locks remain outside this protection. Callers must stop the old kernel
 before taking a snapshot and complete the staged boot before publication;
 the page still does not orchestrate those transitions.
-Later journal-record corruption is still handled by the
-kernel's recovery rules, not by cross-generation fallback. The page does not
+Later committed journal-record corruption is detected by the kernel and
+rejected with `EIO`. Selection tries another valid slot on the same base,
+then reports no valid generation if a nonempty legacy journal also fails.
+The page can then retry the verified prior base, but the full page retry race
+remains unverified. The page does not
 yet orchestrate in-place replacement, abandoned staged generations are not
 reclaimed, and selecting a replaced generation adds a full-image preflight
 read before the kernel's own verification. This remains a prototype, not a
 general atomic generation handoff.
-If the selected journal generation disappears or every sealed slot is invalid
+If the selected journal generation disappears, every sealed slot is invalid,
+or all existing candidates are rejected with `EIO`,
 after manifest selection, Node and browser workers now report that specific
 no-valid-generation condition through a typed initialization error. The page
 can retry boot with the verified prior image and its own composition rather
@@ -159,8 +163,8 @@ closed even when a host import mapped them to `EIO`; the host preserves the
 original exception rather than treating it as a corrupt sealed generation.
 An unexpected end of file remains a corrupt-generation signal, not a backend
 failure, so a truncated indexed checkpoint can still select the prior slot.
-Other kernel `EIO` refusals still fail closed; this is not recovery from arbitrary
-journal-record corruption. Focused Node and three-engine browser tests cover
+Host backend failures and non-`EIO` kernel refusals still fail closed.
+Focused Node and three-engine browser tests cover
 the typed error and prior-candidate boot. A full page retry race test is
 authored but remains unverified here because this workspace has no complete
 browser package artifact tier; it is gated on those artifacts.
@@ -235,6 +239,9 @@ its journal or indexed checkpoint is rejected with `EIO`, boot tries the
 previous valid slot and then the legacy journal. Other kernel refusals and
 host backend failures, including errors mapped to kernel `EIO` imports,
 propagate rather than triggering fallback.
+If the nonempty legacy journal is rejected with `EIO`, boot reports a typed
+no-valid-generation condition rather than a generic kernel refusal; a fresh
+empty journal does not use this recovery classification.
 If generation files exist without any valid journal, boot refuses to create
 or reuse an empty legacy journal as a replacement, even for a non-strict
 low-level caller. Node and Chromium, Firefox, and WebKit exercise that torn

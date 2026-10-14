@@ -643,8 +643,9 @@ test(`browser ${mode} mode rejects a semantically invalid indexed generation and
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, readFaultWorkerUrl, mode }) => {
+      const result = await page.evaluate(async ({ moduleUrl, overlaySelectionUrl, kernelUrl, imageUrl, readFaultWorkerUrl, mode }) => {
         const { BrowserKernel } = await import(moduleUrl);
+        const { isNoValidOverlayGenerationError } = await import(overlaySelectionUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
         const name = `${mode}-index-${crypto.randomUUID()}`;
         const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
@@ -757,11 +758,12 @@ test(`browser ${mode} mode rejects a semantically invalid indexed generation and
         try {
           await readState();
         } catch (error) {
-          refused = String(error).includes(`kernel refused ${mode} rootfs persistence`);
+          refused = isNoValidOverlayGenerationError(error);
         }
         return { newest, readFailed, redirected, fallback, refused };
       }, {
         moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        overlaySelectionUrl: new URL(`/@fs/${overlaySelectionPath}`, baseURL).href,
         kernelUrl,
         imageUrl,
         readFaultWorkerUrl: new URL(`/@fs/${readFaultWorkerPath}`, baseURL).href,
