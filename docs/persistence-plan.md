@@ -240,10 +240,12 @@ remove a nested directory tree and symlink. Explicit chmod/chown/utimensat
 changes to base and created inodes survive restart and indexed compaction;
 the first such update to a base inode uses a versioned metadata-only record.
 Write and truncate timestamps are staged in memory and committed in batches
-on fsync, graceful shutdown, or compaction. Each sync scans resident rootfs
-inodes for modified content, so its cost still needs measurement on a large
-file-count image. Session-injected files such as the browser CA bundle are
-not journal-backed and are deliberately excluded from timestamp writeback;
+on fsync, graceful shutdown, or compaction. Sync now visits only inodes with
+unsynced persistent content, rather than scanning every resident rootfs inode.
+The dirty-inode set is cleared by a successful timestamp or namespace metadata
+commit and retained after failed writeback; its cost still needs measurement
+on a large file-count image. Session-injected files such as the browser CA
+bundle are not journal-backed and are deliberately excluded from timestamp writeback;
 they are recreated at boot. Namespace transactions now include parent
 directory mtime/ctime and affected inode ctime records. Restart tests cover
 create, link, rename, unlink, symlink, mkdir, and rmdir; a guest checks
