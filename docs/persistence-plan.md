@@ -44,11 +44,13 @@ semantics. Node and browser must expose the same guest-visible behavior.
   bounded read-back against emitted per-chunk SHA-256 digests. They return an
   integrity descriptor accepted by browser positioned boot. Browser snapshots
   can now be verified and published as a new computer through the existing
-  manifest-last stream installer, without replacing a computer's live base or
-  journal. Version 4 manifests require a hashed journal namespace bound to the
-  base generation and record whether its journal was initialized; older
+  manifest-last stream installer, or staged as a replacement under a fresh
+  journal namespace. The replacement still needs explicit kernel quiescence,
+  a successful staged boot, and a separate publish call; the page does not
+  drive that sequence. Version 4 manifests require a hashed journal namespace
+  bound to the base generation and record whether its journal was initialized; older
   manifests continue using the computer name or the version 3 namespace.
-  An in-place, crash-safe base-and-journal handoff remains open. The
+  A fully orchestrated, crash-safe base-and-journal handoff remains open. The
   writer coalesces deferred content references into
   extents; the legacy byte-array API still materializes output, and inode-table
   and indirect-block memory scale with image size. An 8 GiB sparse file
@@ -81,15 +83,29 @@ transition, and a strict reboot that recovers the write.
 The ready transition also writes and verifies a separate fallback manifest
 before replacing the pending primary manifest. If the primary manifest is
 damaged later, loading the fallback and reopening its journal preserves the
-guest write; if both manifests are damaged, boot fails closed. This does not
-yet recover damaged image bytes or journal contents, nor provide a newer
-base-and-journal replacement generation.
+guest write; if both manifests are damaged, boot fails closed. An explicit
+replacement API can now stage a new base under a fresh journal namespace,
+boot it before publication, verify both its image and journal header, and
+publish it while retaining the prior ready base and journal. When the two
+manifests identify different generations, selection verifies the new base in
+bounded chunks and its journal header before choosing it; a damaged base or
+header selects the verified prior generation. Chromium, Firefox, and WebKit
+exercise that handoff and fallback after image, header, and manifest damage.
+The caller must quiesce the old kernel before taking a snapshot and both
+kernels before publication; Web Locks only serialize manifest operations,
+not guest journal writes. Later journal-record corruption is still handled by the
+kernel's recovery rules, not by cross-generation fallback. The page does not
+yet orchestrate in-place replacement, abandoned staged generations are not
+reclaimed, and selecting a replaced generation adds a full-image preflight
+read before the kernel's own verification. This remains a prototype, not a
+general atomic generation handoff.
 Direct low-level `BrowserKernel` callers must perform that transition after
 successful initialization and before launching guests; the page boot path does
 it automatically.
 Older image manifests remain strict on reopen, so a crash before their first
-journal initialization can still leave them failing closed. Atomic
-base-plus-journal replacement and generation fallback remain open.
+journal initialization can still leave them failing closed. Automatic,
+quiescence-safe base-plus-journal replacement and complete generation fallback
+remain open.
 ABI 51, following main's networking ABI 50, adds the third host storage handle
 needed to compact an indexed journal while its checkpoint remains open.
 Writes spanning more than 64 cache blocks are split into bounded chunks;
