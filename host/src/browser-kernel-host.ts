@@ -1818,6 +1818,10 @@ export class BrowserKernel {
     await this.request(requestId, { type: "remote_network_leave", requestId });
   }
 
+  hasActiveWorkerRealm(): boolean {
+    return this.workerStarted;
+  }
+
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
     // Remove input-source DOM listeners regardless of worker state.

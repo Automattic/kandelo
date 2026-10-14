@@ -1508,11 +1508,13 @@ describe("BrowserKernel", () => {
     firstWorker.terminate = () => { throw new Error("injected terminate failure"); };
     await first.destroy();
     expect(testable.workerStarted).toBe(true);
+    expect(first.hasActiveWorkerRealm()).toBe(true);
     await expect(competing.initFromOpfsImage(options)).rejects.toThrow("journal is already open");
 
     firstWorker.terminate = () => { firstWorker.terminated = true; };
     await first.destroy();
     expect(testable.workerStarted).toBe(false);
+    expect(first.hasActiveWorkerRealm()).toBe(false);
     expect(held.size).toBe(0);
 
     const retry = competing.initFromOpfsImage(options);
@@ -1528,6 +1530,7 @@ describe("BrowserKernel", () => {
     await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(3));
     MockWorker.instances[2]!.simulateMessage({ type: "init_error", error: "injected initialization failure" });
     await expect(failedBoot).rejects.toThrow("injected initialization failure");
+    expect(failed.hasActiveWorkerRealm()).toBe(false);
     expect(held.size).toBe(0);
   });
 

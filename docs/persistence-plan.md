@@ -102,11 +102,14 @@ The page now holds a separate per-computer Web Lock from before image selection
 until kernel teardown. A second tab using that page path refuses to boot the
 same computer, and same-page restarts wait for the preceding boot and kernel
 teardown before acquiring the lease again. Chromium, Firefox, and WebKit cover
-tab contention, explicit release, and tab-close release. Low-level kernel
-callers do not yet acquire that per-computer runtime lease. BrowserKernel now
-holds a second exclusive Web Lock on the exact journal namespace from before
-worker initialization until `Worker.terminate()` succeeds, including low-level
-callers. A competing same-journal browser kernel fails before opening storage;
+tab contention, explicit release, and tab-close release. If worker termination
+is unconfirmed, page teardown retains both the kernel reference and computer
+lease for a later retry; fallback boot cannot launch a second generation.
+Low-level kernel callers do not yet acquire that per-computer runtime lease.
+BrowserKernel now holds a second exclusive Web Lock on the exact journal
+namespace from before worker initialization until `Worker.terminate()` succeeds,
+including low-level callers. A competing same-journal browser kernel fails
+before opening storage;
 init failure releases the lock, while a failed worker termination retains it
 for a later teardown retry. Concurrent initialization on one BrowserKernel is
 rejected before it can overwrite the first worker handle. This does not exclude
@@ -132,6 +135,7 @@ journal-record corruption. Focused Node and three-engine browser tests cover
 the typed error and prior-candidate boot. A full page retry race test is
 authored but remains unverified here because this workspace has no complete
 browser package artifact tier; it is gated on those artifacts.
+The full-page guest-write/reload smoke test is gated on the same package tier.
 Direct low-level `BrowserKernel` callers must mark pending journals ready and
 promote selected fallback manifests after successful initialization and before
 launching guests; the page boot path does both automatically.
