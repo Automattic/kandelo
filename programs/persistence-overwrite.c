@@ -50,6 +50,43 @@ int main(int argc, char **argv) {
         if (metadata.st_mtim.tv_sec != 234567 || metadata.st_mtim.tv_nsec != 345) return 99;
         return 0;
     }
+    int replace_open = argc >= 2 && strcmp(argv[1], "replace-open") == 0;
+    int verify_replacement = argc >= 2 && strcmp(argv[1], "verify-replacement") == 0;
+    if (replace_open || verify_replacement) {
+        if (replace_open) {
+            int displaced = open("/replacement", O_CREAT | O_EXCL | O_RDWR, 0644);
+            if (displaced < 0) return 126;
+            if (write(displaced, "OLD", 3) != 3 || fsync(displaced) != 0) return 127;
+            struct stat old_metadata;
+            if (fstat(displaced, &old_metadata) != 0 || old_metadata.st_nlink != 1) return 128;
+            if (rename("/created-link", "/replacement") != 0) return 129;
+            if (fstat(displaced, &old_metadata) != 0 || old_metadata.st_nlink != 0) return 130;
+            if (pwrite(displaced, "GONE", 4, 0) != 4 || fsync(displaced) != 0) return 131;
+            char old_bytes[4];
+            if (pread(displaced, old_bytes, sizeof(old_bytes), 0) != (ssize_t)sizeof(old_bytes)
+                || memcmp(old_bytes, "GONE", sizeof(old_bytes)) != 0) return 132;
+            int named = open("/replacement", O_RDONLY);
+            if (named < 0) return 133;
+            struct stat named_metadata;
+            if (fstat(named, &named_metadata) != 0 || named_metadata.st_ino == old_metadata.st_ino
+                || named_metadata.st_nlink != 1 || named_metadata.st_size != 3) return 134;
+            char named_bytes[3];
+            if (pread(named, named_bytes, sizeof(named_bytes), 0) != (ssize_t)sizeof(named_bytes)
+                || memcmp(named_bytes, "\0\0\0", sizeof(named_bytes)) != 0) return 135;
+            return close(named) == 0 && close(displaced) == 0 ? 0 : 136;
+        }
+        struct stat missing;
+        if (stat("/created-link", &missing) != -1 || errno != ENOENT) return 137;
+        struct stat metadata;
+        if (stat("/replacement", &metadata) != 0 || metadata.st_nlink != 1 || metadata.st_size != 3
+            || (metadata.st_mode & 0777) != 0600 || metadata.st_mtim.tv_sec != 234567) return 138;
+        int named = open("/replacement", O_RDONLY);
+        if (named < 0) return 139;
+        char named_bytes[3];
+        if (pread(named, named_bytes, sizeof(named_bytes), 0) != (ssize_t)sizeof(named_bytes)
+            || memcmp(named_bytes, "\0\0\0", sizeof(named_bytes)) != 0) return 140;
+        return close(named) == 0 ? 0 : 141;
+    }
     int create_tree = argc >= 2 && strcmp(argv[1], "create-tree") == 0;
     int verify_tree = argc >= 2 && strcmp(argv[1], "verify-tree") == 0;
     int verify_tree_moved = argc >= 2 && strcmp(argv[1], "verify-tree-moved") == 0;

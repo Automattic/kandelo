@@ -306,6 +306,9 @@ create, link, rename, unlink, symlink, mkdir, and rmdir; a guest checks
 directory mtimes after reopening on Node and all three browser engines. Image
 snapshot export rejects mounted persistence rather than silently exporting
 stale base bytes; exporting a consistent composed snapshot remains open.
+Node and browser guest workflows also replace an open created file by rename:
+the displaced descriptor retains its data with link count zero, while the
+replacement file's content and metadata survive a reboot.
 
 Resizable compaction now omits inode, size, block, and child-dirent records
 for closed, unlinked inodes. An open-unlinked file retains its records through
