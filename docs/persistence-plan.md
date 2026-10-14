@@ -181,9 +181,9 @@ the target's block map. A version 2 checkpoint represents deleted blocks with
 a zero-offset, zero-digest tombstone. Version 1 checkpoints remain readable;
 new checkpoints without tombstones still use version 1. Metadata compaction
 can carry tombstones through two indexed generations, while fixed-overwrite
-mounts continue to reject them. This is groundwork only: the fixed-overwrite
-mount still uses block-only replay, and no persistent namespace mutation is
-enabled yet.
+mounts continue to reject them. Fixed-overwrite mounts still use block-only
+replay; resizable mounts now use the metadata path for persistent namespace
+mutations.
 Fixed-overwrite indexed open parses the authenticated prefix with a
 transaction-sized buffer and rejects metadata hidden behind a block-only
 checkpoint. This adds a second sequential prefix pass after digest
@@ -251,9 +251,19 @@ directory mtimes after reopening on Node and all three browser engines. Image
 snapshot export rejects mounted persistence rather than silently exporting
 stale base bytes; exporting a consistent composed snapshot remains open.
 
-General POSIX replay still needs reclamation of orphaned journal records and
-broader conformance of metadata, open-unlinked lifetime, and namespace edge
-cases. Journal transactions must continue publishing related directory
+Resizable compaction now omits inode, size, block, and child-dirent records
+for closed, unlinked inodes. An open-unlinked file retains its records through
+compaction until the handle closes; deletion tombstones on live parents remain
+so base-image names cannot reappear. Recovery also releases replayed inodes
+that have no names or open handles before a later compaction chooses what to
+retain. Node and all three browser engines run a 32 MiB distinct-block guest
+write with an additional closed orphan block, then verify that the checkpoint
+contains only the 8,192 live blocks and the orphan stays absent after restart.
+The live-inode filter uses a temporary
+sorted vector proportional to resident inodes, so large-file-count memory and
+handoff pause still need measurement. General POSIX replay still needs broader
+conformance of metadata, open-unlinked lifetime, and namespace edge cases.
+Journal transactions must continue publishing related directory
 entries, inode metadata, file size, and blocks together; recovery must rebuild
 the same link counts and zero-filled truncate/extend behavior as the live
 kernel.

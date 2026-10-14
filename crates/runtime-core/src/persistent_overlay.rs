@@ -3,9 +3,9 @@
 //! The base image is identified by its SHA-256 digest. A transaction contains
 //! inode, file-size, file-block, or directory-entry replacements and one trailing commit
 //! marker. Recovery publishes only complete, checksummed transactions. The
-//! kernel's POSIX namespace remains the authority. The experimental fixed-size
-//! overwrite mode mounts only file-block changes; general namespace replay is
-//! not yet supported.
+//! kernel's POSIX namespace remains the authority. The fixed-size overwrite
+//! mode mounts only file-block changes; resizable mounts replay namespace and
+//! inode metadata records.
 //! Storage implementations must provide exclusive single-writer access,
 //! exact positioned I/O, and a flush that makes prior writes durable.
 
@@ -538,7 +538,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         &mut self,
         target: T,
     ) -> Result<OverlayJournal<T>, Errno> {
-        self.compact_into_internal(target, true, true)
+        self.compact_into_internal(target, true, true, |_| true)
     }
 
     pub fn compact_fixed_into<T: OverlayStorage>(
@@ -548,21 +548,30 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if !self.state.entries.is_empty() || self.state.blocks.values().any(Option::is_none) {
             return Err(Errno::EIO);
         }
-        self.compact_into_internal(target, false, false)
+        self.compact_into_internal(target, false, false, |_| true)
     }
 
     pub fn compact_metadata_into<T: OverlayStorage>(
         &mut self,
         target: T,
     ) -> Result<OverlayJournal<T>, Errno> {
-        self.compact_into_internal(target, false, true)
+        self.compact_into_internal(target, false, true, |_| true)
     }
 
-    fn compact_into_internal<T: OverlayStorage>(
+    pub(crate) fn compact_metadata_reachable_into<T: OverlayStorage, F: FnMut(&OverlayKey) -> bool>(
+        &mut self,
+        target: T,
+        retain: F,
+    ) -> Result<OverlayJournal<T>, Errno> {
+        self.compact_into_internal(target, false, true, retain)
+    }
+
+    fn compact_into_internal<T: OverlayStorage, F: FnMut(&OverlayKey) -> bool>(
         &mut self,
         mut target: T,
         track_committed_state: bool,
         allow_tombstones: bool,
+        mut retain: F,
     ) -> Result<OverlayJournal<T>, Errno> {
         self.sync()?;
         if target.len()? != 0 {
@@ -573,6 +582,9 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         let mut batch = Vec::new();
         batch.try_reserve_exact(128).map_err(|_| Errno::ENOMEM)?;
         for (key, value) in &self.state.entries {
+            if !retain(key) {
+                continue;
+            }
             let mutation = match value {
                 Some(bytes) => Mutation::Put {
                     key: key.clone(),
@@ -640,6 +652,9 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 continue;
             }
             let key = OverlayKey::FileBlock { inode, block };
+            if !retain(&key) {
+                continue;
+            }
             let mutation = match location {
                 Some(location) => {
                     let mut bytes = alloc::vec![0; FILE_BLOCK_BYTES];

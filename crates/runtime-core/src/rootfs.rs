@@ -1230,6 +1230,9 @@ fn apply_persistent_dirents(
             };
         }
     }
+    for index in 0..state.inodes.len() {
+        state.maybe_free(index as u32);
+    }
     Ok(())
 }
 
@@ -1319,6 +1322,24 @@ pub fn prepare_persistence_compaction(
     storage: Box<dyn OverlayStorage + Send>,
 ) -> Result<(), Errno> {
     sync_persistence()?;
+    let live_inodes = if resizable_persistence_enabled() {
+        Some(ROOTFS.with(|state| {
+            let mut inodes = Vec::new();
+            inodes.try_reserve_exact(state.inodes.len()).map_err(|_| Errno::ENOMEM)?;
+            inodes.extend(
+                state.inodes.iter().flatten()
+                    .filter(|inode| inode.nlink != 0 || inode.open_count != 0 || inode.map_pins != 0)
+                    .map(|inode| inode.ino),
+            );
+            inodes.sort_unstable();
+            if inodes.windows(2).any(|pair| pair[0] == pair[1]) {
+                return Err(Errno::EIO);
+            }
+            Ok::<_, Errno>(inodes)
+        })?)
+    } else {
+        None
+    };
     let mut pending = PREPARED_PERSISTENCE.lock();
     if pending.is_some() {
         return Err(Errno::EBUSY);
@@ -1326,7 +1347,17 @@ pub fn prepare_persistence_compaction(
     let mut active = PERSISTENT_ROOTFS.lock();
     let source = active.as_mut().ok_or(Errno::EINVAL)?;
     let compacted = if source.resizable {
-        source.journal.compact_metadata_into(storage)?
+        let live_inodes = live_inodes.as_ref().ok_or(Errno::EIO)?;
+        source.journal.compact_metadata_reachable_into(storage, |key| {
+            let inode = match key {
+                OverlayKey::Inode(inode)
+                | OverlayKey::FileSize(inode)
+                | OverlayKey::FileZeroFrom(inode) => *inode,
+                OverlayKey::FileBlock { inode, .. } => *inode,
+                OverlayKey::Dirent { parent, .. } => *parent,
+            };
+            live_inodes.binary_search(&inode).is_ok()
+        })?
     } else {
         source.journal.compact_fixed_into(storage)?
     };
@@ -9716,6 +9747,89 @@ mod tests {
         reopen();
         assert_eq!(times(b"/"), (2_008, 9, 2_008, 9));
         assert!(matches!(lstat(b"/a"), Err(Errno::ENOENT)));
+    }
+
+    #[test]
+    fn resizable_compaction_reclaims_closed_orphans_but_preserves_open_handles() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let first = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let first_index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let second = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let second_index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source), base_digest).unwrap();
+        let handle = open(b"/orphan", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        let ino = fstat(handle).unwrap().st_ino;
+        let offset = 8 * 1024 * 1024 * 1024 + 7;
+        assert_eq!(write(handle, offset, b"DATA", &mut image_bytes), Ok(4));
+        sync_persistence().unwrap();
+        unlink(b"/orphan").unwrap();
+
+        prepare_persistence_compaction(Box::new(first.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(first_index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        assert!(PERSISTENT_ROOTFS.lock().as_ref().unwrap().journal.state().lookup(&OverlayKey::Inode(ino)).is_some());
+        let mut bytes = [0; 4];
+        assert_eq!(read(handle, offset, &mut bytes, &mut image_bytes), Ok(4));
+        assert_eq!(&bytes, b"DATA");
+        let first_size = first.0.lock().len();
+        let first_blocks = u64::from_le_bytes(first_index.0.lock()[80..88].try_into().unwrap());
+        assert_eq!(first_blocks, 1);
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(
+            Box::new(first.clone()),
+            Box::new(first_index.clone()),
+            base_digest,
+            first_size as u64,
+        ).unwrap();
+        assert!(ROOTFS.with(|state| state.inodes.iter().flatten().all(|inode| inode.ino != ino)));
+
+        let base = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        let base_ino = fstat(base).unwrap().st_ino;
+        assert_eq!(write(base, 0, b"OLD", &mut image_bytes), Ok(3));
+        sync_persistence().unwrap();
+        unlink(b"/hello.txt").unwrap();
+        release_handle(base);
+        mkdir(b"/removed-dir", 0o755, 0, 0).unwrap();
+        let removed_dir_ino = lstat(b"/removed-dir").unwrap().st_ino;
+        mkdir(b"/removed-dir/nested", 0o755, 0, 0).unwrap();
+        let nested_ino = lstat(b"/removed-dir/nested").unwrap().st_ino;
+        rmdir(b"/removed-dir/nested").unwrap();
+        rmdir(b"/removed-dir").unwrap();
+
+        prepare_persistence_compaction(Box::new(second.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(second_index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        {
+            let active = PERSISTENT_ROOTFS.lock();
+            let state = active.as_ref().unwrap().journal.state();
+            for orphan in [ino, base_ino, removed_dir_ino, nested_ino] {
+                assert_eq!(state.lookup(&OverlayKey::Inode(orphan)), None);
+            }
+            assert_eq!(state.lookup(&OverlayKey::Dirent {
+                parent: removed_dir_ino,
+                name: b"nested".to_vec(),
+            }), None);
+        }
+        assert!(second.0.lock().len() < first_size);
+        let indexed_blocks = u64::from_le_bytes(second_index.0.lock()[80..88].try_into().unwrap());
+        assert_eq!(indexed_blocks, 0);
+        let checkpoint_end = second.0.lock().len() as u64;
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(Box::new(second), Box::new(second_index), base_digest, checkpoint_end).unwrap();
+        assert!(matches!(lstat(b"/orphan"), Err(Errno::ENOENT)));
+        assert!(matches!(lstat(b"/hello.txt"), Err(Errno::ENOENT)));
+        assert!(matches!(lstat(b"/removed-dir"), Err(Errno::ENOENT)));
+        let replacement = open(b"/replacement", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        assert_eq!(fstat(replacement).unwrap().st_size, 0);
+        release_handle(replacement);
     }
 
     #[test]

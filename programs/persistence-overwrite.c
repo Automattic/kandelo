@@ -189,8 +189,20 @@ int main(int argc, char **argv) {
         if (fsync(fd) != 0) return 28;
         return close(fd) == 0 ? 0 : 29;
     }
-    int verify_many = argc >= 2 && strcmp(argv[1], "verify-many") == 0;
-    int write_many = argc >= 2 && strcmp(argv[1], "many") == 0;
+    int orphan_many = argc >= 2 && strcmp(argv[1], "orphan-many") == 0;
+    int verify_orphan_many = argc >= 2 && strcmp(argv[1], "verify-orphan-many") == 0;
+    if (orphan_many) {
+        int orphan = open("/orphan", O_CREAT | O_EXCL | O_RDWR, 0640);
+        if (orphan < 0) return 104;
+        if (pwrite(orphan, large_write, 4096, 0) != 4096 || fsync(orphan) != 0) return 105;
+        if (unlink("/orphan") != 0 || close(orphan) != 0) return 106;
+    }
+    if (verify_orphan_many) {
+        struct stat missing;
+        if (stat("/orphan", &missing) != -1 || errno != ENOENT) return 107;
+    }
+    int verify_many = argc >= 2 && (strcmp(argv[1], "verify-many") == 0 || verify_orphan_many);
+    int write_many = argc >= 2 && (strcmp(argv[1], "many") == 0 || orphan_many);
     if (verify_many || write_many) {
         int large_fd = open("/large", O_RDWR);
         if (large_fd < 0) return 12;
