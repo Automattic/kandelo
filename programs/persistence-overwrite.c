@@ -10,6 +10,16 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && strcmp(argv[1], "create-fifo") == 0) {
+        return mkfifo("/persistent-fifo", 0640) == 0 ? 0 : 142;
+    }
+    if (argc >= 2 && strcmp(argv[1], "verify-fifo") == 0) {
+        struct stat metadata;
+        if (lstat("/persistent-fifo", &metadata) != 0 || !S_ISFIFO(metadata.st_mode)
+            || (metadata.st_mode & 0777) != 0640) return 143;
+        int fd = open("/persistent-fifo", O_RDONLY | O_NONBLOCK);
+        return fd >= 0 && close(fd) == 0 ? 0 : 144;
+    }
     if (argc >= 2 && strcmp(argv[1], "quota-write") == 0) {
         int fd = open("/state", O_RDWR);
         if (fd < 0) return 108;

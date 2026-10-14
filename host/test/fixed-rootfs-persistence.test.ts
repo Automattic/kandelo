@@ -100,7 +100,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   });
 
-  it("streams a composed resizable snapshot to a file that boots without its journal", async () => {
+  it.skipIf(guestProgramPath === null)("streams a composed resizable snapshot to a file that boots without its journal", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-export-"));
     const path = join(directory, "machine.journal");
     const snapshotPath = join(directory, "snapshot.vfs");
@@ -110,6 +110,8 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       try {
         await first.writeFileToVfs("/state", encoder.encode("SNAP"));
         await first.writeFileToVfs("/created", encoder.encode("created"));
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "create-fifo"]);
+        expect(await exit).toBe(0);
       } finally {
         await first.destroy();
       }
@@ -135,6 +137,8 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         ) as ArrayBuffer);
         expect(new TextDecoder().decode((await withoutJournal.readFileFromVfs("/state"))!)).toBe("SNAP");
         expect(new TextDecoder().decode((await withoutJournal.readFileFromVfs("/created"))!)).toBe("created");
+        const { exit } = await withoutJournal.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-fifo"]);
+        expect(await exit).toBe(0);
       } finally {
         await withoutJournal.destroy();
       }
@@ -148,7 +152,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     const path = join(directory, "machine.journal");
     try {
       const image = await makeImage("abcdefgh");
-      for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed", "set-metadata", "verify-metadata", "replace-open", "verify-replacement"] as const) {
+      for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed", "set-metadata", "verify-metadata", "replace-open", "verify-replacement", "create-fifo", "verify-fifo"] as const) {
         const host = await boot(image, path, true);
         try {
           const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);

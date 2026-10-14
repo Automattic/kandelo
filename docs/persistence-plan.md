@@ -391,7 +391,11 @@ generation without allocating the file's logical length. Created files cannot
 retain set-ID mode bits on their unverified bytes. A failed journal write
 does not publish the new inode or name; every byte offset of a torn
 inode-plus-dirent transaction replays both records or neither. Created
-directories and symlinks also use versioned inode records. Recovery validates
+directories, symlinks, FIFOs, and pathname socket nodes also use versioned
+inode records. Recovery restores FIFO pipes from the replayed namespace,
+including hard-link aliases. Pipe contents and socket endpoints remain
+session-local; only their filesystem nodes persist. Snapshot export retains
+these special nodes rather than dropping them. Recovery validates
 the final directory graph, rejecting cycles, multiple parents, and non-empty
 orphan directories before publishing it. Graph validation now borrows base
 directory entries and overlay names instead of cloning every base directory
