@@ -220,12 +220,21 @@ journal transaction, and commit a link or unlink before changing the live
 tree. Boot validates and replays the final directory entries and recomputes
 link counts; an open-unlinked file remains readable until its last handle
 closes. These mutations currently apply only to non-directory image entries.
-Regular-file creation, directory namespace changes, and timestamps remain
-nonpersistent.
+New regular files now use a journal-backed inode kind, not a `Vec<u8>` body.
+Creation commits a versioned inode record and directory entry atomically;
+boot validates both before replay. A Rust test creates a sparse file beyond
+8 GiB, reopens it, truncates it, compacts it, and reopens the indexed
+generation without allocating the file's logical length. Created files cannot
+retain set-ID mode bits on their unverified bytes. A failed journal write
+does not publish the new inode or name; every byte offset of a torn
+inode-plus-dirent transaction replays both records or neither. Directory creation,
+symlinks, and metadata/timestamp mutations remain nonpersistent. Image
+snapshot export rejects mounted persistence rather than silently exporting
+stale base bytes; exporting a consistent composed snapshot remains open.
 
-General POSIX replay then needs an overlay-backed regular-file inode kind,
-not `Regular(Vec<u8>)`, so newly created and grown files also remain larger
-than runtime memory. Journal transactions must publish directory entries,
-inode metadata, file size, and blocks together; recovery must rebuild the
-same link counts, open-unlinked lifetime, and zero-filled truncate/extend
-behavior as the live kernel.
+General POSIX replay still needs directory and symlink inode kinds, persistent
+metadata/timestamps, and reclamation of orphaned journal records. Journal
+transactions must publish related directory entries, inode metadata, file
+size, and blocks together; recovery must rebuild the same link counts,
+open-unlinked lifetime, and zero-filled truncate/extend behavior as the live
+kernel.
