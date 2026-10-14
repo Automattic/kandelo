@@ -8493,6 +8493,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(lstat(b"/hello.txt").unwrap().st_size, 0);
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        truncate_handle(handle, 8, &mut image_bytes).unwrap();
+        assert_eq!(read(handle, 0, &mut visible, &mut image_bytes), Ok(8));
+        assert_eq!(visible, [0; 8]);
+        release_handle(handle);
     }
 
     #[test]

@@ -21,6 +21,9 @@ int main(int argc, char **argv) {
         } else {
             struct stat metadata;
             if (fstat(fd, &metadata) != 0 || metadata.st_size != offset + 4) return 22;
+            unsigned char prefix[8];
+            if (pread(fd, prefix, sizeof(prefix), 0) != (ssize_t)sizeof(prefix)) return 30;
+            if (memcmp(prefix, "\0\0\0\0\0\0\0\0", sizeof(prefix)) != 0) return 31;
             unsigned char bytes[4];
             if (pread(fd, bytes, sizeof(bytes), offset) != (ssize_t)sizeof(bytes)) return 23;
             if (verify_resize && memcmp(bytes, "GROW", 4) != 0) return 24;
