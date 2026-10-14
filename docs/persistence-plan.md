@@ -224,7 +224,10 @@ slot plus empty-legacy case. Compaction prepares a
 compacted journal without switching the kernel's active handle, writes and
 verifies the target seal, and only then activates it. Failure cancels the
 prepared target and invalidates its seal. The kernel refuses activation if
-the source changed during preparation. Synchronous storage and hash operations
+the source changed during preparation. After activation, a seal or old-handle
+close failure is reported without skipping attempts to close the remaining
+old handles; the active target is retained because activation cannot be
+rolled back. Synchronous storage and hash operations
 run on the dedicated kernel worker during live handoff; guest syscalls wait
 until that turn finishes. The pause has not yet been measured for large
 changed-block sets.

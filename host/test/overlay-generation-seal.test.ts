@@ -21,6 +21,8 @@ class MemoryStorage implements PersistentOverlayStorage {
   failNextRead = false;
   failNextWrite = false;
   failNextTruncate = false;
+  failNextClose = false;
+  closeCount = 0;
 
   constructor(bytes: Uint8Array = new Uint8Array()) {
     this.bytes = bytes.slice();
@@ -70,7 +72,13 @@ class MemoryStorage implements PersistentOverlayStorage {
     this.bytes = this.bytes.slice(0, Number(length));
   }
 
-  close(): void {}
+  close(): void {
+    this.closeCount++;
+    if (this.failNextClose) {
+      this.failNextClose = false;
+      throw new Error("injected close failure");
+    }
+  }
 }
 
 describe("overlay generation seal", () => {
@@ -311,6 +319,37 @@ describe("overlay generation boot selection", () => {
     expect(compacted.index).toBe(entries["g0.index"]);
     expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
     expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
+  });
+
+  it("closes every old handle after activation even when one close fails", async () => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const sourceIndex = new MemoryStorage(Uint8Array.of(4));
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": source,
+      "g0.index": sourceIndex,
+      "g1.seal": new MemoryStorage(),
+    };
+    entries["g1.seal"]!.failNextClose = true;
+    const failures: string[] = [];
+    const compacted = await compactOverlayGeneration(
+      { journal: source, index: sourceIndex, slot: "g0", generation: 1, sealedLength: 0 },
+      files(entries),
+      {
+        prepare: (target) => { target.writeAllAt(0, source.bytes); },
+        checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(1, 2, 3)); },
+        activate: () => {},
+        cancel: () => { throw new Error("unexpected cancellation"); },
+      },
+      0,
+      () => true,
+      (error) => { failures.push(String(error)); },
+    );
+    expect(compacted.slot).toBe("g1");
+    expect(failures).toEqual(["Error: injected close failure"]);
+    expect(entries["g1.seal"]!.closeCount).toBe(1);
+    expect(source.closeCount).toBe(1);
+    expect(sourceIndex.closeCount).toBe(1);
+    expect(compacted.journal).toBe(entries["g1.journal"]);
   });
 
   it("leaves the source intact when target compaction fails", async () => {
