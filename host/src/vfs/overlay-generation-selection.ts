@@ -115,10 +115,18 @@ export async function enableBestOverlayGeneration(
       throw new NoValidOverlayGenerationError();
     }
     try {
-      if ((foundGenerationFile || requireExisting) && legacy.len() === 0) {
+      const legacyLength = legacy.len();
+      if ((foundGenerationFile || requireExisting) && legacyLength === 0) {
         throw new NoValidOverlayGenerationError();
       }
-      enable(legacy);
+      try {
+        enable(legacy);
+      } catch (error) {
+        if (legacyLength > 0 && error instanceof RejectedOverlayGenerationError && error.errno === ERRNO.EIO) {
+          throw new NoValidOverlayGenerationError();
+        }
+        throw error;
+      }
       return { journal: legacy, slot: "legacy", generation: 0, sealedLength: 0 };
     } catch (error) {
       legacy.close();

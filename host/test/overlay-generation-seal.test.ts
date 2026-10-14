@@ -290,6 +290,20 @@ describe("overlay generation boot selection", () => {
       .rejects.toBeInstanceOf(NoValidOverlayGenerationError);
   });
 
+  it("reports a nonempty rejected legacy journal as no valid generation", async () => {
+    const entries = { "legacy.journal": new MemoryStorage(Uint8Array.of(1, 2, 3)) };
+    await expect(enableBestOverlayGeneration(files(entries), () => {
+      throw new RejectedOverlayGenerationError("fixed", 5);
+    })).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
+    expect(entries["legacy.journal"].closeCount).toBe(1);
+    await expect(enableBestOverlayGeneration(files({}), () => {
+      throw new RejectedOverlayGenerationError("fixed", 5);
+    })).rejects.toBeInstanceOf(RejectedOverlayGenerationError);
+    await expect(enableBestOverlayGeneration(files({ "legacy.journal": new MemoryStorage(Uint8Array.of(1)) }), () => {
+      throw new Error("backend unavailable");
+    })).rejects.toThrow("backend unavailable");
+  });
+
   it("stages and seals a compacted slot before selecting it", async () => {
     const source = new MemoryStorage(new Uint8Array(72).fill(7));
     const entries: Record<string, MemoryStorage> = { "legacy.journal": source };

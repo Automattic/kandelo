@@ -211,7 +211,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         }
         if (mode === "resize") {
           expect(readFileSync(path).byteLength).toBeLessThan(10_000);
-          await expect(boot(image, path)).rejects.toThrow(/errno 5/);
+          await expect(boot(image, path)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
         }
       }
       expect(readFileSync(path).byteLength).toBeLessThan(64 * 1024);
@@ -279,7 +279,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         await prior.destroy();
       }
       writeFileSync(`${path}.g0.seal`, Buffer.from("torn"));
-      await expect(boot(image, path)).rejects.toThrow(/errno 5/);
+      await expect(boot(image, path)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       writeFileSync(path, new Uint8Array());
       await expect(boot(image, path)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       expect(readFileSync(path).byteLength).toBe(0);
@@ -331,7 +331,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         await recovered.destroy();
       }
       writeFileSync(`${path}.g0.seal`, Buffer.from("torn"));
-      await expect(boot(image, path, true)).rejects.toThrow(/kernel refused resizable rootfs persistence \(errno 5\)/);
+      await expect(boot(image, path, true)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -631,7 +631,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       const damaged = readFileSync(path);
       damaged[damaged.length - 37] ^= 1;
       writeFileSync(path, damaged);
-      await expect(boot(image, path)).rejects.toThrow(/errno 5/);
+      await expect(boot(image, path)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       expect(readFileSync(path)).toEqual(damaged);
     } finally {
       rmSync(directory, { recursive: true, force: true });
