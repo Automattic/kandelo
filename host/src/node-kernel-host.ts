@@ -31,6 +31,7 @@ import {
 } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
+import { NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -422,7 +423,9 @@ export class NodeKernelHost {
             }
           } else if (msg.type === "init_error") {
             settle(() =>
-              reject(new Error(`Kernel worker init failed: ${msg.error}`))
+              reject(msg.recovery === "no-valid-overlay-generation"
+                ? new NoValidOverlayGenerationError()
+                : new Error(`Kernel worker init failed: ${msg.error}`))
             );
           } else if (msg.type === "kernel_fatal") {
             settle(() =>

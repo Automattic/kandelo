@@ -19,6 +19,7 @@ const imageModulePath = [publishedImageModulePath, directImageModulePath].find((
   return WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(path))).length === 0;
 }) ?? null;
 const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
+const overlaySelectionPath = resolve(repoRoot, "host/src/vfs/overlay-generation-selection.ts");
 const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
 
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
@@ -400,8 +401,9 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
       expect(compacted.indexBytes).toBeGreaterThan(160);
       expect(compacted.sealVersion).toBe(2);
       expect(compacted.compactBytes).toBeLessThan(original.byteLength + repeated.byteLength / 2);
-      const recovery = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+      const recovery = await page.evaluate(async ({ moduleUrl, overlaySelectionUrl, kernelUrl, name }) => {
         const { BrowserKernel } = await import(moduleUrl);
+        const { isNoValidOverlayGenerationError } = await import(overlaySelectionUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const sealFile = await directory.getFileHandle(`${name}.g0.seal`);
         const tearSeal = async () => {
@@ -435,13 +437,14 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         try {
           await missing.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
         } catch (error) {
-          rejected = String(error).includes("refusing to reset the computer");
+          rejected = isNoValidOverlayGenerationError(error);
         } finally {
           await missing.destroy();
         }
         return { indexedState, state, rejected };
       }, {
         moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        overlaySelectionUrl: new URL(`/@fs/${overlaySelectionPath}`, baseURL).href,
         kernelUrl,
         name: result.name,
       });

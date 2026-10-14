@@ -54,7 +54,7 @@ import { NodePlatformIO } from "./platform/node";
 import { OverlayStorageFile } from "./vfs/overlay-storage";
 import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor } from "./vfs/overlay-generation-selection";
+import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
@@ -4026,6 +4026,9 @@ port.on("message", (msg: MainToKernelMessage) => {
         post({
           type: "init_error",
           error: error instanceof Error ? error.message : String(error),
+          ...(error instanceof NoValidOverlayGenerationError
+            ? { recovery: "no-valid-overlay-generation" as const }
+            : {}),
         });
       });
       break;

@@ -392,23 +392,48 @@ export async function loadFixedPersistenceImageHandle(
   fileNames(name);
   return locked(name, async () => {
     const saved = await readSavedImage(await directory(), name, identity);
-    if (
-      saved === null ||
-      saved.manifest.chunkSha256 === undefined ||
-      saved.composition === undefined ||
-      !saved.lazyAssetsRecorded
-    ) return null;
-    return {
-      file: saved.imageFile,
-      journalName: saved.manifest.journalName ?? name,
-      journalInitialized: saved.manifest.format !== FORMAT_V4 || saved.manifest.journalInitialized === true,
-      imageSha256: saved.manifest.imageSha256,
-      length: saved.manifest.length,
-      chunkSha256: saved.manifest.chunkSha256,
-      lazyAssets: saved.lazyAssets,
-      composition: saved.composition,
-    };
+    return saved === null ? null : imageHandleFromSaved(name, saved);
   });
+}
+
+export async function loadPreviousFixedPersistenceImageHandle(
+  name: string,
+  identity: string,
+  failed: FixedPersistenceImageHandle,
+): Promise<FixedPersistenceImageHandle | null> {
+  fileNames(name);
+  return locked(name, async () => {
+    const parent = await directory();
+    const names = fileNames(name);
+    const current = await readSavedImageAt(parent, name, identity, names.manifest);
+    if (current === null || !(await current.imageFile.isSameEntry(failed.file)) ||
+      current.manifest.journalName !== failed.journalName) return null;
+    const previous = await readSavedImageAt(parent, name, identity, names.previousManifest);
+    if (previous === null || previous.manifest.format !== FORMAT_V4 ||
+      !previous.manifest.journalInitialized ||
+      previous.manifest.journalName === failed.journalName ||
+      await previous.imageFile.isSameEntry(failed.file)) return null;
+    await verifySavedImage(parent, previous);
+    return imageHandleFromSaved(name, previous);
+  });
+}
+
+function imageHandleFromSaved(
+  name: string,
+  saved: NonNullable<Awaited<ReturnType<typeof readSavedImageAt>>>,
+): FixedPersistenceImageHandle | null {
+  if (saved.manifest.chunkSha256 === undefined ||
+    saved.composition === undefined || !saved.lazyAssetsRecorded) return null;
+  return {
+    file: saved.imageFile,
+    journalName: saved.manifest.journalName ?? name,
+    journalInitialized: saved.manifest.format !== FORMAT_V4 || saved.manifest.journalInitialized === true,
+    imageSha256: saved.manifest.imageSha256,
+    length: saved.manifest.length,
+    chunkSha256: saved.manifest.chunkSha256,
+    lazyAssets: saved.lazyAssets,
+    composition: saved.composition,
+  };
 }
 
 export async function markFixedPersistenceJournalInitialized(

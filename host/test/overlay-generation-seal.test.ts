@@ -8,6 +8,7 @@ import {
 import {
   compactOverlayGeneration,
   enableBestOverlayGeneration,
+  NoValidOverlayGenerationError,
   RejectedOverlayGenerationError,
   type OverlayGenerationFiles,
 } from "../src/vfs/overlay-generation-selection";
@@ -250,7 +251,7 @@ describe("overlay generation boot selection", () => {
     entries["g1.index"]!.bytes[1] ^= 1;
     expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
     entries["g0.seal"]!.truncate(0);
-    await expect(enableBestOverlayGeneration(files(entries), () => {})).rejects.toThrow("refusing to reset");
+    await expect(enableBestOverlayGeneration(files(entries), () => {})).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
   });
 
   it("refuses a silent reset when only incomplete generation files remain", async () => {

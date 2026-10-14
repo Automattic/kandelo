@@ -119,6 +119,7 @@ export interface KmsAttachStatsMessage {
 export interface InitErrorMessage {
   type: "init_error";
   error: string;
+  recovery?: "no-valid-overlay-generation";
 }
 
 /** The dedicated kernel instance is poisoned and has stopped permanently. */
