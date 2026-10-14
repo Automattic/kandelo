@@ -414,6 +414,9 @@ they are recreated at boot. Namespace transactions now include parent
 directory mtime/ctime and affected inode ctime records. Restart tests cover
 create, link, rename, unlink, symlink, mkdir, and rmdir; a guest checks
 directory mtimes after reopening on Node and all three browser engines. The
+live ctime after a persistent hard link now stays at the timestamp committed
+with the directory entry, even if the clock advances during journal flush;
+a Rust regression checks that live and reopened metadata agree. The
 kernel's image exporter now reads mounted journal blocks, zero fences, and
 created files when building a composed snapshot. Small Node and browser
 snapshots reboot without the source journal. The public host export still

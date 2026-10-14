@@ -5063,7 +5063,8 @@ pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     if new_comps.is_empty() {
         return Err(Errno::EEXIST); // cannot link over the root
     }
-    if resizable_persistence_enabled() {
+    let persistent = resizable_persistence_enabled();
+    if persistent {
         let (source, new_parent, mutation) = ROOTFS.with(|state| {
             let old_idx = {
                 let root = state.mount_root();
@@ -5121,7 +5122,9 @@ pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
         }
         if let Some(inode) = state.get_mut(old_idx) {
             inode.nlink += 1;
-            inode.touch_changed();
+            if !persistent {
+                inode.touch_changed();
+            }
         }
         Ok(())
     })
@@ -6847,6 +6850,37 @@ mod tests {
 
         fn flush(&mut self) -> Result<(), Errno> {
             self.inner.flush()
+        }
+
+        fn truncate(&mut self, len: u64) -> Result<(), Errno> {
+            self.inner.truncate(len)
+        }
+    }
+
+    struct ClockChangingStorage {
+        inner: SharedJournalStorage,
+        change_on_flush: Arc<AtomicBool>,
+    }
+
+    impl OverlayStorage for ClockChangingStorage {
+        fn len(&mut self) -> Result<u64, Errno> {
+            self.inner.len()
+        }
+
+        fn read_exact_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+            self.inner.read_exact_at(offset, dst)
+        }
+
+        fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
+            self.inner.write_all_at(offset, src)
+        }
+
+        fn flush(&mut self) -> Result<(), Errno> {
+            self.inner.flush()?;
+            if self.change_on_flush.swap(false, Ordering::SeqCst) {
+                set_now(2_001, 2);
+            }
+            Ok(())
         }
 
         fn truncate(&mut self, len: u64) -> Result<(), Errno> {
@@ -10098,6 +10132,38 @@ mod tests {
         reopen();
         assert_eq!(times(b"/"), (2_008, 9, 2_008, 9));
         assert!(matches!(lstat(b"/a"), Err(Errno::ENOENT)));
+    }
+
+    #[test]
+    fn persistent_link_keeps_the_committed_ctime_when_clock_changes_during_flush() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let change_on_flush = Arc::new(AtomicBool::new(false));
+        load_image(image.len() as u64, image_host(&image)).unwrap();
+        enable_resizable_persistence(
+            Box::new(ClockChangingStorage {
+                inner: storage.clone(),
+                change_on_flush: change_on_flush.clone(),
+            }),
+            base_digest,
+        )
+        .unwrap();
+
+        set_now(2_000, 1);
+        change_on_flush.store(true, Ordering::SeqCst);
+        link(b"/hello.txt", b"/alias").unwrap();
+        let live = lstat(b"/hello.txt").unwrap();
+        assert_eq!((live.st_ctime_sec, live.st_ctime_nsec), (2_000, 1));
+        assert_eq!(live.st_nlink, 2);
+
+        reset();
+        load_image(image.len() as u64, image_host(&image)).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        let reopened = lstat(b"/alias").unwrap();
+        assert_eq!((reopened.st_ctime_sec, reopened.st_ctime_nsec), (2_000, 1));
+        assert_eq!(reopened.st_nlink, 2);
     }
 
     #[test]
