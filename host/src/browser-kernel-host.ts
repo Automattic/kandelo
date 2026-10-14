@@ -2,6 +2,7 @@ import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-s
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
+import { isStagedRootfsImageIntegrity } from "./vfs/staged-rootfs-image";
 import type { OwnedJobRead } from "./owned-jobs";
 /**
  * BrowserKernel — Thin proxy that communicates with a dedicated kernel
@@ -1694,7 +1695,7 @@ export class BrowserKernel {
   }
 
   /** Write a quiescent snapshot to an empty OPFS staging file without buffering it in JS. */
-  async exportRootfsImageToFile(file: FileSystemFileHandle): Promise<number> {
+  async exportRootfsImageToFile(file: FileSystemFileHandle): Promise<OpfsImageIntegrity> {
     if (!this.initialized) {
       throw new Error("rootfs export requires an initialized kernel");
     }
@@ -1704,10 +1705,10 @@ export class BrowserKernel {
       requestId,
       file,
     });
-    if (!Number.isSafeInteger(result) || (result as number) <= 0) {
-      throw new Error("kernel worker returned an invalid rootfs image length");
+    if (!isStagedRootfsImageIntegrity(result)) {
+      throw new Error("kernel worker returned invalid rootfs image integrity");
     }
-    return result as number;
+    return result;
   }
 
   /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */

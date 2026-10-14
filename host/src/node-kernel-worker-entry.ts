@@ -18,10 +18,12 @@ import { parentPort } from "node:worker_threads";
 import {
   closeSync,
   existsSync,
+  fstatSync,
   fsyncSync,
   mkdirSync,
   mkdtempSync,
   openSync,
+  readSync,
   readFileSync,
   rmdirSync,
   rmSync,
@@ -50,6 +52,7 @@ import type {
 } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import { OverlayStorageFile } from "./vfs/overlay-storage";
+import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor } from "./vfs/overlay-generation-selection";
 import {
@@ -3840,32 +3843,48 @@ async function handleExportRootfsImageToFile(
     return;
   }
   try {
-    const length = await rootfsSnapshotGate.runSnapshot(async () => {
+    const integrity = await rootfsSnapshotGate.runSnapshot(async () => {
       if (processes.size !== 0 || processTeardowns.size !== 0) {
         throw new Error("rootfs export requires a quiescent kernel with no live or tearing-down processes");
       }
-      const file = openSync(msg.path, "wx", 0o600);
+      const file = openSync(msg.path, "wx+", 0o600);
       try {
-        const length = kernelWorker.rootfsExportContainerVisit((offset, chunk) => {
-          let written = 0;
-          while (written < chunk.byteLength) {
-            const count = writeSync(file, chunk, written, chunk.byteLength - written, offset + written);
-            if (count <= 0 || count > chunk.byteLength - written) {
-              throw new Error("rootfs export file write made no progress");
-            }
-            written += count;
-          }
-        });
-        fsyncSync(file);
+        const integrity = writeAndVerifyRootfsImage(
+          (visit) => kernelWorker.rootfsExportContainerVisit(visit),
+          {
+            writeAllAt(offset, bytes) {
+              let written = 0;
+              while (written < bytes.byteLength) {
+                const count = writeSync(file, bytes, written, bytes.byteLength - written, offset + written);
+                if (count <= 0 || count > bytes.byteLength - written) {
+                  throw new Error("rootfs export file write made no progress");
+                }
+                written += count;
+              }
+            },
+            readExactAt(offset, bytes) {
+              let read = 0;
+              while (read < bytes.byteLength) {
+                const count = readSync(file, bytes, read, bytes.byteLength - read, offset + read);
+                if (count <= 0 || count > bytes.byteLength - read) {
+                  throw new Error("rootfs export file read made no progress");
+                }
+                read += count;
+              }
+            },
+            flush: () => fsyncSync(file),
+            getSize: () => fstatSync(file).size,
+          },
+        );
         closeSync(file);
-        return length;
+        return integrity;
       } catch (error) {
         try { closeSync(file); } catch {}
         try { unlinkSync(msg.path); } catch {}
         throw error;
       }
     });
-    respond(msg.requestId, length);
+    respond(msg.requestId, integrity);
   } catch (error) {
     respondError(msg.requestId, error instanceof Error ? error.message : String(error));
   }

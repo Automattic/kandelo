@@ -51,6 +51,7 @@ import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
 import { OpfsImageReader } from "./vfs/opfs-image-reader";
 import { BrowserTimeProvider } from "./vfs/time";
 import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
+import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor } from "./vfs/overlay-generation-selection";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
@@ -3911,7 +3912,7 @@ async function handleExportRootfsImageToFile(
     return;
   }
   try {
-    const length = await rootfsSnapshotGate.runSnapshot(async () => {
+    const integrity = await rootfsSnapshotGate.runSnapshot(async () => {
       if (processes.size !== 0 || processTeardowns.size !== 0 || workerTeardowns.size !== 0) {
         throw new Error("rootfs export requires a quiescent kernel with no live or tearing-down processes");
       }
@@ -3923,27 +3924,46 @@ async function handleExportRootfsImageToFile(
           throw new Error("rootfs export requires an empty OPFS staging file");
         }
         started = true;
-        const length = kernelWorker.rootfsExportContainerVisit((offset, chunk) => {
-          let written = 0;
-          while (written < chunk.byteLength) {
-            const count = handle.write(chunk.subarray(written), { at: offset + written });
-            if (count <= 0 || count > chunk.byteLength - written) {
-              throw new Error("rootfs export OPFS write made no progress");
-            }
-            written += count;
-          }
-        });
-        handle.flush();
+        const integrity = writeAndVerifyRootfsImage(
+          (visit) => kernelWorker.rootfsExportContainerVisit(visit),
+          {
+            writeAllAt(offset, bytes) {
+              let written = 0;
+              while (written < bytes.byteLength) {
+                const count = handle.write(bytes.subarray(written), { at: offset + written });
+                if (count <= 0 || count > bytes.byteLength - written) {
+                  throw new Error("rootfs export OPFS write made no progress");
+                }
+                written += count;
+              }
+            },
+            readExactAt(offset, bytes) {
+              let read = 0;
+              while (read < bytes.byteLength) {
+                const count = handle.read(bytes.subarray(read), { at: offset + read });
+                if (count <= 0 || count > bytes.byteLength - read) {
+                  throw new Error("rootfs export OPFS read made no progress");
+                }
+                read += count;
+              }
+            },
+            flush: () => handle.flush(),
+            getSize: () => handle.getSize(),
+          },
+        );
         completed = true;
-        return length;
+        return integrity;
       } finally {
         if (started && !completed) {
-          try { handle.truncate(0); } catch {}
+          try {
+            handle.truncate(0);
+            handle.flush();
+          } catch {}
         }
         handle.close();
       }
     });
-    respond(msg.requestId, length);
+    respond(msg.requestId, integrity);
   } catch (error) {
     respondError(msg.requestId, formatError(error));
   }
