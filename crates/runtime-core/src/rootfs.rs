@@ -635,7 +635,29 @@ pub fn enable_fixed_persistence(
     storage: Box<dyn OverlayStorage + Send>,
     base_digest: [u8; 32],
 ) -> Result<(), Errno> {
-    let mut journal = OverlayJournal::open(storage, base_digest)?;
+    enable_fixed_persistence_internal(storage, None, base_digest)
+}
+
+pub fn enable_fixed_persistence_indexed(
+    storage: Box<dyn OverlayStorage + Send>,
+    index: Box<dyn OverlayStorage + Send>,
+    base_digest: [u8; 32],
+    checkpoint_end: u64,
+) -> Result<(), Errno> {
+    enable_fixed_persistence_internal(storage, Some((index, checkpoint_end)), base_digest)
+}
+
+fn enable_fixed_persistence_internal(
+    storage: Box<dyn OverlayStorage + Send>,
+    checkpoint: Option<(Box<dyn OverlayStorage + Send>, u64)>,
+    base_digest: [u8; 32],
+) -> Result<(), Errno> {
+    let mut journal = match checkpoint {
+        Some((index, checkpoint_end)) => {
+            OverlayJournal::open_with_checkpoint(storage, index, base_digest, checkpoint_end)?
+        }
+        None => OverlayJournal::open(storage, base_digest)?,
+    };
     journal.validate_fixed_image_blocks(|ino| {
         ROOTFS.with(|state| {
             state.inodes.iter().flatten().find_map(|inode| {
@@ -674,6 +696,15 @@ pub fn sync_persistence() -> Result<(), Errno> {
         Some(journal) => journal.sync(),
         None => Ok(()),
     }
+}
+
+pub fn checkpoint_persistence(storage: Box<dyn OverlayStorage + Send>) -> Result<(), Errno> {
+    let mut active = PERSISTENT_ROOTFS.lock();
+    active
+        .as_mut()
+        .ok_or(Errno::EINVAL)?
+        .checkpoint_fixed_blocks_into(storage)?;
+    Ok(())
 }
 
 pub fn prepare_persistence_compaction(
@@ -5436,7 +5467,9 @@ mod tests {
             let mut bytes = self.0.lock();
             let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
             let end = start.checked_add(src.len()).ok_or(Errno::EIO)?;
-            bytes.resize(end, 0);
+            if end > bytes.len() {
+                bytes.resize(end, 0);
+            }
             bytes[start..end].copy_from_slice(src);
             Ok(())
         }
@@ -8161,6 +8194,56 @@ mod tests {
         reset();
         load_image(image.len() as u64, &mut image_bytes).unwrap();
         enable_fixed_persistence(Box::new(source), base_digest).unwrap();
+        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        let mut changed = [0u8; 16];
+        let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
+        assert_eq!(&changed[..count], b"hello live\n");
+        release_handle(handle);
+    }
+
+    #[test]
+    fn indexed_fixed_persistence_replays_only_the_tail_after_checkpoint() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_fixed_persistence(Box::new(source.clone()), base_digest).unwrap();
+
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(handle, 6, b"KIFS", &mut image_bytes).unwrap(), 4);
+        sync_persistence().unwrap();
+        let checkpoint_end = source.0.lock().len() as u64;
+        PERSISTENT_ROOTFS
+            .lock()
+            .as_mut()
+            .unwrap()
+            .checkpoint_fixed_blocks_into(index.clone())
+            .unwrap();
+        let prefix_digest: [u8; 32] =
+            Sha256::digest(&source.0.lock()[..checkpoint_end as usize]).into();
+        crate::persistent_overlay_index::BlockCheckpoint::open(
+            index.clone(),
+            base_digest,
+            prefix_digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        assert_eq!(write(handle, 6, b"live", &mut image_bytes).unwrap(), 4);
+        sync_persistence().unwrap();
+        release_handle(handle);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_fixed_persistence_indexed(
+            Box::new(source),
+            Box::new(index),
+            base_digest,
+            checkpoint_end,
+        )
+        .unwrap();
         let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
         let mut changed = [0u8; 16];
         let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();

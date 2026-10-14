@@ -213,8 +213,10 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
           });
           const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
           const sealed = await (await directory.getFileHandle(`${name}.g0.seal`)).getFile();
+          const index = await (await directory.getFileHandle(`${name}.g0.index`)).getFile();
           const compactJournal = await (await directory.getFileHandle(`${name}.g0.journal`)).getFile();
-          return { state, sealed: sealed.size > 88, compactBytes: compactJournal.size };
+          const sealVersion = new DataView(await sealed.slice(0, 8).arrayBuffer()).getUint32(4, true);
+          return { state, sealed: sealed.size > 88, indexBytes: index.size, sealVersion, compactBytes: compactJournal.size };
         } finally {
           await kernel.destroy();
         }
@@ -226,6 +228,8 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
       });
       expect(compacted.state).toBe("XYcdefgh");
       expect(compacted.sealed).toBe(true);
+      expect(compacted.indexBytes).toBeGreaterThan(160);
+      expect(compacted.sealVersion).toBe(2);
       expect(compacted.compactBytes).toBeLessThan(original.byteLength + repeated.byteLength / 2);
       const recovery = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
         const { BrowserKernel } = await import(moduleUrl);
@@ -236,9 +240,17 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
           await writer.write(new Uint8Array([1, 2, 3]));
           await writer.close();
         };
-        await tearSeal();
         const imageFile = await directory.getFileHandle(`${name}.base`);
         const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
+        const indexed = new BrowserKernel({ kernelOwnedFs: true });
+        let indexedState: string;
+        try {
+          await indexed.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          indexedState = new TextDecoder().decode(await indexed.readFileFromVfs("/state"));
+        } finally {
+          await indexed.destroy();
+        }
+        await tearSeal();
         const fallback = new BrowserKernel({ kernelOwnedFs: true });
         let state: string;
         try {
@@ -258,13 +270,13 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         } finally {
           await missing.destroy();
         }
-        return { state, rejected };
+        return { indexedState, state, rejected };
       }, {
         moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
         kernelUrl,
         name: result.name,
       });
-      expect(recovery).toEqual({ state: "XYcdefgh", rejected: true });
+      expect(recovery).toEqual({ indexedState: "XYcdefgh", state: "XYcdefgh", rejected: true });
     } finally {
       await context.close();
     }
@@ -273,7 +285,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
   }
 });
 
-test("browser rejects a damaged indexed generation and restores the prior slot", async ({ playwright, browserName, baseURL }, testInfo) => {
+test("browser rejects a semantically invalid indexed generation and restores the prior slot", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.mkdir("/bin", 0o755);
@@ -395,7 +407,7 @@ test("browser rejects a damaged indexed generation and restores the prior slot",
         }
         return { newest, fallback, refused };
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result).toEqual({ newest: "XYcdefgh", fallback: "abcdefgh", refused: true });
+      expect(result).toEqual({ newest: "abcdefgh", fallback: "abcdefgh", refused: true });
     } finally {
       await context.close();
     }

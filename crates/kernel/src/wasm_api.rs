@@ -2189,6 +2189,25 @@ pub extern "C" fn kernel_rootfs_enable_fixed_persistence(
     image_len_lo: u32,
     image_len_hi: u32,
 ) -> i32 {
+    enable_rootfs_persistence(image_len_lo, image_len_hi, None)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_enable_fixed_persistence_indexed(
+    image_len_lo: u32,
+    image_len_hi: u32,
+    checkpoint_end_lo: u32,
+    checkpoint_end_hi: u32,
+) -> i32 {
+    let checkpoint_end = (u64::from(checkpoint_end_hi) << 32) | u64::from(checkpoint_end_lo);
+    enable_rootfs_persistence(image_len_lo, image_len_hi, Some(checkpoint_end))
+}
+
+fn enable_rootfs_persistence(
+    image_len_lo: u32,
+    image_len_hi: u32,
+    checkpoint_end: Option<u64>,
+) -> i32 {
     let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
     if crate::rootfs::image_length() != Some(image_len) {
         return -(Errno::EINVAL as i32);
@@ -2208,7 +2227,16 @@ pub extern "C" fn kernel_rootfs_enable_fixed_persistence(
         offset += read as u64;
     }
     let base_digest: [u8; 32] = digest.finalize().into();
-    match crate::rootfs::enable_fixed_persistence(Box::new(HostOverlayStorage), base_digest) {
+    let result = match checkpoint_end {
+        Some(end) => crate::rootfs::enable_fixed_persistence_indexed(
+            Box::new(HostOverlayStorage),
+            Box::new(HostOverlayTargetStorage),
+            base_digest,
+            end,
+        ),
+        None => crate::rootfs::enable_fixed_persistence(Box::new(HostOverlayStorage), base_digest),
+    };
+    match result {
         Ok(()) => 0,
         Err(error) => -(error as i32),
     }
@@ -2217,6 +2245,19 @@ pub extern "C" fn kernel_rootfs_enable_fixed_persistence(
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_sync_persistence() -> i32 {
     match crate::rootfs::sync_persistence() {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_checkpoint_persistence(target_slot: u32) -> i32 {
+    let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match target_slot {
+        0 => Box::new(HostOverlayStorage),
+        1 => Box::new(HostOverlayTargetStorage),
+        _ => return -(Errno::EINVAL as i32),
+    };
+    match crate::rootfs::checkpoint_persistence(storage) {
         Ok(()) => 0,
         Err(error) => -(error as i32),
     }
