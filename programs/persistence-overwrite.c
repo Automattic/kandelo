@@ -13,6 +13,37 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    int change_config = argc >= 2 && strcmp(argv[1], "change-boot-config") == 0;
+    int restore_config = argc >= 2 && strcmp(argv[1], "restore-boot-config") == 0;
+    if (change_config || restore_config) {
+        int fd = open("/etc/kandelo/demo.json", O_RDWR);
+        if (fd < 0) return 152;
+        char bytes[4096];
+        ssize_t count = pread(fd, bytes, sizeof(bytes) - 1, 0);
+        if (count <= 0) return 153;
+        bytes[count] = '\0';
+        char *match = strstr(bytes, change_config
+            ? "\"defaultProfile\":\"probe\""
+            : "\"defaultProfile\":\"other\"");
+        if (match == NULL) return 154;
+        off_t offset = match - bytes + strlen("\"defaultProfile\":\"");
+        if (pwrite(fd, change_config ? "other" : "probe", 5, offset) != 5) return 155;
+        return fsync(fd) == 0 && close(fd) == 0 ? 0 : 156;
+    }
+    if (argc >= 2 && strcmp(argv[1], "change-terminal-session") == 0) {
+        int fd = open("/etc/kandelo/experimental-terminal-session.json", O_RDWR);
+        if (fd < 0) return 157;
+        char bytes[4096];
+        ssize_t count = pread(fd, bytes, sizeof(bytes) - 1, 0);
+        if (count <= 0) return 158;
+        bytes[count] = '\0';
+        char *path = strstr(bytes, "persistence-overwrite");
+        char *argv = path == NULL ? NULL : strstr(path + 1, "persistence-overwrite");
+        if (argv == NULL) return 159;
+        off_t offset = argv - bytes + strlen("persistence-overwrite") - 1;
+        if (pwrite(fd, "E", 1, offset) != 1) return 160;
+        return fsync(fd) == 0 && close(fd) == 0 ? 0 : 161;
+    }
     if (argc >= 2 && strcmp(argv[1], "create-socket") == 0) {
         int fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd < 0) return 145;

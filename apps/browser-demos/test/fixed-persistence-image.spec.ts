@@ -741,8 +741,18 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
       const page = context.pages()[0] ?? await context.newPage();
       const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
       filesystem.setImageCapacity(8 * 1024 * 1024);
+      const imageConfig = { version: 1 as const, defaultProfile: "probe", profiles: { probe: {}, other: {} } };
+      const terminalSession = {
+        kind: "kandelo-experimental-terminal-session" as const,
+        version: 1 as const,
+        initial: { path: "/bin/persistence-overwrite", argv: ["persistence-overwrite"], uid: 0, gid: 0 },
+      };
       filesystem.mkdir("/bin", 0o755);
+      filesystem.mkdir("/etc", 0o755);
+      filesystem.mkdir("/etc/kandelo", 0o755);
       filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+      filesystem.writeFile("/etc/kandelo/demo.json", new TextEncoder().encode(JSON.stringify(imageConfig)), 0o644);
+      filesystem.writeFile("/etc/kandelo/experimental-terminal-session.json", new TextEncoder().encode(JSON.stringify(terminalSession)), 0o644);
       filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
       const image = await filesystem.saveImage();
       const kernelUrl = new URL("/snapshot-replacement-kernel.wasm", baseURL).href;
@@ -750,7 +760,7 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const staged = await page.evaluate(async ({ moduleUrl, checkpointUrl, browserKernelUrl, kernelUrl, imageUrl }) => {
+      const staged = await page.evaluate(async ({ moduleUrl, checkpointUrl, browserKernelUrl, kernelUrl, imageUrl, imageConfig, terminalSession }) => {
         const {
           loadFixedPersistenceImageHandle,
           markFixedPersistenceJournalInitialized,
@@ -761,13 +771,9 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         const name = `snapshot-replacement-${crypto.randomUUID()}`;
         const identity = "snapshot replacement";
         const composition = {
-          imageConfig: { version: 1 as const, defaultProfile: "probe", profiles: { probe: {} } },
+          imageConfig,
           profileId: "probe",
-          terminalSession: {
-            kind: "kandelo-experimental-terminal-session" as const,
-            version: 1 as const,
-            initial: { path: "/bin/persistence-overwrite", argv: ["persistence-overwrite"], uid: 0, gid: 0 },
-          },
+          terminalSession,
           requiredServices: [],
         };
         const previous = await saveFixedPersistenceImageStream(
@@ -815,6 +821,8 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
         kernelUrl,
         imageUrl,
+        imageConfig,
+        terminalSession,
       });
       expect(staged.stagedState).toBe("XYcdefgh");
       expect(staged.stagedJournal).not.toBe(staged.previousJournal);
@@ -855,6 +863,68 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         previousJournal: staged.previousJournal,
         state: "XYcdefgh",
       });
+      const changedMetadata = await page.evaluate(async ({ moduleUrl, checkpointUrl, browserKernelUrl, kernelUrl, name, identity }) => {
+        const { loadFixedPersistenceImageHandle } = await import(moduleUrl);
+        const { checkpointPersistentImage } = await import(checkpointUrl);
+        const { BrowserKernel } = await import(browserKernelUrl);
+        const current = await loadFixedPersistenceImageHandle(name, identity);
+        if (current === null) throw new Error("replacement disappeared before config edit");
+        const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+        const runGuestEdits = async (modes: string[]) => {
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm,
+              vfsImageFile: current.file,
+              integrity: { length: current.length, chunkBytes: 1024 * 1024, chunkSha256: current.chunkSha256 },
+              experimentalFixedPersistenceName: current.journalName,
+              persistentComputerName: name,
+              requireExistingRootfsPersistence: true,
+            });
+            for (const mode of modes) {
+              const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", mode]);
+              if (await exit !== 0) throw new Error(`guest ${mode} failed`);
+            }
+          } finally {
+            await kernel.destroy();
+          }
+        };
+        const checkpointError = async () => {
+          try {
+            await checkpointPersistentImage({
+              name,
+              identity,
+              journalName: current.journalName,
+              kernelWasm,
+              createKernel: () => new BrowserKernel({ kernelOwnedFs: true }),
+              closeKernel: (instance) => instance.destroy(),
+              lazyUrlMapForImage: () => ({}),
+              releaseLease: async () => {},
+            });
+            return null;
+          } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+          }
+        };
+        await runGuestEdits(["change-boot-config"]);
+        const configError = await checkpointError();
+        await runGuestEdits(["restore-boot-config", "change-terminal-session"]);
+        const sessionError = await checkpointError();
+        const selected = await loadFixedPersistenceImageHandle(name, identity);
+        return {
+          configRejected: configError?.includes("boot configuration changed after composition"),
+          sessionRejected: sessionError?.includes("terminal session changed after composition"),
+          journalUnchanged: selected?.journalName === current.journalName,
+        };
+      }, {
+        moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href,
+        checkpointUrl: new URL(`/@fs/${checkpointModulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        name: staged.name,
+        identity: staged.identity,
+      });
+      expect(changedMetadata).toEqual({ configRejected: true, sessionRejected: true, journalUnchanged: true });
     } finally {
       await context.close();
     }

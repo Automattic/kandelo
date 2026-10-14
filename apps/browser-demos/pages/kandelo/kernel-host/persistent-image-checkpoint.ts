@@ -1,6 +1,17 @@
 import { BrowserKernel } from "@host/browser-kernel-host";
 import type { BrowserPersistenceComputerLease } from "@host/browser-persistence-computer-lease";
 import {
+  KANDELO_DEMO_CONFIG_PATH,
+  MAX_KANDELO_DEMO_CONFIG_BYTES,
+  parseKandeloDemoConfig,
+  validateKandeloDemoConfig,
+} from "../../../../../web-libs/kandelo-session/src/demo-config";
+import {
+  EXPERIMENTAL_TERMINAL_SESSION_PATH,
+  MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES,
+  parseExperimentalTerminalSession,
+} from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
+import {
   loadFixedPersistenceImageHandle,
   publishFixedPersistenceReplacement,
   stageFixedPersistenceSnapshotReplacement,
@@ -20,6 +31,32 @@ export interface PersistentImageCheckpointOptions {
   assertCurrent?: () => void;
   onProgress?: (label: string) => void;
   validateCandidate?: (kernel: BrowserKernel) => Promise<void>;
+}
+
+export async function assertPersistentImageBootMetadata(
+  kernel: Pick<BrowserKernel, "readFileFromVfs">,
+  composition: FixedPersistenceImageHandle["composition"],
+): Promise<void> {
+  const configBytes = await kernel.readFileFromVfs(KANDELO_DEMO_CONFIG_PATH);
+  if (configBytes === null || configBytes.byteLength > MAX_KANDELO_DEMO_CONFIG_BYTES) {
+    throw new Error("persistent image boot configuration changed after composition");
+  }
+  const config = parseKandeloDemoConfig(new TextDecoder("utf-8", { fatal: true }).decode(configBytes));
+  if (config === null) throw new Error("persistent image boot configuration is unsupported");
+  validateKandeloDemoConfig(config);
+  if (JSON.stringify(config) !== JSON.stringify(composition.imageConfig)) {
+    throw new Error("persistent image boot configuration changed after composition");
+  }
+  const sessionBytes = await kernel.readFileFromVfs(EXPERIMENTAL_TERMINAL_SESSION_PATH);
+  if (sessionBytes === null || sessionBytes.byteLength > MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES) {
+    throw new Error("persistent image terminal session changed after composition");
+  }
+  const session = parseExperimentalTerminalSession(
+    new TextDecoder("utf-8", { fatal: true }).decode(sessionBytes),
+  );
+  if (JSON.stringify(session) !== JSON.stringify(composition.terminalSession)) {
+    throw new Error("persistent image terminal session changed after composition");
+  }
 }
 
 export async function checkpointPersistentImage(
@@ -55,6 +92,7 @@ export async function checkpointPersistentImage(
         persistenceComputerLease,
         requireExistingRootfsPersistence: true,
       });
+      await assertPersistentImageBootMetadata(source, previous.composition);
       integrity = await source.exportRootfsImageToFile(snapshotFile);
     } finally {
       await closeKernel(source);
@@ -81,6 +119,7 @@ export async function checkpointPersistentImage(
       persistentComputerName: name,
       persistenceComputerLease,
     });
+    await assertPersistentImageBootMetadata(candidate, previous.composition);
     await validateCandidate?.(candidate);
   } finally {
     await closeKernel(candidate);

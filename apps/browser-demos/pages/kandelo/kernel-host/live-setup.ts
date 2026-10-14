@@ -18,7 +18,10 @@ import {
   promoteFixedPersistenceRecovery,
   type FixedPersistenceImageHandle,
 } from "./fixed-persistence-image";
-import { checkpointPersistentImage as publishPersistentImageCheckpoint } from "./persistent-image-checkpoint";
+import {
+  assertPersistentImageBootMetadata,
+  checkpointPersistentImage as publishPersistentImageCheckpoint,
+} from "./persistent-image-checkpoint";
 import {
   initialDestroyProgress,
   subscribeDestroyProgress,
@@ -1798,6 +1801,7 @@ async function bootProfile(
         }
         throw error;
       }
+      await assertPersistentImageBootMetadata(kernel, opfsImage.composition);
       if (!opfsImage.journalInitialized) {
         await markFixedPersistenceJournalInitialized(persistence.name, persistence.identity, opfsImage);
       }
