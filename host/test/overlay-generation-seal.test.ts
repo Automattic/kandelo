@@ -16,6 +16,9 @@ class MemoryStorage implements PersistentOverlayStorage {
   maxRead = 0;
   failFlush = false;
   failNextFlush = false;
+  failNextRead = false;
+  failNextWrite = false;
+  failNextTruncate = false;
 
   constructor(bytes: Uint8Array = new Uint8Array()) {
     this.bytes = bytes.slice();
@@ -26,6 +29,10 @@ class MemoryStorage implements PersistentOverlayStorage {
   }
 
   readExactAt(offset: HostFileOffset, destination: Uint8Array): void {
+    if (this.failNextRead) {
+      this.failNextRead = false;
+      throw new Error("injected read failure");
+    }
     const start = Number(offset);
     if (start < 0 || start + destination.byteLength > this.bytes.byteLength) throw new Error("short read");
     this.maxRead = Math.max(this.maxRead, destination.byteLength);
@@ -33,6 +40,10 @@ class MemoryStorage implements PersistentOverlayStorage {
   }
 
   writeAllAt(offset: HostFileOffset, source: Uint8Array): void {
+    if (this.failNextWrite) {
+      this.failNextWrite = false;
+      throw new Error("injected write failure");
+    }
     const start = Number(offset);
     const length = Math.max(this.bytes.byteLength, start + source.byteLength);
     const next = new Uint8Array(length);
@@ -50,6 +61,10 @@ class MemoryStorage implements PersistentOverlayStorage {
   }
 
   truncate(length: HostFileOffset): void {
+    if (this.failNextTruncate) {
+      this.failNextTruncate = false;
+      throw new Error("injected truncate failure");
+    }
     this.bytes = this.bytes.slice(0, Number(length));
   }
 
@@ -319,5 +334,46 @@ describe("overlay generation boot selection", () => {
     expect(canceled).toBe(true);
     expect(entries["g0.seal"]!.len()).toBe(0);
     expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
+  });
+
+  it.each([
+    ["target truncate", "g0.journal", "failNextTruncate"],
+    ["target flush", "g0.journal", "failNextFlush"],
+    ["index truncate", "g0.index", "failNextTruncate"],
+    ["index flush", "g0.index", "failNextFlush"],
+    ["target write", "g0.journal", "failNextWrite"],
+    ["index write", "g0.index", "failNextWrite"],
+    ["seal write", "g0.seal", "failNextWrite"],
+    ["seal flush", "g0.seal", "failNextFlush"],
+  ] as const)("preserves the source after %s failure", async (_stage, file, fault) => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": source,
+      "g0.journal": new MemoryStorage(),
+      "g0.index": new MemoryStorage(),
+      "g0.seal": new MemoryStorage(),
+    };
+    entries[file]![fault] = true;
+    let canceled = false;
+    await expect(compactOverlayGeneration(
+      { journal: source, slot: "legacy", generation: 0, sealedLength: 0 },
+      files(entries),
+      {
+        prepare: (target) => {
+          target.writeAllAt(0, source.bytes);
+          target.flush();
+        },
+        checkpoint: (index) => {
+          index.writeAllAt(0, Uint8Array.of(1, 2, 3));
+          index.flush();
+        },
+        activate: () => { throw new Error("unexpected activation"); },
+        cancel: () => { canceled = true; },
+      },
+      0,
+    )).rejects.toThrow("injected");
+    expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
+    expect(entries["g0.seal"]!.len()).toBe(0);
+    expect(canceled).toBe(file === "g0.seal" || (file === "g0.index" && fault === "failNextWrite"));
   });
 });
