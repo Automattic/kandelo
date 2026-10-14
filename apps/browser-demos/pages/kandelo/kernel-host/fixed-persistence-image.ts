@@ -1,6 +1,8 @@
 import type { ImageOwnedRuntimeLazyAssets } from "../../../lib/init/image-owned-runtime-urls";
 import type { ComposeImageResult } from "./image-composer";
 import type { OpfsImageIntegrity } from "../../../../../host/src/vfs/opfs-image-reader";
+import { sha256 as incrementalSha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { parseKandeloDemoConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { parseExperimentalTerminalSession } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 
@@ -8,6 +10,7 @@ const DIRECTORY_NAME = "kandelo-persistent-overlay";
 const FORMAT_V1 = "kandelo-fixed-rootfs-image-v1";
 const FORMAT_V2 = "kandelo-fixed-rootfs-image-v2";
 const FORMAT_V3 = "kandelo-fixed-rootfs-image-v3";
+const FORMAT_V4 = "kandelo-fixed-rootfs-image-v4";
 const NAME_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 const CHUNK_BYTES = 1024 * 1024;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -18,13 +21,15 @@ type StoredComposition = Pick<
 >;
 
 interface ImageManifest {
-  format: typeof FORMAT_V1 | typeof FORMAT_V2 | typeof FORMAT_V3;
+  format: typeof FORMAT_V1 | typeof FORMAT_V2 | typeof FORMAT_V3 | typeof FORMAT_V4;
   identity: string;
   length: number;
   sha256?: string;
   imageFileName?: string;
   journalName?: string;
   journalNameSha256?: string;
+  journalInitialized?: boolean;
+  imageSha256?: string;
   lazyAssets?: ImageOwnedRuntimeLazyAssets | null;
   lazyAssetsSha256?: string;
   chunkSha256?: string[];
@@ -43,6 +48,8 @@ export interface FixedPersistenceImageHandle {
   file: FileSystemFileHandle;
   imageFileName?: string;
   journalName: string;
+  journalInitialized: boolean;
+  imageSha256?: string;
   length: number;
   chunkSha256: readonly string[];
   lazyAssets?: ImageOwnedRuntimeLazyAssets;
@@ -118,7 +125,8 @@ async function readSavedImage(
     throw new Error("experimental persistence base image manifest is invalid");
   }
   if (
-    (manifest?.format !== FORMAT_V1 && manifest?.format !== FORMAT_V2 && manifest?.format !== FORMAT_V3) ||
+    (manifest?.format !== FORMAT_V1 && manifest?.format !== FORMAT_V2 &&
+      manifest?.format !== FORMAT_V3 && manifest?.format !== FORMAT_V4) ||
     manifest.identity !== identity ||
     !Number.isSafeInteger(manifest.length) ||
     manifest.length <= 0 ||
@@ -131,7 +139,7 @@ async function readSavedImage(
   ) {
     throw new Error("experimental persistence base image belongs to a different computer");
   }
-  if (manifest.format === FORMAT_V3) {
+  if (manifest.format === FORMAT_V3 || manifest.format === FORMAT_V4) {
     if (
       typeof manifest.journalName !== "string" ||
       (manifest.journalName !== name &&
@@ -139,7 +147,12 @@ async function readSavedImage(
     ) {
       throw new Error("experimental persistence journal namespace is invalid");
     }
-    const binding = JSON.stringify([manifest.identity, manifest.imageFileName, manifest.journalName]);
+    if (manifest.format === FORMAT_V4 && typeof manifest.journalInitialized !== "boolean") {
+      throw new Error("experimental persistence journal initialization state is invalid");
+    }
+    const binding = JSON.stringify(manifest.format === FORMAT_V4
+      ? [manifest.identity, manifest.imageFileName, manifest.journalName, manifest.journalInitialized]
+      : [manifest.identity, manifest.imageFileName, manifest.journalName]);
     if (
       !SHA256_PATTERN.test(manifest.journalNameSha256 ?? "") ||
       await sha256(new TextEncoder().encode(binding)) !== manifest.journalNameSha256
@@ -148,6 +161,14 @@ async function readSavedImage(
     }
   } else if (manifest.journalName !== undefined || manifest.journalNameSha256 !== undefined) {
     throw new Error("experimental persistence journal namespace is invalid");
+  }
+  if (manifest.format !== FORMAT_V4 && manifest.journalInitialized !== undefined) {
+    throw new Error("experimental persistence journal initialization state is invalid");
+  }
+  if (manifest.format === FORMAT_V4
+    ? !SHA256_PATTERN.test(manifest.imageSha256 ?? "")
+    : manifest.imageSha256 !== undefined) {
+    throw new Error("experimental persistence image digest is invalid");
   }
   const imageFile = await existingFile(
     parent,
@@ -308,11 +329,66 @@ export async function loadFixedPersistenceImageHandle(
     return {
       file: saved.imageFile,
       journalName: saved.manifest.journalName ?? name,
+      journalInitialized: saved.manifest.format !== FORMAT_V4 || saved.manifest.journalInitialized === true,
+      imageSha256: saved.manifest.imageSha256,
       length: saved.manifest.length,
       chunkSha256: saved.manifest.chunkSha256,
       lazyAssets: saved.lazyAssets,
       composition: saved.composition,
     };
+  });
+}
+
+export async function markFixedPersistenceJournalInitialized(
+  name: string,
+  identity: string,
+  installed: FixedPersistenceImageHandle,
+): Promise<void> {
+  fileNames(name);
+  return locked(name, async () => {
+    const parent = await directory();
+    const saved = await readSavedImage(parent, name, identity);
+    if (
+      saved?.manifest.format !== FORMAT_V4 ||
+      saved.manifest.journalName !== installed.journalName ||
+      saved.manifest.length !== installed.length ||
+      !(await saved.imageFile.isSameEntry(installed.file))
+    ) {
+      throw new Error("experimental persistence image changed before journal initialization");
+    }
+    if (saved.manifest.journalInitialized) return;
+    const manifest = saved.manifest;
+    const journalFile = await existingFile(parent, `${installed.journalName}.journal`);
+    const journal = journalFile === null ? null : await journalFile.getFile();
+    if (journal === null || journal.size < 72) {
+      throw new Error("experimental persistence journal is not initialized");
+    }
+    const header = new Uint8Array(await journal.slice(0, 72).arrayBuffer());
+    if (
+      new TextDecoder().decode(header.subarray(0, 4)) !== "KOVL" ||
+      new DataView(header.buffer).getUint32(4, true) !== 1 ||
+      bytesToHex(header.subarray(8, 40)) !== manifest.imageSha256 ||
+      await sha256(header.subarray(0, 40)) !== bytesToHex(header.subarray(40, 72))
+    ) {
+      throw new Error("experimental persistence journal does not belong to this image");
+    }
+    manifest.journalInitialized = true;
+    manifest.journalNameSha256 = await sha256(new TextEncoder().encode(JSON.stringify([
+      identity, manifest.imageFileName, manifest.journalName, true,
+    ])));
+    const file = await parent.getFileHandle(fileNames(name).manifest);
+    const writer = await file.createWritable();
+    try {
+      await writer.write(JSON.stringify(manifest));
+      await writer.close();
+    } catch (error) {
+      await writer.abort().catch(() => {});
+      throw error;
+    }
+    const verified = await readSavedImage(parent, name, identity);
+    if (verified?.manifest.journalInitialized !== true) {
+      throw new Error("experimental persistence journal initialization was not published");
+    }
   });
 }
 
@@ -427,6 +503,7 @@ async function writeFixedPersistenceImageStream(
     let published = false;
     try {
       const chunkSha256: string[] = [];
+      const imageHash = incrementalSha256.create();
       let length = 0;
       const pending = new Uint8Array(CHUNK_BYTES);
       let pendingLength = 0;
@@ -441,6 +518,7 @@ async function writeFixedPersistenceImageStream(
           ) {
             throw new Error("experimental persistence image stream has invalid chunks");
           }
+          imageHash.update(chunk);
           let offset = 0;
           while (offset < chunk.byteLength) {
             const count = Math.min(CHUNK_BYTES - pendingLength, chunk.byteLength - offset);
@@ -485,6 +563,8 @@ async function writeFixedPersistenceImageStream(
         file: imageFile,
         imageFileName,
         journalName,
+        journalInitialized: false,
+        imageSha256: bytesToHex(imageHash.digest()),
         length,
         chunkSha256,
         lazyAssets,
@@ -513,19 +593,22 @@ async function publishImage(
   const imageFileName = staged.imageFileName;
   if (
     imageFileName === undefined ||
-    !new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`).test(imageFileName)
+    !new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`).test(imageFileName) ||
+    !SHA256_PATTERN.test(staged.imageSha256 ?? "")
   ) {
     throw new Error("experimental persistence staged image is invalid");
   }
   const savedLazyAssets = staged.lazyAssets === undefined ? null : { ...staged.lazyAssets };
   const savedComposition = { ...staged.composition };
   const manifest: ImageManifest = {
-    format: FORMAT_V3,
+    format: FORMAT_V4,
     identity,
     imageFileName,
     journalName: staged.journalName,
+    journalInitialized: false,
+    imageSha256: staged.imageSha256,
     journalNameSha256: await sha256(new TextEncoder().encode(JSON.stringify([
-      identity, imageFileName, staged.journalName,
+      identity, imageFileName, staged.journalName, false,
     ]))),
     length: staged.length,
     lazyAssets: savedLazyAssets,
