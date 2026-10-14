@@ -304,9 +304,9 @@ class RetryPreviousPersistenceGeneration extends Error {
   }
 }
 
-class UnterminatedPersistentKernel extends Error {
+class UnconfirmedPersistentKernelQuiescence extends Error {
   constructor(readonly kernel: BrowserKernel) {
-    super("persistent kernel worker termination is unconfirmed; computer remains locked");
+    super("persistent kernel storage quiescence is unconfirmed; computer remains locked");
   }
 }
 
@@ -796,11 +796,11 @@ export async function createLiveHost(
         } finally {
           offDestroyProgress();
         }
-        if (persistenceName !== undefined && previousKernel.hasActiveWorkerRealm()) {
+        if (persistenceName !== undefined && previousKernel.hasUnconfirmedKernelQuiescence()) {
           currentKernel = previousKernel;
           currentPersistenceLease = previousLease;
           if (seq === bootSeq) {
-            showBootError(h, descriptor, new UnterminatedPersistentKernel(previousKernel), bootStartedAt);
+            showBootError(h, descriptor, new UnconfirmedPersistentKernelQuiescence(previousKernel), bootStartedAt);
           }
           return;
         }
@@ -827,7 +827,7 @@ export async function createLiveHost(
         }
         if (seq !== bootSeq) {
           await kernel.destroy().catch(() => {});
-          if (persistenceName !== undefined && kernel.hasActiveWorkerRealm()) {
+          if (persistenceName !== undefined && kernel.hasUnconfirmedKernelQuiescence()) {
             currentKernel = kernel;
             currentPersistenceLease = persistenceLease;
             persistenceLease = null;
@@ -841,13 +841,13 @@ export async function createLiveHost(
         // A failed or superseded composition frees its own staging filesystem:
         // the composer worker is terminated on every non-success path, which is
         // WebKit's deterministic reclamation. Nothing to nudge here.
-        if (err instanceof UnterminatedPersistentKernel) {
+        if (err instanceof UnconfirmedPersistentKernelQuiescence) {
           currentKernel = err.kernel;
           currentPersistenceLease = persistenceLease;
           persistenceLease = null;
         }
         if (err instanceof BootSuperseded || seq !== bootSeq) return;
-        if (!(err instanceof UnterminatedPersistentKernel)) currentKernel = null;
+        if (!(err instanceof UnconfirmedPersistentKernelQuiescence)) currentKernel = null;
         setWebMcpSession(h, null);
         h.detachKernel();
         showBootError(h, descriptor, err, bootStartedAt);
@@ -1949,8 +1949,8 @@ async function bootProfile(
     if (kernel) {
       if (isCurrent()) setWebMcpSession(host, null);
       await kernel.destroy().catch(() => {});
-      if (experimentalPersistenceName !== undefined && kernel.hasActiveWorkerRealm()) {
-        throw new UnterminatedPersistentKernel(kernel);
+      if (experimentalPersistenceName !== undefined && kernel.hasUnconfirmedKernelQuiescence()) {
+        throw new UnconfirmedPersistentKernelQuiescence(kernel);
       }
     }
     throw err;

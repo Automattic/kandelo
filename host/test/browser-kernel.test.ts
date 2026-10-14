@@ -92,6 +92,24 @@ class MockWorker {
   private _extra: Array<(e: any) => void> = [];
 }
 
+function stubPersistenceWebLocks(): Set<string> {
+  const held = new Set<string>();
+  vi.stubGlobal("navigator", {
+    locks: {
+      request: async (name: string, _options: unknown, operation: (lock: object | null) => Promise<unknown>) => {
+        if (held.has(name)) return operation(null);
+        held.add(name);
+        try {
+          return await operation({ name });
+        } finally {
+          held.delete(name);
+        }
+      },
+    },
+  });
+  return held;
+}
+
 // SharedArrayBuffer + WebAssembly.Memory aren't available in some Node
 // configurations. We use the real ones (Node supports them) but stub the
 // kernelOwnedFs path so the constructor doesn't try to format a SAB.
@@ -1467,20 +1485,7 @@ describe("BrowserKernel", () => {
   });
 
   it("holds a persistent journal lease until its worker realm terminates", async () => {
-    const held = new Set<string>();
-    vi.stubGlobal("navigator", {
-      locks: {
-        request: async (name: string, _options: unknown, operation: (lock: object | null) => Promise<unknown>) => {
-          if (held.has(name)) return operation(null);
-          held.add(name);
-          try {
-            return await operation({ name });
-          } finally {
-            held.delete(name);
-          }
-        },
-      },
-    });
+    const held = stubPersistenceWebLocks();
     const BrowserKernel = await loadBrowserKernel();
     const options = {
       kernelWasm: new ArrayBuffer(8),
@@ -1503,25 +1508,30 @@ describe("BrowserKernel", () => {
     await expect(competing.initFromOpfsImage(options)).rejects.toThrow("journal is already open");
     expect(MockWorker.instances).toHaveLength(1);
 
-    const testable = first as unknown as { initialized: boolean; workerStarted: boolean };
-    testable.initialized = false;
+    const testable = first as unknown as {
+      initialized: boolean;
+      workerStarted: boolean;
+      request(): Promise<{ gracefulDetachComplete: true }>;
+    };
+    testable.request = vi.fn(async () => ({ gracefulDetachComplete: true }));
     firstWorker.terminate = () => { throw new Error("injected terminate failure"); };
     await first.destroy();
     expect(testable.workerStarted).toBe(true);
-    expect(first.hasActiveWorkerRealm()).toBe(true);
+    expect(first.hasUnconfirmedKernelQuiescence()).toBe(true);
     await expect(competing.initFromOpfsImage(options)).rejects.toThrow("journal is already open");
 
     firstWorker.terminate = () => { firstWorker.terminated = true; };
     await first.destroy();
     expect(testable.workerStarted).toBe(false);
-    expect(first.hasActiveWorkerRealm()).toBe(false);
+    expect(first.hasUnconfirmedKernelQuiescence()).toBe(false);
     expect(held.size).toBe(0);
 
     const retry = competing.initFromOpfsImage(options);
     await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
     MockWorker.instances[1]!.simulateMessage({ type: "ready" });
     await retry;
-    (competing as unknown as { initialized: boolean }).initialized = false;
+    (competing as unknown as { request(): Promise<{ gracefulDetachComplete: true }> }).request =
+      vi.fn(async () => ({ gracefulDetachComplete: true }));
     await competing.destroy();
     expect(held.size).toBe(0);
 
@@ -1530,7 +1540,67 @@ describe("BrowserKernel", () => {
     await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(3));
     MockWorker.instances[2]!.simulateMessage({ type: "init_error", error: "injected initialization failure" });
     await expect(failedBoot).rejects.toThrow("injected initialization failure");
-    expect(failed.hasActiveWorkerRealm()).toBe(false);
+    expect(failed.hasUnconfirmedKernelQuiescence()).toBe(false);
+    expect(held.size).toBe(0);
+  });
+
+  it("retains a journal lease when browser destroy times out without storage acknowledgement", async () => {
+    const held = stubPersistenceWebLocks();
+    const BrowserKernel = await loadBrowserKernel();
+    const options = {
+      kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle,
+      experimentalFixedPersistenceName: "timed-out-journal",
+    };
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initialization = kernel.initFromOpfsImage(options);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initialization;
+
+    vi.useFakeTimers();
+    try {
+      let lateResponse!: (value: unknown) => void;
+      const testable = kernel as unknown as { request(): Promise<unknown> };
+      testable.request = vi.fn(() => new Promise((resolve) => { lateResponse = resolve; }));
+      const destruction = kernel.destroy();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await destruction;
+      expect(worker.terminated).toBe(true);
+      expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(true);
+      expect(held.has("kandelo-rootfs-journal:timed-out-journal")).toBe(true);
+
+      lateResponse({ gracefulDetachComplete: true });
+      await Promise.resolve();
+      expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(true);
+      await expect(kernel.initFromOpfsImage(options)).rejects.toThrow("already running");
+      const competing = new BrowserKernel({ kernelOwnedFs: true });
+      await expect(competing.initFromOpfsImage(options)).rejects.toThrow("journal is already open");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases a journal lease after an acknowledged storage close with other teardown errors", async () => {
+    const held = stubPersistenceWebLocks();
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initialization = kernel.initFromOpfsImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle,
+      experimentalFixedPersistenceName: "acknowledged-journal",
+    });
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    MockWorker.instances[0]!.simulateMessage({ type: "ready" });
+    await initialization;
+    const testable = kernel as unknown as { request(): Promise<unknown> };
+    testable.request = vi.fn(async () => ({
+      gracefulDetachComplete: false,
+      persistenceSyncFailure: "injected sync failure",
+    }));
+    await kernel.destroy();
+    expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(false);
     expect(held.size).toBe(0);
   });
 

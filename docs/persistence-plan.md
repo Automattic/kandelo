@@ -102,17 +102,24 @@ The page now holds a separate per-computer Web Lock from before image selection
 until kernel teardown. A second tab using that page path refuses to boot the
 same computer, and same-page restarts wait for the preceding boot and kernel
 teardown before acquiring the lease again. Chromium, Firefox, and WebKit cover
-tab contention, explicit release, and tab-close release. If worker termination
-is unconfirmed, page teardown retains both the kernel reference and computer
-lease for a later retry; fallback boot cannot launch a second generation.
+tab contention, explicit release, and tab-close release. A valid worker destroy
+response follows closure of the OPFS journal handles and is the storage
+quiescence acknowledgement. If that response is missing, malformed, or timed
+out, page teardown retains the computer lease even after calling
+`Worker.terminate()`: browser termination has no join acknowledgement, so a
+same-page restart cannot prove the old writer stopped. The tab must close to
+release this fail-closed lease; fallback boot cannot launch a second generation.
 Low-level kernel callers do not yet acquire that per-computer runtime lease.
-BrowserKernel now holds a second exclusive Web Lock on the exact journal
-namespace from before worker initialization until `Worker.terminate()` succeeds,
-including low-level callers. A competing same-journal browser kernel fails
-before opening storage;
-init failure releases the lock, while a failed worker termination retains it
-for a later teardown retry. Concurrent initialization on one BrowserKernel is
-rejected before it can overwrite the first worker handle. This does not exclude
+BrowserKernel also holds a second exclusive Web Lock on the exact journal
+namespace from before worker initialization through an acknowledged storage
+close and worker termination, including low-level callers. A competing
+same-journal browser kernel fails before opening storage. Pre-ready init
+failure releases the lock after worker termination; a missing destroy response
+or failed termination retains it. A valid response can acknowledge storage
+closure even when process-generation detach or persistence sync reported an
+error; those errors remain visible diagnostics, not claims of durability.
+Concurrent initialization on one BrowserKernel is rejected before it can
+overwrite the first worker handle. This does not exclude
 low-level writers using different journal namespaces for the same computer.
 Replacement publication refuses while a page holds the computer lease, but
 cannot detect such unleased writers. Callers must quiesce the old kernel before

@@ -45,10 +45,10 @@ export function readKernelRealmDestroyResult(
  * ownership authority. The caller must terminate the worker realm afterward
  * whether this returns success or a diagnostic.
  */
-export async function awaitGracefulKernelRealmDestroy(
+export async function awaitGracefulKernelRealmDestroyOutcome(
   request: () => Promise<unknown>,
   timeoutMs: number,
-): Promise<string | undefined> {
+): Promise<{ result: KernelRealmDestroyResult | null; failure?: string }> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     const outcome = await Promise.race([
@@ -61,11 +61,11 @@ export async function awaitGracefulKernelRealmDestroy(
       }),
     ]);
     if (outcome.type === "timeout") {
-      return `graceful kernel-worker detach timed out after ${timeoutMs}ms`;
+      return { result: null, failure: `graceful kernel-worker detach timed out after ${timeoutMs}ms` };
     }
     const result = readKernelRealmDestroyResult(outcome.result);
     if (!result) {
-      return "kernel worker returned an invalid destroy result";
+      return { result: null, failure: "kernel worker returned an invalid destroy result" };
     }
     const failures = [
       !result.gracefulDetachComplete
@@ -73,11 +73,18 @@ export async function awaitGracefulKernelRealmDestroy(
         : undefined,
       result.persistenceSyncFailure,
     ].filter((failure): failure is string => failure !== undefined);
-    return failures.length > 0 ? failures.join("; ") : undefined;
+    return { result, failure: failures.length > 0 ? failures.join("; ") : undefined };
   } catch (error) {
-    return "graceful kernel-worker detach failed: " +
-      (error instanceof Error ? error.message : String(error));
+    return { result: null, failure: "graceful kernel-worker detach failed: " +
+      (error instanceof Error ? error.message : String(error)) };
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
+}
+
+export async function awaitGracefulKernelRealmDestroy(
+  request: () => Promise<unknown>,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  return (await awaitGracefulKernelRealmDestroyOutcome(request, timeoutMs)).failure;
 }
