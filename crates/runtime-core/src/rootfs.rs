@@ -1150,37 +1150,45 @@ fn validate_persistent_dirents(
     journal: &mut PersistentJournal,
     created: &[(u64, Inode)],
 ) -> Result<(), Errno> {
-    let mut known = BTreeMap::new();
+    let mut known = Vec::new();
     for inode in state.inodes.iter().flatten() {
         let entries = match &inode.kind {
             InodeKind::Dir(entries) => Some(entries),
             _ => None,
         };
-        if known.insert(inode.ino, entries).is_some() {
-            return Err(Errno::EIO);
-        }
+        known.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        known.push((inode.ino, entries));
     }
     for (ino, inode) in created {
         let entries = match &inode.kind {
             InodeKind::Dir(entries) => Some(entries),
             _ => None,
         };
-        if known.insert(*ino, entries).is_some() {
-            return Err(Errno::EIO);
-        }
+        known.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        known.push((*ino, entries));
     }
+    known.sort_unstable_by_key(|entry| entry.0);
+    if known.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(Errno::EIO);
+    }
+    let known_entry = |ino| {
+        known
+            .binary_search_by_key(&ino, |entry| entry.0)
+            .map(|index| known[index].1)
+            .map_err(|_| Errno::EIO)
+    };
     let mut changes = BTreeMap::<u64, BTreeMap<Vec<u8>, Option<u64>>>::new();
     journal.for_each_metadata(|key, value| {
         let OverlayKey::Dirent { parent, name } = key else {
             return Ok(());
         };
-        if known.get(parent).ok_or(Errno::EIO)?.is_none() {
+        if known_entry(*parent)?.is_none() {
             return Err(Errno::EIO);
         }
         let target = value
             .map(|bytes| {
                 let ino = u64::from_le_bytes(bytes.try_into().map_err(|_| Errno::EIO)?);
-                known.get(&ino).ok_or(Errno::EIO)?;
+                known_entry(ino)?;
                 Ok::<_, Errno>(ino)
             })
             .transpose()?;
@@ -1192,12 +1200,12 @@ fn validate_persistent_dirents(
         .ok_or(Errno::EIO)?
         .ino;
     let mut incoming = BTreeMap::<u64, u32>::new();
-    for (&directory, entries) in &known {
+    for &(directory, entries) in &known {
         let Some(entries) = entries else {
             continue;
         };
         visit_persistent_children(state, entries, changes.get(&directory), |child| {
-            if known.get(&child).ok_or(Errno::EIO)?.is_some() {
+            if known_entry(child)?.is_some() {
                 let count = incoming.entry(child).or_default();
                 *count = count.checked_add(1).ok_or(Errno::EIO)?;
                 if *count > 1 || child == root {
@@ -1213,18 +1221,15 @@ fn validate_persistent_dirents(
         if !reached.insert(directory) {
             return Err(Errno::EIO);
         }
-        let entries = known
-            .get(&directory)
-            .and_then(|entries| *entries)
-            .ok_or(Errno::EIO)?;
+        let entries = known_entry(directory)?.ok_or(Errno::EIO)?;
         visit_persistent_children(state, entries, changes.get(&directory), |child| {
-            if known.get(&child).ok_or(Errno::EIO)?.is_some() {
+            if known_entry(child)?.is_some() {
                 pending.push(child);
             }
             Ok(())
         })?;
     }
-    for (&directory, entries) in &known {
+    for &(directory, entries) in &known {
         let Some(entries) = entries else {
             continue;
         };
@@ -1280,27 +1285,36 @@ fn apply_persistent_dirents(
     state: &mut RootfsState,
     journal: &mut PersistentJournal,
 ) -> Result<(), Errno> {
-    let mut inode_indices = BTreeMap::new();
+    let mut inode_indices = Vec::new();
     for (index, inode) in state.inodes.iter().enumerate() {
         if let Some(inode) = inode {
-            if inode_indices.insert(inode.ino, index as u32).is_some() {
-                return Err(Errno::EIO);
-            }
+            inode_indices.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            inode_indices.push((inode.ino, u32::try_from(index).map_err(|_| Errno::EIO)?));
         }
     }
+    inode_indices.sort_unstable_by_key(|entry| entry.0);
+    if inode_indices.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(Errno::EIO);
+    }
+    let index_for = |ino| {
+        inode_indices
+            .binary_search_by_key(&ino, |entry| entry.0)
+            .map(|index| inode_indices[index].1)
+            .map_err(|_| Errno::EIO)
+    };
     let mut changes = Vec::new();
     journal.for_each_metadata(|key, value| {
         let OverlayKey::Dirent { parent, name } = key else {
             return Ok(());
         };
-        let parent_index = *inode_indices.get(parent).ok_or(Errno::EIO)?;
+        let parent_index = index_for(*parent)?;
         if !state.get(parent_index).ok_or(Errno::EIO)?.is_dir() {
             return Err(Errno::EIO);
         }
         let target_index = match value {
             Some(bytes) => {
                 let inode_number = u64::from_le_bytes(bytes.try_into().map_err(|_| Errno::EIO)?);
-                let index = *inode_indices.get(&inode_number).ok_or(Errno::EIO)?;
+                let index = index_for(inode_number)?;
                 Some(index)
             }
             None => None,
@@ -10423,6 +10437,56 @@ mod tests {
             validate_persistent_dirents(&state, &mut journal, &created),
             Ok(())
         );
+    }
+
+    #[test]
+    fn persistent_dirent_replay_uses_inode_numbers_not_arena_order() {
+        let mut state = RootfsState::new();
+        let root = state.mount_root();
+        let later = state.insert_inode(Inode::new(
+            InodeKind::PersistentRegular,
+            0o644,
+            0,
+            0,
+            0,
+            9,
+        ));
+        let earlier = state.insert_inode(Inode::new(
+            InodeKind::PersistentRegular,
+            0o644,
+            0,
+            0,
+            0,
+            3,
+        ));
+        let storage: Box<dyn OverlayStorage + Send> =
+            Box::new(SharedJournalStorage(Arc::new(Mutex::new(Vec::new()))));
+        let mut journal = OverlayJournal::open(storage, [0; 32]).unwrap();
+        journal
+            .commit(&[
+                Mutation::Put {
+                    key: OverlayKey::Dirent {
+                        parent: 1,
+                        name: b"earlier".to_vec(),
+                    },
+                    value: 3u64.to_le_bytes().to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::Dirent {
+                        parent: 1,
+                        name: b"later".to_vec(),
+                    },
+                    value: 9u64.to_le_bytes().to_vec(),
+                },
+            ])
+            .unwrap();
+        validate_persistent_dirents(&state, &mut journal, &[]).unwrap();
+        apply_persistent_dirents(&mut state, &mut journal).unwrap();
+        let InodeKind::Dir(entries) = &state.get(root).unwrap().kind else {
+            panic!("root must be a directory");
+        };
+        assert_eq!(entries.get(b"earlier".as_slice()), Some(&earlier));
+        assert_eq!(entries.get(b"later".as_slice()), Some(&later));
     }
 
     #[test]
