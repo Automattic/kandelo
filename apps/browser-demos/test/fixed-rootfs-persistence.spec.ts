@@ -23,6 +23,90 @@ const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-over
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
 
+test("browser exports a composed resizable snapshot and reboots without its journal", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(90_000);
+  const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+  const image = await filesystem.saveImage();
+  const kernelUrl = new URL("/resizable-export-kernel.wasm", baseURL).href;
+  const imageUrl = new URL("/resizable-export-image.vfs", baseURL).href;
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-resizable-export-browser-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const name = `resizable-export-${crypto.randomUUID()}`;
+        const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+        const imageWriter = await imageFile.createWritable();
+        await imageWriter.write(await (await fetch(imageUrl)).arrayBuffer());
+        await imageWriter.close();
+        const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+        const bootPersistent = async () => {
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          await kernel.initFromOpfsImage({
+            kernelWasm,
+            vfsImageFile: imageFile,
+            experimentalResizablePersistenceName: name,
+          });
+          return kernel;
+        };
+        const first = await bootPersistent();
+        try {
+          await first.writeFileToVfs("/state", new TextEncoder().encode("SNAP"));
+          await first.writeFileToVfs("/created", new TextEncoder().encode("created"));
+        } finally {
+          await first.destroy();
+        }
+        const reopened = await bootPersistent();
+        let snapshot: Uint8Array;
+        try {
+          snapshot = await reopened.exportRootfsImage();
+        } finally {
+          await reopened.destroy();
+        }
+        const snapshotFile = await directory.getFileHandle(`${name}.snapshot`, { create: true });
+        const snapshotWriter = await snapshotFile.createWritable();
+        await snapshotWriter.write(snapshot);
+        await snapshotWriter.close();
+        const restored = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await restored.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile });
+          return {
+            state: new TextDecoder().decode((await restored.readFileFromVfs("/state"))!),
+            created: new TextDecoder().decode((await restored.readFileFromVfs("/created"))!),
+            snapshotBytes: snapshot.byteLength,
+          };
+        } finally {
+          await restored.destroy();
+        }
+      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
+      expect(result).toEqual({ state: "SNAP", created: "created", snapshotBytes: expect.any(Number) });
+      expect(result.snapshotBytes).toBeGreaterThan(0);
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
 test("browser reopens sparse image and created files after namespace changes", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
