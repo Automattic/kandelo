@@ -177,6 +177,10 @@ can carry tombstones through two indexed generations, while fixed-overwrite
 mounts continue to reject them. This is groundwork only: the fixed-overwrite
 mount still uses block-only replay, and no persistent namespace mutation is
 enabled yet.
+Fixed-overwrite indexed open parses the authenticated prefix with a
+transaction-sized buffer and rejects metadata hidden behind a block-only
+checkpoint. This adds a second sequential prefix pass after digest
+verification, so indexed boot latency needs measurement.
 The generic journal also has a file zero-fence record (key kind 5, an
 inclusive starting block). A shrink atomically records the new size and
 fence, preserving the boundary block's prefix and zeroing its suffix. Later
