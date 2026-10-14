@@ -70,9 +70,13 @@ export function assertFixedPersistenceBootAllowed(
   }
 }
 
-function fileNames(name: string): { image: string; manifest: string } {
+function fileNames(name: string): { image: string; manifest: string; previousManifest: string } {
   if (!NAME_PATTERN.test(name)) throw new Error("invalid experimental persistence name");
-  return { image: `${name}.base`, manifest: `${name}.base.json` };
+  return {
+    image: `${name}.base`,
+    manifest: `${name}.base.json`,
+    previousManifest: `${name}.previous.base.json`,
+  };
 }
 
 async function directory(): Promise<FileSystemDirectoryHandle> {
@@ -101,10 +105,11 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function readSavedImage(
+async function readSavedImageAt(
   parent: FileSystemDirectoryHandle,
   name: string,
   identity: string,
+  manifestName: string,
 ): Promise<{
   manifest: ImageManifest;
   imageFile: FileSystemFileHandle;
@@ -113,7 +118,7 @@ async function readSavedImage(
   composition?: StoredComposition;
 } | null> {
   const names = fileNames(name);
-  const manifestFile = await existingFile(parent, names.manifest);
+  const manifestFile = await existingFile(parent, manifestName);
   if (manifestFile === null) {
     if (await existingFile(parent, names.image) === null) return null;
     throw new Error("experimental persistence base image is incomplete; refusing to boot");
@@ -227,6 +232,24 @@ async function readSavedImage(
     throw new Error("experimental persistence base image is damaged; refusing to boot");
   }
   return { manifest, imageFile, lazyAssets, lazyAssetsRecorded, composition };
+}
+
+async function readSavedImage(
+  parent: FileSystemDirectoryHandle,
+  name: string,
+  identity: string,
+): ReturnType<typeof readSavedImageAt> {
+  const names = fileNames(name);
+  try {
+    const current = await readSavedImageAt(parent, name, identity, names.manifest);
+    if (current !== null) return current;
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith("experimental persistence")) throw error;
+    const previous = await readSavedImageAt(parent, name, identity, names.previousManifest);
+    if (previous !== null) return previous;
+    throw error;
+  }
+  return readSavedImageAt(parent, name, identity, names.previousManifest);
 }
 
 async function readImage(
@@ -347,7 +370,8 @@ export async function markFixedPersistenceJournalInitialized(
   fileNames(name);
   return locked(name, async () => {
     const parent = await directory();
-    const saved = await readSavedImage(parent, name, identity);
+    const names = fileNames(name);
+    const saved = await readSavedImageAt(parent, name, identity, names.manifest);
     if (
       saved?.manifest.format !== FORMAT_V4 ||
       saved.manifest.journalName !== installed.journalName ||
@@ -376,7 +400,20 @@ export async function markFixedPersistenceJournalInitialized(
     manifest.journalNameSha256 = await sha256(new TextEncoder().encode(JSON.stringify([
       identity, manifest.imageFileName, manifest.journalName, true,
     ])));
-    const file = await parent.getFileHandle(fileNames(name).manifest);
+    const backup = await parent.getFileHandle(names.previousManifest, { create: true });
+    const backupWriter = await backup.createWritable();
+    try {
+      await backupWriter.write(JSON.stringify(manifest));
+      await backupWriter.close();
+    } catch (error) {
+      await backupWriter.abort().catch(() => {});
+      throw error;
+    }
+    const verifiedBackup = await readSavedImageAt(parent, name, identity, names.previousManifest);
+    if (verifiedBackup?.manifest.journalInitialized !== true) {
+      throw new Error("experimental persistence fallback manifest was not published");
+    }
+    const file = await parent.getFileHandle(names.manifest);
     const writer = await file.createWritable();
     try {
       await writer.write(JSON.stringify(manifest));
@@ -385,7 +422,7 @@ export async function markFixedPersistenceJournalInitialized(
       await writer.abort().catch(() => {});
       throw error;
     }
-    const verified = await readSavedImage(parent, name, identity);
+    const verified = await readSavedImageAt(parent, name, identity, names.manifest);
     if (verified?.manifest.journalInitialized !== true) {
       throw new Error("experimental persistence journal initialization was not published");
     }
