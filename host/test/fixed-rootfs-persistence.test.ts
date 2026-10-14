@@ -91,10 +91,13 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       const reopened = await boot(image, path, true);
       try {
         expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("SNAP");
-        const length = await reopened.exportRootfsImageToFile(snapshotPath);
-        expect(length).toBe(readFileSync(snapshotPath).byteLength);
+        const integrity = await reopened.exportRootfsImageToFile(snapshotPath);
+        const snapshot = readFileSync(snapshotPath);
+        expect(integrity.length).toBe(snapshot.byteLength);
+        expect(integrity.chunkBytes).toBe(1024 * 1024);
+        expect(integrity.chunkSha256).toEqual([createHash("sha256").update(snapshot).digest("hex")]);
         await expect(reopened.exportRootfsImageToFile(snapshotPath)).rejects.toThrow();
-        expect(readFileSync(snapshotPath).byteLength).toBe(length);
+        expect(readFileSync(snapshotPath).byteLength).toBe(integrity.length);
       } finally {
         await reopened.destroy();
       }

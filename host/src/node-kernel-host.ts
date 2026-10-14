@@ -2,6 +2,8 @@ import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-s
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
+import { isStagedRootfsImageIntegrity } from "./vfs/staged-rootfs-image";
+import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
 /**
  * NodeKernelHost — Main-thread proxy that communicates with a dedicated
  * kernel worker_thread via messages. The kernel worker owns the Wasm
@@ -1229,7 +1231,7 @@ export class NodeKernelHost {
   }
 
   /** Write a quiescent snapshot to a new staging path without buffering its bytes in JS. */
-  async exportRootfsImageToFile(path: string): Promise<number> {
+  async exportRootfsImageToFile(path: string): Promise<OpfsImageIntegrity> {
     if (!this.initialized) {
       throw new Error("rootfs export requires an initialized kernel");
     }
@@ -1239,10 +1241,10 @@ export class NodeKernelHost {
       requestId,
       path,
     });
-    if (!Number.isSafeInteger(result) || (result as number) <= 0) {
-      throw new Error("kernel worker returned an invalid rootfs image length");
+    if (!isStagedRootfsImageIntegrity(result)) {
+      throw new Error("kernel worker returned invalid rootfs image integrity");
     }
-    return result as number;
+    return result;
   }
 
   /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */

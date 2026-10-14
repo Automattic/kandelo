@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
+import type { OpfsImageIntegrity } from "../../../host/src/vfs/opfs-image-reader";
 
 const testDirectory = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = resolve(testDirectory, "../../..");
@@ -76,34 +77,46 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
         }
         const reopened = await bootPersistent();
         const snapshotFile = await directory.getFileHandle(`${name}.snapshot`, { create: true });
-        let snapshotBytes: number;
+        let snapshotIntegrity: OpfsImageIntegrity;
         try {
-          snapshotBytes = await reopened.exportRootfsImageToFile(snapshotFile);
+          snapshotIntegrity = await reopened.exportRootfsImageToFile(snapshotFile);
           let overwriteRejected = false;
           try {
             await reopened.exportRootfsImageToFile(snapshotFile);
           } catch {
             overwriteRejected = true;
           }
-          if (!overwriteRejected || (await snapshotFile.getFile()).size !== snapshotBytes) {
+          if (!overwriteRejected || (await snapshotFile.getFile()).size !== snapshotIntegrity.length) {
             throw new Error("snapshot export replaced a nonempty OPFS file");
           }
         } finally {
           await reopened.destroy();
         }
         const restored = new BrowserKernel({ kernelOwnedFs: true });
+        let state: string;
+        let created: string;
         try {
-          await restored.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile });
-          return {
-            state: new TextDecoder().decode((await restored.readFileFromVfs("/state"))!),
-            created: new TextDecoder().decode((await restored.readFileFromVfs("/created"))!),
-            snapshotBytes,
-          };
+          await restored.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile, integrity: snapshotIntegrity });
+          state = new TextDecoder().decode((await restored.readFileFromVfs("/state"))!);
+          created = new TextDecoder().decode((await restored.readFileFromVfs("/created"))!);
         } finally {
           await restored.destroy();
         }
+        const corrupter = await snapshotFile.createWritable({ keepExistingData: true });
+        await corrupter.write({ type: "write", position: 0, data: Uint8Array.of(0) });
+        await corrupter.close();
+        const damaged = new BrowserKernel({ kernelOwnedFs: true });
+        let damageRejected = false;
+        try {
+          await damaged.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile, integrity: snapshotIntegrity });
+        } catch (error) {
+          damageRejected = String(error).includes("damaged");
+        } finally {
+          await damaged.destroy();
+        }
+        return { state, created, snapshotBytes: snapshotIntegrity.length, damageRejected };
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result).toEqual({ state: "SNAP", created: "created", snapshotBytes: expect.any(Number) });
+      expect(result).toEqual({ state: "SNAP", created: "created", snapshotBytes: expect.any(Number), damageRejected: true });
       expect(result.snapshotBytes).toBeGreaterThan(0);
     } finally {
       await context.close();
