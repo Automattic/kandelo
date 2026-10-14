@@ -45,9 +45,11 @@ semantics. Node and browser must expose the same guest-visible behavior.
   integrity descriptor accepted by browser positioned boot. Browser snapshots
   can now be verified and published as a new computer through the existing
   manifest-last stream installer, or staged as a replacement under a fresh
-  journal namespace. The replacement still needs explicit kernel quiescence,
-  a successful staged boot, and a separate publish call; the page does not
-  drive that sequence. Version 4 manifests require a hashed journal namespace
+  journal namespace. Publication now refuses while either the source or
+  staged journal is open by a `BrowserKernel`, even under a different computer
+  identity. The replacement still needs a successful staged boot and a
+  separate publish call; the page does not drive that sequence. Version 4
+  manifests require a hashed journal namespace
   bound to the base generation and record whether its journal was initialized; older
   manifests continue using the computer name or the version 3 namespace.
   A fully orchestrated, crash-safe base-and-journal handoff remains open. The
@@ -130,12 +132,13 @@ Chromium, Firefox, and WebKit exercise a worker that drops destroy requests:
 the old tab refuses same-journal boots after the timeout, and a new tab can
 reopen the journal after the old tab closes.
 Concurrent initialization on one BrowserKernel is rejected before it can
-overwrite the first worker handle. This does not exclude
-low-level writers that use different names for the same computer. Replacement
-publication refuses while a page holds the computer lease, but cannot detect
-writers using a different identity. Callers must quiesce
-the old kernel before taking a snapshot and both kernels before publication; manifest Web Locks alone
-do not stop guest journal writes.
+overwrite the first worker handle. Replacement publication now takes
+non-waiting exclusive locks on both journal namespaces as well as the
+computer lease. A low-level kernel using a different computer identity but
+either journal namespace blocks publication. Raw OPFS writers that bypass
+these locks remain outside this protection. Callers must stop the old kernel
+before taking a snapshot and complete the staged boot before publication;
+the page still does not orchestrate those transitions.
 Later journal-record corruption is still handled by the
 kernel's recovery rules, not by cross-generation fallback. The page does not
 yet orchestrate in-place replacement, abandoned staged generations are not

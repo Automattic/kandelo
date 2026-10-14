@@ -6,6 +6,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { parseKandeloDemoConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { parseExperimentalTerminalSession } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import { acquireBrowserPersistenceComputerLease, type BrowserPersistenceComputerLease } from "../../../../../host/src/browser-persistence-computer-lease";
+import { withIdleBrowserPersistenceJournals } from "../../../../../host/src/browser-persistence-journal-lease";
 
 const DIRECTORY_NAME = "kandelo-persistent-overlay";
 const FORMAT_V1 = "kandelo-fixed-rootfs-image-v1";
@@ -913,61 +914,65 @@ export async function publishFixedPersistenceReplacement(
   assertCurrent?: () => void,
 ): Promise<void> {
   fileNames(name);
-  await whenRuntimeIdle(name, () => locked(name, async () => {
-    assertCurrent?.();
-    const parent = await directory();
-    const names = fileNames(name);
-    const current = await readSavedImageAt(parent, name, identity, names.manifest);
-    if (
-      current?.manifest.format !== FORMAT_V4 || !current.manifest.journalInitialized ||
-      current.manifest.journalName !== previous.journalName ||
-      !(await current.imageFile.isSameEntry(previous.file)) ||
-      staged.journalName === previous.journalName ||
-      !/^j-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(staged.journalName)
-    ) {
-      throw new Error("experimental persistence replacement source changed");
-    }
-    await verifySavedImage(parent, current);
-    const manifest = await manifestForStagedImage(name, identity, staged, true);
-    const stagedFile = await existingFile(parent, manifest.imageFileName!);
-    if (stagedFile === null || !(await stagedFile.isSameEntry(staged.file))) {
-      throw new Error("experimental persistence staged image changed");
-    }
-    const snapshot = await stagedFile.getFile();
-    if (snapshot.size !== staged.length) {
-      throw new Error("experimental persistence staged image is damaged");
-    }
-    const imageHash = incrementalSha256.create();
-    for (let index = 0; index < staged.chunkSha256.length; index++) {
+  await whenRuntimeIdle(name, () => withIdleBrowserPersistenceJournals(
+    previous.journalName,
+    staged.journalName,
+    () => locked(name, async () => {
       assertCurrent?.();
-      const offset = index * CHUNK_BYTES;
-      const bytes = new Uint8Array(await snapshot.slice(offset, offset + CHUNK_BYTES).arrayBuffer());
-      if (await sha256(bytes) !== staged.chunkSha256[index]) {
+      const parent = await directory();
+      const names = fileNames(name);
+      const current = await readSavedImageAt(parent, name, identity, names.manifest);
+      if (
+        current?.manifest.format !== FORMAT_V4 || !current.manifest.journalInitialized ||
+        current.manifest.journalName !== previous.journalName ||
+        !(await current.imageFile.isSameEntry(previous.file)) ||
+        staged.journalName === previous.journalName ||
+        !/^j-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(staged.journalName)
+      ) {
+        throw new Error("experimental persistence replacement source changed");
+      }
+      await verifySavedImage(parent, current);
+      const manifest = await manifestForStagedImage(name, identity, staged, true);
+      const stagedFile = await existingFile(parent, manifest.imageFileName!);
+      if (stagedFile === null || !(await stagedFile.isSameEntry(staged.file))) {
+        throw new Error("experimental persistence staged image changed");
+      }
+      const snapshot = await stagedFile.getFile();
+      if (snapshot.size !== staged.length) {
         throw new Error("experimental persistence staged image is damaged");
       }
-      imageHash.update(bytes);
-    }
-    if (bytesToHex(imageHash.digest()) !== staged.imageSha256) {
-      throw new Error("experimental persistence staged image is damaged");
-    }
-    await verifyJournalHeader(parent, staged.journalName, staged.imageSha256!);
-    assertCurrent?.();
-    await writeManifest(parent, names.previousManifest, current.manifest, assertCurrent);
-    const backup = await readSavedImageAt(parent, name, identity, names.previousManifest);
-    if (backup === null || backup.manifest.imageFileName !== current.manifest.imageFileName ||
-      backup.manifest.journalName !== current.manifest.journalName ||
-      backup.manifest.journalInitialized !== true) {
-      throw new Error("experimental persistence previous generation was not preserved");
-    }
-    assertCurrent?.();
-    await writeManifest(parent, names.manifest, manifest, assertCurrent);
-    const published = await readSavedImageAt(parent, name, identity, names.manifest);
-    if (published === null || published.manifest.imageFileName !== manifest.imageFileName ||
-      published.manifest.journalName !== staged.journalName ||
-      published.manifest.journalInitialized !== true) {
-      throw new Error("experimental persistence replacement was not published");
-    }
-  }));
+      const imageHash = incrementalSha256.create();
+      for (let index = 0; index < staged.chunkSha256.length; index++) {
+        assertCurrent?.();
+        const offset = index * CHUNK_BYTES;
+        const bytes = new Uint8Array(await snapshot.slice(offset, offset + CHUNK_BYTES).arrayBuffer());
+        if (await sha256(bytes) !== staged.chunkSha256[index]) {
+          throw new Error("experimental persistence staged image is damaged");
+        }
+        imageHash.update(bytes);
+      }
+      if (bytesToHex(imageHash.digest()) !== staged.imageSha256) {
+        throw new Error("experimental persistence staged image is damaged");
+      }
+      await verifyJournalHeader(parent, staged.journalName, staged.imageSha256!);
+      assertCurrent?.();
+      await writeManifest(parent, names.previousManifest, current.manifest, assertCurrent);
+      const backup = await readSavedImageAt(parent, name, identity, names.previousManifest);
+      if (backup === null || backup.manifest.imageFileName !== current.manifest.imageFileName ||
+        backup.manifest.journalName !== current.manifest.journalName ||
+        backup.manifest.journalInitialized !== true) {
+        throw new Error("experimental persistence previous generation was not preserved");
+      }
+      assertCurrent?.();
+      await writeManifest(parent, names.manifest, manifest, assertCurrent);
+      const published = await readSavedImageAt(parent, name, identity, names.manifest);
+      if (published === null || published.manifest.imageFileName !== manifest.imageFileName ||
+        published.manifest.journalName !== staged.journalName ||
+        published.manifest.journalInitialized !== true) {
+        throw new Error("experimental persistence replacement was not published");
+      }
+    }),
+  ));
 }
 
 export async function saveFixedPersistenceImageStream(

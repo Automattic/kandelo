@@ -1003,6 +1003,29 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         } finally {
           await releaseRuntimeLease();
         }
+        const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
+        const journalWriterRejected: boolean[] = [];
+        for (const candidate of [previous, staged]) {
+          const competing = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await competing.initFromOpfsImage({
+              kernelWasm: kernelBytes,
+              vfsImageFile: candidate.file,
+              experimentalFixedPersistenceName: candidate.journalName,
+              persistentComputerName: `other-${crypto.randomUUID()}`,
+              requireExistingRootfsPersistence: true,
+            });
+            let rejected = false;
+            try {
+              await publishFixedPersistenceReplacement(name, identity, previous, staged);
+            } catch (error) {
+              rejected = String(error).includes("journal is already open");
+            }
+            journalWriterRejected.push(rejected);
+          } finally {
+            await competing.destroy();
+          }
+        }
         const interruptedPublications: boolean[] = [];
         for (let cut = 1; cut <= staged.chunkSha256.length + 5; cut++) {
           let publicationChecks = 0;
@@ -1024,6 +1047,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           oldStillCurrentBeforePublish: beforePublish !== null && await beforePublish.file.isSameEntry(previous.file),
           prematurePublishRejected,
           busyPublishRejected,
+          journalWriterRejected,
           interruptedPublications,
           stagedState,
           newReady: current?.journalInitialized === true,
@@ -1040,6 +1064,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         oldStillCurrentBeforePublish: true,
         prematurePublishRejected: true,
         busyPublishRejected: true,
+        journalWriterRejected: [true, true],
         interruptedPublications: [true, true, true, true, true, true],
         stagedState: "replacement",
         newReady: true,
