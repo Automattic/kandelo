@@ -69,10 +69,17 @@ exceed the chosen runtime-memory budget.
 ## Current boundaries
 
 The browser prototype now streams composed output into OPFS with one
-acknowledged chunk in flight, verifies the stored bytes, and publishes only
-from the boot that still owns the session, under one exclusive lock. The next
+acknowledged chunk in flight, verifies the stored bytes, and checks that the
+boot still owns the session immediately before closing the manifest under one
+exclusive lock. Once close begins, publication cannot be revoked. The next
 installation reclaims abandoned generation files. Reopening uses positioned OPFS
 reads and a bounded clean cache; fixed overwrites use a bounded dirty cache.
+The first-install manifest close is the publication boundary. If its close
+acknowledgement is lost, the installer reads back the exact committed manifest
+and retains the verified image; it never deletes image bytes while a manifest
+might still reference them. A failed pre-commit close removes the manifest,
+leaves an orphan image, and the next installation reclaims it. Chromium,
+Firefox, and WebKit exercise both outcomes and a successful retry.
 Version 4 browser manifests publish as pending. After the kernel initializes
 the journal, and before any guest starts, the page verifies its flushed header
 against a streamed whole-image SHA-256 digest and marks the manifest ready.

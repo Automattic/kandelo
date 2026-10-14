@@ -954,6 +954,12 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         const identity = "composer stream probe";
         const previous = await loadFixedPersistenceImageHandle(name, identity);
         if (previous === null) throw new Error("replacement source disappeared");
+        let sameGenerationRejected = false;
+        try {
+          await publishFixedPersistenceReplacement(name, identity, previous, previous);
+        } catch (error) {
+          sameGenerationRejected = String(error).includes("replacement source changed");
+        }
         const imageBytes = new Uint8Array(await (await fetch(replacementUrl)).arrayBuffer());
         const overlayDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const sourceName = `replacement-source-${crypto.randomUUID()}`;
@@ -1133,6 +1139,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         }
         return {
           oldStillCurrentBeforePublish: beforePublish !== null && await beforePublish.file.isSameEntry(previous.file),
+          sameGenerationRejected,
           prematurePublishRejected,
           busyPublishRejected,
           journalWriterRejected,
@@ -1155,6 +1162,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       });
       expect(replacement).toEqual({
         oldStillCurrentBeforePublish: true,
+        sameGenerationRejected: true,
         prematurePublishRejected: true,
         busyPublishRejected: true,
         journalWriterRejected: [true, true],

@@ -321,6 +321,77 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         const last = file === undefined
           ? []
           : [...new Uint8Array(await file.slice(file.size - 3).arrayBuffer())];
+        const filePrototype = Object.getPrototypeOf(restored!.file) as FileSystemFileHandle;
+        const originalCreateWritable = filePrototype.createWritable;
+        const lostAckName = `stream-${crypto.randomUUID()}`;
+        let lostAckInjected = false;
+        filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
+          const writer = await originalCreateWritable.call(this, options);
+          if (this.name !== `${lostAckName}.base.json`) return writer;
+          return {
+            write: (...args: Parameters<typeof writer.write>) => writer.write(...args),
+            close: async () => {
+              await writer.close();
+              lostAckInjected = true;
+              throw new Error("injected lost install close acknowledgement");
+            },
+            abort: () => writer.abort(),
+          } as FileSystemWritableFileStream;
+        };
+        let lostAckSaved: Awaited<ReturnType<typeof saveFixedPersistenceImageStream>>;
+        try {
+          lostAckSaved = await saveFixedPersistenceImageStream(
+            lostAckName, identity, [first], undefined, composition,
+          );
+        } finally {
+          filePrototype.createWritable = originalCreateWritable;
+        }
+        const lostAckRestored = await loadFixedPersistenceImageHandle(lostAckName, identity);
+        const lostAckCommitted = lostAckRestored !== null &&
+          await lostAckRestored.file.isSameEntry(lostAckSaved.file);
+        const rejectedCloseName = `stream-${crypto.randomUUID()}`;
+        filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
+          const writer = await originalCreateWritable.call(this, options);
+          if (this.name !== `${rejectedCloseName}.base.json`) return writer;
+          return {
+            write: (...args: Parameters<typeof writer.write>) => writer.write(...args),
+            close: async () => { throw new Error("injected install close failure"); },
+            abort: () => writer.abort(),
+          } as FileSystemWritableFileStream;
+        };
+        let rejectedCloseFailed = false;
+        try {
+          await saveFixedPersistenceImageStream(
+            rejectedCloseName, identity, [first], undefined, composition,
+          );
+        } catch (error) {
+          rejectedCloseFailed = String(error).includes("injected install close failure");
+        } finally {
+          filePrototype.createWritable = originalCreateWritable;
+        }
+        const rejectedCloseUnpublished = await loadFixedPersistenceImageHandle(rejectedCloseName, identity) === null;
+        const abandonedImages: string[] = [];
+        for await (const [entryName] of (directory as FileSystemDirectoryHandle & {
+          entries(): AsyncIterable<[string, FileSystemHandle]>;
+        }).entries()) {
+          if (entryName.startsWith(`${rejectedCloseName}.`) && entryName.endsWith(".base")) {
+            abandonedImages.push(entryName);
+          }
+        }
+        const retriedInstall = await saveFixedPersistenceImageStream(
+          rejectedCloseName, identity, [first], undefined, composition,
+        );
+        const retriedRestored = await loadFixedPersistenceImageHandle(rejectedCloseName, identity);
+        let abandonedRemoved = abandonedImages.length === 1 && retriedRestored !== null &&
+          await retriedRestored.file.isSameEntry(retriedInstall.file);
+        for (const entryName of abandonedImages) {
+          try {
+            await directory.getFileHandle(entryName);
+            abandonedRemoved = false;
+          } catch (error) {
+            if (!(error instanceof DOMException) || error.name !== "NotFoundError") abandonedRemoved = false;
+          }
+        }
         const damagedFirst = first.slice();
         damagedFirst[0] = 8;
         const damageWriter = await restored!.file.createWritable();
@@ -382,6 +453,11 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           missingJournalRejected,
           legacyJournalName,
           orphanRemoved,
+          lostAckInjected,
+          lostAckCommitted,
+          rejectedCloseFailed,
+          rejectedCloseUnpublished,
+          abandonedRemoved,
           last,
           positionedRead,
           corruptionRejected,
@@ -413,7 +489,12 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         stillPending: true,
         foreignJournalRejected: true,
         missingJournalRejected: true,
-        orphanRemoved: true,
+          orphanRemoved: true,
+          lostAckInjected: true,
+          lostAckCommitted: true,
+          rejectedCloseFailed: true,
+          rejectedCloseUnpublished: true,
+          abandonedRemoved: true,
         last: [1, 2, 3],
         positionedRead: { first: [7, 7, 7], last: [1, 2, 3], firstRead: 3, lastRead: 3 },
         corruptionRejected: true,

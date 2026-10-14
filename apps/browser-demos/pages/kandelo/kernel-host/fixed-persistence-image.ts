@@ -791,7 +791,9 @@ async function writeFixedPersistenceImageStream(
         lazyAssets,
         composition,
       };
-      if (mode === "install") await publishImage(parent, name, identity, result, assertCurrent);
+      if (mode === "install") {
+        await publishImage(parent, name, identity, result, () => { retained = true; }, assertCurrent);
+      }
       retained = true;
       return result;
     } finally {
@@ -805,6 +807,7 @@ async function publishImage(
   name: string,
   identity: string,
   staged: FixedPersistenceImageHandle,
+  retainStagedImage: () => void,
   assertCurrent?: () => void,
 ): Promise<void> {
   const names = fileNames(name);
@@ -814,21 +817,28 @@ async function publishImage(
   const manifest = await manifestForStagedImage(name, identity, staged, false);
   assertCurrent?.();
   const manifestFile = await parent.getFileHandle(names.manifest, { create: true });
+  retainStagedImage();
   let writer: FileSystemWritableFileStream | undefined;
+  let closeAttempted = false;
+  const contents = JSON.stringify(manifest);
   try {
     writer = await manifestFile.createWritable();
-    await writer.write(JSON.stringify(manifest));
+    await writer.write(contents);
     assertCurrent?.();
+    closeAttempted = true;
     await writer.close();
-    try {
-      assertCurrent?.();
-    } catch (error) {
-      await parent.removeEntry(names.manifest).catch(() => {});
-      throw error;
-    }
   } catch (error) {
     await writer?.abort().catch(() => {});
-    await parent.removeEntry(names.manifest).catch(() => {});
+    let storedContents: string | null = null;
+    if (closeAttempted) {
+      try {
+        storedContents = await (await manifestFile.getFile()).text();
+      } catch {}
+      if (storedContents === contents) return;
+    }
+    if (!closeAttempted || storedContents !== null) {
+      await parent.removeEntry(names.manifest).catch(() => {});
+    }
     throw error;
   }
 }
@@ -914,6 +924,10 @@ export async function publishFixedPersistenceReplacement(
   assertCurrent?: () => void,
 ): Promise<void> {
   fileNames(name);
+  if (staged.journalName === previous.journalName ||
+    !/^j-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(staged.journalName)) {
+    throw new Error("experimental persistence replacement source changed");
+  }
   await whenRuntimeIdle(name, () => withIdleBrowserPersistenceJournals(
     previous.journalName,
     staged.journalName,
@@ -943,9 +957,7 @@ export async function publishFixedPersistenceReplacement(
       if (
         current?.manifest.format !== FORMAT_V4 || !current.manifest.journalInitialized ||
         current.manifest.journalName !== previous.journalName ||
-        !(await current.imageFile.isSameEntry(previous.file)) ||
-        staged.journalName === previous.journalName ||
-        !/^j-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(staged.journalName)
+        !(await current.imageFile.isSameEntry(previous.file))
       ) {
         throw new Error("experimental persistence replacement source changed");
       }
