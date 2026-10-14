@@ -312,7 +312,11 @@ that have no names or open handles before a later compaction chooses what to
 retain. Node and all three browser engines run a 32 MiB distinct-block guest
 write with an additional closed orphan block, then verify that the checkpoint
 contains only the 8,192 live blocks and the orphan stays absent after restart.
-The live-inode filter uses a temporary
+Node and all three browser engines also hold an unlinked file descriptor open
+through the first live compaction: its 4 KiB block remains in the checkpoint
+and readable through the descriptor. After the descriptor closes, a second
+live compaction drops that block; reboot keeps the orphan absent and all
+8,192 named-file blocks readable. The live-inode filter uses a temporary
 sorted vector proportional to resident inodes, so large-file-count memory and
 handoff pause still need measurement. General POSIX replay still needs broader
 conformance of metadata, open-unlinked lifetime, and namespace edge cases.
