@@ -177,6 +177,17 @@ can carry tombstones through two indexed generations, while fixed-overwrite
 mounts continue to reject them. This is groundwork only: the fixed-overwrite
 mount still uses block-only replay, and no persistent namespace mutation is
 enabled yet.
+The generic journal also has a file zero-fence record (key kind 5, an
+inclusive starting block). A shrink atomically records the new size and
+fence, preserving the boundary block's prefix and zeroing its suffix. Later
+growth never exposes base bytes or older overlay blocks beyond that fence;
+later writes can replace individual zeroed blocks. Indexed replay invalidates
+only pre-fence checkpoint blocks, and compaction omits them while retaining
+newer replacements. The retained base fence is the minimum cutoff across
+shrinks, so repeated shrink/grow cycles cannot resurrect old base data.
+Tests exercise an 8 GiB logical base without allocating it and two indexed
+metadata compactions. This is not connected to rootfs `ftruncate` yet;
+fixed-overwrite mounts reject the metadata record.
 
 General POSIX replay then needs an overlay-backed regular-file inode kind,
 not `Regular(Vec<u8>)`, so newly created and grown files also remain larger
