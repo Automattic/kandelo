@@ -192,6 +192,12 @@ shrinks, so repeated shrink/grow cycles cannot resurrect old base data.
 Tests exercise an 8 GiB logical base without allocating it and two indexed
 metadata compactions. This is not connected to rootfs `ftruncate` yet;
 fixed-overwrite mounts reject the metadata record.
+The generic journal can also buffer growing and sparse writes with the same
+64-block dirty limit. It tracks at most 64 pending file sizes; eviction
+commits a file's size with any of its evicted blocks, so a crash cannot leave
+a committed block hidden past EOF to reappear on later growth. `sync` flushes
+remaining blocks and sizes together. This is a journal-level API, not yet a
+guest-visible growing-file mount.
 
 General POSIX replay then needs an overlay-backed regular-file inode kind,
 not `Regular(Vec<u8>)`, so newly created and grown files also remain larger
