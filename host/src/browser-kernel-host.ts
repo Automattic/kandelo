@@ -57,6 +57,7 @@ import {
   claimBrowserPersistenceComputerLease,
   type BrowserPersistenceComputerLease,
 } from "./browser-persistence-computer-lease";
+import { browserPersistenceJournalLockName } from "./browser-persistence-journal-lease";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
@@ -334,7 +335,7 @@ async function acquirePersistentJournalLease(name: string): Promise<() => Promis
     signalFailed = reject;
   });
   const holding = navigator.locks.request(
-    `kandelo-rootfs-journal:${name}`,
+    browserPersistenceJournalLockName(name),
     { mode: "exclusive", ifAvailable: true },
     async (lock) => {
       if (lock === null) throw new Error("browser rootfs persistence journal is already open");
