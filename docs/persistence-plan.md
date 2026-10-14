@@ -87,3 +87,9 @@ its journal is rejected, boot tries the previous valid slot and then the
 legacy journal. If generation files exist without any valid journal, boot
 refuses to create an empty replacement. Boot-time handoff writes these slots;
 live compaction does not.
+
+Recovery truncates a torn append shorter than the minimum complete transaction,
+including a partially written transaction header. The writeback test exercises
+every byte offset of a torn 4 KiB block transaction; Node and browser tests
+also reopen a journal with a torn header. This does not yet cover every host
+write and flush failure point, so the dirty-cache milestone remains open.

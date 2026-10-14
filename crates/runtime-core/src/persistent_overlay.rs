@@ -188,7 +188,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         let size = storage.len()?;
         while end < size {
             let remaining = size - end;
-            if remaining < TRANSACTION_HEADER_BYTES as u64 {
+            if remaining < (TRANSACTION_HEADER_BYTES + TRANSACTION_TRAILER_BYTES) as u64 {
                 break;
             }
             let mut header = [0u8; TRANSACTION_HEADER_BYTES];
@@ -820,6 +820,7 @@ mod tests {
         flushes: usize,
         fail_flush: bool,
         fail_after_flushes: Option<usize>,
+        fail_write_after_bytes: Option<usize>,
     }
 
     impl OverlayStorage for MemoryStorage {
@@ -836,10 +837,15 @@ mod tests {
 
         fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
             let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
-            let end = start.checked_add(src.len()).ok_or(Errno::EIO)?;
+            let written = self.fail_write_after_bytes.unwrap_or(src.len()).min(src.len());
+            let end = start.checked_add(written).ok_or(Errno::EIO)?;
             self.bytes.resize(end, 0);
-            self.bytes[start..end].copy_from_slice(src);
-            Ok(())
+            self.bytes[start..end].copy_from_slice(&src[..written]);
+            if written < src.len() {
+                Err(Errno::EIO)
+            } else {
+                Ok(())
+            }
         }
 
         fn flush(&mut self) -> Result<(), Errno> {
@@ -1493,6 +1499,69 @@ mod tests {
             }),
             Err(Errno::EIO)
         );
+    }
+
+    #[test]
+    fn every_torn_writeback_offset_recovers_the_previous_durable_block() {
+        let digest = [29; 32];
+        let mut initial = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        initial
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                value: vec![b'a'; FILE_BLOCK_BYTES],
+            }])
+            .unwrap();
+        let durable = initial.into_storage().bytes;
+        let transaction_length = encode_transaction(
+            2,
+            &[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                value: vec![b'b'; FILE_BLOCK_BYTES],
+            }],
+        )
+        .unwrap()
+        .len();
+        for cut in 0..transaction_length {
+            let mut journal = OverlayJournal::open(
+                MemoryStorage {
+                    bytes: durable.clone(),
+                    fail_write_after_bytes: Some(cut),
+                    ..MemoryStorage::default()
+                },
+                digest,
+            )
+            .unwrap();
+            journal
+                .write_fixed_file_at_buffered(
+                    7,
+                    FILE_BLOCK_BYTES as u64,
+                    0,
+                    &[b'b'; FILE_BLOCK_BYTES],
+                    |_, _| panic!("journaled block needs no base read"),
+                )
+                .unwrap();
+            assert_eq!(journal.sync(), Err(Errno::EIO), "cut {cut}");
+            assert_eq!(journal.dirty_blocks.len(), 1, "cut {cut}");
+            let mut visible = [0];
+            assert_eq!(
+                journal.read_file_at(7, FILE_BLOCK_BYTES as u64, 0, &mut visible, |_, _| {
+                    panic!("dirty block must satisfy read")
+                }),
+                Ok(1)
+            );
+            assert_eq!(visible, [b'b'], "cut {cut}");
+            let mut storage = journal.into_storage();
+            storage.fail_write_after_bytes = None;
+            let mut recovered = OverlayJournal::open(storage, digest).unwrap();
+            assert_eq!(recovered.storage.bytes, durable, "cut {cut}");
+            assert_eq!(
+                recovered.read_file_at(7, FILE_BLOCK_BYTES as u64, 0, &mut visible, |_, _| {
+                    panic!("old block must remain journaled")
+                }),
+                Ok(1)
+            );
+            assert_eq!(visible, [b'a'], "cut {cut}");
+        }
     }
 
     #[test]

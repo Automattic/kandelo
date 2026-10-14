@@ -13,7 +13,7 @@ import { writeOverlayGenerationSeal } from "../src/vfs/overlay-generation-seal";
 const directKernelPath = join(import.meta.dirname, "../../target/wasm32-unknown-unknown/release/kandelo_kernel.wasm");
 const directImageModulePath = join(import.meta.dirname, "../../target/wasm32-unknown-unknown/release/kandelo_image_module.wasm");
 const publishedImageModulePath = join(import.meta.dirname, "../../local-binaries/kandelo_image_module32.wasm");
-const kernelPath = existsSync(directKernelPath) ? directKernelPath : tryResolveBinary("kernel.wasm");
+const kernelPath = tryResolveBinary("kernel.wasm") ?? (existsSync(directKernelPath) ? directKernelPath : null);
 const imageModulePath = [publishedImageModulePath, directImageModulePath].find((path) => {
   if (!existsSync(path)) return false;
   return WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(path))).length === 0;
@@ -231,7 +231,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         await recovered.destroy();
       }
       const committed = readFileSync(path);
-      appendFileSync(path, Buffer.from("KTXN"));
+      appendFileSync(path, Buffer.concat([Buffer.from("KTXN"), Buffer.alloc(20)]));
       const afterTail = await boot(image, path);
       try {
         expect(new TextDecoder().decode((await afterTail.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
