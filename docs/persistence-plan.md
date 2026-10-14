@@ -78,6 +78,12 @@ than silently resetting it. Node exposes the same strict reopen option.
 Chromium, Firefox, and WebKit now exercise a page reload between manifest
 publication and the first kernel boot, followed by a guest write, a ready-state
 transition, and a strict reboot that recovers the write.
+The ready transition also writes and verifies a separate fallback manifest
+before replacing the pending primary manifest. If the primary manifest is
+damaged later, loading the fallback and reopening its journal preserves the
+guest write; if both manifests are damaged, boot fails closed. This does not
+yet recover damaged image bytes or journal contents, nor provide a newer
+base-and-journal replacement generation.
 Direct low-level `BrowserKernel` callers must perform that transition after
 successful initialization and before launching guests; the page boot path does
 it automatically.

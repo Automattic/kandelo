@@ -926,6 +926,51 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         name: result.pendingName,
       });
       expect(readyBoot).toEqual({ ready: true, state: "XYcdefgh" });
+      await page.evaluate(async (name) => {
+        const overlayDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const currentManifest = await overlayDirectory.getFileHandle(`${name}.base.json`);
+        const damagedWriter = await currentManifest.createWritable();
+        await damagedWriter.write("{");
+        await damagedWriter.close();
+      }, result.pendingName);
+      await page.reload();
+      const fallbackBoot = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, name }) => {
+        const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
+        const { BrowserKernel } = await import(browserKernelUrl);
+        const overlayDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const fallback = await loadFixedPersistenceImageHandle(name, "composer stream probe");
+        if (fallback === null) throw new Error("fallback manifest was not retained");
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        let state: string;
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: fallback.file,
+            experimentalFixedPersistenceName: fallback.journalName,
+            requireExistingRootfsPersistence: fallback.journalInitialized,
+          });
+          state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+        } finally {
+          await kernel.destroy();
+        }
+        const previousManifest = await overlayDirectory.getFileHandle(`${name}.previous.base.json`);
+        const previousWriter = await previousManifest.createWritable();
+        await previousWriter.write("{");
+        await previousWriter.close();
+        let bothDamagedRejected = false;
+        try {
+          await loadFixedPersistenceImageHandle(name, "composer stream probe");
+        } catch {
+          bothDamagedRejected = true;
+        }
+        return { fallbackReady: fallback.journalInitialized, state, bothDamagedRejected };
+      }, {
+        persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        name: result.pendingName,
+      });
+      expect(fallbackBoot).toEqual({ fallbackReady: true, state: "XYcdefgh", bothDamagedRejected: true });
     } finally {
       await context.close();
     }
