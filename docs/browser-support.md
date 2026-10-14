@@ -2355,8 +2355,8 @@ at `/candidate-b/`. A completed build is not freely relocatable, and
 
 `./run.sh build-browser [--base /prefix/] [--out DIR]` performs every step
 below for one prefix (default `/`, output `apps/browser-demos/dist`) and
-fails if the output lacks `index.html`, `service-worker.js`, or the VFS
-group, or contains the private product map.
+fails if the output lacks `index.html`, `service-worker.js`, the VFS
+group, or `signalling/piplet.php`, or contains the private product map.
 
 The SourceOnly local DAG described in
 [Package Management](package-management.md#local-dag-build) is the canonical
@@ -2578,8 +2578,13 @@ VITE_KANDELO_SIGNALLING_URL=/custom/piplet.php ./run.sh build-browser
 
 The build forwards this deployment setting into its isolated dev shell.
 The endpoint is embedded in the browser bundle; changing it requires a rebuild.
-Deploy the PHP piplet separately on a PHP-capable server; the static browser
-output does not start or deploy a signalling service.
+`build-browser` includes a copy of the PHP piplet at
+`signalling/piplet.php` in the output directory. Serve that path with
+64-bit PHP 8.3 or newer, and make its directory writable by the PHP server
+user: the piplet stores session state by replacing its own file. Static-only
+hosting cannot execute the included piplet; use a separately hosted PHP
+endpoint and the URL override in that case. Replacing the deployed piplet
+with a fresh build clears its active sessions.
 If the endpoint is unavailable, session creation or joining reports the request
 failure in the panel.
 
