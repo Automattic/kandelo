@@ -41,19 +41,26 @@ async function terminalText(page: Page): Promise<string> {
 }
 
 async function expectBootCount(page: Page, count: number, errors: string[]): Promise<void> {
-  await expect.poll(async () => {
-    if (errors.length > 0) throw new Error(errors.join("\n"));
-    const viteError = page.locator("vite-error-overlay");
-    if (await viteError.count()) {
-      throw new Error(`Vite rejected the page: ${await viteError.first().innerText()}`);
-    }
-    const failure = await page.locator('.kdock-status-text[data-status="error"]').count();
-    if (failure > 0) {
-      const lines = await page.locator(".ksys-line").allInnerTexts();
-      throw new Error(`machine boot failed:\n${lines.join("\n")}`);
-    }
-    return terminalText(page);
-  }, { timeout: 120_000 }).toContain(`PERSISTENCE_BOOT_${count}`);
+  try {
+    await expect.poll(async () => {
+      if (errors.length > 0) throw new Error(errors.join("\n"));
+      const viteError = page.locator("vite-error-overlay");
+      if (await viteError.count()) {
+        throw new Error(`Vite rejected the page: ${await viteError.first().innerText()}`);
+      }
+      const failure = await page.locator('.kdock-status-text[data-status="error"]').count();
+      if (failure > 0) {
+        const lines = await page.locator(".ksys-line").allInnerTexts();
+        throw new Error(`machine boot failed:\n${lines.join("\n")}`);
+      }
+      return terminalText(page);
+    }, { timeout: 120_000 }).toContain(`PERSISTENCE_BOOT_${count}`);
+  } catch (error) {
+    await page.getByRole("button", { name: "Internals" }).click().catch(() => {});
+    const lines = await page.locator(".ksys-line").allInnerTexts();
+    const status = await page.locator(".kdock-status-text").allInnerTexts();
+    throw new Error(`${String(error)}\nstatus: ${status.join(" | ")}\nboot log:\n${lines.join("\n")}`);
+  }
 }
 
 test("Kandelo page restores a guest-written computer after reload", async ({ playwright, browserName, baseURL }, testInfo) => {
