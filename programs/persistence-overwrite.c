@@ -1,8 +1,11 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -10,6 +13,28 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && strcmp(argv[1], "create-socket") == 0) {
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) return 145;
+        struct sockaddr_un address = {0};
+        address.sun_family = AF_UNIX;
+        strcpy(address.sun_path, "/persistent-socket");
+        socklen_t length = offsetof(struct sockaddr_un, sun_path) + strlen(address.sun_path) + 1;
+        if (bind(fd, (const struct sockaddr *)&address, length) != 0) return 146;
+        return close(fd) == 0 ? 0 : 147;
+    }
+    if (argc >= 2 && strcmp(argv[1], "verify-socket") == 0) {
+        struct stat metadata;
+        if (lstat("/persistent-socket", &metadata) != 0 || !S_ISSOCK(metadata.st_mode)) return 148;
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) return 149;
+        struct sockaddr_un address = {0};
+        address.sun_family = AF_UNIX;
+        strcpy(address.sun_path, "/persistent-socket");
+        socklen_t length = offsetof(struct sockaddr_un, sun_path) + strlen(address.sun_path) + 1;
+        if (connect(fd, (const struct sockaddr *)&address, length) != -1 || errno != ECONNREFUSED) return 150;
+        return close(fd) == 0 ? 0 : 151;
+    }
     if (argc >= 2 && strcmp(argv[1], "create-fifo") == 0) {
         return mkfifo("/persistent-fifo", 0640) == 0 ? 0 : 142;
     }

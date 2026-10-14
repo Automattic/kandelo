@@ -112,6 +112,8 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         await first.writeFileToVfs("/created", encoder.encode("created"));
         const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "create-fifo"]);
         expect(await exit).toBe(0);
+        const socket = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "create-socket"]);
+        expect(await socket.exit).toBe(0);
       } finally {
         await first.destroy();
       }
@@ -139,6 +141,8 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         expect(new TextDecoder().decode((await withoutJournal.readFileFromVfs("/created"))!)).toBe("created");
         const { exit } = await withoutJournal.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-fifo"]);
         expect(await exit).toBe(0);
+        const socket = await withoutJournal.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-socket"]);
+        expect(await socket.exit).toBe(0);
       } finally {
         await withoutJournal.destroy();
       }
@@ -152,7 +156,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     const path = join(directory, "machine.journal");
     try {
       const image = await makeImage("abcdefgh");
-      for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed", "set-metadata", "verify-metadata", "replace-open", "verify-replacement", "create-fifo", "verify-fifo"] as const) {
+      for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed", "set-metadata", "verify-metadata", "replace-open", "verify-replacement", "create-fifo", "verify-fifo", "create-socket", "verify-socket"] as const) {
         const host = await boot(image, path, true);
         try {
           const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
