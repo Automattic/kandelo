@@ -115,8 +115,8 @@ export async function enableBestOverlayGeneration(
       throw new NoValidOverlayGenerationError();
     }
     try {
-      if (requireExisting && legacy.len() === 0) {
-        throw new Error("persistent overlay journal is empty; refusing to reset the computer");
+      if ((foundGenerationFile || requireExisting) && legacy.len() === 0) {
+        throw new NoValidOverlayGenerationError();
       }
       enable(legacy);
       return { journal: legacy, slot: "legacy", generation: 0, sealedLength: 0 };
