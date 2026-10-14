@@ -154,6 +154,12 @@ failure releases the lock after worker termination; a missing destroy response
 or failed termination retains it. A valid response can acknowledge storage
 closure even when process-generation detach or persistence sync reported an
 error; those errors remain visible diagnostics, not claims of durability.
+Node and browser kernel hosts retain an acknowledged persistence shutdown
+sync failure for callers after teardown. The page latches that failure and
+refuses same-page persistent restarts, including superseded boots, instead of
+silently starting from potentially older journal contents; a reload is needed
+to attempt recovery. Browser quota-failure tests exercise this shutdown result
+in fixed and resizable modes on Chromium, Firefox, and WebKit.
 Chromium, Firefox, and WebKit exercise a worker that drops destroy requests:
 the old tab refuses same-journal boots after the timeout, and a new tab can
 reopen the journal after the old tab closes.

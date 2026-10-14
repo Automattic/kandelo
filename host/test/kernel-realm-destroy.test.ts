@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { NodeKernelHost } from "../src/node-kernel-host";
 import {
   awaitGracefulKernelRealmDestroy,
   awaitGracefulKernelRealmDestroyOutcome,
@@ -27,5 +28,29 @@ describe("kernel realm destroy result", () => {
     const invalid = await awaitGracefulKernelRealmDestroyOutcome(() => Promise.resolve({}), 1000);
     expect(invalid.result).toBeNull();
     expect(invalid.failure).toContain("invalid destroy result");
+  });
+
+  it("keeps a Node shutdown sync failure available after teardown", async () => {
+    const host = new NodeKernelHost();
+    const internal = host as unknown as {
+      workerStarted: boolean;
+      initialized: boolean;
+      request: () => Promise<unknown>;
+      terminateWorker: () => Promise<number>;
+    };
+    internal.workerStarted = true;
+    internal.initialized = true;
+    internal.request = async () => kernelRealmDestroyResult(true, "injected sync failure");
+    internal.terminateWorker = async () => {
+      internal.workerStarted = false;
+      return 0;
+    };
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await host.destroy();
+      expect(host.getPersistenceShutdownFailure()).toBe("injected sync failure");
+    } finally {
+      warning.mockRestore();
+    }
   });
 });

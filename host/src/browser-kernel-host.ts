@@ -358,6 +358,7 @@ export class BrowserKernel {
   private workerStarted = false;
   private workerStarting = false;
   private persistentJournalQuiescenceUnproven = false;
+  private persistenceShutdownFailure: string | null = null;
   private releasePersistentJournalLease: (() => Promise<void>) | null = null;
   private releasePersistentComputerLease: (() => Promise<void>) | null = null;
   private initialized = false;
@@ -704,6 +705,7 @@ export class BrowserKernel {
     this.workerStarting = false;
     this.releasePersistentJournalLease = releaseJournalLease;
     this.releasePersistentComputerLease = releaseComputerLease;
+    this.persistenceShutdownFailure = null;
     this.workerStarted = true;
 
     this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
@@ -1866,6 +1868,10 @@ export class BrowserKernel {
     return this.workerStarted || this.persistentJournalQuiescenceUnproven;
   }
 
+  getPersistenceShutdownFailure(): string | null {
+    return this.persistenceShutdownFailure;
+  }
+
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
     // Remove input-source DOM listeners regardless of worker state.
@@ -1884,7 +1890,10 @@ export class BrowserKernel {
         DESTROY_REQUEST_TIMEOUT_MS,
       );
       gracefulDetachFailure = outcome.failure;
-      if (outcome.result !== null) this.persistentJournalQuiescenceUnproven = false;
+      if (outcome.result !== null) {
+        this.persistentJournalQuiescenceUnproven = false;
+        this.persistenceShutdownFailure = outcome.result.persistenceSyncFailure ?? null;
+      }
     }
     this.initialized = false;
     await this.pcmDriver?.settleOutputPipeline().catch(() => {});

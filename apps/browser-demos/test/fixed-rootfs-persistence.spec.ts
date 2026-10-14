@@ -1177,6 +1177,16 @@ for (const { mode, fault } of quotaScenarios) {
           dirtyPrefix: true,
           unwrittenTail: true,
         });
+        if (fault === "evict") {
+          const shutdownFailure = await page.evaluate(async () => {
+            const kernel = (window as unknown as {
+              crashKernel: { destroy(): Promise<void>; getPersistenceShutdownFailure(): string | null };
+            }).crashKernel;
+            await kernel.destroy();
+            return kernel.getPersistenceShutdownFailure();
+          });
+          expect(shutdownFailure).toContain("rootfs persistence shutdown sync failed");
+        }
         await page.reload();
         const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name, mode, fault }) => {
           const { BrowserKernel } = await import(moduleUrl);

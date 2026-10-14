@@ -1302,6 +1302,7 @@ describe("BrowserKernel", () => {
     });
     await destroyPromise;
     expect(w.terminated).toBe(true);
+    expect(kernel.getPersistenceShutdownFailure()).toBeNull();
   });
 
   it("uses worker-realm termination as the final release fallback", async () => {
@@ -1670,6 +1671,7 @@ describe("BrowserKernel", () => {
     }));
     await kernel.destroy();
     expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(false);
+    expect(kernel.getPersistenceShutdownFailure()).toBe("injected sync failure");
     expect(held.size).toBe(0);
   });
 
