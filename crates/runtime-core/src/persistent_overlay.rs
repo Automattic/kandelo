@@ -1333,6 +1333,94 @@ mod tests {
     }
 
     #[test]
+    fn indexed_recovery_rejects_corrupt_prefix_or_tail_and_truncates_torn_append() {
+        let digest = [34; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        journal
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                value: vec![b'a'; FILE_BLOCK_BYTES],
+            }])
+            .unwrap();
+        let block_offset = journal.state.blocks[&(7, 0)].unwrap().offset as usize;
+        let checkpoint_end = journal.end;
+        let checkpoint_bytes = journal
+            .checkpoint_fixed_blocks_into(MemoryStorage::default())
+            .unwrap()
+            .into_storage()
+            .bytes;
+        let durable = journal.into_storage().bytes;
+        let tail = encode_transaction(
+            2,
+            &[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                value: vec![b'b'; FILE_BLOCK_BYTES],
+            }],
+        )
+        .unwrap();
+        let mut damaged_prefix = durable.clone();
+        damaged_prefix[block_offset] ^= 1;
+        assert!(matches!(
+            OverlayJournal::open_with_checkpoint(
+                MemoryStorage {
+                    bytes: damaged_prefix,
+                    ..MemoryStorage::default()
+                },
+                MemoryStorage {
+                    bytes: checkpoint_bytes.clone(),
+                    ..MemoryStorage::default()
+                },
+                digest,
+                checkpoint_end,
+            ),
+            Err(Errno::EIO)
+        ));
+        let mut torn = durable.clone();
+        torn.extend_from_slice(&tail[..24]);
+        let mut recovered = OverlayJournal::open_with_checkpoint(
+            MemoryStorage {
+                bytes: torn,
+                ..MemoryStorage::default()
+            },
+            MemoryStorage {
+                bytes: checkpoint_bytes.clone(),
+                ..MemoryStorage::default()
+            },
+            digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        assert_eq!(recovered.storage.bytes, durable);
+        let mut byte = [0];
+        assert_eq!(
+            recovered.read_file_at(7, FILE_BLOCK_BYTES as u64, 0, &mut byte, |_, _| {
+                panic!("checkpoint must satisfy read")
+            }),
+            Ok(1)
+        );
+        assert_eq!(byte, [b'a']);
+        let mut damaged_tail = durable;
+        damaged_tail.extend_from_slice(&tail);
+        let last = damaged_tail.len() - 37;
+        damaged_tail[last] ^= 1;
+        assert!(matches!(
+            OverlayJournal::open_with_checkpoint(
+                MemoryStorage {
+                    bytes: damaged_tail,
+                    ..MemoryStorage::default()
+                },
+                MemoryStorage {
+                    bytes: checkpoint_bytes,
+                    ..MemoryStorage::default()
+                },
+                digest,
+                checkpoint_end,
+            ),
+            Err(Errno::EIO)
+        ));
+    }
+
+    #[test]
     fn compaction_refuses_corrupt_source_or_existing_target() {
         let mut journal = OverlayJournal::open(MemoryStorage::default(), [25; 32]).unwrap();
         journal
