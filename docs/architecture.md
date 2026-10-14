@@ -2161,6 +2161,8 @@ a 64-block (256 KiB) dirty cache and are immediately visible to reads. Dirty
 eviction, `fsync`, `fdatasync`, and graceful destroy commit and flush these
 blocks. A crash may lose writes without a successful flush; a failed flush
 reports an error and poisons further writes rather than claiming durability.
+One guest write spanning more than 64 blocks is processed in cache-sized
+chunks; failure after earlier chunks returns their short byte count.
 OPFS quota exhaustion reports `ENOSPC` at the flush or eviction that reaches
 storage, not necessarily at the earlier buffered write.
 The read cache is separately bounded to 64 blocks. Creation, deletion, rename,
