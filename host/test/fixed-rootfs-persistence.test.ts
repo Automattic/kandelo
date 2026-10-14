@@ -80,7 +80,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     const path = join(directory, "machine.journal");
     try {
       const image = await makeImage("abcdefgh");
-      for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed", "set-metadata", "verify-metadata"] as const) {
+      for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink", "create-file", "verify-created", "verify-created-shrunk", "verify-created-link", "create-symlink", "verify-symlink", "verify-symlink-moved", "create-tree", "verify-tree", "verify-tree-moved", "verify-tree-removed", "set-metadata", "verify-metadata", "replace-open", "verify-replacement"] as const) {
         const host = await boot(image, path, true);
         try {
           const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
@@ -93,6 +93,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
           await expect(boot(image, path)).rejects.toThrow(/errno 5/);
         }
       }
+      expect(readFileSync(path).byteLength).toBeLessThan(64 * 1024);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
