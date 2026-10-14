@@ -17,6 +17,14 @@ export interface PersistentOverlayStorage {
   close(): void;
 }
 
+export class OverlayStorageUnexpectedEofError extends Error {
+  readonly code = "EIO";
+
+  constructor() {
+    super("EIO: persistent overlay storage reached unexpected end of file");
+  }
+}
+
 const MAX_IO_BYTES = 1024 * 1024;
 
 function storageError(code: "EBADF" | "EIO" | "ENOSPC" | "EOVERFLOW"): Error & { code: string } {
@@ -77,7 +85,8 @@ export class OverlayStorageFile implements PersistentOverlayStorage {
     while (done < destination.byteLength) {
       const chunk = destination.subarray(done, done + MAX_IO_BYTES);
       const read = this.backend.read(handle, chunk, start + done, chunk.byteLength);
-      if (!Number.isInteger(read) || read <= 0 || read > chunk.byteLength) {
+      if (read === 0) throw new OverlayStorageUnexpectedEofError();
+      if (!Number.isInteger(read) || read < 0 || read > chunk.byteLength) {
         throw storageError("EIO");
       }
       done += read;
@@ -168,7 +177,8 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
     while (done < destination.byteLength) {
       const chunk = destination.subarray(done, done + MAX_IO_BYTES);
       const read = handle.read(chunk, { at: start + done });
-      if (!Number.isInteger(read) || read <= 0 || read > chunk.byteLength) throw storageError("EIO");
+      if (read === 0) throw new OverlayStorageUnexpectedEofError();
+      if (!Number.isInteger(read) || read < 0 || read > chunk.byteLength) throw storageError("EIO");
       done += read;
     }
   }

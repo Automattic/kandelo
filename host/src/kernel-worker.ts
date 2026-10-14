@@ -91,7 +91,7 @@ import {
   type PreparedExecKernel,
 } from "./exec-target";
 import type { DeferredFetchSettled } from "./vfs/rootfs-lazy-archives";
-import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
+import { OverlayStorageUnexpectedEofError, type PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { WasmModuleCache } from "./wasm-module-cache";
 import {
   buildRawHttpRequest,
@@ -5555,8 +5555,29 @@ export class CentralizedKernelWorker {
     if (index !== undefined && (!Number.isSafeInteger(checkpointEnd) || checkpointEnd! < 72)) {
       throw new Error("indexed rootfs persistence requires a valid checkpoint boundary");
     }
-    this.#kernel.setPersistentOverlayStorage(storage);
-    this.#kernel.setPersistentOverlayTargetStorage(index ?? null);
+    const observed = { failure: null as { cause: unknown } | null };
+    const monitor = (backing: PersistentOverlayStorage): PersistentOverlayStorage => {
+      const call = <Result>(operation: () => Result): Result => {
+        try {
+          return operation();
+        } catch (error) {
+          if (!(error instanceof OverlayStorageUnexpectedEofError)) {
+            observed.failure ??= { cause: error };
+          }
+          throw error;
+        }
+      };
+      return {
+        len: () => call(() => backing.len()),
+        readExactAt: (offset, destination) => call(() => backing.readExactAt(offset, destination)),
+        writeAllAt: (offset, source) => call(() => backing.writeAllAt(offset, source)),
+        flush: () => call(() => backing.flush()),
+        truncate: (length) => call(() => backing.truncate(length)),
+        close: () => backing.close(),
+      };
+    };
+    this.#kernel.setPersistentOverlayStorage(monitor(storage));
+    this.#kernel.setPersistentOverlayTargetStorage(index === undefined ? null : monitor(index));
     this.#kernel.setPersistentOverlayCompactionStorage(null);
     let status: number | undefined;
     try {
@@ -5580,8 +5601,16 @@ export class CentralizedKernelWorker {
           : enable(lengthLo, lengthHi, checkpointEnd! >>> 0, Math.floor(checkpointEnd! / 0x1_0000_0000));
         return undefined;
       });
+      if (observed.failure !== null) {
+        throw new Error(
+          `persistent overlay host storage failed during kernel initialization: ${String(observed.failure.cause)}`,
+          observed.failure,
+        );
+      }
       if (status === undefined) throw new Error("kernel did not report rootfs persistence status");
       if (status !== 0) throw new RejectedOverlayGenerationError(resizable ? "resizable" : "fixed", -status);
+      this.#kernel.setPersistentOverlayStorage(storage);
+      this.#kernel.setPersistentOverlayTargetStorage(index ?? null);
       this.#persistentOverlayImportSlot = 0;
       this.#persistentOverlayIndexSlot = index === undefined ? null : 1;
       this.#persistentOverlayActiveStorage = storage;

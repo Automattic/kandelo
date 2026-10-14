@@ -623,6 +623,7 @@ test(`browser ${mode} mode rejects a semantically invalid indexed generation and
   const image = await filesystem.saveImage();
   const kernelUrl = new URL("/fixed-index-kernel.wasm", baseURL).href;
   const imageUrl = new URL("/fixed-index-image.vfs", baseURL).href;
+  const readFaultWorkerPath = resolve(testDirectory, "fixtures/opfs-overlay-boot-read-failure-worker.ts");
   const projectUse = testInfo.project.use as {
     channel?: string;
     launchOptions?: Record<string, unknown>;
@@ -642,7 +643,7 @@ test(`browser ${mode} mode rejects a semantically invalid indexed generation and
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, mode }) => {
+      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, readFaultWorkerUrl, mode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
         const name = `${mode}-index-${crypto.randomUUID()}`;
@@ -727,6 +728,28 @@ test(`browser ${mode} mode rejects a semantically invalid indexed generation and
           }
         };
         const newest = await readState();
+        const OriginalWorker = Worker;
+        let redirected = 0;
+        globalThis.Worker = class extends OriginalWorker {
+          constructor(url: string | URL, options?: WorkerOptions) {
+            if (String(url).includes("browser-kernel-worker-entry")) {
+              const faultUrl = new URL(readFaultWorkerUrl);
+              faultUrl.searchParams.set("name", name);
+              redirected++;
+              super(faultUrl, options);
+            } else {
+              super(url, options);
+            }
+          }
+        };
+        let readFailed = false;
+        try {
+          await readState();
+        } catch (error) {
+          readFailed = String(error).includes("persistent overlay host storage failed during kernel initialization");
+        } finally {
+          globalThis.Worker = OriginalWorker;
+        }
         await writeBytes("g1.index", Uint8Array.of(0, 2, 3));
         const fallback = await readState();
         await writeBytes("g0.seal", Uint8Array.of(0));
@@ -736,9 +759,15 @@ test(`browser ${mode} mode rejects a semantically invalid indexed generation and
         } catch (error) {
           refused = String(error).includes(`kernel refused ${mode} rootfs persistence`);
         }
-        return { newest, fallback, refused };
-      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl, mode });
-      expect(result).toEqual({ newest: "abcdefgh", fallback: "abcdefgh", refused: true });
+        return { newest, readFailed, redirected, fallback, refused };
+      }, {
+        moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        imageUrl,
+        readFaultWorkerUrl: new URL(`/@fs/${readFaultWorkerPath}`, baseURL).href,
+        mode,
+      });
+      expect(result).toEqual({ newest: "abcdefgh", readFailed: true, redirected: 1, fallback: "abcdefgh", refused: true });
     } finally {
       await context.close();
     }
