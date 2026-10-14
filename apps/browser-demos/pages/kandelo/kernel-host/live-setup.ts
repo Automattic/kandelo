@@ -2,6 +2,7 @@ import { observePreviewRequest } from "../panes/preview-progress";
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { isNoValidOverlayGenerationError } from "@host/vfs/overlay-generation-selection";
 import { setWebMcpSession, type WebMcpIdentity } from "../webmcp/runtime";
 import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
 import { ABSOLUTE_POINTER_EXTENT } from "@host/input/input-source";
@@ -11,7 +12,9 @@ import {
   assertFixedPersistenceBootAllowed,
   loadFixedPersistenceImage,
   loadFixedPersistenceImageHandle,
+  loadPreviousFixedPersistenceImageHandle,
   markFixedPersistenceJournalInitialized,
+  type FixedPersistenceImageHandle,
 } from "./fixed-persistence-image";
 import {
   initialDestroyProgress,
@@ -290,6 +293,12 @@ function dinitContainerArgv(target: string): string[] {
 class BootSuperseded extends Error {
   constructor() {
     super("boot superseded");
+  }
+}
+
+class RetryPreviousPersistenceGeneration extends Error {
+  constructor(readonly previous: FixedPersistenceImageHandle) {
+    super("retrying the prior persistent image generation");
   }
 }
 
@@ -769,16 +778,26 @@ export async function createLiveHost(
     const bootStartedAt = performance.now();
 
     try {
-      const kernel = await bootProfile(
-        h,
-        profile,
-        descriptor,
-        bootStartedAt,
-        () => seq === bootSeq,
-        requireServiceWorker,
-        legacyScriptIgnored,
-        opts.experimentalPersistenceName ?? undefined,
+      const boot = (preferred?: FixedPersistenceImageHandle) => bootProfile(
+        h, profile, descriptor, bootStartedAt, () => seq === bootSeq,
+        requireServiceWorker, legacyScriptIgnored,
+        opts.experimentalPersistenceName ?? undefined, preferred,
       );
+      let kernel: BrowserKernel;
+      try {
+        kernel = await boot();
+      } catch (error) {
+        if (!(error instanceof RetryPreviousPersistenceGeneration) || seq !== bootSeq) throw error;
+        kernel = await boot(error.previous);
+        if (seq === bootSeq) {
+          h.pushDmesg({
+            t: bootElapsedMs(bootStartedAt),
+            level: "warn",
+            facility: "kandelo",
+            msg: "new persistent journal generation is invalid; booted the prior verified image",
+          });
+        }
+      }
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
         return;
@@ -1186,6 +1205,7 @@ async function bootProfile(
   ) => Promise<ServiceWorker>,
   legacyScriptIgnored = false,
   experimentalPersistenceName?: string,
+  preferredPersistenceImage?: FixedPersistenceImageHandle,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1308,7 +1328,7 @@ async function bootProfile(
     };
   const restoredHandle = persistence === null
     ? null
-    : await loadFixedPersistenceImageHandle(persistence.name, persistence.identity);
+    : preferredPersistenceImage ?? await loadFixedPersistenceImageHandle(persistence.name, persistence.identity);
   const restoredImage = persistence === null || restoredHandle !== null
     ? null
     : await loadFixedPersistenceImage(persistence.name, persistence.identity);
@@ -1573,18 +1593,29 @@ async function bootProfile(
     // not accept (the lazy URL table above) is a type error, never a field the
     // host silently drops.
     if (opfsImage !== undefined && opfsImage !== null && persistence !== null) {
-      await kernel.initFromOpfsImage({
-        kernelWasm: kernelBytes,
-        vfsImageFile: opfsImage.file,
-        integrity: {
-          length: opfsImage.length,
-          chunkBytes: 1024 * 1024,
-          chunkSha256: opfsImage.chunkSha256,
-        },
-        lazyUrlMap,
-        experimentalFixedPersistenceName: opfsImage.journalName,
-        requireExistingRootfsPersistence: opfsImage.journalInitialized,
-      });
+      try {
+        await kernel.initFromOpfsImage({
+          kernelWasm: kernelBytes,
+          vfsImageFile: opfsImage.file,
+          integrity: {
+            length: opfsImage.length,
+            chunkBytes: 1024 * 1024,
+            chunkSha256: opfsImage.chunkSha256,
+          },
+          lazyUrlMap,
+          experimentalFixedPersistenceName: opfsImage.journalName,
+          requireExistingRootfsPersistence: opfsImage.journalInitialized,
+        });
+      } catch (error) {
+        if (isNoValidOverlayGenerationError(error) &&
+          preferredPersistenceImage === undefined && restoredHandle !== null) {
+          const previous = await loadPreviousFixedPersistenceImageHandle(
+            persistence.name, persistence.identity, restoredHandle,
+          );
+          if (previous !== null) throw new RetryPreviousPersistenceGeneration(previous);
+        }
+        throw error;
+      }
       if (!opfsImage.journalInitialized) {
         await markFixedPersistenceJournalInitialized(persistence.name, persistence.identity, opfsImage);
       }

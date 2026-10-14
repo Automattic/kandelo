@@ -57,7 +57,7 @@ import { BrowserTimeProvider } from "./vfs/time";
 import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
 import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor } from "./vfs/overlay-generation-selection";
+import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -4605,7 +4605,13 @@ sw.onmessage = (e: MessageEvent) => {
         initReady = false;
         initFailure = error;
         console.error("[kernel-worker] init failed:", err);
-        post({ type: "init_error", error });
+        post({
+          type: "init_error",
+          error,
+          ...(err instanceof NoValidOverlayGenerationError
+            ? { recovery: "no-valid-overlay-generation" as const }
+            : {}),
+        });
       });
       break;
     case "read_owned_job":

@@ -99,6 +99,16 @@ yet orchestrate in-place replacement, abandoned staged generations are not
 reclaimed, and selecting a replaced generation adds a full-image preflight
 read before the kernel's own verification. This remains a prototype, not a
 general atomic generation handoff.
+If the selected journal generation disappears or every sealed slot is invalid
+after manifest selection, Node and browser workers now report that specific
+no-valid-generation condition through a typed initialization error. The page
+can retry boot with the verified prior image and its own composition rather
+than keeping machine settings from the failed image. Other I/O errors and
+kernel `EIO` refusals still fail closed; this is not recovery from arbitrary
+journal-record corruption. Focused Node and three-engine browser tests cover
+the typed error and prior-candidate boot. A full page retry race test is
+authored but remains unverified here because this workspace has no complete
+browser package artifact tier; it is gated on those artifacts.
 Direct low-level `BrowserKernel` callers must perform that transition after
 successful initialization and before launching guests; the page boot path does
 it automatically.
@@ -368,7 +378,8 @@ image, verify its bytes in bounded 1 MiB reads against the SHA-256 hashes of
 emitted chunks, and return the chunk integrity descriptor. Browser boot with
 that descriptor accepts the snapshot and rejects a later byte-damaged file on
 Chromium, Firefox, and WebKit. The browser can publish such a snapshot as a
-new computer: it checks each source chunk against the descriptor while copying
+new computer or stage it for explicit in-place replacement: it checks each
+source chunk against the descriptor while copying
 through the bounded stream installer, then read-back verifies the copied
 generation before writing its manifest. A bad source leaves the new computer
 unpublished. Version 4 manifests require a hashed journal namespace and
@@ -377,9 +388,8 @@ the browser boot uses that name when opening the overlay, and rejects a changed
 namespace rather than silently starting an empty journal. Existing manifests
 without that field retain their original name. A composer guest write survives
 a reboot through a non-default journal namespace on Chromium, Firefox, and
-WebKit. This does not yet replace an
-existing computer's base or coordinate
-its digest-bound journal; an in-place crash-safe handoff is still needed. The
+WebKit. Automatic replacement of an existing computer's base and journal,
+with kernel quiescence and complete failure recovery, is still needed. The
 image writer coalesces
 adjacent deferred content blocks into extents: a 32 MiB file occupies fewer
 than 20 extent records while reads across direct and indirect boundaries

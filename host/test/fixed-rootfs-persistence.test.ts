@@ -9,6 +9,7 @@ import { NodeKernelHost } from "../src/node-kernel-host";
 import { HostFileSystem } from "../src/vfs/host-fs";
 import { OverlayStorageFile } from "../src/vfs/overlay-storage";
 import { writeOverlayGenerationSeal } from "../src/vfs/overlay-generation-seal";
+import { NoValidOverlayGenerationError } from "../src/vfs/overlay-generation-selection";
 
 const directKernelPath = join(import.meta.dirname, "../../target/wasm32-unknown-unknown/release/kandelo_kernel.wasm");
 const directImageModulePath = join(import.meta.dirname, "../../target/wasm32-unknown-unknown/release/kandelo_image_module.wasm");
@@ -89,7 +90,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         await first.destroy();
       }
       rmSync(path);
-      await expect(boot(image, path, false, true)).rejects.toThrow("refusing to reset");
+      await expect(boot(image, path, false, true)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       expect(existsSync(path)).toBe(false);
       writeFileSync(path, new Uint8Array());
       await expect(boot(image, path, false, true)).rejects.toThrow("refusing to reset");

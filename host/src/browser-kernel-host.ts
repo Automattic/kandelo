@@ -57,6 +57,7 @@ import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
 import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
+import { NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import {
   encodeClipboardText,
   type ClipboardOfferResult,
@@ -656,7 +657,9 @@ export class BrowserKernel {
           if (e.data?.type === "ready") {
             settleResolve();
           } else if (e.data?.type === "init_error") {
-            settleReject(new Error(`Kernel worker init failed: ${e.data.error}`));
+            settleReject(e.data.recovery === "no-valid-overlay-generation"
+              ? new NoValidOverlayGenerationError()
+              : new Error(`Kernel worker init failed: ${e.data.error}`));
           } else if (e.data?.type === "kernel_fatal") {
             settleReject(new Error(`Kernel worker failed: ${e.data.error}`));
           }

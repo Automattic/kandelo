@@ -8,6 +8,20 @@ export class RejectedOverlayGenerationError extends Error {
   }
 }
 
+export class NoValidOverlayGenerationError extends Error {
+  readonly recovery = "no-valid-overlay-generation" as const;
+
+  constructor() {
+    super("persistent overlay has no valid journal generation; refusing to reset the computer");
+    this.name = "NoValidOverlayGenerationError";
+  }
+}
+
+export function isNoValidOverlayGenerationError(error: unknown): error is NoValidOverlayGenerationError {
+  return error instanceof Error &&
+    "recovery" in error && error.recovery === "no-valid-overlay-generation";
+}
+
 export type OverlayGenerationSlot = "legacy" | "g0" | "g1";
 export type OverlayGenerationFile = "journal" | "seal" | "index";
 
@@ -98,7 +112,7 @@ export async function enableBestOverlayGeneration(
     }
     const legacy = await files.open("legacy", "journal", !foundGenerationFile && !requireExisting);
     if (legacy === null) {
-      throw new Error("persistent overlay has no valid journal generation; refusing to reset the computer");
+      throw new NoValidOverlayGenerationError();
     }
     try {
       if (requireExisting && legacy.len() === 0) {
