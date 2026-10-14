@@ -9,6 +9,53 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    int create_tree = argc >= 2 && strcmp(argv[1], "create-tree") == 0;
+    int verify_tree = argc >= 2 && strcmp(argv[1], "verify-tree") == 0;
+    int verify_tree_moved = argc >= 2 && strcmp(argv[1], "verify-tree-moved") == 0;
+    int verify_tree_removed = argc >= 2 && strcmp(argv[1], "verify-tree-removed") == 0;
+    if (create_tree || verify_tree || verify_tree_moved || verify_tree_removed) {
+        if (create_tree) {
+            if (mkdir("/persist-tree", 0750) != 0) return 80;
+            if (mkdir("/persist-tree/nested", 0700) != 0) return 81;
+            int fd = open("/persist-tree/nested/file", O_CREAT | O_WRONLY, 0640);
+            if (fd < 0) return 82;
+            if (write(fd, "TREE", 4) != 4 || fsync(fd) != 0 || close(fd) != 0) return 83;
+            return symlink("file", "/persist-tree/nested/link") == 0 ? 0 : 84;
+        }
+        if (verify_tree_removed) {
+            struct stat missing;
+            return lstat("/persist-moved", &missing) == -1 && errno == ENOENT ? 0 : 85;
+        }
+        const char *parent = verify_tree ? "/persist-tree" : "/persist-moved";
+        const char *link_path = verify_tree ? "/persist-tree/nested/link" : "/persist-moved/nested/link";
+        struct stat metadata;
+        if (stat(parent, &metadata) != 0 || !S_ISDIR(metadata.st_mode) || metadata.st_nlink != 3) return 86;
+        int fd = open(link_path, O_RDONLY);
+        if (fd < 0) return 87;
+        char bytes[4];
+        if (read(fd, bytes, sizeof(bytes)) != 4 || memcmp(bytes, "TREE", 4) != 0 || close(fd) != 0) return 88;
+        if (verify_tree) return rename(parent, "/persist-moved") == 0 ? 0 : 89;
+        if (unlink("/persist-moved/nested/link") != 0) return 90;
+        if (unlink("/persist-moved/nested/file") != 0) return 91;
+        if (rmdir("/persist-moved/nested") != 0) return 92;
+        return rmdir("/persist-moved") == 0 ? 0 : 93;
+    }
+    int create_symlink = argc >= 2 && strcmp(argv[1], "create-symlink") == 0;
+    int verify_symlink = argc >= 2 && strcmp(argv[1], "verify-symlink") == 0;
+    int verify_symlink_moved = argc >= 2 && strcmp(argv[1], "verify-symlink-moved") == 0;
+    if (create_symlink || verify_symlink || verify_symlink_moved) {
+        if (create_symlink) return symlink("/alias", "/state-link") == 0 ? 0 : 73;
+        const char *path = verify_symlink_moved ? "/state-link-moved" : "/state-link";
+        char target[32];
+        if (readlink(path, target, sizeof(target)) != 6 || memcmp(target, "/alias", 6) != 0) return 74;
+        struct stat metadata;
+        if (lstat(path, &metadata) != 0 || !S_ISLNK(metadata.st_mode)) return 75;
+        int fd = open(path, O_RDONLY);
+        if (fd < 0) return 76;
+        if (close(fd) != 0) return 77;
+        if (verify_symlink) return rename(path, "/state-link-moved") == 0 ? 0 : 78;
+        return unlink(path) == 0 ? 0 : 79;
+    }
     int create_file = argc >= 2 && strcmp(argv[1], "create-file") == 0;
     int verify_created = argc >= 2 && strcmp(argv[1], "verify-created") == 0;
     int verify_created_shrunk = argc >= 2 && strcmp(argv[1], "verify-created-shrunk") == 0;
