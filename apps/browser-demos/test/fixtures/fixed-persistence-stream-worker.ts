@@ -2,7 +2,7 @@ import { saveFixedPersistenceImageStream } from "../../pages/kandelo/kernel-host
 import { OpfsImageReader } from "../../../../host/src/vfs/opfs-image-reader";
 
 self.onmessage = (event: MessageEvent<
-  | { name: string; identity: string }
+  | { name: string; identity: string; journalName?: string }
   | { file: FileSystemFileHandle; length: number; chunkSha256: string[] }
 >) => {
   void (async () => {
@@ -40,6 +40,9 @@ self.onmessage = (event: MessageEvent<
           },
           requiredServices: [],
         },
+        undefined,
+        undefined,
+        event.data.journalName,
       );
       self.postMessage({ type: "done", file: saved.file, length: saved.length });
     } catch (error) {

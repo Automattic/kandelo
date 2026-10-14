@@ -116,6 +116,7 @@ export function composeImageInWorker(
             if (!options.isCurrent()) throw options.supersededError();
             options.onTick(message);
           },
+          job.persistentImage.journalName,
         );
         void stagePromise.catch((error: unknown) => finish(() => reject(error)));
         return;

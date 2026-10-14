@@ -1581,7 +1581,7 @@ async function bootProfile(
           chunkSha256: opfsImage.chunkSha256,
         },
         lazyUrlMap,
-        experimentalFixedPersistenceName: persistence.name,
+        experimentalFixedPersistenceName: opfsImage.journalName,
       });
     } else {
       const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =

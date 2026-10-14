@@ -165,6 +165,7 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         const { loadFixedPersistenceImageHandle, publishFixedPersistenceSnapshot, saveFixedPersistenceImageStream } = await import(url);
         const name = `stream-${crypto.randomUUID()}`;
         const identity = "streamed image";
+        const journalName = `j-${crypto.randomUUID()}`;
         const composition = {
           imageConfig: { version: 1 as const, defaultProfile: "probe", profiles: { probe: {} } },
           profileId: "probe",
@@ -192,7 +193,7 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
             }
           };
           worker.onerror = (event) => reject(new Error(event.message));
-          worker.postMessage({ name, identity });
+          worker.postMessage({ name, identity, journalName });
         }).finally(() => worker.terminate());
         const restored = await loadFixedPersistenceImageHandle(name, identity);
         const cloneName = `snapshot-${crypto.randomUUID()}`;
@@ -205,6 +206,42 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           cloneName, identity, restored!.file, integrity, restored!.lazyAssets, restored!.composition,
         );
         const clone = await loadFixedPersistenceImageHandle(cloneName, identity);
+        const manifestFile = await directory.getFileHandle(`${name}.base.json`);
+        const manifestText = await (await manifestFile.getFile()).text();
+        const changedManifest = JSON.parse(manifestText);
+        changedManifest.journalName = `j-${crypto.randomUUID()}`;
+        const changedWriter = await manifestFile.createWritable();
+        await changedWriter.write(JSON.stringify(changedManifest));
+        await changedWriter.close();
+        let journalBindingRejected = false;
+        try {
+          await loadFixedPersistenceImageHandle(name, identity);
+        } catch {
+          journalBindingRejected = true;
+        }
+        const restoreWriter = await manifestFile.createWritable();
+        await restoreWriter.write(manifestText);
+        await restoreWriter.close();
+        const legacyManifest = JSON.parse(manifestText);
+        delete legacyManifest.journalName;
+        delete legacyManifest.journalNameSha256;
+        const legacyWriter = await manifestFile.createWritable();
+        await legacyWriter.write(JSON.stringify(legacyManifest));
+        await legacyWriter.close();
+        let missingJournalRejected = false;
+        try {
+          await loadFixedPersistenceImageHandle(name, identity);
+        } catch {
+          missingJournalRejected = true;
+        }
+        legacyManifest.format = "kandelo-fixed-rootfs-image-v2";
+        const legacyVersionWriter = await manifestFile.createWritable();
+        await legacyVersionWriter.write(JSON.stringify(legacyManifest));
+        await legacyVersionWriter.close();
+        const legacyJournalName = (await loadFixedPersistenceImageHandle(name, identity))?.journalName;
+        const restoreBoundWriter = await manifestFile.createWritable();
+        await restoreBoundWriter.write(manifestText);
+        await restoreBoundWriter.close();
         let orphanRemoved = false;
         try {
           await directory.getFileHandle(orphanName);
@@ -292,13 +329,20 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           savedLength: saved.length,
           clonedFileLength: (await saved.file.getFile()).size,
           restoredLength: restored?.length,
+          name,
+          journalName,
+          restoredJournalName: restored?.journalName,
           digestCount: restored?.chunkSha256.length,
+          journalBindingRejected,
+          missingJournalRejected,
+          legacyJournalName,
           orphanRemoved,
           last,
           positionedRead,
           corruptionRejected,
           cloneName,
           cloneLength: clone?.length,
+          cloneJournalName: clone?.journalName,
           cloneTail,
           damagedSnapshotRejected,
           failedSnapshotUnpublished: failedSnapshot === null,
@@ -309,17 +353,22 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         url: new URL(`/@fs/${modulePath}`, baseURL).href,
         workerUrl: new URL(`/@fs/${streamWorkerPath}`, baseURL).href,
       });
-      const { cloneName, ...observed } = result;
+      const { cloneName, journalName, restoredJournalName, name, legacyJournalName, ...observed } = result;
+      expect(restoredJournalName).toBe(journalName);
+      expect(legacyJournalName).toBe(name);
       expect(observed).toEqual({
         savedLength: 1024 * 1024 + 3,
         clonedFileLength: 1024 * 1024 + 3,
         restoredLength: 1024 * 1024 + 3,
         digestCount: 2,
+        journalBindingRejected: true,
+        missingJournalRejected: true,
         orphanRemoved: true,
         last: [1, 2, 3],
         positionedRead: { first: [7, 7, 7], last: [1, 2, 3], firstRead: 3, lastRead: 3 },
         corruptionRejected: true,
         cloneLength: 1024 * 1024 + 3,
+        cloneJournalName: cloneName,
         cloneTail: [1, 2, 3],
         damagedSnapshotRejected: true,
         failedSnapshotUnpublished: true,

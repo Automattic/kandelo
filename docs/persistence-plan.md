@@ -45,7 +45,9 @@ semantics. Node and browser must expose the same guest-visible behavior.
   integrity descriptor accepted by browser positioned boot. Browser snapshots
   can now be verified and published as a new computer through the existing
   manifest-last stream installer, without replacing a computer's live base or
-  journal. An in-place, crash-safe base-and-journal handoff remains open. The
+  journal. Version 3 manifests require a hashed journal namespace bound to the
+  base generation; older manifests continue using the computer name.
+  An in-place, crash-safe base-and-journal handoff remains open. The
   writer coalesces deferred content references into
   extents; the legacy byte-array API still materializes output, and inode-table
   and indirect-block memory scale with image size. An 8 GiB sparse file
@@ -331,7 +333,13 @@ Chromium, Firefox, and WebKit. The browser can publish such a snapshot as a
 new computer: it checks each source chunk against the descriptor while copying
 through the bounded stream installer, then read-back verifies the copied
 generation before writing its manifest. A bad source leaves the new computer
-unpublished. This does not replace an existing computer's base or coordinate
+unpublished. The version 3 manifest requires a distinct, hashed journal namespace;
+the browser boot uses that name when opening the overlay, and rejects a changed
+namespace rather than silently starting an empty journal. Existing manifests
+without that field retain their original name. A composer guest write survives
+a reboot through a non-default journal namespace on Chromium, Firefox, and
+WebKit. This does not yet replace an
+existing computer's base or coordinate
 its digest-bound journal; an in-place crash-safe handoff is still needed. The
 image writer coalesces
 adjacent deferred content blocks into extents: a 32 MiB file occupies fewer
