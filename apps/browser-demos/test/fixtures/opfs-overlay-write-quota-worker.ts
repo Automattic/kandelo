@@ -4,11 +4,12 @@ self.onmessage = (event) => queuedMessages.push(event);
 const name = new URL(self.location.href).searchParams.get("name");
 if (name === null) throw new Error("missing persistent overlay name");
 const fault = new URL(self.location.href).searchParams.get("fault");
-if (fault !== "write" && fault !== "partial" && fault !== "flush") {
+if (fault !== "write" && fault !== "partial" && fault !== "short" && fault !== "flush") {
   throw new Error("invalid persistent overlay fault mode");
 }
 const cutParameter = new URL(self.location.href).searchParams.get("cut");
-if (fault === "partial" && (cutParameter === null || !/^(?:[1-9]\d*|-1)$/.test(cutParameter))) {
+if ((fault === "partial" || fault === "short") &&
+  (cutParameter === null || !/^(?:[1-9]\d*|-1)$/.test(cutParameter))) {
   throw new Error("invalid persistent overlay partial cut");
 }
 
@@ -29,6 +30,7 @@ const journalName = `${name}.journal`;
 const journals = new WeakSet<FileSystemSyncAccessHandle>();
 let armed = false;
 let injected = false;
+let shortWritten = false;
 
 filePrototype.createSyncAccessHandle = async function (...args: unknown[]) {
   const access = await originalCreateSyncAccessHandle.apply(this, args);
@@ -46,6 +48,13 @@ accessPrototype.flush = function (...args: unknown[]) {
 };
 accessPrototype.write = function (...args: unknown[]) {
   if (journals.has(this) && armed && !injected && fault !== "flush") {
+    if (fault === "short" && !shortWritten) {
+      const source = args[0] as Uint8Array;
+      const cut = Number(cutParameter) === -1 ? source.byteLength - 1 : Number(cutParameter);
+      if (cut >= source.byteLength) throw new Error("partial cut must precede the transaction end");
+      shortWritten = true;
+      return originalWrite.call(this, source.subarray(0, cut), args[1]);
+    }
     injected = true;
     if (fault === "partial") {
       const source = args[0] as Uint8Array;

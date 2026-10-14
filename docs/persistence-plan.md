@@ -333,6 +333,8 @@ three browser engines: `pwrite` remains readable
 from the dirty cache and `fsync` reports `ENOSPC`. Reload after a failed write
 recovers the previous durable bytes; after a failed flush, either the complete
 old or complete new transaction may survive, and boot must accept both.
+The browser also exercises a short OPFS write followed by quota failure on
+the retry, both after 128 bytes and one byte before transaction end.
 Quota failure during dirty-cache eviction returns a short guest write, leaves
 accepted dirty blocks readable, and keeps `ENOSPC` available to a later
 `fdatasync` rather than replacing it with `EIO`. Rust unit coverage and guest

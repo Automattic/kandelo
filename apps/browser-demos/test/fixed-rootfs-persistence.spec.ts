@@ -1078,6 +1078,7 @@ test("browser termination loses unsynced writes without damaging the last durabl
 const quotaScenarios = (["fixed", "resizable"] as const).flatMap((mode) => [
   ...(["write", "flush", "evict"] as const).map((fault) => ({ mode, fault, cut: undefined })),
   ...([1, 23, 24, 128, 4096, -1] as const).map((cut) => ({ mode, fault: "partial" as const, cut })),
+  ...([128, -1] as const).map((cut) => ({ mode, fault: "short" as const, cut })),
 ]);
 for (const { mode, fault, cut } of quotaScenarios) {
   test(`browser ${mode} ${fault}${cut === undefined ? "" : cut === -1 ? " cut before transaction end" : ` cut ${cut}`} quota failure rejects durability sync, preserves dirty reads, and recovers`, async ({ playwright, browserName, baseURL }, testInfo) => {
