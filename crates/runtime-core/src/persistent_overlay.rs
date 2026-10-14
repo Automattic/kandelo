@@ -181,6 +181,7 @@ pub struct OverlayJournal<S: OverlayStorage> {
     failed: bool,
     block_cache: Vec<((u64, u64), Vec<u8>)>,
     dirty_blocks: Vec<((u64, u64), Vec<u8>)>,
+    dirty_sizes: BTreeMap<u64, u64>,
     tail_limit_bytes: Option<u64>,
     track_committed_state: bool,
 }
@@ -333,6 +334,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             failed: false,
             block_cache: Vec::new(),
             dirty_blocks: Vec::new(),
+            dirty_sizes: BTreeMap::new(),
             tail_limit_bytes: None,
             track_committed_state: true,
         })
@@ -351,7 +353,10 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     }
 
     pub fn can_activate_compaction(&self, revision: (u64, u64)) -> bool {
-        !self.failed && self.dirty_blocks.is_empty() && self.compaction_revision() == revision
+        !self.failed
+            && self.dirty_blocks.is_empty()
+            && self.dirty_sizes.is_empty()
+            && self.compaction_revision() == revision
     }
 
     pub fn validate_fixed_image_blocks<F>(&mut self, mut base_size: F) -> Result<(), Errno>
@@ -607,7 +612,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if self.failed {
             return Err(Errno::EIO);
         }
-        if self.dirty_blocks.is_empty() {
+        if self.dirty_blocks.is_empty() && self.dirty_sizes.is_empty() {
             self.storage.flush()
         } else {
             self.flush_dirty()
@@ -620,10 +625,10 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     }
 
     fn flush_dirty(&mut self) -> Result<(), Errno> {
-        if self.dirty_blocks.is_empty() {
+        if self.dirty_blocks.is_empty() && self.dirty_sizes.is_empty() {
             return Ok(());
         }
-        let mutations: Vec<_> = self
+        let mut mutations: Vec<_> = self
             .dirty_blocks
             .iter()
             .map(|((inode, block), bytes)| Mutation::Put {
@@ -634,9 +639,25 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 value: bytes.clone(),
             })
             .collect();
+        mutations.extend(
+            self.dirty_sizes
+                .iter()
+                .map(|(&inode, &size)| Mutation::Put {
+                    key: OverlayKey::FileSize(inode),
+                    value: size.to_le_bytes().to_vec(),
+                }),
+        );
         self.commit_transaction(&mutations)?;
         self.dirty_blocks.clear();
+        self.dirty_sizes.clear();
         Ok(())
+    }
+
+    fn visible_file_size(&self, inode: u64, base_size: u64) -> Result<u64, Errno> {
+        self.dirty_sizes
+            .get(&inode)
+            .copied()
+            .map_or_else(|| self.state.file_size(inode, base_size), Ok)
     }
 
     fn commit_transaction(&mut self, mutations: &[Mutation]) -> Result<(), Errno> {
@@ -705,7 +726,36 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         base_size: u64,
         offset: u64,
         src: &[u8],
+        read_base: F,
+    ) -> Result<usize, Errno>
+    where
+        F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
+    {
+        self.write_buffered_file_at(inode, base_size, offset, src, read_base, true)
+    }
+
+    pub fn write_file_at_buffered<F>(
+        &mut self,
+        inode: u64,
+        base_size: u64,
+        offset: u64,
+        src: &[u8],
+        read_base: F,
+    ) -> Result<usize, Errno>
+    where
+        F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
+    {
+        self.write_buffered_file_at(inode, base_size, offset, src, read_base, false)
+    }
+
+    fn write_buffered_file_at<F>(
+        &mut self,
+        inode: u64,
+        base_size: u64,
+        offset: u64,
+        src: &[u8],
         mut read_base: F,
+        fixed_size: bool,
     ) -> Result<usize, Errno>
     where
         F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
@@ -718,7 +768,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         }
         self.check_active_tail_limit()?;
         let end = offset.checked_add(src.len() as u64).ok_or(Errno::EFBIG)?;
-        if end > base_size {
+        if fixed_size && end > base_size {
             return Err(Errno::EFBIG);
         }
         let block_count =
@@ -732,12 +782,13 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 let position = offset + done as u64;
                 let within_block = position as usize % FILE_BLOCK_BYTES;
                 let chunk = (src.len() - done).min(CACHE_BLOCKS * FILE_BLOCK_BYTES - within_block);
-                match self.write_fixed_file_chunk(
+                match self.write_buffered_file_chunk(
                     inode,
                     base_size,
                     position,
                     &src[done..done + chunk],
                     &mut read_base,
+                    fixed_size,
                 ) {
                     Ok(written) => done += written,
                     Err(_) if done > 0 => return Ok(done),
@@ -746,22 +797,28 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             }
             return Ok(done);
         }
-        self.write_fixed_file_chunk(inode, base_size, offset, src, &mut read_base)
+        self.write_buffered_file_chunk(inode, base_size, offset, src, &mut read_base, fixed_size)
     }
 
-    fn write_fixed_file_chunk<F>(
+    fn write_buffered_file_chunk<F>(
         &mut self,
         inode: u64,
         base_size: u64,
         offset: u64,
         src: &[u8],
         read_base: &mut F,
+        fixed_size: bool,
     ) -> Result<usize, Errno>
     where
         F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
     {
         self.check_active_tail_limit()?;
         let end = offset + src.len() as u64;
+        let grows = !fixed_size && end > self.visible_file_size(inode, base_size)?;
+        if grows && !self.dirty_sizes.contains_key(&inode) && self.dirty_sizes.len() == CACHE_BLOCKS
+        {
+            self.flush_dirty()?;
+        }
         let block_count =
             (end - 1) / FILE_BLOCK_BYTES as u64 - offset / FILE_BLOCK_BYTES as u64 + 1;
         let mut prepared = Vec::new();
@@ -799,7 +856,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             if victims.len() < count {
                 return Err(Errno::EIO);
             }
-            let mutations: Vec<_> = victims
+            let mut mutations: Vec<_> = victims
                 .iter()
                 .map(|(key, bytes)| Mutation::Put {
                     key: OverlayKey::FileBlock {
@@ -809,9 +866,19 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                     value: bytes.clone(),
                 })
                 .collect();
+            for (&owner, &size) in &self.dirty_sizes {
+                if victims.iter().any(|(key, _)| key.0 == owner) {
+                    mutations.push(Mutation::Put {
+                        key: OverlayKey::FileSize(owner),
+                        value: size.to_le_bytes().to_vec(),
+                    });
+                }
+            }
             self.commit_transaction(&mutations)?;
             self.dirty_blocks
                 .retain(|(key, _)| !victims.iter().any(|(victim, _)| victim == key));
+            self.dirty_sizes
+                .retain(|owner, _| !victims.iter().any(|(key, _)| key.0 == *owner));
         }
         for (key, bytes) in prepared {
             self.block_cache.retain(|(cached, _)| *cached != key);
@@ -823,6 +890,9 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 self.dirty_blocks.remove(index);
             }
             self.dirty_blocks.push((key, bytes));
+        }
+        if grows {
+            self.dirty_sizes.insert(inode, end);
         }
         Ok(src.len())
     }
@@ -856,7 +926,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if self.failed {
             return Err(Errno::EIO);
         }
-        let size = self.state.file_size(inode, base_size)?;
+        let size = self.visible_file_size(inode, base_size)?;
         if src.is_empty() {
             return Ok(0);
         }
@@ -915,7 +985,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if self.failed {
             return Err(Errno::EIO);
         }
-        let old_size = self.state.file_size(inode, base_size)?;
+        let old_size = self.visible_file_size(inode, base_size)?;
         if new_size == old_size {
             return Ok(());
         }
@@ -962,7 +1032,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     where
         F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
     {
-        let size = self.state.file_size(inode, base_size)?;
+        let size = self.visible_file_size(inode, base_size)?;
         if offset >= size {
             return Ok(0);
         }
@@ -2290,7 +2360,7 @@ mod tests {
             assert_eq!(byte, [0]);
         }
         indexed
-            .write_file_at(7, base_size, 8195, b"z", |_, _| {
+            .write_file_at_buffered(7, base_size, 8195, b"z", |_, _| {
                 panic!("post-truncate write must see zeros")
             })
             .unwrap();
@@ -2303,7 +2373,10 @@ mod tests {
             .unwrap()
             .into_storage();
         assert_eq!(first_index.bytes.len(), 160 + 2 * 56);
-        assert_eq!(u32::from_le_bytes(first_index.bytes[4..8].try_into().unwrap()), 1);
+        assert_eq!(
+            u32::from_le_bytes(first_index.bytes[4..8].try_into().unwrap()),
+            1
+        );
         let first_storage = first.into_storage();
         assert!(matches!(
             OverlayJournal::open_with_checkpoint(
@@ -3180,6 +3253,124 @@ mod tests {
         );
         assert_eq!(first, [b'x']);
         assert_eq!(journal.sync(), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn buffered_sparse_growth_reopens_without_allocating_the_hole() {
+        let digest = [43; 32];
+        let offset = 8 * 1024 * 1024 * 1024u64 + 7;
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        assert_eq!(
+            journal.write_file_at_buffered(7, 0, offset, b"hello", |_, _| {
+                panic!("sparse write needs no base read")
+            }),
+            Ok(5)
+        );
+        assert_eq!(journal.storage.bytes.len(), HEADER_BYTES);
+        assert_eq!(journal.dirty_sizes.get(&7), Some(&(offset + 5)));
+        let mut visible = [1; 8];
+        assert_eq!(
+            journal.read_file_at(7, 0, offset - 3, &mut visible, |_, _| {
+                panic!("dirty sparse block must satisfy read")
+            }),
+            Ok(8)
+        );
+        assert_eq!(&visible, b"\0\0\0hello");
+        journal.sync().unwrap();
+        assert!(journal.storage.bytes.len() < 5000);
+        let mut recovered = OverlayJournal::open(journal.into_storage(), digest).unwrap();
+        assert_eq!(recovered.state.file_size(7, 0), Ok(offset + 5));
+        assert_eq!(
+            recovered.read_file_at(7, 0, offset - 3, &mut visible, |_, _| {
+                panic!("journaled sparse block must satisfy read")
+            }),
+            Ok(8)
+        );
+        assert_eq!(&visible, b"\0\0\0hello");
+    }
+
+    #[test]
+    fn growing_cache_eviction_publishes_size_with_committed_blocks() {
+        let digest = [44; 32];
+        let source = vec![b'x'; (CACHE_BLOCKS + 1) * FILE_BLOCK_BYTES];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        assert_eq!(
+            journal.write_file_at_buffered(7, 0, 0, &source, |_, _| {
+                panic!("full blocks need no base read")
+            }),
+            Ok(source.len())
+        );
+        assert!(journal.dirty_blocks.len() <= CACHE_BLOCKS);
+        assert_eq!(journal.dirty_sizes.get(&7), Some(&(source.len() as u64)));
+        let mut recovered = OverlayJournal::open(journal.into_storage(), digest).unwrap();
+        assert_eq!(
+            recovered.state.file_size(7, 0),
+            Ok((CACHE_BLOCKS * FILE_BLOCK_BYTES) as u64)
+        );
+        let mut byte = [0];
+        assert_eq!(
+            recovered.read_file_at(7, 0, 0, &mut byte, |_, _| {
+                panic!("evicted block must be journaled")
+            }),
+            Ok(1)
+        );
+        assert_eq!(byte, [b'x']);
+        assert_eq!(
+            recovered.read_file_at(
+                7,
+                0,
+                (CACHE_BLOCKS - 1) as u64 * FILE_BLOCK_BYTES as u64,
+                &mut byte,
+                |_, _| { panic!("unflushed block must read as a hole") }
+            ),
+            Ok(1)
+        );
+        assert_eq!(byte, [0]);
+    }
+
+    #[test]
+    fn growing_cache_bounds_pending_sizes_and_returns_short_on_writeback_failure() {
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [45; 32]).unwrap();
+        for inode in 1..=CACHE_BLOCKS as u64 {
+            journal
+                .write_file_at_buffered(inode, 0, 0, b"x", |_, _| {
+                    panic!("new files have no base bytes")
+                })
+                .unwrap();
+        }
+        assert_eq!(journal.dirty_sizes.len(), CACHE_BLOCKS);
+        journal
+            .write_file_at_buffered(CACHE_BLOCKS as u64 + 1, 0, 0, b"y", |_, _| {
+                panic!("new files have no base bytes")
+            })
+            .unwrap();
+        assert_eq!(journal.dirty_sizes.len(), 1);
+        assert_eq!(journal.state.file_size(1, 0), Ok(1));
+        journal.sync().unwrap();
+        let mut recovered = OverlayJournal::open(journal.into_storage(), [45; 32]).unwrap();
+        let mut byte = [0];
+        assert_eq!(
+            recovered.read_file_at(CACHE_BLOCKS as u64 + 1, 0, 0, &mut byte, |_, _| {
+                panic!("last block must be journaled")
+            }),
+            Ok(1)
+        );
+        assert_eq!(byte, [b'y']);
+
+        let mut failing = OverlayJournal::open(MemoryStorage::default(), [46; 32]).unwrap();
+        failing.storage.fail_flush = true;
+        let source = vec![b'x'; (CACHE_BLOCKS + 1) * FILE_BLOCK_BYTES];
+        assert_eq!(
+            failing.write_file_at_buffered(7, 0, 0, &source, |_, _| {
+                panic!("full blocks need no base read")
+            }),
+            Ok(CACHE_BLOCKS * FILE_BLOCK_BYTES)
+        );
+        assert_eq!(
+            failing.dirty_sizes.get(&7),
+            Some(&((CACHE_BLOCKS * FILE_BLOCK_BYTES) as u64))
+        );
+        assert_eq!(failing.sync(), Err(Errno::EIO));
     }
 
     #[test]
