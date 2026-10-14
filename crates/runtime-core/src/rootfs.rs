@@ -211,6 +211,7 @@ struct Inode {
     map_pins: u32,
     /// Bumped by every content mutation (see [`content_generation`]).
     content_gen: u64,
+    synced_content_gen: u64,
     ino: u64,
     persistent_size: Option<u64>,
     atime_sec: u64,
@@ -237,6 +238,7 @@ impl Inode {
             open_count: 0,
             map_pins: 0,
             content_gen: 0,
+            synced_content_gen: 0,
             ino,
             persistent_size: None,
             atime_sec: sec,
@@ -637,6 +639,69 @@ static ROOTFS: RootfsGlobal = RootfsGlobal::new();
 type PersistentJournal = OverlayJournal<Box<dyn OverlayStorage + Send>>;
 const PERSISTENT_REGULAR_RECORD_BYTES: usize = 52;
 
+#[derive(Clone, Copy)]
+struct PersistentInodeMetadata {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    atime_sec: u64,
+    atime_nsec: u32,
+    mtime_sec: u64,
+    mtime_nsec: u32,
+    ctime_sec: u64,
+    ctime_nsec: u32,
+}
+
+impl PersistentInodeMetadata {
+    fn from_inode(inode: &Inode) -> Self {
+        Self {
+            mode: inode.mode,
+            uid: inode.uid,
+            gid: inode.gid,
+            atime_sec: inode.atime_sec,
+            atime_nsec: inode.atime_nsec,
+            mtime_sec: inode.mtime_sec,
+            mtime_nsec: inode.mtime_nsec,
+            ctime_sec: inode.ctime_sec,
+            ctime_nsec: inode.ctime_nsec,
+        }
+    }
+
+    fn apply(self, inode: &mut Inode) {
+        inode.mode = self.mode;
+        inode.uid = self.uid;
+        inode.gid = self.gid;
+        inode.atime_sec = self.atime_sec;
+        inode.atime_nsec = self.atime_nsec;
+        inode.mtime_sec = self.mtime_sec;
+        inode.mtime_nsec = self.mtime_nsec;
+        inode.ctime_sec = self.ctime_sec;
+        inode.ctime_nsec = self.ctime_nsec;
+    }
+
+    fn touch_changed(&mut self) {
+        let (sec, nsec) = now();
+        self.ctime_sec = sec;
+        self.ctime_nsec = nsec;
+    }
+}
+
+fn encode_inode_record(kind: u8, target: &[u8], metadata: PersistentInodeMetadata) -> Vec<u8> {
+    let mut value = Vec::with_capacity(PERSISTENT_REGULAR_RECORD_BYTES + target.len());
+    value.extend_from_slice(&[1, kind, 0, 0]);
+    value.extend_from_slice(&metadata.mode.to_le_bytes());
+    value.extend_from_slice(&metadata.uid.to_le_bytes());
+    value.extend_from_slice(&metadata.gid.to_le_bytes());
+    value.extend_from_slice(&metadata.atime_sec.to_le_bytes());
+    value.extend_from_slice(&metadata.atime_nsec.to_le_bytes());
+    value.extend_from_slice(&metadata.mtime_sec.to_le_bytes());
+    value.extend_from_slice(&metadata.mtime_nsec.to_le_bytes());
+    value.extend_from_slice(&metadata.ctime_sec.to_le_bytes());
+    value.extend_from_slice(&metadata.ctime_nsec.to_le_bytes());
+    value.extend_from_slice(target);
+    value
+}
+
 fn encode_persistent_inode(inode: &Inode) -> Vec<u8> {
     let (kind, target) = match &inode.kind {
         InodeKind::PersistentRegular => (1, &[][..]),
@@ -644,22 +709,10 @@ fn encode_persistent_inode(inode: &Inode) -> Vec<u8> {
         InodeKind::Symlink(target) => (3, target.as_slice()),
         _ => unreachable!(),
     };
-    let mut value = Vec::with_capacity(PERSISTENT_REGULAR_RECORD_BYTES + target.len());
-    value.extend_from_slice(&[1, kind, 0, 0]);
-    value.extend_from_slice(&inode.mode.to_le_bytes());
-    value.extend_from_slice(&inode.uid.to_le_bytes());
-    value.extend_from_slice(&inode.gid.to_le_bytes());
-    value.extend_from_slice(&inode.atime_sec.to_le_bytes());
-    value.extend_from_slice(&inode.atime_nsec.to_le_bytes());
-    value.extend_from_slice(&inode.mtime_sec.to_le_bytes());
-    value.extend_from_slice(&inode.mtime_nsec.to_le_bytes());
-    value.extend_from_slice(&inode.ctime_sec.to_le_bytes());
-    value.extend_from_slice(&inode.ctime_nsec.to_le_bytes());
-    value.extend_from_slice(target);
-    value
+    encode_inode_record(kind, target, PersistentInodeMetadata::from_inode(inode))
 }
 
-fn decode_persistent_inode(ino: u64, value: &[u8]) -> Result<Inode, Errno> {
+fn decode_inode_record(value: &[u8]) -> Result<PersistentInodeMetadata, Errno> {
     if value.len() < PERSISTENT_REGULAR_RECORD_BYTES
         || value.len() > 4096
         || value[0] != 1
@@ -667,6 +720,30 @@ fn decode_persistent_inode(ino: u64, value: &[u8]) -> Result<Inode, Errno> {
     {
         return Err(Errno::EIO);
     }
+    let read_u32 = |start| u32::from_le_bytes(value[start..start + 4].try_into().unwrap());
+    let read_u64 = |start| u64::from_le_bytes(value[start..start + 8].try_into().unwrap());
+    let metadata = PersistentInodeMetadata {
+        mode: read_u32(4),
+        uid: read_u32(8),
+        gid: read_u32(12),
+        atime_sec: read_u64(16),
+        atime_nsec: read_u32(24),
+        mtime_sec: read_u64(28),
+        mtime_nsec: read_u32(36),
+        ctime_sec: read_u64(40),
+        ctime_nsec: read_u32(48),
+    };
+    if metadata.atime_nsec >= 1_000_000_000
+        || metadata.mtime_nsec >= 1_000_000_000
+        || metadata.ctime_nsec >= 1_000_000_000
+    {
+        return Err(Errno::EIO);
+    }
+    Ok(metadata)
+}
+
+fn decode_persistent_inode(ino: u64, value: &[u8]) -> Result<Inode, Errno> {
+    let metadata = decode_inode_record(value)?;
     let kind = match value[1] {
         1 if value.len() == PERSISTENT_REGULAR_RECORD_BYTES => InodeKind::PersistentRegular,
         2 if value.len() == PERSISTENT_REGULAR_RECORD_BYTES => InodeKind::Dir(BTreeMap::new()),
@@ -675,31 +752,16 @@ fn decode_persistent_inode(ino: u64, value: &[u8]) -> Result<Inode, Errno> {
         }
         _ => return Err(Errno::EIO),
     };
-    let read_u32 = |start| u32::from_le_bytes(value[start..start + 4].try_into().unwrap());
-    let read_u64 = |start| u64::from_le_bytes(value[start..start + 8].try_into().unwrap());
-    let mode = read_u32(4);
-    let atime_nsec = read_u32(24);
-    let mtime_nsec = read_u32(36);
-    let ctime_nsec = read_u32(48);
-    if mode & !(if matches!(kind, InodeKind::Dir(_)) { 0o7777 } else { 0o1777 }) != 0
-        || (matches!(kind, InodeKind::Symlink(_)) && mode != 0o777)
-        || atime_nsec >= 1_000_000_000
-        || mtime_nsec >= 1_000_000_000
-        || ctime_nsec >= 1_000_000_000
+    if metadata.mode & !(if matches!(kind, InodeKind::Dir(_) | InodeKind::Symlink(_)) { 0o7777 } else { 0o1777 }) != 0
     {
         return Err(Errno::EIO);
     }
     let nlink = if matches!(kind, InodeKind::Dir(_)) { 2 } else { 0 };
-    let mut inode = Inode::new(kind, mode, read_u32(8), read_u32(12), nlink, ino);
+    let mut inode = Inode::new(kind, metadata.mode, metadata.uid, metadata.gid, nlink, ino);
     if matches!(inode.kind, InodeKind::PersistentRegular) {
         inode.persistent_size = Some(0);
     }
-    inode.atime_sec = read_u64(16);
-    inode.atime_nsec = atime_nsec;
-    inode.mtime_sec = read_u64(28);
-    inode.mtime_nsec = mtime_nsec;
-    inode.ctime_sec = read_u64(40);
-    inode.ctime_nsec = ctime_nsec;
+    metadata.apply(&mut inode);
     Ok(inode)
 }
 
@@ -769,14 +831,53 @@ fn enable_persistence_internal(
     };
     let minimum_created_ino = ROOTFS.with(|state| state.next_ino);
     let mut created = Vec::new();
+    let mut base_updates = BTreeMap::new();
+    let mut base_indices: Option<BTreeMap<u64, u32>> = None;
     for (key, value) in journal.state().metadata_entries() {
         if let OverlayKey::Inode(ino) = key {
-            if !resizable || *ino < minimum_created_ino || *ino == u64::MAX {
+            if !resizable || *ino == u64::MAX {
                 return Err(Errno::EIO);
             }
-            let inode = decode_persistent_inode(*ino, value.ok_or(Errno::EIO)?)?;
-            created.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-            created.push((*ino, inode));
+            let bytes = value.ok_or(Errno::EIO)?;
+            if *ino < minimum_created_ino {
+                if bytes.len() != PERSISTENT_REGULAR_RECORD_BYTES || bytes[1] != 4 {
+                    return Err(Errno::EIO);
+                }
+                let metadata = decode_inode_record(bytes)?;
+                if metadata.mode & !0o7777 != 0 {
+                    return Err(Errno::EIO);
+                }
+                if base_indices.is_none() {
+                    base_indices = Some(ROOTFS.with(|state| {
+                        let mut indices = BTreeMap::new();
+                        for (index, inode) in state.inodes.iter().enumerate() {
+                            if let Some(inode) = inode {
+                                if indices.insert(inode.ino, index as u32).is_some() {
+                                    return Err(Errno::EIO);
+                                }
+                            }
+                        }
+                        Ok::<_, Errno>(indices)
+                    })?);
+                }
+                let index = *base_indices.as_ref().unwrap().get(ino).ok_or(Errno::EIO)?;
+                let valid = ROOTFS.with(|state| {
+                    let inode = state.get(index).ok_or(Errno::EIO)?;
+                    if matches!(inode.kind, InodeKind::Regular(_) | InodeKind::PersistentRegular)
+                        || (matches!(inode.kind, InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. })
+                            && metadata.mode & 0o6000 != 0)
+                    {
+                        return Err(Errno::EIO);
+                    }
+                    Ok::<_, Errno>(())
+                });
+                valid?;
+                base_updates.insert(*ino, (index, metadata));
+            } else {
+                let inode = decode_persistent_inode(*ino, bytes)?;
+                created.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+                created.push((*ino, inode));
+            }
         }
     }
     let mut eligible_sizes = ROOTFS.with(|state| {
@@ -788,7 +889,8 @@ fn enable_persistence_internal(
                 ..
             } = inode.kind
             {
-                if inode.deferred_digest == crate::sdef::DIGEST_NONE && inode.mode & 0o6000 == 0 {
+                let mode = base_updates.get(&inode.ino).map_or(inode.mode, |(_, metadata)| metadata.mode);
+                if inode.deferred_digest == crate::sdef::DIGEST_NONE && mode & 0o6000 == 0 {
                     sizes.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
                     sizes.push((inode.ino, size));
                 }
@@ -828,6 +930,9 @@ fn enable_persistence_internal(
             for (ino, inode) in created {
                 state.bump_next_ino(ino);
                 state.insert_inode(inode);
+            }
+            for (_, (index, metadata)) in base_updates {
+                metadata.apply(state.get_mut(index).ok_or(Errno::EIO)?);
             }
             for inode in state.inodes.iter_mut().flatten() {
                 if let Some(base_size) = base_size(inode.ino) {
@@ -1036,10 +1141,58 @@ pub fn image_length() -> Option<u64> {
 }
 
 pub fn sync_persistence() -> Result<(), Errno> {
-    match PERSISTENT_ROOTFS.lock().as_mut() {
-        Some(mount) => mount.journal.sync(),
-        None => Ok(()),
+    if !resizable_persistence_enabled() {
+        return match PERSISTENT_ROOTFS.lock().as_mut() {
+            Some(mount) => mount.journal.sync(),
+            None => Ok(()),
+        };
     }
+    let mut cursor = 0;
+    loop {
+        let (next, mutations, generations) = ROOTFS.with(|state| {
+            let mut mutations = Vec::new();
+            let mut generations = Vec::new();
+            let mut next = cursor;
+            for index in cursor..state.inodes.len() {
+                next = index + 1;
+                let Some(inode) = state.inodes[index].as_ref() else {
+                    continue;
+                };
+                if inode.content_gen == inode.synced_content_gen {
+                    continue;
+                }
+                let kind = match inode.kind {
+                    InodeKind::PersistentRegular => 1,
+                    InodeKind::BaseRegular { source: BaseSource::Image, .. } => 4,
+                    _ => continue,
+                };
+                mutations.push(Mutation::Put {
+                    key: OverlayKey::Inode(inode.ino),
+                    value: encode_inode_record(kind, &[], PersistentInodeMetadata::from_inode(inode)),
+                });
+                generations.push((index as u32, inode.content_gen));
+                if mutations.len() == 64 {
+                    break;
+                }
+            }
+            Ok::<_, Errno>((next, mutations, generations))
+        })?;
+        if mutations.is_empty() {
+            break;
+        }
+        PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.commit(&mutations)?;
+        ROOTFS.with(|state| {
+            for (index, generation) in generations {
+                if let Some(inode) = state.get_mut(index) {
+                    if inode.content_gen == generation {
+                        inode.synced_content_gen = generation;
+                    }
+                }
+            }
+        });
+        cursor = next;
+    }
+    PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.sync()
 }
 
 pub fn checkpoint_prepared_persistence(
@@ -1057,6 +1210,7 @@ pub fn checkpoint_prepared_persistence(
 pub fn prepare_persistence_compaction(
     storage: Box<dyn OverlayStorage + Send>,
 ) -> Result<(), Errno> {
+    sync_persistence()?;
     let mut pending = PREPARED_PERSISTENCE.lock();
     if pending.is_some() {
         return Err(Errno::EBUSY);
@@ -4639,8 +4793,84 @@ pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     })
 }
 
+fn change_persistent_owner(
+    metadata: &mut PersistentInodeMetadata,
+    uid: u32,
+    gid: u32,
+    clear_setid: bool,
+) {
+    if uid != u32::MAX {
+        metadata.uid = uid;
+    }
+    if gid != u32::MAX {
+        metadata.gid = gid;
+    }
+    if clear_setid {
+        metadata.mode &= !0o4000;
+        if metadata.mode & 0o0010 != 0 {
+            metadata.mode &= !0o2000;
+        }
+    }
+    metadata.touch_changed();
+}
+
+fn update_persistent_inode_metadata(
+    index: u32,
+    update: impl FnOnce(&mut PersistentInodeMetadata) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    let (ino, kind, target, mut metadata) = ROOTFS.with(|state| {
+        let inode = state.get(index).ok_or(Errno::ENOENT)?;
+        let kind = match &inode.kind {
+            InodeKind::PersistentRegular => 1,
+            InodeKind::Dir(_) => 2,
+            InodeKind::Symlink(_) => 3,
+            InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. } | InodeKind::Special(_) => 4,
+            InodeKind::Regular(_) => return Err(Errno::EROFS),
+        };
+        let target = match &inode.kind {
+            InodeKind::Symlink(target) => target.clone(),
+            _ => Vec::new(),
+        };
+        Ok::<_, Errno>((inode.ino, kind, target, PersistentInodeMetadata::from_inode(inode)))
+    })?;
+    update(&mut metadata)?;
+    if metadata.mode & !0o7777 != 0 || (kind == 1 || kind == 4) && metadata.mode & 0o6000 != 0 {
+        return Err(Errno::EPERM);
+    }
+    let mut active = PERSISTENT_ROOTFS.lock();
+    let journal = &mut active.as_mut().ok_or(Errno::EIO)?.journal;
+    let stored_kind = match journal.state().lookup(&OverlayKey::Inode(ino)) {
+        Some(Some(bytes)) if bytes.len() >= 2 => bytes[1],
+        Some(_) => return Err(Errno::EIO),
+        None => 4,
+    };
+    if stored_kind == 4 && kind == 1 {
+        return Err(Errno::EIO);
+    }
+    let record_kind = if stored_kind == 4 { 4 } else { kind };
+    if stored_kind != 4 && stored_kind != kind {
+        return Err(Errno::EIO);
+    }
+    let value = encode_inode_record(record_kind, if record_kind == 3 { &target } else { &[] }, metadata);
+    journal.commit(&[Mutation::Put { key: OverlayKey::Inode(ino), value }])?;
+    ROOTFS.with(|state| {
+        let inode = state.get_mut(index).ok_or(Errno::EIO)?;
+        metadata.apply(inode);
+        inode.synced_content_gen = inode.content_gen;
+        Ok::<_, Errno>(())
+    })?;
+    Ok(())
+}
+
 /// chmod a rootfs path (permission bits only).
 pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
+    if resizable_persistence_enabled() {
+        return update_persistent_inode_metadata(walk_to_inode(path)?, |metadata| {
+            metadata.mode = mode & 0o7777;
+            metadata.touch_changed();
+            Ok(())
+        });
+    }
     reject_fixed_persistence_mutation()?;
     let idx = walk_to_inode(path)?;
     ROOTFS.with(|state| {
@@ -4655,6 +4885,12 @@ pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
 /// `clear_setid` is set, set-user-ID (and set-group-ID on a group-executable
 /// file) is cleared, matching the host chown path.
 pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    if resizable_persistence_enabled() {
+        return update_persistent_inode_metadata(walk_to_inode(path)?, |metadata| {
+            change_persistent_owner(metadata, uid, gid, clear_setid);
+            Ok(())
+        });
+    }
     reject_fixed_persistence_mutation()?;
     let idx = walk_to_inode(path)?;
     ROOTFS.with(|state| {
@@ -4681,6 +4917,13 @@ pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), E
 
 /// fchmod an open rootfs file handle.
 pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
+    if resizable_persistence_enabled() {
+        return update_persistent_inode_metadata(file_handle_to_inode(handle)?, |metadata| {
+            metadata.mode = mode & 0o7777;
+            metadata.touch_changed();
+            Ok(())
+        });
+    }
     reject_fixed_persistence_mutation()?;
     let idx = file_handle_to_inode(handle)?;
     ROOTFS.with(|state| {
@@ -4693,6 +4936,12 @@ pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
 
 /// fchown an open rootfs file handle. A field of `u32::MAX` (-1) is unchanged.
 pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), Errno> {
+    if resizable_persistence_enabled() {
+        return update_persistent_inode_metadata(file_handle_to_inode(handle)?, |metadata| {
+            change_persistent_owner(metadata, uid, gid, clear_setid);
+            Ok(())
+        });
+    }
     reject_fixed_persistence_mutation()?;
     let idx = file_handle_to_inode(handle)?;
     ROOTFS.with(|state| {
@@ -4728,6 +4977,20 @@ pub fn utimensat(
     ctime_sec: u64,
     ctime_nsec: u32,
 ) -> Result<(), Errno> {
+    if resizable_persistence_enabled() {
+        return update_persistent_inode_metadata(walk_to_inode(path)?, |metadata| {
+            if atime_nsec >= 1_000_000_000 || mtime_nsec >= 1_000_000_000 || ctime_nsec >= 1_000_000_000 {
+                return Err(Errno::EINVAL);
+            }
+            metadata.atime_sec = atime_sec;
+            metadata.atime_nsec = atime_nsec;
+            metadata.mtime_sec = mtime_sec;
+            metadata.mtime_nsec = mtime_nsec;
+            metadata.ctime_sec = ctime_sec;
+            metadata.ctime_nsec = ctime_nsec;
+            Ok(())
+        });
+    }
     reject_fixed_persistence_mutation()?;
     let idx = walk_to_inode(path)?;
     ROOTFS.with(|state| {
@@ -9301,6 +9564,123 @@ mod tests {
     }
 
     #[test]
+    fn resizable_persistence_replays_explicit_metadata_updates() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source.clone()), base_digest).unwrap();
+        chmod(b"/hello.txt", 0o640).unwrap();
+        chown(b"/hello.txt", 7, 8, true).unwrap();
+        utimensat(b"/hello.txt", 123, 456, 234, 567, 345, 678).unwrap();
+        assert_eq!(chmod(b"/hello.txt", 0o4755), Err(Errno::EPERM));
+        let handle = open(b"/created-meta", O_CREAT | O_RDWR, 0o644, 1, 2).unwrap();
+        fchmod(handle, 0o600).unwrap();
+        fchown(handle, 9, 10, true).unwrap();
+        assert_eq!(fchmod(handle, 0o6755), Err(Errno::EPERM));
+        release_handle(handle);
+        mkdir(b"/metadata-dir", 0o755, 1, 2).unwrap();
+        chmod(b"/metadata-dir", 0o700).unwrap();
+        chown(b"/metadata-dir", 11, 12, false).unwrap();
+        sync_persistence().unwrap();
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source), base_digest).unwrap();
+        let base = lstat(b"/hello.txt").unwrap();
+        assert_eq!(base.st_mode & 0o7777, 0o640);
+        assert_eq!((base.st_uid, base.st_gid), (7, 8));
+        assert_eq!((base.st_atime_sec, base.st_atime_nsec), (123, 456));
+        assert_eq!((base.st_mtime_sec, base.st_mtime_nsec), (234, 567));
+        assert_eq!((base.st_ctime_sec, base.st_ctime_nsec), (345, 678));
+        let created = lstat(b"/created-meta").unwrap();
+        assert_eq!(created.st_mode & 0o7777, 0o600);
+        assert_eq!((created.st_uid, created.st_gid), (9, 10));
+        let directory = lstat(b"/metadata-dir").unwrap();
+        assert_eq!(directory.st_mode & 0o7777, 0o700);
+        assert_eq!((directory.st_uid, directory.st_gid), (11, 12));
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let checkpoint_end = target.0.lock().len() as u64;
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(Box::new(target), Box::new(index), base_digest, checkpoint_end).unwrap();
+        assert_eq!(lstat(b"/hello.txt").unwrap().st_mtime_sec, 234);
+        assert_eq!(lstat(b"/created-meta").unwrap().st_mode & 0o7777, 0o600);
+        assert_eq!(lstat(b"/metadata-dir").unwrap().st_uid, 11);
+    }
+
+    #[test]
+    fn failed_persistent_metadata_update_does_not_change_live_inode() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let fail_writes = Arc::new(AtomicBool::new(false));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(
+            Box::new(FailingCreateStorage { inner: storage.clone(), fail_writes: fail_writes.clone() }),
+            base_digest,
+        ).unwrap();
+        let before = lstat(b"/hello.txt").unwrap();
+        fail_writes.store(true, Ordering::SeqCst);
+        assert_eq!(chmod(b"/hello.txt", 0o600), Err(Errno::ENOSPC));
+        assert_eq!(lstat(b"/hello.txt").unwrap().st_mode, before.st_mode);
+        assert_eq!(lstat(b"/hello.txt").unwrap().st_ctime_sec, before.st_ctime_sec);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        assert_eq!(lstat(b"/hello.txt").unwrap().st_mode, before.st_mode);
+    }
+
+    #[test]
+    fn resizable_persistence_syncs_write_and_truncate_timestamps() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source.clone()), base_digest).unwrap();
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(handle, 0, b"TIME", &mut image_bytes), Ok(4));
+        let written = fstat(handle).unwrap();
+        sync_persistence().unwrap();
+        release_handle(handle);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source), base_digest).unwrap();
+        let reopened = lstat(b"/hello.txt").unwrap();
+        assert_eq!((reopened.st_mtime_sec, reopened.st_mtime_nsec), (written.st_mtime_sec, written.st_mtime_nsec));
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        truncate_handle(handle, 0, &mut image_bytes).unwrap();
+        let truncated = fstat(handle).unwrap();
+        release_handle(handle);
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let checkpoint_end = target.0.lock().len() as u64;
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(Box::new(target), Box::new(index), base_digest, checkpoint_end).unwrap();
+        let reopened = lstat(b"/hello.txt").unwrap();
+        assert_eq!(reopened.st_size, 0);
+        assert_eq!((reopened.st_mtime_sec, reopened.st_mtime_nsec), (truncated.st_mtime_sec, truncated.st_mtime_nsec));
+    }
+
+    #[test]
     fn resizable_persistence_rejects_namespace_and_unknown_file_records() {
         use crate::persistent_overlay::{Mutation, OverlayKey};
 
@@ -9432,6 +9812,22 @@ mod tests {
         ]).unwrap();
         assert_eq!(enable_resizable_persistence(Box::new(cyclic_directory), base_digest), Err(Errno::EIO));
         assert!(matches!(lstat(b"/cycle"), Err(Errno::ENOENT)));
+
+        let invalid_metadata = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut journal = OverlayJournal::open(invalid_metadata.clone(), base_digest).unwrap();
+        let base_inode = lstat(b"/hello.txt").unwrap().st_ino;
+        let mut metadata = ROOTFS.with(|state| {
+            PersistentInodeMetadata::from_inode(
+                state.inodes.iter().flatten().find(|inode| inode.ino == base_inode).unwrap(),
+            )
+        });
+        metadata.atime_nsec = 1_000_000_000;
+        journal.commit(&[Mutation::Put {
+            key: OverlayKey::Inode(base_inode),
+            value: encode_inode_record(4, &[], metadata),
+        }]).unwrap();
+        assert_eq!(enable_resizable_persistence(Box::new(invalid_metadata), base_digest), Err(Errno::EIO));
+        assert!(lstat(b"/hello.txt").unwrap().st_atime_nsec < 1_000_000_000);
 
         let unknown = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
         let mut journal = OverlayJournal::open(unknown.clone(), base_digest).unwrap();

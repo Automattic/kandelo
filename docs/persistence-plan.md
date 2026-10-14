@@ -97,7 +97,9 @@ compaction repeatedly fails. Fixed-overwrite compaction now copies records
 without retaining the target block map, then scans the compacted journal with
 bounded buffers to write its sorted checkpoint sidecar.
 Resizable mounts now journal regular-file, symlink, and directory namespace
-mutations. Metadata and timestamp updates remain a separate milestone.
+mutations. Explicit chmod, chown, and utimensat updates also use inode records;
+fsync and compaction flush timestamps for writes and truncates. Persistent
+regular files reject attempts to set set-ID bits on unauthenticated bytes.
 
 Boot now checks two optional sealed journal slots (`g0` and `g1`) on Node and
 browser hosts, preferring the highest verified generation. A seal authenticates
@@ -230,13 +232,18 @@ inode-plus-dirent transaction replays both records or neither. Created
 directories and symlinks also use versioned inode records. Recovery validates
 the final directory graph, rejecting cycles, multiple parents, and non-empty
 orphan directories before publishing it. Guest restart tests create, move, and
-remove a nested directory tree and symlink. Metadata/timestamp mutations
-remain nonpersistent. Image
+remove a nested directory tree and symlink. Explicit chmod/chown/utimensat
+changes to base and created inodes survive restart and indexed compaction;
+the first such update to a base inode uses a versioned metadata-only record.
+Write and truncate timestamps are staged in memory and committed in batches
+on fsync, graceful shutdown, or compaction. Each sync scans resident rootfs
+inodes for modified content, so its cost still needs measurement on a large
+file-count image. Image
 snapshot export rejects mounted persistence rather than silently exporting
 stale base bytes; exporting a consistent composed snapshot remains open.
 
-General POSIX replay still needs persistent metadata/timestamps and
-reclamation of orphaned journal records. Journal
+General POSIX replay still needs reclamation of orphaned journal records and
+complete metadata timestamp coverage for namespace operations. Journal
 transactions must publish related directory entries, inode metadata, file
 size, and blocks together; recovery must rebuild the same link counts,
 open-unlinked lifetime, and zero-filled truncate/extend behavior as the live
