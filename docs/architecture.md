@@ -2212,18 +2212,18 @@ checks each chunk from storage, then publishes a manifest only while that boot
 still owns the session, under the same exclusive Web Lock as the write. A
 superseded boot cannot publish its staged image; an interrupted generation
 without a manifest is reclaimed before the next installation of that name.
-Initial source
-fetch and composition still require image-sized allocations, and journal
-recovery metadata is unbounded;
-this is not yet a general larger-than-memory filesystem. Browser sessions use
+Persistent direct and scoped Pages source fetches stage decoded bytes in OPFS
+with bounded chunks, and composition reads the source through positioned calls.
+Journal recovery metadata remains unbounded, so this is not yet general
+persistent POSIX storage. Browser sessions use
 an OPFS `FileSystemSyncAccessHandle` in the kernel worker;
 its exclusive handle provides the single-writer lease and is closed on destroy.
 Node sessions use an absolute journal path and a sibling `.lock` directory;
 concurrent Node sessions fail closed, and a crash may require manual removal
 of a stale lock after confirming no writer remains. Journal paths must be
 private; neither adapter protects against an external writer. Offsets must
-fit JavaScript's safe-integer range. The base image is still resident in host
-memory on initial installation, and the journal's block-location index grows
+fit JavaScript's safe-integer range. Nonpersistent boots still materialize
+source bytes, and the journal's block-location index grows
 with changed blocks.
 The Rust journal can stage a compacted copy in separate storage after
 verifying every live block, but the live host has no generation handoff yet;
