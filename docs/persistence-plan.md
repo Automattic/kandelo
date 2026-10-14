@@ -171,7 +171,7 @@ compaction. Focused tests reject damaged prefix and committed-tail bytes while
 truncating an incomplete tail. Indexed open now hashes each validated prefix
 transaction during replay instead of reading the full prefix once for hashing
 and again for replay; an I/O-count test covers the journal read volume. It
-still scans the entire prefix and retains the resizable metadata map. Live
+still scans the entire prefix. Live
 compaction and a write-stop limit bound the active tail;
 fixed-overwrite compaction's target map is no longer resident. The old
 unindexed journal still needs its initial full-map recovery before conversion.
@@ -184,18 +184,26 @@ Its fixed-size records locate current inode, size, zero-fence, and dirent
 values in the authenticated journal; deleted records are tombstones. The
 table is streamed from compacted transactions with bounded buffers and
 searched through one cached page. Indexed boot verifies its order, checksum,
-and values against replayed metadata, rejecting a self-consistent table that
-points to the wrong journal bytes. Versions 1 and 2 remain readable. This is
-format groundwork, not yet a bounded metadata boot: replay still builds the
-entire metadata map, and the resident rootfs inode/directory tree also scales
-with namespace size. The 280-byte fixed metadata record adds sidecar space;
-its size and compaction pause need measurement before general release.
+and exact mutation locations while hashing the journal prefix, but does not
+materialize that prefix's metadata in the overlay map. Rootfs streams the
+table to rebuild its POSIX inode and directory state; subsequent lookups and
+compactions merge the indexed prefix with the bounded unsealed tail. Versions
+1 and 2 remain readable through the older full-map path. The resident rootfs
+tree and temporary namespace-graph validation still scale with file count,
+so this is not yet a full namespace-memory bound. The 280-byte fixed metadata
+record adds sidecar space; its boot and compaction costs need measurement.
+Hot indexed metadata values use a 64-entry bounded cache, so repeated
+file-size and zero-fence reads do not reissue positioned journal reads.
+The table binds exact value locations at boot but carries no per-value digest;
+a metadata byte damaged after boot is detected on the next journal-prefix
+verification, not necessarily on the first live read. Production integrity
+needs an authenticated value check on demand.
 
 The live handoff now uses that third handle and a dedicated kernel-worker turn.
 The fixed-overwrite checkpoint is streamed, but its worst-case memory and
 handoff pause duration have not been validated for an actually large writable
-image. General POSIX mutation replay still needs to consume metadata from
-the new checkpoint without materializing every record in the overlay map.
+image. General POSIX mutation replay uses the metadata checkpoint, but
+the rootfs namespace tree and graph-validation scratch remain resident.
 Indexed boot validates block references against a temporary sorted table of
 eligible image-file sizes, rather than walking every rootfs inode for each
 checkpoint block. The table uses memory proportional to eligible files, not
@@ -309,9 +317,10 @@ Compaction also drops deleted names that never existed in the immutable base,
 while retaining base-name tombstones so deleted image files cannot reappear.
 The mount tracks only touched base names and reconstructs that set from the
 unchanged base tree on restart; repeated create/delete cycles no longer grow
-the compacted journal with transient-name tombstones. This does not yet bound
-the in-memory metadata map between compactions or replace it with an on-disk
-metadata checkpoint.
+the compacted journal with transient-name tombstones. A version 3 generation
+keeps only its unsealed metadata tail in the overlay map, subject to the
+63 MiB write-stop limit; legacy and version 1/2 generations still retain
+their full metadata map until conversion. The rootfs tree remains resident.
 Journal transactions must continue publishing related directory
 entries, inode metadata, file size, and blocks together; recovery must rebuild
 the same link counts and zero-filled truncate/extend behavior as the live

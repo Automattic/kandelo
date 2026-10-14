@@ -168,6 +168,21 @@ pub struct BlockCheckpoint<S: OverlayStorage> {
 }
 
 impl<S: OverlayStorage> BlockCheckpoint<S> {
+    pub fn metadata_journal_digest(storage: &mut S) -> Result<Option<[u8; 32]>, Errno> {
+        let mut header = [0; HEADER_BYTES];
+        storage.read_exact_at(0, &mut header)?;
+        let version = u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?);
+        if version != METADATA_VERSION {
+            return Ok(None);
+        }
+        if &header[..4] != MAGIC || header[128..] != Sha256::digest(&header[..128])[..] {
+            return Err(Errno::EIO);
+        }
+        let mut digest = [0; 32];
+        digest.copy_from_slice(&header[40..72]);
+        Ok(Some(digest))
+    }
+
     pub fn create(
         storage: S,
         base_digest: [u8; 32],
