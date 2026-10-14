@@ -413,6 +413,12 @@ export interface ClipboardGuestWaitMessage {
   timeoutMs?: number;
 }
 
+export interface ExportRootfsImageToFileMessage {
+  type: "export_rootfs_image_to_file";
+  requestId: number;
+  file: FileSystemFileHandle;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | AttachRemotePeerMessage
@@ -429,6 +435,7 @@ export type MainToKernelMessage =
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
   | ExportRootfsImageMessage
+  | ExportRootfsImageToFileMessage
   | ClipboardOfferMessage
   | ClipboardGuestWaitMessage
   | AppendStdinDataMessage

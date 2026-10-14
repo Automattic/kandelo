@@ -23,7 +23,7 @@ const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-over
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
 
-test("browser exports a composed resizable snapshot and reboots without its journal", async ({ playwright, browserName, baseURL }, testInfo) => {
+test("browser streams a composed resizable snapshot to OPFS and reboots without its journal", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
@@ -75,23 +75,29 @@ test("browser exports a composed resizable snapshot and reboots without its jour
           await first.destroy();
         }
         const reopened = await bootPersistent();
-        let snapshot: Uint8Array;
+        const snapshotFile = await directory.getFileHandle(`${name}.snapshot`, { create: true });
+        let snapshotBytes: number;
         try {
-          snapshot = await reopened.exportRootfsImage();
+          snapshotBytes = await reopened.exportRootfsImageToFile(snapshotFile);
+          let overwriteRejected = false;
+          try {
+            await reopened.exportRootfsImageToFile(snapshotFile);
+          } catch {
+            overwriteRejected = true;
+          }
+          if (!overwriteRejected || (await snapshotFile.getFile()).size !== snapshotBytes) {
+            throw new Error("snapshot export replaced a nonempty OPFS file");
+          }
         } finally {
           await reopened.destroy();
         }
-        const snapshotFile = await directory.getFileHandle(`${name}.snapshot`, { create: true });
-        const snapshotWriter = await snapshotFile.createWritable();
-        await snapshotWriter.write(snapshot);
-        await snapshotWriter.close();
         const restored = new BrowserKernel({ kernelOwnedFs: true });
         try {
           await restored.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile });
           return {
             state: new TextDecoder().decode((await restored.readFileFromVfs("/state"))!),
             created: new TextDecoder().decode((await restored.readFileFromVfs("/created"))!),
-            snapshotBytes: snapshot.byteLength,
+            snapshotBytes,
           };
         } finally {
           await restored.destroy();

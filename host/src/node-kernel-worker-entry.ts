@@ -15,7 +15,19 @@ import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/r
  *                  pty_output, resolve_exec, lazy_download
  */
 import { parentPort } from "node:worker_threads";
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmdirSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -3816,6 +3828,49 @@ async function handleExportRootfsImage(
   }
 }
 
+async function handleExportRootfsImageToFile(
+  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image_to_file" }>,
+) {
+  if (!rootImage.has()) {
+    respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
+    return;
+  }
+  if (!initReady) {
+    respondError(msg.requestId, "rootfs export requires an initialized kernel");
+    return;
+  }
+  try {
+    const length = await rootfsSnapshotGate.runSnapshot(async () => {
+      if (processes.size !== 0 || processTeardowns.size !== 0) {
+        throw new Error("rootfs export requires a quiescent kernel with no live or tearing-down processes");
+      }
+      const file = openSync(msg.path, "wx", 0o600);
+      try {
+        const length = kernelWorker.rootfsExportContainerVisit((offset, chunk) => {
+          let written = 0;
+          while (written < chunk.byteLength) {
+            const count = writeSync(file, chunk, written, chunk.byteLength - written, offset + written);
+            if (count <= 0 || count > chunk.byteLength - written) {
+              throw new Error("rootfs export file write made no progress");
+            }
+            written += count;
+          }
+        });
+        fsyncSync(file);
+        closeSync(file);
+        return length;
+      } catch (error) {
+        try { closeSync(file); } catch {}
+        try { unlinkSync(msg.path); } catch {}
+        throw error;
+      }
+    });
+    respond(msg.requestId, length);
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleReadVfsFile(
   msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
 ) {
@@ -4018,6 +4073,9 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "export_rootfs_image":
       void handleExportRootfsImage(msg);
+      break;
+    case "export_rootfs_image_to_file":
+      void handleExportRootfsImageToFile(msg);
       break;
     case "clipboard_offer":
       void handleClipboardOffer(msg);

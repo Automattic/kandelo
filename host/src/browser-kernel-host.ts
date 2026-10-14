@@ -1693,6 +1693,23 @@ export class BrowserKernel {
     return result;
   }
 
+  /** Write a quiescent snapshot to an empty OPFS staging file without buffering it in JS. */
+  async exportRootfsImageToFile(file: FileSystemFileHandle): Promise<number> {
+    if (!this.initialized) {
+      throw new Error("rootfs export requires an initialized kernel");
+    }
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "export_rootfs_image_to_file",
+      requestId,
+      file,
+    });
+    if (!Number.isSafeInteger(result) || (result as number) <= 0) {
+      throw new Error("kernel worker returned an invalid rootfs image length");
+    }
+    return result as number;
+  }
+
   /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
   async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> {
     const requestId = this.nextRequestId++;
