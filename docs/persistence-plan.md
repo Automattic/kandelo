@@ -89,8 +89,14 @@ the compacted prefix while the active journal may append later transactions;
 the kernel still validates and replays those transactions. If a slot is torn or
 its journal is rejected, boot tries the previous valid slot and then the
 legacy journal. If generation files exist without any valid journal, boot
-refuses to create an empty replacement. Boot-time handoff writes these slots;
-live compaction does not.
+refuses to create an empty replacement. Boot-time handoff now prepares a
+compacted journal without switching the kernel's active handle, writes and
+verifies the target seal, and only then activates it. Failure cancels the
+prepared target and invalidates its seal. The kernel refuses activation if
+the source changed during preparation, but the host does not yet stop guest
+syscalls during the asynchronous seal. Thus this sequence is safe only at
+boot, before any guest can write; live compaction still needs an exclusive
+kernel-worker gate.
 
 Recovery truncates a torn append shorter than the minimum complete transaction,
 including a partially written transaction header. The writeback test exercises

@@ -5553,29 +5553,62 @@ export class CentralizedKernelWorker {
   }
 
   #persistentOverlayImportSlot: 0 | 1 = 0;
+  #preparedOverlayImportSlot: 0 | 1 | null = null;
 
-  compactRootfsPersistence(target: PersistentOverlayStorage): void {
+  prepareRootfsPersistenceCompaction(target: PersistentOverlayStorage): void {
+    if (this.#preparedOverlayImportSlot !== null) throw new Error("rootfs persistence compaction is already prepared");
     const targetSlot = this.#persistentOverlayImportSlot === 0 ? 1 : 0;
     if (targetSlot === 0) this.#kernel.setPersistentOverlayStorage(target);
     else this.#kernel.setPersistentOverlayTargetStorage(target);
     let status: number | undefined;
     try {
-      this.#runImmediateKernelEntry("compact rootfs persistence", (entry) => {
-        const compact = this.#kernelInstanceForEntry(entry).exports
-          .kernel_rootfs_compact_persistence as ((targetSlot: number) => number) | undefined;
-        if (typeof compact !== "function") throw new Error("kernel lacks rootfs persistence compaction export");
-        status = compact(targetSlot);
+      this.#runImmediateKernelEntry("prepare rootfs persistence compaction", (entry) => {
+        const prepare = this.#kernelInstanceForEntry(entry).exports
+          .kernel_rootfs_prepare_persistence_compaction as ((targetSlot: number) => number) | undefined;
+        if (typeof prepare !== "function") throw new Error("kernel lacks rootfs persistence compaction preparation export");
+        status = prepare(targetSlot);
         return undefined;
       });
-      if (status !== 0) throw new Error(`rootfs persistence compaction failed (errno ${-(status ?? 5)})`);
-      if (targetSlot === 0) this.#kernel.setPersistentOverlayTargetStorage(null);
-      else this.#kernel.setPersistentOverlayStorage(null);
-      this.#persistentOverlayImportSlot = targetSlot;
+      if (status !== 0) throw new Error(`rootfs persistence compaction preparation failed (errno ${-(status ?? 5)})`);
+      this.#preparedOverlayImportSlot = targetSlot;
     } catch (error) {
       if (targetSlot === 0) this.#kernel.setPersistentOverlayStorage(null);
       else this.#kernel.setPersistentOverlayTargetStorage(null);
       throw error;
     }
+  }
+
+  activateRootfsPersistenceCompaction(): void {
+    const targetSlot = this.#preparedOverlayImportSlot;
+    if (targetSlot === null) throw new Error("rootfs persistence compaction is not prepared");
+    let status: number | undefined;
+    this.#runImmediateKernelEntry("activate rootfs persistence compaction", (entry) => {
+      const activate = this.#kernelInstanceForEntry(entry).exports
+        .kernel_rootfs_activate_persistence_compaction as (() => number) | undefined;
+      if (typeof activate !== "function") throw new Error("kernel lacks rootfs persistence compaction activation export");
+      status = activate();
+      return undefined;
+    });
+    if (status !== 0) throw new Error(`rootfs persistence compaction activation failed (errno ${-(status ?? 5)})`);
+    if (targetSlot === 0) this.#kernel.setPersistentOverlayTargetStorage(null);
+    else this.#kernel.setPersistentOverlayStorage(null);
+    this.#persistentOverlayImportSlot = targetSlot;
+    this.#preparedOverlayImportSlot = null;
+  }
+
+  cancelRootfsPersistenceCompaction(): void {
+    const targetSlot = this.#preparedOverlayImportSlot;
+    if (targetSlot === null) return;
+    this.#runImmediateKernelEntry("cancel rootfs persistence compaction", (entry) => {
+      const cancel = this.#kernelInstanceForEntry(entry).exports
+        .kernel_rootfs_cancel_persistence_compaction as (() => void) | undefined;
+      if (typeof cancel !== "function") throw new Error("kernel lacks rootfs persistence compaction cancellation export");
+      cancel();
+      return undefined;
+    });
+    if (targetSlot === 0) this.#kernel.setPersistentOverlayStorage(null);
+    else this.#kernel.setPersistentOverlayTargetStorage(null);
+    this.#preparedOverlayImportSlot = null;
   }
 
   syncRootfsPersistence(): void {

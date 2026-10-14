@@ -625,6 +625,11 @@ static ROOTFS: RootfsGlobal = RootfsGlobal::new();
 
 type PersistentJournal = OverlayJournal<Box<dyn OverlayStorage + Send>>;
 static PERSISTENT_ROOTFS: Mutex<Option<PersistentJournal>> = Mutex::new(None);
+struct PreparedPersistence {
+    journal: PersistentJournal,
+    source_revision: (u64, u64),
+}
+static PREPARED_PERSISTENCE: Mutex<Option<PreparedPersistence>> = Mutex::new(None);
 
 pub fn enable_fixed_persistence(
     storage: Box<dyn OverlayStorage + Send>,
@@ -671,12 +676,38 @@ pub fn sync_persistence() -> Result<(), Errno> {
     }
 }
 
-pub fn compact_persistence(storage: Box<dyn OverlayStorage + Send>) -> Result<(), Errno> {
+pub fn prepare_persistence_compaction(
+    storage: Box<dyn OverlayStorage + Send>,
+) -> Result<(), Errno> {
+    let mut pending = PREPARED_PERSISTENCE.lock();
+    if pending.is_some() {
+        return Err(Errno::EBUSY);
+    }
     let mut active = PERSISTENT_ROOTFS.lock();
     let source = active.as_mut().ok_or(Errno::EINVAL)?;
     let compacted = source.compact_into(storage)?;
-    *active = Some(compacted);
+    *pending = Some(PreparedPersistence {
+        journal: compacted,
+        source_revision: source.compaction_revision(),
+    });
     Ok(())
+}
+
+pub fn activate_persistence_compaction() -> Result<(), Errno> {
+    let mut pending = PREPARED_PERSISTENCE.lock();
+    let prepared = pending.as_ref().ok_or(Errno::EINVAL)?;
+    let mut active = PERSISTENT_ROOTFS.lock();
+    let source = active.as_ref().ok_or(Errno::EINVAL)?;
+    if !source.can_activate_compaction(prepared.source_revision) {
+        *pending = None;
+        return Err(Errno::EBUSY);
+    }
+    *active = Some(pending.take().ok_or(Errno::EIO)?.journal);
+    Ok(())
+}
+
+pub fn cancel_persistence_compaction() {
+    *PREPARED_PERSISTENCE.lock() = None;
 }
 
 fn reject_fixed_persistence_mutation() -> Result<(), Errno> {
@@ -1142,6 +1173,7 @@ fn iter_to_dir_handle(idx: u32) -> i64 {
 /// Clear the whole overlay (drops every inode and open stream). Used before
 /// repopulating from a fresh image or manifest and by tests for isolation.
 pub fn reset() {
+    *PREPARED_PERSISTENCE.lock() = None;
     *PERSISTENT_ROOTFS.lock() = None;
     ROOTFS.with(|state| *state = RootfsState::new());
     FOREIGN_MOUNTS.with(|slot| slot.clear());
@@ -8103,6 +8135,36 @@ mod tests {
         let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
         let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
         assert_eq!(&changed[..count], b"hello KIFS\n");
+        release_handle(handle);
+    }
+
+    #[test]
+    fn prepared_compaction_refuses_intervening_write_without_switching_source() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_fixed_persistence(Box::new(source.clone()), base_digest).unwrap();
+
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(handle, 6, b"KIFS", &mut image_bytes).unwrap(), 4);
+        sync_persistence().unwrap();
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        assert_eq!(write(handle, 6, b"live", &mut image_bytes).unwrap(), 4);
+        assert_eq!(activate_persistence_compaction(), Err(Errno::EBUSY));
+        sync_persistence().unwrap();
+        release_handle(handle);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_fixed_persistence(Box::new(source), base_digest).unwrap();
+        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        let mut changed = [0u8; 16];
+        let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
+        assert_eq!(&changed[..count], b"hello live\n");
         release_handle(handle);
     }
 

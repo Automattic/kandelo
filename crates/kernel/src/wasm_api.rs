@@ -2223,16 +2223,29 @@ pub extern "C" fn kernel_rootfs_sync_persistence() -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_rootfs_compact_persistence(target_slot: u32) -> i32 {
+pub extern "C" fn kernel_rootfs_prepare_persistence_compaction(target_slot: u32) -> i32 {
     let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match target_slot {
         0 => Box::new(HostOverlayStorage),
         1 => Box::new(HostOverlayTargetStorage),
         _ => return -(Errno::EINVAL as i32),
     };
-    match crate::rootfs::compact_persistence(storage) {
+    match crate::rootfs::prepare_persistence_compaction(storage) {
         Ok(()) => 0,
         Err(error) => -(error as i32),
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_activate_persistence_compaction() -> i32 {
+    match crate::rootfs::activate_persistence_compaction() {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_cancel_persistence_compaction() {
+    crate::rootfs::cancel_persistence_compaction();
 }
 
 /// Enable (nonzero) or disable (zero) in-kernel rootfs authority over `/`. The

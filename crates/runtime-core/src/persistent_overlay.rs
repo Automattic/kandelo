@@ -304,6 +304,14 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         &self.state
     }
 
+    pub fn compaction_revision(&self) -> (u64, u64) {
+        (self.end, self.next_sequence)
+    }
+
+    pub fn can_activate_compaction(&self, revision: (u64, u64)) -> bool {
+        !self.failed && self.dirty_blocks.is_empty() && self.compaction_revision() == revision
+    }
+
     pub fn validate_fixed_image_blocks<F>(&mut self, mut base_size: F) -> Result<(), Errno>
     where
         F: FnMut(u64) -> Option<u64>,
