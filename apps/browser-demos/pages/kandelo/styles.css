@@ -873,11 +873,11 @@
 
 .kdemo-surface-badge {
   flex: 0 1 auto;
+  /* Every message shares one grid cell, so the badge is as wide as the
+     widest reserved message (DemoSurfaceDockControls). */
+  display: inline-grid;
   min-width: 0;
   max-width: min(42vw, 360px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   padding: 2px 6px;
   border: 1px solid var(--kdock-border);
   border-radius: 5px;
@@ -887,6 +887,18 @@
   letter-spacing: 0.04em;
   line-height: 1.35;
   text-transform: uppercase;
+}
+
+.kdemo-surface-badge-text {
+  grid-area: 1 / 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kdemo-surface-badge-text[data-reserve="true"] {
+  visibility: hidden;
 }
 
 .kdemo-surface-badge[data-active="true"] {
