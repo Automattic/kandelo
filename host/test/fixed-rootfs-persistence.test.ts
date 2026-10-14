@@ -35,12 +35,13 @@ async function makeImage(state: string, includeLargeFile = false, largeFileBytes
   return filesystem.saveImage();
 }
 
-async function boot(image: Uint8Array, path: string, resizable = false): Promise<NodeKernelHost> {
+async function boot(image: Uint8Array, path: string, resizable = false, requireExisting = false): Promise<NodeKernelHost> {
   const host = new NodeKernelHost({
     rootfsImage: image,
     ...(resizable
       ? { experimentalResizablePersistencePath: path }
       : { experimentalFixedPersistencePath: path }),
+    requireExistingRootfsPersistence: requireExisting,
   });
   const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
   try {
@@ -75,6 +76,29 @@ function expandJournalToCompactionThreshold(path: string): number {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
+  it.skipIf(guestProgramPath === null)("refuses to reset a restored computer whose journal disappeared", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-missing-journal-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      rmSync(path);
+      await expect(boot(image, path, false, true)).rejects.toThrow("refusing to reset");
+      expect(existsSync(path)).toBe(false);
+      writeFileSync(path, new Uint8Array());
+      await expect(boot(image, path, false, true)).rejects.toThrow("refusing to reset");
+      expect(readFileSync(path).byteLength).toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("streams a composed resizable snapshot to a file that boots without its journal", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-export-"));
     const path = join(directory, "machine.journal");

@@ -677,14 +677,20 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         const restored = await loadFixedPersistenceImageHandle(name, identity);
         if (restored?.journalName !== journalName) throw new Error("journal namespace was not retained");
         const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
-        const open = async () => {
+        const open = async (requireExistingRootfsPersistence = false) => {
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
-          await kernel.initFromOpfsImage({
-            kernelWasm: kernelBytes,
-            vfsImageFile: restored!.file,
-            experimentalFixedPersistenceName: restored.journalName,
-          });
-          return kernel;
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: kernelBytes,
+              vfsImageFile: restored!.file,
+              experimentalFixedPersistenceName: restored.journalName,
+              requireExistingRootfsPersistence,
+            });
+            return kernel;
+          } catch (error) {
+            await kernel.destroy();
+            throw error;
+          }
         };
         const firstKernel = await open();
         let initial: string;
@@ -695,12 +701,35 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         } finally {
           await firstKernel.destroy();
         }
-        const secondKernel = await open();
+        const secondKernel = await open(true);
         let recovered: string;
         try {
           recovered = new TextDecoder().decode(await secondKernel.readFileFromVfs("/state"));
         } finally {
           await secondKernel.destroy();
+        }
+        const overlayDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        await overlayDirectory.removeEntry(`${journalName}.journal`);
+        let missingJournalRejected = false;
+        try {
+          const unexpectedlyOpened = await open(true);
+          await unexpectedlyOpened.destroy();
+        } catch (error) {
+          missingJournalRejected = String(error).includes("refusing to reset");
+        }
+        let missingJournalRecreated = true;
+        try {
+          await overlayDirectory.getFileHandle(`${journalName}.journal`);
+        } catch (error) {
+          missingJournalRecreated = !(error instanceof DOMException && error.name === "NotFoundError");
+        }
+        const emptyJournal = await overlayDirectory.getFileHandle(`${journalName}.journal`, { create: true });
+        let emptyJournalRejected = false;
+        try {
+          const unexpectedlyOpened = await open(true);
+          await unexpectedlyOpened.destroy();
+        } catch (error) {
+          emptyJournalRejected = String(error).includes("refusing to reset");
         }
         const supersededName = `composer-${crypto.randomUUID()}`;
         let current = true;
@@ -768,6 +797,10 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           profile: restored?.composition.profileId,
           initial,
           recovered,
+          missingJournalRejected,
+          missingJournalRecreated,
+          emptyJournalRejected,
+          emptyJournalSize: (await emptyJournal.getFile()).size,
           fileMatches: composed.imageFile !== undefined && restored !== null
             ? await composed.imageFile.file.isSameEntry(restored.file)
             : false,
@@ -790,6 +823,10 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       expect(result.profile).toBe("probe");
       expect(result.initial).toBe("abcdefgh");
       expect(result.recovered).toBe("XYcdefgh");
+      expect(result.missingJournalRejected).toBe(true);
+      expect(result.missingJournalRecreated).toBe(false);
+      expect(result.emptyJournalRejected).toBe(true);
+      expect(result.emptyJournalSize).toBe(0);
       expect(result.fileMatches).toBe(true);
       expect(result.superseded).toBe(true);
       expect(result.supersededUnpublished).toBe(true);

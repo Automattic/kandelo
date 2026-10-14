@@ -68,6 +68,12 @@ acknowledged chunk in flight, verifies the stored bytes, and publishes only
 from the boot that still owns the session, under one exclusive lock. The next
 installation reclaims abandoned generation files. Reopening uses positioned OPFS
 reads and a bounded clean cache; fixed overwrites use a bounded dirty cache.
+Restoring an already published browser image now refuses an absent or empty
+journal rather than initializing a blank one; Node exposes the same strict
+reopen option. Fresh installs may still initialize the journal. A crash after
+publishing the base manifest but before the first journal initialization can
+therefore leave an image that fails closed on the next boot. Atomic initial
+base-plus-journal publication and generation fallback remain open.
 ABI 51, following main's networking ABI 50, adds the third host storage handle
 needed to compact an indexed journal while its checkpoint remains open.
 Writes spanning more than 64 cache blocks are split into bounded chunks;

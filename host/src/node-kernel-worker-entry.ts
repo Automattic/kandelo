@@ -1276,6 +1276,9 @@ async function handleInit(msg: InitMessage) {
   await pcmDriver.prepare(pcmTransport);
 
   const persistencePath = msg.experimentalResizablePersistencePath ?? msg.experimentalFixedPersistencePath;
+  if (msg.requireExistingRootfsPersistence && persistencePath === undefined) {
+    throw new Error("requireExistingRootfsPersistence requires a journal path");
+  }
   if (persistencePath !== undefined) {
     const path = persistencePath;
     const resizable = msg.experimentalResizablePersistencePath !== undefined;
@@ -1299,6 +1302,7 @@ async function handleInit(msg: InitMessage) {
           if (resizable) kernelWorker.enableResizableRootfsPersistence(storage, index, checkpointEnd);
           else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
         },
+        msg.requireExistingRootfsPersistence,
       );
       const handoff = {
         prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),

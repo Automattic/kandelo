@@ -45,6 +45,7 @@ export interface OverlayCompactionHandoff {
 export async function enableBestOverlayGeneration(
   files: OverlayGenerationFiles,
   enable: (journal: PersistentOverlayStorage, index?: PersistentOverlayStorage, checkpointEnd?: number) => void,
+  requireExisting = false,
 ): Promise<SelectedOverlayGeneration> {
   const candidates: Candidate[] = [];
   let foundGenerationFile = false;
@@ -95,11 +96,14 @@ export async function enableBestOverlayGeneration(
         }
       }
     }
-    const legacy = await files.open("legacy", "journal", !foundGenerationFile);
+    const legacy = await files.open("legacy", "journal", !foundGenerationFile && !requireExisting);
     if (legacy === null) {
       throw new Error("persistent overlay has no valid journal generation; refusing to reset the computer");
     }
     try {
+      if (requireExisting && legacy.len() === 0) {
+        throw new Error("persistent overlay journal is empty; refusing to reset the computer");
+      }
       enable(legacy);
       return { journal: legacy, slot: "legacy", generation: 0, sealedLength: 0 };
     } catch (error) {
