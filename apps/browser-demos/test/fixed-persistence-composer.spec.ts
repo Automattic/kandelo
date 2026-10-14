@@ -634,9 +634,12 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
     try {
       const page = context.pages()[0] ?? await context.newPage();
       const image = await imageWithState("abcdefgh");
+      const replacementImage = await imageWithState("replacement");
       const imageUrl = new URL("/fixed-composer-stream.vfs", baseURL).href;
+      const replacementUrl = new URL("/fixed-composer-replacement.vfs", baseURL).href;
       const kernelUrl = new URL("/fixed-composer-kernel.wasm", baseURL).href;
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+      await page.route(replacementUrl, (route) => route.fulfill({ body: Buffer.from(replacementImage) }));
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
       const result = await page.evaluate(async ({ composerUrl, sourceStageUrl, persistenceUrl, browserKernelUrl, imageUrl, kernelUrl }) => {
@@ -926,6 +929,179 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         name: result.pendingName,
       });
       expect(readyBoot).toEqual({ ready: true, state: "XYcdefgh" });
+      const replacement = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, replacementUrl, name }) => {
+        const {
+          loadFixedPersistenceImageHandle,
+          publishFixedPersistenceReplacement,
+          stageFixedPersistenceSnapshotReplacement,
+        } = await import(persistenceUrl);
+        const { BrowserKernel } = await import(browserKernelUrl);
+        const identity = "composer stream probe";
+        const previous = await loadFixedPersistenceImageHandle(name, identity);
+        if (previous === null) throw new Error("replacement source disappeared");
+        const imageBytes = new Uint8Array(await (await fetch(replacementUrl)).arrayBuffer());
+        const overlayDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const sourceName = `replacement-source-${crypto.randomUUID()}`;
+        const sourceFile = await overlayDirectory.getFileHandle(sourceName, { create: true });
+        const sourceWriter = await sourceFile.createWritable();
+        await sourceWriter.write(imageBytes);
+        await sourceWriter.close();
+        const chunkSha256: string[] = [];
+        for (let offset = 0; offset < imageBytes.byteLength; offset += 1024 * 1024) {
+          const chunk = imageBytes.subarray(offset, offset + 1024 * 1024);
+          const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", chunk));
+          chunkSha256.push(Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""));
+        }
+        const staged = await stageFixedPersistenceSnapshotReplacement(
+          name, identity, sourceFile,
+          { length: imageBytes.byteLength, chunkBytes: 1024 * 1024, chunkSha256 },
+          previous.lazyAssets, previous.composition,
+        );
+        await overlayDirectory.removeEntry(sourceName);
+        const beforePublish = await loadFixedPersistenceImageHandle(name, identity);
+        let prematurePublishRejected = false;
+        try {
+          await publishFixedPersistenceReplacement(name, identity, previous, staged);
+        } catch (error) {
+          prematurePublishRejected = String(error).includes("journal is not initialized");
+        }
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        let stagedState: string;
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: staged.file,
+            integrity: { length: staged.length, chunkBytes: 1024 * 1024, chunkSha256: staged.chunkSha256 },
+            experimentalFixedPersistenceName: staged.journalName,
+          });
+          stagedState = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+        } finally {
+          await kernel.destroy();
+        }
+        let publicationChecks = 0;
+        let interruptedPublishRejected = false;
+        try {
+          await publishFixedPersistenceReplacement(name, identity, previous, staged, () => {
+            if (++publicationChecks === 6) throw new Error("publication interrupted before close");
+          });
+        } catch (error) {
+          interruptedPublishRejected = String(error).includes("publication interrupted before close");
+        }
+        const afterInterruption = await loadFixedPersistenceImageHandle(name, identity);
+        await publishFixedPersistenceReplacement(name, identity, previous, staged);
+        const current = await loadFixedPersistenceImageHandle(name, identity);
+        return {
+          oldStillCurrentBeforePublish: beforePublish !== null && await beforePublish.file.isSameEntry(previous.file),
+          prematurePublishRejected,
+          interruptedPublishRejected,
+          oldStillCurrentAfterInterruption: afterInterruption !== null && await afterInterruption.file.isSameEntry(previous.file),
+          stagedState,
+          newReady: current?.journalInitialized === true,
+          newCurrent: current !== null && await current.file.isSameEntry(staged.file),
+        };
+      }, {
+        persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        replacementUrl,
+        name: result.pendingName,
+      });
+      expect(replacement).toEqual({
+        oldStillCurrentBeforePublish: true,
+        prematurePublishRejected: true,
+        interruptedPublishRejected: true,
+        oldStillCurrentAfterInterruption: true,
+        stagedState: "replacement",
+        newReady: true,
+        newCurrent: true,
+      });
+      await page.reload();
+      const replacementBoot = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, name }) => {
+        const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
+        const { BrowserKernel } = await import(browserKernelUrl);
+        const current = await loadFixedPersistenceImageHandle(name, "composer stream probe");
+        if (current === null) throw new Error("replacement disappeared after reload");
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: current.file,
+            experimentalFixedPersistenceName: current.journalName,
+            requireExistingRootfsPersistence: current.journalInitialized,
+          });
+          return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+        } finally {
+          await kernel.destroy();
+        }
+      }, {
+        persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        name: result.pendingName,
+      });
+      expect(replacementBoot).toBe("replacement");
+      const damagedGeneration = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, name }) => {
+        const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
+        const { BrowserKernel } = await import(browserKernelUrl);
+        const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
+        const boot = async (handle: NonNullable<Awaited<ReturnType<typeof loadFixedPersistenceImageHandle>>>) => {
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: kernelBytes,
+              vfsImageFile: handle.file,
+              experimentalFixedPersistenceName: handle.journalName,
+              requireExistingRootfsPersistence: handle.journalInitialized,
+            });
+            return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          } finally {
+            await kernel.destroy();
+          }
+        };
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const manifest = JSON.parse(await (await directory.getFileHandle(`${name}.base.json`)).getFile().then((file) => file.text())) as {
+          imageFileName: string;
+          journalName: string;
+        };
+        const imageFile = await directory.getFileHandle(manifest.imageFileName);
+        const originalImage = new Uint8Array(await (await imageFile.getFile()).arrayBuffer());
+        const damagedImage = originalImage.slice();
+        damagedImage[0] ^= 1;
+        const imageWriter = await imageFile.createWritable();
+        await imageWriter.write(damagedImage);
+        await imageWriter.close();
+        const afterImageDamage = await loadFixedPersistenceImageHandle(name, "composer stream probe");
+        const imageFallback = afterImageDamage?.journalName !== manifest.journalName;
+        const imageFallbackState = afterImageDamage === null ? null : await boot(afterImageDamage);
+        const imageRestore = await imageFile.createWritable();
+        await imageRestore.write(originalImage);
+        await imageRestore.close();
+        const journalFile = await directory.getFileHandle(`${manifest.journalName}.journal`);
+        const originalJournal = new Uint8Array(await (await journalFile.getFile()).arrayBuffer());
+        const damagedJournal = originalJournal.slice();
+        damagedJournal[0] ^= 1;
+        const journalWriter = await journalFile.createWritable();
+        await journalWriter.write(damagedJournal);
+        await journalWriter.close();
+        const afterJournalDamage = await loadFixedPersistenceImageHandle(name, "composer stream probe");
+        const journalFallback = afterJournalDamage?.journalName !== manifest.journalName;
+        const journalFallbackState = afterJournalDamage === null ? null : await boot(afterJournalDamage);
+        const journalRestore = await journalFile.createWritable();
+        await journalRestore.write(originalJournal);
+        await journalRestore.close();
+        return { imageFallback, imageFallbackState, journalFallback, journalFallbackState };
+      }, {
+        persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        name: result.pendingName,
+      });
+      expect(damagedGeneration).toEqual({
+        imageFallback: true,
+        imageFallbackState: "XYcdefgh",
+        journalFallback: true,
+        journalFallbackState: "XYcdefgh",
+      });
       await page.evaluate(async (name) => {
         const overlayDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const currentManifest = await overlayDirectory.getFileHandle(`${name}.base.json`);

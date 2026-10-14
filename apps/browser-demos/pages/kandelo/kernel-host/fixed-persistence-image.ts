@@ -240,16 +240,65 @@ async function readSavedImage(
   identity: string,
 ): ReturnType<typeof readSavedImageAt> {
   const names = fileNames(name);
+  let current: Awaited<ReturnType<typeof readSavedImageAt>>;
   try {
-    const current = await readSavedImageAt(parent, name, identity, names.manifest);
-    if (current !== null) return current;
+    current = await readSavedImageAt(parent, name, identity, names.manifest);
   } catch (error) {
     if (!(error instanceof Error) || !error.message.startsWith("experimental persistence")) throw error;
     const previous = await readSavedImageAt(parent, name, identity, names.previousManifest);
-    if (previous !== null) return previous;
+    if (previous !== null) {
+      await verifySavedImage(parent, previous);
+      return previous;
+    }
     throw error;
   }
-  return readSavedImageAt(parent, name, identity, names.previousManifest);
+  if (current === null) {
+    const previous = await readSavedImageAt(parent, name, identity, names.previousManifest);
+    if (previous !== null) await verifySavedImage(parent, previous);
+    return previous;
+  }
+  let previous: Awaited<ReturnType<typeof readSavedImageAt>>;
+  try {
+    previous = await readSavedImageAt(parent, name, identity, names.previousManifest);
+  } catch {
+    return current;
+  }
+  if (previous !== null && !(await previous.imageFile.isSameEntry(current.imageFile))) {
+    try {
+      await verifySavedImage(parent, current);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith("experimental persistence")) throw error;
+      await verifySavedImage(parent, previous);
+      return previous;
+    }
+  }
+  return current;
+}
+
+async function verifySavedImage(
+  parent: FileSystemDirectoryHandle,
+  saved: NonNullable<Awaited<ReturnType<typeof readSavedImageAt>>>,
+): Promise<void> {
+  const { manifest, imageFile } = saved;
+  if (manifest.chunkSha256 === undefined) {
+    throw new Error("experimental persistence fallback image lacks chunk integrity");
+  }
+  const snapshot = await imageFile.getFile();
+  const imageHash = incrementalSha256.create();
+  for (let index = 0; index < manifest.chunkSha256.length; index++) {
+    const offset = index * CHUNK_BYTES;
+    const bytes = new Uint8Array(await snapshot.slice(offset, offset + CHUNK_BYTES).arrayBuffer());
+    if (await sha256(bytes) !== manifest.chunkSha256[index]) {
+      throw new Error("experimental persistence base image is damaged; refusing to boot");
+    }
+    imageHash.update(bytes);
+  }
+  if (manifest.format === FORMAT_V4 && bytesToHex(imageHash.digest()) !== manifest.imageSha256) {
+    throw new Error("experimental persistence base image is damaged; refusing to boot");
+  }
+  if (manifest.format === FORMAT_V4 && manifest.journalInitialized) {
+    await verifyJournalHeader(parent, manifest.journalName!, manifest.imageSha256!);
+  }
 }
 
 async function readImage(
@@ -382,51 +431,43 @@ export async function markFixedPersistenceJournalInitialized(
     }
     if (saved.manifest.journalInitialized) return;
     const manifest = saved.manifest;
-    const journalFile = await existingFile(parent, `${installed.journalName}.journal`);
-    const journal = journalFile === null ? null : await journalFile.getFile();
-    if (journal === null || journal.size < 72) {
-      throw new Error("experimental persistence journal is not initialized");
-    }
-    const header = new Uint8Array(await journal.slice(0, 72).arrayBuffer());
-    if (
-      new TextDecoder().decode(header.subarray(0, 4)) !== "KOVL" ||
-      new DataView(header.buffer).getUint32(4, true) !== 1 ||
-      bytesToHex(header.subarray(8, 40)) !== manifest.imageSha256 ||
-      await sha256(header.subarray(0, 40)) !== bytesToHex(header.subarray(40, 72))
-    ) {
-      throw new Error("experimental persistence journal does not belong to this image");
-    }
+    await verifyJournalHeader(parent, installed.journalName, manifest.imageSha256!);
     manifest.journalInitialized = true;
     manifest.journalNameSha256 = await sha256(new TextEncoder().encode(JSON.stringify([
       identity, manifest.imageFileName, manifest.journalName, true,
     ])));
-    const backup = await parent.getFileHandle(names.previousManifest, { create: true });
-    const backupWriter = await backup.createWritable();
-    try {
-      await backupWriter.write(JSON.stringify(manifest));
-      await backupWriter.close();
-    } catch (error) {
-      await backupWriter.abort().catch(() => {});
-      throw error;
-    }
+    await writeManifest(parent, names.previousManifest, manifest);
     const verifiedBackup = await readSavedImageAt(parent, name, identity, names.previousManifest);
     if (verifiedBackup?.manifest.journalInitialized !== true) {
       throw new Error("experimental persistence fallback manifest was not published");
     }
-    const file = await parent.getFileHandle(names.manifest);
-    const writer = await file.createWritable();
-    try {
-      await writer.write(JSON.stringify(manifest));
-      await writer.close();
-    } catch (error) {
-      await writer.abort().catch(() => {});
-      throw error;
-    }
+    await writeManifest(parent, names.manifest, manifest);
     const verified = await readSavedImageAt(parent, name, identity, names.manifest);
     if (verified?.manifest.journalInitialized !== true) {
       throw new Error("experimental persistence journal initialization was not published");
     }
   });
+}
+
+async function verifyJournalHeader(
+  parent: FileSystemDirectoryHandle,
+  journalName: string,
+  imageSha256: string,
+): Promise<void> {
+  const journalFile = await existingFile(parent, `${journalName}.journal`);
+  const journal = journalFile === null ? null : await journalFile.getFile();
+  if (journal === null || journal.size < 72) {
+    throw new Error("experimental persistence journal is not initialized");
+  }
+  const header = new Uint8Array(await journal.slice(0, 72).arrayBuffer());
+  if (
+    new TextDecoder().decode(header.subarray(0, 4)) !== "KOVL" ||
+    new DataView(header.buffer).getUint32(4, true) !== 1 ||
+    bytesToHex(header.subarray(8, 40)) !== imageSha256 ||
+    await sha256(header.subarray(0, 40)) !== bytesToHex(header.subarray(40, 72))
+  ) {
+    throw new Error("experimental persistence journal does not belong to this image");
+  }
 }
 
 export async function saveFixedPersistenceImage(
@@ -512,6 +553,7 @@ async function writeFixedPersistenceImageStream(
   assertCurrent?: () => void,
   onProgress?: (message: string) => void,
   journalName = name,
+  mode: "install" | "replacement" = "install",
 ): Promise<FixedPersistenceImageHandle> {
   fileNames(name);
   if (journalName !== name && !/^j-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(journalName)) {
@@ -523,21 +565,30 @@ async function writeFixedPersistenceImageStream(
     assertCurrent?.();
     const parent = await directory();
     onProgress?.("persistent image directory opened");
-    if (await readSavedImage(parent, name, identity) !== null) {
+    const existing = mode === "install"
+      ? await readSavedImage(parent, name, identity)
+      : await readSavedImageAt(parent, name, identity, fileNames(name).manifest);
+    if (mode === "install" && existing !== null) {
       throw new Error("experimental persistence was initialized concurrently; restart the computer");
     }
+    if (mode === "replacement" &&
+      (existing?.manifest.format !== FORMAT_V4 || !existing.manifest.journalInitialized)) {
+      throw new Error("experimental persistence replacement requires a ready current image");
+    }
     onProgress?.("persistent image absence checked");
-    const generationPattern = new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`);
-    const entries = (parent as FileSystemDirectoryHandle & {
-      entries(): AsyncIterable<[string, FileSystemHandle]>;
-    }).entries();
-    for await (const [entryName] of entries) {
-      if (generationPattern.test(entryName)) await parent.removeEntry(entryName);
+    if (mode === "install") {
+      const generationPattern = new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`);
+      const entries = (parent as FileSystemDirectoryHandle & {
+        entries(): AsyncIterable<[string, FileSystemHandle]>;
+      }).entries();
+      for await (const [entryName] of entries) {
+        if (generationPattern.test(entryName)) await parent.removeEntry(entryName);
+      }
     }
     const imageFileName = `${name}.${crypto.randomUUID()}.base`;
     const imageFile = await parent.getFileHandle(imageFileName, { create: true });
     onProgress?.("persistent image file opened");
-    let published = false;
+    let retained = false;
     try {
       const chunkSha256: string[] = [];
       const imageHash = incrementalSha256.create();
@@ -607,11 +658,11 @@ async function writeFixedPersistenceImageStream(
         lazyAssets,
         composition,
       };
-      await publishImage(parent, name, identity, result, assertCurrent);
-      published = true;
+      if (mode === "install") await publishImage(parent, name, identity, result, assertCurrent);
+      retained = true;
       return result;
     } finally {
-      if (!published) await parent.removeEntry(imageFileName).catch(() => {});
+      if (!retained) await parent.removeEntry(imageFileName).catch(() => {});
     }
   });
 }
@@ -627,34 +678,7 @@ async function publishImage(
   if (await readSavedImage(parent, name, identity) !== null) {
     throw new Error("experimental persistence was initialized concurrently; restart the computer");
   }
-  const imageFileName = staged.imageFileName;
-  if (
-    imageFileName === undefined ||
-    !new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`).test(imageFileName) ||
-    !SHA256_PATTERN.test(staged.imageSha256 ?? "")
-  ) {
-    throw new Error("experimental persistence staged image is invalid");
-  }
-  const savedLazyAssets = staged.lazyAssets === undefined ? null : { ...staged.lazyAssets };
-  const savedComposition = { ...staged.composition };
-  const manifest: ImageManifest = {
-    format: FORMAT_V4,
-    identity,
-    imageFileName,
-    journalName: staged.journalName,
-    journalInitialized: false,
-    imageSha256: staged.imageSha256,
-    journalNameSha256: await sha256(new TextEncoder().encode(JSON.stringify([
-      identity, imageFileName, staged.journalName, false,
-    ]))),
-    length: staged.length,
-    lazyAssets: savedLazyAssets,
-    lazyAssetsSha256: await sha256(new TextEncoder().encode(JSON.stringify(savedLazyAssets))),
-    chunkSha256: [...staged.chunkSha256],
-    chunkSha256Digest: await sha256(new TextEncoder().encode(JSON.stringify(staged.chunkSha256))),
-    composition: savedComposition,
-    compositionSha256: await sha256(new TextEncoder().encode(JSON.stringify(savedComposition))),
-  };
+  const manifest = await manifestForStagedImage(name, identity, staged, false);
   assertCurrent?.();
   const manifestFile = await parent.getFileHandle(names.manifest, { create: true });
   let writer: FileSystemWritableFileStream | undefined;
@@ -674,6 +698,144 @@ async function publishImage(
     await parent.removeEntry(names.manifest).catch(() => {});
     throw error;
   }
+}
+
+async function manifestForStagedImage(
+  name: string,
+  identity: string,
+  staged: FixedPersistenceImageHandle,
+  journalInitialized: boolean,
+): Promise<ImageManifest> {
+  const imageFileName = staged.imageFileName;
+  if (
+    imageFileName === undefined ||
+    !new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`).test(imageFileName) ||
+    !SHA256_PATTERN.test(staged.imageSha256 ?? "") ||
+    !Number.isSafeInteger(staged.length) || staged.length <= 0 ||
+    !Array.isArray(staged.chunkSha256) ||
+    staged.chunkSha256.length !== Math.ceil(staged.length / CHUNK_BYTES) ||
+    !staged.chunkSha256.every((digest) => SHA256_PATTERN.test(digest))
+  ) {
+    throw new Error("experimental persistence staged image is invalid");
+  }
+  const savedLazyAssets = staged.lazyAssets === undefined ? null : { ...staged.lazyAssets };
+  const savedComposition = { ...staged.composition };
+  const manifest: ImageManifest = {
+    format: FORMAT_V4,
+    identity,
+    imageFileName,
+    journalName: staged.journalName,
+    journalInitialized,
+    imageSha256: staged.imageSha256,
+    journalNameSha256: await sha256(new TextEncoder().encode(JSON.stringify([
+      identity, imageFileName, staged.journalName, journalInitialized,
+    ]))),
+    length: staged.length,
+    lazyAssets: savedLazyAssets,
+    lazyAssetsSha256: await sha256(new TextEncoder().encode(JSON.stringify(savedLazyAssets))),
+    chunkSha256: [...staged.chunkSha256],
+    chunkSha256Digest: await sha256(new TextEncoder().encode(JSON.stringify(staged.chunkSha256))),
+    composition: savedComposition,
+    compositionSha256: await sha256(new TextEncoder().encode(JSON.stringify(savedComposition))),
+  };
+  return manifest;
+}
+
+async function writeManifest(
+  parent: FileSystemDirectoryHandle,
+  fileName: string,
+  manifest: ImageManifest,
+  assertCurrent?: () => void,
+): Promise<void> {
+  const file = await parent.getFileHandle(fileName, { create: true });
+  const writer = await file.createWritable();
+  try {
+    await writer.write(JSON.stringify(manifest));
+    assertCurrent?.();
+    await writer.close();
+  } catch (error) {
+    await writer.abort().catch(() => {});
+    throw error;
+  }
+}
+
+export async function stageFixedPersistenceReplacement(
+  name: string,
+  identity: string,
+  chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+  lazyAssets: ImageOwnedRuntimeLazyAssets | undefined,
+  composition: StoredComposition,
+  assertCurrent?: () => void,
+): Promise<FixedPersistenceImageHandle> {
+  return writeFixedPersistenceImageStream(
+    name, identity, chunks, lazyAssets, composition, assertCurrent, undefined,
+    `j-${crypto.randomUUID()}`, "replacement",
+  );
+}
+
+export async function publishFixedPersistenceReplacement(
+  name: string,
+  identity: string,
+  previous: FixedPersistenceImageHandle,
+  staged: FixedPersistenceImageHandle,
+  assertCurrent?: () => void,
+): Promise<void> {
+  fileNames(name);
+  await locked(name, async () => {
+    assertCurrent?.();
+    const parent = await directory();
+    const names = fileNames(name);
+    const current = await readSavedImageAt(parent, name, identity, names.manifest);
+    if (
+      current?.manifest.format !== FORMAT_V4 || !current.manifest.journalInitialized ||
+      current.manifest.journalName !== previous.journalName ||
+      !(await current.imageFile.isSameEntry(previous.file)) ||
+      staged.journalName === previous.journalName ||
+      !/^j-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(staged.journalName)
+    ) {
+      throw new Error("experimental persistence replacement source changed");
+    }
+    await verifySavedImage(parent, current);
+    const manifest = await manifestForStagedImage(name, identity, staged, true);
+    const stagedFile = await existingFile(parent, manifest.imageFileName!);
+    if (stagedFile === null || !(await stagedFile.isSameEntry(staged.file))) {
+      throw new Error("experimental persistence staged image changed");
+    }
+    const snapshot = await stagedFile.getFile();
+    if (snapshot.size !== staged.length) {
+      throw new Error("experimental persistence staged image is damaged");
+    }
+    const imageHash = incrementalSha256.create();
+    for (let index = 0; index < staged.chunkSha256.length; index++) {
+      assertCurrent?.();
+      const offset = index * CHUNK_BYTES;
+      const bytes = new Uint8Array(await snapshot.slice(offset, offset + CHUNK_BYTES).arrayBuffer());
+      if (await sha256(bytes) !== staged.chunkSha256[index]) {
+        throw new Error("experimental persistence staged image is damaged");
+      }
+      imageHash.update(bytes);
+    }
+    if (bytesToHex(imageHash.digest()) !== staged.imageSha256) {
+      throw new Error("experimental persistence staged image is damaged");
+    }
+    await verifyJournalHeader(parent, staged.journalName, staged.imageSha256!);
+    assertCurrent?.();
+    await writeManifest(parent, names.previousManifest, current.manifest, assertCurrent);
+    const backup = await readSavedImageAt(parent, name, identity, names.previousManifest);
+    if (backup === null || backup.manifest.imageFileName !== current.manifest.imageFileName ||
+      backup.manifest.journalName !== current.manifest.journalName ||
+      backup.manifest.journalInitialized !== true) {
+      throw new Error("experimental persistence previous generation was not preserved");
+    }
+    assertCurrent?.();
+    await writeManifest(parent, names.manifest, manifest, assertCurrent);
+    const published = await readSavedImageAt(parent, name, identity, names.manifest);
+    if (published === null || published.manifest.imageFileName !== manifest.imageFileName ||
+      published.manifest.journalName !== staged.journalName ||
+      published.manifest.journalInitialized !== true) {
+      throw new Error("experimental persistence replacement was not published");
+    }
+  });
 }
 
 export async function saveFixedPersistenceImageStream(
@@ -700,6 +862,32 @@ export async function publishFixedPersistenceSnapshot(
   composition: StoredComposition,
   assertCurrent?: () => void,
 ): Promise<FixedPersistenceImageHandle> {
+  return saveFixedPersistenceImageStream(
+    name, identity, await verifiedSnapshotChunks(stagedFile, integrity, assertCurrent),
+    lazyAssets, composition, assertCurrent,
+  );
+}
+
+export async function stageFixedPersistenceSnapshotReplacement(
+  name: string,
+  identity: string,
+  stagedFile: FileSystemFileHandle,
+  integrity: OpfsImageIntegrity,
+  lazyAssets: ImageOwnedRuntimeLazyAssets | undefined,
+  composition: StoredComposition,
+  assertCurrent?: () => void,
+): Promise<FixedPersistenceImageHandle> {
+  return stageFixedPersistenceReplacement(
+    name, identity, await verifiedSnapshotChunks(stagedFile, integrity, assertCurrent),
+    lazyAssets, composition, assertCurrent,
+  );
+}
+
+async function verifiedSnapshotChunks(
+  stagedFile: FileSystemFileHandle,
+  integrity: OpfsImageIntegrity,
+  assertCurrent?: () => void,
+): Promise<AsyncIterable<Uint8Array>> {
   if (
     !Number.isSafeInteger(integrity.length) || integrity.length <= 0 ||
     integrity.chunkBytes !== CHUNK_BYTES ||
@@ -724,7 +912,5 @@ export async function publishFixedPersistenceSnapshot(
       yield bytes;
     }
   }
-  return saveFixedPersistenceImageStream(
-    name, identity, verifiedChunks(), lazyAssets, composition, assertCurrent,
-  );
+  return verifiedChunks();
 }
