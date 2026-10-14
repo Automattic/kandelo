@@ -51,7 +51,7 @@ import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
-import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+import { awaitGracefulKernelRealmDestroyOutcome } from "./kernel-realm-destroy";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
@@ -349,6 +349,7 @@ export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
   private workerStarting = false;
+  private persistentJournalQuiescenceUnproven = false;
   private releasePersistentJournalLease: (() => Promise<void>) | null = null;
   private initialized = false;
   private maxPages: number;
@@ -622,7 +623,7 @@ export class BrowserKernel {
     rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
   }): Promise<void> {
-    if (this.workerStarted || this.workerStarting) {
+    if (this.workerStarted || this.workerStarting || this.persistentJournalQuiescenceUnproven) {
       throw new Error("browser kernel worker is already running");
     }
     if (
@@ -791,6 +792,7 @@ export class BrowserKernel {
       throw error;
     }
     this.initialized = true;
+    this.persistentJournalQuiescenceUnproven = journalName !== undefined;
   }
 
   /**
@@ -1828,8 +1830,8 @@ export class BrowserKernel {
     await this.request(requestId, { type: "remote_network_leave", requestId });
   }
 
-  hasActiveWorkerRealm(): boolean {
-    return this.workerStarted;
+  hasUnconfirmedKernelQuiescence(): boolean {
+    return this.workerStarted || this.persistentJournalQuiescenceUnproven;
   }
 
   /** Destroy the kernel and release all resources. */
@@ -1841,7 +1843,7 @@ export class BrowserKernel {
     let gracefulDetachFailure: string | undefined;
     if (this.initialized && this.kernelFatalError === null) {
       const requestId = this.nextRequestId++;
-      gracefulDetachFailure = await awaitGracefulKernelRealmDestroy(
+      const outcome = await awaitGracefulKernelRealmDestroyOutcome(
         () =>
           this.request(requestId, {
             type: "destroy",
@@ -1849,6 +1851,8 @@ export class BrowserKernel {
           }),
         DESTROY_REQUEST_TIMEOUT_MS,
       );
+      gracefulDetachFailure = outcome.failure;
+      if (outcome.result !== null) this.persistentJournalQuiescenceUnproven = false;
     }
     this.initialized = false;
     await this.pcmDriver?.settleOutputPipeline().catch(() => {});
@@ -1870,7 +1874,7 @@ export class BrowserKernel {
         (error instanceof Error ? error.message : String(error));
     }
     this.workerStarted = realmTerminationFailure !== undefined;
-    if (!this.workerStarted) {
+    if (!this.workerStarted && !this.persistentJournalQuiescenceUnproven) {
       const releaseJournalLease = this.releasePersistentJournalLease;
       this.releasePersistentJournalLease = null;
       await releaseJournalLease?.();
