@@ -112,6 +112,14 @@ bounded unsealed tail. A corrupt table or mismatched seal must reject that
 generation and try the prior valid one. Existing v1 journals need an explicit
 conversion path; no format change may silently reset a machine.
 
+A Rust-only fixed-block checkpoint table now implements the first part of
+this format. It writes sorted block locations without materializing an index
+copy, binds their checksum to the base and exact journal prefix, verifies all
+records on open, and uses one cached page for binary-search lookups. The
+journal can build it only after flushing and verifying every indexed block.
+No host generation uses this table yet; boot still rebuilds the old in-memory
+map and the milestone remains open.
+
 Live compaction needs a two-phase handoff, unlike the current boot-only
 handoff. While guest operations are stopped at a kernel-worker boundary, copy
 live records into the inactive slot, flush its journal and table, publish and
