@@ -23,7 +23,7 @@ const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-over
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
 
-test("browser reopens a resizable journal after sparse growth and truncate", async ({ playwright, browserName, baseURL }, testInfo) => {
+test("browser reopens a resizable journal after sparse growth and namespace changes", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.mkdir("/bin", 0o755);
@@ -62,7 +62,7 @@ test("browser reopens a resizable journal after sparse growth and truncate", asy
         await writer.write(imageBytes);
         await writer.close();
         const statuses = [];
-        for (const mode of ["resize", "verify-resize", "verify-zero"]) {
+        for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink"]) {
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
           try {
             await kernel.initFromOpfsImage({
@@ -79,7 +79,7 @@ test("browser reopens a resizable journal after sparse growth and truncate", asy
         const journal = await (await directory.getFileHandle(`${name}.journal`)).getFile();
         return { statuses, journalSize: journal.size };
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result.statuses).toEqual([0, 0, 0]);
+      expect(result.statuses).toEqual([0, 0, 0, 0, 0, 0, 0]);
       expect(result.journalSize).toBeLessThan(20_000);
     } finally {
       await context.close();

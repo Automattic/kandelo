@@ -36,7 +36,7 @@ use core::cell::UnsafeCell;
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
-use crate::persistent_overlay::{OverlayJournal, OverlayStorage};
+use crate::persistent_overlay::{Mutation, OverlayJournal, OverlayKey, OverlayStorage};
 use spin::Mutex;
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::WasmStat;
@@ -735,8 +735,104 @@ fn enable_persistence_internal(
             }
             Ok::<_, Errno>(())
         })?;
+        ROOTFS.with(|state| apply_persistent_dirents(state, &journal))?;
     }
     *active = Some(PersistentMount { journal, resizable });
+    Ok(())
+}
+
+fn apply_persistent_dirents(
+    state: &mut RootfsState,
+    journal: &PersistentJournal,
+) -> Result<(), Errno> {
+    let mut inode_indices = BTreeMap::new();
+    for (index, inode) in state.inodes.iter().enumerate() {
+        if let Some(inode) = inode {
+            if inode_indices.insert(inode.ino, index as u32).is_some() {
+                return Err(Errno::EIO);
+            }
+        }
+    }
+    let mut changes = Vec::new();
+    for (key, value) in journal.state().metadata_entries() {
+        let OverlayKey::Dirent { parent, name } = key else {
+            continue;
+        };
+        let parent_index = *inode_indices.get(parent).ok_or(Errno::EIO)?;
+        let parent_inode = state.get(parent_index).ok_or(Errno::EIO)?;
+        let InodeKind::Dir(entries) = &parent_inode.kind else {
+            return Err(Errno::EIO);
+        };
+        if entries
+            .get(name)
+            .is_some_and(|&index| state.get(index).is_some_and(Inode::is_dir))
+        {
+            return Err(Errno::EIO);
+        }
+        let target_index = match value {
+            Some(bytes) => {
+                let inode_number = u64::from_le_bytes(bytes.try_into().map_err(|_| Errno::EIO)?);
+                let index = *inode_indices.get(&inode_number).ok_or(Errno::EIO)?;
+                if state.get(index).ok_or(Errno::EIO)?.is_dir() {
+                    return Err(Errno::EIO);
+                }
+                Some(index)
+            }
+            None => None,
+        };
+        changes.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+        changes.push((parent_index, name.clone(), target_index));
+    }
+    let mut links = Vec::new();
+    links
+        .try_reserve_exact(state.inodes.len())
+        .map_err(|_| Errno::ENOMEM)?;
+    links.resize(state.inodes.len(), 0u32);
+    for inode in state.inodes.iter().flatten() {
+        if let InodeKind::Dir(entries) = &inode.kind {
+            for &index in entries.values() {
+                let count = links.get_mut(index as usize).ok_or(Errno::EIO)?;
+                *count = count.checked_add(1).ok_or(Errno::EIO)?;
+            }
+        }
+    }
+    for (parent, name, target) in &changes {
+        let Some(InodeKind::Dir(entries)) = state.get(*parent).map(|inode| &inode.kind) else {
+            return Err(Errno::EIO);
+        };
+        let prior = entries.get(name).copied();
+        if prior != *target {
+            if let Some(index) = prior {
+                let count = links.get_mut(index as usize).ok_or(Errno::EIO)?;
+                *count = count.checked_sub(1).ok_or(Errno::EIO)?;
+            }
+            if let Some(index) = target {
+                let count = links.get_mut(*index as usize).ok_or(Errno::EIO)?;
+                *count = count.checked_add(1).ok_or(Errno::EIO)?;
+            }
+        }
+    }
+    for (parent, name, target) in changes {
+        let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|inode| &mut inode.kind)
+        else {
+            return Err(Errno::EIO);
+        };
+        match target {
+            Some(index) => {
+                entries.insert(name, index);
+            }
+            None => {
+                entries.remove(&name);
+            }
+        }
+    }
+    for (index, inode) in state.inodes.iter_mut().enumerate() {
+        if let Some(inode) = inode {
+            if !inode.is_dir() {
+                inode.nlink = links[index];
+            }
+        }
+    }
     Ok(())
 }
 
@@ -3957,10 +4053,30 @@ pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
 
 /// Unlink a rootfs non-directory name.
 pub fn unlink(path: &[u8]) -> Result<(), Errno> {
-    reject_fixed_persistence_mutation()?;
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EISDIR);
+    }
+    if resizable_persistence_enabled() {
+        let key = ROOTFS.with(|state| {
+            let (parent, last, target) = state.resolve(&comps)?;
+            let target = target.ok_or(Errno::ENOENT)?;
+            if state.get(target).ok_or(Errno::ENOENT)?.is_dir() {
+                return Err(Errno::EISDIR);
+            }
+            Ok::<_, Errno>(OverlayKey::Dirent {
+                parent: state.get(parent).ok_or(Errno::EIO)?.ino,
+                name: last.ok_or(Errno::ENOENT)?.to_vec(),
+            })
+        })?;
+        PERSISTENT_ROOTFS
+            .lock()
+            .as_mut()
+            .ok_or(Errno::EIO)?
+            .journal
+            .commit(&[Mutation::Delete { key }])?;
+    } else {
+        reject_fixed_persistence_mutation()?;
     }
     let result = ROOTFS.with(|state| {
         let (parent, last, target) = state.resolve(&comps)?;
@@ -3990,7 +4106,6 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
 /// compatible type is atomically replaced; type mismatches yield ENOTDIR/EISDIR
 /// and a non-empty destination directory yields ENOTEMPTY.
 pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
-    reject_fixed_persistence_mutation()?;
     // A directory cannot be moved into its own subtree.
     if new.len() > old.len() && new.starts_with(old) && new[old.len()] == b'/' {
         return Err(Errno::EINVAL);
@@ -3999,6 +4114,50 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let new_comps = split_components(new);
     if old_comps.is_empty() || new_comps.is_empty() {
         return Err(Errno::EBUSY); // cannot rename the root
+    }
+    if resizable_persistence_enabled() {
+        let mutations = ROOTFS.with(|state| {
+            let (old_parent, old_name, old_target) = state.resolve(&old_comps)?;
+            let old_target = old_target.ok_or(Errno::ENOENT)?;
+            let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
+            if new_existing == Some(old_target) {
+                return Ok::<_, Errno>(None);
+            }
+            if state.get(old_target).ok_or(Errno::ENOENT)?.is_dir() {
+                return Err(Errno::EROFS);
+            }
+            if new_existing.is_some_and(|index| state.get(index).is_some_and(Inode::is_dir)) {
+                return Err(Errno::EISDIR);
+            }
+            let inode_number = state.get(old_target).ok_or(Errno::EIO)?.ino;
+            let old_parent_number = state.get(old_parent).ok_or(Errno::EIO)?.ino;
+            let new_parent_number = state.get(new_parent).ok_or(Errno::EIO)?.ino;
+            Ok(Some([
+                Mutation::Delete {
+                    key: OverlayKey::Dirent {
+                        parent: old_parent_number,
+                        name: old_name.ok_or(Errno::ENOENT)?.to_vec(),
+                    },
+                },
+                Mutation::Put {
+                    key: OverlayKey::Dirent {
+                        parent: new_parent_number,
+                        name: new_name.ok_or(Errno::ENOENT)?.to_vec(),
+                    },
+                    value: inode_number.to_le_bytes().to_vec(),
+                },
+            ]))
+        })?;
+        if let Some(mutations) = mutations {
+            PERSISTENT_ROOTFS
+                .lock()
+                .as_mut()
+                .ok_or(Errno::EIO)?
+                .journal
+                .commit(&mutations)?;
+        }
+    } else {
+        reject_fixed_persistence_mutation()?;
     }
     let result = ROOTFS.with(|state| {
         let (old_parent, old_name, old_target) = state.resolve(&old_comps)?;
@@ -4036,7 +4195,11 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
                 entries.remove(&new_name);
             }
             if let Some(inode) = state.get_mut(existing) {
-                inode.nlink = 0;
+                inode.nlink = if new_is_dir {
+                    0
+                } else {
+                    inode.nlink.saturating_sub(1)
+                };
             }
             state.maybe_free(existing);
         }
@@ -6495,6 +6658,19 @@ mod tests {
         assert_eq!(link(b"/usr/bin", b"/bin2").unwrap_err(), Errno::EPERM);
     }
 
+    #[test]
+    fn rename_replacing_one_hard_link_preserves_other_links() {
+        let _guard = TestGuard::acquire();
+        build_sample_tree();
+        insert_host_file(b"/replace", 44, 3, 0o644, 0, 0, 20).unwrap();
+        link(b"/replace", b"/survivor").unwrap();
+        let replaced_ino = lstat(b"/survivor").unwrap().st_ino;
+        rename(b"/usr/bin/hello", b"/replace").unwrap();
+        assert_eq!(lstat(b"/survivor").unwrap().st_ino, replaced_ino);
+        assert_eq!(lstat(b"/survivor").unwrap().st_nlink, 1);
+        assert_ne!(lstat(b"/replace").unwrap().st_ino, replaced_ino);
+    }
+
     /// A declared capacity is a growth ceiling, not download bytes.
     ///
     /// `main`'s #1419 found the canonical rootfs shipping 16 MiB for 3 MiB of
@@ -8425,6 +8601,61 @@ mod tests {
     }
 
     #[test]
+    fn resizable_persistence_replays_rename_and_unlink_after_indexed_compaction() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source), base_digest).unwrap();
+        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        rename(b"/hello.txt", b"/moved").unwrap();
+        assert!(matches!(lstat(b"/hello.txt"), Err(Errno::ENOENT)));
+        assert_eq!(lstat(b"/moved").unwrap().st_nlink, 1);
+        let mut bytes = [0; 11];
+        assert_eq!(read(handle, 0, &mut bytes, &mut image_bytes), Ok(11));
+        assert_eq!(&bytes, b"hello sffs\n");
+        release_handle(handle);
+        sync_persistence().unwrap();
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let checkpoint_end = target.0.lock().len() as u64;
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(
+            Box::new(target.clone()),
+            Box::new(index.clone()),
+            base_digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        assert!(matches!(lstat(b"/hello.txt"), Err(Errno::ENOENT)));
+        let handle = open(b"/moved", O_RDONLY, 0, 0, 0).unwrap();
+        unlink(b"/moved").unwrap();
+        assert!(matches!(lstat(b"/moved"), Err(Errno::ENOENT)));
+        assert_eq!(read(handle, 0, &mut bytes, &mut image_bytes), Ok(11));
+        release_handle(handle);
+        sync_persistence().unwrap();
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(
+            Box::new(target),
+            Box::new(index),
+            base_digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        assert!(matches!(lstat(b"/hello.txt"), Err(Errno::ENOENT)));
+        assert!(matches!(lstat(b"/moved"), Err(Errno::ENOENT)));
+    }
+
+    #[test]
     fn resizable_persistence_rejects_namespace_and_unknown_file_records() {
         use crate::persistent_overlay::{Mutation, OverlayKey};
 
@@ -8447,6 +8678,36 @@ mod tests {
             .unwrap();
         assert_eq!(
             enable_resizable_persistence(Box::new(namespace), base_digest),
+            Err(Errno::EIO)
+        );
+
+        let removed_directory = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut journal = OverlayJournal::open(removed_directory.clone(), base_digest).unwrap();
+        journal
+            .commit(&[Mutation::Delete {
+                key: OverlayKey::Dirent {
+                    parent: 1,
+                    name: b"dir".to_vec(),
+                },
+            }])
+            .unwrap();
+        assert_eq!(
+            enable_resizable_persistence(Box::new(removed_directory), base_digest),
+            Err(Errno::EIO)
+        );
+
+        let unknown_parent = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut journal = OverlayJournal::open(unknown_parent.clone(), base_digest).unwrap();
+        journal
+            .commit(&[Mutation::Delete {
+                key: OverlayKey::Dirent {
+                    parent: 99_999,
+                    name: b"hello.txt".to_vec(),
+                },
+            }])
+            .unwrap();
+        assert_eq!(
+            enable_resizable_persistence(Box::new(unknown_parent), base_digest),
             Err(Errno::EIO)
         );
 
