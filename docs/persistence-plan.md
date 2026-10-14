@@ -96,8 +96,9 @@ already accepted dirty blocks flush. This bounds the active tail even if
 compaction repeatedly fails. Fixed-overwrite compaction now copies records
 without retaining the target block map, then scans the compacted journal with
 bounded buffers to write its sorted checkpoint sidecar.
-Resizable mounts now journal rename and unlink of existing non-directory
-image entries. Other namespace mutations remain a separate milestone.
+Resizable mounts now journal link, rename, and unlink of existing
+non-directory image entries. Other namespace mutations remain a separate
+milestone.
 
 Boot now checks two optional sealed journal slots (`g0` and `g1`) on Node and
 browser hosts, preferring the highest verified generation. A seal authenticates
@@ -214,13 +215,13 @@ bytes are zero; this passes in Node and Chromium, Firefox, and WebKit without
 allocating the 8 GiB file. Fixed-mode mounts reject the resizable journal.
 `O_TRUNC` uses the same journaled zero-fence path as `ftruncate(0)` for
 eligible files; fixed-overwrite mounts continue to reject it. Resizable
-mounts also commit a rename's source removal and destination replacement
-in one journal transaction, and commit an unlink before changing the live
+mounts commit a rename's source removal and destination replacement in one
+journal transaction, and commit a link or unlink before changing the live
 tree. Boot validates and replays the final directory entries and recomputes
 link counts; an open-unlinked file remains readable until its last handle
 closes. These mutations currently apply only to non-directory image entries.
-Creation, directory namespace changes, hard-link creation, and timestamps
-remain nonpersistent.
+Regular-file creation, directory namespace changes, and timestamps remain
+nonpersistent.
 
 General POSIX replay then needs an overlay-backed regular-file inode kind,
 not `Regular(Vec<u8>)`, so newly created and grown files also remain larger

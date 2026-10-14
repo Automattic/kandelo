@@ -75,7 +75,7 @@ function expandJournalToCompactionThreshold(path: string): number {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
-  it.skipIf(guestProgramPath === null)("reopens sparse growth, zeroed regrowth, rename, and unlink", async () => {
+  it.skipIf(guestProgramPath === null)("reopens sparse growth, zeroed regrowth, link, rename, and unlink", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-rootfs-"));
     const path = join(directory, "machine.journal");
     try {

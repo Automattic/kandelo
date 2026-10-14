@@ -14,11 +14,18 @@ int main(int argc, char **argv) {
     int unlink_state = argc >= 2 && strcmp(argv[1], "unlink-state") == 0;
     int verify_unlink = argc >= 2 && strcmp(argv[1], "verify-unlink") == 0;
     if (rename_state || verify_rename || unlink_state || verify_unlink) {
-        if (rename_state && rename("/state", "/moved") != 0) return 32;
+        if (rename_state) {
+            if (link("/state", "/alias") != 0) return 45;
+            if (rename("/state", "/moved") != 0) return 32;
+        }
         if (verify_unlink) {
             if (open("/state", O_RDONLY) >= 0 || errno != ENOENT) return 33;
             if (open("/moved", O_RDONLY) >= 0 || errno != ENOENT) return 34;
-            return 0;
+            int alias = open("/alias", O_RDONLY);
+            if (alias < 0) return 46;
+            struct stat alias_metadata;
+            if (fstat(alias, &alias_metadata) != 0 || alias_metadata.st_nlink != 1) return 47;
+            return close(alias) == 0 ? 0 : 48;
         }
         if (open("/state", O_RDONLY) >= 0 || errno != ENOENT) return 35;
         int fd = open("/moved", O_RDONLY);
@@ -26,12 +33,18 @@ int main(int argc, char **argv) {
         off_t offset = 8LL * 1024 * 1024 * 1024 + 7;
         struct stat metadata;
         if (fstat(fd, &metadata) != 0 || metadata.st_size != offset + 4) return 37;
+        int alias = open("/alias", O_RDONLY);
+        if (alias < 0) return 49;
+        struct stat alias_metadata;
+        if (fstat(alias, &alias_metadata) != 0 || alias_metadata.st_ino != metadata.st_ino || alias_metadata.st_nlink != 2) return 50;
+        if (close(alias) != 0) return 51;
         unsigned char bytes[4];
         if (pread(fd, bytes, sizeof(bytes), offset) != (ssize_t)sizeof(bytes)) return 38;
         if (memcmp(bytes, "\0\0\0\0", sizeof(bytes)) != 0) return 39;
         if (unlink_state) {
             if (unlink("/moved") != 0) return 40;
             if (open("/moved", O_RDONLY) >= 0 || errno != ENOENT) return 41;
+            if (fstat(fd, &metadata) != 0 || metadata.st_nlink != 1) return 52;
             if (pread(fd, bytes, sizeof(bytes), offset) != (ssize_t)sizeof(bytes)) return 42;
             if (memcmp(bytes, "\0\0\0\0", sizeof(bytes)) != 0) return 43;
         }

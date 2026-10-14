@@ -4250,19 +4250,57 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
 /// links to directories are EPERM; an existing destination is EEXIST. `old` is
 /// not dereferenced (the kernel already applied the syscall's follow policy).
 pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
-    reject_fixed_persistence_mutation()?;
     let old_comps = split_components(old);
     let new_comps = split_components(new);
     if new_comps.is_empty() {
         return Err(Errno::EEXIST); // cannot link over the root
+    }
+    if resizable_persistence_enabled() {
+        let mutation = ROOTFS.with(|state| {
+            let old_idx = {
+                let root = state.mount_root();
+                state.walk(root, &old_comps)?
+            };
+            let source = state.get(old_idx).ok_or(Errno::ENOENT)?;
+            if source.is_dir() {
+                return Err(Errno::EPERM);
+            }
+            if source.nlink == u32::MAX {
+                return Err(Errno::EMLINK);
+            }
+            let inode_number = source.ino;
+            let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
+            if new_existing.is_some() {
+                return Err(Errno::EEXIST);
+            }
+            Ok::<_, Errno>(Mutation::Put {
+                key: OverlayKey::Dirent {
+                    parent: state.get(new_parent).ok_or(Errno::EIO)?.ino,
+                    name: new_name.ok_or(Errno::ENOENT)?.to_vec(),
+                },
+                value: inode_number.to_le_bytes().to_vec(),
+            })
+        })?;
+        PERSISTENT_ROOTFS
+            .lock()
+            .as_mut()
+            .ok_or(Errno::EIO)?
+            .journal
+            .commit(&[mutation])?;
+    } else {
+        reject_fixed_persistence_mutation()?;
     }
     ROOTFS.with(|state| {
         let old_idx = {
             let root = state.mount_root();
             state.walk(root, &old_comps)?
         };
-        if state.get(old_idx).ok_or(Errno::ENOENT)?.is_dir() {
+        let source = state.get(old_idx).ok_or(Errno::ENOENT)?;
+        if source.is_dir() {
             return Err(Errno::EPERM); // no hard links to directories
+        }
+        if source.nlink == u32::MAX {
+            return Err(Errno::EMLINK);
         }
         let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
         if new_existing.is_some() {
@@ -8688,9 +8726,11 @@ mod tests {
         load_image(image.len() as u64, &mut image_bytes).unwrap();
         enable_resizable_persistence(Box::new(source), base_digest).unwrap();
         let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        link(b"/hello.txt", b"/alias").unwrap();
         rename(b"/hello.txt", b"/moved").unwrap();
         assert!(matches!(lstat(b"/hello.txt"), Err(Errno::ENOENT)));
-        assert_eq!(lstat(b"/moved").unwrap().st_nlink, 1);
+        assert_eq!(lstat(b"/moved").unwrap().st_nlink, 2);
+        assert_eq!(lstat(b"/alias").unwrap().st_ino, lstat(b"/moved").unwrap().st_ino);
         let mut bytes = [0; 11];
         assert_eq!(read(handle, 0, &mut bytes, &mut image_bytes), Ok(11));
         assert_eq!(&bytes, b"hello sffs\n");
@@ -8711,9 +8751,11 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(lstat(b"/hello.txt"), Err(Errno::ENOENT)));
+        assert_eq!(lstat(b"/alias").unwrap().st_nlink, 2);
         let handle = open(b"/moved", O_RDONLY, 0, 0, 0).unwrap();
         unlink(b"/moved").unwrap();
         assert!(matches!(lstat(b"/moved"), Err(Errno::ENOENT)));
+        assert_eq!(lstat(b"/alias").unwrap().st_nlink, 1);
         assert_eq!(read(handle, 0, &mut bytes, &mut image_bytes), Ok(11));
         release_handle(handle);
         sync_persistence().unwrap();
@@ -8729,6 +8771,7 @@ mod tests {
         .unwrap();
         assert!(matches!(lstat(b"/hello.txt"), Err(Errno::ENOENT)));
         assert!(matches!(lstat(b"/moved"), Err(Errno::ENOENT)));
+        assert_eq!(lstat(b"/alias").unwrap().st_nlink, 1);
     }
 
     #[test]
