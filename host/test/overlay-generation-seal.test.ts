@@ -260,6 +260,16 @@ describe("overlay generation boot selection", () => {
     expect(Object.keys(entries)).toEqual(["g0.journal"]);
   });
 
+  it("does not create a missing journal for a restored computer", async () => {
+    const entries: Record<string, MemoryStorage> = {};
+    await expect(enableBestOverlayGeneration(files(entries), () => {}, true))
+      .rejects.toThrow("refusing to reset");
+    expect(Object.keys(entries)).toEqual([]);
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("legacy");
+    await expect(enableBestOverlayGeneration(files(entries), () => {}, true))
+      .rejects.toThrow("refusing to reset");
+  });
+
   it("stages and seals a compacted slot before selecting it", async () => {
     const source = new MemoryStorage(new Uint8Array(72).fill(7));
     const entries: Record<string, MemoryStorage> = { "legacy.journal": source };

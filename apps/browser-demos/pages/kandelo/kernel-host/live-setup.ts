@@ -1582,6 +1582,7 @@ async function bootProfile(
         },
         lazyUrlMap,
         experimentalFixedPersistenceName: opfsImage.journalName,
+        requireExistingRootfsPersistence: restoredHandle !== null,
       });
     } else {
       const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =

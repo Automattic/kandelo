@@ -1294,6 +1294,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   }
 
   const persistenceName = msg.experimentalResizablePersistenceName ?? msg.experimentalFixedPersistenceName;
+  if (msg.requireExistingRootfsPersistence && persistenceName === undefined) {
+    throw new Error("requireExistingRootfsPersistence requires a journal name");
+  }
   if (persistenceName !== undefined) {
     if (msg.experimentalResizablePersistenceName !== undefined
       && msg.experimentalFixedPersistenceName !== undefined) {
@@ -1312,6 +1315,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         if (resizable) kernelWorker.enableResizableRootfsPersistence(storage, index, checkpointEnd);
         else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
       },
+      msg.requireExistingRootfsPersistence,
     );
     const handoff = {
       prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),

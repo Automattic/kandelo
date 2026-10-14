@@ -170,6 +170,7 @@ export interface InitMessage {
   opfsImageIntegrity?: OpfsImageIntegrity;
   experimentalFixedPersistenceName?: string;
   experimentalResizablePersistenceName?: string;
+  requireExistingRootfsPersistence?: boolean;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */

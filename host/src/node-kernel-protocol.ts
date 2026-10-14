@@ -161,6 +161,7 @@ export interface InitMessage {
   rootfsImage?: ArrayBuffer;
   experimentalFixedPersistencePath?: string;
   experimentalResizablePersistencePath?: string;
+  requireExistingRootfsPersistence?: boolean;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base used to resolve relative lazy URLs embedded in rootfsImage. */

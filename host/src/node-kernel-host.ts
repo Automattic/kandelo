@@ -91,6 +91,7 @@ export interface NodeKernelHostOptions {
   experimentalFixedPersistencePath?: string;
   /** Opt-in resizable image-file persistence at this absolute journal path. */
   experimentalResizablePersistencePath?: string;
+  requireExistingRootfsPersistence?: boolean;
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
@@ -475,6 +476,7 @@ export class NodeKernelHost {
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
           experimentalFixedPersistencePath: this.options.experimentalFixedPersistencePath,
           experimentalResizablePersistencePath: this.options.experimentalResizablePersistencePath,
+          requireExistingRootfsPersistence: this.options.requireExistingRootfsPersistence,
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
           rootfsLazyAssets,
           rootfsLazyAssetSources,
