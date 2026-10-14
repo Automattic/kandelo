@@ -1081,8 +1081,56 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           interruptedPublications.push(interrupted && afterInterruption !== null &&
             await afterInterruption.file.isSameEntry(previous.file));
         }
-        await publishFixedPersistenceReplacement(name, identity, previous, staged);
+        let postCloseInjected = false;
+        filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
+          const writer = await originalCreateWritable.call(this, options);
+          if (this.name !== `${name}.base.json`) return writer;
+          return {
+            write: (...args: Parameters<typeof writer.write>) => writer.write(...args),
+            close: async () => {
+              await writer.close();
+              postCloseInjected = true;
+              throw new Error("injected lost manifest close acknowledgement");
+            },
+            abort: () => writer.abort(),
+          } as FileSystemWritableFileStream;
+        };
+        let postCloseRejected = false;
+        try {
+          await publishFixedPersistenceReplacement(name, identity, previous, staged);
+        } catch (error) {
+          postCloseRejected = String(error).includes("injected lost manifest close acknowledgement");
+        } finally {
+          filePrototype.createWritable = originalCreateWritable;
+        }
         const current = await loadFixedPersistenceImageHandle(name, identity);
+        let retryManifestWrites = 0;
+        filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
+          if (this.name === `${name}.base.json` || this.name === `${name}.previous.base.json`) {
+            retryManifestWrites++;
+          }
+          return originalCreateWritable.call(this, options);
+        };
+        try {
+          await publishFixedPersistenceReplacement(name, identity, previous, staged);
+        } finally {
+          filePrototype.createWritable = originalCreateWritable;
+        }
+        const backupFile = await overlayDirectory.getFileHandle(`${name}.previous.base.json`);
+        const backupBytes = await (await backupFile.getFile()).arrayBuffer();
+        const damagedBackupWriter = await backupFile.createWritable();
+        await damagedBackupWriter.write("{}");
+        await damagedBackupWriter.close();
+        let damagedBackupRejected = false;
+        try {
+          await publishFixedPersistenceReplacement(name, identity, previous, staged);
+        } catch (error) {
+          damagedBackupRejected = String(error).includes("base image belongs to a different computer");
+        } finally {
+          const restoreBackupWriter = await backupFile.createWritable();
+          await restoreBackupWriter.write(backupBytes);
+          await restoreBackupWriter.close();
+        }
         return {
           oldStillCurrentBeforePublish: beforePublish !== null && await beforePublish.file.isSameEntry(previous.file),
           prematurePublishRejected,
@@ -1090,6 +1138,10 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           journalWriterRejected,
           manifestFailures,
           interruptedPublications,
+          postCloseInjected,
+          postCloseRejected,
+          retryManifestWrites,
+          damagedBackupRejected,
           stagedState,
           newReady: current?.journalInitialized === true,
           newCurrent: current !== null && await current.file.isSameEntry(staged.file),
@@ -1108,6 +1160,10 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         journalWriterRejected: [true, true],
         manifestFailures: [true, true, true, true],
         interruptedPublications: [true, true, true, true, true, true],
+        postCloseInjected: true,
+        postCloseRejected: true,
+        retryManifestWrites: 0,
+        damagedBackupRejected: true,
         stagedState: "replacement",
         newReady: true,
         newCurrent: true,

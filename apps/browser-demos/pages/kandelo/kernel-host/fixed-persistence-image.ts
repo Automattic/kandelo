@@ -922,6 +922,24 @@ export async function publishFixedPersistenceReplacement(
       const parent = await directory();
       const names = fileNames(name);
       const current = await readSavedImageAt(parent, name, identity, names.manifest);
+      const manifest = await manifestForStagedImage(name, identity, staged, true);
+      if (current !== null && JSON.stringify(current.manifest) === JSON.stringify(manifest) &&
+        await current.imageFile.isSameEntry(staged.file)) {
+        const backup = await readSavedImageAt(parent, name, identity, names.previousManifest);
+        if (backup?.manifest.format !== FORMAT_V4 || !backup.manifest.journalInitialized ||
+          backup.manifest.journalName !== previous.journalName ||
+          backup.manifest.imageSha256 !== previous.imageSha256 ||
+          backup.manifest.length !== previous.length ||
+          JSON.stringify(backup.manifest.chunkSha256) !== JSON.stringify(previous.chunkSha256) ||
+          JSON.stringify(backup.composition) !== JSON.stringify(previous.composition) ||
+          JSON.stringify(backup.manifest.lazyAssets) !== JSON.stringify(previous.lazyAssets ?? null) ||
+          !(await backup.imageFile.isSameEntry(previous.file))) {
+          throw new Error("experimental persistence previous generation was not preserved");
+        }
+        await verifySavedImage(parent, backup);
+        await verifySavedImage(parent, current);
+        return;
+      }
       if (
         current?.manifest.format !== FORMAT_V4 || !current.manifest.journalInitialized ||
         current.manifest.journalName !== previous.journalName ||
@@ -932,7 +950,6 @@ export async function publishFixedPersistenceReplacement(
         throw new Error("experimental persistence replacement source changed");
       }
       await verifySavedImage(parent, current);
-      const manifest = await manifestForStagedImage(name, identity, staged, true);
       const stagedFile = await existingFile(parent, manifest.imageFileName!);
       if (stagedFile === null || !(await stagedFile.isSameEntry(staged.file))) {
         throw new Error("experimental persistence staged image changed");
