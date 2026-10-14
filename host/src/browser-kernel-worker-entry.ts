@@ -52,7 +52,7 @@ import { OpfsImageReader } from "./vfs/opfs-image-reader";
 import { BrowserTimeProvider } from "./vfs/time";
 import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { compactOverlayGenerationAtBoot, enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
+import { checkpointCompactedOverlayGenerationAtBoot, compactOverlayGenerationAtBoot, enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -167,6 +167,7 @@ const O_WRONLY_CREAT_TRUNC =
 // State
 let kernelWorker: CentralizedKernelWorker;
 let persistentOverlay: PersistentOverlayStorage | null = null;
+let persistentOverlayIndex: PersistentOverlayStorage | null = null;
 let opfsImageReader: OpfsImageReader | null = null;
 let workerAdapter: BrowserWorkerAdapter;
 let io: VirtualPlatformIO;
@@ -1319,7 +1320,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
     const selected = await enableBestOverlayGeneration(
       files,
-      (storage) => kernelWorker.enableFixedRootfsPersistence(storage),
+      (storage, index, checkpointEnd) => kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd),
     );
     const active = await compactOverlayGenerationAtBoot(
       selected,
@@ -1330,7 +1331,13 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
       },
     );
-    persistentOverlay = active.journal;
+    const indexed = active === selected ? active : await checkpointCompactedOverlayGenerationAtBoot(
+      active,
+      files,
+      (index) => kernelWorker.checkpointRootfsPersistence(index),
+    );
+    persistentOverlay = indexed.journal;
+    persistentOverlayIndex = indexed.index ?? null;
   }
 
   initReady = true;
@@ -4251,6 +4258,8 @@ async function performDestroy() {
   }
   persistentOverlay?.close();
   persistentOverlay = null;
+  persistentOverlayIndex?.close();
+  persistentOverlayIndex = null;
   opfsImageReader?.close();
   opfsImageReader = null;
   initReady = false;

@@ -72,16 +72,18 @@ against the grouped product digest before staging and composing them. Protected
 candidate boots explicitly reject experimental persistence. Ordinary
 nonpersistent boots still use resident image bytes. The browser writer's
 positioned import is isolated in a separate Wasm artifact; the default writer
-remains import-free. Journal block locations and recovery work still grow with
-the number of distinct changed blocks. On Node and browser boots, a journal
-with at least 32 MiB of unsealed tail is compacted into the alternate slot
-before processes start. The old generation stays intact until the new journal
-is flushed, sealed, and verified. This resets accumulated transaction history
-for later boots, but the first recovery still scans that history; every boot
-also scans the entire sealed prefix and holds an in-memory index for every
-changed block. Live compaction and persistent
-namespace mutations remain separate milestones, not implicit guarantees of
-the current fixed-overwrite mode.
+remains import-free. On Node and browser boots, an unindexed journal with at
+least 32 MiB of unsealed tail is compacted into the alternate slot before
+processes start. The old generation stays intact until the new journal is
+flushed, sealed, and verified. The kernel then writes a fixed-block checkpoint
+sidecar, and the host seals that sidecar as a v2 generation. The first recovery
+still scans the old journal and holds its changed-block map in memory. A later
+indexed boot scans the authenticated prefix and checkpoint with bounded I/O
+buffers, then holds only the appended tail's map. Indexed generations cannot
+yet compact again: their second storage import serves the checkpoint, leaving
+no import for a compaction target. The tail can therefore grow without bound.
+Live compaction and persistent namespace mutations remain separate milestones,
+not implicit guarantees of the current fixed-overwrite mode.
 
 Boot now checks two optional sealed journal slots (`g0` and `g1`) on Node and
 browser hosts, preferring the highest verified generation. A seal authenticates
@@ -118,27 +120,25 @@ bounded unsealed tail. A corrupt table or mismatched seal must reject that
 generation and try the prior valid one. Existing v1 journals need an explicit
 conversion path; no format change may silently reset a machine.
 
-A Rust-only fixed-block checkpoint table now implements the first part of
-this format. It writes sorted block locations without materializing an index
-copy, binds their checksum to the base and exact journal prefix, verifies all
-records on open, and uses one cached page for binary-search lookups. The
-journal can build it only after flushing and verifying every indexed block.
-No host generation uses this table yet; boot still rebuilds the old in-memory
-map and the milestone remains open. A backward-compatible v2 generation seal
-can additionally bind an index sidecar by length and bounded chunk digests;
-Node and browser selection reject a byte-damaged indexed candidate and fall
-back to an older valid slot. Current compaction still publishes v1 seals, and
-the host does not yet pass a selected index to the kernel, so this v2 path is
-not yet the normal boot format or a semantic index-validation guarantee. A
-Rust-only indexed open now verifies the journal prefix, replays only later
-transactions, reads older blocks through the table's bounded page cache, and
-merges the table with later mutations during compaction. Focused tests reject
-damaged prefix and committed-tail bytes while truncating an incomplete tail.
-This still scans the entire prefix to verify its digest and does not bound an
-active journal's tail without live compaction.
+A fixed-block checkpoint table now writes sorted block locations without
+materializing an index copy, binds their checksum to the base and exact
+journal prefix, verifies all records on open, and uses one cached page for
+binary-search lookups. The kernel builds it after boot-time compaction by
+flushing and verifying each indexed block. A v2 generation seal binds the
+sidecar by length and bounded chunk digests; Node and browser selection reject
+a byte-damaged candidate, while the kernel rejects a syntactically sealed but
+semantically invalid checkpoint. Indexed open verifies the journal prefix,
+replays only later transactions, reads older blocks through the table's
+bounded page cache, and merges the table with later mutations during
+compaction. Focused tests reject damaged prefix and committed-tail bytes while
+truncating an incomplete tail. This still scans the entire prefix to verify
+its digest and does not bound an active journal's tail without live compaction.
+Small legacy and v1 journals continue to use the full-memory map until they
+cross the boot-time compaction threshold; no conversion silently resets them.
 
-Live compaction needs a two-phase handoff, unlike the current boot-only
-handoff. While guest operations are stopped at a kernel-worker boundary, copy
+Live compaction needs the existing two-phase handoff under an exclusive
+kernel-worker gate and a third simultaneous storage handle. While guest
+operations are stopped at a kernel-worker boundary, copy
 live records into the inactive slot, flush its journal and table, publish and
 verify its seal, and only then switch the kernel's active storage handle. If
 any stage fails before publication, keep serving the old generation. The old

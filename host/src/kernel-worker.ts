@@ -5526,34 +5526,50 @@ export class CentralizedKernelWorker {
     this.#rootfsImageRead = imageRead;
   }
 
-  enableFixedRootfsPersistence(storage: PersistentOverlayStorage): void {
+  enableFixedRootfsPersistence(
+    storage: PersistentOverlayStorage,
+    index?: PersistentOverlayStorage,
+    checkpointEnd?: number,
+  ): void {
     if (this.#rootfsImageLength === 0) throw new Error("persistent rootfs requires a loaded image");
+    if (index !== undefined && (!Number.isSafeInteger(checkpointEnd) || checkpointEnd! < 72)) {
+      throw new Error("indexed rootfs persistence requires a valid checkpoint boundary");
+    }
     this.#kernel.setPersistentOverlayStorage(storage);
+    this.#kernel.setPersistentOverlayTargetStorage(index ?? null);
     let status: number | undefined;
     try {
       this.#runImmediateKernelEntry("enable fixed rootfs persistence", (entry) => {
-        const enable = this.#kernelInstanceForEntry(entry).exports
-          .kernel_rootfs_enable_fixed_persistence as
-          | ((lengthLo: number, lengthHi: number) => number)
+        const exports = this.#kernelInstanceForEntry(entry).exports;
+        const enable = (index === undefined
+          ? exports.kernel_rootfs_enable_fixed_persistence
+          : exports.kernel_rootfs_enable_fixed_persistence_indexed) as
+          | ((...args: number[]) => number)
           | undefined;
         if (typeof enable !== "function") throw new Error("kernel lacks fixed rootfs persistence export");
         const lengthLo = this.#rootfsImageLength >>> 0;
         const lengthHi = Math.floor(this.#rootfsImageLength / 0x1_0000_0000);
-        status = enable(lengthLo, lengthHi);
+        status = index === undefined
+          ? enable(lengthLo, lengthHi)
+          : enable(lengthLo, lengthHi, checkpointEnd! >>> 0, Math.floor(checkpointEnd! / 0x1_0000_0000));
         return undefined;
       });
       if (status !== 0) throw new Error(`kernel refused fixed rootfs persistence (errno ${-(status ?? 5)})`);
       this.#persistentOverlayImportSlot = 0;
+      this.#persistentOverlayIndexActive = index !== undefined;
     } catch (error) {
       this.#kernel.setPersistentOverlayStorage(null);
+      this.#kernel.setPersistentOverlayTargetStorage(null);
       throw error;
     }
   }
 
   #persistentOverlayImportSlot: 0 | 1 = 0;
+  #persistentOverlayIndexActive = false;
   #preparedOverlayImportSlot: 0 | 1 | null = null;
 
   prepareRootfsPersistenceCompaction(target: PersistentOverlayStorage): void {
+    if (this.#persistentOverlayIndexActive) throw new Error("indexed rootfs compaction needs a separate target storage import");
     if (this.#preparedOverlayImportSlot !== null) throw new Error("rootfs persistence compaction is already prepared");
     const targetSlot = this.#persistentOverlayImportSlot === 0 ? 1 : 0;
     if (targetSlot === 0) this.#kernel.setPersistentOverlayStorage(target);
@@ -5607,6 +5623,29 @@ export class CentralizedKernelWorker {
     if (targetSlot === 0) this.#kernel.setPersistentOverlayStorage(null);
     else this.#kernel.setPersistentOverlayTargetStorage(null);
     this.#preparedOverlayImportSlot = null;
+  }
+
+  checkpointRootfsPersistence(index: PersistentOverlayStorage): void {
+    if (this.#persistentOverlayIndexActive) throw new Error("rootfs persistence already has an index");
+    const indexSlot = this.#persistentOverlayImportSlot === 0 ? 1 : 0;
+    if (indexSlot === 0) this.#kernel.setPersistentOverlayStorage(index);
+    else this.#kernel.setPersistentOverlayTargetStorage(index);
+    let status: number | undefined;
+    try {
+      this.#runImmediateKernelEntry("checkpoint rootfs persistence", (entry) => {
+        const checkpoint = this.#kernelInstanceForEntry(entry).exports
+          .kernel_rootfs_checkpoint_persistence as ((indexSlot: number) => number) | undefined;
+        if (typeof checkpoint !== "function") throw new Error("kernel lacks rootfs persistence checkpoint export");
+        status = checkpoint(indexSlot);
+        return undefined;
+      });
+      if (status !== 0) throw new Error(`rootfs persistence checkpoint failed (errno ${-(status ?? 5)})`);
+      this.#persistentOverlayIndexActive = true;
+    } catch (error) {
+      if (indexSlot === 0) this.#kernel.setPersistentOverlayStorage(null);
+      else this.#kernel.setPersistentOverlayTargetStorage(null);
+      throw error;
+    }
   }
 
   syncRootfsPersistence(): void {

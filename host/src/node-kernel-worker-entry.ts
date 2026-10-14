@@ -39,7 +39,7 @@ import type {
 import { NodePlatformIO } from "./platform/node";
 import { OverlayStorageFile } from "./vfs/overlay-storage";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { compactOverlayGenerationAtBoot, enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
+import { checkpointCompactedOverlayGenerationAtBoot, compactOverlayGenerationAtBoot, enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
@@ -181,6 +181,7 @@ const port = parentPort;
 
 let kernelWorker: CentralizedKernelWorker;
 let persistentOverlay: PersistentOverlayStorage | null = null;
+let persistentOverlayIndex: PersistentOverlayStorage | null = null;
 let persistentOverlayLockDir: string | null = null;
 let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
@@ -1276,7 +1277,7 @@ async function handleInit(msg: InitMessage) {
       } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
       const selected = await enableBestOverlayGeneration(
         files,
-        (storage) => kernelWorker.enableFixedRootfsPersistence(storage),
+        (storage, index, checkpointEnd) => kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd),
       );
       const active = await compactOverlayGenerationAtBoot(
         selected,
@@ -1287,7 +1288,13 @@ async function handleInit(msg: InitMessage) {
           cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
         },
       );
-      persistentOverlay = active.journal;
+      const indexed = active === selected ? active : await checkpointCompactedOverlayGenerationAtBoot(
+        active,
+        files,
+        (index) => kernelWorker.checkpointRootfsPersistence(index),
+      );
+      persistentOverlay = indexed.journal;
+      persistentOverlayIndex = indexed.index ?? null;
       persistentOverlayLockDir = lockDir;
     } catch (error) {
       rmdirSync(lockDir);
@@ -3618,6 +3625,8 @@ async function performDestroy() {
   }
   persistentOverlay?.close();
   persistentOverlay = null;
+  persistentOverlayIndex?.close();
+  persistentOverlayIndex = null;
   if (persistentOverlayLockDir !== null) {
     rmdirSync(persistentOverlayLockDir);
     persistentOverlayLockDir = null;
