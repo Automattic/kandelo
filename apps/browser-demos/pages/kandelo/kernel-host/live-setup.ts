@@ -304,6 +304,12 @@ class RetryPreviousPersistenceGeneration extends Error {
   }
 }
 
+class UnterminatedPersistentKernel extends Error {
+  constructor(readonly kernel: BrowserKernel) {
+    super("persistent kernel worker termination is unconfirmed; computer remains locked");
+  }
+}
+
 type PagesVfsProductId =
   | "platform-rootfs"
   | "browser-main-shell"
@@ -760,6 +766,7 @@ export async function createLiveHost(
         await precedingBoot;
         if (seq !== bootSeq) return;
       }
+      const bootStartedAt = performance.now();
       const previousKernel = currentKernel;
       const previousLease = currentPersistenceLease;
       // The descriptor still names the OUTGOING machine here: setDescriptor for
@@ -789,9 +796,16 @@ export async function createLiveHost(
         } finally {
           offDestroyProgress();
         }
+        if (persistenceName !== undefined && previousKernel.hasActiveWorkerRealm()) {
+          currentKernel = previousKernel;
+          currentPersistenceLease = previousLease;
+          if (seq === bootSeq) {
+            showBootError(h, descriptor, new UnterminatedPersistentKernel(previousKernel), bootStartedAt);
+          }
+          return;
+        }
       }
       await previousLease?.();
-      const bootStartedAt = performance.now();
 
       let persistenceLease: (() => Promise<void>) | null = null;
       try {
@@ -813,6 +827,11 @@ export async function createLiveHost(
         }
         if (seq !== bootSeq) {
           await kernel.destroy().catch(() => {});
+          if (persistenceName !== undefined && kernel.hasActiveWorkerRealm()) {
+            currentKernel = kernel;
+            currentPersistenceLease = persistenceLease;
+            persistenceLease = null;
+          }
           return;
         }
         currentKernel = kernel;
@@ -822,8 +841,13 @@ export async function createLiveHost(
         // A failed or superseded composition frees its own staging filesystem:
         // the composer worker is terminated on every non-success path, which is
         // WebKit's deterministic reclamation. Nothing to nudge here.
+        if (err instanceof UnterminatedPersistentKernel) {
+          currentKernel = err.kernel;
+          currentPersistenceLease = persistenceLease;
+          persistenceLease = null;
+        }
         if (err instanceof BootSuperseded || seq !== bootSeq) return;
-        currentKernel = null;
+        if (!(err instanceof UnterminatedPersistentKernel)) currentKernel = null;
         setWebMcpSession(h, null);
         h.detachKernel();
         showBootError(h, descriptor, err, bootStartedAt);
@@ -1925,6 +1949,9 @@ async function bootProfile(
     if (kernel) {
       if (isCurrent()) setWebMcpSession(host, null);
       await kernel.destroy().catch(() => {});
+      if (experimentalPersistenceName !== undefined && kernel.hasActiveWorkerRealm()) {
+        throw new UnterminatedPersistentKernel(kernel);
+      }
     }
     throw err;
   }

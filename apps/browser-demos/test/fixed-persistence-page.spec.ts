@@ -13,8 +13,17 @@ const imageModulePath = [
 ].find((path) => existsSync(path) && WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(path))).length === 0) ?? null;
 const fixturePath = resolve(repoRoot, "local-binaries/test-fixtures/wasm32/persistence-boot-counter.wasm");
 const programPath = existsSync(fixturePath) ? fixturePath : null;
+const fullBrowserProductsReady = [
+  "local-binaries",
+  "binaries",
+  "host/wasm",
+].some((root) => [
+  "programs/wasm32/bash.wasm",
+  "programs/wasm32/shell.vfs.zst",
+].every((path) => existsSync(resolve(repoRoot, root, path))));
 
 test.skip(imageModulePath === null || programPath === null, "image writer and boot-counter fixture are required");
+test.skip(!fullBrowserProductsReady, "complete browser package artifacts are required");
 
 async function probeImage(): Promise<Uint8Array> {
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
@@ -113,7 +122,7 @@ for (const sourceEncoding of ["raw", "zstd"] as const) {
         const competitor = await context.newPage();
         await competitor.goto(pageUrl.href, { waitUntil: "domcontentloaded" });
         await expect(competitor.locator('.kdock-status-text[data-status="error"]')).toBeAttached({ timeout: 60_000 });
-        await expect(competitor.locator(".ksys-line").last()).toContainText(/NoModificationAllowedError|No modification allowed|InvalidStateError|invalid state|another open Access Handle/i);
+        await expect(competitor.locator(".ksys-line").last()).toContainText("already running in another tab");
         await competitor.close();
       } finally {
         await context.close();
