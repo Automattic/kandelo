@@ -111,7 +111,12 @@ after each failure. A lost acknowledgement after the primary manifest closes
 reports an error to the caller, but reload selects the staged image. Retrying
 publication verifies both the committed image and preserved prior image and
 journals, then succeeds without rewriting either manifest. A damaged backup
-refuses that retry. These cases do not cover an actual tab crash.
+refuses that retry. A persistent-browser-context test closes the publishing
+tab immediately before or after the primary manifest close, then opens a new
+tab: Chromium, Firefox, and WebKit select the prior or staged generation,
+respectively, while retaining the prior image after commit. This test uses
+synthetic journal headers; it does not prove staged guest boot, browser-process
+crash, or power-loss durability at that cut.
 The selected prior manifest carries the exact primary and fallback manifest
 digests observed at selection. Only after the prior kernel initializes, and
 before guest processes launch, the page checks those digests under the
