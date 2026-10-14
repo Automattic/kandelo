@@ -1500,6 +1500,67 @@ describe("BrowserKernel", () => {
     ]);
   });
 
+  it("holds a persistent journal lease until its worker realm terminates", async () => {
+    const held = new Set<string>();
+    vi.stubGlobal("navigator", {
+      locks: {
+        request: async (name: string, _options: unknown, operation: (lock: object | null) => Promise<unknown>) => {
+          if (held.has(name)) return operation(null);
+          held.add(name);
+          try {
+            return await operation({ name });
+          } finally {
+            held.delete(name);
+          }
+        },
+      },
+    });
+    const BrowserKernel = await loadBrowserKernel();
+    const options = {
+      kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle,
+      experimentalFixedPersistenceName: "journal-lease-probe",
+    };
+    const first = new BrowserKernel({ kernelOwnedFs: true });
+    const initialBoot = first.initFromOpfsImage(options);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    const firstWorker = MockWorker.instances[0]!;
+    firstWorker.simulateMessage({ type: "ready" });
+    await initialBoot;
+    await expect(first.initFromOpfsImage(options)).rejects.toThrow("already running");
+
+    const competing = new BrowserKernel({ kernelOwnedFs: true });
+    await expect(competing.initFromOpfsImage(options)).rejects.toThrow("journal is already open");
+    expect(MockWorker.instances).toHaveLength(1);
+
+    const testable = first as unknown as { initialized: boolean; workerStarted: boolean };
+    testable.initialized = false;
+    firstWorker.terminate = () => { throw new Error("injected terminate failure"); };
+    await first.destroy();
+    expect(testable.workerStarted).toBe(true);
+    await expect(competing.initFromOpfsImage(options)).rejects.toThrow("journal is already open");
+
+    firstWorker.terminate = () => { firstWorker.terminated = true; };
+    await first.destroy();
+    expect(testable.workerStarted).toBe(false);
+    expect(held.size).toBe(0);
+
+    const retry = competing.initFromOpfsImage(options);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
+    MockWorker.instances[1]!.simulateMessage({ type: "ready" });
+    await retry;
+    (competing as unknown as { initialized: boolean }).initialized = false;
+    await competing.destroy();
+    expect(held.size).toBe(0);
+
+    const failed = new BrowserKernel({ kernelOwnedFs: true });
+    const failedBoot = failed.initFromOpfsImage(options);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(3));
+    MockWorker.instances[2]!.simulateMessage({ type: "init_error", error: "injected initialization failure" });
+    await expect(failedBoot).rejects.toThrow("injected initialization failure");
+    expect(held.size).toBe(0);
+  });
+
   it("drops framebuffer pixel mirrors on clean and trap exits", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });

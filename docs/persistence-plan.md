@@ -103,10 +103,17 @@ until kernel teardown. A second tab using that page path refuses to boot the
 same computer, and same-page restarts wait for the preceding boot and kernel
 teardown before acquiring the lease again. Chromium, Firefox, and WebKit cover
 tab contention, explicit release, and tab-close release. Low-level kernel
-callers do not yet acquire that runtime lease. Replacement publication refuses
-while a page holds it, but cannot detect unleased low-level writers. Callers
-must quiesce the old kernel before taking a snapshot and both kernels before
-publication; manifest Web Locks alone do not stop guest journal writes.
+callers do not yet acquire that per-computer runtime lease. BrowserKernel now
+holds a second exclusive Web Lock on the exact journal namespace from before
+worker initialization until `Worker.terminate()` succeeds, including low-level
+callers. A competing same-journal browser kernel fails before opening storage;
+init failure releases the lock, while a failed worker termination retains it
+for a later teardown retry. This does not exclude low-level writers using
+different journal namespaces for the same computer. Replacement publication
+refuses while a page holds the computer lease, but cannot detect such
+unleased writers. Callers must quiesce the old kernel before taking a snapshot
+and both kernels before publication; manifest Web Locks alone do not stop guest
+journal writes.
 Later journal-record corruption is still handled by the
 kernel's recovery rules, not by cross-generation fallback. The page does not
 yet orchestrate in-place replacement, abandoned staged generations are not
