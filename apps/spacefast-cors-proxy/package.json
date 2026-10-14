@@ -1,0 +1,9 @@
+{
+  "name": "kandelo-spacefast-cors-proxy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --import ./test/register-sockets.ts --test --test-timeout=15000 --experimental-test-coverage --test-coverage-include='**/spacefast-cors-proxy/handler.ts' --test-coverage-include='**/spacefast-cors-proxy/src/*.ts' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 test/*.test.ts"
+  }
+}

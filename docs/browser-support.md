@@ -2326,6 +2326,16 @@ only when building a deployable directory-scoped distribution.
 
 ### Directory-scoped production hosting
 
+The standalone [`apps/spacefast-cors-proxy`](../apps/spacefast-cors-proxy/README.md)
+draft implements the Playground proxy protocol for Spacefast Functions,
+including the range alias used by this browser app. It owns DNS validation
+and pins TCP/TLS connections to validated public addresses rather than fetching
+the target hostname through the platform gateway. Its local tests include real
+TCP/TLS fixtures; live Spacefast socket admission is unverified. Cloudflare
+socket destination restrictions can prevent access to hosts reached by the
+existing PHP proxy. Authentication, publication and switching this browser
+app's proxy are deferred.
+
 A production build owns one normalized absolute deployment prefix. Build and
 host the output with the same value: output built with `VITE_BASE=/a/` must be
 served at `/a/`, and output built with `VITE_BASE=/candidate-b/` must be served
