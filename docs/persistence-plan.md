@@ -170,8 +170,11 @@ from an authenticated indexed prefix using a transaction-sized buffer while
 leaving its file-block map in the checkpoint. It checks the prefix sequence
 against the checkpoint before applying the tail. Streamed compaction can
 carry these metadata records through two indexed generations without retaining
-the target's block map. Block tombstones are not representable in this index
-and are explicitly rejected. This is groundwork only: the fixed-overwrite
+the target's block map. A version 2 checkpoint represents deleted blocks with
+a zero-offset, zero-digest tombstone. Version 1 checkpoints remain readable;
+new checkpoints without tombstones still use version 1. Metadata compaction
+can carry tombstones through two indexed generations, while fixed-overwrite
+mounts continue to reject them. This is groundwork only: the fixed-overwrite
 mount still uses block-only replay, and no persistent namespace mutation is
 enabled yet.
 

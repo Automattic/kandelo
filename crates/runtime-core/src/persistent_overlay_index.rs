@@ -4,6 +4,7 @@ use wasm_posix_shared::Errno;
 
 const MAGIC: &[u8; 4] = b"KIDX";
 const VERSION: u32 = 1;
+const TOMBSTONE_VERSION: u32 = 2;
 const HEADER_BYTES: usize = 160;
 const RECORD_BYTES: usize = 56;
 const RECORDS_PER_PAGE: usize = 73;
@@ -18,6 +19,10 @@ pub struct BlockCheckpointEntry {
 }
 
 impl BlockCheckpointEntry {
+    pub fn is_tombstone(&self) -> bool {
+        self.offset == 0
+    }
+
     fn encode(self) -> [u8; RECORD_BYTES] {
         let mut bytes = [0; RECORD_BYTES];
         bytes[..8].copy_from_slice(&self.inode.to_le_bytes());
@@ -41,11 +46,18 @@ impl BlockCheckpointEntry {
         })
     }
 
-    fn validate(&self, journal_end: u64) -> Result<(), Errno> {
-        if self.inode == 0
-            || self.offset < 72
-            || self.offset.checked_add(4096).ok_or(Errno::EIO)? > journal_end
-        {
+    fn validate(&self, journal_end: u64, allow_tombstone: bool) -> Result<(), Errno> {
+        if self.inode == 0 {
+            return Err(Errno::EIO);
+        }
+        if self.is_tombstone() {
+            return if allow_tombstone && self.digest == [0; 32] {
+                Ok(())
+            } else {
+                Err(Errno::EIO)
+            };
+        }
+        if self.offset < 72 || self.offset.checked_add(4096).ok_or(Errno::EIO)? > journal_end {
             return Err(Errno::EIO);
         }
         Ok(())
@@ -99,9 +111,11 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         let mut count = 0u64;
         let mut digest = Sha256::new();
         let mut previous = None;
+        let mut has_tombstone = false;
         for entry in entries {
             let entry = entry?;
-            entry.validate(journal_end)?;
+            entry.validate(journal_end, true)?;
+            has_tombstone |= entry.is_tombstone();
             let key = (entry.inode, entry.block);
             if previous.is_some_and(|previous| previous >= key) {
                 return Err(Errno::EINVAL);
@@ -126,7 +140,12 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         storage.flush()?;
         let mut header = [0; HEADER_BYTES];
         header[..4].copy_from_slice(MAGIC);
-        header[4..8].copy_from_slice(&VERSION.to_le_bytes());
+        let version = if has_tombstone {
+            TOMBSTONE_VERSION
+        } else {
+            VERSION
+        };
+        header[4..8].copy_from_slice(&version.to_le_bytes());
         header[8..40].copy_from_slice(&base_digest);
         header[40..72].copy_from_slice(&journal_digest);
         header[72..80].copy_from_slice(&journal_end.to_le_bytes());
@@ -158,8 +177,9 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         }
         let mut header = [0; HEADER_BYTES];
         storage.read_exact_at(0, &mut header)?;
+        let version = u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?);
         if &header[..4] != MAGIC
-            || u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?) != VERSION
+            || (version != VERSION && version != TOMBSTONE_VERSION)
             || header[8..40] != base_digest
             || header[40..72] != journal_digest
             || u64::from_le_bytes(header[72..80].try_into().map_err(|_| Errno::EIO)?) != journal_end
@@ -186,7 +206,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
             digest.update(&*bytes);
             for record in bytes.chunks_exact(RECORD_BYTES) {
                 let entry = BlockCheckpointEntry::decode(record)?;
-                entry.validate(journal_end)?;
+                entry.validate(journal_end, version == TOMBSTONE_VERSION)?;
                 let key = (entry.inode, entry.block);
                 if previous.is_some_and(|previous| previous >= key) {
                     return Err(Errno::EIO);
@@ -346,9 +366,10 @@ mod tests {
             records.clone(),
         )
         .unwrap();
+        let storage = checkpoint.into_storage();
+        assert_eq!(u32::from_le_bytes(storage.bytes[4..8].try_into().unwrap()), 1);
         let mut reopened =
-            BlockCheckpoint::open(checkpoint.into_storage(), [1; 32], [2; 32], 72 + 200 * 4096)
-                .unwrap();
+            BlockCheckpoint::open(storage, [1; 32], [2; 32], 72 + 200 * 4096).unwrap();
         assert_eq!(reopened.count(), 200);
         assert_eq!(reopened.next_sequence(), 201);
         for record in records {
@@ -359,6 +380,59 @@ mod tests {
         }
         assert_eq!(reopened.lookup(7, 200), Ok(None));
         assert_eq!(reopened.lookup(8, 0), Ok(None));
+    }
+
+    #[test]
+    fn tombstone_checkpoint_uses_v2_and_v1_remains_readable() {
+        let entry = BlockCheckpointEntry {
+            inode: 7,
+            block: 3,
+            offset: 0,
+            digest: [0; 32],
+        };
+        assert!(matches!(
+            BlockCheckpoint::create(
+                MemoryStorage::default(),
+                [1; 32],
+                [2; 32],
+                72,
+                2,
+                [BlockCheckpointEntry {
+                    digest: [1; 32],
+                    ..entry
+                }],
+            ),
+            Err(Errno::EIO)
+        ));
+        let checkpoint = BlockCheckpoint::create(
+            MemoryStorage::default(),
+            [1; 32],
+            [2; 32],
+            72,
+            2,
+            [entry],
+        )
+        .unwrap();
+        let mut storage = checkpoint.into_storage();
+        assert_eq!(u32::from_le_bytes(storage.bytes[4..8].try_into().unwrap()), 2);
+        let mut reopened = BlockCheckpoint::open(
+            MemoryStorage {
+                bytes: storage.bytes.clone(),
+                ..MemoryStorage::default()
+            },
+            [1; 32],
+            [2; 32],
+            72,
+        )
+        .unwrap();
+        assert_eq!(reopened.lookup(7, 3), Ok(Some(entry)));
+        storage.bytes[4..8].copy_from_slice(&VERSION.to_le_bytes());
+        let digest = Sha256::digest(&storage.bytes[..128]);
+        storage.bytes[128..160].copy_from_slice(&digest);
+        assert!(matches!(
+            BlockCheckpoint::open(storage, [1; 32], [2; 32], 72),
+            Err(Errno::EIO)
+        ));
     }
 
     #[test]

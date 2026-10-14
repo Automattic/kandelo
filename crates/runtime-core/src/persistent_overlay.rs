@@ -332,6 +332,9 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if let Some(checkpoint) = self.checkpoint.as_mut() {
             for index in 0..checkpoint.count() {
                 let entry = checkpoint.entry_at(index)?.ok_or(Errno::EIO)?;
+                if entry.is_tombstone() {
+                    return Err(Errno::EIO);
+                }
                 let offset = entry
                     .block
                     .checked_mul(FILE_BLOCK_BYTES as u64)
@@ -367,8 +370,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if self.checkpoint.is_some() {
             return Err(Errno::EOPNOTSUPP);
         }
-        if (!allow_metadata && !self.state.entries.is_empty())
-            || self.state.blocks.values().any(Option::is_none)
+        if !allow_metadata
+            && (!self.state.entries.is_empty() || self.state.blocks.values().any(Option::is_none))
         {
             return Err(Errno::EINVAL);
         }
@@ -395,13 +398,16 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 .state
                 .blocks
                 .iter()
-                .filter_map(|(&(inode, block), location)| {
-                    location.map(|location| BlockCheckpointEntry {
+                .map(|(&(inode, block), location)| {
+                    let (offset, digest) = location.map_or((0, [0; 32]), |location| {
+                        (location.offset, location.digest)
+                    });
+                    BlockCheckpointEntry {
                         inode,
                         block,
-                        offset: location.offset,
-                        digest: location.digest,
-                    })
+                        offset,
+                        digest,
+                    }
                 });
             BlockCheckpoint::create(
                 target,
@@ -443,7 +449,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         &mut self,
         target: T,
     ) -> Result<OverlayJournal<T>, Errno> {
-        self.compact_into_internal(target, true)
+        self.compact_into_internal(target, true, true)
     }
 
     pub fn compact_fixed_into<T: OverlayStorage>(
@@ -453,23 +459,21 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if !self.state.entries.is_empty() || self.state.blocks.values().any(Option::is_none) {
             return Err(Errno::EIO);
         }
-        self.compact_into_internal(target, false)
+        self.compact_into_internal(target, false, false)
     }
 
     pub fn compact_metadata_into<T: OverlayStorage>(
         &mut self,
         target: T,
     ) -> Result<OverlayJournal<T>, Errno> {
-        if self.state.blocks.values().any(Option::is_none) {
-            return Err(Errno::EOPNOTSUPP);
-        }
-        self.compact_into_internal(target, false)
+        self.compact_into_internal(target, false, true)
     }
 
     fn compact_into_internal<T: OverlayStorage>(
         &mut self,
         mut target: T,
         track_committed_state: bool,
+        allow_tombstones: bool,
     ) -> Result<OverlayJournal<T>, Errno> {
         self.sync()?;
         if target.len()? != 0 {
@@ -516,7 +520,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                     .entry_at(checkpoint_position)?;
                 (
                     (indexed.inode, indexed.block),
-                    Some(BlockLocation {
+                    (!indexed.is_tombstone()).then_some(BlockLocation {
                         offset: indexed.offset,
                         digest: indexed.digest,
                     }),
@@ -547,7 +551,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                     }
                     Mutation::Put { key, value: bytes }
                 }
-                None => Mutation::Delete { key },
+                None if allow_tombstones => Mutation::Delete { key },
+                None => return Err(Errno::EIO),
             };
             batch.push(mutation);
             if batch.len() == 128 {
@@ -920,7 +925,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         }
         match self.checkpoint.as_mut() {
             Some(checkpoint) => Ok(checkpoint.lookup(inode, block)?.map(|entry| {
-                Some(BlockLocation {
+                (!entry.is_tombstone()).then_some(BlockLocation {
                     offset: entry.offset,
                     digest: entry.digest,
                 })
@@ -1026,11 +1031,21 @@ impl<'a, S: OverlayStorage> CompactedBlockEntries<'a, S> {
         self.pending.clear();
         self.pending_position = 0;
         for (mutation, relative_offset) in mutations {
-            let (inode, block, value) = match mutation {
+            let (inode, block, offset, digest) = match mutation {
                 Mutation::Put {
                     key: OverlayKey::FileBlock { inode, block },
                     value,
-                } => (inode, block, value),
+                } => (
+                    inode,
+                    block,
+                    self.position
+                        + TRANSACTION_HEADER_BYTES as u64
+                        + relative_offset.ok_or(Errno::EIO)?,
+                    Sha256::digest(value).into(),
+                ),
+                Mutation::Delete {
+                    key: OverlayKey::FileBlock { inode, block },
+                } if self.allow_metadata => (inode, block, 0, [0; 32]),
                 mutation
                     if self.allow_metadata
                         && !matches!(mutation_key(&mutation), OverlayKey::FileBlock { .. }) =>
@@ -1042,10 +1057,8 @@ impl<'a, S: OverlayStorage> CompactedBlockEntries<'a, S> {
             self.pending.push(BlockCheckpointEntry {
                 inode,
                 block,
-                offset: self.position
-                    + TRANSACTION_HEADER_BYTES as u64
-                    + relative_offset.ok_or(Errno::EIO)?,
-                digest: Sha256::digest(value).into(),
+                offset,
+                digest,
             });
         }
         self.position = self
@@ -1986,6 +1999,103 @@ mod tests {
             );
             assert_eq!(byte, [expected]);
         }
+    }
+
+    #[test]
+    fn block_tombstone_survives_two_indexed_metadata_compactions() {
+        let digest = [39; 32];
+        let mut source = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        source
+            .commit(&[
+                Mutation::Put {
+                    key: directory_key(b"file"),
+                    value: 7u64.to_le_bytes().to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                    value: vec![b'a'; FILE_BLOCK_BYTES],
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 1 },
+                    value: vec![b'b'; FILE_BLOCK_BYTES],
+                },
+            ])
+            .unwrap();
+        source
+            .commit(&[Mutation::Delete {
+                key: OverlayKey::FileBlock { inode: 7, block: 1 },
+            }])
+            .unwrap();
+        let mut first = source
+            .compact_metadata_into(MemoryStorage::default())
+            .unwrap();
+        let first_end = first.end;
+        let first_checkpoint = first
+            .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
+            .unwrap()
+            .into_storage();
+        assert_eq!(
+            u32::from_le_bytes(first_checkpoint.bytes[4..8].try_into().unwrap()),
+            2
+        );
+        let mut reopened = OverlayJournal::open_with_checkpoint_metadata(
+            first.into_storage(),
+            first_checkpoint,
+            digest,
+            first_end,
+        )
+        .unwrap();
+        assert_eq!(
+            reopened.validate_fixed_image_blocks(|_| Some(8192)),
+            Err(Errno::EIO)
+        );
+        let mut byte = [1];
+        assert_eq!(
+            reopened.read_file_at(7, 8192, 4096, &mut byte, |_, _| {
+                panic!("tombstone must mask the base")
+            }),
+            Ok(1)
+        );
+        assert_eq!(byte, [0]);
+        assert_eq!(
+            reopened.state.lookup(&directory_key(b"file")),
+            Some(Some(&7u64.to_le_bytes()[..]))
+        );
+        reopened
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                value: vec![b'c'; FILE_BLOCK_BYTES],
+            }])
+            .unwrap();
+        let mut second = reopened
+            .compact_metadata_into(MemoryStorage::default())
+            .unwrap();
+        let second_end = second.end;
+        let second_checkpoint = second
+            .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
+            .unwrap()
+            .into_storage();
+        let mut recovered = OverlayJournal::open_with_checkpoint_metadata(
+            second.into_storage(),
+            second_checkpoint,
+            digest,
+            second_end,
+        )
+        .unwrap();
+        assert_eq!(
+            recovered.read_file_at(7, 8192, 0, &mut byte, |_, _| {
+                panic!("indexed block must satisfy read")
+            }),
+            Ok(1)
+        );
+        assert_eq!(byte, [b'c']);
+        assert_eq!(
+            recovered.read_file_at(7, 8192, 4096, &mut byte, |_, _| {
+                panic!("indexed tombstone must mask the base")
+            }),
+            Ok(1)
+        );
+        assert_eq!(byte, [0]);
     }
 
     #[test]
