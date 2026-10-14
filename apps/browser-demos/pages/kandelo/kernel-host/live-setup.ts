@@ -604,6 +604,7 @@ export async function createLiveHost(
   }
   let currentKernel: BrowserKernel | null = null;
   let currentPersistenceLease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null;
+  let persistenceShutdownFailure: string | null = null;
   let bootInFlight: Promise<void> = Promise.resolve();
   let bootSeq = 0;
   const persistenceName = opts.experimentalPersistenceName ?? undefined;
@@ -758,6 +759,7 @@ export async function createLiveHost(
     legacyScriptIgnored = false,
   ): Promise<void> {
     const seq = ++bootSeq;
+    const bootStartedAt = performance.now();
     const precedingBoot = bootInFlight;
     let completeBoot!: () => void;
     bootInFlight = new Promise<void>((resolve) => { completeBoot = resolve; });
@@ -765,8 +767,11 @@ export async function createLiveHost(
       if (persistenceName !== undefined) {
         await precedingBoot;
         if (seq !== bootSeq) return;
+        if (persistenceShutdownFailure !== null) {
+          showBootError(h, descriptor, new Error(persistenceShutdownFailure), bootStartedAt);
+          return;
+        }
       }
-      const bootStartedAt = performance.now();
       const previousKernel = currentKernel;
       const previousLease = currentPersistenceLease;
       // The descriptor still names the OUTGOING machine here: setDescriptor for
@@ -804,8 +809,18 @@ export async function createLiveHost(
           }
           return;
         }
+        const shutdownFailure = previousKernel.getPersistenceShutdownFailure();
+        if (persistenceName !== undefined && shutdownFailure !== null) {
+          persistenceShutdownFailure = `Persistent computer shutdown could not synchronize writes: ${shutdownFailure}. Reload before starting this computer again.`;
+        }
       }
       await previousLease?.();
+      if (persistenceShutdownFailure !== null) {
+        if (seq === bootSeq) {
+          showBootError(h, descriptor, new Error(persistenceShutdownFailure), bootStartedAt);
+        }
+        return;
+      }
 
       let persistenceLease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null;
       try {

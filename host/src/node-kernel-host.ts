@@ -58,7 +58,7 @@ import {
 } from "./constants";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
-import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+import { awaitGracefulKernelRealmDestroyOutcome } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import {
   encodeClipboardText,
@@ -254,6 +254,7 @@ export interface SpawnOptions {
 export class NodeKernelHost {
   private worker!: NodeThreadWorker;
   private workerStarted = false;
+  private persistenceShutdownFailure: string | null = null;
   private initialized = false;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private exitResolvers = new Map<number, {
@@ -347,6 +348,7 @@ export class NodeKernelHost {
     }
 
     this.worker = spawnKernelWorkerThread();
+    this.persistenceShutdownFailure = null;
     this.workerStarted = true;
     this.kernelWorkerExitExpected = false;
     this.workerTermination = null;
@@ -1294,6 +1296,10 @@ export class NodeKernelHost {
     await this.request(requestId, { type: "remote_network_leave", requestId });
   }
 
+  getPersistenceShutdownFailure(): string | null {
+    return this.persistenceShutdownFailure;
+  }
+
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
     this.attachedInputSource?.stop();
@@ -1303,10 +1309,14 @@ export class NodeKernelHost {
     this.kernelWorkerExitExpected = true;
     if (this.initialized && this.kernelFatalError === null) {
       const requestId = this._nextRequestId++;
-      gracefulDetachFailure = await awaitGracefulKernelRealmDestroy(
+      const outcome = await awaitGracefulKernelRealmDestroyOutcome(
         () => this.request(requestId, { type: "destroy", requestId }),
         DESTROY_REQUEST_TIMEOUT_MS,
       );
+      gracefulDetachFailure = outcome.failure;
+      if (outcome.result !== null) {
+        this.persistenceShutdownFailure = outcome.result.persistenceSyncFailure ?? null;
+      }
     }
     // WHY: the kernel worker owns every nested process/pthread worker. Once
     // those children have been terminated or contained inside this realm,
