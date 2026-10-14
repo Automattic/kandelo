@@ -25,6 +25,104 @@ const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-over
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
 
+test("browser retains a persistent journal lease after an unacknowledged destroy until tab close", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(90_000);
+  const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.writeFile("/state", new TextEncoder().encode("intact"), 0o644);
+  const image = await filesystem.saveImage();
+  const kernelUrl = new URL("/destroy-timeout-kernel.wasm", baseURL).href;
+  const imageUrl = new URL("/destroy-timeout-image.vfs", baseURL).href;
+  const faultWorkerPath = resolve(testDirectory, "fixtures/opfs-overlay-destroy-timeout-worker.ts");
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-destroy-timeout-browser-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      await context.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await context.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+      const page = context.pages()[0] ?? await context.newPage();
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const before = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, faultWorkerUrl }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+        const name = `destroy-timeout-${crypto.randomUUID()}`;
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+        const writer = await imageFile.createWritable();
+        await writer.write(await (await fetch(imageUrl)).arrayBuffer());
+        await writer.close();
+        const OriginalWorker = Worker;
+        let redirected = 0;
+        globalThis.Worker = class extends OriginalWorker {
+          constructor(url: string | URL, options?: WorkerOptions) {
+            if (String(url).includes("browser-kernel-worker-entry")) {
+              redirected++;
+              super(faultWorkerUrl, options);
+            } else {
+              super(url, options);
+            }
+          }
+        };
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+        await kernel.destroy();
+        let retryRejected = false;
+        try {
+          await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+        } catch (error) {
+          retryRejected = String(error).includes("already running");
+        }
+        const competing = new BrowserKernel({ kernelOwnedFs: true });
+        let competingRejected = false;
+        try {
+          await competing.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+        } catch (error) {
+          competingRejected = String(error).includes("journal is already open");
+        }
+        await competing.destroy();
+        return { name, redirected, unconfirmed: kernel.hasUnconfirmedKernelQuiescence(), retryRejected, competingRejected };
+      }, {
+        moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        imageUrl,
+        faultWorkerUrl: new URL(`/@fs/${faultWorkerPath}`, baseURL).href,
+      });
+      expect(before).toMatchObject({ redirected: 1, unconfirmed: true, retryRejected: true, competingRejected: true });
+      await page.close();
+      const reopened = await context.newPage();
+      await reopened.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const state = await reopened.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const imageFile = await directory.getFileHandle(`${name}.base`);
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+        } finally {
+          await kernel.destroy();
+        }
+      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, name: before.name });
+      expect(state).toBe("intact");
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
 test("browser streams a composed resizable snapshot to OPFS and reboots without its journal", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
