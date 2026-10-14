@@ -382,6 +382,42 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         Ok(())
     }
 
+    pub fn validate_resizable_image_blocks<F>(&mut self, mut base_size: F) -> Result<(), Errno>
+    where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        let max_zero_block = i64::MAX as u64 / FILE_BLOCK_BYTES as u64 + 1;
+        for (key, value) in &self.state.entries {
+            let value = value
+                .as_ref()
+                .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
+                .map(u64::from_le_bytes)
+                .ok_or(Errno::EIO)?;
+            let inode = match key {
+                OverlayKey::FileSize(inode) if value <= i64::MAX as u64 => *inode,
+                OverlayKey::FileZeroFrom(inode) if value <= max_zero_block => *inode,
+                _ => return Err(Errno::EIO),
+            };
+            base_size(inode).ok_or(Errno::EIO)?;
+        }
+        for &(inode, block) in self.state.blocks.keys() {
+            if block > i64::MAX as u64 / FILE_BLOCK_BYTES as u64 {
+                return Err(Errno::EIO);
+            }
+            base_size(inode).ok_or(Errno::EIO)?;
+        }
+        if let Some(checkpoint) = self.checkpoint.as_mut() {
+            for index in 0..checkpoint.count() {
+                let entry = checkpoint.entry_at(index)?.ok_or(Errno::EIO)?;
+                if entry.block > i64::MAX as u64 / FILE_BLOCK_BYTES as u64 {
+                    return Err(Errno::EIO);
+                }
+                base_size(entry.inode).ok_or(Errno::EIO)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn checkpoint_fixed_blocks_into<T: OverlayStorage>(
         &mut self,
         target: T,
@@ -474,6 +510,17 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         storage: Box<dyn OverlayStorage + Send>,
     ) -> Result<(), Errno> {
         let checkpoint = self.checkpoint_fixed_blocks_into(storage)?;
+        self.checkpoint = Some(checkpoint);
+        self.state.blocks.clear();
+        self.track_committed_state = true;
+        Ok(())
+    }
+
+    pub fn install_metadata_block_checkpoint(
+        &mut self,
+        storage: Box<dyn OverlayStorage + Send>,
+    ) -> Result<(), Errno> {
+        let checkpoint = self.checkpoint_blocks_with_metadata_into(storage)?;
         self.checkpoint = Some(checkpoint);
         self.state.blocks.clear();
         self.track_committed_state = true;
@@ -653,7 +700,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         Ok(())
     }
 
-    fn visible_file_size(&self, inode: u64, base_size: u64) -> Result<u64, Errno> {
+    pub fn visible_file_size(&self, inode: u64, base_size: u64) -> Result<u64, Errno> {
         self.dirty_sizes
             .get(&inode)
             .copied()
