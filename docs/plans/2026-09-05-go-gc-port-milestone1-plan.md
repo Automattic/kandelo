@@ -3362,3 +3362,19 @@ root cause has not been established. A full `./run.sh build wp-vfs` began
 rebuilding 133 local-set nodes and was stopped at 64/133 when available disk
 fell below 6 GiB; the targeted WordPress package resolver is being used
 instead. No Go compiler or standard-library patch was added for this step.
+
+**2026-10-14 — WordPress image retry and disk gate.** The normal WordPress
+resolver first failed after building SpiderMonkey because the existing
+`node-browser-bundle` script required `WASM_POSIX_DEP_SOURCE_DIR`; the default
+archive resolver supplies the pinned URL and digest, not a source-directory
+handoff. The bundle now stages its manifest-pinned npm source through the
+shared verified-source helper, and its focused wasm32 resolver build
+passes. Cache GC with a one-day age limit and ABI floor 50 reclaimed 5.6 GiB.
+The WordPress retry advanced into the shell image's Clang dependency, but was
+stopped at 16% of that build when free disk fell to 3.5 GiB. The aborted
+Clang work directory was removed, restoring 6.3 GiB free. No new WordPress
+VFS was published, so the Caddy-backed WordPress service, editor, and browser
+profile remain unvalidated. Next: secure enough build space for the ABI-50
+shell closure, complete the WordPress image, then run Node and browser editor
+soaks. Separately, diagnose the WebKit Caddy startup stack overflow without
+patching Go's compiler or standard library.

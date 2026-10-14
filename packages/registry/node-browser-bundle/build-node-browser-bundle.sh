@@ -11,7 +11,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
 WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-}"
 NODE_DIR="${WASM_POSIX_DEP_NODE_DIR:-}"
-SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-}"
 
 fail() { echo "build-node-browser-bundle: $*" >&2; exit 2; }
@@ -26,7 +25,11 @@ require_real_directory() {
 require_real_directory WASM_POSIX_DEP_OUT_DIR "$OUT_DIR"
 require_real_directory WASM_POSIX_DEP_WORK_DIR "$WORK_DIR"
 require_real_directory WASM_POSIX_DEP_NODE_DIR "$NODE_DIR"
-require_real_directory WASM_POSIX_DEP_SOURCE_DIR "$SOURCE_DIR"
+
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+SOURCE_DIR="$WORK_DIR/npm-source"
+kandelo_package_stage_primary_source node-browser-bundle "$SOURCE_DIR" "$WORK_DIR"
 
 node_wasm="$NODE_DIR/node.wasm"
 [ -f "$node_wasm" ] || fail "node.wasm not found under $NODE_DIR"
