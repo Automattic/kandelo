@@ -741,7 +741,11 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
       const page = context.pages()[0] ?? await context.newPage();
       const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
       filesystem.setImageCapacity(8 * 1024 * 1024);
-      const imageConfig = { version: 1 as const, defaultProfile: "probe", profiles: { probe: {}, other: {} } };
+      const imageConfig = {
+        version: 1 as const,
+        defaultProfile: "probe",
+        profiles: { probe: { init: { target: "boot" } }, other: {} },
+      };
       const terminalSession = {
         kind: "kandelo-experimental-terminal-session" as const,
         version: 1 as const,
@@ -750,9 +754,13 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
       filesystem.mkdir("/bin", 0o755);
       filesystem.mkdir("/etc", 0o755);
       filesystem.mkdir("/etc/kandelo", 0o755);
+      filesystem.mkdir("/etc/dinit.d", 0o755);
       filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
       filesystem.writeFile("/etc/kandelo/demo.json", new TextEncoder().encode(JSON.stringify(imageConfig)), 0o644);
       filesystem.writeFile("/etc/kandelo/experimental-terminal-session.json", new TextEncoder().encode(JSON.stringify(terminalSession)), 0o644);
+      filesystem.writeFile("/etc/dinit.d/boot", new TextEncoder().encode("type = internal\ndepends-on = alpha\n"), 0o644);
+      filesystem.writeFile("/etc/dinit.d/alpha", new TextEncoder().encode("type = internal\n"), 0o644);
+      filesystem.writeFile("/etc/dinit.d/bravo", new TextEncoder().encode("type = internal\n"), 0o644);
       filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
       const image = await filesystem.saveImage();
       const kernelUrl = new URL("/snapshot-replacement-kernel.wasm", baseURL).href;
@@ -774,7 +782,7 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
           imageConfig,
           profileId: "probe",
           terminalSession,
-          requiredServices: [],
+          requiredServices: ["boot", "alpha"],
         };
         const previous = await saveFixedPersistenceImageStream(
           name, identity, [new Uint8Array(await (await fetch(imageUrl)).arrayBuffer())], undefined, composition,
@@ -910,10 +918,13 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         const configError = await checkpointError();
         await runGuestEdits(["restore-boot-config", "change-terminal-session"]);
         const sessionError = await checkpointError();
+        await runGuestEdits(["restore-terminal-session", "change-dinit-closure"]);
+        const serviceError = await checkpointError();
         const selected = await loadFixedPersistenceImageHandle(name, identity);
         return {
           configRejected: configError?.includes("boot configuration changed after composition"),
           sessionRejected: sessionError?.includes("terminal session changed after composition"),
+          serviceRejected: serviceError?.includes("dinit service closure changed after composition"),
           journalUnchanged: selected?.journalName === current.journalName,
         };
       }, {
@@ -924,7 +935,12 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         name: staged.name,
         identity: staged.identity,
       });
-      expect(changedMetadata).toEqual({ configRejected: true, sessionRejected: true, journalUnchanged: true });
+      expect(changedMetadata).toEqual({
+        configRejected: true,
+        sessionRejected: true,
+        serviceRejected: true,
+        journalUnchanged: true,
+      });
     } finally {
       await context.close();
     }

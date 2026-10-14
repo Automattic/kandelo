@@ -140,10 +140,14 @@ package artifacts, so page-driven replacement is implemented but not yet
 validated end to end here.
 Before checkpoint publication or page guest launch, the browser compares the
 kernel's live demo configuration and experimental terminal session with the
-composition saved beside the image. If a guest changed either file, it fails
-closed rather than booting from stale host policy or publishing a snapshot
-with misleading composition. This does not yet rederive the required dinit
-service closure from guest-edited service files.
+composition saved beside the image. It also rederives the selected dinit
+target's bounded dependency closure from the kernel's live service files. If
+a guest changed any of those machine declarations, it fails closed rather
+than booting from stale host policy or publishing a snapshot with misleading
+composition. Guest edits to all three declarations reject checkpoint
+publication on Chromium, Firefox, and WebKit. Guest-edited service commands
+with unchanged dependencies remain image-owned executable policy and are not
+frozen by this metadata check.
 The selected prior manifest carries the exact primary and fallback manifest
 digests observed at selection. Only after the prior kernel initializes, and
 before guest processes launch, the page checks those digests under the
