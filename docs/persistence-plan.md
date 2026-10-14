@@ -327,8 +327,9 @@ including a partially written transaction header. The writeback test exercises
 every byte offset of a torn 4 KiB block transaction; Node and browser tests
 reopen journals torn before and after the header and near the commit marker.
 Injected OPFS `QuotaExceededError` failures before the first transaction write,
-after its first 128 bytes, and at its flush now exercise both fixed and
-resizable guest paths on all three browser engines: `pwrite` remains readable
+at cuts 1, 23, 24, 128, and 4096 bytes into it, one byte before the transaction
+ends, and at its flush now exercise both fixed and resizable guest paths on all
+three browser engines: `pwrite` remains readable
 from the dirty cache and `fsync` reports `ENOSPC`. Reload after a failed write
 recovers the previous durable bytes; after a failed flush, either the complete
 old or complete new transaction may survive, and boot must accept both.

@@ -7,6 +7,10 @@ const fault = new URL(self.location.href).searchParams.get("fault");
 if (fault !== "write" && fault !== "partial" && fault !== "flush") {
   throw new Error("invalid persistent overlay fault mode");
 }
+const cutParameter = new URL(self.location.href).searchParams.get("cut");
+if (fault === "partial" && (cutParameter === null || !/^(?:[1-9]\d*|-1)$/.test(cutParameter))) {
+  throw new Error("invalid persistent overlay partial cut");
+}
 
 const root = await navigator.storage.getDirectory();
 const directory = await root.getDirectoryHandle("kandelo-persistent-overlay", { create: true });
@@ -45,7 +49,9 @@ accessPrototype.write = function (...args: unknown[]) {
     injected = true;
     if (fault === "partial") {
       const source = args[0] as Uint8Array;
-      originalWrite.call(this, source.subarray(0, Math.min(128, source.byteLength)), args[1]);
+      const cut = Number(cutParameter) === -1 ? source.byteLength - 1 : Number(cutParameter);
+      if (cut >= source.byteLength) throw new Error("partial cut must precede the transaction end");
+      originalWrite.call(this, source.subarray(0, cut), args[1]);
     }
     throw new DOMException("injected journal quota exhaustion", "QuotaExceededError");
   }
