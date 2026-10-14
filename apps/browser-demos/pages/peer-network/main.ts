@@ -186,7 +186,9 @@ function screen(pid: number) {
   const keyboard = attachLinuxMediumRawKeyboard(canvas, { sendInput: (bytes) => kernel.ptyWrite(pid, bytes) }, { getEnabled: () => gamePid === pid && processes.get(pid)?.exit === null });
   detachKeyboard = () => keyboard.close(); canvas.focus();
 }
-async function startGame(game: "doom" | "quake", host: boolean) {
+// Guest applications on the connected machine, not image machine profiles.
+type PeerNetworkGame = "doom" | "quake";
+async function startGame(game: PeerNetworkGame, host: boolean) {
   if (gamePid && processes.get(gamePid)?.exit === null) throw new Error("Stop the running game first");
   const kernel = requireMachine();
   status.textContent = `Preparing ${game} shareware…`;

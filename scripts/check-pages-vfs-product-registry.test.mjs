@@ -514,6 +514,27 @@ test("admits product-id-keyed plumbing (not a machine-identity table)", () => {
   });
 });
 
+test("exempts the peer-network guest game selector without exempting machine profiles", () => {
+  withTempDir((directory) => {
+    const path = "apps/browser-demos/pages/peer-network/main.ts";
+    const selector = `type PeerNetworkGame = "doom" | "quake";`;
+    writeFixture(directory, path, selector);
+    assert.doesNotThrow(() => assertNoAppMachineIdentityTables(fakeCatalog, directory));
+    writeFixture(directory, path, `${selector}\ntype MachineProfile = "doom" | "quake";`);
+    assert.throws(
+      () => assertNoAppMachineIdentityTables(fakeCatalog, directory),
+      /union type.*MachineProfile/,
+    );
+    writeFixture(directory, path, `${selector}\nconst MACHINE_SPECS = {
+      doom: { argv: ["/bin/fbdoom"] }, quake: { argv: ["/bin/quake"] },
+    };`);
+    assert.throws(
+      () => assertNoAppMachineIdentityTables(fakeCatalog, directory),
+      /object literal.*MACHINE_SPECS/,
+    );
+  });
+});
+
 test("exempts OPTIONAL_DEMO_VFS_PATHS in optional-demo-vfs.ts by name", () => {
   withTempDir((directory) => {
     writeFixture(
