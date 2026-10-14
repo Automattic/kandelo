@@ -939,6 +939,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       expect(readyBoot).toEqual({ ready: true, state: "XYcdefgh" });
       const replacement = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, replacementUrl, name }) => {
         const {
+          acquireFixedPersistenceRuntimeLease,
           loadFixedPersistenceImageHandle,
           publishFixedPersistenceReplacement,
           stageFixedPersistenceSnapshotReplacement,
@@ -986,6 +987,15 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         } finally {
           await kernel.destroy();
         }
+        const releaseRuntimeLease = await acquireFixedPersistenceRuntimeLease(name);
+        let busyPublishRejected = false;
+        try {
+          await publishFixedPersistenceReplacement(name, identity, previous, staged);
+        } catch (error) {
+          busyPublishRejected = String(error).includes("already running in another tab");
+        } finally {
+          await releaseRuntimeLease();
+        }
         let publicationChecks = 0;
         let interruptedPublishRejected = false;
         try {
@@ -1001,6 +1011,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         return {
           oldStillCurrentBeforePublish: beforePublish !== null && await beforePublish.file.isSameEntry(previous.file),
           prematurePublishRejected,
+          busyPublishRejected,
           interruptedPublishRejected,
           oldStillCurrentAfterInterruption: afterInterruption !== null && await afterInterruption.file.isSameEntry(previous.file),
           stagedState,
@@ -1017,6 +1028,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       expect(replacement).toEqual({
         oldStillCurrentBeforePublish: true,
         prematurePublishRejected: true,
+        busyPublishRejected: true,
         interruptedPublishRejected: true,
         oldStillCurrentAfterInterruption: true,
         stagedState: "replacement",

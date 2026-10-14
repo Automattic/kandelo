@@ -399,6 +399,50 @@ async function locked<T>(name: string, operation: () => Promise<T>): Promise<T> 
   return navigator.locks.request(`kandelo-fixed-rootfs-${name}`, { mode: "exclusive" }, operation);
 }
 
+function runtimeLockName(name: string): string {
+  return `kandelo-fixed-rootfs-runtime:${name}`;
+}
+
+async function whenRuntimeIdle<T>(name: string, operation: () => Promise<T>): Promise<T> {
+  if (!navigator.locks) throw new Error("experimental persistence requires Web Locks");
+  return navigator.locks.request(runtimeLockName(name), { mode: "exclusive", ifAvailable: true }, (lock) => {
+    if (lock === null) throw new Error("experimental persistence computer is already running in another tab");
+    return operation();
+  });
+}
+
+export async function acquireFixedPersistenceRuntimeLease(name: string): Promise<() => Promise<void>> {
+  fileNames(name);
+  if (!navigator.locks) throw new Error("experimental persistence requires Web Locks");
+  let signalRelease!: () => void;
+  const released = new Promise<void>((resolve) => { signalRelease = resolve; });
+  let signalAcquired!: () => void;
+  let signalFailed!: (error: unknown) => void;
+  const acquired = new Promise<void>((resolve, reject) => {
+    signalAcquired = resolve;
+    signalFailed = reject;
+  });
+  const holding = navigator.locks.request(
+    runtimeLockName(name),
+    { mode: "exclusive", ifAvailable: true },
+    async (lock) => {
+      if (lock === null) throw new Error("experimental persistence computer is already running in another tab");
+      signalAcquired();
+      await released;
+    },
+  );
+  void holding.catch(signalFailed);
+  await acquired;
+  let didRelease = false;
+  return async () => {
+    if (!didRelease) {
+      didRelease = true;
+      signalRelease();
+    }
+    await holding;
+  };
+}
+
 export async function loadFixedPersistenceImage(
   name: string,
   identity: string,
@@ -895,7 +939,7 @@ export async function publishFixedPersistenceReplacement(
   assertCurrent?: () => void,
 ): Promise<void> {
   fileNames(name);
-  await locked(name, async () => {
+  await whenRuntimeIdle(name, () => locked(name, async () => {
     assertCurrent?.();
     const parent = await directory();
     const names = fileNames(name);
@@ -949,7 +993,7 @@ export async function publishFixedPersistenceReplacement(
       published.manifest.journalInitialized !== true) {
       throw new Error("experimental persistence replacement was not published");
     }
-  });
+  }));
 }
 
 export async function saveFixedPersistenceImageStream(
