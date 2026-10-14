@@ -62,6 +62,7 @@ impl<T: OverlayStorage + ?Sized> OverlayStorage for Box<T> {
 pub enum OverlayKey {
     Inode(u64),
     FileSize(u64),
+    FileZeroFrom(u64),
     FileBlock { inode: u64, block: u64 },
     Dirent { parent: u64, name: Vec<u8> },
 }
@@ -76,6 +77,7 @@ pub enum Mutation {
 pub struct OverlayState {
     entries: BTreeMap<OverlayKey, Option<Vec<u8>>>,
     blocks: BTreeMap<(u64, u64), Option<BlockLocation>>,
+    invalid_checkpoint_from: BTreeMap<u64, u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -101,6 +103,16 @@ impl OverlayState {
         }
     }
 
+    fn zero_from(&self, inode: u64) -> Result<Option<u64>, Errno> {
+        match self.lookup(&OverlayKey::FileZeroFrom(inode)) {
+            Some(Some(value)) => Ok(Some(u64::from_le_bytes(
+                value.try_into().map_err(|_| Errno::EIO)?,
+            ))),
+            Some(None) => Err(Errno::EIO),
+            None => Ok(None),
+        }
+    }
+
     pub fn validate_fixed_image_blocks<F>(&self, mut base_size: F) -> Result<(), Errno>
     where
         F: FnMut(u64) -> Option<u64>,
@@ -122,10 +134,23 @@ impl OverlayState {
         Ok(())
     }
 
-    fn apply(&mut self, mutation: Mutation, value_offset: Option<u64>) {
+    fn apply(&mut self, mutation: Mutation, value_offset: Option<u64>, has_checkpoint: bool) {
         match mutation {
             Mutation::Put { key, value } => {
-                if let OverlayKey::FileBlock { inode, block } = key {
+                if let OverlayKey::FileZeroFrom(inode) = key {
+                    let block = u64::from_le_bytes(value[..8].try_into().unwrap());
+                    self.blocks
+                        .retain(|(owner, index), _| *owner != inode || *index < block);
+                    if has_checkpoint {
+                        self.invalid_checkpoint_from
+                            .entry(inode)
+                            .and_modify(|old| *old = (*old).min(block))
+                            .or_insert(block);
+                    }
+                    let previous = self.zero_from(inode).ok().flatten().unwrap_or(u64::MAX);
+                    self.entries
+                        .insert(key, Some(previous.min(block).to_le_bytes().to_vec()));
+                } else if let OverlayKey::FileBlock { inode, block } = key {
                     let digest: [u8; 32] = Sha256::digest(&value).into();
                     self.blocks.insert(
                         (inode, block),
@@ -231,6 +256,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 &mut state,
                 false,
                 false,
+                false,
             )?;
             if replayed_end != checkpoint_end || next_sequence != checkpoint.next_sequence() {
                 return Err(Errno::EIO);
@@ -288,6 +314,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             &mut state,
             true,
             true,
+            checkpoint.is_some(),
         )?;
         if end < size {
             storage.truncate(end)?;
@@ -541,6 +568,15 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 tail_entry = tail_entries.next();
                 (*key, *location)
             };
+            if take_checkpoint
+                && self
+                    .state
+                    .invalid_checkpoint_from
+                    .get(&inode)
+                    .is_some_and(|from| block >= *from)
+            {
+                continue;
+            }
             let key = OverlayKey::FileBlock { inode, block };
             let mutation = match location {
                 Some(location) => {
@@ -627,18 +663,31 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                     [TRANSACTION_HEADER_BYTES..transaction.len() - TRANSACTION_TRAILER_BYTES],
             )?;
             for (mutation, relative_offset) in records {
-                if let OverlayKey::FileBlock { inode, block } = &mutation_key(&mutation) {
-                    self.block_cache
-                        .retain(|(cached, _)| *cached != (*inode, *block));
+                match mutation_key(&mutation) {
+                    OverlayKey::FileBlock { inode, block } => {
+                        self.block_cache
+                            .retain(|(cached, _)| *cached != (*inode, *block));
+                    }
+                    OverlayKey::FileZeroFrom(inode) => {
+                        let Mutation::Put { value, .. } = &mutation else {
+                            return Err(Errno::EIO);
+                        };
+                        let from =
+                            u64::from_le_bytes(value[..8].try_into().map_err(|_| Errno::EIO)?);
+                        self.block_cache
+                            .retain(|((owner, block), _)| *owner != *inode || *block < from);
+                    }
+                    _ => {}
                 }
                 let value_offset = relative_offset
                     .map(|offset| self.end + TRANSACTION_HEADER_BYTES as u64 + offset);
-                self.state.apply(mutation, value_offset);
+                self.state
+                    .apply(mutation, value_offset, self.checkpoint.is_some());
             }
         } else {
             for mutation in mutations {
                 if !matches!(mutation_key(mutation), OverlayKey::FileBlock { .. }) {
-                    self.state.apply(mutation.clone(), None);
+                    self.state.apply(mutation.clone(), None, false);
                 }
             }
         }
@@ -850,6 +899,55 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         Ok(src.len())
     }
 
+    pub fn truncate_file_at<F>(
+        &mut self,
+        inode: u64,
+        base_size: u64,
+        new_size: u64,
+        mut read_base: F,
+    ) -> Result<(), Errno>
+    where
+        F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
+    {
+        if self.failed {
+            return Err(Errno::EIO);
+        }
+        let old_size = self.state.file_size(inode, base_size)?;
+        if new_size == old_size {
+            return Ok(());
+        }
+        let mut mutations = Vec::new();
+        if new_size < old_size {
+            let block = new_size / FILE_BLOCK_BYTES as u64;
+            let remainder = (new_size % FILE_BLOCK_BYTES as u64) as usize;
+            let clear_from = block + u64::from(remainder != 0);
+            mutations.push(Mutation::Put {
+                key: OverlayKey::FileZeroFrom(inode),
+                value: clear_from.to_le_bytes().to_vec(),
+            });
+            if remainder != 0 {
+                let mut bytes = alloc::vec![0; FILE_BLOCK_BYTES];
+                self.read_file_at(
+                    inode,
+                    base_size,
+                    block * FILE_BLOCK_BYTES as u64,
+                    &mut bytes,
+                    &mut read_base,
+                )?;
+                bytes[remainder..].fill(0);
+                mutations.push(Mutation::Put {
+                    key: OverlayKey::FileBlock { inode, block },
+                    value: bytes,
+                });
+            }
+        }
+        mutations.push(Mutation::Put {
+            key: OverlayKey::FileSize(inode),
+            value: new_size.to_le_bytes().to_vec(),
+        });
+        self.commit(&mutations)
+    }
+
     pub fn read_file_at<F>(
         &mut self,
         inode: u64,
@@ -891,7 +989,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 }
                 Some(None) => target.fill(0),
                 None => {
-                    let from_base = if position < base_size {
+                    let base_visible = self.state.zero_from(inode)?.is_none_or(|from| block < from);
+                    let from_base = if base_visible && position < base_size {
                         usize::try_from(base_size - position)
                             .unwrap_or(usize::MAX)
                             .min(chunk)
@@ -922,6 +1021,14 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     ) -> Result<Option<Option<BlockLocation>>, Errno> {
         if let Some(location) = self.state.blocks.get(&(inode, block)) {
             return Ok(Some(*location));
+        }
+        if self
+            .state
+            .invalid_checkpoint_from
+            .get(&inode)
+            .is_some_and(|from| block >= *from)
+        {
+            return Ok(Some(None));
         }
         match self.checkpoint.as_mut() {
             Some(checkpoint) => Ok(checkpoint.lookup(inode, block)?.map(|entry| {
@@ -1098,6 +1205,7 @@ fn validate_key(key: &OverlayKey) -> Result<(), Errno> {
     match key {
         OverlayKey::Inode(inode) if *inode != 0 => Ok(()),
         OverlayKey::FileSize(inode) if *inode != 0 => Ok(()),
+        OverlayKey::FileZeroFrom(inode) if *inode != 0 => Ok(()),
         OverlayKey::FileBlock { inode, .. } if *inode != 0 => Ok(()),
         OverlayKey::Dirent { parent, name }
             if *parent != 0
@@ -1120,6 +1228,7 @@ fn validate_mutation(mutation: &Mutation) -> Result<(), Errno> {
             match key {
                 OverlayKey::Inode(_) if !value.is_empty() && value.len() <= 4096 => Ok(()),
                 OverlayKey::FileSize(_) if value.len() == 8 => Ok(()),
+                OverlayKey::FileZeroFrom(_) if value.len() == 8 => Ok(()),
                 OverlayKey::FileBlock { .. } if value.len() == FILE_BLOCK_BYTES => Ok(()),
                 OverlayKey::Dirent { .. }
                     if value.len() == 8
@@ -1132,6 +1241,9 @@ fn validate_mutation(mutation: &Mutation) -> Result<(), Errno> {
                 _ => Err(Errno::EINVAL),
             }
         }
+        Mutation::Delete {
+            key: OverlayKey::FileZeroFrom(_),
+        } => Err(Errno::EINVAL),
         Mutation::Delete { key } => validate_key(key),
     }
 }
@@ -1146,6 +1258,12 @@ fn encode_key(out: &mut Vec<u8>, key: &OverlayKey) {
         }
         OverlayKey::FileSize(inode) => {
             out.push(4);
+            out.extend_from_slice(&inode.to_le_bytes());
+            out.extend_from_slice(&0u64.to_le_bytes());
+            out.push(0);
+        }
+        OverlayKey::FileZeroFrom(inode) => {
+            out.push(5);
             out.extend_from_slice(&inode.to_le_bytes());
             out.extend_from_slice(&0u64.to_le_bytes());
             out.push(0);
@@ -1174,6 +1292,7 @@ fn replay_transactions<S: OverlayStorage>(
     state: &mut OverlayState,
     include_blocks: bool,
     allow_torn_tail: bool,
+    has_checkpoint: bool,
 ) -> Result<(u64, u64), Errno> {
     while end < size {
         let remaining = size - end;
@@ -1229,7 +1348,7 @@ fn replay_transactions<S: OverlayStorage>(
             if include_blocks || !matches!(mutation_key(&mutation), OverlayKey::FileBlock { .. }) {
                 let value_offset =
                     relative_offset.map(|offset| end + TRANSACTION_HEADER_BYTES as u64 + offset);
-                state.apply(mutation, value_offset);
+                state.apply(mutation, value_offset, has_checkpoint);
             }
         }
         next_sequence = next_sequence.checked_add(1).ok_or(Errno::EOVERFLOW)?;
@@ -1310,6 +1429,7 @@ fn decode_mutations(mut bytes: &[u8]) -> Result<Vec<(Mutation, Option<u64>)>, Er
         let key = match kind {
             1 if block == 0 && name_length == 0 => OverlayKey::Inode(inode),
             4 if block == 0 && name_length == 0 => OverlayKey::FileSize(inode),
+            5 if block == 0 && name_length == 0 => OverlayKey::FileZeroFrom(inode),
             2 if name_length == 0 => OverlayKey::FileBlock { inode, block },
             3 if block == 0 => OverlayKey::Dirent {
                 parent: inode,
@@ -2096,6 +2216,229 @@ mod tests {
             Ok(1)
         );
         assert_eq!(byte, [0]);
+    }
+
+    #[test]
+    fn indexed_truncate_masks_huge_base_without_materializing_it() {
+        let digest = [40; 32];
+        let base_size = 8 * 1024 * 1024 * 1024u64;
+        let mut source = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        source
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 2 },
+                value: vec![b'x'; FILE_BLOCK_BYTES],
+            }])
+            .unwrap();
+        let prefix_end = source.end;
+        let prefix_index = source
+            .checkpoint_fixed_blocks_into(MemoryStorage::default())
+            .unwrap()
+            .into_storage();
+        let mut indexed = OverlayJournal::open_with_checkpoint_metadata(
+            source.into_storage(),
+            prefix_index,
+            digest,
+            prefix_end,
+        )
+        .unwrap();
+        indexed
+            .truncate_file_at(7, base_size, 4097, |_, dst| {
+                dst.fill(b'a');
+                Ok(dst.len())
+            })
+            .unwrap();
+        indexed
+            .truncate_file_at(7, base_size, base_size, |_, _| {
+                panic!("growth must not read the base")
+            })
+            .unwrap();
+        assert_eq!(
+            indexed.validate_fixed_image_blocks(|_| Some(base_size)),
+            Err(Errno::EIO)
+        );
+        let mut bytes = [0; 3];
+        assert_eq!(
+            indexed.read_file_at(7, base_size, 4096, &mut bytes, |_, _| {
+                panic!("boundary must be journaled")
+            }),
+            Ok(3)
+        );
+        assert_eq!(bytes, [b'a', 0, 0]);
+        let mut byte = [1];
+        for offset in [8192, base_size - 1] {
+            assert_eq!(
+                indexed.read_file_at(7, base_size, offset, &mut byte, |_, _| {
+                    panic!("truncated base must stay masked")
+                }),
+                Ok(1)
+            );
+            assert_eq!(byte, [0]);
+        }
+        indexed
+            .write_file_at(7, base_size, 8195, b"z", |_, _| {
+                panic!("post-truncate write must see zeros")
+            })
+            .unwrap();
+        let mut first = indexed
+            .compact_metadata_into(MemoryStorage::default())
+            .unwrap();
+        let first_end = first.end;
+        let first_index = first
+            .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
+            .unwrap()
+            .into_storage();
+        assert_eq!(first_index.bytes.len(), 160 + 2 * 56);
+        let mut reopened = OverlayJournal::open_with_checkpoint_metadata(
+            first.into_storage(),
+            first_index,
+            digest,
+            first_end,
+        )
+        .unwrap();
+        assert_eq!(reopened.state.file_size(7, base_size), Ok(base_size));
+        assert_eq!(
+            reopened.read_file_at(7, base_size, 8195, &mut byte, |_, _| {
+                panic!("new block must be indexed")
+            }),
+            Ok(1)
+        );
+        assert_eq!(byte, [b'z']);
+        let mut second = reopened
+            .compact_metadata_into(MemoryStorage::default())
+            .unwrap();
+        let second_end = second.end;
+        let second_index = second
+            .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
+            .unwrap()
+            .into_storage();
+        let mut recovered = OverlayJournal::open_with_checkpoint_metadata(
+            second.into_storage(),
+            second_index,
+            digest,
+            second_end,
+        )
+        .unwrap();
+        for (offset, expected) in [
+            (4096, b'a'),
+            (4097, 0),
+            (8192, 0),
+            (8195, b'z'),
+            (base_size - 1, 0),
+        ] {
+            assert_eq!(
+                recovered.read_file_at(7, base_size, offset, &mut byte, |_, _| {
+                    panic!("compacted image must not need base bytes")
+                }),
+                Ok(1)
+            );
+            assert_eq!(byte, [expected]);
+        }
+    }
+
+    #[test]
+    fn repeated_shrinks_clear_only_blocks_after_each_cut() {
+        let digest = [41; 32];
+        let base_size = 3 * FILE_BLOCK_BYTES as u64;
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        journal
+            .truncate_file_at(7, base_size, FILE_BLOCK_BYTES as u64, |_, _| {
+                panic!("aligned shrink needs no base read")
+            })
+            .unwrap();
+        journal
+            .truncate_file_at(7, base_size, base_size, |_, _| {
+                panic!("growth needs no base read")
+            })
+            .unwrap();
+        journal
+            .write_file_at(7, base_size, FILE_BLOCK_BYTES as u64, b"b", |_, _| {
+                panic!("masked base must read as zeros")
+            })
+            .unwrap();
+        journal
+            .write_file_at(7, base_size, 2 * FILE_BLOCK_BYTES as u64, b"c", |_, _| {
+                panic!("masked base must read as zeros")
+            })
+            .unwrap();
+        journal
+            .truncate_file_at(7, base_size, 2 * FILE_BLOCK_BYTES as u64, |_, _| {
+                panic!("aligned shrink needs no base read")
+            })
+            .unwrap();
+        journal
+            .truncate_file_at(7, base_size, base_size, |_, _| {
+                panic!("growth needs no base read")
+            })
+            .unwrap();
+        assert_eq!(journal.state.zero_from(7), Ok(Some(1)));
+        let mut recovered = OverlayJournal::open(journal.into_storage(), digest).unwrap();
+        let mut byte = [1];
+        for (offset, expected) in [
+            (0, b'a'),
+            (FILE_BLOCK_BYTES as u64, b'b'),
+            (2 * FILE_BLOCK_BYTES as u64, 0),
+        ] {
+            assert_eq!(
+                recovered.read_file_at(7, base_size, offset, &mut byte, |_, dst| {
+                    dst.fill(b'a');
+                    Ok(dst.len())
+                }),
+                Ok(1)
+            );
+            assert_eq!(byte, [expected]);
+        }
+    }
+
+    #[test]
+    fn torn_truncate_never_publishes_the_zero_fence_or_size() {
+        let digest = [42; 32];
+        let base_size = 2 * FILE_BLOCK_BYTES as u64;
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        journal
+            .write_file_at(7, base_size, FILE_BLOCK_BYTES as u64, b"x", |_, dst| {
+                dst.fill(b'a');
+                Ok(dst.len())
+            })
+            .unwrap();
+        let durable = journal.into_storage().bytes;
+        let mut complete = OverlayJournal::open(
+            MemoryStorage {
+                bytes: durable.clone(),
+                ..MemoryStorage::default()
+            },
+            digest,
+        )
+        .unwrap();
+        complete
+            .truncate_file_at(7, base_size, 0, |_, _| {
+                panic!("zero truncate needs no base read")
+            })
+            .unwrap();
+        let complete_bytes = complete.into_storage().bytes;
+        let append = &complete_bytes[durable.len()..];
+        for cut in [1, 24, append.len() / 2, append.len() - 1] {
+            let mut torn = durable.clone();
+            torn.extend_from_slice(&append[..cut]);
+            let mut recovered = OverlayJournal::open(
+                MemoryStorage {
+                    bytes: torn,
+                    ..MemoryStorage::default()
+                },
+                digest,
+            )
+            .unwrap();
+            assert_eq!(recovered.storage.bytes, durable);
+            assert_eq!(recovered.state.file_size(7, base_size), Ok(base_size));
+            assert_eq!(recovered.state.zero_from(7), Ok(None));
+            let mut byte = [0];
+            assert_eq!(
+                recovered.read_file_at(7, base_size, FILE_BLOCK_BYTES as u64, &mut byte, |_, _| {
+                    panic!("old overlay block must survive")
+                }),
+                Ok(1)
+            );
+            assert_eq!(byte, [b'x']);
+        }
     }
 
     #[test]
