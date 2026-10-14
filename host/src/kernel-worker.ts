@@ -415,6 +415,7 @@ const EACCES = 13;
 const EBADF = 9;
 const EBUSY = 16;
 const EADDRNOTAVAIL = 99;
+const ENETUNREACH = 101;
 const EEXIST = 17;
 const EFAULT = 14;
 const EIO = 5;
@@ -3860,9 +3861,21 @@ export class CentralizedKernelWorker {
         );
         return 0;
       },
+      onUdpSourceAddress: (destination: [number, number, number, number]): number => {
+        const selected = this.io.network?.udpSourceAddress?.(new Uint8Array(destination));
+        if (typeof selected === "number") return -selected;
+        const address = selected;
+        if (address?.length !== 4 || address.every((octet) => octet === 0)) return -ENETUNREACH;
+        return ((address[0] << 24) | (address[1] << 16) | (address[2] << 8) | address[3]) >>> 0;
+      },
       onUdpBind: (handle: number, addr: [number, number, number, number], port: number): number => {
         const pid = this.currentHandlePid;
-        if (pid === 0 || !this.io.network?.bindUdp) return 0;
+        if (pid === 0) return -EINVAL;
+        if (!this.io.network?.bindUdp) {
+          // An absent external adapter still permits the kernel's wildcard
+          // loopback sockets; it cannot authenticate a nonlocal address.
+          return addr.every((octet) => octet === 0) ? 0 : -EADDRNOTAVAIL;
+        }
         const key = `${pid}:${handle}`;
         const result = this.io.network.bindUdp(
           key,
@@ -31034,7 +31047,7 @@ export class CentralizedKernelWorker {
         new Uint8Array(addr),
         port,
         {
-          accept: (peer, _local, remote) => {
+          accept: (peer, local, remote) => {
             const target = this.pickListenerTarget(port);
             if (!target) return EHOSTUNREACH;
             return this.handleIncomingVirtualTcpConnection(
@@ -31042,6 +31055,7 @@ export class CentralizedKernelWorker {
               target.fd,
               peer,
               remote,
+              local,
             );
           },
         },
@@ -32012,14 +32026,17 @@ export class CentralizedKernelWorker {
     listenerFd: number,
     peer: TcpConnectionPeer,
     remote: NetworkAddress,
+    local: NetworkAddress,
   ): number {
     if (!this.#initialized || this.#kernelInstance === null) return 107;
+    let localSnapshot: {readonly addr: [number,number,number,number]; readonly port:number};
     let remoteSnapshot: {
       readonly addr: [number, number, number, number];
       readonly port: number;
     };
     try {
       remoteSnapshot = this.#snapshotVirtualNetworkAddress(remote);
+      localSnapshot = this.#snapshotVirtualNetworkAddress(local);
     } catch {
       return EIO;
     }
@@ -32034,12 +32051,20 @@ export class CentralizedKernelWorker {
           { pid, fd: listenerFd },
           remoteSnapshot.addr,
           remoteSnapshot.port,
+          localSnapshot.addr,
           entry,
         );
         if (recvPipeIdx < 0) {
           result = -recvPipeIdx;
           return;
         }
+        const connectionId = (
+          this.#kernelInstanceForEntry(entry).exports.kernel_tcp_connection_id as (
+            recv: number,
+            send: number,
+          ) => number
+        )(recvPipeIdx, recvPipeIdx + 1);
+        if (!connectionId) throw new Error("TCP injection did not mint its backing identity");
         result = 0;
         entry.deferProtocolEffect(() => {
           this.wakeTargetPollNow(pid);
@@ -32048,6 +32073,7 @@ export class CentralizedKernelWorker {
             pid,
             recvPipeIdx,
             peer,
+            connectionId,
           );
           return undefined;
         });
@@ -32060,6 +32086,7 @@ export class CentralizedKernelWorker {
     target: TcpListenerTarget,
     remoteAddr: readonly [number, number, number, number],
     remotePort: number,
+    localAddr: readonly [number,number,number,number],
     entry: KernelWorkerEntryContext,
   ): number {
     return (
@@ -32071,6 +32098,7 @@ export class CentralizedKernelWorker {
         c: number,
         d: number,
         port: number,
+        local: number,
       ) => number
     )(
       target.pid,
@@ -32080,6 +32108,7 @@ export class CentralizedKernelWorker {
       remoteAddr[2],
       remoteAddr[3],
       remotePort,
+      ((localAddr[0] << 24) | (localAddr[1] << 16) | (localAddr[2] << 8) | localAddr[3]) >>> 0,
     );
   }
 
@@ -32087,10 +32116,12 @@ export class CentralizedKernelWorker {
     targetPid: number,
     recvPipeIdx: number,
     peer: TcpConnectionPeer,
+    connectionId: number,
   ): void {
     const sendPipeIdx = recvPipeIdx + 1;
     let cleaned = false;
     let abortRequested = false;
+    let peerSendClosed = false;
     let peerReceiveEnded = false;
     let guestReadShutdown = false;
     let guestWriteShutdown = false;
@@ -32137,7 +32168,8 @@ export class CentralizedKernelWorker {
           }
         } catch (error) {
           const errno = (error as { errno?: unknown })?.errno;
-          if (errno !== EAGAIN) abortRequested = true;
+          if (errno === 32) { peerSendClosed = true; pendingOutbound = null; }
+          else if (errno !== EAGAIN) abortRequested = true;
         }
       }
 
@@ -32174,6 +32206,10 @@ export class CentralizedKernelWorker {
           let shutdownPeerWrite = false;
           let closePeer = false;
 
+          if (peerSendClosed && sendPipeReadOpen) {
+            this.#closeTcpPipeReadWithinKernelEntry(sendPipeIdx, entry);
+            sendPipeReadOpen = false; notifyWritable = true;
+          }
           if (!abortRequested) {
             const readOpen = recvPipeWriteOpen
               ? this.#tcpPipeReadOpenWithinKernelEntry(
@@ -32232,7 +32268,7 @@ export class CentralizedKernelWorker {
               notifyReadable = true;
             }
 
-            if (pendingOutbound === null) {
+            if (pendingOutbound === null && sendPipeReadOpen) {
               pendingOutbound = this.readPipeChunk(
                 0,
                 sendPipeIdx,
@@ -32266,6 +32302,10 @@ export class CentralizedKernelWorker {
               );
           }
 
+          if (abortRequested) {
+            const reset = this.#kernelInstanceForEntry(entry).exports.kernel_reset_tcp_connection as (recv: number, send: number, token: number) => number;
+            if (reset(recvPipeIdx, sendPipeIdx, connectionId) !== 0) throw new Error("TCP bridge lost its owned socket backing during reset");
+          }
           if (abortRequested || closePeer) {
             if (recvPipeWriteOpen) {
               this.#closeTcpPipeWriteWithinKernelEntry(

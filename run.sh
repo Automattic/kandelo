@@ -257,6 +257,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_publish_spawn_child
     kernel_reap_exited_child
     kernel_remove_process
+    kernel_reset_tcp_connection
     kernel_set_current_tid
     kernel_set_cwd
     kernel_spawn_exec_commit
@@ -269,6 +270,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_spawn_scratch_pointer
     kernel_spawn_scratch_retained_capacity
     kernel_take_process_timer_cleanup
+    kernel_tcp_connection_id
     kernel_thread_exit
     kernel_thread_has_deliverable
     kernel_transfer_channel_execute

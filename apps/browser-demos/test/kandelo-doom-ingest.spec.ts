@@ -171,3 +171,23 @@ test("a rejected file fails visibly and leaves the running WAD alone", async ({ 
   // The demo was never signalled: same pid, still up.
   expect(await boundPid(page)).toBe(pidBefore);
 });
+
+test("dock buttons stay put when the game gains or loses focus", async ({ page }) => {
+  test.setTimeout(300_000);
+  const canvas = await bootDoomOrSkip(page);
+  const badge = page.locator(".kdemo-surface-badge").first();
+  const lan = page.getByTestId("fb-dock-action-lan");
+  const unfocused = await lan.boundingBox();
+  // Focus without clicking: a click on the canvas also locks the mouse.
+  await canvas.focus();
+  await expect(badge).toHaveText(/captured/i);
+  const focused = await lan.boundingBox();
+  // Clicking a dock button takes focus from the game, which changes the
+  // badge's message; the button must still be where the pointer is.
+  await lan.click();
+  await expect(page.getByTestId("fb-dock-menu-lan")).toBeVisible();
+  await expect(badge).toHaveText(/click to play/i);
+  const opened = await lan.boundingBox();
+  expect(focused?.x).toBe(unfocused?.x);
+  expect(opened?.x).toBe(focused?.x);
+});

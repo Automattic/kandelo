@@ -21,6 +21,7 @@
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
+import type { RemoteSegmentPeer } from "./networking/remote-segment-port";
 
 export type { HttpRequest, HttpResponse };
 
@@ -298,3 +299,38 @@ export interface WriteVfsFileMessage {
 export type ProcEventMessage =
   | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
   | { type: "proc_event"; kind: "exec"; pid: number };
+
+/** Transfer a connected peer's byte bridge to the forwarding kernel worker.
+ *  Responds with the peer's assigned segment address. */
+export interface AttachRemotePeerMessage {
+  type: "remote_network_attach";
+  requestId: number;
+  peer: RemoteSegmentPeer;
+}
+
+/** Inspect the worker-owned remote segment's membership and UDP bindings. */
+export interface RemoteNetworkSnapshotMessage {
+  type: "remote_network_snapshot";
+  requestId: number;
+}
+
+/** Start a network session with this machine as the forwarding host.
+ *  Responds with the machine's session address. */
+export interface RemoteNetworkHostMessage {
+  type: "remote_network_host";
+  requestId: number;
+}
+
+/** Join a session over a connected peer's byte bridge to its host. Responds
+ *  with the address the host assigned. */
+export interface RemoteNetworkJoinMessage {
+  type: "remote_network_join";
+  requestId: number;
+  peer: RemoteSegmentPeer;
+}
+
+/** Leave the session; a host leaving ends it for every member. */
+export interface RemoteNetworkLeaveMessage {
+  type: "remote_network_leave";
+  requestId: number;
+}

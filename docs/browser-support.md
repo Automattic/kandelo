@@ -1219,32 +1219,32 @@ and Lua, which the build leaves out, and its 859 MB archive does not fit
 the machine's filesystem; Helga Deep in Trouble needs the Wintermute
 engine's JPEG support.
 
-The catalog is image content. `packages/registry/shell/scummvm-freeware-games.json`
-lists each game's archive URL on `downloads.scummvm.org`, its size, and the
-SHA-256 the ScummVM project publishes beside it; the image builder writes it
-to `/usr/local/share/scummvm-play/games.tsv`, and fails if the ScummVM
+The catalog is image content.
+`packages/registry/shell/scummvm-freeware-games.json` lists each game's
+archive URL on `downloads.scummvm.org`, its size, and the SHA-256 the
+ScummVM project publishes beside it; the image builder writes it to
+`/usr/local/share/scummvm-play/games.tsv`, and fails if the ScummVM
 profile's dock menu does not list exactly its games. Each button and menu
-entry is a `dockActions` command: it ends the running ScummVM with Ctrl+C,
-then runs `/usr/local/bin/scummvm-play <game>` in the machine's shell. That
-script downloads the archive with the machine's own `curl` — in the browser
-that goes through the CORS proxy described below, because the site grants
-no CORS — reporting a percentage against the catalog size (the guest
-receives downloads as chunked responses, so `curl` never learns the total),
-starts with one request for smaller archives or 32 MiB ranges above the
-proxy's 100 MiB response limit. If any request fails, it switches to
-16 MiB ranges with up to three attempts per range. Completed ranges stay
-downloaded; an incomplete attempt is discarded before retrying. If the
-server ignores ranges on a smaller archive, it retries the full request.
-It then checks the SHA-256, unzips into
-`/usr/share/scummvm-games/<game>`, and
-deletes the archive. ScummVM's own `--add --recursive` then finds the game
-and records it as a launcher target, and the script starts that target; a
-collection (the WAGE games) opens the launcher instead. A failed download
-or a digest mismatch stops there with a message in the machine's terminal;
-nothing is started from unverified data. `scummvm-play --list` prints the
-catalog in the terminal. A game stays unpacked for the rest of the session,
-so choosing it again starts it without downloading; nothing persists across
-a reboot.
+entry is a `dockActions` command: it ends the running ScummVM (the
+framebuffer pane signals the `/dev/fb0` owner, described below), then runs
+`/usr/local/bin/scummvm-play <game>` in the machine's shell. That script
+downloads the archive with the machine's own `curl` — in the browser that
+goes through the CORS proxy described below, because the site grants no CORS
+— reporting a percentage against the catalog size (the guest receives
+downloads as chunked responses, so `curl` never learns the total), starts
+with one request for smaller archives or 32 MiB ranges above the proxy's 100
+MiB response limit. If any request fails, it switches to 16 MiB ranges with
+up to three attempts per range. Completed ranges stay downloaded; an
+incomplete attempt is discarded before retrying. If the server ignores
+ranges on a smaller archive, it retries the full request. It then checks the
+SHA-256, unzips into `/usr/share/scummvm-games/<game>`, and deletes the
+archive. ScummVM's own `--add --recursive` then finds the game and records
+it as a launcher target, and the script starts that target; a collection
+(the WAGE games) opens the launcher instead. A failed download or a digest
+mismatch stops there with a message in the machine's terminal; nothing is
+started from unverified data. `scummvm-play --list` prints the catalog in
+the terminal. A game stays unpacked for the rest of the session, so choosing
+it again starts it without downloading; nothing persists across a reboot.
 
 No other game ships with the machine: no Kandelo package carries a commercial
 SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
@@ -1324,13 +1324,26 @@ download completed. Both views reset when the kernel is replaced; neither is
 persisted as a machine snapshot.
 
 Cross-origin browser fetches are routed through `public/service-worker.js`,
-which defaults to `https://wordpress-playground-cors-proxy.net/?`. Override it
-with `VITE_CORS_PROXY_URL` when testing another proxy:
+which defaults to `https://wordpress-playground-cors-proxy.net/?`. Only GET
+and HEAD requests are wrapped in the proxy: the proxy exists to make
+CORS-less read-only resources readable under COEP, and its only POST
+authority is the reviewed `git-upload-pack` boundary, which targets the proxy
+URL deliberately. Requests with any other method go directly to their target,
+including guest HTTP requests issued by controlled kernel workers, so that
+server must grant CORS itself. A CORS-less POST fails at the browser's CORS
+boundary; the service worker cannot make it readable. Override the proxy with
+`VITE_CORS_PROXY_URL` when testing another proxy:
 
 ```bash
 cd apps/browser-demos
 VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 ```
+
+An explicit guest `BrowserKernel({ corsProxy })` configuration already directs
+requests to the proxy in `NetworkIO`. Those deliberate requests keep their
+existing route and header policy. The GET/HEAD automatic-wrapping boundary
+applies to unwrapped page and worker requests, including guest fetches from
+an embedder without an explicit backend proxy.
 
 Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
 prefixes receive percent-encoded targets.
@@ -2037,18 +2050,26 @@ knows about but cannot run declares `unavailable`, the reason, instead of
 `restart`; the menu shows it disabled with that reason, so the gap stays
 visible rather than silently missing.
 
-A display machine's command (its `init.shellCommand`) is a long-lived program
-that owns the machine's terminal and a single-owner display device, so running
-something else means ending that program first. A click does what a person at
-the terminal would: the host types the interrupt character (Ctrl+C) into the
-machine's shell PTY, which the kernel's line discipline delivers as `SIGINT`
-to the foreground process group, and waits for the shell's prompt to come
-back (`KernelHost.interruptShellForeground`). The prompt is the evidence the
-program exited and released its devices; if it does not appear within ten
-seconds the action fails visibly and the command is not sent. Only then is
-`restart` written to the shell, exactly as if typed. Like `ingest.onLoad`,
-`restart` is the image author's command, never user input. `id`s must be
-unique within the profile, and entry `id`s within their menu.
+A display machine's command (its `init.shellCommand`) is a long-lived
+program that owns the machine's terminal and a single-owner display device,
+so running something else means ending that program first. A click does what
+a person at the terminal would: the host types the interrupt character
+(Ctrl+C) into the machine's shell PTY, which the kernel's line discipline
+delivers as `SIGINT` to the foreground process group, and waits for the
+shell's prompt to come back (`KernelHost.interruptShellForeground`). The
+prompt is the evidence the program exited and released its devices; if it
+does not appear within ten seconds the action fails visibly and the command
+is not sent. A program that reads its keyboard from a raw-mode terminal, as
+fbDOOM does, has turned the line discipline's signal keys off, so Ctrl+C
+reaches it as an ordinary keypress and it keeps running, exactly as it would
+on any Unix terminal. The framebuffer pane therefore ends its display
+program the way `ingest.onLoad` does: it sends `SIGTERM` to the process
+bound to `/dev/fb0` and waits, for at most ten seconds, until that process
+has exited and the kernel has released the device; when nothing owns the
+device it falls back to Ctrl+C. Only then is `restart` written to the shell,
+exactly as if typed. Like `ingest.onLoad`, `restart` is the image author's
+command, never user input. `id`s must be unique within the profile, and
+entry `id`s within their menu.
 
 The runtime treats this file as untrusted image input. It must be a regular
 file no larger than 256 KiB, contain valid UTF-8 and JSON, and use a supported
@@ -2501,6 +2522,143 @@ claim that browser completion is working based on Node-only evidence.
 
 ### No external raw sockets
 Browser sandboxing prevents Kandelo from listening on real network ports or opening raw TCP/UDP sockets to arbitrary external peers. Local loopback sockets and `LocalVirtualNetwork` listeners are virtual sockets inside the browser session, so Kandelo machines can still communicate with each other using POSIX UDP/TCP. Browser-facing HTTP server demos use a service worker to intercept HTTP requests and inject them as kernel TCP connections via the connection pump.
+
+Outbound internet traffic leaves through the fetch and TLS bridges, which the guest sees as a NAT link: `eth0` is `10.0.2.15/24`, internet streams report that address from `getsockname`, and DNS names resolve to made-up addresses in `198.18.0.0/15`. The link carries TCP only, so a UDP datagram for anywhere beyond the machine fails with `EHOSTUNREACH` (see [architecture](architecture.md)).
+
+### Purpose-checked browser peer connections
+
+The Kandelo app's dock has a network button for **network sessions** between
+independent computers that are already running. Creating a session makes this
+computer the host of a `10.89.0.0/24` link (`10.89.0.1`) and shows an invite
+link carrying a random room token, the session's name, and the machine the
+host runs (its `vfs` image and `profile`, as a Share link names them), never
+the fragment where startup scripts travel. Opening the link boots that machine
+and opens the panel with a Join button; joining always waits for that click, because it shows the hosting
+computer this computer's network address. A session admits up to 31 joiners;
+the host forwards their traffic in its dedicated kernel worker, and the panel
+lists the computers and addresses the worker reports. Booting another machine
+or leaving ends this computer's part in the session, and a host leaving ends
+it for everyone, with the reason shown. The bare `/pages/peer-network/` page
+connects machines it boots itself, with the same transport. Its Doom/Quake
+controls select guest applications on the connected machine, rather than
+machine profiles. The machine-identity source guard admits only the named
+`PeerNetworkGame` selector type; image-owned machine definitions still belong
+in `/etc/kandelo/demo.json`.
+
+Both use `purpose: "network"` peer connections. The main thread transfers
+framed bytes between RTC channels and bounded native MessagePorts. Guest
+programs use ordinary IPv4 UDP and TCP sockets; DNS names `host` and
+`peer-N` resolve through the worker's segment membership, and broadcasts
+reach every computer in the session, so LAN discovery works: in Chromium, a
+joiner's `fbdoom -localsearch` finds the hosting computer's server, and
+TyrQuake's own menus find each other: on the Quake machine, Multiplayer →
+New Game on one computer and Multiplayer → Join a Game → Search for local
+games on another list and join the game, with no restart, even though Quake
+was already running when the session started. (Upstream TyrQuake 0.71 never
+registers its network console commands, so New Game could only start a
+one-player game that never listened; the package's
+`0005-register-network-console-commands.patch` registers them.) A LAN game should run as a private server
+(`fbdoom -privateserver`): the browser's internet egress carries TCP only,
+so UDP to Doom's internet master server fails with `EHOSTUNREACH`, and
+fbdoom stops with a fatal error when its registration send fails. The Doom
+machine's **LAN game** dock menu runs these commands for the player: a host
+co-op or deathmatch entry restarts the game as `fbdoom -server
+-privateserver -nodes N` (plus `-deathmatch`), so the host plays and the
+game starts once N players have joined; **Join a LAN game** runs `fbdoom
+-autojoin`, which searches the session by broadcast and stops with "No
+server found on local LAN" when none answers; and **Back to single player**
+restarts the ordinary game without leaving the session. Every player uses
+the shareware WAD the machine fetched at boot, so all computers load the
+same game data. Node runs the same segment over paired native ports; its
+built-in runtime has no WebRTC API, so creating RTC links remains a browser
+adapter capability.
+
+Computers find each other through the signalling piplet's rooms. The
+development server relays the real `apps/signalling/piplet.php` same-origin
+at `<base>__kandelo_signalling`, run by PHP from `apps/signalling/tools.nix`
+(or `KANDELO_SIGNALLING_PHP`, or `php` on `PATH`). A deployment names its
+piplet with `VITE_KANDELO_SIGNALLING_URL`; serve it same-origin or with CORS.
+Without either, the panel says sessions are unavailable rather than offering
+a button that cannot work.
+
+UDP uses an unordered channel with zero retransmissions; directory control is
+ordered and reliable. The payload cap is the lesser of 65,507 bytes and the
+negotiated SCTP ceiling minus 16 bytes. Oversized sends return EMSGSIZE and a
+full worker-side bridge returns EAGAIN; admitted UDP can still be lost under RTC
+congestion or remote socket closure. Each bridge direction caps pending storage
+at 128 frames and one MiB. Membership and control messages are bounded, source
+addresses are checked against link ownership, and disconnect removes remote
+bindings and routes. Local Chromium checks demonstrate actual guest Netcat
+messages in both directions and between joiners, plus two-player Doom and
+TyrQuake with both players behind a separate forwarding host. Visible Chromium
+checks used the normal browser launch and real PHP signalling server. These
+runs require the local loopback ICE fixture; default ICE failed to find a direct
+route in the first visible check and reported that boundary. A Linux network lab
+verifies a computer on another network joining with STUN only
+(`apps/browser-demos/test/network-lab/`, run with its `run.sh`; it needs Docker,
+which on macOS supplies the Linux VM). Each Chromium sits in its own home
+network behind its own NAT router, which masquerades the home behind one public
+address and drops unsolicited inbound traffic as a household router does; the
+only route between the homes is through both NATs, and the only ICE server is
+the lab's STUN server. The test checks that each side's selected ICE route is
+the other router's public address with nothing relayed, then carries a guest TCP
+stream across it. Networks STUN cannot cross (symmetric NATs, which need a TURN
+relay), real internet paths between computers, long-duration games, and
+Firefox/WebKit guest runtime behavior remain unverified. See the dated
+[design and validation record](plans/2026-10-06-webrtc-guest-udp.md).
+
+`web-libs/kandelo-session/src/peer-connection.ts` owns reusable WebRTC
+connection setup. A consumer declares a purpose and named data channels with
+their delivery options. Optional message chunking is available only for
+reliable, ordered channels; raw channels preserve their declared delivery
+semantics. This connection API does not itself connect guest sockets.
+
+Connect codes retain the `kandelo1:` prefix and contain a bounded, UTF-8
+base64 JSON envelope with SDP, offer/answer type, purpose and channel labels.
+Codes are capped at 64 KiB. A different purpose or channel set is rejected
+before creating a connection. Old codes without a purpose must be recreated;
+there is no legacy compatibility path.
+
+ICE gathering waits at most three seconds before emitting the candidates
+available so far. The default servers provide STUN, with no TURN relay;
+failure to find a direct route is reported explicitly. Consumers may supply
+their own ICE servers. The Kandelo app takes its network sessions' ICE
+servers from `VITE_KANDELO_ICE_SERVERS` when it is built or served: a JSON
+array in `RTCIceServer` form, up to 8 servers with `stun:`, `stuns:`, `turn:`
+or `turns:` URLs and an optional username and credential. A malformed list
+fails the session with its reason rather than falling back to the public
+defaults, and a deployment that wants peers behind symmetric NATs to connect
+names a TURN server there. Missing channel arrival is bounded to 30 seconds after
+ICE connects; the manual answer exchange has no deadline. Cancellation closes
+pending channels and connections.
+Close and failure subscriptions expose established connection teardown.
+Late failure subscribers receive the recorded connection error once, so an
+ICE failure during an asynchronous consumer handoff is not lost. An orderly
+close does not report a connection failure.
+
+Session sharing, which declares its own reliable, ordered and chunked
+channels as the `migration` purpose, is not yet on main; it lands with
+the session-sharing work in #1372.
+
+`apps/signalling/piplet.php` and `apps/browser-demos/lib/peer-signalling.ts`
+carry the offer and answer as opaque connect codes. The server does not
+interpret purpose or carry guest traffic. Two shapes share one store:
+
+- A **session** pairs two computers under a human-chosen name. The name
+  grants access to its codes; sessions expire after ten minutes and are
+  bounded to 256 stored sessions, with a 64 KiB limit per code.
+- A **room** matches many computers to one host under a random 20-64 letter
+  token. Joiners post offers under the token; the host collects waiting joins
+  on each heartbeat and answers or refuses each one. Only the host may
+  answer, refuse or close, proven by a random key in the
+  `X-Kandelo-Host-Key` header that never leaves the hosting computer; the
+  piplet stores only its SHA-256. A room expires 60 seconds after its last
+  heartbeat and an unanswered join after 120. Rooms, waiting joins per room,
+  names and the whole store are bounded.
+
+Anyone holding a room token can ask to join, and an answered join carries
+the host's network addresses, so a token is a capability: share it only with
+the people you mean to invite.
 
 ### Memory per process
 Each process gets a fresh memory layout whose requested initial pages cover the

@@ -607,6 +607,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#drainAndProcessWakeupEventsWithinKernelEntry::kernel-export-direct-use::takePtyReadiness?.()",
   ),
   reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_tcp_connection_id as ( recv: number, send: number, ) => number )(recvPipeIdx, recvPipeIdx + 1)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#startIncomingVirtualTcpConnectionPump.pumpHostPhase::kernel-export-direct-use::reset(recvPipeIdx, sendPipeIdx, connectionId)",
+  ),
+  reviewedScalarKernelExportCall(
     "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_create_process()",
   ),
   reviewedScalarKernelExportCall(
@@ -703,7 +709,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#ksmUnmap::kernel-export-direct-use::unmap(pid, addr, len)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#injectIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_inject_connection as ( pid: number, listenerFd: number, a: number, b: number, c: number, d: number, port: number, ) => number )( target.pid, target.fd, remoteAddr[0], remoteAddr[1], remoteAddr[2], remoteAddr[3], remotePort, )",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#injectIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_inject_connection as ( pid: number, listenerFd: number, a: number, b: number, c: number, d: number, port: number, local: number, ) => number )( target.pid, target.fd, remoteAddr[0], remoteAddr[1], remoteAddr[2], remoteAddr[3], remotePort, ((localAddr[0] << 24) | (localAddr[1] << 16) | (localAddr[2] << 8) | localAddr[3]) >>> 0, )",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#kernelThreadHasDeliverable::kernel-export-direct-use::threadHasDeliverable(pid, tid)",
@@ -1594,9 +1600,9 @@ const auditAllowances: AuditAllowance[] = [
     why: "The connector physical-size import binds its exact pointer formal to the two-u32 capacity the kernel lends before inspecting display state.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, 4, "host_network_local_address destination", )',
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, 8, "host_network_interface destination", )',
     disposition: "rust-lent",
-    why: "The host_network_local_address import binds its pointer formal to a fixed four-byte capacity, and the single write that follows is guarded by an exact four-byte length check on the host-owned address.",
+    why: "The host_network_interface import binds its pointer formal to a fixed eight-byte capacity, and the single write that follows is an eight-byte buffer assembled from the host-owned address and netmask, each checked to be exactly four bytes.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#hostFutexWake::kernel-view::new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory))",

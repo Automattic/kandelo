@@ -1459,6 +1459,116 @@ Semantic changes (not visible to the snapshot):
 - **`mount(2)` is still `ENOSYS`.** The in-kernel filesystems are configured
   by the host at boot, not by the guest.
 
+### ABI 50 guest networking through host-owned segments
+
+ABI 50 lets a guest machine's ordinary POSIX sockets reach another machine
+through a segment the host owns, such as the WebRTC remote segment. The remote
+UDP segment exposed a kernel assumption that a routed IPv4 address must belong
+to one hard-coded demo subnet; the host, which owns the interface, now
+answers that question. `__abi_version` equality is exact, so every program,
+package archive and VFS image is rebuilt for 50.
+
+Structural changes (recorded in the snapshot):
+
+- **`env.host_udp_source_address(a, b, c, d) -> i64`** is a new kernel import.
+  Its four arguments are the destination octets; the result is a nonzero
+  packed source IPv4 address in network byte order, or a negative errno. The
+  host derives it from the kernel worker's actual `NetworkIO` interface, and a
+  host without a routed UDP interface answers `ENETUNREACH`.
+- **Remote TCP imports.** `env.host_net_connect_from(handle, addr_ptr,
+  addr_len, port, source, source_port)` starts a connect from an explicit
+  bound source; `env.host_net_local_endpoint(handle) -> i64` reports the
+  actual local address and port of a connected stream (packed address in the
+  high bits, port in the low 16), or a negative errno; and
+  `env.host_net_shutdown(handle, how)` disables stream directions on the host
+  connection. A host without one of these answers `EOPNOTSUPP`, which the
+  kernel reports instead of pretending the operation happened.
+- **Accepted-stream reset exports.** `kernel_tcp_connection_id(recv, send)`
+  returns a non-reused token for an accepted stream's pipe pair, and
+  `kernel_reset_tcp_connection(recv, send, token)` resets both halves only
+  when that token still owns them, so a pipe index freed by a half-close
+  cannot authorize a reset of a later connection. `kernel_inject_connection`
+  gains a trailing routed local-address argument.
+
+Semantic changes:
+
+- **UDP bind ownership belongs to the host.** Binding a specific
+  non-loopback address delegates the ownership check to HostIO, and a host
+  without a network adapter refuses it with `EADDRNOTAVAIL` instead of
+  accepting an address it cannot deliver to. The kernel no longer limits
+  binds and routes to the `10.88.0.0/16` demo subnet.
+- **Connected wildcard UDP sockets keep their selected source.**
+  `getsockname` reports the source the host selected for the association,
+  and an `AF_UNSPEC` disconnect clears it while keeping the bound port.
+  Fork state format 18 carries that selected source to the child, so an
+  inherited connected socket reports the same local address.
+- **`FIONREAD` on a datagram socket reports the next queued packet's size**
+  (zero for an empty packet or queue) instead of zero.
+- **Host `EHOSTUNREACH` and `ENOBUFS` reach the guest as themselves.** Both
+  are now kernel `Errno` values, so a host that reports an unreachable peer
+  or exhausted buffers is no longer converted to `EIO`.
+- **A failed host-backed connect stays reported.** Every later `poll`,
+  `select` or `epoll` wait reports the socket ready (with `POLLERR` until
+  `SO_ERROR` consumes the error), instead of only the wait that observed the
+  failure. A caller whose first wait absorbed the failure used to wait for a
+  connection that had already failed.
+- **Host-backed TCP shutdown keeps the connection handle.** `shutdown`
+  changes directions on the shared connection and the handle is released only
+  at close, so a half-close no longer drops a connection that another
+  descriptor still holds. An unsupported host shutdown fails without changing
+  the kernel's shutdown flags.
+- **Host connection handles are machine-wide.** They are allocated across
+  processes instead of reusing a process-local socket slot, so two processes'
+  first sockets no longer collide in a shared host backend.
+- **Stream resets are sticky and shared.** A reset reported by the host is
+  visible as `ECONNRESET` through every descriptor that shares the socket,
+  raises `POLLERR`, and is reported once through `SO_ERROR`. Accepted
+  connections report the routed local address from `getsockname`.
+
+ABI 50 also carries the interface configuration that network sessions need,
+added before anything shipped under the number:
+
+- **`env.host_network_interface(buf) -> i32` replaces
+  `env.host_network_local_address(buf) -> i32`.** It writes the assigned IPv4
+  address followed by the netmask of its link (8 bytes, network byte order)
+  and returns 1, or returns 0 when the interface has no address. A host must
+  report the netmask whenever it reports an address; the kernel derives the
+  interface flags and broadcast address from the pair, and treats a
+  non-contiguous netmask as no configuration. A host built for an earlier
+  ABI 50 tree provides the old import and cannot instantiate this kernel.
+  Host imports are not in the structural snapshot, so this is listed by hand.
+- **`SIOCGIFFLAGS`, `SIOCGIFNETMASK` and `SIOCGIFBRDADDR`** join the
+  interface ioctls and the ioctl contract table, all with `struct ifreq`
+  replies. Before, the kernel answered them `ENOTTY`. Loopback is
+  `IFF_UP|IFF_LOOPBACK|IFF_RUNNING` with netmask 255.0.0.0 and no broadcast
+  address. `eth0` is `IFF_UP|IFF_RUNNING|IFF_BROADCAST` only while the host
+  has assigned it an address; outside any network its flags are zero and the
+  address queries fail with `EADDRNOTAVAIL`, as `SIOCGIFADDR` already did.
+  These interfaces are not POSIX; they report the kernel's real interface
+  state to programs that enumerate it.
+- **A subnet broadcast needs `SO_BROADCAST`.** Sending or connecting a UDP
+  socket to `eth0`'s directed broadcast address fails with `EACCES` unless
+  `SO_BROADCAST` is set, as the limited broadcast address already did. The
+  check asks the host for the interface configuration only for a destination
+  that would leave the machine.
+- **The internet egress is a NAT link.** The Node socket backend and the
+  browser fetch and TLS bridges report `eth0` as `10.0.2.15/24`, so the
+  interface queries above describe the link TCP actually leaves on. Three
+  answers change with it: `getsockname` on an internet stream reports
+  `10.0.2.15` and its port instead of the host's real address (Node) or
+  `EOPNOTSUPP` (browser); a UDP datagram for anywhere beyond the machine
+  fails with `EHOSTUNREACH` instead of `ENETUNREACH`, because the route
+  exists and its gateway cannot deliver UDP; and the browser bridges' DNS
+  answers come from `198.18.0.0/15`, assigned in order, instead of hashes
+  into `10.0.0.0/8` that could collide with each other or a session's
+  subnet.
+- **libc `getifaddrs` uses those ioctls.** musl builds the list from
+  rtnetlink, which Kandelo does not provide, so `getifaddrs` failed. The
+  overlay lists every interface with its IPv4 address, netmask and broadcast
+  address, and a null `ifa_addr` for an interface without an address. It
+  reports no `AF_PACKET` or IPv6 entries, because the kernel models neither
+  on these interfaces.
+
 ## The snapshot
 
 `abi/snapshot.json` is generated by `cargo xtask dump-abi` from the

@@ -1,3 +1,4 @@
+import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 import { OwnedJobs } from "./owned-jobs";
 /**
  * Kernel Worker Entry Point — Dedicated web worker that hosts the
@@ -859,6 +860,8 @@ async function createFreshProcessMemory(
 
 // ── Init ──
 
+const remoteSegmentRuntime = new RemoteSegmentRuntime();
+
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = false;
   initFailure = null;
@@ -961,7 +964,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // The service worker handles CORS proxying transparently in both dev and
   // production, keeping the browser networking path identical across modes.
   await tlsBackend.init();
-  io.network = tlsBackend;
+  // The session network wraps the browser backend for the machine's life, so
+  // a network session can start or end while guest programs are running.
+  io.network = msg.remoteNetwork
+    ? await remoteSegmentRuntime.initialize(msg.remoteNetwork, tlsBackend)
+    : remoteSegmentRuntime.install(tlsBackend);
 
   // The MITM CA certificate is installed after `init`, below: it is
   // per-session runtime data that can never be in an image, and `/` is the
@@ -4194,6 +4201,7 @@ async function performDestroy() {
         "Audio clock did not consume the queued close tail before machine teardown; the remaining tail was discarded.",
     });
   }
+  remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
   initReady = false;
   initFailure = "kernel worker destroyed";
@@ -4432,10 +4440,12 @@ const sw = globalThis as unknown as {
 
 sw.onmessage = (e: MessageEvent) => {
   const msg = e.data as MainToKernelMessage;
+  if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
   switch (msg.type) {
     case "init":
       void handleInit(msg).catch((err) => {
         const error = formatError(err);
+        remoteSegmentRuntime.close();
         initReady = false;
         initFailure = error;
         console.error("[kernel-worker] init failed:", err);

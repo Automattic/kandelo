@@ -753,6 +753,8 @@ export interface KernelCallbacks {
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
   onWaitpid?: (targetPid: number, options: number) => void;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
+  /** Packed IPv4 source in network byte order, or a negative errno. */
+  onUdpSourceAddress?: (destination: [number, number, number, number]) => number;
   onUdpBind?: (handle: number, addr: [number, number, number, number], port: number) => number;
   onUdpUnbind?: (handle: number) => number;
   onStdout?: (data: Uint8Array) => void;
@@ -2137,19 +2139,29 @@ export class WasmPosixKernel {
           }
         },
         // Workstream H4 (host-surface minimization): the network-interface
-        // ioctl content (interface table, MAC, ifreq/ifconf layout) is now
-        // kernel-owned (`crates/runtime-core/src/netif.rs`). This is the one
-        // remaining host-owned fact the kernel cannot compute itself.
-        host_network_local_address: (bufPtr: KernelPointer): number => {
+        // ioctl content (interface table, MAC, flags, ifreq/ifconf layout) is
+        // kernel-owned (`crates/runtime-core/src/netif.rs`). The address the
+        // host assigned and the netmask of its link are the one remaining
+        // host-owned fact the kernel cannot compute itself.
+        host_network_interface: (bufPtr: KernelPointer): number => {
           const address = this.io.network?.localAddress;
+          const netmask = this.io.network?.localNetmask;
           if (address?.length !== 4) return 0;
+          // An address without its link's netmask is an incomplete adapter,
+          // not a /32: say so instead of inventing a subnet.
+          if (netmask?.length !== 4) {
+            throw new Error("the network adapter reports an address without its netmask");
+          }
           try {
             const destination = this.#rustLentKernelDestination(
               bufPtr,
-              4,
-              "host_network_local_address destination",
+              8,
+              "host_network_interface destination",
             );
-            this.#writeKernelBytes(destination, address);
+            const config = new IntrinsicUint8Array(8);
+            config.set(address, 0);
+            config.set(netmask, 4);
+            this.#writeKernelBytes(destination, config);
             return 1;
           } catch {
             return 0;
@@ -2209,8 +2221,27 @@ export class WasmPosixKernel {
         host_net_readiness: (handle: number): number => {
           return this.#hostNetReadiness(handle);
         },
+        host_net_connect_from: (handle: number, addrPtr: KernelPointer, addrLen: number, port: number, source: number, sourcePort: number): number => {
+          return this.#hostNetConnect(handle,addrPtr,addrLen,port,{addr:new Uint8Array([source >>> 24,(source >>> 16)&255,(source >>> 8)&255,source&255]),port:sourcePort});
+        },
         host_net_connect_status: (handle: number): number => {
           return this.#hostNetConnectStatus(handle);
+        },
+        host_net_local_endpoint: (handle: number): bigint => {
+          try {
+            const value = this.io.network?.localEndpoint?.(handle);
+            if (!value) return -95n;
+            if (!(value.addr instanceof Uint8Array) || value.addr.length !== 4 || !Number.isInteger(value.port) || value.port < 1 || value.port > 65535) return -5n;
+            let packed = 0n;
+            for (const byte of value.addr) packed = (packed << 8n) | BigInt(byte);
+            return (packed << 16n) | BigInt(value.port);
+          } catch (error: any) { return Number.isInteger(error?.errno) && error.errno > 0 && error.errno <= 4095 ? -BigInt(error.errno) : -5n; }
+        },
+        host_net_shutdown: (handle: number, how: number): number => {
+          try {
+            if (!this.io.network?.shutdown) return -95;
+            this.io.network.shutdown(handle, how); return 0;
+          } catch (error: any) { return Number.isInteger(error?.errno) && error.errno > 0 && error.errno <= 4095 ? -error.errno : -5; }
         },
         host_net_close: (handle: number): number => {
           return this.#hostNetClose(handle);
@@ -2220,6 +2251,9 @@ export class WasmPosixKernel {
         },
         host_udp_bind: (handle: number, addrA: number, addrB: number, addrC: number, addrD: number, port: number): number => {
           return this.#hostUdpBind(handle, addrA, addrB, addrC, addrD, port);
+        },
+        host_udp_source_address: (a: number, b: number, c: number, d: number): bigint => {
+          return BigInt(this.callbacks.onUdpSourceAddress?.([a, b, c, d]) ?? -101);
         },
         host_udp_unbind: (handle: number): number => {
           return this.#hostUdpUnbind(handle);
@@ -4899,6 +4933,7 @@ export class WasmPosixKernel {
     addrPtr: KernelPointer,
     addrLen: number,
     port: number,
+    source?: import("./types").NetworkAddress,
   ): number {
     if (!this.io.network) return -111; // -ECONNREFUSED
     let addr: Uint8Array;
@@ -4908,9 +4943,10 @@ export class WasmPosixKernel {
       return -14; // EFAULT
     }
     try {
-      this.io.network.connect(handle, addr, port);
+      this.io.network.connect(handle, addr, port, source);
       return 0;
-    } catch {
+    } catch (error: any) {
+      if (Number.isInteger(error?.errno) && error.errno > 0 && error.errno <= 4095) return -error.errno;
       return -111; // -ECONNREFUSED
     }
   }
@@ -5035,7 +5071,7 @@ export class WasmPosixKernel {
   }
 
   #hostUdpBind(handle: number, addrA: number, addrB: number, addrC: number, addrD: number, port: number): number {
-    if (!this.callbacks.onUdpBind) return 0;
+    if (!this.callbacks.onUdpBind) return (addrA | addrB | addrC | addrD) === 0 ? 0 : -99;
     return this.callbacks.onUdpBind(handle, [addrA, addrB, addrC, addrD], port);
   }
 

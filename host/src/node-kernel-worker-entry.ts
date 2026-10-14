@@ -1,3 +1,4 @@
+import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 /**
  * Node.js kernel worker entry point — general-purpose, message-based.
  *
@@ -999,6 +1000,8 @@ function cleanupSessionDir(): void {
   rootfsForeignPrefixes = [];
 }
 
+const remoteSegmentRuntime = new RemoteSegmentRuntime();
+
 async function handleInit(msg: InitMessage) {
   initReady = false;
   injectedExecWorkerConstructionFailure = false;
@@ -1037,6 +1040,11 @@ async function handleInit(msg: InitMessage) {
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
   }
+  // The session network wraps the configured backend (or none) for the
+  // machine's life, so a session can start or end under running programs.
+  io.network = msg.remoteNetwork
+    ? await remoteSegmentRuntime.initialize(msg.remoteNetwork, io.network)
+    : remoteSegmentRuntime.install(io.network);
 
   kernelWorker = new CentralizedKernelWorker(
     {
@@ -3555,6 +3563,7 @@ async function performDestroy() {
   }
   await pcmDriver?.close();
   pcmDriver = null;
+  remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
   if (gracefulDetachComplete) {
     try {
@@ -3855,10 +3864,12 @@ function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_
 }
 
 port.on("message", (msg: MainToKernelMessage) => {
+  if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
   switch (msg.type) {
     case "init":
       void handleInit(msg).catch((error) => {
         cleanupSessionDir();
+        remoteSegmentRuntime.close();
         initReady = false;
         post({
           type: "init_error",

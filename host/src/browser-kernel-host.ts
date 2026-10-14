@@ -1,3 +1,5 @@
+import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
+import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
 import type { OwnedJobRead } from "./owned-jobs";
@@ -72,6 +74,8 @@ const defaultPcmWorkletUrl = new URL(
 );
 
 export interface BrowserKernelOptions {
+  /** Worker-owned remote UDP segment; a joiner transfers its native peer port. */
+  remoteNetwork?: RemoteSegmentInit;
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
   /**
@@ -618,6 +622,7 @@ export class BrowserKernel {
         const transferBuf = opts.kernelWasmBytes.slice(0);
         const initMsg: MainToKernelMessage = {
           type: "init",
+          remoteNetwork: this.options.remoteNetwork,
           kernelWasmBytes: transferBuf,
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
@@ -657,6 +662,9 @@ export class BrowserKernel {
           // snapshotClosedLazyAssets always allocates one ordinary ArrayBuffer
           // per binding, so transferring it cannot detach caller-owned bytes.
           transfer.push(asset.bytes.buffer as ArrayBuffer);
+        }
+        if (this.options.remoteNetwork?.role === "joiner") {
+          transfer.push(this.options.remoteNetwork.peer.port as MessagePort);
         }
         this.kernelWorkerHandle.postMessage(initMsg, transfer);
       });
@@ -1633,6 +1641,48 @@ export class BrowserKernel {
       throw new Error("kernel worker returned an invalid rootfs image");
     }
     return result;
+  }
+
+  /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
+  async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> {
+    const requestId = this.nextRequestId++;
+    try {
+      return await this.request(requestId, { type: "remote_network_attach", requestId, peer }, [peer.port as MessagePort]);
+    } catch (error) {
+      this.pendingRequests.delete(requestId);
+      throw error;
+    }
+  }
+
+  /** Inspect the worker-owned session: state, membership and endpoints. */
+  remoteNetworkSnapshot(): Promise<RemoteSessionSnapshot> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, { type: "remote_network_snapshot", requestId });
+  }
+
+  /** Start a network session hosted by this running machine; resolves with
+   *  its session address. */
+  hostRemoteNetwork(): Promise<string> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, { type: "remote_network_host", requestId });
+  }
+
+  /** Join a session over a connected peer's byte bridge to its host;
+   *  resolves with the address the host assigned. */
+  async joinRemoteNetwork(peer: RemoteSegmentPeer): Promise<string> {
+    const requestId = this.nextRequestId++;
+    try {
+      return await this.request(requestId, { type: "remote_network_join", requestId, peer }, [peer.port as MessagePort]);
+    } catch (error) {
+      this.pendingRequests.delete(requestId);
+      throw error;
+    }
+  }
+
+  /** Leave the session. Its address disappears and its streams reset. */
+  async leaveRemoteNetwork(): Promise<void> {
+    const requestId = this.nextRequestId++;
+    await this.request(requestId, { type: "remote_network_leave", requestId });
   }
 
   /** Destroy the kernel and release all resources. */

@@ -40,6 +40,7 @@ import {
 } from "./vite-binary-resolution";
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
+import { devSignallingServer } from "./vite/dev-signalling";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -916,6 +917,7 @@ const defaultDemoInputs = {
 
 const demoInputs = {
   ...defaultDemoInputs,
+  "peer-network": path.resolve(__dirname, "pages/peer-network/index.html"),
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
   benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
   "php-test": path.resolve(__dirname, "pages/php-test/index.html"),
@@ -929,11 +931,11 @@ function sourceOnlyDemoInputs<T extends Record<string, string>>(
 ): T {
   if (configuredSourceOnlyRoot === null) return selected;
   const unsupported = Object.keys(selected).filter(
-    (name) => !(name in defaultDemoInputs),
+    (name) => !(name in defaultDemoInputs) && name !== "peer-network",
   );
   if (unsupported.length > 0) {
     throw new Error(
-      "SourceOnly browser builds admit only the root main, kandelo, and network inputs; " +
+      "SourceOnly browser builds admit only the root main, kandelo, network, and peer-network inputs; " +
         `these inputs still depend on ambient build outputs: ${unsupported.join(", ")}`,
     );
   }
@@ -983,6 +985,7 @@ export default defineConfig(() => {
       forceFreshDevWorkerResponses(),
       injectCorsProxyConfig(),
       devCorsProxyMiddleware(),
+      devSignallingServer(repoRoot),
     ],
     server: {
       host: "127.0.0.1",

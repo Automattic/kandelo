@@ -51,9 +51,10 @@ const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // (Linux semantics) instead of a copy. The state is produced and consumed by
 // one kernel build, so the version guards against a mismatched kernel, not
 // a persisted format.
+// v18 also preserves the selected source of connected wildcard IPv4 UDP.
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
-const FORK_VERSION: u32 = 17;
+const FORK_VERSION: u32 = 18;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -504,6 +505,8 @@ fn write_durable_socket_state(
         }
         None => w.write_u32(0)?,
     }
+    // A selected source is nonzero; zero encodes no UDP association source.
+    w.write_u32(sock.udp_source_addr.map(u32::from_be_bytes).unwrap_or(0))?;
     Ok(())
 }
 
@@ -569,6 +572,8 @@ fn read_durable_socket_state(
         }),
         _ => return Err(Errno::EINVAL),
     };
+    let source = r.read_u32()?;
+    sock.udp_source_addr = if source == 0 { None } else { Some(source.to_be_bytes()) };
     Ok(())
 }
 
@@ -1671,6 +1676,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             sock.send_buf_idx = send_buf_idx;
             sock.shut_rd = shut_rd;
             sock.shut_wr = shut_wr;
+            if let Some(handle) = host_net_handle { crate::socket::reserve_host_net_handle(handle); }
             sock.host_net_handle = host_net_handle;
             sock.options = options;
             sock.bind_addr = bind_addr;
@@ -2940,6 +2946,27 @@ mod tests {
         let child = deserialize_fork_state(&buf[..written], 42).unwrap();
 
         assert_eq!(child.memory.get_brk(), 0x02000000);
+    }
+
+    #[test]
+    fn test_fork_roundtrips_connected_wildcard_udp_source() {
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+        let mut proc = Process::new(1);
+        let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 17);
+        socket.state = SocketState::Connected;
+        socket.bind_port = 41000;
+        socket.peer_addr = [10, 89, 0, 2];
+        socket.peer_port = 42000;
+        socket.udp_source_addr = Some([10, 89, 0, 1]);
+        let socket_idx = install_socket_for_fork(&mut proc, socket);
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 42).unwrap();
+        let inherited = child.sockets.get(socket_idx).unwrap();
+        assert_eq!(inherited.bind_addr, [0; 4]);
+        assert_eq!(inherited.udp_source_addr, Some([10, 89, 0, 1]));
+        assert_eq!(inherited.peer_addr, [10, 89, 0, 2]);
+        assert_eq!(inherited.state, SocketState::Connected);
     }
 
     #[test]

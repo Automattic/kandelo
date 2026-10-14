@@ -270,6 +270,19 @@ pub trait HostIO {
     }
     fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno>;
     fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno>;
+    fn host_net_connect_from(
+        &mut self,
+        handle: i32,
+        addr: &[u8],
+        port: u16,
+        source: [u8; 4],
+        source_port: u16,
+    ) -> Result<(), Errno> {
+        if source != [0; 4] || source_port != 0 {
+            return Err(Errno::EOPNOTSUPP);
+        }
+        self.host_net_connect(handle, addr, port)
+    }
     /// Query the status of a host-delegated connect that was previously
     /// kicked off via `host_net_connect`. Returns `Ok(())` once the TCP
     /// handshake completed successfully, `Err(EAGAIN)` while still pending,
@@ -300,13 +313,31 @@ pub trait HostIO {
         let _ = handle;
         Ok(wasm_posix_shared::net_readiness::UNOBSERVABLE)
     }
+    fn host_net_local_endpoint(&mut self, handle: i32) -> Result<([u8; 4], u16), Errno> {
+        let _ = handle;
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn host_net_shutdown(&mut self, handle: i32, how: u32) -> Result<(), Errno> {
+        let _ = (handle, how);
+        Err(Errno::EOPNOTSUPP)
+    }
     fn host_net_close(&mut self, handle: i32) -> Result<(), Errno>;
     /// Notify the host that an AF_INET socket is now listening, so the host
     /// can open a real TCP server on the given port.
     fn host_net_listen(&mut self, fd: i32, port: u16, addr: &[u8; 4]) -> Result<(), Errno>;
+    /// Select the real IPv4 source for a non-loopback UDP route. Hosts without
+    /// such an interface fail truthfully; route ownership belongs to the host.
+    fn host_udp_source_address(&mut self, dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
+        let _ = dst;
+        Err(Errno::ENETUNREACH)
+    }
     fn host_udp_bind(&mut self, handle: i32, addr: &[u8; 4], port: u16) -> Result<(), Errno> {
-        let _ = (handle, addr, port);
-        Ok(())
+        let _ = (handle, port);
+        if *addr == [0; 4] {
+            Ok(())
+        } else {
+            Err(Errno::EADDRNOTAVAIL)
+        }
     }
     fn host_udp_unbind(&mut self, handle: i32) -> Result<(), Errno> {
         let _ = handle;
@@ -324,13 +355,14 @@ pub trait HostIO {
         Err(Errno::ENETUNREACH)
     }
     fn host_getaddrinfo(&mut self, name: &[u8], result: &mut [u8]) -> Result<usize, Errno>;
-    /// The machine's real assigned IPv4 address, for the kernel-owned
-    /// network-interface `ioctl`s (`SIOCGIFADDR`, `SIOCGIFCONF`) to report on
-    /// the one non-loopback virtual interface. `None` means the host has no
-    /// address configured (yet) or does not model one at all — hosts that
-    /// don't track network configuration (e.g. `host-native`'s headless
-    /// conformance target) keep this default.
-    fn host_network_local_address(&mut self) -> Option<[u8; 4]> {
+    /// The machine's real assigned IPv4 address and the netmask of the link
+    /// it is on, for the kernel-owned network-interface `ioctl`s and for the
+    /// subnet-broadcast permission check on the one non-loopback virtual
+    /// interface. `None` means the host has no address configured (yet) or
+    /// does not model one at all — hosts that don't track network
+    /// configuration (e.g. `host-native`'s headless conformance target) keep
+    /// this default.
+    fn host_network_interface(&mut self) -> Option<crate::netif::InterfaceConfig> {
         None
     }
     /// Futex wake: wake up to `count` waiters on addr. Returns number woken.

@@ -190,7 +190,17 @@ describe("FetchNetworkBackend", () => {
       const backend = new FetchNetworkBackend();
       const addr = backend.getaddrinfo("example.com");
       expect(addr.length).toBe(4);
-      expect(addr[0]).toBe(10); // 10.x.x.x range
+      // 198.18.0.0/15: never routed on the internet, and clear of a
+      // session's 10.89.0.0/24 and every virtual link's subnet.
+      expect(addr[0]).toBe(198);
+      expect(addr[1] & 0xfe).toBe(18);
+    });
+
+    it("never gives two names the same address", () => {
+      const backend = new FetchNetworkBackend();
+      const seen = new Set<string>();
+      for (let i = 0; i < 2000; i++) seen.add(Array.from(backend.getaddrinfo(`host-${i}.example`)).join("."));
+      expect(seen.size).toBe(2000);
     });
 
     it("returns deterministic results for same hostname", () => {
