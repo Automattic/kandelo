@@ -475,6 +475,7 @@ mod tests {
             .collect();
         for line in block.lines() {
             let trimmed = line.trim();
+            if !trimmed.contains(':') { continue; }
             let Some(rest) = trimmed.strip_prefix('"') else { continue };
             let Some(name) = rest.split('"').next() else { continue };
             assert!(

@@ -53,8 +53,16 @@ acknowledged chunk in flight, verifies the stored bytes, and publishes only
 from the boot that still owns the session, under one exclusive lock. The next
 installation reclaims abandoned generation files. Reopening uses positioned OPFS
 reads and a bounded clean cache; fixed overwrites use a bounded dirty cache.
-Initial source fetch, zstd decode, and image-writer loading still materialize
-the source image. Journal block locations and recovery work still grow with
+For a first install from an uncompressed VFS URL, the page now stages bounded
+chunks into a temporary OPFS file and the image writer reads that file through
+positioned calls. A 68 MiB raw image can be composed with a 64 MiB VFS profile
+budget without returning source or composed image bytes to the page. The
+temporary source is removed after composition; an interrupted browser process
+may leave an orphaned source file. Zstd images, Pages products, and protected
+candidate placements still materialize their source bytes, so the incremental
+install milestone is not complete. The browser writer's positioned import is
+isolated in a separate Wasm artifact; the default image writer remains
+import-free. Journal block locations and recovery work still grow with
 the number of distinct changed blocks. On Node and browser boots, a journal
 with at least 32 MiB of unsealed tail is compacted into the alternate slot
 before processes start. The old generation stays intact until the new journal

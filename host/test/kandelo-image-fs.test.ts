@@ -1,4 +1,6 @@
 import { zstdCompressSync } from "node:zlib";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { KandeloImageFs, KandeloImageError } from "../../images/vfs/lib/kandelo-image-fs";
@@ -37,6 +39,41 @@ function zipEntry(over: Partial<ZipEntry> & { fileName: string }): ZipEntry {
  * points, reached through real wasm, from the language that will call them.
  */
 describe("KandeloImageFs", () => {
+  it("derives an image through bounded positioned source reads", () => {
+    const source = KandeloImageFs.create();
+    const metadata = { version: 1, kernelAbi: ABI_VERSION, createdBy: "positioned test" };
+    source.setImageCapacity(8 * 1024 * 1024);
+    source.setImageMetadata(metadata);
+    const content = Uint8Array.from({ length: 2 * 1024 * 1024 }, (_, index) => index % 251);
+    source.writeFile("/source", content);
+    const image = source.exportImage();
+    const moduleBytes = new Uint8Array(readFileSync(join(
+      import.meta.dirname,
+      "../../local-binaries/kandelo_image_module_positioned32.wasm",
+    )));
+    let maxRead = 0;
+    const derived = KandeloImageFs.createFromPositionedImage(
+      moduleBytes,
+      image.byteLength,
+      (offset, destination) => {
+        maxRead = Math.max(maxRead, destination.byteLength);
+        if (offset + destination.byteLength > image.byteLength) return -5;
+        destination.set(image.subarray(offset, offset + destination.byteLength));
+        return destination.byteLength;
+      },
+    );
+    expect(derived.readFile("/source")).toEqual(content);
+    expect(maxRead).toBeLessThanOrEqual(64 * 1024);
+    derived.setImageCapacity(8 * 1024 * 1024);
+    derived.writeFile("/added", new TextEncoder().encode("new"));
+    const reopened = KandeloImageFs.create();
+    reopened.loadImage(derived.exportImage());
+    expect(reopened.readFile("/source")).toEqual(content);
+    expect(reopened.getImageMetadata()).toEqual(metadata);
+    expect(reopened.exportCapacityBytes()).toBe(8 * 1024 * 1024);
+    expect(new TextDecoder().decode(reopened.readFile("/added"))).toBe("new");
+  });
+
   it("round-trips every byte of a dense file through the Rust image writer", () => {
     const fs = KandeloImageFs.create();
     const bytes = new Uint8Array(4 * 1024 * 1024);

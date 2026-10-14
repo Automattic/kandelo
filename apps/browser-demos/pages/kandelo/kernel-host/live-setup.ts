@@ -103,6 +103,7 @@ import {
   type PagesVfsProductEntry,
 } from "./pages-vfs-product-loader";
 import { readStreamedBody } from "../../../../../web-libs/kandelo-session/src/sized-download";
+import { stageRawVfsSourceImage, type StagedSourceImage } from "./opfs-source-image";
 import {
   deploymentScopeFromServiceWorkerUrl,
 } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
@@ -1335,13 +1336,18 @@ async function bootProfile(
       .then(failOn("kernel.wasm"))
       .then((r) => r.arrayBuffer()),
     restoredHandle === null && (restoredImage === null || !restoredImage.lazyAssetsRecorded)
-      ? loadVfsImage(profile, reportVfsImageProgress)
+      ? loadVfsImage(profile, reportVfsImageProgress, persistence !== null)
       : Promise.resolve({
         imageBytes: new ArrayBuffer(0),
         lazyAssets: restoredHandle?.lazyAssets ?? restoredImage?.lazyAssets,
-      }),
+      } as LoadedVfsImage),
   ]);
-  assertCurrent();
+  try {
+    assertCurrent();
+  } catch (error) {
+    await loadedVfs.positionedSource?.remove();
+    throw error;
+  }
   if (restoredHandle !== null || (frozenImageBytes !== null && restoredImage?.lazyAssetsRecorded)) {
     const length = restoredHandle?.length ?? frozenImageBytes!.byteLength;
     reportVfsImageProgress({
@@ -1353,7 +1359,8 @@ async function bootProfile(
 
   tick(
     `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(
-      restoredHandle?.length ?? frozenImageBytes?.byteLength ?? loadedVfs.imageBytes.byteLength
+      restoredHandle?.length ?? frozenImageBytes?.byteLength
+        ?? loadedVfs.positionedSource?.integrity.length ?? loadedVfs.imageBytes.byteLength
     )}`,
   );
   // Compose the boot image in a DISPOSABLE worker, never on this thread.
@@ -1368,37 +1375,48 @@ async function bootProfile(
   // (kernelOwnedFs). Supersession is enforced by terminating the worker,
   // which also frees its staging memory. See image-composer.ts for the
   // composition itself.
-  const composed: ComposeImageResult = restoredHandle === null ? await composeImageInWorker(
-    {
-      imageBytes: frozenImageBytes === null
-        ? new Uint8Array(loadedVfs.imageBytes)
-        : new Uint8Array(),
-      ...(frozenImageBytes === null ? {} : { frozenImageBytes }),
-      ...(persistence !== null && frozenImageBytes === null
-        ? {
-          persistentImage: {
-            name: persistence.name,
-            identity: persistence.identity,
-            lazyAssets: loadedVfs.lazyAssets,
+  let composed: ComposeImageResult;
+  try {
+    composed = restoredHandle === null ? await composeImageInWorker(
+      {
+        imageBytes: frozenImageBytes === null
+          ? new Uint8Array(loadedVfs.imageBytes)
+          : new Uint8Array(),
+        ...(loadedVfs.positionedSource === undefined ? {} : {
+          positionedSource: {
+            file: loadedVfs.positionedSource.file,
+            integrity: loadedVfs.positionedSource.integrity,
           },
-        }
-        : {}),
-      maxVfsByteLength: profile.maxVfsByteLength,
-      imageLabel: imageLabel(profile),
-      requestedProfileId: profile.requestedProfileId,
-      requestedProfileSource: profile.requestedProfileSource,
-      hasCandidateEvidence: profile.candidateEvidence !== undefined,
-      descriptor: requestedDescriptor,
-      appPath: APP_PATH,
-      proto: PROTO,
-      preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
-    },
-    {
-      onTick: tick,
-      isCurrent,
-      supersededError: () => new BootSuperseded(),
-    },
-  ) : { ...restoredHandle.composition, imageBytes: new Uint8Array() };
+        }),
+        ...(frozenImageBytes === null ? {} : { frozenImageBytes }),
+        ...(persistence !== null && frozenImageBytes === null
+          ? {
+            persistentImage: {
+              name: persistence.name,
+              identity: persistence.identity,
+              lazyAssets: loadedVfs.lazyAssets,
+            },
+          }
+          : {}),
+        maxVfsByteLength: profile.maxVfsByteLength,
+        imageLabel: imageLabel(profile),
+        requestedProfileId: profile.requestedProfileId,
+        requestedProfileSource: profile.requestedProfileSource,
+        hasCandidateEvidence: profile.candidateEvidence !== undefined,
+        descriptor: requestedDescriptor,
+        appPath: APP_PATH,
+        proto: PROTO,
+        preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
+      },
+      {
+        onTick: tick,
+        isCurrent,
+        supersededError: () => new BootSuperseded(),
+      },
+    ) : { ...restoredHandle.composition, imageBytes: new Uint8Array() };
+  } finally {
+    await loadedVfs.positionedSource?.remove();
+  }
   assertCurrent();
   const { imageConfig, profileId, terminalSession, bootInputManifest } =
     composed;
@@ -1980,6 +1998,7 @@ function attachDeclaredInputSource(
 interface LoadedVfsImage {
   imageBytes: ArrayBuffer;
   lazyAssets?: ImageOwnedRuntimeLazyAssets;
+  positionedSource?: StagedSourceImage;
 }
 
 /**
@@ -2004,6 +2023,7 @@ type VfsImageProgressReport = (report: {
 async function loadVfsImage(
   profile: LiveProfile,
   reportProgress: VfsImageProgressReport,
+  persistentInstall = false,
 ): Promise<LoadedVfsImage> {
   if (profile.candidateEvidence !== undefined) {
     if (profile.candidateVfsPlacement === undefined) {
@@ -2038,7 +2058,26 @@ async function loadVfsImage(
   const vfsUrl = await resolveProfileVfsUrl(profile);
   const label = imageLabel(profile);
   try {
+    const stagingDirectory = persistentInstall
+      ? await (await navigator.storage.getDirectory()).getDirectoryHandle(
+        "kandelo-persistent-overlay", { create: true },
+      )
+      : undefined;
     const response = await fetch(vfsUrl).then(failOn(label));
+    if (persistentInstall) {
+      const source = await stageRawVfsSourceImage(response, (loadedBytes, totalBytes) =>
+        reportProgress({ loadedBytes, totalBytes, status: "loading" }), stagingDirectory);
+      if (!(source instanceof Uint8Array)) {
+        reportProgress({
+          loadedBytes: source.integrity.length,
+          totalBytes: source.integrity.length,
+          status: "complete",
+        });
+        return { imageBytes: new ArrayBuffer(0), positionedSource: source };
+      }
+      reportProgress({ loadedBytes: source.byteLength, totalBytes: source.byteLength, status: "complete" });
+      return { imageBytes: source.buffer as ArrayBuffer };
+    }
     const bytes = await readStreamedBody(
       response,
       label,

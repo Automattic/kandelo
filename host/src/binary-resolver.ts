@@ -1787,8 +1787,8 @@ function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
     // which `crates/kandelo-image-module/build-wasm.sh` builds out-of-band and
     // which carries no `packages/registry/<name>/build.toml`, so it never
     // appears in the v2 `projection.packages` map. Admit it as its own
-    // single root-level member node so every host resolves it through the
-    // same pinned projection as `kernel.wasm`.
+    // root-level member node so every host resolves it through the same pinned
+    // projection as `kernel.wasm`.
     //
     // This must list every module in `CORESIDENT_SIDE_MODULES`
     // (`tools/xtask/src/local_build.rs`; a cargo test checks the two agree).
@@ -1796,18 +1796,22 @@ function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
     // manifest unreadable, because the parse throws before any binary
     // resolves.
     //
-    // An explicit allowlist rather than "any single root-level member": this
+    // An explicit allowlist rather than "any root-level member": this
     // check is what stops an arbitrary node in an untrusted projection from
     // claiming a root path, so it must enumerate what is permitted.
     const standaloneModuleArtifacts: Record<string, readonly string[]> = {
-      "kandelo-image-module": ["kandelo_image_module32.wasm"],
+      "kandelo-image-module": [
+        "kandelo_image_module32.wasm",
+        "kandelo_image_module_positioned32.wasm",
+      ],
     };
+    const allowedStandaloneArtifacts = standaloneModuleArtifacts[packageName];
     const isStandaloneModuleNode =
       !projection.packages.has(packageName)
-      && members.length === 1
-      && (standaloneModuleArtifacts[packageName]?.includes(
-        members[0]!.mirrorPath,
-      ) ?? false);
+      && allowedStandaloneArtifacts !== undefined
+      && members.length === allowedStandaloneArtifacts.length
+      && allowedStandaloneArtifacts.every((path) =>
+        members.some((member) => member.mirrorPath === path));
     if (!isExactProgramNode && !isRootMirrorNode && !isStandaloneModuleNode) {
       throw sourceOnlyProjectionError(
         projectionPath,

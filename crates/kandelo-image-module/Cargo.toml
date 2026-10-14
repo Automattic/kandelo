@@ -9,6 +9,9 @@ description = "Standalone wasm entry point for building VFS images from a host b
 name = "kandelo_image_module"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+positioned-image = []
+
 [dependencies]
 runtime-core = { path = "../runtime-core" }
 wasm-posix-shared = { path = "../shared" }
