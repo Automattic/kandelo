@@ -562,12 +562,21 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     }
 
     pub fn release_checkpoint_metadata(&mut self) -> Result<(), Errno> {
+        self.release_checkpoint_metadata_with(|_| {})
+    }
+
+    pub(crate) fn release_checkpoint_metadata_with<F>(&mut self, before_release: F) -> Result<(), Errno>
+    where
+        F: FnOnce(&OverlayState),
+    {
         if !self.metadata_prefix_resident {
+            before_release(&self.state);
             return Ok(());
         }
         if self.checkpoint.as_ref().map(BlockCheckpoint::journal_end) != Some(self.end) {
             return Err(Errno::EBUSY);
         }
+        before_release(&self.state);
         self.state.entries.clear();
         self.metadata_prefix_resident = false;
         Ok(())
