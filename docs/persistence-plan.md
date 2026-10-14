@@ -39,11 +39,11 @@ semantics. Node and browser must expose the same guest-visible behavior.
   images, quota exhaustion, tab contention, browser termination, corruption,
   and recovery; run applicable POSIX/conformance and Node/browser benchmark
   suites before claiming general support or a speedup.
-- [ ] Stream composed snapshots to a staging file with bounded host and
-  writer memory, authenticate the result, and publish only after completion.
-  The current small-snapshot API materializes the whole output and the writer
-  keeps per-block structure; an 8 GiB sparse file also exceeds its per-file
-  block-map limit.
+- [ ] Bound the image writer's per-block structure for composed snapshots,
+  authenticate the staged output, and publish only after completion. The new
+  Node and browser staging-file APIs stream the host output, but the legacy
+  byte-array API still materializes it. An 8 GiB sparse file exceeds the
+  writer's per-file block-map limit.
 
 The first >RAM acceptance target is deliberately read-only. It proves that
 boot and image reads no longer require an image-sized allocation before
@@ -312,9 +312,12 @@ directory mtimes after reopening on Node and all three browser engines. The
 kernel's image exporter now reads mounted journal blocks, zero fences, and
 created files when building a composed snapshot. Small Node and browser
 snapshots reboot without the source journal. The public host export still
-collects the whole output in memory, and the image writer retains structural
-metadata proportional to exported blocks, so >RAM snapshot export remains
-open rather than a production guarantee.
+collects the whole output in memory; separate Node and browser staging-file
+APIs now write one kernel chunk at a time without retaining the output in JS.
+Node refuses to overwrite an existing path; browser requires an empty OPFS
+target and truncates partial output on failure. The image writer still retains
+structural metadata proportional to exported blocks, so >RAM snapshot export
+remains open rather than a production guarantee.
 Node and browser guest workflows also replace an open created file by rename:
 the displaced descriptor retains its data with link count zero, while the
 replacement file's content and metadata survive a reboot.

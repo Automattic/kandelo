@@ -75,9 +75,10 @@ function expandJournalToCompactionThreshold(path: string): number {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
-  it("exports a composed resizable snapshot that boots without its journal", async () => {
+  it("streams a composed resizable snapshot to a file that boots without its journal", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-export-"));
     const path = join(directory, "machine.journal");
+    const snapshotPath = join(directory, "snapshot.vfs");
     try {
       const image = await makeImage("abcdefgh");
       const first = await boot(image, path, true);
@@ -88,14 +89,16 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         await first.destroy();
       }
       const reopened = await boot(image, path, true);
-      let snapshot: Uint8Array;
       try {
         expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("SNAP");
-        snapshot = await reopened.exportRootfsImage();
+        const length = await reopened.exportRootfsImageToFile(snapshotPath);
+        expect(length).toBe(readFileSync(snapshotPath).byteLength);
+        await expect(reopened.exportRootfsImageToFile(snapshotPath)).rejects.toThrow();
+        expect(readFileSync(snapshotPath).byteLength).toBe(length);
       } finally {
         await reopened.destroy();
       }
-      const withoutJournal = new NodeKernelHost({ rootfsImage: snapshot });
+      const withoutJournal = new NodeKernelHost({ rootfsImage: new Uint8Array(readFileSync(snapshotPath)) });
       try {
         const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
         await withoutJournal.init(kernelBytes.buffer.slice(

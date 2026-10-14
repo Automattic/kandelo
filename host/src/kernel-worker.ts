@@ -5970,9 +5970,27 @@ export class CentralizedKernelWorker {
    * mount.
    */
   rootfsExportContainerRead(): Uint8Array {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    this.rootfsExportContainerVisit((_offset, bytes) => {
+      chunks.push(bytes);
+      total += bytes.byteLength;
+    });
+    const output = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    return output;
+  }
+
+  rootfsExportContainerVisit(visit: (offset: number, bytes: Uint8Array) => void): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
-    let output = new Uint8Array(0);
     let failErrno = 0;
+    let sinkError: unknown;
+    let sinkFailed = false;
+    let offset = 0;
     this.#runImmediateKernelEntry("kernel rootfs export image", (entry) => {
       if (
         typeof entry.instance.exports.kernel_rootfs_export_container_read
@@ -5987,8 +6005,6 @@ export class CentralizedKernelWorker {
         failErrno = EIO;
         return undefined;
       }
-      const chunks: Uint8Array[] = [];
-      let offset = 0;
       for (;;) {
         const res: { errno: number; bytes: Uint8Array | null } =
           region.withLease((lease) => {
@@ -6017,26 +6033,26 @@ export class CentralizedKernelWorker {
         }
         // Zero is the end of the image. A short chunk is not.
         if (res.bytes === null) break;
-        chunks.push(res.bytes);
-        offset += res.bytes.byteLength;
-      }
-      if (failErrno === 0) {
-        let total = 0;
-        for (const c of chunks) total += c.byteLength;
-        const merged = new Uint8Array(total);
-        let at = 0;
-        for (const c of chunks) {
-          merged.set(c, at);
-          at += c.byteLength;
+        if (!Number.isSafeInteger(offset + res.bytes.byteLength)) {
+          failErrno = EIO;
+          break;
         }
-        output = merged;
+        try {
+          visit(offset, res.bytes);
+        } catch (error) {
+          sinkError = error;
+          sinkFailed = true;
+          break;
+        }
+        offset += res.bytes.byteLength;
       }
       return undefined;
     });
+    if (sinkFailed) throw sinkError;
     if (failErrno !== 0) {
       throw new KernelScratchError("rootfs export image failed", failErrno);
     }
-    return output;
+    return offset;
   }
 
   /**

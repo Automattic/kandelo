@@ -3896,6 +3896,56 @@ async function handleExportRootfsImage(
   }
 }
 
+async function handleExportRootfsImageToFile(
+  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image_to_file" }>,
+) {
+  if (!rootImage.has()) {
+    respondError(msg.requestId, "VFS is not initialized");
+    return;
+  }
+  if (!initReady) {
+    respondError(msg.requestId, "rootfs export requires an initialized kernel");
+    return;
+  }
+  try {
+    const length = await rootfsSnapshotGate.runSnapshot(async () => {
+      if (processes.size !== 0 || processTeardowns.size !== 0 || workerTeardowns.size !== 0) {
+        throw new Error("rootfs export requires a quiescent kernel with no live or tearing-down processes");
+      }
+      const handle = await msg.file.createSyncAccessHandle();
+      let completed = false;
+      let started = false;
+      try {
+        if (handle.getSize() !== 0) {
+          throw new Error("rootfs export requires an empty OPFS staging file");
+        }
+        started = true;
+        const length = kernelWorker.rootfsExportContainerVisit((offset, chunk) => {
+          let written = 0;
+          while (written < chunk.byteLength) {
+            const count = handle.write(chunk.subarray(written), { at: offset + written });
+            if (count <= 0 || count > chunk.byteLength - written) {
+              throw new Error("rootfs export OPFS write made no progress");
+            }
+            written += count;
+          }
+        });
+        handle.flush();
+        completed = true;
+        return length;
+      } finally {
+        if (started && !completed) {
+          try { handle.truncate(0); } catch {}
+        }
+        handle.close();
+      }
+    });
+    respond(msg.requestId, length);
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
+  }
+}
+
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
   const info = processes.get(pid);
@@ -4559,6 +4609,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
+    case "export_rootfs_image_to_file": void handleExportRootfsImageToFile(msg); break;
     case "clipboard_offer": void handleClipboardOffer(msg); break;
     case "clipboard_guest_wait": void handleClipboardGuestWait(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;

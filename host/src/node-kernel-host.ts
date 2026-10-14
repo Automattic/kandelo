@@ -1228,6 +1228,23 @@ export class NodeKernelHost {
     return result;
   }
 
+  /** Write a quiescent snapshot to a new staging path without buffering its bytes in JS. */
+  async exportRootfsImageToFile(path: string): Promise<number> {
+    if (!this.initialized) {
+      throw new Error("rootfs export requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "export_rootfs_image_to_file",
+      requestId,
+      path,
+    });
+    if (!Number.isSafeInteger(result) || (result as number) <= 0) {
+      throw new Error("kernel worker returned an invalid rootfs image length");
+    }
+    return result as number;
+  }
+
   /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
   async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> {
     const requestId = this._nextRequestId++;
