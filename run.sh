@@ -2804,9 +2804,15 @@ cmd_build_browser() {
     # so it and the group it authenticates live under local-binaries/, never
     # under the output directory.
     step "Building production browser app for $base"
+    # Deployment configuration must cross the isolated shell explicitly.
+    # Leave an unset URL absent so Vite can still load it from .env files.
+    local signalling_env=()
+    if [ "${VITE_KANDELO_SIGNALLING_URL+x}" = x ]; then
+        signalling_env=(env "VITE_KANDELO_SIGNALLING_URL=$VITE_KANDELO_SIGNALLING_URL")
+    fi
     # dev-shell.sh does not forward arbitrary caller environment, so the
     # inner script takes the repo root, base, and output as arguments.
-    bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
+    bash "$REPO_ROOT/scripts/dev-shell.sh" ${signalling_env[@]+"${signalling_env[@]}"} bash -c '
         set -euo pipefail
         cd "$1"
         export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
