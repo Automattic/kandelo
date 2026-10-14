@@ -178,7 +178,7 @@ unindexed journal still needs its initial full-map recovery before conversion.
 Small legacy and v1 journals continue to use the full-memory map until they
 cross the boot-time compaction threshold; no conversion silently resets them.
 
-Compacted resizable generations now write a version 3 checkpoint with a
+Compacted resizable generations now write a version 4 checkpoint with a
 sorted, checksummed metadata table in the same sidecar as the block table.
 Its fixed-size records locate current inode, size, zero-fence, and dirent
 values in the authenticated journal; deleted records are tombstones. The
@@ -188,16 +188,17 @@ and exact mutation locations while hashing the journal prefix, but does not
 materialize that prefix's metadata in the overlay map. Rootfs streams the
 table to rebuild its POSIX inode and directory state; subsequent lookups and
 compactions merge the indexed prefix with the bounded unsealed tail. Versions
-1 and 2 remain readable through the older full-map path. The resident rootfs
+1 and 2 remain readable through the older full-map path; version 3 metadata
+tables remain readable without value digests. The resident rootfs
 tree and temporary namespace-graph validation still scale with file count,
-so this is not yet a full namespace-memory bound. The 280-byte fixed metadata
+so this is not yet a full namespace-memory bound. The 312-byte fixed metadata
 record adds sidecar space; its boot and compaction costs need measurement.
 Hot indexed metadata values use a 64-entry bounded cache, so repeated
 file-size and zero-fence reads do not reissue positioned journal reads.
-The table binds exact value locations at boot but carries no per-value digest;
-a metadata byte damaged after boot is detected on the next journal-prefix
-verification, not necessarily on the first live read. Production integrity
-needs an authenticated value check on demand.
+The version 4 table binds exact value locations and SHA-256 value digests at
+boot, then checks each indexed value on its next storage read. A value already
+in the 64-entry cache is not reread until eviction or reboot. Legacy version 3
+tables have no on-demand value authentication.
 
 The live handoff now uses that third handle and a dedicated kernel-worker turn.
 The fixed-overwrite checkpoint is streamed, but its worst-case memory and
@@ -317,7 +318,7 @@ Compaction also drops deleted names that never existed in the immutable base,
 while retaining base-name tombstones so deleted image files cannot reappear.
 The mount tracks only touched base names and reconstructs that set from the
 unchanged base tree on restart; repeated create/delete cycles no longer grow
-the compacted journal with transient-name tombstones. A version 3 generation
+the compacted journal with transient-name tombstones. A version 3/4 generation
 keeps only its unsealed metadata tail in the overlay map, subject to the
 63 MiB write-stop limit; legacy and version 1/2 generations still retain
 their full metadata map until conversion. The rootfs tree remains resident.
