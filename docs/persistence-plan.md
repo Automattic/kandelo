@@ -118,6 +118,9 @@ failure releases the lock after worker termination; a missing destroy response
 or failed termination retains it. A valid response can acknowledge storage
 closure even when process-generation detach or persistence sync reported an
 error; those errors remain visible diagnostics, not claims of durability.
+Chromium, Firefox, and WebKit exercise a worker that drops destroy requests:
+the old tab refuses same-journal boots after the timeout, and a new tab can
+reopen the journal after the old tab closes.
 Concurrent initialization on one BrowserKernel is rejected before it can
 overwrite the first worker handle. This does not exclude
 low-level writers using different journal namespaces for the same computer.
