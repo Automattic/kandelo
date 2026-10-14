@@ -160,6 +160,11 @@ Indexed boot validates block references against a temporary sorted table of
 eligible image-file sizes, rather than walking every rootfs inode for each
 checkpoint block. The table uses memory proportional to eligible files, not
 changed blocks; large-index boot time and peak memory remain unmeasured.
+Node and all three browser engines now write 32 MiB across 8,192 distinct
+file blocks, wait for a live indexed compaction, and verify every block
+through guest reads after reopening. This exercises a larger checkpoint than
+the repeated-overwrite tests, but does not establish a worst-case memory or
+handoff-pause bound for a near-capacity writable image.
 An opt-in journal open path can now replay inode, size, and dirent records
 from an authenticated indexed prefix using a transaction-sized buffer while
 leaving its file-block map in the checkpoint. It checks the prefix sequence
