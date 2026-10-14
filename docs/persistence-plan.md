@@ -136,6 +136,11 @@ resizable guest paths on all three browser engines: `pwrite` remains readable
 from the dirty cache and `fsync` reports `ENOSPC`. Reload after a failed write
 recovers the previous durable bytes; after a failed flush, either the complete
 old or complete new transaction may survive, and boot must accept both.
+Quota failure during dirty-cache eviction returns a short guest write, leaves
+accepted dirty blocks readable, and keeps `ENOSPC` available to a later
+`fdatasync` rather than replacing it with `EIO`. Rust unit coverage and guest
+runs on Chromium, Firefox, and WebKit exercise that boundary in both
+fixed and resizable modes, including recovery of the previous durable bytes.
 This does not yet cover every host write and flush failure point, so the
 dirty-cache milestone remains open.
 

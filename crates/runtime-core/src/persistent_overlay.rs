@@ -182,7 +182,7 @@ pub struct OverlayJournal<S: OverlayStorage> {
     checkpoint: Option<BlockCheckpoint<Box<dyn OverlayStorage + Send>>>,
     next_sequence: u64,
     end: u64,
-    failed: bool,
+    failure: Option<Errno>,
     block_cache: Vec<((u64, u64), Vec<u8>)>,
     dirty_blocks: Vec<((u64, u64), Vec<u8>)>,
     dirty_sizes: BTreeMap<u64, u64>,
@@ -335,7 +335,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             checkpoint,
             next_sequence,
             end,
-            failed: false,
+            failure: None,
             block_cache: Vec::new(),
             dirty_blocks: Vec::new(),
             dirty_sizes: BTreeMap::new(),
@@ -357,7 +357,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     }
 
     pub fn can_activate_compaction(&self, revision: (u64, u64)) -> bool {
-        !self.failed
+        self.failure.is_none()
             && self.dirty_blocks.is_empty()
             && self.dirty_sizes.is_empty()
             && self.compaction_revision() == revision
@@ -681,8 +681,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     }
 
     pub fn sync(&mut self) -> Result<(), Errno> {
-        if self.failed {
-            return Err(Errno::EIO);
+        if let Some(error) = self.failure {
+            return Err(error);
         }
         if self.dirty_blocks.is_empty() && self.dirty_sizes.is_empty() {
             self.storage.flush()
@@ -692,8 +692,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     }
 
     pub fn commit(&mut self, mutations: &[Mutation]) -> Result<(), Errno> {
-        if self.failed {
-            return Err(Errno::EIO);
+        if let Some(error) = self.failure {
+            return Err(error);
         }
         if mutations.is_empty() {
             return self.flush_dirty();
@@ -741,8 +741,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     }
 
     fn commit_transaction(&mut self, mutations: &[Mutation]) -> Result<(), Errno> {
-        if self.failed {
-            return Err(Errno::EIO);
+        if let Some(error) = self.failure {
+            return Err(error);
         }
         if mutations.is_empty() {
             return Ok(());
@@ -758,7 +758,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             .write_all_at(self.end, &transaction)
             .and_then(|()| self.storage.flush())
         {
-            self.failed = true;
+            self.failure = Some(error);
             return Err(error);
         }
         if self.track_committed_state {
@@ -840,8 +840,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     where
         F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
     {
-        if self.failed {
-            return Err(Errno::EIO);
+        if let Some(error) = self.failure {
+            return Err(error);
         }
         if src.is_empty() {
             return Ok(0);
@@ -1003,8 +1003,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     where
         F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
     {
-        if self.failed {
-            return Err(Errno::EIO);
+        if let Some(error) = self.failure {
+            return Err(error);
         }
         let size = self.visible_file_size(inode, base_size)?;
         if src.is_empty() {
@@ -1062,8 +1062,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     where
         F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
     {
-        if self.failed {
-            return Err(Errno::EIO);
+        if let Some(error) = self.failure {
+            return Err(error);
         }
         let old_size = self.visible_file_size(inode, base_size)?;
         if new_size == old_size {
@@ -1632,6 +1632,7 @@ mod tests {
         bytes: Vec<u8>,
         flushes: usize,
         fail_flush: bool,
+        fail_errno: Option<Errno>,
         fail_after_flushes: Option<usize>,
         fail_write_after_bytes: Option<usize>,
     }
@@ -1668,7 +1669,7 @@ mod tests {
 
         fn flush(&mut self) -> Result<(), Errno> {
             if self.fail_flush || self.fail_after_flushes == Some(self.flushes) {
-                return Err(Errno::EIO);
+                return Err(self.fail_errno.unwrap_or(Errno::EIO));
             }
             self.flushes += 1;
             Ok(())
@@ -3433,6 +3434,36 @@ mod tests {
         );
         assert_eq!(first, [b'x']);
         assert_eq!(journal.sync(), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn quota_failure_during_eviction_remains_visible_to_later_sync() {
+        let chunk_bytes = CACHE_BLOCKS * FILE_BLOCK_BYTES;
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [49; 32]).unwrap();
+        journal.storage.fail_flush = true;
+        journal.storage.fail_errno = Some(Errno::ENOSPC);
+        let source = vec![b'x'; chunk_bytes + FILE_BLOCK_BYTES];
+        assert_eq!(
+            journal.write_fixed_file_at_buffered(
+                7,
+                source.len() as u64,
+                0,
+                &source,
+                |_, _| panic!("full blocks need no base read"),
+            ),
+            Ok(chunk_bytes)
+        );
+        assert_eq!(journal.sync(), Err(Errno::ENOSPC));
+        assert_eq!(journal.commit(&[]), Err(Errno::ENOSPC));
+        assert_eq!(journal.dirty_blocks.len(), CACHE_BLOCKS);
+        let mut visible = [0];
+        assert_eq!(
+            journal.read_file_at(7, source.len() as u64, 0, &mut visible, |_, _| {
+                panic!("dirty block must remain readable")
+            }),
+            Ok(1)
+        );
+        assert_eq!(visible, [b'x']);
     }
 
     #[test]
