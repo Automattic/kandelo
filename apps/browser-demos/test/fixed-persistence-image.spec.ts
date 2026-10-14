@@ -162,7 +162,7 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
       const page = context.pages()[0] ?? await context.newPage();
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
       const result = await page.evaluate(async ({ url, workerUrl }) => {
-        const { loadFixedPersistenceImageHandle, saveFixedPersistenceImageStream } = await import(url);
+        const { loadFixedPersistenceImageHandle, publishFixedPersistenceSnapshot, saveFixedPersistenceImageStream } = await import(url);
         const name = `stream-${crypto.randomUUID()}`;
         const identity = "streamed image";
         const composition = {
@@ -195,6 +195,16 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           worker.postMessage({ name, identity });
         }).finally(() => worker.terminate());
         const restored = await loadFixedPersistenceImageHandle(name, identity);
+        const cloneName = `snapshot-${crypto.randomUUID()}`;
+        const integrity = {
+          length: restored!.length,
+          chunkBytes: 1024 * 1024,
+          chunkSha256: restored!.chunkSha256,
+        };
+        await publishFixedPersistenceSnapshot(
+          cloneName, identity, restored!.file, integrity, restored!.lazyAssets, restored!.composition,
+        );
+        const clone = await loadFixedPersistenceImageHandle(cloneName, identity);
         let orphanRemoved = false;
         try {
           await directory.getFileHandle(orphanName);
@@ -240,6 +250,18 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         await damageWriter.write(damagedFirst);
         await damageWriter.write(Uint8Array.of(1, 2, 3));
         await damageWriter.close();
+        const failedName = `snapshot-${crypto.randomUUID()}`;
+        let damagedSnapshotRejected = false;
+        try {
+          await publishFixedPersistenceSnapshot(
+            failedName, identity, restored!.file, integrity, restored!.lazyAssets, restored!.composition,
+          );
+        } catch {
+          damagedSnapshotRejected = true;
+        }
+        const failedSnapshot = await loadFixedPersistenceImageHandle(failedName, identity);
+        const cloneFile = await clone!.file.getFile();
+        const cloneTail = [...new Uint8Array(await cloneFile.slice(cloneFile.size - 3).arrayBuffer())];
         const corruptWorker = new Worker(workerUrl, { type: "module" });
         const corruptionRejected = await new Promise<boolean>((resolve, reject) => {
           corruptWorker.onmessage = (event: MessageEvent<{ type: string; message?: string }>) => {
@@ -275,6 +297,11 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           last,
           positionedRead,
           corruptionRejected,
+          cloneName,
+          cloneLength: clone?.length,
+          cloneTail,
+          damagedSnapshotRejected,
+          failedSnapshotUnpublished: failedSnapshot === null,
           interruptedRejected,
           incomplete: incomplete === null,
         };
@@ -282,7 +309,8 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         url: new URL(`/@fs/${modulePath}`, baseURL).href,
         workerUrl: new URL(`/@fs/${streamWorkerPath}`, baseURL).href,
       });
-      expect(result).toEqual({
+      const { cloneName, ...observed } = result;
+      expect(observed).toEqual({
         savedLength: 1024 * 1024 + 3,
         clonedFileLength: 1024 * 1024 + 3,
         restoredLength: 1024 * 1024 + 3,
@@ -291,9 +319,25 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         last: [1, 2, 3],
         positionedRead: { first: [7, 7, 7], last: [1, 2, 3], firstRead: 3, lastRead: 3 },
         corruptionRejected: true,
+        cloneLength: 1024 * 1024 + 3,
+        cloneTail: [1, 2, 3],
+        damagedSnapshotRejected: true,
+        failedSnapshotUnpublished: true,
         interruptedRejected: true,
         incomplete: true,
       });
+      await page.reload();
+      const reloadedClone = await page.evaluate(async ({ url, name }) => {
+        const { loadFixedPersistenceImageHandle } = await import(url);
+        const clone = await loadFixedPersistenceImageHandle(name, "streamed image");
+        if (clone === null) return null;
+        const file = await clone.file.getFile();
+        return {
+          length: clone.length,
+          tail: [...new Uint8Array(await file.slice(file.size - 3).arrayBuffer())],
+        };
+      }, { url: new URL(`/@fs/${modulePath}`, baseURL).href, name: cloneName });
+      expect(reloadedClone).toEqual({ length: 1024 * 1024 + 3, tail: [1, 2, 3] });
     } finally {
       await context.close();
     }

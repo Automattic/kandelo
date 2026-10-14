@@ -42,8 +42,11 @@ semantics. Node and browser must expose the same guest-visible behavior.
 - [ ] Publish verified staged composed snapshots with a crash-safe handoff.
   Node and browser staging-file APIs stream output, flush it, and compare a
   bounded read-back against emitted per-chunk SHA-256 digests. They return an
-  integrity descriptor accepted by browser positioned boot, but do not yet
-  publish a generation. The writer coalesces deferred content references into
+  integrity descriptor accepted by browser positioned boot. Browser snapshots
+  can now be verified and published as a new computer through the existing
+  manifest-last stream installer, without replacing a computer's live base or
+  journal. An in-place, crash-safe base-and-journal handoff remains open. The
+  writer coalesces deferred content references into
   extents; the legacy byte-array API still materializes output, and inode-table
   and indirect-block memory scale with image size. An 8 GiB sparse file
   exceeds the format's per-file block limit. A 772 MiB snapshot now boots
@@ -324,8 +327,13 @@ target and truncates partial output on failure. Both hosts flush the staged
 image, verify its bytes in bounded 1 MiB reads against the SHA-256 hashes of
 emitted chunks, and return the chunk integrity descriptor. Browser boot with
 that descriptor accepts the snapshot and rejects a later byte-damaged file on
-Chromium, Firefox, and WebKit. No API yet atomically publishes the staged file
-as a bootable generation. The image writer coalesces
+Chromium, Firefox, and WebKit. The browser can publish such a snapshot as a
+new computer: it checks each source chunk against the descriptor while copying
+through the bounded stream installer, then read-back verifies the copied
+generation before writing its manifest. A bad source leaves the new computer
+unpublished. This does not replace an existing computer's base or coordinate
+its digest-bound journal; an in-place crash-safe handoff is still needed. The
+image writer coalesces
 adjacent deferred content blocks into extents: a 32 MiB file occupies fewer
 than 20 extent records while reads across direct and indirect boundaries
 return the expected bytes. Inode-table and indirect-block memory still scale
