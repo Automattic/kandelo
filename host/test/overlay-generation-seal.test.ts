@@ -8,6 +8,7 @@ import {
 import {
   compactOverlayGeneration,
   enableBestOverlayGeneration,
+  RejectedOverlayGenerationError,
   type OverlayGenerationFiles,
 } from "../src/vfs/overlay-generation-selection";
 
@@ -198,9 +199,34 @@ describe("overlay generation boot selection", () => {
     entries["g1.seal"]!.truncate(0);
     expect((await enableBestOverlayGeneration(files(entries), (journal) => {
       if (journal === entries["g0.journal"]) {
-        throw new Error("kernel refused fixed rootfs persistence (errno 5)");
+        throw new RejectedOverlayGenerationError("fixed", 5);
       }
     })).slot).toBe("legacy");
+  });
+
+  it.each(["fixed", "resizable"] as const)("falls back from a semantically corrupt %s generation only", async (mode) => {
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(Uint8Array.of(1)),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(Uint8Array.of(2)),
+      "g1.seal": new MemoryStorage(),
+    };
+    const digest = new Uint8Array(32);
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, digest);
+    await writeOverlayGenerationSeal(entries["g1.journal"]!, entries["g1.seal"]!, 2, digest);
+    const attempts: number[] = [];
+    const selected = await enableBestOverlayGeneration(files(entries), (journal) => {
+      attempts.push(journal === entries["g1.journal"] ? 2 : 1);
+      if (journal === entries["g1.journal"]) throw new RejectedOverlayGenerationError(mode, 5);
+    });
+    expect(selected.slot).toBe("g0");
+    expect(attempts).toEqual([2, 1]);
+    await expect(enableBestOverlayGeneration(files(entries), (journal) => {
+      if (journal === entries["g1.journal"]) throw new RejectedOverlayGenerationError(mode, 12);
+    })).rejects.toThrow(/errno 12/);
+    await expect(enableBestOverlayGeneration(files(entries), (journal) => {
+      if (journal === entries["g1.journal"]) throw new Error("host I/O failed");
+    })).rejects.toThrow("host I/O failed");
   });
 
   it("falls back when a newer indexed generation is damaged", async () => {

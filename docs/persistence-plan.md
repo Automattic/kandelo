@@ -109,8 +109,10 @@ Boot now checks two optional sealed journal slots (`g0` and `g1`) on Node and
 browser hosts, preferring the highest verified generation. A seal authenticates
 the compacted prefix while the active journal may append later transactions;
 the kernel still validates and replays those transactions. If a slot is torn or
-its journal is rejected, boot tries the previous valid slot and then the
-legacy journal. If generation files exist without any valid journal, boot
+its journal or indexed checkpoint is rejected with `EIO`, boot tries the
+previous valid slot and then the legacy journal. Other kernel refusals and
+errors thrown directly by the host propagate rather than triggering fallback.
+If generation files exist without any valid journal, boot
 refuses to create an empty replacement. Compaction prepares a
 compacted journal without switching the kernel's active handle, writes and
 verifies the target seal, and only then activates it. Failure cancels the

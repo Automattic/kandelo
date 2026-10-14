@@ -166,6 +166,52 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 90_000);
 
+  it.skipIf(guestProgramPath === null)("falls back from a sealed but semantically invalid resizable generation", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-fallback-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path, true);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      const committed = readFileSync(path);
+      writeFileSync(`${path}.g0.journal`, committed.subarray(0, 72));
+      copyFileSync(path, `${path}.g1.journal`);
+      const backend = new HostFileSystem(directory);
+      const digest = new Uint8Array(createHash("sha256").update(image).digest());
+      for (const [slot, generation] of [["g0", 1], ["g1", 2]] as const) {
+        const journal = OverlayStorageFile.open(backend, `/machine.journal.${slot}.journal`, false);
+        const seal = OverlayStorageFile.open(backend, `/machine.journal.${slot}.seal`);
+        const index = slot === "g1"
+          ? OverlayStorageFile.open(backend, `/machine.journal.${slot}.index`)
+          : null;
+        try {
+          index?.writeAllAt(0, Uint8Array.of(1, 2, 3));
+          await writeOverlayGenerationSeal(journal, seal, generation, digest, index ?? undefined);
+        } finally {
+          index?.close();
+          seal.close();
+          journal.close();
+        }
+      }
+      writeFileSync(path, Buffer.from("damaged legacy"));
+      const recovered = await boot(image, path, true);
+      try {
+        expect(new TextDecoder().decode((await recovered.readFileFromVfs("/state"))!)).toBe("abcdefgh");
+      } finally {
+        await recovered.destroy();
+      }
+      writeFileSync(`${path}.g0.seal`, Buffer.from("torn"));
+      await expect(boot(image, path, true)).rejects.toThrow(/kernel refused resizable rootfs persistence \(errno 5\)/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it.skipIf(guestProgramPath === null)("compacts an oversized journal before serving the computer", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-compact-"));
     const path = join(directory, "machine.journal");

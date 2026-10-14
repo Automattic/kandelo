@@ -351,7 +351,8 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
   }
 });
 
-test("browser rejects a semantically invalid indexed generation and restores the prior slot", async ({ playwright, browserName, baseURL }, testInfo) => {
+for (const mode of ["fixed", "resizable"] as const) {
+test(`browser ${mode} mode rejects a semantically invalid indexed generation and restores the prior slot`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.mkdir("/bin", 0o755);
@@ -379,10 +380,10 @@ test("browser rejects a semantically invalid indexed generation and restores the
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
+      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, mode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
-        const name = `fixed-index-${crypto.randomUUID()}`;
+        const name = `${mode}-index-${crypto.randomUUID()}`;
         const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
         const imageWriter = await imageFile.createWritable();
         await imageWriter.write(await (await fetch(imageUrl)).arrayBuffer());
@@ -393,7 +394,9 @@ test("browser rejects a semantically invalid indexed generation and restores the
             await kernel.initFromOpfsImage({
               kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
               vfsImageFile: imageFile,
-              experimentalFixedPersistenceName: name,
+              ...(mode === "fixed"
+                ? { experimentalFixedPersistenceName: name }
+                : { experimentalResizablePersistenceName: name }),
             });
             return kernel;
           } catch (error) {
@@ -469,10 +472,10 @@ test("browser rejects a semantically invalid indexed generation and restores the
         try {
           await readState();
         } catch (error) {
-          refused = String(error).includes("kernel refused fixed rootfs persistence");
+          refused = String(error).includes(`kernel refused ${mode} rootfs persistence`);
         }
         return { newest, fallback, refused };
-      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
+      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl, mode });
       expect(result).toEqual({ newest: "abcdefgh", fallback: "abcdefgh", refused: true });
     } finally {
       await context.close();
@@ -481,6 +484,7 @@ test("browser rejects a semantically invalid indexed generation and restores the
     rmSync(userDataDir, { recursive: true, force: true });
   }
 });
+}
 
 test("browser replays 8192 distinct blocks after live compaction", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(240_000);
