@@ -30,6 +30,13 @@ role = "runtime"
 materialization = "embedded"
 
 [[software.package]]
+name = "frankenphp-caddy"
+outputs = ["frankenphp-caddy"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
 name = "dinit"
 outputs = ["dinit", "dinitctl"]
 source_roles = []

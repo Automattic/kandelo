@@ -7,6 +7,7 @@ import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesys
  *     + wordpress-secrets (scripted; this machine's keys, on first boot)
  *       → php-fpm (process) → nginx (process)
  *       → FrankenPHP classic (process)
+ *       → FrankenPHP Caddy (process)
  *
  * The browser host overwrites wp-config.php with the page-supplied
  * @@APP_PATH@@ and @@PROTO@@ values before dinit starts. Keeping that
@@ -74,6 +75,7 @@ const PHP_FPM_GID = 65534;
 // canonical shell, so its product profile must admit that 512 MiB base.
 const WORDPRESS_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const FRANKENPHP_ENV_PATH = "/etc/dinit.d/env-frankenphp";
+const FRANKENPHP_CADDY_CONFIG_PATH = "/etc/caddy/Caddyfile";
 
 // --- Service configs (reuse logic from init modules) ---
 
@@ -306,6 +308,7 @@ include $docRoot . '/index.php';
  *   php-fpm        (process)  — depends-on wp-config-init + smtp-capture
  *   nginx          (process)  — depends-on php-fpm
  *   frankenphp-classic (process) — depends-on wp-config-init + smtp-capture + wordpress-secrets
+ *   frankenphp-caddy (process) — depends-on wp-config-init + smtp-capture + wordpress-secrets
  */
 function buildServices(): DinitService[] {
   return [
@@ -346,6 +349,16 @@ function buildServices(): DinitService[] {
       noDefaultEnvFile: true,
       extra: [`env-file = ${FRANKENPHP_ENV_PATH}`],
     },
+    {
+      name: "frankenphp-caddy",
+      type: "process",
+      command: `/usr/sbin/frankenphp-caddy run --config ${FRANKENPHP_CADDY_CONFIG_PATH} --adapter caddyfile`,
+      dependsOn: ["wp-config-init", "smtp-capture", WORDPRESS_SECRETS_SERVICE],
+      logfile: "/var/log/frankenphp-caddy.log",
+      restart: false,
+      noDefaultEnvFile: true,
+      extra: [`env-file = ${FRANKENPHP_ENV_PATH}`],
+    },
   ];
 }
 
@@ -358,6 +371,7 @@ export interface WordPressVfsImageBuildInputs {
   nginx: Uint8Array;
   phpFpm: Uint8Array;
   frankenphpClassic: Uint8Array;
+  frankenphpCaddy: Uint8Array;
   opcache: Uint8Array;
   msmtpd: Uint8Array;
   dinit?: DinitBinaryInputs;
@@ -385,11 +399,12 @@ export async function buildWordPressVfsImage(
   populateSmtpCaptureConfig(fs);
   populateWordPressFirstBootSecrets(fs);
 
-  console.log("Writing nginx + php-fpm + FrankenPHP + msmtpd binaries...");
+  console.log("Writing nginx + php-fpm + FrankenPHP + Caddy + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
   writeVfsBinary(fs, "/usr/sbin/nginx", inputs.nginx);
   writeVfsBinary(fs, "/usr/sbin/php-fpm", inputs.phpFpm);
   writeVfsBinary(fs, "/usr/sbin/frankenphp-classic", inputs.frankenphpClassic);
+  writeVfsBinary(fs, "/usr/sbin/frankenphp-caddy", inputs.frankenphpCaddy);
   writeVfsBinary(fs, "/usr/sbin/msmtpd", inputs.msmtpd);
   ensureDirRecursive(fs, "/etc/frankenphp");
   writeVfsFile(fs, "/etc/frankenphp/php.ini", `curl.cainfo=/etc/ssl/certs/ca-certificates.crt
@@ -400,6 +415,21 @@ openssl.cafile=/etc/ssl/certs/ca-certificates.crt
     `${Object.entries({ ...DINIT_SERVICE_ENV, PHPRC: "/etc/frankenphp", FRANKENPHP_NUM_THREADS: "6" })
       .map(([name, value]) => `${name}=${value}`)
       .join("\n")}\n`);
+  ensureDirRecursive(fs, "/etc/caddy");
+  writeVfsFile(fs, FRANKENPHP_CADDY_CONFIG_PATH, `{
+\tadmin off
+\tauto_https off
+
+\tfrankenphp {
+\t\tnum_threads 6
+\t}
+}
+
+:{$FRANKENPHP_PORT:8080} {
+\troot * /var/www/html
+\tphp_server
+}
+`);
 
   // Template + default wp-config. The browser host overwrites wp-config.php
   // with the current page prefix/protocol before dinit starts.
@@ -478,6 +508,7 @@ async function main(): Promise<void> {
   const nginxRoot = process.env.WASM_POSIX_DEP_NGINX_DIR;
   const phpRoot = process.env.WASM_POSIX_DEP_PHP_DIR;
   const frankenphpRoot = process.env.WASM_POSIX_DEP_FRANKENPHP_CLASSIC_DIR;
+  const frankenphpCaddyRoot = process.env.WASM_POSIX_DEP_FRANKENPHP_CADDY_DIR;
   const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
   const msmtpdRoot = process.env.WASM_POSIX_DEP_MSMTPD_DIR;
   const kernelRoot = process.env.WASM_POSIX_DEP_KERNEL_DIR;
@@ -496,6 +527,9 @@ async function main(): Promise<void> {
     frankenphpClassic: new Uint8Array(readFileSync(frankenphpRoot === undefined
       ? resolveBinary("programs/frankenphp-classic.wasm")
       : join(frankenphpRoot, "frankenphp-classic.wasm"))),
+    frankenphpCaddy: new Uint8Array(readFileSync(frankenphpCaddyRoot === undefined
+      ? resolveBinary("programs/frankenphp-caddy.wasm")
+      : join(frankenphpCaddyRoot, "frankenphp-caddy.wasm"))),
     opcache: new Uint8Array(readFileSync(phpRoot === undefined
       ? resolveBinary("programs/php/opcache.so")
       : join(phpRoot, "opcache.so"))),

@@ -62,6 +62,10 @@ name = "bzip2"
 class = "user-software"
 
 [[packages]]
+name = "caddy"
+class = "user-software"
+
+[[packages]]
 name = "cairo"
 class = "platform"
 
@@ -155,6 +159,10 @@ class = "platform"
 
 [[packages]]
 name = "foot"
+class = "user-software"
+
+[[packages]]
+name = "frankenphp-caddy"
 class = "user-software"
 
 [[packages]]

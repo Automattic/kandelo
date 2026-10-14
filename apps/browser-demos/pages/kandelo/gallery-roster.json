@@ -34,6 +34,10 @@
       "profile": "wordpress-frankenphp"
     },
     {
+      "product": "browser-wordpress",
+      "profile": "wordpress-frankenphp-caddy"
+    },
+    {
       "product": "browser-lamp",
       "profile": "wordpress-mariadb"
     },

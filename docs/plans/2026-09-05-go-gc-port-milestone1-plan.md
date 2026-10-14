@@ -3346,3 +3346,19 @@ boundary to investigate, not evidence of a missing Caddy dependency
 API. The full FrankenPHP/Caddy entry point still requires the separate
 PHP/cgo link and `php_server` runtime validation before a Caddy-backed
 WordPress profile can replace the classic profile.
+
+**2026-10-14 — FrankenPHP/Caddy package and WordPress profile in progress.**
+FrankenPHP v1.11.0's Caddy module now links the pinned PHP ZTS archive and
+the six direct Go target forks without another upstream source patch. The
+new `frankenphp-caddy` ABI-50 package completed a normal resolver build;
+its published artifact serves PHP through Caddy's `php_server` and a static
+VFS file with HTTP 200 in Node, Chromium, and Firefox. The WordPress image
+recipe now embeds this executable and Caddyfile, adds a dinit service and
+separate gallery profile, and preserves the existing nginx/PHP-FPM and
+FrankenPHP classic profiles. This is package and small HTTP-fixture evidence,
+not yet a working WordPress/Caddy image or logged-in editor result. WebKit
+still exits before readiness with a repeated Wasm call-stack overflow; its
+root cause has not been established. A full `./run.sh build wp-vfs` began
+rebuilding 133 local-set nodes and was stopped at 64/133 when available disk
+fell below 6 GiB; the targeted WordPress package resolver is being used
+instead. No Go compiler or standard-library patch was added for this step.
