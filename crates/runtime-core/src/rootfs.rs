@@ -2664,6 +2664,14 @@ pub fn is_dir(path: &[u8]) -> bool {
 /// converts a base file to an empty overlay file directly. Directories go
 /// through [`opendir`].
 pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i64, Errno> {
+    if resizable_persistence_enabled() && flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
+        let handle = open(path, flags & !O_TRUNC, mode, uid, gid)?;
+        if let Err(error) = truncate_handle(handle, 0, |_, _| Err(Errno::EIO)) {
+            release_handle(handle);
+            return Err(error);
+        }
+        return Ok(handle);
+    }
     let comps = split_components(path);
     let fixed_persistence = fixed_persistence_enabled();
     ROOTFS.with(|state| {
@@ -8456,8 +8464,8 @@ mod tests {
             Err(Errno::EIO)
         );
         enable_resizable_persistence_indexed(
-            Box::new(target),
-            Box::new(index),
+            Box::new(target.clone()),
+            Box::new(index.clone()),
             base_digest,
             checkpoint_end,
         )
@@ -8470,6 +8478,21 @@ mod tests {
         );
         assert_eq!(visible[0], 0);
         release_handle(handle);
+        let handle = open(b"/hello.txt", O_RDWR | O_TRUNC, 0, 0, 0).unwrap();
+        assert_eq!(fstat(handle).unwrap().st_size, 0);
+        sync_persistence().unwrap();
+        release_handle(handle);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(
+            Box::new(target),
+            Box::new(index),
+            base_digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        assert_eq!(lstat(b"/hello.txt").unwrap().st_size, 0);
     }
 
     #[test]

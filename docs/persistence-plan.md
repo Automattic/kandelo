@@ -211,8 +211,9 @@ image-backed regular files. A guest grows `/state` sparsely past 8 GiB,
 reopens it, shrinks and regrows it, then reopens it again and checks that old
 bytes are zero; this passes in Node and Chromium, Firefox, and WebKit without
 allocating the 8 GiB file. Fixed-mode mounts reject the resizable journal.
-This does not yet persist timestamps or support `O_TRUNC`, creation, unlink,
-or rename.
+`O_TRUNC` now uses the same journaled zero-fence path as `ftruncate(0)` for
+eligible files; fixed-overwrite mounts continue to reject it. This does not
+yet persist timestamps or support creation, unlink, or rename.
 
 General POSIX replay then needs an overlay-backed regular-file inode kind,
 not `Regular(Vec<u8>)`, so newly created and grown files also remain larger

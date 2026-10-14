@@ -11,11 +11,12 @@ int main(int argc, char **argv) {
     int verify_resize = argc >= 2 && strcmp(argv[1], "verify-resize") == 0;
     int verify_zero = argc >= 2 && strcmp(argv[1], "verify-zero") == 0;
     if (resize || verify_resize || verify_zero) {
-        int fd = open("/state", O_RDWR);
+        int fd = open("/state", O_RDWR | (resize ? O_TRUNC : 0));
         if (fd < 0) return 19;
         off_t offset = 8LL * 1024 * 1024 * 1024 + 7;
         if (resize) {
-            if (ftruncate(fd, 0) != 0) return 20;
+            struct stat metadata;
+            if (fstat(fd, &metadata) != 0 || metadata.st_size != 0) return 20;
             if (pwrite(fd, "GROW", 4, offset) != 4) return 21;
         } else {
             struct stat metadata;
