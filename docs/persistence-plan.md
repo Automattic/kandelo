@@ -156,6 +156,15 @@ The fixed-overwrite checkpoint is streamed, but its worst-case memory and
 handoff pause duration have not been validated for an actually large writable
 image. General POSIX mutation replay also needs a checkpoint design for
 metadata, not just file blocks.
+An opt-in journal open path can now replay inode, size, and dirent records
+from an authenticated indexed prefix using a transaction-sized buffer while
+leaving its file-block map in the checkpoint. It checks the prefix sequence
+against the checkpoint before applying the tail. Streamed compaction can
+carry these metadata records through two indexed generations without retaining
+the target's block map. Block tombstones are not representable in this index
+and are explicitly rejected. This is groundwork only: the fixed-overwrite
+mount still uses block-only replay, and no persistent namespace mutation is
+enabled yet.
 
 General POSIX replay then needs an overlay-backed regular-file inode kind,
 not `Regular(Vec<u8>)`, so newly created and grown files also remain larger

@@ -162,14 +162,45 @@ pub struct OverlayJournal<S: OverlayStorage> {
 
 impl<S: OverlayStorage> OverlayJournal<S> {
     pub fn open(storage: S, base_digest: [u8; 32]) -> Result<Self, Errno> {
-        Self::open_internal(storage, base_digest, None)
+        Self::open_internal(storage, base_digest, None, OverlayState::default())
     }
 
     pub fn open_with_checkpoint<T: OverlayStorage + Send + 'static>(
+        storage: S,
+        checkpoint_storage: T,
+        base_digest: [u8; 32],
+        checkpoint_end: u64,
+    ) -> Result<Self, Errno> {
+        Self::open_with_checkpoint_internal(
+            storage,
+            checkpoint_storage,
+            base_digest,
+            checkpoint_end,
+            false,
+        )
+    }
+
+    pub fn open_with_checkpoint_metadata<T: OverlayStorage + Send + 'static>(
+        storage: S,
+        checkpoint_storage: T,
+        base_digest: [u8; 32],
+        checkpoint_end: u64,
+    ) -> Result<Self, Errno> {
+        Self::open_with_checkpoint_internal(
+            storage,
+            checkpoint_storage,
+            base_digest,
+            checkpoint_end,
+            true,
+        )
+    }
+
+    fn open_with_checkpoint_internal<T: OverlayStorage + Send + 'static>(
         mut storage: S,
         checkpoint_storage: T,
         base_digest: [u8; 32],
         checkpoint_end: u64,
+        replay_metadata: bool,
     ) -> Result<Self, Errno> {
         if checkpoint_end < HEADER_BYTES as u64 || storage.len()? < checkpoint_end {
             return Err(Errno::EIO);
@@ -190,13 +221,29 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             digest.finalize().into(),
             checkpoint_end,
         )?;
-        Self::open_internal(storage, base_digest, Some(checkpoint))
+        let mut state = OverlayState::default();
+        if replay_metadata {
+            let (replayed_end, next_sequence) = replay_transactions(
+                &mut storage,
+                HEADER_BYTES as u64,
+                checkpoint_end,
+                1,
+                &mut state,
+                false,
+                false,
+            )?;
+            if replayed_end != checkpoint_end || next_sequence != checkpoint.next_sequence() {
+                return Err(Errno::EIO);
+            }
+        }
+        Self::open_internal(storage, base_digest, Some(checkpoint), state)
     }
 
     fn open_internal(
         mut storage: S,
         base_digest: [u8; 32],
         checkpoint: Option<BlockCheckpoint<Box<dyn OverlayStorage + Send>>>,
+        mut state: OverlayState,
     ) -> Result<Self, Errno> {
         let size = storage.len()?;
         if size == 0 {
@@ -226,66 +273,22 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             }
         }
 
-        let mut state = OverlayState::default();
-        let mut next_sequence = checkpoint.as_ref().map_or(1, BlockCheckpoint::next_sequence);
-        let mut end = checkpoint.as_ref().map_or(HEADER_BYTES as u64, BlockCheckpoint::journal_end);
+        let next_sequence = checkpoint
+            .as_ref()
+            .map_or(1, BlockCheckpoint::next_sequence);
+        let start = checkpoint
+            .as_ref()
+            .map_or(HEADER_BYTES as u64, BlockCheckpoint::journal_end);
         let size = storage.len()?;
-        while end < size {
-            let remaining = size - end;
-            if remaining < (TRANSACTION_HEADER_BYTES + TRANSACTION_TRAILER_BYTES) as u64 {
-                break;
-            }
-            let mut header = [0u8; TRANSACTION_HEADER_BYTES];
-            storage.read_exact_at(end, &mut header)?;
-            if &header[..4] != TRANSACTION_MAGIC {
-                return Err(Errno::EIO);
-            }
-            let length =
-                u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?) as usize;
-            let length_complement =
-                u32::from_le_bytes(header[20..24].try_into().map_err(|_| Errno::EIO)?);
-            if length_complement != !(length as u32) {
-                return Err(Errno::EIO);
-            }
-            if !(TRANSACTION_HEADER_BYTES + TRANSACTION_TRAILER_BYTES..=MAX_TRANSACTION_BYTES)
-                .contains(&length)
-            {
-                return Err(Errno::EIO);
-            }
-            if length as u64 > remaining {
-                break;
-            }
-            let mut transaction = Vec::new();
-            transaction
-                .try_reserve_exact(length)
-                .map_err(|_| Errno::ENOMEM)?;
-            transaction.resize(length, 0);
-            storage.read_exact_at(end, &mut transaction)?;
-            let sequence =
-                u64::from_le_bytes(transaction[8..16].try_into().map_err(|_| Errno::EIO)?);
-            if sequence != next_sequence {
-                return Err(Errno::EIO);
-            }
-            let digest_start = length - TRANSACTION_TRAILER_BYTES;
-            if &transaction[length - 4..] != COMMIT_MAGIC
-                || transaction[digest_start..length - 4]
-                    != Sha256::digest(&transaction[..digest_start])[..]
-            {
-                return Err(Errno::EIO);
-            }
-            let mutations = decode_mutations(&transaction[TRANSACTION_HEADER_BYTES..digest_start])?;
-            let count = u32::from_le_bytes(transaction[16..20].try_into().map_err(|_| Errno::EIO)?);
-            if mutations.len() != count as usize {
-                return Err(Errno::EIO);
-            }
-            for (mutation, relative_offset) in mutations {
-                let value_offset =
-                    relative_offset.map(|offset| end + TRANSACTION_HEADER_BYTES as u64 + offset);
-                state.apply(mutation, value_offset);
-            }
-            next_sequence = next_sequence.checked_add(1).ok_or(Errno::EOVERFLOW)?;
-            end = end.checked_add(length as u64).ok_or(Errno::EOVERFLOW)?;
-        }
+        let (end, next_sequence) = replay_transactions(
+            &mut storage,
+            start,
+            size,
+            next_sequence,
+            &mut state,
+            true,
+            true,
+        )?;
         if end < size {
             storage.truncate(end)?;
             storage.flush()?;
@@ -329,7 +332,10 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if let Some(checkpoint) = self.checkpoint.as_mut() {
             for index in 0..checkpoint.count() {
                 let entry = checkpoint.entry_at(index)?.ok_or(Errno::EIO)?;
-                let offset = entry.block.checked_mul(FILE_BLOCK_BYTES as u64).ok_or(Errno::EIO)?;
+                let offset = entry
+                    .block
+                    .checked_mul(FILE_BLOCK_BYTES as u64)
+                    .ok_or(Errno::EIO)?;
                 if offset >= base_size(entry.inode).ok_or(Errno::EIO)? {
                     return Err(Errno::EIO);
                 }
@@ -342,11 +348,28 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         &mut self,
         target: T,
     ) -> Result<BlockCheckpoint<T>, Errno> {
+        self.checkpoint_blocks_into_internal(target, false)
+    }
+
+    pub fn checkpoint_blocks_with_metadata_into<T: OverlayStorage>(
+        &mut self,
+        target: T,
+    ) -> Result<BlockCheckpoint<T>, Errno> {
+        self.checkpoint_blocks_into_internal(target, true)
+    }
+
+    fn checkpoint_blocks_into_internal<T: OverlayStorage>(
+        &mut self,
+        target: T,
+        allow_metadata: bool,
+    ) -> Result<BlockCheckpoint<T>, Errno> {
         self.sync()?;
         if self.checkpoint.is_some() {
             return Err(Errno::EOPNOTSUPP);
         }
-        if !self.state.entries.is_empty() || self.state.blocks.values().any(Option::is_none) {
+        if (!allow_metadata && !self.state.entries.is_empty())
+            || self.state.blocks.values().any(Option::is_none)
+        {
             return Err(Errno::EINVAL);
         }
         let mut digest = Sha256::new();
@@ -395,7 +418,12 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 journal_digest,
                 self.end,
                 self.next_sequence,
-                CompactedBlockEntries::new(&mut self.storage, self.end, self.next_sequence),
+                CompactedBlockEntries::new(
+                    &mut self.storage,
+                    self.end,
+                    self.next_sequence,
+                    allow_metadata,
+                ),
             )
         }
     }
@@ -424,6 +452,16 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     ) -> Result<OverlayJournal<T>, Errno> {
         if !self.state.entries.is_empty() || self.state.blocks.values().any(Option::is_none) {
             return Err(Errno::EIO);
+        }
+        self.compact_into_internal(target, false)
+    }
+
+    pub fn compact_metadata_into<T: OverlayStorage>(
+        &mut self,
+        target: T,
+    ) -> Result<OverlayJournal<T>, Errno> {
+        if self.state.blocks.values().any(Option::is_none) {
+            return Err(Errno::EOPNOTSUPP);
         }
         self.compact_into_internal(target, false)
     }
@@ -499,10 +537,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 tail_entry = tail_entries.next();
                 (*key, *location)
             };
-            let key = OverlayKey::FileBlock {
-                inode,
-                block,
-            };
+            let key = OverlayKey::FileBlock { inode, block };
             let mutation = match location {
                 Some(location) => {
                     let mut bytes = alloc::vec![0; FILE_BLOCK_BYTES];
@@ -583,16 +618,23 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         }
         if self.track_committed_state {
             let records = decode_mutations(
-                &transaction[TRANSACTION_HEADER_BYTES..transaction.len() - TRANSACTION_TRAILER_BYTES],
+                &transaction
+                    [TRANSACTION_HEADER_BYTES..transaction.len() - TRANSACTION_TRAILER_BYTES],
             )?;
             for (mutation, relative_offset) in records {
                 if let OverlayKey::FileBlock { inode, block } = &mutation_key(&mutation) {
                     self.block_cache
                         .retain(|(cached, _)| *cached != (*inode, *block));
                 }
-                let value_offset =
-                    relative_offset.map(|offset| self.end + TRANSACTION_HEADER_BYTES as u64 + offset);
+                let value_offset = relative_offset
+                    .map(|offset| self.end + TRANSACTION_HEADER_BYTES as u64 + offset);
                 self.state.apply(mutation, value_offset);
+            }
+        } else {
+            for mutation in mutations {
+                if !matches!(mutation_key(mutation), OverlayKey::FileBlock { .. }) {
+                    self.state.apply(mutation.clone(), None);
+                }
             }
         }
         self.end = following_end;
@@ -689,8 +731,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             .filter(|(key, _)| !self.dirty_blocks.iter().any(|(cached, _)| cached == key))
             .count();
         if self.dirty_blocks.len() + new_blocks > CACHE_BLOCKS {
-            let count = (self.dirty_blocks.len() + new_blocks - CACHE_BLOCKS)
-                .max(CACHE_BLOCKS / 4);
+            let count = (self.dirty_blocks.len() + new_blocks - CACHE_BLOCKS).max(CACHE_BLOCKS / 4);
             let victims: Vec<_> = self
                 .dirty_blocks
                 .iter()
@@ -929,19 +970,21 @@ struct CompactedBlockEntries<'a, S: OverlayStorage> {
     position: u64,
     sequence: u64,
     expected_sequence: u64,
+    allow_metadata: bool,
     finished: bool,
     pending: Vec<BlockCheckpointEntry>,
     pending_position: usize,
 }
 
 impl<'a, S: OverlayStorage> CompactedBlockEntries<'a, S> {
-    fn new(storage: &'a mut S, end: u64, expected_sequence: u64) -> Self {
+    fn new(storage: &'a mut S, end: u64, expected_sequence: u64, allow_metadata: bool) -> Self {
         Self {
             storage,
             end,
             position: HEADER_BYTES as u64,
             sequence: 1,
             expected_sequence,
+            allow_metadata,
             finished: false,
             pending: Vec::new(),
             pending_position: 0,
@@ -988,6 +1031,12 @@ impl<'a, S: OverlayStorage> CompactedBlockEntries<'a, S> {
                     key: OverlayKey::FileBlock { inode, block },
                     value,
                 } => (inode, block, value),
+                mutation
+                    if self.allow_metadata
+                        && !matches!(mutation_key(&mutation), OverlayKey::FileBlock { .. }) =>
+                {
+                    continue;
+                }
                 _ => return Err(Errno::EIO),
             };
             self.pending.push(BlockCheckpointEntry {
@@ -999,7 +1048,10 @@ impl<'a, S: OverlayStorage> CompactedBlockEntries<'a, S> {
                 digest: Sha256::digest(value).into(),
             });
         }
-        self.position = self.position.checked_add(length as u64).ok_or(Errno::EOVERFLOW)?;
+        self.position = self
+            .position
+            .checked_add(length as u64)
+            .ok_or(Errno::EOVERFLOW)?;
         self.sequence = self.sequence.checked_add(1).ok_or(Errno::EOVERFLOW)?;
         Ok(())
     }
@@ -1099,6 +1151,78 @@ fn encode_key(out: &mut Vec<u8>, key: &OverlayKey) {
             out.extend_from_slice(name);
         }
     }
+}
+
+fn replay_transactions<S: OverlayStorage>(
+    storage: &mut S,
+    mut end: u64,
+    size: u64,
+    mut next_sequence: u64,
+    state: &mut OverlayState,
+    include_blocks: bool,
+    allow_torn_tail: bool,
+) -> Result<(u64, u64), Errno> {
+    while end < size {
+        let remaining = size - end;
+        if remaining < (TRANSACTION_HEADER_BYTES + TRANSACTION_TRAILER_BYTES) as u64 {
+            if allow_torn_tail {
+                break;
+            }
+            return Err(Errno::EIO);
+        }
+        let mut header = [0u8; TRANSACTION_HEADER_BYTES];
+        storage.read_exact_at(end, &mut header)?;
+        if &header[..4] != TRANSACTION_MAGIC {
+            return Err(Errno::EIO);
+        }
+        let length = u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?) as usize;
+        let length_complement =
+            u32::from_le_bytes(header[20..24].try_into().map_err(|_| Errno::EIO)?);
+        if length_complement != !(length as u32)
+            || !(TRANSACTION_HEADER_BYTES + TRANSACTION_TRAILER_BYTES..=MAX_TRANSACTION_BYTES)
+                .contains(&length)
+        {
+            return Err(Errno::EIO);
+        }
+        if length as u64 > remaining {
+            if allow_torn_tail {
+                break;
+            }
+            return Err(Errno::EIO);
+        }
+        let mut transaction = Vec::new();
+        transaction
+            .try_reserve_exact(length)
+            .map_err(|_| Errno::ENOMEM)?;
+        transaction.resize(length, 0);
+        storage.read_exact_at(end, &mut transaction)?;
+        let sequence = u64::from_le_bytes(transaction[8..16].try_into().map_err(|_| Errno::EIO)?);
+        if sequence != next_sequence {
+            return Err(Errno::EIO);
+        }
+        let digest_start = length - TRANSACTION_TRAILER_BYTES;
+        if &transaction[length - 4..] != COMMIT_MAGIC
+            || transaction[digest_start..length - 4]
+                != Sha256::digest(&transaction[..digest_start])[..]
+        {
+            return Err(Errno::EIO);
+        }
+        let mutations = decode_mutations(&transaction[TRANSACTION_HEADER_BYTES..digest_start])?;
+        let count = u32::from_le_bytes(transaction[16..20].try_into().map_err(|_| Errno::EIO)?);
+        if mutations.len() != count as usize {
+            return Err(Errno::EIO);
+        }
+        for (mutation, relative_offset) in mutations {
+            if include_blocks || !matches!(mutation_key(&mutation), OverlayKey::FileBlock { .. }) {
+                let value_offset =
+                    relative_offset.map(|offset| end + TRANSACTION_HEADER_BYTES as u64 + offset);
+                state.apply(mutation, value_offset);
+            }
+        }
+        next_sequence = next_sequence.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        end = end.checked_add(length as u64).ok_or(Errno::EOVERFLOW)?;
+    }
+    Ok((end, next_sequence))
 }
 
 fn encode_transaction(sequence: u64, mutations: &[Mutation]) -> Result<Vec<u8>, Errno> {
@@ -1228,7 +1352,10 @@ mod tests {
 
         fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
             let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
-            let written = self.fail_write_after_bytes.unwrap_or(src.len()).min(src.len());
+            let written = self
+                .fail_write_after_bytes
+                .unwrap_or(src.len())
+                .min(src.len());
             let end = start.checked_add(written).ok_or(Errno::EIO)?;
             if end > self.bytes.len() {
                 self.bytes.resize(end, 0);
@@ -1364,9 +1491,18 @@ mod tests {
             digest,
         )
         .unwrap();
-        assert_eq!(reopened.state().lookup(&inode_key()), Some(Some(&b"inode"[..])));
-        assert_eq!(reopened.state().lookup(&directory_key(b"removed")), Some(None));
-        assert_eq!(reopened.state().file_size(7, 0), Ok(FILE_BLOCK_BYTES as u64));
+        assert_eq!(
+            reopened.state().lookup(&inode_key()),
+            Some(Some(&b"inode"[..]))
+        );
+        assert_eq!(
+            reopened.state().lookup(&directory_key(b"removed")),
+            Some(None)
+        );
+        assert_eq!(
+            reopened.state().file_size(7, 0),
+            Ok(FILE_BLOCK_BYTES as u64)
+        );
         let mut block = vec![0; FILE_BLOCK_BYTES];
         assert_eq!(
             reopened.read_file_at(7, 0, 0, &mut block, |_, _| panic!("block is journaled")),
@@ -1463,7 +1599,10 @@ mod tests {
             .unwrap();
         journal
             .commit(&[Mutation::Put {
-                key: OverlayKey::FileBlock { inode: 7, block: 73 },
+                key: OverlayKey::FileBlock {
+                    inode: 7,
+                    block: 73,
+                },
                 value: vec![9; FILE_BLOCK_BYTES],
             }])
             .unwrap();
@@ -1519,7 +1658,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reopened.state.blocks.len(), 2);
-        let mut compacted = reopened.compact_fixed_into(MemoryStorage::default()).unwrap();
+        let mut compacted = reopened
+            .compact_fixed_into(MemoryStorage::default())
+            .unwrap();
         assert!(compacted.state.blocks.is_empty());
         compacted
             .install_fixed_block_checkpoint(Box::new(MemoryStorage::default()))
@@ -1627,6 +1768,224 @@ mod tests {
             ),
             Err(Errno::EIO)
         ));
+    }
+
+    #[test]
+    fn indexed_metadata_replay_retains_namespace_without_a_prefix_block_map() {
+        let digest = [36; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        journal
+            .commit(&[
+                Mutation::Put {
+                    key: inode_key(),
+                    value: b"file metadata".to_vec(),
+                },
+                Mutation::Put {
+                    key: directory_key(b"old"),
+                    value: 7u64.to_le_bytes().to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                    value: vec![b'a'; FILE_BLOCK_BYTES],
+                },
+            ])
+            .unwrap();
+        let checkpoint_end = journal.end;
+        let checkpoint_sequence = journal.next_sequence;
+        let location = journal.state.blocks[&(7, 0)].unwrap();
+        let checkpoint = BlockCheckpoint::create(
+            MemoryStorage::default(),
+            digest,
+            Sha256::digest(&journal.storage.bytes).into(),
+            checkpoint_end,
+            checkpoint_sequence,
+            [BlockCheckpointEntry {
+                inode: 7,
+                block: 0,
+                offset: location.offset,
+                digest: location.digest,
+            }],
+        )
+        .unwrap()
+        .into_storage();
+        journal
+            .commit(&[
+                Mutation::Delete {
+                    key: directory_key(b"old"),
+                },
+                Mutation::Put {
+                    key: directory_key(b"new"),
+                    value: 7u64.to_le_bytes().to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 1 },
+                    value: vec![b'b'; FILE_BLOCK_BYTES],
+                },
+            ])
+            .unwrap();
+        let journal_bytes = journal.into_storage().bytes;
+        let mut reopened = OverlayJournal::open_with_checkpoint_metadata(
+            MemoryStorage {
+                bytes: journal_bytes.clone(),
+                ..MemoryStorage::default()
+            },
+            MemoryStorage {
+                bytes: checkpoint.bytes.clone(),
+                ..MemoryStorage::default()
+            },
+            digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        assert_eq!(
+            reopened.state.lookup(&inode_key()),
+            Some(Some(&b"file metadata"[..]))
+        );
+        assert_eq!(reopened.state.lookup(&directory_key(b"old")), Some(None));
+        assert_eq!(
+            reopened.state.lookup(&directory_key(b"new")),
+            Some(Some(&7u64.to_le_bytes()[..]))
+        );
+        assert_eq!(reopened.state.blocks.len(), 1);
+        for (block, expected) in [(0, b'a'), (1, b'b')] {
+            let mut byte = [0];
+            assert_eq!(
+                reopened.read_file_at(
+                    7,
+                    (2 * FILE_BLOCK_BYTES) as u64,
+                    block * FILE_BLOCK_BYTES as u64,
+                    &mut byte,
+                    |_, _| { panic!("indexed block must satisfy read") }
+                ),
+                Ok(1)
+            );
+            assert_eq!(byte, [expected]);
+        }
+        let incorrect_sequence = BlockCheckpoint::create(
+            MemoryStorage::default(),
+            digest,
+            Sha256::digest(&journal_bytes[..checkpoint_end as usize]).into(),
+            checkpoint_end,
+            checkpoint_sequence + 1,
+            [BlockCheckpointEntry {
+                inode: 7,
+                block: 0,
+                offset: location.offset,
+                digest: location.digest,
+            }],
+        )
+        .unwrap()
+        .into_storage();
+        assert!(matches!(
+            OverlayJournal::open_with_checkpoint_metadata(
+                MemoryStorage {
+                    bytes: journal_bytes,
+                    ..MemoryStorage::default()
+                },
+                incorrect_sequence,
+                digest,
+                checkpoint_end,
+            ),
+            Err(Errno::EIO)
+        ));
+    }
+
+    #[test]
+    fn metadata_survives_two_streamed_indexed_compactions() {
+        let digest = [37; 32];
+        let mut source = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        source
+            .commit(&[
+                Mutation::Put {
+                    key: inode_key(),
+                    value: b"file metadata".to_vec(),
+                },
+                Mutation::Put {
+                    key: directory_key(b"old"),
+                    value: 7u64.to_le_bytes().to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                    value: vec![b'a'; FILE_BLOCK_BYTES],
+                },
+            ])
+            .unwrap();
+        let mut first = source
+            .compact_metadata_into(MemoryStorage::default())
+            .unwrap();
+        assert!(first.state.blocks.is_empty());
+        assert_eq!(
+            first.state.lookup(&inode_key()),
+            Some(Some(&b"file metadata"[..]))
+        );
+        let first_end = first.end;
+        let first_checkpoint = first
+            .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
+            .unwrap()
+            .into_storage();
+        let mut reopened = OverlayJournal::open_with_checkpoint_metadata(
+            first.into_storage(),
+            first_checkpoint,
+            digest,
+            first_end,
+        )
+        .unwrap();
+        assert!(reopened.state.blocks.is_empty());
+        reopened
+            .commit(&[
+                Mutation::Delete {
+                    key: directory_key(b"old"),
+                },
+                Mutation::Put {
+                    key: directory_key(b"new"),
+                    value: 7u64.to_le_bytes().to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 1 },
+                    value: vec![b'b'; FILE_BLOCK_BYTES],
+                },
+            ])
+            .unwrap();
+        let mut second = reopened
+            .compact_metadata_into(MemoryStorage::default())
+            .unwrap();
+        assert!(second.state.blocks.is_empty());
+        let second_end = second.end;
+        let second_checkpoint = second
+            .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
+            .unwrap()
+            .into_storage();
+        let mut recovered = OverlayJournal::open_with_checkpoint_metadata(
+            second.into_storage(),
+            second_checkpoint,
+            digest,
+            second_end,
+        )
+        .unwrap();
+        assert_eq!(
+            recovered.state.lookup(&inode_key()),
+            Some(Some(&b"file metadata"[..]))
+        );
+        assert_eq!(recovered.state.lookup(&directory_key(b"old")), Some(None));
+        assert_eq!(
+            recovered.state.lookup(&directory_key(b"new")),
+            Some(Some(&7u64.to_le_bytes()[..]))
+        );
+        assert!(recovered.state.blocks.is_empty());
+        for (block, expected) in [(0, b'a'), (1, b'b')] {
+            let mut byte = [0];
+            assert_eq!(
+                recovered.read_file_at(
+                    7,
+                    (2 * FILE_BLOCK_BYTES) as u64,
+                    block * FILE_BLOCK_BYTES as u64,
+                    &mut byte,
+                    |_, _| { panic!("compacted block must satisfy read") }
+                ),
+                Ok(1)
+            );
+            assert_eq!(byte, [expected]);
+        }
     }
 
     #[test]
@@ -2096,7 +2455,10 @@ mod tests {
                 Ok(FILE_BLOCK_BYTES)
             );
         }
-        assert_eq!(journal.dirty_blocks.len(), CACHE_BLOCKS - CACHE_BLOCKS / 4 + 1);
+        assert_eq!(
+            journal.dirty_blocks.len(),
+            CACHE_BLOCKS - CACHE_BLOCKS / 4 + 1
+        );
         assert!(journal.state.blocks.contains_key(&(7, 0)));
         assert!(!journal.state.blocks.contains_key(&(7, CACHE_BLOCKS as u64)));
         journal.sync().unwrap();
@@ -2130,33 +2492,51 @@ mod tests {
             .unwrap();
         journal.sync().unwrap();
         assert_eq!(
-            journal.write_fixed_file_at_buffered(7, size, FILE_BLOCK_BYTES as u64, b"new", |_, dst| {
-                dst.fill(0);
-                Ok(dst.len())
-            }),
+            journal.write_fixed_file_at_buffered(
+                7,
+                size,
+                FILE_BLOCK_BYTES as u64,
+                b"new",
+                |_, dst| {
+                    dst.fill(0);
+                    Ok(dst.len())
+                }
+            ),
             Err(Errno::ENOSPC)
         );
         let mut visible = [0];
         journal
-            .read_file_at(7, size, 0, &mut visible, |_, _| panic!("journal must satisfy read"))
+            .read_file_at(7, size, 0, &mut visible, |_, _| {
+                panic!("journal must satisfy read")
+            })
             .unwrap();
         assert_eq!(visible, [b'a']);
-        let mut compacted = journal.compact_fixed_into(MemoryStorage::default()).unwrap();
+        let mut compacted = journal
+            .compact_fixed_into(MemoryStorage::default())
+            .unwrap();
         assert!(compacted.state.blocks.is_empty());
         compacted
             .install_fixed_block_checkpoint(Box::new(MemoryStorage::default()))
             .unwrap();
         let mut visible = [0];
         compacted
-            .read_file_at(7, size, 0, &mut visible, |_, _| panic!("checkpoint must satisfy read"))
+            .read_file_at(7, size, 0, &mut visible, |_, _| {
+                panic!("checkpoint must satisfy read")
+            })
             .unwrap();
         assert_eq!(visible, [b'a']);
         compacted.tail_limit_bytes = Some(100);
         assert_eq!(
-            compacted.write_fixed_file_at_buffered(7, size, FILE_BLOCK_BYTES as u64, b"new", |_, dst| {
-                dst.fill(0);
-                Ok(dst.len())
-            }),
+            compacted.write_fixed_file_at_buffered(
+                7,
+                size,
+                FILE_BLOCK_BYTES as u64,
+                b"new",
+                |_, dst| {
+                    dst.fill(0);
+                    Ok(dst.len())
+                }
+            ),
             Ok(3)
         );
     }
@@ -2355,6 +2735,11 @@ mod tests {
             Ok(1)
         );
         assert_eq!(previous, [0]);
-        assert!(!journal.dirty_blocks.iter().any(|(key, _)| key.1 == CACHE_BLOCKS as u64));
+        assert!(
+            !journal
+                .dirty_blocks
+                .iter()
+                .any(|(key, _)| key.1 == CACHE_BLOCKS as u64)
+        );
     }
 }
