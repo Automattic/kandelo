@@ -221,6 +221,9 @@ fn read_indexed_metadata<S: OverlayStorage>(
     };
     bytes.resize(length as usize, 0);
     storage.read_exact_at(offset, bytes)?;
+    if entry.value_digest.is_some_and(|digest| Sha256::digest(&*bytes)[..] != digest) {
+        return Err(Errno::EIO);
+    }
     Ok(true)
 }
 
@@ -287,10 +290,13 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 checkpoint_end,
             )?;
             let mut metadata_position = 0u64;
-            let mut verify_metadata = |record: MetadataCheckpointEntry| {
+            let mut verify_metadata = |mut record: MetadataCheckpointEntry| {
                 let expected = checkpoint
                     .metadata_entry_at(metadata_position)?
                     .ok_or(Errno::EIO)?;
+                if !checkpoint.has_metadata_value_digests() {
+                    record.value_digest = None;
+                }
                 if expected != record {
                     return Err(Errno::EIO);
                 }
@@ -1687,6 +1693,10 @@ impl<'a, S: OverlayStorage> CompactedMetadataEntries<'a, S> {
             self.pending.push(MetadataCheckpointEntry {
                 key: mutation_key(&mutation).clone(),
                 value,
+                value_digest: match &mutation {
+                    Mutation::Put { value, .. } => Some(Sha256::digest(value).into()),
+                    Mutation::Delete { .. } => None,
+                },
             });
         }
         self.position = self
@@ -1902,6 +1912,10 @@ fn replay_transactions<S: OverlayStorage>(
                 check(MetadataCheckpointEntry {
                     key: mutation_key(&mutation).clone(),
                     value,
+                    value_digest: match &mutation {
+                        Mutation::Put { value, .. } => Some(Sha256::digest(value).into()),
+                        Mutation::Delete { .. } => None,
+                    },
                 })?;
             }
             if matches!(filter, ReplayFilter::VerifyOnly) {
@@ -2830,6 +2844,79 @@ mod tests {
     }
 
     #[test]
+    fn indexed_metadata_read_rejects_damage_after_boot() {
+        let base_digest = [56; 32];
+        let mut source = OverlayJournal::open(MemoryStorage::default(), base_digest).unwrap();
+        source
+            .commit(&[Mutation::Put {
+                key: inode_key(),
+                value: b"metadata".to_vec(),
+            }])
+            .unwrap();
+        let mut compacted = source.compact_metadata_into(MemoryStorage::default()).unwrap();
+        let end = compacted.end;
+        let mut checkpoint = compacted
+            .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
+            .unwrap();
+        let value_offset = checkpoint
+            .lookup_metadata(&inode_key())
+            .unwrap()
+            .unwrap()
+            .value
+            .unwrap()
+            .0 as usize;
+        let mut reopened = OverlayJournal::open_with_checkpoint_metadata(
+            compacted.into_storage(),
+            checkpoint.into_storage(),
+            base_digest,
+            end,
+        )
+        .unwrap();
+        reopened.storage.bytes[value_offset] ^= 1;
+        assert_eq!(reopened.metadata_value(&inode_key()), Err(Errno::EIO));
+        assert_eq!(reopened.for_each_metadata(|_, _| Ok(())), Err(Errno::EIO));
+        reopened.storage.bytes[value_offset] ^= 1;
+        assert_eq!(reopened.metadata_value(&inode_key()), Ok(Some(Some(b"metadata".to_vec()))));
+    }
+
+    #[test]
+    fn indexed_boot_reads_legacy_v3_metadata_checkpoint() {
+        let base_digest = [57; 32];
+        let mut source = OverlayJournal::open(MemoryStorage::default(), base_digest).unwrap();
+        source
+            .commit(&[Mutation::Put {
+                key: inode_key(),
+                value: b"metadata".to_vec(),
+            }])
+            .unwrap();
+        let mut compacted = source.compact_metadata_into(MemoryStorage::default()).unwrap();
+        let end = compacted.end;
+        let checkpoint = compacted
+            .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
+            .unwrap();
+        let mut index_bytes = checkpoint.into_storage().bytes;
+        index_bytes.truncate(160 + 280);
+        index_bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
+        let mut combined = Sha256::new();
+        combined.update(Sha256::digest([]));
+        combined.update(Sha256::digest(&index_bytes[160..]));
+        index_bytes[96..128].copy_from_slice(&combined.finalize());
+        let header_digest = Sha256::digest(&index_bytes[..128]);
+        index_bytes[128..160].copy_from_slice(&header_digest);
+        let mut reopened = OverlayJournal::open_with_checkpoint_metadata(
+            compacted.into_storage(),
+            MemoryStorage {
+                bytes: index_bytes,
+                ..MemoryStorage::default()
+            },
+            base_digest,
+            end,
+        )
+        .unwrap();
+        assert_eq!(reopened.metadata_value(&inode_key()), Ok(Some(Some(b"metadata".to_vec()))));
+    }
+
+    #[test]
     fn indexed_metadata_replay_retains_namespace_without_a_prefix_block_map() {
         let digest = [36; 32];
         let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
@@ -3083,7 +3170,7 @@ mod tests {
             .into_storage();
         assert_eq!(
             u32::from_le_bytes(first_checkpoint.bytes[4..8].try_into().unwrap()),
-            3
+            4
         );
         let mut reopened = OverlayJournal::open_with_checkpoint_metadata(
             first.into_storage(),
@@ -3214,10 +3301,10 @@ mod tests {
             .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
             .unwrap()
             .into_storage();
-        assert_eq!(first_index.bytes.len(), 160 + 2 * 56 + 2 * 280);
+        assert_eq!(first_index.bytes.len(), 160 + 2 * 56 + 2 * 312);
         assert_eq!(
             u32::from_le_bytes(first_index.bytes[4..8].try_into().unwrap()),
-            3
+            4
         );
         let first_storage = first.into_storage();
         assert!(matches!(
