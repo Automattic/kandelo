@@ -20,6 +20,20 @@ int main(int argc, char **argv) {
         close(fd);
         return 0;
     }
+    if (argc >= 2 && strcmp(argv[1], "quota-evict") == 0) {
+        int fd = open("/large", O_RDWR);
+        if (fd < 0) return 112;
+        const size_t cached_bytes = 64 * 4096;
+        memset(large_write, 'X', cached_bytes + 4096);
+        if (pwrite(fd, large_write, cached_bytes + 4096, 0) != (ssize_t)cached_bytes) return 113;
+        if (fdatasync(fd) != -1 || errno != ENOSPC) return 114;
+        unsigned char first;
+        unsigned char unwritten;
+        if (pread(fd, &first, 1, 0) != 1 || first != 'X') return 115;
+        if (pread(fd, &unwritten, 1, cached_bytes) != 1 || unwritten != 0) return 116;
+        close(fd);
+        return 0;
+    }
     int set_metadata = argc >= 2 && strcmp(argv[1], "set-metadata") == 0;
     int verify_metadata = argc >= 2 && strcmp(argv[1], "verify-metadata") == 0;
     if (set_metadata || verify_metadata) {
