@@ -1003,24 +1003,28 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         } finally {
           await releaseRuntimeLease();
         }
-        let publicationChecks = 0;
-        let interruptedPublishRejected = false;
-        try {
-          await publishFixedPersistenceReplacement(name, identity, previous, staged, () => {
-            if (++publicationChecks === 6) throw new Error("publication interrupted before close");
-          });
-        } catch (error) {
-          interruptedPublishRejected = String(error).includes("publication interrupted before close");
+        const interruptedPublications: boolean[] = [];
+        for (let cut = 1; cut <= staged.chunkSha256.length + 5; cut++) {
+          let publicationChecks = 0;
+          let interrupted = false;
+          try {
+            await publishFixedPersistenceReplacement(name, identity, previous, staged, () => {
+              if (++publicationChecks === cut) throw new Error("publication interrupted before close");
+            });
+          } catch (error) {
+            interrupted = String(error).includes("publication interrupted before close");
+          }
+          const afterInterruption = await loadFixedPersistenceImageHandle(name, identity);
+          interruptedPublications.push(interrupted && afterInterruption !== null &&
+            await afterInterruption.file.isSameEntry(previous.file));
         }
-        const afterInterruption = await loadFixedPersistenceImageHandle(name, identity);
         await publishFixedPersistenceReplacement(name, identity, previous, staged);
         const current = await loadFixedPersistenceImageHandle(name, identity);
         return {
           oldStillCurrentBeforePublish: beforePublish !== null && await beforePublish.file.isSameEntry(previous.file),
           prematurePublishRejected,
           busyPublishRejected,
-          interruptedPublishRejected,
-          oldStillCurrentAfterInterruption: afterInterruption !== null && await afterInterruption.file.isSameEntry(previous.file),
+          interruptedPublications,
           stagedState,
           newReady: current?.journalInitialized === true,
           newCurrent: current !== null && await current.file.isSameEntry(staged.file),
@@ -1036,8 +1040,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         oldStillCurrentBeforePublish: true,
         prematurePublishRejected: true,
         busyPublishRejected: true,
-        interruptedPublishRejected: true,
-        oldStillCurrentAfterInterruption: true,
+        interruptedPublications: [true, true, true, true, true, true],
         stagedState: "replacement",
         newReady: true,
         newCurrent: true,
