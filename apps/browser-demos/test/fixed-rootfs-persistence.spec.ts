@@ -10,8 +10,7 @@ import { tryResolveBinary } from "../../../host/src/binary-resolver";
 const testDirectory = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = resolve(testDirectory, "../../..");
 const directKernelPath = resolve(repoRoot, "target/wasm32-unknown-unknown/release/kandelo_kernel.wasm");
-const publishedKernelPath = resolve(repoRoot, "local-binaries/kernel.wasm");
-const kernelPath = [directKernelPath, publishedKernelPath].find(existsSync) ?? null;
+const kernelPath = tryResolveBinary("kernel.wasm") ?? (existsSync(directKernelPath) ? directKernelPath : null);
 const directImageModulePath = resolve(repoRoot, "target/wasm32-unknown-unknown/release/kandelo_image_module.wasm");
 const publishedImageModulePath = resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm");
 const imageModulePath = [publishedImageModulePath, directImageModulePath].find((path) => {
@@ -132,6 +131,39 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         }
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
       expect(result).toMatchObject({ initial: "abcdefgh", written: "XYcdefgh", locked: true, rejected: true, cacheProbeMatches: true, recovered: "XYcdefgh" });
+
+      const tornHeader = await page.evaluate(async ({ moduleUrl, kernelUrl, name, journalBytes }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const journalFile = await directory.getFileHandle(`${name}.journal`);
+        const bytes = new Uint8Array(journalBytes.length + 24);
+        bytes.set(journalBytes);
+        bytes.set(new TextEncoder().encode("KTXN"), journalBytes.length);
+        const writer = await journalFile.createWritable();
+        await writer.write(bytes);
+        await writer.close();
+        const imageFile = await directory.getFileHandle(`${name}.base`);
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: imageFile,
+            experimentalFixedPersistenceName: name,
+          });
+          return {
+            state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+            journalSize: (await journalFile.getFile()).size,
+          };
+        } finally {
+          await kernel.destroy();
+        }
+      }, {
+        moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        name: result.name,
+        journalBytes: result.journalBytes,
+      });
+      expect(tornHeader).toEqual({ state: "XYcdefgh", journalSize: result.journalBytes.length });
 
       const original = Buffer.from(result.journalBytes);
       const transactionLength = original.readUInt32LE(76);
