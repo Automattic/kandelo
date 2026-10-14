@@ -267,8 +267,8 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
           const competing = new BrowserKernel({ kernelOwnedFs: true });
           try {
             await competing.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
-          } catch {
-            locked = true;
+          } catch (error) {
+            locked = String(error).includes("journal is already open");
           } finally {
             await competing.destroy();
           }

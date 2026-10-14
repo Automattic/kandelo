@@ -256,7 +256,11 @@ pipe pair.
   bounded 4 MiB cache; boot verifies its 1 MiB chunk digests without a
   whole-image JavaScript buffer. The 256 KiB dirty-block cache holds
   unsynced fixed-size overwrites; `fsync`, `fdatasync`, eviction, and graceful
-  destroy flush it. Larger guest writes are split into cache-sized chunks and
+  destroy flush it. Each browser kernel holds an exclusive Web Lock for its
+  persistent journal namespace until its worker terminates; the page also
+  leases the computer name across boot and kernel lifetime. These locks do not
+  coordinate low-level callers using different journal names for one computer.
+  Larger guest writes are split into cache-sized chunks and
   may return a short count after a later writeback failure. Browser termination
   loses unsynced writes without changing
   the last durable image; an abrupt crash can do the same. Image capacity,

@@ -310,9 +310,43 @@ function decodeVfsImage(image: Uint8Array): Uint8Array {
   return whole;
 }
 
+async function acquirePersistentJournalLease(name: string): Promise<() => Promise<void>> {
+  if (typeof navigator === "undefined" || !navigator.locks) {
+    throw new Error("browser rootfs persistence requires Web Locks");
+  }
+  let signalRelease!: () => void;
+  const released = new Promise<void>((resolve) => { signalRelease = resolve; });
+  let signalAcquired!: () => void;
+  let signalFailed!: (error: unknown) => void;
+  const acquired = new Promise<void>((resolve, reject) => {
+    signalAcquired = resolve;
+    signalFailed = reject;
+  });
+  const holding = navigator.locks.request(
+    `kandelo-rootfs-journal:${name}`,
+    { mode: "exclusive", ifAvailable: true },
+    async (lock) => {
+      if (lock === null) throw new Error("browser rootfs persistence journal is already open");
+      signalAcquired();
+      await released;
+    },
+  );
+  void holding.catch(signalFailed);
+  await acquired;
+  let didRelease = false;
+  return async () => {
+    if (!didRelease) {
+      didRelease = true;
+      signalRelease();
+    }
+    await holding;
+  };
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
+  private releasePersistentJournalLease: (() => Promise<void>) | null = null;
   private initialized = false;
   private maxPages: number;
   private readonly memoryProfile: RuntimeMemoryProfile;
@@ -588,6 +622,7 @@ export class BrowserKernel {
     rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
   }): Promise<void> {
+    if (this.workerStarted) throw new Error("browser kernel worker is already running");
     if (
       opts.takeVfsImageOwnership &&
       (
@@ -604,8 +639,22 @@ export class BrowserKernel {
     const closedLazyAssets = opts.closedLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
+    if (opts.experimentalFixedPersistenceName !== undefined &&
+      opts.experimentalResizablePersistenceName !== undefined) {
+      throw new Error("browser rootfs persistence modes are mutually exclusive");
+    }
+    const journalName = opts.experimentalFixedPersistenceName ?? opts.experimentalResizablePersistenceName;
+    const releaseJournalLease = journalName === undefined
+      ? null
+      : await acquirePersistentJournalLease(journalName);
     // Create the kernel worker
-    this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
+    try {
+      this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
+    } catch (error) {
+      await releaseJournalLease?.();
+      throw error;
+    }
+    this.releasePersistentJournalLease = releaseJournalLease;
     this.workerStarted = true;
 
     this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
@@ -632,9 +681,8 @@ export class BrowserKernel {
       }
     };
 
-    this.reportMemoryProfile();
-
     try {
+      this.reportMemoryProfile();
       await new Promise<void>((resolve, reject) => {
         let settled = false;
         const cleanup = () => {
@@ -1801,7 +1849,12 @@ export class BrowserKernel {
         "kernel-worker realm termination failed: " +
         (error instanceof Error ? error.message : String(error));
     }
-    this.workerStarted = false;
+    this.workerStarted = realmTerminationFailure !== undefined;
+    if (!this.workerStarted) {
+      const releaseJournalLease = this.releasePersistentJournalLease;
+      this.releasePersistentJournalLease = null;
+      await releaseJournalLease?.();
+    }
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
