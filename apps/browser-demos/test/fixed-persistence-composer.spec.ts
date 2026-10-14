@@ -646,6 +646,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         const { BrowserKernel } = await import(browserKernelUrl);
         const name = `composer-${crypto.randomUUID()}`;
         const identity = "composer stream probe";
+        const journalName = `j-${crypto.randomUUID()}`;
         const ticks: string[] = [];
         const source = await stageRawVfsSourceImage(await fetch(imageUrl), () => {});
         if (source instanceof Uint8Array) throw new Error("raw fixture was treated as compressed");
@@ -655,7 +656,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
             file: source.file,
             integrity: source.integrity,
           },
-          persistentImage: { name, identity },
+          persistentImage: { name, identity, journalName },
           maxVfsByteLength: 64 * 1024 * 1024,
           imageLabel: "persistence probe",
           requestedProfileId: "probe",
@@ -674,13 +675,14 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         });
         await source.remove();
         const restored = await loadFixedPersistenceImageHandle(name, identity);
+        if (restored?.journalName !== journalName) throw new Error("journal namespace was not retained");
         const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
         const open = async () => {
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
           await kernel.initFromOpfsImage({
             kernelWasm: kernelBytes,
             vfsImageFile: restored!.file,
-            experimentalFixedPersistenceName: name,
+            experimentalFixedPersistenceName: restored.journalName,
           });
           return kernel;
         };

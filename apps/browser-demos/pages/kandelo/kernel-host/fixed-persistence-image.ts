@@ -7,6 +7,7 @@ import { parseExperimentalTerminalSession } from "../../../../../web-libs/kandel
 const DIRECTORY_NAME = "kandelo-persistent-overlay";
 const FORMAT_V1 = "kandelo-fixed-rootfs-image-v1";
 const FORMAT_V2 = "kandelo-fixed-rootfs-image-v2";
+const FORMAT_V3 = "kandelo-fixed-rootfs-image-v3";
 const NAME_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 const CHUNK_BYTES = 1024 * 1024;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
@@ -17,11 +18,13 @@ type StoredComposition = Pick<
 >;
 
 interface ImageManifest {
-  format: typeof FORMAT_V1 | typeof FORMAT_V2;
+  format: typeof FORMAT_V1 | typeof FORMAT_V2 | typeof FORMAT_V3;
   identity: string;
   length: number;
   sha256?: string;
   imageFileName?: string;
+  journalName?: string;
+  journalNameSha256?: string;
   lazyAssets?: ImageOwnedRuntimeLazyAssets | null;
   lazyAssetsSha256?: string;
   chunkSha256?: string[];
@@ -39,6 +42,7 @@ interface FixedPersistenceImage {
 export interface FixedPersistenceImageHandle {
   file: FileSystemFileHandle;
   imageFileName?: string;
+  journalName: string;
   length: number;
   chunkSha256: readonly string[];
   lazyAssets?: ImageOwnedRuntimeLazyAssets;
@@ -114,12 +118,12 @@ async function readSavedImage(
     throw new Error("experimental persistence base image manifest is invalid");
   }
   if (
-    (manifest?.format !== FORMAT_V1 && manifest?.format !== FORMAT_V2) ||
+    (manifest?.format !== FORMAT_V1 && manifest?.format !== FORMAT_V2 && manifest?.format !== FORMAT_V3) ||
     manifest.identity !== identity ||
     !Number.isSafeInteger(manifest.length) ||
     manifest.length <= 0 ||
     (manifest.format === FORMAT_V1 && !SHA256_PATTERN.test(manifest.sha256 ?? "")) ||
-    (manifest.format === FORMAT_V2 && (
+    (manifest.format !== FORMAT_V1 && (
       manifest.sha256 !== undefined ||
       typeof manifest.imageFileName !== "string" ||
       !new RegExp(`^${name}\\.[0-9a-f-]{36}\\.base$`).test(manifest.imageFileName)
@@ -127,9 +131,27 @@ async function readSavedImage(
   ) {
     throw new Error("experimental persistence base image belongs to a different computer");
   }
+  if (manifest.format === FORMAT_V3) {
+    if (
+      typeof manifest.journalName !== "string" ||
+      (manifest.journalName !== name &&
+        !/^j-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(manifest.journalName))
+    ) {
+      throw new Error("experimental persistence journal namespace is invalid");
+    }
+    const binding = JSON.stringify([manifest.identity, manifest.imageFileName, manifest.journalName]);
+    if (
+      !SHA256_PATTERN.test(manifest.journalNameSha256 ?? "") ||
+      await sha256(new TextEncoder().encode(binding)) !== manifest.journalNameSha256
+    ) {
+      throw new Error("experimental persistence journal namespace is damaged");
+    }
+  } else if (manifest.journalName !== undefined || manifest.journalNameSha256 !== undefined) {
+    throw new Error("experimental persistence journal namespace is invalid");
+  }
   const imageFile = await existingFile(
     parent,
-    manifest.format === FORMAT_V2 ? manifest.imageFileName! : names.image,
+    manifest.format === FORMAT_V1 ? names.image : manifest.imageFileName!,
   );
   if (imageFile === null) {
     throw new Error("experimental persistence base image is incomplete; refusing to boot");
@@ -175,7 +197,7 @@ async function readSavedImage(
     throw new Error("experimental persistence base image manifest is invalid");
   }
   if (
-    manifest.format === FORMAT_V2 &&
+    manifest.format !== FORMAT_V1 &&
     (manifest.chunkSha256 === undefined || composition === undefined || !lazyAssetsRecorded)
   ) {
     throw new Error("experimental persistence base image manifest is invalid");
@@ -194,7 +216,7 @@ async function readImage(
   const saved = await readSavedImage(parent, name, identity);
   if (saved === null) return null;
   const { manifest, imageFile, lazyAssets, lazyAssetsRecorded } = saved;
-  if (manifest.format === FORMAT_V2) {
+  if (manifest.format !== FORMAT_V1) {
     throw new Error("experimental persistence image requires positioned OPFS loading");
   }
   const bytes = new Uint8Array(await (await imageFile.getFile()).arrayBuffer());
@@ -285,6 +307,7 @@ export async function loadFixedPersistenceImageHandle(
     ) return null;
     return {
       file: saved.imageFile,
+      journalName: saved.manifest.journalName ?? name,
       length: saved.manifest.length,
       chunkSha256: saved.manifest.chunkSha256,
       lazyAssets: saved.lazyAssets,
@@ -375,8 +398,12 @@ async function writeFixedPersistenceImageStream(
   composition: StoredComposition,
   assertCurrent?: () => void,
   onProgress?: (message: string) => void,
+  journalName = name,
 ): Promise<FixedPersistenceImageHandle> {
   fileNames(name);
+  if (journalName !== name && !/^j-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(journalName)) {
+    throw new Error("experimental persistence journal namespace is invalid");
+  }
   onProgress?.("persistent image requesting lock");
   return locked(name, async () => {
     onProgress?.("persistent image lock acquired");
@@ -457,6 +484,7 @@ async function writeFixedPersistenceImageStream(
       const result: FixedPersistenceImageHandle = {
         file: imageFile,
         imageFileName,
+        journalName,
         length,
         chunkSha256,
         lazyAssets,
@@ -492,9 +520,13 @@ async function publishImage(
   const savedLazyAssets = staged.lazyAssets === undefined ? null : { ...staged.lazyAssets };
   const savedComposition = { ...staged.composition };
   const manifest: ImageManifest = {
-    format: FORMAT_V2,
+    format: FORMAT_V3,
     identity,
     imageFileName,
+    journalName: staged.journalName,
+    journalNameSha256: await sha256(new TextEncoder().encode(JSON.stringify([
+      identity, imageFileName, staged.journalName,
+    ]))),
     length: staged.length,
     lazyAssets: savedLazyAssets,
     lazyAssetsSha256: await sha256(new TextEncoder().encode(JSON.stringify(savedLazyAssets))),
@@ -532,9 +564,10 @@ export async function saveFixedPersistenceImageStream(
   composition: StoredComposition,
   assertCurrent?: () => void,
   onProgress?: (message: string) => void,
+  journalName?: string,
 ): Promise<FixedPersistenceImageHandle> {
   return writeFixedPersistenceImageStream(
-    name, identity, chunks, lazyAssets, composition, assertCurrent, onProgress,
+    name, identity, chunks, lazyAssets, composition, assertCurrent, onProgress, journalName,
   );
 }
 

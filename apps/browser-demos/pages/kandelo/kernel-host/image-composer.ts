@@ -145,6 +145,7 @@ export interface ComposeImageJob {
   persistentImage?: {
     name: string;
     identity: string;
+    journalName?: string;
     lazyAssets?: ImageOwnedRuntimeLazyAssets;
   };
   /** Host filesystem budget; the image's own capacity still governs. */
