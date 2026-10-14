@@ -357,6 +357,7 @@ struct DirIter {
 struct RootfsState {
     inodes: Vec<Option<Inode>>,
     free_inodes: Vec<u32>,
+    dirty_persistent_timestamps: BTreeSet<u32>,
     /// Root ("/") inode index, created on first use.
     root: Option<u32>,
     dir_iters: Vec<Option<DirIter>>,
@@ -442,6 +443,7 @@ impl RootfsState {
         RootfsState {
             inodes: Vec::new(),
             free_inodes: Vec::new(),
+            dirty_persistent_timestamps: BTreeSet::new(),
             root: None,
             dir_iters: Vec::new(),
             free_dir_iters: Vec::new(),
@@ -557,6 +559,7 @@ impl RootfsState {
             .map(|inode| inode.nlink == 0 && inode.open_count == 0 && inode.map_pins == 0)
             .unwrap_or(false);
         if drop_it {
+            self.dirty_persistent_timestamps.remove(&idx);
             self.inodes[idx as usize] = None;
             self.free_inodes.push(idx);
         }
@@ -746,6 +749,7 @@ impl PreparedPersistentMetadataChange {
         let inode = state.get_mut(self.index).ok_or(Errno::EIO)?;
         self.metadata.apply(inode);
         inode.synced_content_gen = inode.content_gen;
+        state.dirty_persistent_timestamps.remove(&self.index);
         Ok(())
     }
 }
@@ -1342,24 +1346,22 @@ pub fn sync_persistence() -> Result<(), Errno> {
             let mut mutations = Vec::new();
             let mut generations = Vec::new();
             let mut next = cursor;
-            for index in cursor..state.inodes.len() {
-                next = index + 1;
-                let Some(inode) = state.inodes[index].as_ref() else {
-                    continue;
-                };
+            for &index in state.dirty_persistent_timestamps.range(cursor..) {
+                next = index.checked_add(1).ok_or(Errno::EIO)?;
+                let inode = state.get(index).ok_or(Errno::EIO)?;
                 if inode.content_gen == inode.synced_content_gen {
-                    continue;
+                    return Err(Errno::EIO);
                 }
                 let kind = match inode.kind {
                     InodeKind::PersistentRegular => 1,
                     InodeKind::BaseRegular { source: BaseSource::Image, .. } => 4,
-                    _ => continue,
+                    _ => return Err(Errno::EIO),
                 };
                 mutations.push(Mutation::Put {
                     key: OverlayKey::Inode(inode.ino),
                     value: encode_inode_record(kind, &[], PersistentInodeMetadata::from_inode(inode)),
                 });
-                generations.push((index as u32, inode.content_gen));
+                generations.push((index, inode.content_gen));
                 if mutations.len() == 64 {
                     break;
                 }
@@ -1375,6 +1377,7 @@ pub fn sync_persistence() -> Result<(), Errno> {
                 if let Some(inode) = state.get_mut(index) {
                     if inode.content_gen == generation {
                         inode.synced_content_gen = generation;
+                        state.dirty_persistent_timestamps.remove(&index);
                     }
                 }
             }
@@ -3881,6 +3884,9 @@ where
                     }
                     inode.clear_setid_on_modify();
                     inode.touch_modified();
+                    if resizable {
+                        state.dirty_persistent_timestamps.insert(idx);
+                    }
                 }
             });
         }
@@ -3980,6 +3986,7 @@ where
                 inode.clear_setid_on_modify();
             }
             inode.touch_modified();
+            state.dirty_persistent_timestamps.insert(idx);
             Ok(())
         })?;
         return Ok(());
@@ -9758,6 +9765,77 @@ mod tests {
         reopen();
         assert_eq!(times(b"/"), (2_008, 9, 2_008, 9));
         assert!(matches!(lstat(b"/a"), Err(Errno::ENOENT)));
+    }
+
+    #[test]
+    fn resizable_timestamp_writeback_tracks_only_dirty_inodes() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage.clone()), base_digest).unwrap();
+        let first = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        let second = open(b"/big.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(first, 0, b"A", &mut image_bytes), Ok(1));
+        assert_eq!(write(second, 0, b"B", &mut image_bytes), Ok(1));
+        assert_eq!(ROOTFS.with(|state| state.dirty_persistent_timestamps.len()), 2);
+        chmod(b"/hello.txt", 0o600).unwrap();
+        assert_eq!(ROOTFS.with(|state| state.dirty_persistent_timestamps.len()), 1);
+        sync_persistence().unwrap();
+        assert!(ROOTFS.with(|state| state.dirty_persistent_timestamps.is_empty()));
+        release_handle(first);
+        release_handle(second);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        assert_eq!(lstat(b"/hello.txt").unwrap().st_mode & 0o777, 0o600);
+        let first = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        let second = open(b"/big.txt", O_RDONLY, 0, 0, 0).unwrap();
+        let mut byte = [0];
+        assert_eq!(read(first, 0, &mut byte, &mut image_bytes), Ok(1));
+        assert_eq!(byte, [b'A']);
+        assert_eq!(read(second, 0, &mut byte, &mut image_bytes), Ok(1));
+        assert_eq!(byte, [b'B']);
+        release_handle(first);
+        release_handle(second);
+    }
+
+    #[test]
+    fn failed_timestamp_writeback_keeps_dirty_inode_and_reopens_old_data() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let fail_writes = Arc::new(AtomicBool::new(false));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(
+            Box::new(FailingCreateStorage {
+                inner: storage.clone(),
+                fail_writes: fail_writes.clone(),
+            }),
+            base_digest,
+        ).unwrap();
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(handle, 0, b"X", &mut image_bytes), Ok(1));
+        fail_writes.store(true, Ordering::SeqCst);
+        assert_eq!(sync_persistence(), Err(Errno::ENOSPC));
+        assert_eq!(ROOTFS.with(|state| state.dirty_persistent_timestamps.len()), 1);
+        let mut byte = [0];
+        assert_eq!(read(handle, 0, &mut byte, &mut image_bytes), Ok(1));
+        assert_eq!(byte, [b'X']);
+        release_handle(handle);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        let reopened = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(read(reopened, 0, &mut byte, &mut image_bytes), Ok(1));
+        assert_eq!(byte, [b'h']);
+        release_handle(reopened);
     }
 
     #[test]
