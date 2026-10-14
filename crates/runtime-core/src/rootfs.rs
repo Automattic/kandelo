@@ -31,6 +31,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::hint::spin_loop;
@@ -636,9 +637,15 @@ static ROOTFS: RootfsGlobal = RootfsGlobal::new();
 type PersistentJournal = OverlayJournal<Box<dyn OverlayStorage + Send>>;
 const PERSISTENT_REGULAR_RECORD_BYTES: usize = 52;
 
-fn encode_persistent_regular(inode: &Inode) -> Vec<u8> {
-    let mut value = Vec::with_capacity(PERSISTENT_REGULAR_RECORD_BYTES);
-    value.extend_from_slice(&[1, 1, 0, 0]);
+fn encode_persistent_inode(inode: &Inode) -> Vec<u8> {
+    let (kind, target) = match &inode.kind {
+        InodeKind::PersistentRegular => (1, &[][..]),
+        InodeKind::Dir(_) => (2, &[][..]),
+        InodeKind::Symlink(target) => (3, target.as_slice()),
+        _ => unreachable!(),
+    };
+    let mut value = Vec::with_capacity(PERSISTENT_REGULAR_RECORD_BYTES + target.len());
+    value.extend_from_slice(&[1, kind, 0, 0]);
     value.extend_from_slice(&inode.mode.to_le_bytes());
     value.extend_from_slice(&inode.uid.to_le_bytes());
     value.extend_from_slice(&inode.gid.to_le_bytes());
@@ -648,35 +655,45 @@ fn encode_persistent_regular(inode: &Inode) -> Vec<u8> {
     value.extend_from_slice(&inode.mtime_nsec.to_le_bytes());
     value.extend_from_slice(&inode.ctime_sec.to_le_bytes());
     value.extend_from_slice(&inode.ctime_nsec.to_le_bytes());
+    value.extend_from_slice(target);
     value
 }
 
-fn decode_persistent_regular(ino: u64, value: &[u8]) -> Result<Inode, Errno> {
-    if value.len() != PERSISTENT_REGULAR_RECORD_BYTES || value[..4] != [1, 1, 0, 0] {
+fn decode_persistent_inode(ino: u64, value: &[u8]) -> Result<Inode, Errno> {
+    if value.len() < PERSISTENT_REGULAR_RECORD_BYTES
+        || value.len() > 4096
+        || value[0] != 1
+        || value[2..4] != [0, 0]
+    {
         return Err(Errno::EIO);
     }
+    let kind = match value[1] {
+        1 if value.len() == PERSISTENT_REGULAR_RECORD_BYTES => InodeKind::PersistentRegular,
+        2 if value.len() == PERSISTENT_REGULAR_RECORD_BYTES => InodeKind::Dir(BTreeMap::new()),
+        3 if value.len() > PERSISTENT_REGULAR_RECORD_BYTES => {
+            InodeKind::Symlink(value[PERSISTENT_REGULAR_RECORD_BYTES..].to_vec())
+        }
+        _ => return Err(Errno::EIO),
+    };
     let read_u32 = |start| u32::from_le_bytes(value[start..start + 4].try_into().unwrap());
     let read_u64 = |start| u64::from_le_bytes(value[start..start + 8].try_into().unwrap());
     let mode = read_u32(4);
     let atime_nsec = read_u32(24);
     let mtime_nsec = read_u32(36);
     let ctime_nsec = read_u32(48);
-    if mode & !0o1777 != 0
+    if mode & !(if matches!(kind, InodeKind::Dir(_)) { 0o7777 } else { 0o1777 }) != 0
+        || (matches!(kind, InodeKind::Symlink(_)) && mode != 0o777)
         || atime_nsec >= 1_000_000_000
         || mtime_nsec >= 1_000_000_000
         || ctime_nsec >= 1_000_000_000
     {
         return Err(Errno::EIO);
     }
-    let mut inode = Inode::new(
-        InodeKind::PersistentRegular,
-        mode,
-        read_u32(8),
-        read_u32(12),
-        0,
-        ino,
-    );
-    inode.persistent_size = Some(0);
+    let nlink = if matches!(kind, InodeKind::Dir(_)) { 2 } else { 0 };
+    let mut inode = Inode::new(kind, mode, read_u32(8), read_u32(12), nlink, ino);
+    if matches!(inode.kind, InodeKind::PersistentRegular) {
+        inode.persistent_size = Some(0);
+    }
     inode.atime_sec = read_u64(16);
     inode.atime_nsec = atime_nsec;
     inode.mtime_sec = read_u64(28);
@@ -757,7 +774,7 @@ fn enable_persistence_internal(
             if !resizable || *ino < minimum_created_ino || *ino == u64::MAX {
                 return Err(Errno::EIO);
             }
-            let inode = decode_persistent_regular(*ino, value.ok_or(Errno::EIO)?)?;
+            let inode = decode_persistent_inode(*ino, value.ok_or(Errno::EIO)?)?;
             created.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
             created.push((*ino, inode));
         }
@@ -782,7 +799,9 @@ fn enable_persistence_internal(
     eligible_sizes
         .try_reserve(created.len())
         .map_err(|_| Errno::ENOMEM)?;
-    eligible_sizes.extend(created.iter().map(|(ino, _)| (*ino, 0)));
+    eligible_sizes.extend(created.iter().filter_map(|(ino, inode)| {
+        matches!(inode.kind, InodeKind::PersistentRegular).then_some((*ino, 0))
+    }));
     eligible_sizes.sort_unstable_by_key(|&(ino, _)| ino);
     if eligible_sizes.windows(2).any(|pair| pair[0].0 == pair[1].0) {
         return Err(Errno::EIO);
@@ -829,38 +848,72 @@ fn validate_persistent_dirents(
     created: &[(u64, Inode)],
 ) -> Result<(), Errno> {
     let mut known = BTreeMap::new();
-    for (index, inode) in state.inodes.iter().enumerate() {
-        if let Some(inode) = inode {
-            if known.insert(inode.ino, Some(index as u32)).is_some() {
-                return Err(Errno::EIO);
+    let mut directories = BTreeMap::new();
+    for inode in state.inodes.iter().flatten() {
+        if known.insert(inode.ino, inode.is_dir()).is_some() {
+            return Err(Errno::EIO);
+        }
+        if let InodeKind::Dir(entries) = &inode.kind {
+            let mut children = BTreeMap::new();
+            for (name, &index) in entries {
+                children.insert(name.clone(), state.get(index).ok_or(Errno::EIO)?.ino);
             }
+            directories.insert(inode.ino, children);
         }
     }
-    for (ino, _) in created {
-        if known.insert(*ino, None).is_some() {
+    for (ino, inode) in created {
+        if known.insert(*ino, inode.is_dir()).is_some() {
             return Err(Errno::EIO);
+        }
+        if inode.is_dir() {
+            directories.insert(*ino, BTreeMap::new());
         }
     }
     for (key, value) in journal.state().metadata_entries() {
         let OverlayKey::Dirent { parent, name } = key else {
             continue;
         };
-        let parent_index = known.get(parent).copied().flatten().ok_or(Errno::EIO)?;
-        let Some(InodeKind::Dir(entries)) = state.get(parent_index).map(|inode| &inode.kind) else {
-            return Err(Errno::EIO);
-        };
-        if entries
-            .get(name)
-            .is_some_and(|&index| state.get(index).is_some_and(Inode::is_dir))
-        {
-            return Err(Errno::EIO);
-        }
+        let entries = directories.get_mut(parent).ok_or(Errno::EIO)?;
         if let Some(bytes) = value {
             let ino = u64::from_le_bytes(bytes.try_into().map_err(|_| Errno::EIO)?);
-            let target = known.get(&ino).ok_or(Errno::EIO)?;
-            if target.is_some_and(|index| state.get(index).is_some_and(Inode::is_dir)) {
-                return Err(Errno::EIO);
+            known.get(&ino).ok_or(Errno::EIO)?;
+            entries.insert(name.clone(), ino);
+        } else {
+            entries.remove(name);
+        }
+    }
+    let root = state.get(state.root.ok_or(Errno::EIO)?).ok_or(Errno::EIO)?.ino;
+    let mut incoming = BTreeMap::<u64, u32>::new();
+    for entries in directories.values() {
+        for child in entries.values() {
+            if *known.get(child).ok_or(Errno::EIO)? {
+                let count = incoming.entry(*child).or_default();
+                *count = count.checked_add(1).ok_or(Errno::EIO)?;
+                if *count > 1 || *child == root {
+                    return Err(Errno::EIO);
+                }
             }
+        }
+    }
+    let mut reached = alloc::collections::BTreeSet::new();
+    let mut pending = vec![root];
+    while let Some(directory) = pending.pop() {
+        if !reached.insert(directory) {
+            return Err(Errno::EIO);
+        }
+        for child in directories.get(&directory).ok_or(Errno::EIO)?.values() {
+            if *known.get(child).ok_or(Errno::EIO)? {
+                pending.push(*child);
+            }
+        }
+    }
+    for (directory, entries) in &directories {
+        let count = incoming.get(directory).copied().unwrap_or(0);
+        if *directory == root {
+            continue;
+        }
+        if (count == 1 && !reached.contains(directory)) || (count == 0 && !entries.is_empty()) {
+            return Err(Errno::EIO);
         }
     }
     Ok(())
@@ -884,23 +937,13 @@ fn apply_persistent_dirents(
             continue;
         };
         let parent_index = *inode_indices.get(parent).ok_or(Errno::EIO)?;
-        let parent_inode = state.get(parent_index).ok_or(Errno::EIO)?;
-        let InodeKind::Dir(entries) = &parent_inode.kind else {
-            return Err(Errno::EIO);
-        };
-        if entries
-            .get(name)
-            .is_some_and(|&index| state.get(index).is_some_and(Inode::is_dir))
-        {
+        if !state.get(parent_index).ok_or(Errno::EIO)?.is_dir() {
             return Err(Errno::EIO);
         }
         let target_index = match value {
             Some(bytes) => {
                 let inode_number = u64::from_le_bytes(bytes.try_into().map_err(|_| Errno::EIO)?);
                 let index = *inode_indices.get(&inode_number).ok_or(Errno::EIO)?;
-                if state.get(index).ok_or(Errno::EIO)?.is_dir() {
-                    return Err(Errno::EIO);
-                }
                 Some(index)
             }
             None => None,
@@ -951,11 +994,27 @@ fn apply_persistent_dirents(
             }
         }
     }
+    let mut child_directories = vec![0u32; state.inodes.len()];
+    for (parent, inode) in state.inodes.iter().enumerate() {
+        if let Some(InodeKind::Dir(entries)) = inode.as_ref().map(|node| &node.kind) {
+            for &child in entries.values() {
+                if state.get(child).is_some_and(Inode::is_dir) {
+                    child_directories[parent] = child_directories[parent].checked_add(1).ok_or(Errno::EIO)?;
+                }
+            }
+        }
+    }
     for (index, inode) in state.inodes.iter_mut().enumerate() {
         if let Some(inode) = inode {
-            if !inode.is_dir() {
-                inode.nlink = links[index];
-            }
+            inode.nlink = if inode.is_dir() {
+                if Some(index as u32) == state.root || links[index] != 0 {
+                    2 + child_directories[index]
+                } else {
+                    0
+                }
+            } else {
+                links[index]
+            };
         }
     }
     Ok(())
@@ -2929,7 +2988,7 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
             let mutations = [
                 Mutation::Put {
                     key: OverlayKey::Inode(inode.ino),
-                    value: encode_persistent_regular(&inode),
+                    value: encode_persistent_inode(&inode),
                 },
                 Mutation::Put {
                     key: OverlayKey::Dirent {
@@ -4219,11 +4278,45 @@ pub fn closedir(handle: i64) -> Result<(), Errno> {
 
 /// mkdir a rootfs directory.
 pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
-    reject_fixed_persistence_mutation()?;
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EEXIST); // the root already exists
     }
+    if resizable_persistence_enabled() {
+        let (parent, name, parent_ino, inode) = ROOTFS.with(|state| {
+            let (parent, last, target) = state.resolve(&comps)?;
+            if target.is_some() {
+                return Err(Errno::EEXIST);
+            }
+            let ino = state.next_ino;
+            if ino == u64::MAX {
+                return Err(Errno::ENOSPC);
+            }
+            let inode = Inode::new(InodeKind::Dir(BTreeMap::new()), mode & 0o7777, uid, gid, 2, ino);
+            Ok::<_, Errno>((parent, last.ok_or(Errno::ENOENT)?.to_vec(), state.get(parent).ok_or(Errno::EIO)?.ino, inode))
+        })?;
+        PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.commit(&[
+            Mutation::Put {
+                key: OverlayKey::Inode(inode.ino),
+                value: encode_persistent_inode(&inode),
+            },
+            Mutation::Put {
+                key: OverlayKey::Dirent { parent: parent_ino, name: name.clone() },
+                value: inode.ino.to_le_bytes().to_vec(),
+            },
+        ])?;
+        return ROOTFS.with(|state| {
+            state.bump_next_ino(inode.ino);
+            let index = state.insert_inode(inode);
+            let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|node| &mut node.kind) else {
+                return Err(Errno::EIO);
+            };
+            entries.insert(name, index);
+            state.recompute_dir_nlink(parent);
+            Ok(())
+        });
+    }
+    reject_fixed_persistence_mutation()?;
     ROOTFS.with(|state| {
         let (parent, last, target) = state.resolve(&comps)?;
         if target.is_some() {
@@ -4255,10 +4348,27 @@ pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
 
 /// Remove an empty rootfs directory.
 pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
-    reject_fixed_persistence_mutation()?;
     let comps = split_components(path);
     if comps.is_empty() {
         return Err(Errno::EBUSY); // cannot remove the root
+    }
+    if resizable_persistence_enabled() {
+        let key = ROOTFS.with(|state| {
+            let (parent, last, target) = state.resolve(&comps)?;
+            let target = target.ok_or(Errno::ENOENT)?;
+            match &state.get(target).ok_or(Errno::ENOENT)?.kind {
+                InodeKind::Dir(entries) if entries.is_empty() => {}
+                InodeKind::Dir(_) => return Err(Errno::ENOTEMPTY),
+                _ => return Err(Errno::ENOTDIR),
+            }
+            Ok::<_, Errno>(OverlayKey::Dirent {
+                parent: state.get(parent).ok_or(Errno::EIO)?.ino,
+                name: last.ok_or(Errno::ENOENT)?.to_vec(),
+            })
+        })?;
+        PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.commit(&[Mutation::Delete { key }])?;
+    } else {
+        reject_fixed_persistence_mutation()?;
     }
     ROOTFS.with(|state| {
         let (parent, last, target) = state.resolve(&comps)?;
@@ -4358,11 +4468,20 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
             if new_existing == Some(old_target) {
                 return Ok::<_, Errno>(None);
             }
-            if state.get(old_target).ok_or(Errno::ENOENT)?.is_dir() {
-                return Err(Errno::EROFS);
-            }
-            if new_existing.is_some_and(|index| state.get(index).is_some_and(Inode::is_dir)) {
-                return Err(Errno::EISDIR);
+            let old_is_dir = state.get(old_target).ok_or(Errno::ENOENT)?.is_dir();
+            if let Some(existing) = new_existing {
+                let new_inode = state.get(existing).ok_or(Errno::ENOENT)?;
+                if old_is_dir && !new_inode.is_dir() {
+                    return Err(Errno::ENOTDIR);
+                }
+                if !old_is_dir && new_inode.is_dir() {
+                    return Err(Errno::EISDIR);
+                }
+                if let InodeKind::Dir(entries) = &new_inode.kind {
+                    if !entries.is_empty() {
+                        return Err(Errno::ENOTEMPTY);
+                    }
+                }
             }
             let inode_number = state.get(old_target).ok_or(Errno::EIO)?.ino;
             let old_parent_number = state.get(old_parent).ok_or(Errno::EIO)?.ino;
@@ -4643,7 +4762,6 @@ pub fn utimensat(
 
 /// Create a symbolic link at a rootfs path pointing at `target`.
 pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(), Errno> {
-    reject_fixed_persistence_mutation()?;
     let comps = split_components(linkpath);
     if comps.is_empty() {
         return Err(Errno::EEXIST);
@@ -4651,6 +4769,44 @@ pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(),
     if target.is_empty() {
         return Err(Errno::ENOENT);
     }
+    if resizable_persistence_enabled() {
+        if target.len() > 4096 - PERSISTENT_REGULAR_RECORD_BYTES {
+            return Err(Errno::ENAMETOOLONG);
+        }
+        let creation = ROOTFS.with(|state| {
+            let (parent, last, existing) = state.resolve(&comps)?;
+            if existing.is_some() {
+                return Err(Errno::EEXIST);
+            }
+            let ino = state.next_ino;
+            if ino == u64::MAX {
+                return Err(Errno::ENOSPC);
+            }
+            let inode = Inode::new(InodeKind::Symlink(target.to_vec()), 0o777, uid, gid, 1, ino);
+            Ok::<_, Errno>((parent, last.ok_or(Errno::ENOENT)?.to_vec(), state.get(parent).ok_or(Errno::EIO)?.ino, inode))
+        })?;
+        let (parent, name, parent_ino, inode) = creation;
+        PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.commit(&[
+            Mutation::Put {
+                key: OverlayKey::Inode(inode.ino),
+                value: encode_persistent_inode(&inode),
+            },
+            Mutation::Put {
+                key: OverlayKey::Dirent { parent: parent_ino, name: name.clone() },
+                value: inode.ino.to_le_bytes().to_vec(),
+            },
+        ])?;
+        return ROOTFS.with(|state| {
+            state.bump_next_ino(inode.ino);
+            let index = state.insert_inode(inode);
+            let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|node| &mut node.kind) else {
+                return Err(Errno::EIO);
+            };
+            entries.insert(name, index);
+            Ok(())
+        });
+    }
+    reject_fixed_persistence_mutation()?;
     ROOTFS.with(|state| {
         let (parent, last, existing) = state.resolve(&comps)?;
         if existing.is_some() {
@@ -8984,7 +9140,7 @@ mod tests {
         let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
         let mut image_bytes = image_host(&image);
         load_image(image.len() as u64, &mut image_bytes).unwrap();
-        enable_resizable_persistence(Box::new(source), base_digest).unwrap();
+        enable_resizable_persistence(Box::new(source.clone()), base_digest).unwrap();
         let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
         link(b"/hello.txt", b"/alias").unwrap();
         rename(b"/hello.txt", b"/moved").unwrap();
@@ -9126,6 +9282,101 @@ mod tests {
     }
 
     #[test]
+    fn resizable_persistence_reopens_created_symlink_after_indexed_compaction() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source.clone()), base_digest).unwrap();
+        symlink(b"/hello.txt", b"/created-link", 7, 8).unwrap();
+        assert_eq!(lstat(b"/created-link").unwrap().st_mode & S_IFMT, S_IFLNK);
+        let mut bytes = [0; 32];
+        assert_eq!(readlink(b"/created-link", &mut bytes), Ok(10));
+        assert_eq!(&bytes[..10], b"/hello.txt");
+        link(b"/created-link", b"/alias-link").unwrap();
+        sync_persistence().unwrap();
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source.clone()), base_digest).unwrap();
+        assert_eq!(lstat(b"/created-link").unwrap().st_nlink, 2);
+        assert_eq!(readlink(b"/alias-link", &mut bytes), Ok(10));
+        unlink(b"/created-link").unwrap();
+        sync_persistence().unwrap();
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let checkpoint_end = target.0.lock().len() as u64;
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(Box::new(target), Box::new(index), base_digest, checkpoint_end).unwrap();
+        assert!(matches!(lstat(b"/created-link"), Err(Errno::ENOENT)));
+        assert_eq!(lstat(b"/alias-link").unwrap().st_nlink, 1);
+        assert_eq!(readlink(b"/alias-link", &mut bytes), Ok(10));
+        assert_eq!(&bytes[..10], b"/hello.txt");
+    }
+
+    #[test]
+    fn resizable_persistence_reopens_directory_tree_after_indexed_compaction() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source.clone()), base_digest).unwrap();
+        let root_links = lstat(b"/").unwrap().st_nlink;
+        mkdir(b"/created-dir", 0o750, 7, 8).unwrap();
+        mkdir(b"/empty-dir", 0o700, 7, 8).unwrap();
+        mkdir(b"/created-dir/nested", 0o700, 7, 8).unwrap();
+        assert_eq!(lstat(b"/").unwrap().st_nlink, root_links + 2);
+        let handle = open(b"/created-dir/nested/file", O_CREAT | O_RDWR, 0o640, 7, 8).unwrap();
+        assert_eq!(write(handle, 0, b"nested", &mut image_bytes), Ok(6));
+        release_handle(handle);
+        symlink(b"file", b"/created-dir/nested/link", 7, 8).unwrap();
+        rename(b"/created-dir", b"/moved-dir").unwrap();
+        assert_eq!(rmdir(b"/moved-dir"), Err(Errno::ENOTEMPTY));
+        assert_eq!(link(b"/moved-dir", b"/alias-dir"), Err(Errno::EPERM));
+        rmdir(b"/empty-dir").unwrap();
+        sync_persistence().unwrap();
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source), base_digest).unwrap();
+        assert_eq!(lstat(b"/").unwrap().st_nlink, root_links + 1);
+        assert!(matches!(lstat(b"/created-dir"), Err(Errno::ENOENT)));
+        assert!(matches!(lstat(b"/empty-dir"), Err(Errno::ENOENT)));
+        assert_eq!(lstat(b"/moved-dir").unwrap().st_mode & 0o777, 0o750);
+        assert_eq!(lstat(b"/moved-dir").unwrap().st_nlink, 3);
+        let mut link_target = [0; 8];
+        assert_eq!(readlink(b"/moved-dir/nested/link", &mut link_target), Ok(4));
+        assert_eq!(&link_target[..4], b"file");
+        let handle = open(b"/moved-dir/nested/file", O_RDONLY, 0, 0, 0).unwrap();
+        let mut content = [0; 6];
+        assert_eq!(read(handle, 0, &mut content, &mut image_bytes), Ok(6));
+        assert_eq!(&content, b"nested");
+        release_handle(handle);
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let checkpoint_end = target.0.lock().len() as u64;
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(Box::new(target), Box::new(index), base_digest, checkpoint_end).unwrap();
+        assert_eq!(lstat(b"/moved-dir").unwrap().st_nlink, 3);
+        assert_eq!(lstat(b"/moved-dir/nested/file").unwrap().st_size, 6);
+        assert_eq!(readlink(b"/moved-dir/nested/link", &mut link_target), Ok(4));
+    }
+
+    #[test]
     fn resizable_persistence_rejects_namespace_and_unknown_file_records() {
         use crate::persistent_overlay::{Mutation, OverlayKey};
 
@@ -9201,7 +9452,7 @@ mod tests {
             .commit(&[
                 Mutation::Put {
                     key: OverlayKey::Inode(created.ino),
-                    value: encode_persistent_regular(&created),
+                    value: encode_persistent_inode(&created),
                 },
                 Mutation::Put {
                     key: OverlayKey::Dirent {
@@ -9218,6 +9469,45 @@ mod tests {
             Err(Errno::EIO)
         );
         assert_eq!(ROOTFS.with(|state| state.next_ino), next_ino);
+
+        let linked_directory = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut journal = OverlayJournal::open(linked_directory.clone(), base_digest).unwrap();
+        let created_dir = Inode::new(InodeKind::Dir(BTreeMap::new()), 0o755, 0, 0, 2, 99_999);
+        journal.commit(&[
+            Mutation::Put {
+                key: OverlayKey::Inode(created_dir.ino),
+                value: encode_persistent_inode(&created_dir),
+            },
+            Mutation::Put {
+                key: OverlayKey::Dirent { parent: 1, name: b"first-dir".to_vec() },
+                value: created_dir.ino.to_le_bytes().to_vec(),
+            },
+            Mutation::Put {
+                key: OverlayKey::Dirent { parent: 1, name: b"second-dir".to_vec() },
+                value: created_dir.ino.to_le_bytes().to_vec(),
+            },
+        ]).unwrap();
+        assert_eq!(enable_resizable_persistence(Box::new(linked_directory), base_digest), Err(Errno::EIO));
+        assert!(matches!(lstat(b"/first-dir"), Err(Errno::ENOENT)));
+
+        let cyclic_directory = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut journal = OverlayJournal::open(cyclic_directory.clone(), base_digest).unwrap();
+        journal.commit(&[
+            Mutation::Put {
+                key: OverlayKey::Inode(created_dir.ino),
+                value: encode_persistent_inode(&created_dir),
+            },
+            Mutation::Put {
+                key: OverlayKey::Dirent { parent: 1, name: b"cycle".to_vec() },
+                value: created_dir.ino.to_le_bytes().to_vec(),
+            },
+            Mutation::Put {
+                key: OverlayKey::Dirent { parent: created_dir.ino, name: b"back".to_vec() },
+                value: 1u64.to_le_bytes().to_vec(),
+            },
+        ]).unwrap();
+        assert_eq!(enable_resizable_persistence(Box::new(cyclic_directory), base_digest), Err(Errno::EIO));
+        assert!(matches!(lstat(b"/cycle"), Err(Errno::ENOENT)));
 
         let unknown = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
         let mut journal = OverlayJournal::open(unknown.clone(), base_digest).unwrap();

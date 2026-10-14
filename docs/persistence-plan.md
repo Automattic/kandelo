@@ -96,9 +96,8 @@ already accepted dirty blocks flush. This bounds the active tail even if
 compaction repeatedly fails. Fixed-overwrite compaction now copies records
 without retaining the target block map, then scans the compacted journal with
 bounded buffers to write its sorted checkpoint sidecar.
-Resizable mounts now journal link, rename, and unlink of existing
-non-directory image entries. Other namespace mutations remain a separate
-milestone.
+Resizable mounts now journal regular-file, symlink, and directory namespace
+mutations. Metadata and timestamp updates remain a separate milestone.
 
 Boot now checks two optional sealed journal slots (`g0` and `g1`) on Node and
 browser hosts, preferring the highest verified generation. A seal authenticates
@@ -227,13 +226,17 @@ boot validates both before replay. A Rust test creates a sparse file beyond
 generation without allocating the file's logical length. Created files cannot
 retain set-ID mode bits on their unverified bytes. A failed journal write
 does not publish the new inode or name; every byte offset of a torn
-inode-plus-dirent transaction replays both records or neither. Directory creation,
-symlinks, and metadata/timestamp mutations remain nonpersistent. Image
+inode-plus-dirent transaction replays both records or neither. Created
+directories and symlinks also use versioned inode records. Recovery validates
+the final directory graph, rejecting cycles, multiple parents, and non-empty
+orphan directories before publishing it. Guest restart tests create, move, and
+remove a nested directory tree and symlink. Metadata/timestamp mutations
+remain nonpersistent. Image
 snapshot export rejects mounted persistence rather than silently exporting
 stale base bytes; exporting a consistent composed snapshot remains open.
 
-General POSIX replay still needs directory and symlink inode kinds, persistent
-metadata/timestamps, and reclamation of orphaned journal records. Journal
+General POSIX replay still needs persistent metadata/timestamps and
+reclamation of orphaned journal records. Journal
 transactions must publish related directory entries, inode metadata, file
 size, and blocks together; recovery must rebuild the same link counts,
 open-unlinked lifetime, and zero-filled truncate/extend behavior as the live
