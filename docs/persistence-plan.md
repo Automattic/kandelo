@@ -108,12 +108,13 @@ holds a second exclusive Web Lock on the exact journal namespace from before
 worker initialization until `Worker.terminate()` succeeds, including low-level
 callers. A competing same-journal browser kernel fails before opening storage;
 init failure releases the lock, while a failed worker termination retains it
-for a later teardown retry. This does not exclude low-level writers using
-different journal namespaces for the same computer. Replacement publication
-refuses while a page holds the computer lease, but cannot detect such
-unleased writers. Callers must quiesce the old kernel before taking a snapshot
-and both kernels before publication; manifest Web Locks alone do not stop guest
-journal writes.
+for a later teardown retry. Concurrent initialization on one BrowserKernel is
+rejected before it can overwrite the first worker handle. This does not exclude
+low-level writers using different journal namespaces for the same computer.
+Replacement publication refuses while a page holds the computer lease, but
+cannot detect such unleased writers. Callers must quiesce the old kernel before
+taking a snapshot and both kernels before publication; manifest Web Locks alone
+do not stop guest journal writes.
 Later journal-record corruption is still handled by the
 kernel's recovery rules, not by cross-generation fallback. The page does not
 yet orchestrate in-place replacement, abandoned staged generations are not
