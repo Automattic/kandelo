@@ -46,8 +46,9 @@ semantics. Node and browser must expose the same guest-visible behavior.
   publish a generation. The writer coalesces deferred content references into
   extents; the legacy byte-array API still materializes output, and inode-table
   and indirect-block memory scale with image size. An 8 GiB sparse file
-  exceeds the format's per-file block limit, so >RAM snapshot export remains
-  unproven.
+  exceeds the format's per-file block limit. A 772 MiB snapshot now boots
+  under the 768 MiB kernel ceiling on all three browser engines, but this is
+  a narrow acceptance case, not a general memory or performance bound.
 
 The first >RAM acceptance target is deliberately read-only. It proves that
 boot and image reads no longer require an image-sized allocation before
@@ -330,6 +331,16 @@ than 20 extent records while reads across direct and indirect boundaries
 return the expected bytes. Inode-table and indirect-block memory still scale
 with capacity, so >RAM snapshot export remains open rather than a production
 guarantee.
+The constrained-memory positioned-install browser case now exports its
+written 772 MiB-plus image to a separate OPFS snapshot after a clean reboot,
+then reloads the page and boots the snapshot with its chunk integrity
+descriptor but without the source journal. Guest reads verify both the
+ordinary overwrite and the large file's tail write on Chromium, Firefox,
+and WebKit while the kernel ceiling is 768 MiB. The export path does not
+allocate the image-sized output in JavaScript or kernel linear memory;
+the writer's inode table, indirect blocks, rootfs tree, and journal metadata
+still scale with capacity or file count. Peak memory, handoff latency,
+larger-file format limits, and crash-safe snapshot publication remain open.
 Node and browser guest workflows also replace an open created file by rename:
 the displaced descriptor retains its data with link count zero, while the
 replacement file's content and metadata survive a reboot.

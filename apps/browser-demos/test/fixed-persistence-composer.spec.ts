@@ -9,6 +9,7 @@ import { zstdCompressSync } from "node:zlib";
 import { expect, test, type BrowserType, type Page, type TestInfo } from "@playwright/test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
+import type { OpfsImageIntegrity } from "../../../host/src/vfs/opfs-image-reader";
 
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
 const imageModulePath = [
@@ -482,31 +483,51 @@ for (const scenario of [
         const restored = await loadFixedPersistenceImageHandle(name, identity);
         if (restored === null) throw new Error("large image was not published");
         const kernel = new BrowserKernel({ kernelOwnedFs: true, memoryProfile });
+        let state: string;
+        let largeFileSize: number | undefined;
+        let written: string;
         try {
           await kernel.initFromOpfsImage({
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: restored.file,
             experimentalFixedPersistenceName: name,
           });
-          const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
-          const largeFileSize = (await kernel.statVfsPath("/large"))?.size;
+          state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          largeFileSize = (await kernel.statVfsPath("/large"))?.size;
           const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite"]);
           if (await exit !== 0) throw new Error("large-image guest overwrite failed");
           const tailWrite = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "large-tail"]);
           if (await tailWrite.exit !== 0) throw new Error("large-image guest tail write failed");
-          return {
-            name,
-            identity,
-            sourceLength: source.integrity.length,
-            composedLength: composed.imageFile?.length,
-            returnedBytes: composed.imageBytes.byteLength,
-            state,
-            written: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
-            largeFileSize,
-          };
+          written = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
         } finally {
           await kernel.destroy();
         }
+        let snapshotIntegrity: OpfsImageIntegrity | undefined;
+        if (memoryProfile === "constrained") {
+          const snapshotKernel = new BrowserKernel({ kernelOwnedFs: true, memoryProfile });
+          try {
+            await snapshotKernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: restored.file,
+              experimentalFixedPersistenceName: name,
+            });
+            const snapshotFile = await stagingDirectory.getFileHandle(`${name}.snapshot`, { create: true });
+            snapshotIntegrity = await snapshotKernel.exportRootfsImageToFile(snapshotFile);
+          } finally {
+            await snapshotKernel.destroy();
+          }
+        }
+        return {
+          name,
+          identity,
+          sourceLength: source.integrity.length,
+          composedLength: composed.imageFile?.length,
+          returnedBytes: composed.imageBytes.byteLength,
+          state,
+          written,
+          largeFileSize,
+          snapshotIntegrity,
+        };
       }, {
         sourceStageUrl: new URL(`/@fs/${sourceStagePath}`, baseURL).href,
         composerUrl: new URL(`/@fs/${composerPath}`, baseURL).href,
@@ -522,13 +543,19 @@ for (const scenario of [
       expect(result.state).toBe("large-image");
       expect(result.written).toBe("XYrge-image");
       expect(result.largeFileSize).toBe(scenario.fileBytes);
+      if (scenario.memoryProfile === "constrained") {
+        expect(result.snapshotIntegrity?.length).toBeGreaterThan(scenario.budgetBytes);
+      }
       await page.reload();
-      const recovered = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, name, identity, memoryProfile }) => {
+      const recovered = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, name, identity, memoryProfile, snapshotIntegrity }) => {
         const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
         const { BrowserKernel } = await import(browserKernelUrl);
         const restored = await loadFixedPersistenceImageHandle(name, identity);
         if (restored === null) throw new Error("large image was not retained across page reload");
         const kernel = new BrowserKernel({ kernelOwnedFs: true, memoryProfile });
+        let state: string;
+        let largeFileSize: number | undefined;
+        let tailVerified: boolean;
         try {
           await kernel.initFromOpfsImage({
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
@@ -536,14 +563,32 @@ for (const scenario of [
             experimentalFixedPersistenceName: name,
           });
           const tailVerify = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
-          return {
-            state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
-            largeFileSize: (await kernel.statVfsPath("/large"))?.size,
-            tailVerified: await tailVerify.exit === 0,
-          };
+          state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          largeFileSize = (await kernel.statVfsPath("/large"))?.size;
+          tailVerified = await tailVerify.exit === 0;
         } finally {
           await kernel.destroy();
         }
+        let snapshotState: string | undefined;
+        let snapshotTailVerified: boolean | undefined;
+        if (snapshotIntegrity !== undefined) {
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+          const snapshotFile = await directory.getFileHandle(`${name}.snapshot`);
+          const snapshotKernel = new BrowserKernel({ kernelOwnedFs: true, memoryProfile });
+          try {
+            await snapshotKernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: snapshotFile,
+              integrity: snapshotIntegrity,
+            });
+            snapshotState = new TextDecoder().decode(await snapshotKernel.readFileFromVfs("/state"));
+            const verify = await snapshotKernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
+            snapshotTailVerified = await verify.exit === 0;
+          } finally {
+            await snapshotKernel.destroy();
+          }
+        }
+        return { state, largeFileSize, tailVerified, snapshotState, snapshotTailVerified };
       }, {
         persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
         browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
@@ -551,8 +596,15 @@ for (const scenario of [
         name: result.name,
         identity: result.identity,
         memoryProfile: scenario.memoryProfile,
+        snapshotIntegrity: result.snapshotIntegrity,
       });
-      expect(recovered).toEqual({ state: "XYrge-image", largeFileSize: scenario.fileBytes, tailVerified: true });
+      expect(recovered).toEqual({
+        state: "XYrge-image",
+        largeFileSize: scenario.fileBytes,
+        tailVerified: true,
+        snapshotState: scenario.memoryProfile === "constrained" ? "XYrge-image" : undefined,
+        snapshotTailVerified: scenario.memoryProfile === "constrained" ? true : undefined,
+      });
     } finally {
       await context.close();
       rmSync(userDataDir, { recursive: true, force: true });
