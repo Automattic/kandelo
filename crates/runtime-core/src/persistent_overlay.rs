@@ -91,6 +91,10 @@ impl OverlayState {
         self.entries.get(key).map(|value| value.as_deref())
     }
 
+    pub fn metadata_entries(&self) -> impl Iterator<Item = (&OverlayKey, Option<&[u8]>)> {
+        self.entries.iter().map(|(key, value)| (key, value.as_deref()))
+    }
+
     pub fn file_size(&self, inode: u64, base_size: u64) -> Result<u64, Errno> {
         if inode == 0 {
             return Err(Errno::EINVAL);
@@ -388,6 +392,9 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     {
         let max_zero_block = i64::MAX as u64 / FILE_BLOCK_BYTES as u64 + 1;
         for (key, value) in &self.state.entries {
+            if matches!(key, OverlayKey::Dirent { .. }) {
+                continue;
+            }
             let value = value
                 .as_ref()
                 .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())

@@ -1,4 +1,6 @@
+#include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -7,6 +9,34 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    int rename_state = argc >= 2 && strcmp(argv[1], "rename-state") == 0;
+    int verify_rename = argc >= 2 && strcmp(argv[1], "verify-rename") == 0;
+    int unlink_state = argc >= 2 && strcmp(argv[1], "unlink-state") == 0;
+    int verify_unlink = argc >= 2 && strcmp(argv[1], "verify-unlink") == 0;
+    if (rename_state || verify_rename || unlink_state || verify_unlink) {
+        if (rename_state && rename("/state", "/moved") != 0) return 32;
+        if (verify_unlink) {
+            if (open("/state", O_RDONLY) >= 0 || errno != ENOENT) return 33;
+            if (open("/moved", O_RDONLY) >= 0 || errno != ENOENT) return 34;
+            return 0;
+        }
+        if (open("/state", O_RDONLY) >= 0 || errno != ENOENT) return 35;
+        int fd = open("/moved", O_RDONLY);
+        if (fd < 0) return 36;
+        off_t offset = 8LL * 1024 * 1024 * 1024 + 7;
+        struct stat metadata;
+        if (fstat(fd, &metadata) != 0 || metadata.st_size != offset + 4) return 37;
+        unsigned char bytes[4];
+        if (pread(fd, bytes, sizeof(bytes), offset) != (ssize_t)sizeof(bytes)) return 38;
+        if (memcmp(bytes, "\0\0\0\0", sizeof(bytes)) != 0) return 39;
+        if (unlink_state) {
+            if (unlink("/moved") != 0) return 40;
+            if (open("/moved", O_RDONLY) >= 0 || errno != ENOENT) return 41;
+            if (pread(fd, bytes, sizeof(bytes), offset) != (ssize_t)sizeof(bytes)) return 42;
+            if (memcmp(bytes, "\0\0\0\0", sizeof(bytes)) != 0) return 43;
+        }
+        return close(fd) == 0 ? 0 : 44;
+    }
     int resize = argc >= 2 && strcmp(argv[1], "resize") == 0;
     int verify_resize = argc >= 2 && strcmp(argv[1], "verify-resize") == 0;
     int verify_zero = argc >= 2 && strcmp(argv[1], "verify-zero") == 0;

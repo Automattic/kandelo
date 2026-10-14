@@ -75,12 +75,12 @@ function expandJournalToCompactionThreshold(path: string): number {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
-  it.skipIf(guestProgramPath === null)("reopens a guest's 8 GiB sparse growth and zeroed regrowth", async () => {
+  it.skipIf(guestProgramPath === null)("reopens sparse growth, zeroed regrowth, rename, and unlink", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-rootfs-"));
     const path = join(directory, "machine.journal");
     try {
       const image = await makeImage("abcdefgh");
-      for (const mode of ["resize", "verify-resize", "verify-zero"] as const) {
+      for (const mode of ["resize", "verify-resize", "verify-zero", "rename-state", "verify-rename", "unlink-state", "verify-unlink"] as const) {
         const host = await boot(image, path, true);
         try {
           const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
