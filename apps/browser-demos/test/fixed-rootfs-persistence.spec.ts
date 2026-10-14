@@ -260,6 +260,91 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
   }
 });
 
+test("browser replays a guest write larger than its bounded dirty cache", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(90_000);
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-fixed-large-browser-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      const largeWriteBytes = 2 * 1024 * 1024;
+      const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+      filesystem.mkdir("/bin", 0o755);
+      filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+      filesystem.writeFile("/large", new Uint8Array(largeWriteBytes + 4096), 0o644);
+      const image = await filesystem.saveImage();
+      const kernelUrl = new URL("/fixed-large-kernel.wasm", baseURL).href;
+      const imageUrl = new URL("/fixed-large-image.vfs", baseURL).href;
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const moduleUrl = new URL(`/@fs/${browserKernelPath}`, baseURL).href;
+      const name = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const name = `fixed-large-${crypto.randomUUID()}`;
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+        const writer = await imageFile.createWritable();
+        await writer.write(await (await fetch(imageUrl)).arrayBuffer());
+        await writer.close();
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: imageFile,
+            experimentalFixedPersistenceName: name,
+          });
+          const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "large"]);
+          if (await exit !== 0) throw new Error("large guest write failed");
+        } finally {
+          await kernel.destroy();
+        }
+        return name;
+      }, { moduleUrl, kernelUrl, imageUrl });
+      await page.reload();
+      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, name, largeWriteBytes }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const imageFile = await directory.getFileHandle(`${name}.base`);
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: imageFile,
+            experimentalFixedPersistenceName: name,
+          });
+          const actual = await kernel.readFileFromVfs("/large");
+          if (!actual) throw new Error("large file missing");
+          for (let index = 0; index < largeWriteBytes; index++) {
+            if (actual[index + 13] !== (((index / 4096) ^ index) & 0xff)) {
+              return { size: actual.byteLength, mismatch: index };
+            }
+          }
+          return { size: actual.byteLength, mismatch: null };
+        } finally {
+          await kernel.destroy();
+        }
+      }, { moduleUrl, kernelUrl, name, largeWriteBytes });
+      expect(result).toEqual({ size: largeWriteBytes + 4096, mismatch: null });
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
 test("browser termination loses unsynced writes without damaging the last durable image", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));

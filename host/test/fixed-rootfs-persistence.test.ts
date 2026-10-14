@@ -22,13 +22,16 @@ const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-over
 const guestProgramName = "/bin/persistence-overwrite";
 const encoder = new TextEncoder();
 
-async function makeImage(state: string): Promise<Uint8Array> {
+const largeWriteBytes = 2 * 1024 * 1024;
+
+async function makeImage(state: string, includeLargeFile = false): Promise<Uint8Array> {
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   if (guestProgramPath !== null) {
     filesystem.mkdir("/bin", 0o755);
     filesystem.writeFile(guestProgramName, new Uint8Array(readFileSync(guestProgramPath)), 0o755);
   }
   filesystem.writeFile("/state", encoder.encode(state), 0o644);
+  if (includeLargeFile) filesystem.writeFile("/large", new Uint8Array(largeWriteBytes + 4096), 0o644);
   return filesystem.saveImage();
 }
 
@@ -205,6 +208,35 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         expect(new TextDecoder().decode((await recovered.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
       } finally {
         await recovered.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it.skipIf(guestProgramPath === null)("replays a guest write larger than the bounded dirty cache", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-large-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh", true);
+      const first = await boot(image, path);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "large"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      const reopened = await boot(image, path);
+      try {
+        const actual = await reopened.readFileFromVfs("/large");
+        expect(actual?.byteLength).toBe(largeWriteBytes + 4096);
+        const expected = new Uint8Array(largeWriteBytes + 4096);
+        for (let index = 0; index < largeWriteBytes; index++) {
+          expected[index + 13] = ((index / 4096) ^ index) & 0xff;
+        }
+        expect(actual).toEqual(expected);
+      } finally {
+        await reopened.destroy();
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });

@@ -53,6 +53,10 @@ acknowledged chunk in flight, verifies the stored bytes, and publishes only
 from the boot that still owns the session, under one exclusive lock. The next
 installation reclaims abandoned generation files. Reopening uses positioned OPFS
 reads and a bounded clean cache; fixed overwrites use a bounded dirty cache.
+Writes spanning more than 64 cache blocks are split into bounded chunks;
+later writeback failure returns a short count rather than claiming the entire
+write succeeded. A 2 MiB guest `pwrite` followed by `fsync` survives a Node
+worker restart and Chromium, Firefox, and WebKit page reloads.
 For a first install from a direct VFS URL, the page now stages bounded
 chunks into a temporary OPFS file and the image writer reads that file through
 positioned calls. Zstd sources are decoded block-by-block with at most a
