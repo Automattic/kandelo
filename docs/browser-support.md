@@ -256,7 +256,9 @@ pipe pair.
   bounded 4 MiB cache; boot verifies its 1 MiB chunk digests without a
   whole-image JavaScript buffer. The 256 KiB dirty-block cache holds
   unsynced fixed-size overwrites; `fsync`, `fdatasync`, eviction, and graceful
-  destroy flush it. Browser termination loses unsynced writes without changing
+  destroy flush it. Larger guest writes are split into cache-sized chunks and
+  may return a short count after a later writeback failure. Browser termination
+  loses unsynced writes without changing
   the last durable image; an abrupt crash can do the same. Image capacity,
   runtime memory, and OPFS quota are distinct limits. A 772 MiB decoded image
   boots under the constrained 768 MiB kernel ceiling in browser tests; this
