@@ -318,6 +318,35 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 180_000);
 
+  it.skipIf(guestProgramPath === null)("compacts resizable data without retaining a closed orphan", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-orphan-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh", true, 32 * 1024 * 1024);
+      const first = await boot(image, path, true);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "orphan-many"]);
+        expect(await exit).toBe(0);
+        await vi.waitFor(() => expect(readFileSync(`${path}.g0.seal`).byteLength).toBeGreaterThan(96), {
+          timeout: 60_000,
+          interval: 100,
+        });
+        expect(readFileSync(`${path}.g0.index`).readBigUInt64LE(80)).toBe(8192n);
+      } finally {
+        await first.destroy();
+      }
+      const reopened = await boot(image, path, true);
+      try {
+        const { exit } = await reopened.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-orphan-many"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 180_000);
+
   it.skipIf(guestProgramPath === null)("compacts an indexed journal twice while guests keep writing", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-live-"));
     const path = join(directory, "machine.journal");
