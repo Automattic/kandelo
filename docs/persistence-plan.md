@@ -244,13 +244,16 @@ on fsync, graceful shutdown, or compaction. Each sync scans resident rootfs
 inodes for modified content, so its cost still needs measurement on a large
 file-count image. Session-injected files such as the browser CA bundle are
 not journal-backed and are deliberately excluded from timestamp writeback;
-they are recreated at boot. Image
+they are recreated at boot. Namespace transactions now include parent
+directory mtime/ctime and affected inode ctime records. Restart tests cover
+create, link, rename, unlink, symlink, mkdir, and rmdir; a guest checks
+directory mtimes after reopening on Node and all three browser engines. Image
 snapshot export rejects mounted persistence rather than silently exporting
 stale base bytes; exporting a consistent composed snapshot remains open.
 
 General POSIX replay still needs reclamation of orphaned journal records and
-complete metadata timestamp coverage for namespace operations. Journal
-transactions must publish related directory entries, inode metadata, file
-size, and blocks together; recovery must rebuild the same link counts,
-open-unlinked lifetime, and zero-filled truncate/extend behavior as the live
+broader conformance of metadata, open-unlinked lifetime, and namespace edge
+cases. Journal transactions must continue publishing related directory
+entries, inode metadata, file size, and blocks together; recovery must rebuild
+the same link counts and zero-filled truncate/extend behavior as the live
 kernel.

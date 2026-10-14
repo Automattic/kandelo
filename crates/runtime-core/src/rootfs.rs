@@ -686,6 +686,114 @@ impl PersistentInodeMetadata {
     }
 }
 
+#[derive(Clone, Copy)]
+enum NamespaceTimestamp {
+    Modified,
+    Changed,
+}
+
+struct PreparedPersistentMetadataChange {
+    index: u32,
+    ino: u64,
+    kind: u8,
+    target: Vec<u8>,
+    metadata: PersistentInodeMetadata,
+}
+
+impl PreparedPersistentMetadataChange {
+    fn from_inode(index: u32, inode: &Inode) -> Result<Self, Errno> {
+        let kind = match &inode.kind {
+            InodeKind::PersistentRegular => 1,
+            InodeKind::Dir(_) => 2,
+            InodeKind::Symlink(_) => 3,
+            InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. } | InodeKind::Special(_) => 4,
+            InodeKind::Regular(_) => return Err(Errno::EROFS),
+        };
+        let target = match &inode.kind {
+            InodeKind::Symlink(target) => target.clone(),
+            _ => Vec::new(),
+        };
+        Ok(Self {
+            index,
+            ino: inode.ino,
+            kind,
+            target,
+            metadata: PersistentInodeMetadata::from_inode(inode),
+        })
+    }
+
+    fn mutation(&self, journal: &PersistentJournal) -> Result<Mutation, Errno> {
+        let stored_kind = match journal.state().lookup(&OverlayKey::Inode(self.ino)) {
+            Some(Some(bytes)) if bytes.len() >= 2 => bytes[1],
+            Some(_) => return Err(Errno::EIO),
+            None => 4,
+        };
+        if (stored_kind != 4 && stored_kind != self.kind)
+            || (stored_kind == 4 && self.kind == 1)
+        {
+            return Err(Errno::EIO);
+        }
+        let record_kind = if stored_kind == 4 { 4 } else { self.kind };
+        let value = encode_inode_record(
+            record_kind,
+            if record_kind == 3 { &self.target } else { &[] },
+            self.metadata,
+        );
+        Ok(Mutation::Put { key: OverlayKey::Inode(self.ino), value })
+    }
+
+    fn apply(self, state: &mut RootfsState) -> Result<(), Errno> {
+        let inode = state.get_mut(self.index).ok_or(Errno::EIO)?;
+        self.metadata.apply(inode);
+        inode.synced_content_gen = inode.content_gen;
+        Ok(())
+    }
+}
+
+fn commit_persistent_namespace(
+    mutations: &[Mutation],
+    timestamps: &[(u32, NamespaceTimestamp)],
+) -> Result<(), Errno> {
+    let (sec, nsec) = now();
+    let changes = ROOTFS.with(|state| {
+        let mut changes: Vec<PreparedPersistentMetadataChange> = Vec::new();
+        for &(index, stamp) in timestamps {
+            if let Some(change) = changes.iter_mut().find(|change| change.index == index) {
+                if matches!(stamp, NamespaceTimestamp::Modified) {
+                    change.metadata.mtime_sec = sec;
+                    change.metadata.mtime_nsec = nsec;
+                }
+                continue;
+            }
+            let mut change = PreparedPersistentMetadataChange::from_inode(
+                index,
+                state.get(index).ok_or(Errno::EIO)?,
+            )?;
+            if matches!(stamp, NamespaceTimestamp::Modified) {
+                change.metadata.mtime_sec = sec;
+                change.metadata.mtime_nsec = nsec;
+            }
+            change.metadata.ctime_sec = sec;
+            change.metadata.ctime_nsec = nsec;
+            changes.push(change);
+        }
+        Ok::<_, Errno>(changes)
+    })?;
+    let mut active = PERSISTENT_ROOTFS.lock();
+    let journal = &mut active.as_mut().ok_or(Errno::EIO)?.journal;
+    let mut transaction = mutations.to_vec();
+    for change in &changes {
+        transaction.push(change.mutation(journal)?);
+    }
+    journal.commit(&transaction)?;
+    ROOTFS.with(|state| {
+        for change in changes {
+            change.apply(state)?;
+        }
+        Ok::<_, Errno>(())
+    })
+}
+
 fn encode_inode_record(kind: u8, target: &[u8], metadata: PersistentInodeMetadata) -> Vec<u8> {
     let mut value = Vec::with_capacity(PERSISTENT_REGULAR_RECORD_BYTES + target.len());
     value.extend_from_slice(&[1, kind, 0, 0]);
@@ -3134,12 +3242,7 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                     value: inode.ino.to_le_bytes().to_vec(),
                 },
             ];
-            PERSISTENT_ROOTFS
-                .lock()
-                .as_mut()
-                .ok_or(Errno::EIO)?
-                .journal
-                .commit(&mutations)?;
+            commit_persistent_namespace(&mutations, &[(parent, NamespaceTimestamp::Modified)])?;
             return ROOTFS.with(|state| {
                 state.bump_next_ino(inode.ino);
                 let index = state.insert_inode(inode);
@@ -4431,7 +4534,7 @@ pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
             let inode = Inode::new(InodeKind::Dir(BTreeMap::new()), mode & 0o7777, uid, gid, 2, ino);
             Ok::<_, Errno>((parent, last.ok_or(Errno::ENOENT)?.to_vec(), state.get(parent).ok_or(Errno::EIO)?.ino, inode))
         })?;
-        PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.commit(&[
+        commit_persistent_namespace(&[
             Mutation::Put {
                 key: OverlayKey::Inode(inode.ino),
                 value: encode_persistent_inode(&inode),
@@ -4440,7 +4543,7 @@ pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
                 key: OverlayKey::Dirent { parent: parent_ino, name: name.clone() },
                 value: inode.ino.to_le_bytes().to_vec(),
             },
-        ])?;
+        ], &[(parent, NamespaceTimestamp::Modified)])?;
         return ROOTFS.with(|state| {
             state.bump_next_ino(inode.ino);
             let index = state.insert_inode(inode);
@@ -4489,7 +4592,7 @@ pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
         return Err(Errno::EBUSY); // cannot remove the root
     }
     if resizable_persistence_enabled() {
-        let key = ROOTFS.with(|state| {
+        let (parent, key) = ROOTFS.with(|state| {
             let (parent, last, target) = state.resolve(&comps)?;
             let target = target.ok_or(Errno::ENOENT)?;
             match &state.get(target).ok_or(Errno::ENOENT)?.kind {
@@ -4497,12 +4600,12 @@ pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
                 InodeKind::Dir(_) => return Err(Errno::ENOTEMPTY),
                 _ => return Err(Errno::ENOTDIR),
             }
-            Ok::<_, Errno>(OverlayKey::Dirent {
+            Ok::<_, Errno>((parent, OverlayKey::Dirent {
                 parent: state.get(parent).ok_or(Errno::EIO)?.ino,
                 name: last.ok_or(Errno::ENOENT)?.to_vec(),
-            })
+            }))
         })?;
-        PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.commit(&[Mutation::Delete { key }])?;
+        commit_persistent_namespace(&[Mutation::Delete { key }], &[(parent, NamespaceTimestamp::Modified)])?;
     } else {
         reject_fixed_persistence_mutation()?;
     }
@@ -4539,23 +4642,21 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
         return Err(Errno::EISDIR);
     }
     if resizable_persistence_enabled() {
-        let key = ROOTFS.with(|state| {
+        let (parent, target, key) = ROOTFS.with(|state| {
             let (parent, last, target) = state.resolve(&comps)?;
             let target = target.ok_or(Errno::ENOENT)?;
             if state.get(target).ok_or(Errno::ENOENT)?.is_dir() {
                 return Err(Errno::EISDIR);
             }
-            Ok::<_, Errno>(OverlayKey::Dirent {
+            Ok::<_, Errno>((parent, target, OverlayKey::Dirent {
                 parent: state.get(parent).ok_or(Errno::EIO)?.ino,
                 name: last.ok_or(Errno::ENOENT)?.to_vec(),
-            })
+            }))
         })?;
-        PERSISTENT_ROOTFS
-            .lock()
-            .as_mut()
-            .ok_or(Errno::EIO)?
-            .journal
-            .commit(&[Mutation::Delete { key }])?;
+        commit_persistent_namespace(
+            &[Mutation::Delete { key }],
+            &[(parent, NamespaceTimestamp::Modified), (target, NamespaceTimestamp::Changed)],
+        )?;
     } else {
         reject_fixed_persistence_mutation()?;
     }
@@ -4622,7 +4723,7 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
             let inode_number = state.get(old_target).ok_or(Errno::EIO)?.ino;
             let old_parent_number = state.get(old_parent).ok_or(Errno::EIO)?.ino;
             let new_parent_number = state.get(new_parent).ok_or(Errno::EIO)?.ino;
-            Ok(Some([
+            Ok(Some(([
                 Mutation::Delete {
                     key: OverlayKey::Dirent {
                         parent: old_parent_number,
@@ -4636,15 +4737,21 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
                     },
                     value: inode_number.to_le_bytes().to_vec(),
                 },
-            ]))
+            ], old_parent, new_parent, old_target, new_existing)))
         })?;
-        if let Some(mutations) = mutations {
-            PERSISTENT_ROOTFS
-                .lock()
-                .as_mut()
-                .ok_or(Errno::EIO)?
-                .journal
-                .commit(&mutations)?;
+        if let Some((mutations, old_parent, new_parent, source, replaced)) = mutations {
+            let mut timestamps = vec![
+                (old_parent, NamespaceTimestamp::Modified),
+                (new_parent, NamespaceTimestamp::Modified),
+                (source, NamespaceTimestamp::Changed),
+            ];
+            if let Some(replaced) = replaced {
+                timestamps.push((replaced, NamespaceTimestamp::Changed));
+            }
+            commit_persistent_namespace(
+                &mutations,
+                &timestamps,
+            )?;
         }
     } else {
         reject_fixed_persistence_mutation()?;
@@ -4728,7 +4835,7 @@ pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
         return Err(Errno::EEXIST); // cannot link over the root
     }
     if resizable_persistence_enabled() {
-        let mutation = ROOTFS.with(|state| {
+        let (source, new_parent, mutation) = ROOTFS.with(|state| {
             let old_idx = {
                 let root = state.mount_root();
                 state.walk(root, &old_comps)?
@@ -4745,20 +4852,18 @@ pub fn link(old: &[u8], new: &[u8]) -> Result<(), Errno> {
             if new_existing.is_some() {
                 return Err(Errno::EEXIST);
             }
-            Ok::<_, Errno>(Mutation::Put {
+            Ok::<_, Errno>((old_idx, new_parent, Mutation::Put {
                 key: OverlayKey::Dirent {
                     parent: state.get(new_parent).ok_or(Errno::EIO)?.ino,
                     name: new_name.ok_or(Errno::ENOENT)?.to_vec(),
                 },
                 value: inode_number.to_le_bytes().to_vec(),
-            })
+            }))
         })?;
-        PERSISTENT_ROOTFS
-            .lock()
-            .as_mut()
-            .ok_or(Errno::EIO)?
-            .journal
-            .commit(&[mutation])?;
+        commit_persistent_namespace(
+            &[mutation],
+            &[(new_parent, NamespaceTimestamp::Modified), (source, NamespaceTimestamp::Changed)],
+        )?;
     } else {
         reject_fixed_persistence_mutation()?;
     }
@@ -4818,48 +4923,22 @@ fn update_persistent_inode_metadata(
     index: u32,
     update: impl FnOnce(&mut PersistentInodeMetadata) -> Result<(), Errno>,
 ) -> Result<(), Errno> {
-    let (ino, kind, target, mut metadata) = ROOTFS.with(|state| {
-        let inode = state.get(index).ok_or(Errno::ENOENT)?;
-        let kind = match &inode.kind {
-            InodeKind::PersistentRegular => 1,
-            InodeKind::Dir(_) => 2,
-            InodeKind::Symlink(_) => 3,
-            InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. } | InodeKind::Special(_) => 4,
-            InodeKind::Regular(_) => return Err(Errno::EROFS),
-        };
-        let target = match &inode.kind {
-            InodeKind::Symlink(target) => target.clone(),
-            _ => Vec::new(),
-        };
-        Ok::<_, Errno>((inode.ino, kind, target, PersistentInodeMetadata::from_inode(inode)))
+    let mut change = ROOTFS.with(|state| {
+        PreparedPersistentMetadataChange::from_inode(
+            index,
+            state.get(index).ok_or(Errno::ENOENT)?,
+        )
     })?;
-    update(&mut metadata)?;
-    if metadata.mode & !0o7777 != 0 || (kind == 1 || kind == 4) && metadata.mode & 0o6000 != 0 {
+    update(&mut change.metadata)?;
+    if change.metadata.mode & !0o7777 != 0
+        || (change.kind == 1 || change.kind == 4) && change.metadata.mode & 0o6000 != 0
+    {
         return Err(Errno::EPERM);
     }
     let mut active = PERSISTENT_ROOTFS.lock();
     let journal = &mut active.as_mut().ok_or(Errno::EIO)?.journal;
-    let stored_kind = match journal.state().lookup(&OverlayKey::Inode(ino)) {
-        Some(Some(bytes)) if bytes.len() >= 2 => bytes[1],
-        Some(_) => return Err(Errno::EIO),
-        None => 4,
-    };
-    if stored_kind == 4 && kind == 1 {
-        return Err(Errno::EIO);
-    }
-    let record_kind = if stored_kind == 4 { 4 } else { kind };
-    if stored_kind != 4 && stored_kind != kind {
-        return Err(Errno::EIO);
-    }
-    let value = encode_inode_record(record_kind, if record_kind == 3 { &target } else { &[] }, metadata);
-    journal.commit(&[Mutation::Put { key: OverlayKey::Inode(ino), value }])?;
-    ROOTFS.with(|state| {
-        let inode = state.get_mut(index).ok_or(Errno::EIO)?;
-        metadata.apply(inode);
-        inode.synced_content_gen = inode.content_gen;
-        Ok::<_, Errno>(())
-    })?;
-    Ok(())
+    journal.commit(&[change.mutation(journal)?])?;
+    ROOTFS.with(|state| change.apply(state))
 }
 
 /// chmod a rootfs path (permission bits only).
@@ -5031,7 +5110,7 @@ pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(),
             Ok::<_, Errno>((parent, last.ok_or(Errno::ENOENT)?.to_vec(), state.get(parent).ok_or(Errno::EIO)?.ino, inode))
         })?;
         let (parent, name, parent_ino, inode) = creation;
-        PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.commit(&[
+        commit_persistent_namespace(&[
             Mutation::Put {
                 key: OverlayKey::Inode(inode.ino),
                 value: encode_persistent_inode(&inode),
@@ -5040,7 +5119,7 @@ pub fn symlink(target: &[u8], linkpath: &[u8], uid: u32, gid: u32) -> Result<(),
                 key: OverlayKey::Dirent { parent: parent_ino, name: name.clone() },
                 value: inode.ino.to_le_bytes().to_vec(),
             },
-        ])?;
+        ], &[(parent, NamespaceTimestamp::Modified)])?;
         return ROOTFS.with(|state| {
             state.bump_next_ino(inode.ino);
             let index = state.insert_inode(inode);
@@ -9454,6 +9533,7 @@ mod tests {
         )
         .unwrap();
         let next_ino = ROOTFS.with(|state| state.next_ino);
+        let root_before = lstat(b"/").unwrap();
         fail_writes.store(true, Ordering::SeqCst);
         assert_eq!(
             open(b"/not-created", O_CREAT | O_RDWR, 0o644, 0, 0),
@@ -9461,11 +9541,105 @@ mod tests {
         );
         assert!(matches!(lstat(b"/not-created"), Err(Errno::ENOENT)));
         assert_eq!(ROOTFS.with(|state| state.next_ino), next_ino);
+        let root_after = lstat(b"/").unwrap();
+        assert_eq!((root_after.st_mtime_sec, root_after.st_mtime_nsec), (root_before.st_mtime_sec, root_before.st_mtime_nsec));
+        assert_eq!((root_after.st_ctime_sec, root_after.st_ctime_nsec), (root_before.st_ctime_sec, root_before.st_ctime_nsec));
 
         reset();
         load_image(image.len() as u64, &mut image_bytes).unwrap();
         enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
         assert!(matches!(lstat(b"/not-created"), Err(Errno::ENOENT)));
+        let root_reopened = lstat(b"/").unwrap();
+        assert_eq!((root_reopened.st_mtime_sec, root_reopened.st_mtime_nsec), (root_before.st_mtime_sec, root_before.st_mtime_nsec));
+    }
+
+    #[test]
+    fn resizable_persistence_replays_namespace_timestamps() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let reopen = || {
+            reset();
+            load_image(image.len() as u64, image_host(&image)).unwrap();
+            enable_resizable_persistence(Box::new(storage.clone()), base_digest).unwrap();
+        };
+        let times = |path: &[u8]| {
+            let stat = lstat(path).unwrap();
+            (stat.st_mtime_sec, stat.st_mtime_nsec, stat.st_ctime_sec, stat.st_ctime_nsec)
+        };
+        reopen();
+        utimensat(b"/", 10, 1, 11, 2, 12, 3).unwrap();
+
+        set_now(2_000, 1);
+        mkdir(b"/a", 0o755, 0, 0).unwrap();
+        assert_eq!(times(b"/"), (2_000, 1, 2_000, 1));
+        reopen();
+        assert_eq!(times(b"/"), (2_000, 1, 2_000, 1));
+
+        set_now(2_001, 2);
+        let handle = open(b"/a/file", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        release_handle(handle);
+        assert_eq!(times(b"/a"), (2_001, 2, 2_001, 2));
+        reopen();
+        assert_eq!(times(b"/a"), (2_001, 2, 2_001, 2));
+
+        set_now(2_002, 3);
+        link(b"/a/file", b"/alias").unwrap();
+        assert_eq!(times(b"/"), (2_002, 3, 2_002, 3));
+        assert_eq!(times(b"/a/file").2, 2_002);
+        reopen();
+        assert_eq!(times(b"/"), (2_002, 3, 2_002, 3));
+        assert_eq!(times(b"/alias").2, 2_002);
+
+        let replaced = open(b"/a/moved", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        release_handle(replaced);
+        link(b"/a/moved", b"/a/retained").unwrap();
+        set_now(2_003, 4);
+        rename(b"/alias", b"/a/moved").unwrap();
+        assert_eq!(times(b"/"), (2_003, 4, 2_003, 4));
+        assert_eq!(times(b"/a"), (2_003, 4, 2_003, 4));
+        assert_eq!(times(b"/a/file").2, 2_003);
+        assert_eq!(times(b"/a/retained").2, 2_003);
+        reopen();
+        assert_eq!(times(b"/"), (2_003, 4, 2_003, 4));
+        assert_eq!(times(b"/a"), (2_003, 4, 2_003, 4));
+        assert_eq!(times(b"/a/moved").2, 2_003);
+        assert_eq!(times(b"/a/retained").2, 2_003);
+
+        set_now(2_004, 5);
+        unlink(b"/a/moved").unwrap();
+        assert_eq!(times(b"/a"), (2_004, 5, 2_004, 5));
+        assert_eq!(times(b"/a/file").2, 2_004);
+        reopen();
+        assert_eq!(times(b"/a"), (2_004, 5, 2_004, 5));
+        assert_eq!(times(b"/a/file").2, 2_004);
+
+        set_now(2_005, 6);
+        symlink(b"file", b"/a/link", 0, 0).unwrap();
+        assert_eq!(times(b"/a"), (2_005, 6, 2_005, 6));
+        reopen();
+        assert_eq!(times(b"/a"), (2_005, 6, 2_005, 6));
+
+        set_now(2_006, 7);
+        unlink(b"/a/link").unwrap();
+        unlink(b"/a/retained").unwrap();
+        assert_eq!(times(b"/a"), (2_006, 7, 2_006, 7));
+        reopen();
+        assert_eq!(times(b"/a"), (2_006, 7, 2_006, 7));
+
+        set_now(2_007, 8);
+        unlink(b"/a/file").unwrap();
+        assert_eq!(times(b"/a"), (2_007, 8, 2_007, 8));
+        reopen();
+        assert_eq!(times(b"/a"), (2_007, 8, 2_007, 8));
+
+        set_now(2_008, 9);
+        rmdir(b"/a").unwrap();
+        assert_eq!(times(b"/"), (2_008, 9, 2_008, 9));
+        reopen();
+        assert_eq!(times(b"/"), (2_008, 9, 2_008, 9));
+        assert!(matches!(lstat(b"/a"), Err(Errno::ENOENT)));
     }
 
     #[test]
