@@ -156,6 +156,10 @@ The fixed-overwrite checkpoint is streamed, but its worst-case memory and
 handoff pause duration have not been validated for an actually large writable
 image. General POSIX mutation replay also needs a checkpoint design for
 metadata, not just file blocks.
+Indexed boot validates block references against a temporary sorted table of
+eligible image-file sizes, rather than walking every rootfs inode for each
+checkpoint block. The table uses memory proportional to eligible files, not
+changed blocks; large-index boot time and peak memory remain unmeasured.
 An opt-in journal open path can now replay inode, size, and dirent records
 from an authenticated indexed prefix using a transaction-sized buffer while
 leaving its file-block map in the checkpoint. It checks the prefix sequence
