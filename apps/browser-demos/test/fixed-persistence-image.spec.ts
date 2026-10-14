@@ -1,11 +1,23 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const modulePath = resolve(fileURLToPath(new URL(".", import.meta.url)), "../pages/kandelo/kernel-host/fixed-persistence-image.ts");
 const streamWorkerPath = resolve(fileURLToPath(new URL(".", import.meta.url)), "fixtures/fixed-persistence-stream-worker.ts");
+const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
+const imageModulePath = [
+  resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm"),
+  resolve(repoRoot, "target/wasm32-unknown-unknown/release/kandelo_image_module.wasm"),
+].find((path) => existsSync(path) && WebAssembly.Module.imports(new WebAssembly.Module(readFileSync(path))).length === 0) ?? null;
+const kernelPath = tryResolveBinary("kernel.wasm") ?? [
+  resolve(repoRoot, "target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"),
+].find(existsSync) ?? null;
+const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
+const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
 
 test("experimental computer keeps exact base bytes and rejects damaged images", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
@@ -529,6 +541,23 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
 for (const cut of ["before", "after"] as const) {
 test(`closing a tab ${cut} replacement manifest commit selects the right generation`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
+  test.skip(imageModulePath === null || kernelPath === null || guestProgramPath === null,
+    "kernel, image writer, and guest artifacts are required");
+  const imageModule = new Uint8Array(readFileSync(imageModulePath!));
+  const guestProgram = new Uint8Array(readFileSync(guestProgramPath!));
+  const makeImage = async (state: string) => {
+    const filesystem = KandeloImageFs.create(imageModule);
+    filesystem.setImageCapacity(8 * 1024 * 1024);
+    filesystem.mkdir("/bin", 0o755);
+    filesystem.writeFile("/bin/persistence-overwrite", guestProgram, 0o755);
+    filesystem.writeFile("/state", new TextEncoder().encode(state), 0o644);
+    return filesystem.saveImage();
+  };
+  const previousImage = await makeImage("abcdefgh");
+  const replacementImage = await makeImage("replacement");
+  const kernelUrl = new URL("/replacement-tab-close-kernel.wasm", baseURL).href;
+  const previousImageUrl = new URL("/replacement-tab-close-previous.vfs", baseURL).href;
+  const replacementImageUrl = new URL("/replacement-tab-close-staged.vfs", baseURL).href;
   const projectUse = testInfo.project.use as {
     channel?: string;
     launchOptions?: Record<string, unknown>;
@@ -544,13 +573,18 @@ test(`closing a tab ${cut} replacement manifest commit selects the right generat
       ...(projectUse.launchOptions ?? {}),
     });
     try {
+      await context.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await context.route(previousImageUrl, (route) => route.fulfill({ body: Buffer.from(previousImage) }));
+      await context.route(replacementImageUrl, (route) => route.fulfill({ body: Buffer.from(replacementImage) }));
       const page = context.pages()[0] ?? await context.newPage();
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
       const primaryClosed = page.waitForEvent("console", {
         predicate: (message) => message.text() === `replacement primary manifest ${cut} close`,
         timeout: 30_000,
       });
-      const { name, identity, stagedJournalName, previousJournalName } = await page.evaluate(async ({ url, cut }) => {
+      const { name, identity, stagedJournalName, previousJournalName } = await page.evaluate(async ({
+        url, browserKernelUrl, kernelUrl, previousImageUrl, replacementImageUrl, cut,
+      }) => {
         const {
           loadFixedPersistenceImageHandle,
           markFixedPersistenceJournalInitialized,
@@ -558,6 +592,7 @@ test(`closing a tab ${cut} replacement manifest commit selects the right generat
           saveFixedPersistenceImageStream,
           stageFixedPersistenceReplacement,
         } = await import(url);
+        const { BrowserKernel } = await import(browserKernelUrl);
         const name = `crash-replacement-${crypto.randomUUID()}`;
         const identity = "replacement crash boundary";
         const composition = {
@@ -570,29 +605,46 @@ test(`closing a tab ${cut} replacement manifest commit selects the right generat
           },
           requiredServices: [],
         };
+        const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+        const previousImage = new Uint8Array(await (await fetch(previousImageUrl)).arrayBuffer());
+        const replacementImage = new Uint8Array(await (await fetch(replacementImageUrl)).arrayBuffer());
         const previous = await saveFixedPersistenceImageStream(
-          name, identity, [new Uint8Array(1024).fill(1)], undefined, composition,
+          name, identity, [previousImage], undefined, composition,
         );
-        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
-        const writeJournalHeader = async (journalName: string, imageSha256: string) => {
-          const header = new Uint8Array(72);
-          header.set(new TextEncoder().encode("KOVL"));
-          new DataView(header.buffer).setUint32(4, 1, true);
-          header.set(Uint8Array.from(imageSha256.match(/../g)!, (byte) => Number.parseInt(byte, 16)), 8);
-          header.set(new Uint8Array(await crypto.subtle.digest("SHA-256", header.subarray(0, 40))), 40);
-          const file = await directory.getFileHandle(`${journalName}.journal`, { create: true });
-          const writer = await file.createWritable();
-          await writer.write(header);
-          await writer.close();
-        };
-        await writeJournalHeader(previous.journalName, previous.imageSha256!);
-        await markFixedPersistenceJournalInitialized(name, identity, previous);
+        const first = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await first.initFromOpfsImage({
+            kernelWasm,
+            vfsImageFile: previous.file,
+            integrity: { length: previous.length, chunkBytes: 1024 * 1024, chunkSha256: previous.chunkSha256 },
+            experimentalFixedPersistenceName: previous.journalName,
+            persistentComputerName: name,
+          });
+          await markFixedPersistenceJournalInitialized(name, identity, previous);
+          const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite"]);
+          if (await exit !== 0) throw new Error("prior guest write failed");
+        } finally {
+          await first.destroy();
+        }
         const ready = await loadFixedPersistenceImageHandle(name, identity);
         if (ready === null) throw new Error("prior generation did not become ready");
         const staged = await stageFixedPersistenceReplacement(
-          name, identity, [new Uint8Array(1024).fill(2)], undefined, composition,
+          name, identity, [replacementImage], undefined, composition,
         );
-        await writeJournalHeader(staged.journalName, staged.imageSha256!);
+        const stagedKernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await stagedKernel.initFromOpfsImage({
+            kernelWasm,
+            vfsImageFile: staged.file,
+            integrity: { length: staged.length, chunkBytes: 1024 * 1024, chunkSha256: staged.chunkSha256 },
+            experimentalFixedPersistenceName: staged.journalName,
+            persistentComputerName: name,
+          });
+          const state = new TextDecoder().decode(await stagedKernel.readFileFromVfs("/state"));
+          if (state !== "replacement") throw new Error("staged generation did not boot");
+        } finally {
+          await stagedKernel.destroy();
+        }
         const filePrototype = Object.getPrototypeOf(staged.file) as FileSystemFileHandle;
         const originalCreateWritable = filePrototype.createWritable;
         filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
@@ -610,22 +662,50 @@ test(`closing a tab ${cut} replacement manifest commit selects the right generat
         };
         void publishFixedPersistenceReplacement(name, identity, ready, staged);
         return { name, identity, stagedJournalName: staged.journalName, previousJournalName: ready.journalName };
-      }, { url: new URL(`/@fs/${modulePath}`, baseURL).href, cut });
+      }, {
+        url: new URL(`/@fs/${modulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        previousImageUrl,
+        replacementImageUrl,
+        cut,
+      });
       await primaryClosed;
       await page.close();
       const reopened = await context.newPage();
       try {
         await reopened.goto(new URL("/trap-signal-test.html", baseURL).href);
-        const recovered = await reopened.evaluate(async ({ url, name, identity }) => {
+        const recovered = await reopened.evaluate(async ({ url, browserKernelUrl, kernelUrl, name, identity }) => {
           const { loadFixedPersistenceImageHandle, loadPreviousFixedPersistenceImageHandle } = await import(url);
+          const { BrowserKernel } = await import(browserKernelUrl);
           const current = await loadFixedPersistenceImageHandle(name, identity);
           if (current === null) throw new Error("committed replacement disappeared after tab close");
           const previous = await loadPreviousFixedPersistenceImageHandle(name, identity, current);
-          return { current: current.journalName, previous: previous?.journalName ?? null };
-        }, { url: new URL(`/@fs/${modulePath}`, baseURL).href, name, identity });
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: current.file,
+              integrity: { length: current.length, chunkBytes: 1024 * 1024, chunkSha256: current.chunkSha256 },
+              experimentalFixedPersistenceName: current.journalName,
+              persistentComputerName: name,
+              requireExistingRootfsPersistence: true,
+            });
+            const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+            return { current: current.journalName, previous: previous?.journalName ?? null, state };
+          } finally {
+            await kernel.destroy();
+          }
+        }, {
+          url: new URL(`/@fs/${modulePath}`, baseURL).href,
+          browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+          kernelUrl,
+          name,
+          identity,
+        });
         expect(recovered).toEqual(cut === "after"
-          ? { current: stagedJournalName, previous: previousJournalName }
-          : { current: previousJournalName, previous: null });
+          ? { current: stagedJournalName, previous: previousJournalName, state: "replacement" }
+          : { current: previousJournalName, previous: null, state: "XYcdefgh" });
       } finally {
         await reopened.close();
       }
