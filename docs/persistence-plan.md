@@ -117,6 +117,11 @@ tab: Chromium, Firefox, and WebKit select the prior or staged generation,
 respectively, while retaining the prior image after commit. Both generations
 boot through the real browser kernel; before-commit recovery replays a guest
 write from the prior journal, and after-commit recovery reads the staged base.
+An end-to-end browser test also exports a guest-written kernel image to an
+OPFS staging file, stages it under a fresh journal, boots it, publishes the
+replacement, and reopens it after reload. Snapshot export requires a fresh
+quiescent kernel after the guest-writing kernel has been destroyed; waiting
+for a process exit alone does not make that kernel quiescent.
 This does not prove page-driven replacement, browser-process crash, or
 power-loss durability at that cut.
 The selected prior manifest carries the exact primary and fallback manifest
