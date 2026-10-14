@@ -206,7 +206,11 @@ pub mod process_layout;
 ///     a host-backed shutdown keeps its
 ///     connection handle until close, and accepted connections report the
 ///     routed local address. docs/abi-versioning.md ("ABI 50") lists each.
-pub const ABI_VERSION: u32 = 50;
+/// 51: persistent rootfs compaction can hold a source journal, its checkpoint,
+///     and a target journal simultaneously. The required
+///     `env.host_overlay_compaction_*` import family extends the kernel-host
+///     contract. docs/abi-versioning.md ("ABI 51") describes the boundary.
+pub const ABI_VERSION: u32 = 51;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///

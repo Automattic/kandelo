@@ -26,6 +26,7 @@ const TRANSACTION_TRAILER_BYTES: usize = 36;
 const MAX_TRANSACTION_BYTES: usize = 1024 * 1024;
 const FILE_BLOCK_BYTES: usize = 4096;
 const CACHE_BLOCKS: usize = 64;
+const ACTIVE_TAIL_LIMIT_BYTES: u64 = 63 * 1024 * 1024;
 
 pub trait OverlayStorage {
     fn len(&mut self) -> Result<u64, Errno>;
@@ -155,6 +156,8 @@ pub struct OverlayJournal<S: OverlayStorage> {
     failed: bool,
     block_cache: Vec<((u64, u64), Vec<u8>)>,
     dirty_blocks: Vec<((u64, u64), Vec<u8>)>,
+    tail_limit_bytes: Option<u64>,
+    track_committed_state: bool,
 }
 
 impl<S: OverlayStorage> OverlayJournal<S> {
@@ -297,7 +300,13 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             failed: false,
             block_cache: Vec::new(),
             dirty_blocks: Vec::new(),
+            tail_limit_bytes: None,
+            track_committed_state: true,
         })
+    }
+
+    pub fn limit_active_tail(&mut self) {
+        self.tail_limit_bytes = Some(ACTIVE_TAIL_LIMIT_BYTES);
     }
 
     pub fn state(&self) -> &OverlayState {
@@ -357,37 +366,79 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 return Err(Errno::EIO);
             }
         }
-        let records = self
-            .state
-            .blocks
-            .iter()
-            .filter_map(|(&(inode, block), location)| {
-                location.map(|location| BlockCheckpointEntry {
-                    inode,
-                    block,
-                    offset: location.offset,
-                    digest: location.digest,
-                })
-            });
-        BlockCheckpoint::create(
-            target,
-            self.base_digest,
-            digest.finalize().into(),
-            self.end,
-            self.next_sequence,
-            records,
-        )
+        let journal_digest = digest.finalize().into();
+        if self.track_committed_state {
+            let records = self
+                .state
+                .blocks
+                .iter()
+                .filter_map(|(&(inode, block), location)| {
+                    location.map(|location| BlockCheckpointEntry {
+                        inode,
+                        block,
+                        offset: location.offset,
+                        digest: location.digest,
+                    })
+                });
+            BlockCheckpoint::create(
+                target,
+                self.base_digest,
+                journal_digest,
+                self.end,
+                self.next_sequence,
+                records,
+            )
+        } else {
+            BlockCheckpoint::create_checked(
+                target,
+                self.base_digest,
+                journal_digest,
+                self.end,
+                self.next_sequence,
+                CompactedBlockEntries::new(&mut self.storage, self.end, self.next_sequence),
+            )
+        }
+    }
+
+    pub fn install_fixed_block_checkpoint(
+        &mut self,
+        storage: Box<dyn OverlayStorage + Send>,
+    ) -> Result<(), Errno> {
+        let checkpoint = self.checkpoint_fixed_blocks_into(storage)?;
+        self.checkpoint = Some(checkpoint);
+        self.state.blocks.clear();
+        self.track_committed_state = true;
+        Ok(())
     }
 
     pub fn compact_into<T: OverlayStorage>(
         &mut self,
+        target: T,
+    ) -> Result<OverlayJournal<T>, Errno> {
+        self.compact_into_internal(target, true)
+    }
+
+    pub fn compact_fixed_into<T: OverlayStorage>(
+        &mut self,
+        target: T,
+    ) -> Result<OverlayJournal<T>, Errno> {
+        if !self.state.entries.is_empty() || self.state.blocks.values().any(Option::is_none) {
+            return Err(Errno::EIO);
+        }
+        self.compact_into_internal(target, false)
+    }
+
+    fn compact_into_internal<T: OverlayStorage>(
+        &mut self,
         mut target: T,
+        track_committed_state: bool,
     ) -> Result<OverlayJournal<T>, Errno> {
         self.sync()?;
         if target.len()? != 0 {
             return Err(Errno::EEXIST);
         }
         let mut compacted = OverlayJournal::open(target, self.base_digest)?;
+        compacted.track_committed_state = track_committed_state;
         let mut batch = Vec::new();
         batch.try_reserve_exact(128).map_err(|_| Errno::ENOMEM)?;
         for (key, value) in &self.state.entries {
@@ -530,17 +581,19 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             self.failed = true;
             return Err(error);
         }
-        let records = decode_mutations(
-            &transaction[TRANSACTION_HEADER_BYTES..transaction.len() - TRANSACTION_TRAILER_BYTES],
-        )?;
-        for (mutation, relative_offset) in records {
-            if let OverlayKey::FileBlock { inode, block } = &mutation_key(&mutation) {
-                self.block_cache
-                    .retain(|(cached, _)| *cached != (*inode, *block));
+        if self.track_committed_state {
+            let records = decode_mutations(
+                &transaction[TRANSACTION_HEADER_BYTES..transaction.len() - TRANSACTION_TRAILER_BYTES],
+            )?;
+            for (mutation, relative_offset) in records {
+                if let OverlayKey::FileBlock { inode, block } = &mutation_key(&mutation) {
+                    self.block_cache
+                        .retain(|(cached, _)| *cached != (*inode, *block));
+                }
+                let value_offset =
+                    relative_offset.map(|offset| self.end + TRANSACTION_HEADER_BYTES as u64 + offset);
+                self.state.apply(mutation, value_offset);
             }
-            let value_offset =
-                relative_offset.map(|offset| self.end + TRANSACTION_HEADER_BYTES as u64 + offset);
-            self.state.apply(mutation, value_offset);
         }
         self.end = following_end;
         self.next_sequence = following_sequence;
@@ -564,6 +617,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if src.is_empty() {
             return Ok(0);
         }
+        self.check_active_tail_limit()?;
         let end = offset.checked_add(src.len() as u64).ok_or(Errno::EFBIG)?;
         if end > base_size {
             return Err(Errno::EFBIG);
@@ -573,6 +627,9 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if block_count > CACHE_BLOCKS as u64 {
             let mut done = 0;
             while done < src.len() {
+                if let Err(error) = self.check_active_tail_limit() {
+                    return if done > 0 { Ok(done) } else { Err(error) };
+                }
                 let position = offset + done as u64;
                 let within_block = position as usize % FILE_BLOCK_BYTES;
                 let chunk = (src.len() - done).min(CACHE_BLOCKS * FILE_BLOCK_BYTES - within_block);
@@ -604,6 +661,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     where
         F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
     {
+        self.check_active_tail_limit()?;
         let end = offset + src.len() as u64;
         let block_count =
             (end - 1) / FILE_BLOCK_BYTES as u64 - offset / FILE_BLOCK_BYTES as u64 + 1;
@@ -669,6 +727,21 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             self.dirty_blocks.push((key, bytes));
         }
         Ok(src.len())
+    }
+
+    fn check_active_tail_limit(&self) -> Result<(), Errno> {
+        let Some(limit) = self.tail_limit_bytes else {
+            return Ok(());
+        };
+        let prefix_end = self
+            .checkpoint
+            .as_ref()
+            .map_or(HEADER_BYTES as u64, BlockCheckpoint::journal_end);
+        if self.end.saturating_sub(prefix_end) >= limit {
+            Err(Errno::ENOSPC)
+        } else {
+            Ok(())
+        }
     }
 
     pub fn write_file_at<F>(
@@ -847,6 +920,112 @@ impl<S: OverlayStorage> OverlayJournal<S> {
 
     pub fn into_storage(self) -> S {
         self.storage
+    }
+}
+
+struct CompactedBlockEntries<'a, S: OverlayStorage> {
+    storage: &'a mut S,
+    end: u64,
+    position: u64,
+    sequence: u64,
+    expected_sequence: u64,
+    finished: bool,
+    pending: Vec<BlockCheckpointEntry>,
+    pending_position: usize,
+}
+
+impl<'a, S: OverlayStorage> CompactedBlockEntries<'a, S> {
+    fn new(storage: &'a mut S, end: u64, expected_sequence: u64) -> Self {
+        Self {
+            storage,
+            end,
+            position: HEADER_BYTES as u64,
+            sequence: 1,
+            expected_sequence,
+            finished: false,
+            pending: Vec::new(),
+            pending_position: 0,
+        }
+    }
+
+    fn read_transaction(&mut self) -> Result<(), Errno> {
+        let remaining = self.end.checked_sub(self.position).ok_or(Errno::EIO)?;
+        if remaining < (TRANSACTION_HEADER_BYTES + TRANSACTION_TRAILER_BYTES) as u64 {
+            return Err(Errno::EIO);
+        }
+        let mut header = [0; TRANSACTION_HEADER_BYTES];
+        self.storage.read_exact_at(self.position, &mut header)?;
+        let length = u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?) as usize;
+        if &header[..4] != TRANSACTION_MAGIC
+            || !(TRANSACTION_HEADER_BYTES + TRANSACTION_TRAILER_BYTES..=MAX_TRANSACTION_BYTES)
+                .contains(&length)
+            || length as u64 > remaining
+            || u32::from_le_bytes(header[20..24].try_into().map_err(|_| Errno::EIO)?)
+                != !(length as u32)
+        {
+            return Err(Errno::EIO);
+        }
+        let mut bytes = alloc::vec![0; length];
+        self.storage.read_exact_at(self.position, &mut bytes)?;
+        let digest_start = length - TRANSACTION_TRAILER_BYTES;
+        if u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| Errno::EIO)?) != self.sequence
+            || &bytes[length - 4..] != COMMIT_MAGIC
+            || bytes[digest_start..length - 4] != Sha256::digest(&bytes[..digest_start])[..]
+        {
+            return Err(Errno::EIO);
+        }
+        let mutations = decode_mutations(&bytes[TRANSACTION_HEADER_BYTES..digest_start])?;
+        if mutations.len()
+            != u32::from_le_bytes(bytes[16..20].try_into().map_err(|_| Errno::EIO)?) as usize
+        {
+            return Err(Errno::EIO);
+        }
+        self.pending.clear();
+        self.pending_position = 0;
+        for (mutation, relative_offset) in mutations {
+            let (inode, block, value) = match mutation {
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode, block },
+                    value,
+                } => (inode, block, value),
+                _ => return Err(Errno::EIO),
+            };
+            self.pending.push(BlockCheckpointEntry {
+                inode,
+                block,
+                offset: self.position
+                    + TRANSACTION_HEADER_BYTES as u64
+                    + relative_offset.ok_or(Errno::EIO)?,
+                digest: Sha256::digest(value).into(),
+            });
+        }
+        self.position = self.position.checked_add(length as u64).ok_or(Errno::EOVERFLOW)?;
+        self.sequence = self.sequence.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok(())
+    }
+}
+
+impl<S: OverlayStorage> Iterator for CompactedBlockEntries<'_, S> {
+    type Item = Result<BlockCheckpointEntry, Errno>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        loop {
+            if let Some(entry) = self.pending.get(self.pending_position).copied() {
+                self.pending_position += 1;
+                return Some(Ok(entry));
+            }
+            if self.position == self.end {
+                self.finished = true;
+                return (self.sequence != self.expected_sequence).then_some(Err(Errno::EIO));
+            }
+            if let Err(error) = self.read_transaction() {
+                self.finished = true;
+                return Some(Err(error));
+            }
+        }
     }
 }
 
@@ -1248,6 +1427,25 @@ mod tests {
     }
 
     #[test]
+    fn streamed_compaction_checkpoint_rejects_target_damage() {
+        let mut source = OverlayJournal::open(MemoryStorage::default(), [38; 32]).unwrap();
+        source
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                value: vec![b'a'; FILE_BLOCK_BYTES],
+            }])
+            .unwrap();
+        let mut compacted = source.compact_fixed_into(MemoryStorage::default()).unwrap();
+        assert!(compacted.state.blocks.is_empty());
+        let last_data_byte = compacted.storage.bytes.len() - TRANSACTION_TRAILER_BYTES - 1;
+        compacted.storage.bytes[last_data_byte] ^= 1;
+        assert!(matches!(
+            compacted.checkpoint_fixed_blocks_into(MemoryStorage::default()),
+            Err(Errno::EIO)
+        ));
+    }
+
+    #[test]
     fn indexed_recovery_replays_only_the_tail_and_reads_older_blocks_on_demand() {
         let digest = [33; 32];
         let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
@@ -1321,9 +1519,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reopened.state.blocks.len(), 2);
-        let compacted = reopened.compact_into(MemoryStorage::default()).unwrap();
-        assert_eq!(compacted.state.blocks.len(), 200);
-        let mut compacted = OverlayJournal::open(compacted.into_storage(), digest).unwrap();
+        let mut compacted = reopened.compact_fixed_into(MemoryStorage::default()).unwrap();
+        assert!(compacted.state.blocks.is_empty());
+        compacted
+            .install_fixed_block_checkpoint(Box::new(MemoryStorage::default()))
+            .unwrap();
+        assert!(compacted.state.blocks.is_empty());
         for (block, expected) in [(0, 0), (73, 9), (74, 11), (199, 199)] {
             let mut byte = [0];
             assert_eq!(
@@ -1915,6 +2116,49 @@ mod tests {
             );
             assert_eq!(byte[0], block as u8);
         }
+    }
+
+    #[test]
+    fn active_tail_limit_rejects_new_writes_until_checkpoint_handoff() {
+        let size = (2 * FILE_BLOCK_BYTES) as u64;
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [37; 32]).unwrap();
+        journal.tail_limit_bytes = Some(100);
+        journal
+            .write_fixed_file_at_buffered(7, size, 0, &[b'a'; FILE_BLOCK_BYTES], |_, _| {
+                panic!("full block needs no base read")
+            })
+            .unwrap();
+        journal.sync().unwrap();
+        assert_eq!(
+            journal.write_fixed_file_at_buffered(7, size, FILE_BLOCK_BYTES as u64, b"new", |_, dst| {
+                dst.fill(0);
+                Ok(dst.len())
+            }),
+            Err(Errno::ENOSPC)
+        );
+        let mut visible = [0];
+        journal
+            .read_file_at(7, size, 0, &mut visible, |_, _| panic!("journal must satisfy read"))
+            .unwrap();
+        assert_eq!(visible, [b'a']);
+        let mut compacted = journal.compact_fixed_into(MemoryStorage::default()).unwrap();
+        assert!(compacted.state.blocks.is_empty());
+        compacted
+            .install_fixed_block_checkpoint(Box::new(MemoryStorage::default()))
+            .unwrap();
+        let mut visible = [0];
+        compacted
+            .read_file_at(7, size, 0, &mut visible, |_, _| panic!("checkpoint must satisfy read"))
+            .unwrap();
+        assert_eq!(visible, [b'a']);
+        compacted.tail_limit_bytes = Some(100);
+        assert_eq!(
+            compacted.write_fixed_file_at_buffered(7, size, FILE_BLOCK_BYTES as u64, b"new", |_, dst| {
+                dst.fill(0);
+                Ok(dst.len())
+            }),
+            Ok(3)
+        );
     }
 
     #[test]

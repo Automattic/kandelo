@@ -52,7 +52,7 @@ import { OpfsImageReader } from "./vfs/opfs-image-reader";
 import { BrowserTimeProvider } from "./vfs/time";
 import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { checkpointCompactedOverlayGenerationAtBoot, compactOverlayGenerationAtBoot, enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
+import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor } from "./vfs/overlay-generation-selection";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -168,6 +168,7 @@ const O_WRONLY_CREAT_TRUNC =
 let kernelWorker: CentralizedKernelWorker;
 let persistentOverlay: PersistentOverlayStorage | null = null;
 let persistentOverlayIndex: PersistentOverlayStorage | null = null;
+let liveOverlayCompactor: LiveOverlayCompactor | null = null;
 let opfsImageReader: OpfsImageReader | null = null;
 let workerAdapter: BrowserWorkerAdapter;
 let io: VirtualPlatformIO;
@@ -1322,25 +1323,25 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       files,
       (storage, index, checkpointEnd) => kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd),
     );
-    const active = await compactOverlayGenerationAtBoot(
-      selected,
-      files,
-      {
-        prepare: (storage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
-        activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
-        cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
-      },
-    );
-    const indexed = active === selected ? active : await checkpointCompactedOverlayGenerationAtBoot(
-      active,
-      files,
-      (index) => kernelWorker.checkpointRootfsPersistence(index),
-    );
-    persistentOverlay = indexed.journal;
-    persistentOverlayIndex = indexed.index ?? null;
+    const handoff = {
+      prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
+      checkpoint: (index: PersistentOverlayStorage) => kernelWorker.checkpointPreparedRootfsPersistence(index),
+      activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
+      cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
+    };
+    const active = await compactOverlayGeneration(selected, files, handoff);
+    persistentOverlay = active.journal;
+    persistentOverlayIndex = active.index ?? null;
+    liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
+      persistentOverlay = next.journal;
+      persistentOverlayIndex = next.index ?? null;
+    }, (error) => {
+      post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${formatError(error)}` });
+    });
   }
 
   initReady = true;
+  liveOverlayCompactor?.start();
 
   const pcmTransport = kernelWorker.claimPcmTransport(true);
   post({ type: "ready", pcmTransport });
@@ -4127,6 +4128,8 @@ function handlePickListenerTarget(
 }
 
 async function performDestroy() {
+  liveOverlayCompactor?.stop();
+  liveOverlayCompactor = null;
   // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively exits.
   // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug is
   // fixed; see docs/jsc-terminate-atomics-wait-workaround.md.

@@ -2911,7 +2911,7 @@
     },
     {
       "kind": "func",
-      "name": "kernel_rootfs_checkpoint_persistence",
+      "name": "kernel_rootfs_checkpoint_prepared_persistence",
       "signature": "(i32) -> (i32)"
     },
     {

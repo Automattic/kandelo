@@ -417,7 +417,7 @@ test("browser rejects a semantically invalid indexed generation and restores the
 });
 
 test("browser replays a guest write larger than its bounded dirty cache", async ({ playwright, browserName, baseURL }, testInfo) => {
-  test.setTimeout(90_000);
+  test.setTimeout(180_000);
   const projectUse = testInfo.project.use as {
     channel?: string;
     launchOptions?: Record<string, unknown>;
@@ -461,8 +461,25 @@ test("browser replays a guest write larger than its bounded dirty cache", async 
             vfsImageFile: imageFile,
             experimentalFixedPersistenceName: name,
           });
-          const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "large"]);
-          if (await exit !== 0) throw new Error("large guest write failed");
+          for (const slot of ["g0", "g1"]) {
+            for (let iteration = 0; iteration < 17; iteration++) {
+              const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "large"]);
+              if (await exit !== 0) throw new Error("large guest write failed");
+            }
+            const deadline = Date.now() + 30_000;
+            let sealed = false;
+            while (Date.now() < deadline) {
+              try {
+                const file = await (await directory.getFileHandle(`${name}.${slot}.seal`)).getFile();
+                sealed = file.size > 96;
+              } catch {
+                sealed = false;
+              }
+              if (sealed) break;
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+            if (!sealed) throw new Error(`live compaction did not seal ${slot}`);
+          }
         } finally {
           await kernel.destroy();
         }

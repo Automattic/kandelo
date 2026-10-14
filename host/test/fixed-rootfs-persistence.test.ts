@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -173,10 +173,13 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         await reopened.destroy();
       }
       expect(readFileSync(`${path}.g0.journal`).byteLength).toBe(firstSlotLength);
-      expect(existsSync(`${path}.g1.seal`)).toBe(false);
-      const again = await boot(image, path);
-      await again.destroy();
-      expect(readFileSync(`${path}.g0.journal`).byteLength).toBe(firstSlotLength);
+      expect(existsSync(`${path}.g1.seal`)).toBe(true);
+      expect(existsSync(`${path}.g1.index`)).toBe(true);
+      expect(readFileSync(`${path}.g1.seal`).readUInt32LE(4)).toBe(2);
+      expect(readFileSync(`${path}.g1.journal`).byteLength).toBeLessThan(firstSlotLength / 2);
+      const secondSlot = await boot(image, path);
+      await secondSlot.destroy();
+      expect(readFileSync(`${path}.g1.journal`).byteLength).toBeLessThan(firstSlotLength / 2);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -260,6 +263,42 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       rmSync(directory, { recursive: true, force: true });
     }
   }, 90_000);
+
+  it.skipIf(guestProgramPath === null)("compacts an indexed journal twice while guests keep writing", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-live-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh", true);
+      const host = await boot(image, path);
+      try {
+        for (const slot of ["g0", "g1"] as const) {
+          for (let iteration = 0; iteration < 17; iteration++) {
+            const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite", "large"]);
+            expect(await exit).toBe(0);
+          }
+          await vi.waitFor(() => expect(readFileSync(`${path}.${slot}.seal`).byteLength).toBeGreaterThan(96), {
+            timeout: 30_000,
+            interval: 100,
+          });
+          expect(readFileSync(`${path}.${slot}.seal`).readUInt32LE(4)).toBe(2);
+          expect(existsSync(`${path}.${slot}.index`)).toBe(true);
+        }
+      } finally {
+        await host.destroy();
+      }
+      const recovered = await boot(image, path);
+      try {
+        const actual = await recovered.readFileFromVfs("/large");
+        expect(actual?.byteLength).toBe(largeWriteBytes + 4096);
+        expect(actual?.[13]).toBe(0);
+        expect(actual?.[4096 + 13]).toBe(1);
+      } finally {
+        await recovered.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it.skipIf(guestProgramPath === null)("replays a guest overwrite after a worker restart", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-"));

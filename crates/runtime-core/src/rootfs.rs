@@ -675,6 +675,7 @@ fn enable_fixed_persistence_internal(
             })
         })
     })?;
+    journal.limit_active_tail();
     let mut active = PERSISTENT_ROOTFS.lock();
     if active.is_some() {
         return Err(Errno::EBUSY);
@@ -698,13 +699,15 @@ pub fn sync_persistence() -> Result<(), Errno> {
     }
 }
 
-pub fn checkpoint_persistence(storage: Box<dyn OverlayStorage + Send>) -> Result<(), Errno> {
-    let mut active = PERSISTENT_ROOTFS.lock();
-    active
+pub fn checkpoint_prepared_persistence(
+    storage: Box<dyn OverlayStorage + Send>,
+) -> Result<(), Errno> {
+    let mut pending = PREPARED_PERSISTENCE.lock();
+    pending
         .as_mut()
         .ok_or(Errno::EINVAL)?
-        .checkpoint_fixed_blocks_into(storage)?;
-    Ok(())
+        .journal
+        .install_fixed_block_checkpoint(storage)
 }
 
 pub fn prepare_persistence_compaction(
@@ -716,7 +719,7 @@ pub fn prepare_persistence_compaction(
     }
     let mut active = PERSISTENT_ROOTFS.lock();
     let source = active.as_mut().ok_or(Errno::EINVAL)?;
-    let compacted = source.compact_into(storage)?;
+    let compacted = source.compact_fixed_into(storage)?;
     *pending = Some(PreparedPersistence {
         journal: compacted,
         source_revision: source.compaction_revision(),
@@ -733,7 +736,9 @@ pub fn activate_persistence_compaction() -> Result<(), Errno> {
         *pending = None;
         return Err(Errno::EBUSY);
     }
-    *active = Some(pending.take().ok_or(Errno::EIO)?.journal);
+    let mut next = pending.take().ok_or(Errno::EIO)?.journal;
+    next.limit_active_tail();
+    *active = Some(next);
     Ok(())
 }
 
@@ -8172,6 +8177,44 @@ mod tests {
         let mut changed = [0u8; 16];
         let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
         assert_eq!(&changed[..count], b"hello live\n");
+        release_handle(handle);
+    }
+
+    #[test]
+    fn prepared_checkpoint_survives_activation_and_reopen() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_fixed_persistence(Box::new(source), base_digest).unwrap();
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(handle, 6, b"KIFS", &mut image_bytes).unwrap(), 4);
+        sync_persistence().unwrap();
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let checkpoint_end = target.0.lock().len() as u64;
+        let mut changed = [0u8; 16];
+        let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
+        assert_eq!(&changed[..count], b"hello KIFS\n");
+        release_handle(handle);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_fixed_persistence_indexed(
+            Box::new(target),
+            Box::new(index),
+            base_digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).unwrap();
+        let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
+        assert_eq!(&changed[..count], b"hello KIFS\n");
         release_handle(handle);
     }
 

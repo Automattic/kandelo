@@ -1,3 +1,4 @@
+import { sha256 } from "@noble/hashes/sha2.js";
 import type { PersistentOverlayStorage } from "./overlay-storage";
 
 const MAGIC = [0x4b, 0x4f, 0x47, 0x53];
@@ -34,20 +35,20 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return difference === 0;
 }
 
-async function digest(bytes: Uint8Array): Promise<Uint8Array> {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice().buffer));
+function digest(bytes: Uint8Array): Uint8Array {
+  return sha256(bytes);
 }
 
 function chunkCount(length: number): number {
   return Math.ceil(length / CHUNK_BYTES);
 }
 
-async function header(
+function header(
   generation: number,
   journalLength: number,
   baseDigest: Uint8Array,
   indexLength?: number,
-): Promise<Uint8Array> {
+): Uint8Array {
   if (!validLength(generation) || !validLength(journalLength) || baseDigest.byteLength !== DIGEST_BYTES
     || (indexLength !== undefined && !validLength(indexLength))) {
     throw sealError();
@@ -62,7 +63,7 @@ async function header(
   view.setBigUint64(16, BigInt(journalLength), true);
   bytes.set(baseDigest, 24);
   if (indexLength !== undefined) view.setBigUint64(56, BigInt(indexLength), true);
-  bytes.set(await digest(bytes.subarray(0, headerDataBytes)), headerDataBytes);
+  bytes.set(digest(bytes.subarray(0, headerDataBytes)), headerDataBytes);
   return bytes;
 }
 
@@ -73,11 +74,21 @@ export async function writeOverlayGenerationSeal(
   baseDigest: Uint8Array,
   index?: PersistentOverlayStorage,
 ): Promise<void> {
+  writeOverlayGenerationSealSync(journal, seal, generation, baseDigest, index);
+}
+
+export function writeOverlayGenerationSealSync(
+  journal: PersistentOverlayStorage,
+  seal: PersistentOverlayStorage,
+  generation: number,
+  baseDigest: Uint8Array,
+  index?: PersistentOverlayStorage,
+): void {
   journal.flush();
   index?.flush();
   const journalLength = journal.len();
   const indexLength = index?.len();
-  const bytes = await header(generation, journalLength, baseDigest, indexLength);
+  const bytes = header(generation, journalLength, baseDigest, indexLength);
   const journalChunks = chunkCount(journalLength);
   const indexChunks = indexLength === undefined ? 0 : chunkCount(indexLength);
   const sealLength = bytes.byteLength + (journalChunks + indexChunks) * DIGEST_BYTES;
@@ -88,14 +99,14 @@ export async function writeOverlayGenerationSeal(
     const offset = chunkIndex * CHUNK_BYTES;
     const chunk = new Uint8Array(Math.min(CHUNK_BYTES, journalLength - offset));
     journal.readExactAt(offset, chunk);
-    seal.writeAllAt(bytes.byteLength + chunkIndex * DIGEST_BYTES, await digest(chunk));
+    seal.writeAllAt(bytes.byteLength + chunkIndex * DIGEST_BYTES, digest(chunk));
   }
   if (index !== undefined && indexLength !== undefined) {
     for (let chunkIndex = 0; chunkIndex < indexChunks; chunkIndex++) {
       const offset = chunkIndex * CHUNK_BYTES;
       const chunk = new Uint8Array(Math.min(CHUNK_BYTES, indexLength - offset));
       index.readExactAt(offset, chunk);
-      seal.writeAllAt(bytes.byteLength + (journalChunks + chunkIndex) * DIGEST_BYTES, await digest(chunk));
+      seal.writeAllAt(bytes.byteLength + (journalChunks + chunkIndex) * DIGEST_BYTES, digest(chunk));
     }
   }
   seal.flush();
@@ -108,6 +119,16 @@ export async function verifyOverlayGenerationSeal(
   allowAppendedTail = false,
   index?: PersistentOverlayStorage | null,
 ): Promise<OverlayGenerationSeal> {
+  return verifyOverlayGenerationSealSync(journal, seal, expectedBaseDigest, allowAppendedTail, index);
+}
+
+export function verifyOverlayGenerationSealSync(
+  journal: PersistentOverlayStorage,
+  seal: PersistentOverlayStorage,
+  expectedBaseDigest?: Uint8Array,
+  allowAppendedTail = false,
+  index?: PersistentOverlayStorage | null,
+): OverlayGenerationSeal {
   if (seal.len() < HEADER_BYTES) throw sealError();
   const prefix = new Uint8Array(8);
   seal.readExactAt(0, prefix);
@@ -134,7 +155,7 @@ export async function verifyOverlayGenerationSeal(
     invalidIndex ||
     (allowAppendedTail ? journal.len() < journalLength : journal.len() !== journalLength) ||
     (expectedBaseDigest !== undefined && !sameBytes(baseDigest, expectedBaseDigest)) ||
-    !sameBytes(bytes.subarray(headerDataBytes), await digest(bytes.subarray(0, headerDataBytes)))
+    !sameBytes(bytes.subarray(headerDataBytes), digest(bytes.subarray(0, headerDataBytes)))
   ) {
     throw sealError();
   }
@@ -148,7 +169,7 @@ export async function verifyOverlayGenerationSeal(
     const chunk = new Uint8Array(Math.min(CHUNK_BYTES, journalLength - offset));
     journal.readExactAt(offset, chunk);
     seal.readExactAt(bytes.byteLength + chunkIndex * DIGEST_BYTES, expected);
-    if (!sameBytes(expected, await digest(chunk))) throw sealError();
+    if (!sameBytes(expected, digest(chunk))) throw sealError();
   }
   if (index !== null && index !== undefined && indexLength !== undefined) {
     for (let chunkIndex = 0; chunkIndex < indexChunks; chunkIndex++) {
@@ -156,7 +177,7 @@ export async function verifyOverlayGenerationSeal(
       const chunk = new Uint8Array(Math.min(CHUNK_BYTES, indexLength - offset));
       index.readExactAt(offset, chunk);
       seal.readExactAt(bytes.byteLength + (journalChunks + chunkIndex) * DIGEST_BYTES, expected);
-      if (!sameBytes(expected, await digest(chunk))) throw sealError();
+      if (!sameBytes(expected, digest(chunk))) throw sealError();
     }
   }
   return indexLength === undefined

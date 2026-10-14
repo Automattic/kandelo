@@ -1568,6 +1568,20 @@ added before anything shipped under the number:
   address, and a null `ifa_addr` for an interface without an address. It
   reports no `AF_PACKET` or IPv6 entries, because the kernel models neither
   on these interfaces.
+### ABI 51 persistent overlay compaction storage
+
+The kernel now requires `env.host_overlay_compaction_len`,
+`env.host_overlay_compaction_read`, `env.host_overlay_compaction_write`,
+`env.host_overlay_compaction_flush`, and
+`env.host_overlay_compaction_truncate`. These positioned byte operations
+provide a third simultaneous host storage handle. An indexed journal needs
+the first two handles for its active journal and checkpoint, so it cannot
+copy live blocks to another journal without the third. The imports use the
+same signed-length and negative-errno conventions as the existing overlay
+storage families. Adding required Wasm imports is incompatible with older
+host adapters, so this is a new ABI epoch even though guest syscall numbers
+and marshalling are unchanged. Programs, packages, and ABI-bound VFS images
+must be rebuilt for ABI 51.
 
 ## The snapshot
 

@@ -1,4 +1,4 @@
-import { verifyOverlayGenerationSeal, writeOverlayGenerationSeal } from "./overlay-generation-seal";
+import { verifyOverlayGenerationSeal, verifyOverlayGenerationSealSync, writeOverlayGenerationSealSync } from "./overlay-generation-seal";
 import type { PersistentOverlayStorage } from "./overlay-storage";
 
 export type OverlayGenerationSlot = "legacy" | "g0" | "g1";
@@ -30,6 +30,7 @@ export interface SelectedOverlayGeneration {
 
 export interface OverlayCompactionHandoff {
   prepare(target: PersistentOverlayStorage): void;
+  checkpoint(index: PersistentOverlayStorage): void;
   activate(): void;
   cancel(): void;
 }
@@ -106,13 +107,14 @@ export async function enableBestOverlayGeneration(
   }
 }
 
-export async function compactOverlayGenerationAtBoot(
+export async function compactOverlayGeneration(
   selected: SelectedOverlayGeneration,
   files: OverlayGenerationFiles,
   handoff: OverlayCompactionHandoff,
   minTailBytes = 32 * 1024 * 1024,
+  shouldProceed: () => boolean = () => true,
+  reportCleanupFailure: (error: unknown) => void = console.error,
 ): Promise<SelectedOverlayGeneration> {
-  if (selected.index !== undefined) return selected;
   if (selected.journal.len() - selected.sealedLength < minTailBytes) return selected;
   if (!Number.isSafeInteger(selected.generation + 1)) {
     throw new Error("persistent overlay generation number exhausted");
@@ -121,30 +123,53 @@ export async function compactOverlayGenerationAtBoot(
   const target = await files.open(slot, "journal", true);
   if (target === null) throw new Error("could not create persistent overlay target journal");
   let seal: PersistentOverlayStorage | null = null;
+  let index: PersistentOverlayStorage | null = null;
   let prepared = false;
   let activated = false;
+  let targetTouched = false;
+  let sealedLength = 0;
   try {
     seal = await files.open(slot, "seal", true);
     if (seal === null) throw new Error("could not create persistent overlay target seal");
+    index = await files.open(slot, "index", true);
+    if (index === null) throw new Error("could not create persistent overlay target checkpoint");
+    if (!shouldProceed()) {
+      seal.close();
+      index.close();
+      target.close();
+      return selected;
+    }
     const header = new Uint8Array(40);
     selected.journal.readExactAt(0, header);
+    targetTouched = true;
     target.truncate(0);
     target.flush();
+    index.truncate(0);
+    index.flush();
     handoff.prepare(target);
     prepared = true;
+    handoff.checkpoint(index);
     const baseDigest = header.slice(8, 40);
     const generation = selected.generation + 1;
-    await writeOverlayGenerationSeal(target, seal, generation, baseDigest);
-    await verifyOverlayGenerationSeal(target, seal, baseDigest);
+    writeOverlayGenerationSealSync(target, seal, generation, baseDigest, index);
+    verifyOverlayGenerationSealSync(target, seal, baseDigest, false, index);
+    sealedLength = target.len();
     handoff.activate();
     activated = true;
     prepared = false;
     seal.close();
+    seal = null;
     selected.journal.close();
-    return { journal: target, slot, generation, sealedLength: target.len() };
+    selected.index?.close();
+    return { journal: target, index, slot, generation, sealedLength };
   } catch (error) {
+    if (activated && index !== null) {
+      reportCleanupFailure(error);
+      return { journal: target, index, slot, generation: selected.generation + 1, sealedLength };
+    }
     let failure: unknown = error;
     const openedSeal = seal;
+    const openedIndex = index;
     const cleanup = (operation: () => void): void => {
       try {
         operation();
@@ -152,7 +177,7 @@ export async function compactOverlayGenerationAtBoot(
         failure = new AggregateError([failure, cleanupError], "persistent overlay compaction cleanup failed");
       }
     };
-    if (!activated && openedSeal !== null) {
+    if (targetTouched && openedSeal !== null) {
       cleanup(() => {
         openedSeal.truncate(0);
         openedSeal.flush();
@@ -160,40 +185,63 @@ export async function compactOverlayGenerationAtBoot(
     }
     if (prepared) cleanup(() => handoff.cancel());
     if (openedSeal !== null) cleanup(() => openedSeal.close());
+    if (openedIndex !== null) cleanup(() => openedIndex.close());
     cleanup(() => target.close());
-    cleanup(() => selected.journal.close());
     throw failure;
   }
 }
 
-export async function checkpointCompactedOverlayGenerationAtBoot(
-  selected: SelectedOverlayGeneration,
-  files: OverlayGenerationFiles,
-  checkpoint: (index: PersistentOverlayStorage) => void,
-): Promise<SelectedOverlayGeneration> {
-  if (selected.slot === "legacy" || selected.index !== undefined) {
-    throw new Error("only a newly compacted generation can be checkpointed");
+export class LiveOverlayCompactor {
+  #selected: SelectedOverlayGeneration;
+  #timer: ReturnType<typeof setInterval> | null = null;
+  #running = false;
+  #stopped = false;
+  #retryAfter = 0;
+
+  constructor(
+    selected: SelectedOverlayGeneration,
+    private readonly files: OverlayGenerationFiles,
+    private readonly handoff: OverlayCompactionHandoff,
+    private readonly onGeneration: (next: SelectedOverlayGeneration) => void,
+    private readonly onError: (error: unknown) => void,
+    private readonly minTailBytes = 32 * 1024 * 1024,
+  ) {
+    this.#selected = selected;
   }
-  const index = await files.open(selected.slot, "index", true);
-  if (index === null) throw new Error("could not create persistent overlay checkpoint");
-  let seal: PersistentOverlayStorage | null = null;
-  try {
-    seal = await files.open(selected.slot, "seal", false);
-    if (seal === null) throw new Error("could not open persistent overlay generation seal");
-    const header = new Uint8Array(40);
-    selected.journal.readExactAt(0, header);
-    index.truncate(0);
-    index.flush();
-    checkpoint(index);
-    const baseDigest = header.slice(8, 40);
-    await writeOverlayGenerationSeal(selected.journal, seal, selected.generation, baseDigest, index);
-    await verifyOverlayGenerationSeal(selected.journal, seal, baseDigest, false, index);
-    seal.close();
-    return { ...selected, index, sealedLength: selected.journal.len() };
-  } catch (error) {
-    seal?.close();
-    index.close();
-    selected.journal.close();
-    throw error;
+
+  start(): void {
+    if (this.#timer !== null || this.#stopped) return;
+    this.#timer = setInterval(() => { void this.compactIfNeeded(); }, 2_000);
+  }
+
+  stop(): void {
+    this.#stopped = true;
+    if (this.#timer !== null) clearInterval(this.#timer);
+    this.#timer = null;
+  }
+
+  async compactIfNeeded(): Promise<void> {
+    if (this.#stopped || this.#running || Date.now() < this.#retryAfter) return;
+    this.#running = true;
+    const selected = this.#selected;
+    try {
+      const next = await compactOverlayGeneration(
+        selected,
+        this.files,
+        this.handoff,
+        this.minTailBytes,
+        () => !this.#stopped && this.#selected === selected,
+        this.onError,
+      );
+      if (next !== selected) {
+        this.#selected = next;
+        this.onGeneration(next);
+      }
+    } catch (error) {
+      this.#retryAfter = Date.now() + 30_000;
+      this.onError(error);
+    } finally {
+      this.#running = false;
+    }
   }
 }
