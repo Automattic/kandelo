@@ -2901,8 +2901,13 @@
     },
     {
       "kind": "func",
-      "name": "kernel_rootfs_compact_persistence",
-      "signature": "(i32) -> (i32)"
+      "name": "kernel_rootfs_activate_persistence_compaction",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_cancel_persistence_compaction",
+      "signature": "() -> ()"
     },
     {
       "kind": "func",
@@ -2953,6 +2958,11 @@
       "kind": "func",
       "name": "kernel_rootfs_mkdir_parents",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_prepare_persistence_compaction",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",

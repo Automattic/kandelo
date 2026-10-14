@@ -15,6 +15,7 @@ class MemoryStorage implements PersistentOverlayStorage {
   bytes: Uint8Array;
   maxRead = 0;
   failFlush = false;
+  failNextFlush = false;
 
   constructor(bytes: Uint8Array = new Uint8Array()) {
     this.bytes = bytes.slice();
@@ -42,6 +43,10 @@ class MemoryStorage implements PersistentOverlayStorage {
 
   flush(): void {
     if (this.failFlush) throw new Error("injected flush failure");
+    if (this.failNextFlush) {
+      this.failNextFlush = false;
+      throw new Error("injected flush failure");
+    }
   }
 
   truncate(length: HostFileOffset): void {
@@ -212,10 +217,20 @@ describe("overlay generation boot selection", () => {
     const source = new MemoryStorage(new Uint8Array(72).fill(7));
     const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
     const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
-    const compacted = await compactOverlayGenerationAtBoot(selected, files(entries), (target) => {
-      target.writeAllAt(0, source.bytes);
-      target.flush();
+    const stages: string[] = [];
+    const compacted = await compactOverlayGenerationAtBoot(selected, files(entries), {
+      prepare: (target) => {
+        target.writeAllAt(0, source.bytes);
+        target.flush();
+        stages.push("prepare");
+      },
+      activate: () => {
+        expect(entries["g0.seal"]!.len()).toBeGreaterThan(88);
+        stages.push("activate");
+      },
+      cancel: () => { throw new Error("unexpected cancellation"); },
     }, 0);
+    expect(stages).toEqual(["prepare", "activate"]);
     expect(compacted.slot).toBe("g0");
     expect(compacted.generation).toBe(1);
     expect(entries["g0.seal"]!.len()).toBeGreaterThan(88);
@@ -227,11 +242,48 @@ describe("overlay generation boot selection", () => {
     const source = new MemoryStorage(new Uint8Array(72).fill(7));
     const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
     const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
-    await expect(compactOverlayGenerationAtBoot(selected, files(entries), (target) => {
-      target.writeAllAt(0, Uint8Array.of(1, 2));
-      throw new Error("injected target failure");
+    await expect(compactOverlayGenerationAtBoot(selected, files(entries), {
+      prepare: (target) => {
+        target.writeAllAt(0, Uint8Array.of(1, 2));
+        throw new Error("injected target failure");
+      },
+      activate: () => { throw new Error("unexpected activation"); },
+      cancel: () => {},
     }, 0)).rejects.toThrow("injected target failure");
     expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
     expect(entries["g0.seal"]!.len()).toBe(0);
+  });
+
+  it("invalidates a sealed target when activation fails", async () => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
+    let canceled = false;
+    await expect(compactOverlayGenerationAtBoot(selected, files(entries), {
+      prepare: (target) => { target.writeAllAt(0, source.bytes); },
+      activate: () => { throw new Error("injected activation failure"); },
+      cancel: () => { canceled = true; },
+    }, 0)).rejects.toThrow("injected activation failure");
+    expect(canceled).toBe(true);
+    expect(entries["g0.seal"]!.len()).toBe(0);
+    expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
+  });
+
+  it("cancels preparation and invalidates a seal after its flush fails", async () => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
+    let canceled = false;
+    await expect(compactOverlayGenerationAtBoot(selected, files(entries), {
+      prepare: (target) => {
+        target.writeAllAt(0, source.bytes);
+        entries["g0.seal"]!.failNextFlush = true;
+      },
+      activate: () => { throw new Error("unexpected activation"); },
+      cancel: () => { canceled = true; },
+    }, 0)).rejects.toThrow("injected flush failure");
+    expect(canceled).toBe(true);
+    expect(entries["g0.seal"]!.len()).toBe(0);
+    expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
   });
 });

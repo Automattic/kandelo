@@ -26,6 +26,12 @@ export interface SelectedOverlayGeneration {
   sealedLength: number;
 }
 
+export interface OverlayCompactionHandoff {
+  prepare(target: PersistentOverlayStorage): void;
+  activate(): void;
+  cancel(): void;
+}
+
 export async function enableBestOverlayGeneration(
   files: OverlayGenerationFiles,
   enable: (journal: PersistentOverlayStorage) => void,
@@ -96,7 +102,7 @@ export async function enableBestOverlayGeneration(
 export async function compactOverlayGenerationAtBoot(
   selected: SelectedOverlayGeneration,
   files: OverlayGenerationFiles,
-  compact: (target: PersistentOverlayStorage) => void,
+  handoff: OverlayCompactionHandoff,
   minTailBytes = 32 * 1024 * 1024,
 ): Promise<SelectedOverlayGeneration> {
   if (selected.journal.len() - selected.sealedLength < minTailBytes) return selected;
@@ -107,6 +113,8 @@ export async function compactOverlayGenerationAtBoot(
   const target = await files.open(slot, "journal", true);
   if (target === null) throw new Error("could not create persistent overlay target journal");
   let seal: PersistentOverlayStorage | null = null;
+  let prepared = false;
+  let activated = false;
   try {
     seal = await files.open(slot, "seal", true);
     if (seal === null) throw new Error("could not create persistent overlay target seal");
@@ -114,18 +122,37 @@ export async function compactOverlayGenerationAtBoot(
     selected.journal.readExactAt(0, header);
     target.truncate(0);
     target.flush();
-    compact(target);
+    handoff.prepare(target);
+    prepared = true;
     const baseDigest = header.slice(8, 40);
     const generation = selected.generation + 1;
     await writeOverlayGenerationSeal(target, seal, generation, baseDigest);
     await verifyOverlayGenerationSeal(target, seal, baseDigest);
+    handoff.activate();
+    activated = true;
+    prepared = false;
     seal.close();
     selected.journal.close();
     return { journal: target, slot, generation, sealedLength: target.len() };
   } catch (error) {
-    seal?.close();
-    target.close();
-    selected.journal.close();
-    throw error;
+    let failure: unknown = error;
+    const cleanup = (operation: () => void): void => {
+      try {
+        operation();
+      } catch (cleanupError) {
+        failure = new AggregateError([failure, cleanupError], "persistent overlay compaction cleanup failed");
+      }
+    };
+    if (!activated && seal !== null) {
+      cleanup(() => {
+        seal.truncate(0);
+        seal.flush();
+      });
+    }
+    if (prepared) cleanup(() => handoff.cancel());
+    if (seal !== null) cleanup(() => seal.close());
+    cleanup(() => target.close());
+    cleanup(() => selected.journal.close());
+    throw failure;
   }
 }

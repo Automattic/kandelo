@@ -1281,7 +1281,11 @@ async function handleInit(msg: InitMessage) {
       const active = await compactOverlayGenerationAtBoot(
         selected,
         files,
-        (storage) => kernelWorker.compactRootfsPersistence(storage),
+        {
+          prepare: (storage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
+          activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
+          cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
+        },
       );
       persistentOverlay = active.journal;
       persistentOverlayLockDir = lockDir;
