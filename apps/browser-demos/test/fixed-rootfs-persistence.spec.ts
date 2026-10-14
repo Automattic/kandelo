@@ -1075,10 +1075,12 @@ test("browser termination loses unsynced writes without damaging the last durabl
   }
 });
 
-const quotaScenarios = (["fixed", "resizable"] as const).flatMap((mode) =>
-  (["write", "partial", "flush", "evict"] as const).map((fault) => ({ mode, fault })));
-for (const { mode, fault } of quotaScenarios) {
-  test(`browser ${mode} ${fault} quota failure rejects durability sync, preserves dirty reads, and recovers`, async ({ playwright, browserName, baseURL }, testInfo) => {
+const quotaScenarios = (["fixed", "resizable"] as const).flatMap((mode) => [
+  ...(["write", "flush", "evict"] as const).map((fault) => ({ mode, fault, cut: undefined })),
+  ...([1, 23, 24, 128, 4096, -1] as const).map((cut) => ({ mode, fault: "partial" as const, cut })),
+]);
+for (const { mode, fault, cut } of quotaScenarios) {
+  test(`browser ${mode} ${fault}${cut === undefined ? "" : cut === -1 ? " cut before transaction end" : ` cut ${cut}`} quota failure rejects durability sync, preserves dirty reads, and recovers`, async ({ playwright, browserName, baseURL }, testInfo) => {
     test.setTimeout(90_000);
     const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
     filesystem.mkdir("/bin", 0o755);
@@ -1108,7 +1110,7 @@ for (const { mode, fault } of quotaScenarios) {
         await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
         await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
         await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-        const before = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, quotaWorkerUrl, mode, fault }) => {
+        const before = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, quotaWorkerUrl, mode, fault, cut }) => {
           const { BrowserKernel } = await import(moduleUrl);
           const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
           const imageBytes = await (await fetch(imageUrl)).arrayBuffer();
@@ -1127,6 +1129,7 @@ for (const { mode, fault } of quotaScenarios) {
                 const faultUrl = new URL(quotaWorkerUrl);
                 faultUrl.searchParams.set("name", name);
                 faultUrl.searchParams.set("fault", fault === "evict" ? "write" : fault);
+                if (cut !== undefined) faultUrl.searchParams.set("cut", String(cut));
                 redirected++;
                 super(faultUrl, options);
               } else {
@@ -1169,6 +1172,7 @@ for (const { mode, fault } of quotaScenarios) {
           quotaWorkerUrl: new URL(`/@fs/${quotaWorkerPath}`, baseURL).href,
           mode,
           fault,
+          cut,
         });
         expect(before).toMatchObject({
           status: 0,
