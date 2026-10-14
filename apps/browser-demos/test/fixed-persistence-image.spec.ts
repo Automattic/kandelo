@@ -473,3 +473,66 @@ test("experimental computer refuses URL scripts and invalid names", async ({ pag
     script: true,
   });
 });
+
+test("persistent computer runtime lease excludes other tabs until teardown", async ({ playwright, browserName, baseURL }, testInfo) => {
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-runtime-lease-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const first = context.pages()[0] ?? await context.newPage();
+      const second = await context.newPage();
+      const url = new URL(`/@fs/${modulePath}`, baseURL).href;
+      const fixtureUrl = new URL("/trap-signal-test.html", baseURL).href;
+      await Promise.all([first.goto(fixtureUrl), second.goto(fixtureUrl)]);
+      await first.evaluate(async (moduleUrl) => {
+        const { acquireFixedPersistenceRuntimeLease } = await import(moduleUrl);
+        (window as Window & { releasePersistenceLease?: () => Promise<void> }).releasePersistenceLease =
+          await acquireFixedPersistenceRuntimeLease("computer-lease-probe");
+      }, url);
+      const blocked = await second.evaluate(async (moduleUrl) => {
+        const { acquireFixedPersistenceRuntimeLease } = await import(moduleUrl);
+        try {
+          const release = await acquireFixedPersistenceRuntimeLease("computer-lease-probe");
+          await release();
+          return false;
+        } catch (error) {
+          return error instanceof Error && error.message.includes("already running in another tab");
+        }
+      }, url);
+      expect(blocked).toBe(true);
+      await first.evaluate(async () => {
+        await (window as Window & { releasePersistenceLease?: () => Promise<void> }).releasePersistenceLease?.();
+      });
+      await second.evaluate(async (moduleUrl) => {
+        const { acquireFixedPersistenceRuntimeLease } = await import(moduleUrl);
+        (window as Window & { releasePersistenceLease?: () => Promise<void> }).releasePersistenceLease =
+          await acquireFixedPersistenceRuntimeLease("computer-lease-probe");
+      }, url);
+      await second.close();
+      const third = await context.newPage();
+      await third.goto(fixtureUrl);
+      const reacquired = await third.evaluate(async (moduleUrl) => {
+        const { acquireFixedPersistenceRuntimeLease } = await import(moduleUrl);
+        const release = await acquireFixedPersistenceRuntimeLease("computer-lease-probe");
+        await release();
+        return true;
+      }, url);
+      expect(reacquired).toBe(true);
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});

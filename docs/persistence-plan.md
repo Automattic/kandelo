@@ -98,9 +98,16 @@ manifest lock and promotes the prior manifest to primary. A changed manifest
 refuses promotion; a successful promotion prevents later repair of the newer
 image from silently switching away from writes made on the recovered branch.
 The damaged newer base and journal remain on OPFS for forensic recovery.
-The caller must quiesce the old kernel before taking a snapshot and both
-kernels before publication; Web Locks only serialize manifest operations,
-not guest journal writes. Later journal-record corruption is still handled by the
+The page now holds a separate per-computer Web Lock from before image selection
+until kernel teardown. A second tab using that page path refuses to boot the
+same computer, and same-page restarts wait for the preceding boot and kernel
+teardown before acquiring the lease again. Chromium, Firefox, and WebKit cover
+tab contention, explicit release, and tab-close release. Low-level kernel
+callers do not yet acquire that runtime lease. Replacement publication refuses
+while a page holds it, but cannot detect unleased low-level writers. Callers
+must quiesce the old kernel before taking a snapshot and both kernels before
+publication; manifest Web Locks alone do not stop guest journal writes.
+Later journal-record corruption is still handled by the
 kernel's recovery rules, not by cross-generation fallback. The page does not
 yet orchestrate in-place replacement, abandoned staged generations are not
 reclaimed, and selecting a replaced generation adds a full-image preflight

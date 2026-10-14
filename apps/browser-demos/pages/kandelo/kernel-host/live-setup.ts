@@ -9,6 +9,7 @@ import { connectorModeSize } from "@host/dri/kms-registry";
 import { composeImageInWorker } from "./image-composer-client";
 import { imageMachine, type ComposeImageResult, type ImageMachine } from "./image-composer";
 import {
+  acquireFixedPersistenceRuntimeLease,
   assertFixedPersistenceBootAllowed,
   loadFixedPersistenceImage,
   loadFixedPersistenceImageHandle,
@@ -596,7 +597,10 @@ export async function createLiveHost(
     await CANONICAL_PAGES_VFS_LOADER.activate("browser-main-shell");
   }
   let currentKernel: BrowserKernel | null = null;
+  let currentPersistenceLease: (() => Promise<void>) | null = null;
+  let bootInFlight: Promise<void> = Promise.resolve();
   let bootSeq = 0;
+  const persistenceName = opts.experimentalPersistenceName ?? undefined;
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const candidateEvidence = readInjectedProtectedBrowserEvidence(
     window.__KANDELO_ABI_STAGING_BROWSER_EVIDENCE__,
@@ -748,63 +752,86 @@ export async function createLiveHost(
     legacyScriptIgnored = false,
   ): Promise<void> {
     const seq = ++bootSeq;
-    const previousKernel = currentKernel;
-    // The descriptor still names the OUTGOING machine here: setDescriptor for
-    // the incoming one runs inside bootProfile, after this teardown.
-    const outgoingTitle = h.getBootDescriptor().title;
-    currentKernel = null;
-    // WHY: detach while this activation still owns the previous generation.
-    // If we await teardown first, a newer boot can attach its kernel and this
-    // superseded activation would detach that newer generation on resume.
-    setWebMcpSession(h, null);
-    h.detachKernel();
-    if (previousKernel) {
-      // No reclamation nudge needed after destroy: the previous machine's
-      // workers are terminated inside destroy(), and this boot path leaves no
-      // main-thread SharedArrayBuffer behind — image composition runs in a
-      // disposable worker whose buffer dies with its realm.
-      h.setMachineProgress(initialDestroyProgress(outgoingTitle));
-      const offDestroyProgress = subscribeDestroyProgress(
-        previousKernel,
-        outgoingTitle,
-        () => seq === bootSeq,
-        (progress) => h.setMachineProgress(progress),
-      );
-      try {
-        await previousKernel.destroy().catch(() => {});
-      } finally {
-        offDestroyProgress();
-      }
-    }
-    const bootStartedAt = performance.now();
-
+    const precedingBoot = bootInFlight;
+    let completeBoot!: () => void;
+    bootInFlight = new Promise<void>((resolve) => { completeBoot = resolve; });
     try {
-      const boot = (preferred?: FixedPersistenceImageHandle) => bootProfile(
-        h, profile, descriptor, bootStartedAt, () => seq === bootSeq,
-        requireServiceWorker, legacyScriptIgnored,
-        opts.experimentalPersistenceName ?? undefined, preferred,
-      );
-      let kernel: BrowserKernel;
-      try {
-        kernel = await boot();
-      } catch (error) {
-        if (!(error instanceof RetryPreviousPersistenceGeneration) || seq !== bootSeq) throw error;
-        kernel = await boot(error.previous);
+      if (persistenceName !== undefined) {
+        await precedingBoot;
+        if (seq !== bootSeq) return;
       }
-      if (seq !== bootSeq) {
-        await kernel.destroy().catch(() => {});
-        return;
-      }
-      currentKernel = kernel;
-    } catch (err) {
-      // A failed or superseded composition frees its own staging filesystem:
-      // the composer worker is terminated on every non-success path, which is
-      // WebKit's deterministic reclamation. Nothing to nudge here.
-      if (err instanceof BootSuperseded || seq !== bootSeq) return;
+      const previousKernel = currentKernel;
+      const previousLease = currentPersistenceLease;
+      // The descriptor still names the OUTGOING machine here: setDescriptor for
+      // the incoming one runs inside bootProfile, after this teardown.
+      const outgoingTitle = h.getBootDescriptor().title;
       currentKernel = null;
+      currentPersistenceLease = null;
+      // WHY: detach while this activation still owns the previous generation.
+      // If we await teardown first, a newer boot can attach its kernel and this
+      // superseded activation would detach that newer generation on resume.
       setWebMcpSession(h, null);
       h.detachKernel();
-      showBootError(h, descriptor, err, bootStartedAt);
+      if (previousKernel) {
+        // No reclamation nudge needed after destroy: the previous machine's
+        // workers are terminated inside destroy(), and this boot path leaves no
+        // main-thread SharedArrayBuffer behind — image composition runs in a
+        // disposable worker whose buffer dies with its realm.
+        h.setMachineProgress(initialDestroyProgress(outgoingTitle));
+        const offDestroyProgress = subscribeDestroyProgress(
+          previousKernel,
+          outgoingTitle,
+          () => seq === bootSeq,
+          (progress) => h.setMachineProgress(progress),
+        );
+        try {
+          await previousKernel.destroy().catch(() => {});
+        } finally {
+          offDestroyProgress();
+        }
+      }
+      await previousLease?.();
+      const bootStartedAt = performance.now();
+
+      let persistenceLease: (() => Promise<void>) | null = null;
+      try {
+        if (persistenceName !== undefined) {
+          persistenceLease = await acquireFixedPersistenceRuntimeLease(persistenceName);
+          if (seq !== bootSeq) throw new BootSuperseded();
+        }
+        const boot = (preferred?: FixedPersistenceImageHandle) => bootProfile(
+          h, profile, descriptor, bootStartedAt, () => seq === bootSeq,
+          requireServiceWorker, legacyScriptIgnored,
+          persistenceName, preferred,
+        );
+        let kernel: BrowserKernel;
+        try {
+          kernel = await boot();
+        } catch (error) {
+          if (!(error instanceof RetryPreviousPersistenceGeneration) || seq !== bootSeq) throw error;
+          kernel = await boot(error.previous);
+        }
+        if (seq !== bootSeq) {
+          await kernel.destroy().catch(() => {});
+          return;
+        }
+        currentKernel = kernel;
+        currentPersistenceLease = persistenceLease;
+        persistenceLease = null;
+      } catch (err) {
+        // A failed or superseded composition frees its own staging filesystem:
+        // the composer worker is terminated on every non-success path, which is
+        // WebKit's deterministic reclamation. Nothing to nudge here.
+        if (err instanceof BootSuperseded || seq !== bootSeq) return;
+        currentKernel = null;
+        setWebMcpSession(h, null);
+        h.detachKernel();
+        showBootError(h, descriptor, err, bootStartedAt);
+      } finally {
+        await persistenceLease?.();
+      }
+    } finally {
+      completeBoot();
     }
   }
 }
