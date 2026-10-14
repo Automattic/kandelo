@@ -1489,6 +1489,10 @@ describe("BrowserKernel", () => {
     };
     const first = new BrowserKernel({ kernelOwnedFs: true });
     const initialBoot = first.initFromOpfsImage(options);
+    await expect(first.initFromOpfsImage({
+      ...options,
+      experimentalFixedPersistenceName: "other-journal-lease-probe",
+    })).rejects.toThrow("already running");
     await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
     const firstWorker = MockWorker.instances[0]!;
     firstWorker.simulateMessage({ type: "ready" });

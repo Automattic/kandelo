@@ -346,6 +346,7 @@ async function acquirePersistentJournalLease(name: string): Promise<() => Promis
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
+  private workerStarting = false;
   private releasePersistentJournalLease: (() => Promise<void>) | null = null;
   private initialized = false;
   private maxPages: number;
@@ -622,7 +623,9 @@ export class BrowserKernel {
     rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
   }): Promise<void> {
-    if (this.workerStarted) throw new Error("browser kernel worker is already running");
+    if (this.workerStarted || this.workerStarting) {
+      throw new Error("browser kernel worker is already running");
+    }
     if (
       opts.takeVfsImageOwnership &&
       (
@@ -644,16 +647,19 @@ export class BrowserKernel {
       throw new Error("browser rootfs persistence modes are mutually exclusive");
     }
     const journalName = opts.experimentalFixedPersistenceName ?? opts.experimentalResizablePersistenceName;
-    const releaseJournalLease = journalName === undefined
-      ? null
-      : await acquirePersistentJournalLease(journalName);
-    // Create the kernel worker
+    let releaseJournalLease: (() => Promise<void>) | null = null;
+    this.workerStarting = true;
     try {
+      releaseJournalLease = journalName === undefined
+        ? null
+        : await acquirePersistentJournalLease(journalName);
       this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
     } catch (error) {
+      this.workerStarting = false;
       await releaseJournalLease?.();
       throw error;
     }
+    this.workerStarting = false;
     this.releasePersistentJournalLease = releaseJournalLease;
     this.workerStarted = true;
 
