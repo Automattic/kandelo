@@ -1292,16 +1292,25 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     resetBridgePendingRequests();
   }
 
-  if (msg.experimentalFixedPersistenceName !== undefined) {
-    if (!rootImage.has()) throw new Error("fixed rootfs persistence requires a rootfs image");
+  const persistenceName = msg.experimentalResizablePersistenceName ?? msg.experimentalFixedPersistenceName;
+  if (persistenceName !== undefined) {
+    if (msg.experimentalResizablePersistenceName !== undefined
+      && msg.experimentalFixedPersistenceName !== undefined) {
+      throw new Error("fixed and resizable persistence modes are mutually exclusive");
+    }
+    if (!rootImage.has()) throw new Error("rootfs persistence requires a rootfs image");
+    const resizable = msg.experimentalResizablePersistenceName !== undefined;
     const files = {
       open: (slot, file, create) => OpfsOverlayStorageFile.openFile(
-        msg.experimentalFixedPersistenceName!, slot, file, create,
+        persistenceName, slot, file, create,
       ),
     } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
     const selected = await enableBestOverlayGeneration(
       files,
-      (storage, index, checkpointEnd) => kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd),
+      (storage, index, checkpointEnd) => {
+        if (resizable) kernelWorker.enableResizableRootfsPersistence(storage, index, checkpointEnd);
+        else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
+      },
     );
     const handoff = {
       prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),

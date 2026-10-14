@@ -173,6 +173,8 @@ export interface BrowserKernelOptions {
 export interface BrowserKernelBootOptions {
   /** Opt-in fixed-size image-file overwrites in a named OPFS journal. */
   experimentalFixedPersistenceName?: string;
+  /** Opt-in resizable image-file persistence in a named OPFS journal. */
+  experimentalResizablePersistenceName?: string;
   /** Kernel wasm bytes; if omitted, fetched from the bundled URL. */
   kernelWasm?: ArrayBuffer;
   /**
@@ -223,6 +225,7 @@ export type BrowserKernelOwnedImageBootOptions = Omit<
 export interface BrowserKernelOwnedImageInitOptions {
   /** Opt-in fixed-size image-file overwrites in a named OPFS journal. */
   experimentalFixedPersistenceName?: string;
+  experimentalResizablePersistenceName?: string;
   kernelWasm?: ArrayBuffer;
   /**
    * One whole ordinary ArrayBuffer whose ownership is transferred to the
@@ -476,6 +479,7 @@ export class BrowserKernel {
    */
   async initFromImage(options: {
     experimentalFixedPersistenceName?: string;
+    experimentalResizablePersistenceName?: string;
     kernelWasm?: ArrayBuffer;
     vfsImage: Uint8Array | "default";
     lazyUrlBase?: string;
@@ -501,6 +505,7 @@ export class BrowserKernel {
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
+      experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
       takeVfsImageOwnership: false,
     });
   }
@@ -532,6 +537,7 @@ export class BrowserKernel {
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
+      experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
       takeVfsImageOwnership: true,
     });
   }
@@ -550,6 +556,7 @@ export class BrowserKernel {
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
+      experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
       takeVfsImageOwnership: false,
     });
   }
@@ -560,6 +567,7 @@ export class BrowserKernel {
    */
   private async bootWorker(opts: {
     experimentalFixedPersistenceName?: string;
+    experimentalResizablePersistenceName?: string;
     kernelWasmBytes: ArrayBuffer;
     vfsImage: Uint8Array;
     opfsImage?: FileSystemFileHandle;
@@ -673,6 +681,7 @@ export class BrowserKernel {
             ? undefined
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
           experimentalFixedPersistenceName: opts.experimentalFixedPersistenceName,
+          experimentalResizablePersistenceName: opts.experimentalResizablePersistenceName,
           workerEntryUrl,
           config: {
             maxWorkers: this.options.maxWorkers,

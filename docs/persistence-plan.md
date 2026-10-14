@@ -1,6 +1,6 @@
 # Persistent VFS image plan
 
-The current fixed-overwrite overlay is an opt-in prototype, not general
+The current fixed-overwrite and resizable-file overlays are opt-in prototypes, not general
 persistent rootfs support. Keep the immutable base image and its append-only
 journal separate: a failed update must never rewrite the only bootable base.
 The browser owns OPFS byte transport; the Rust kernel owns filesystem
@@ -190,7 +190,7 @@ only pre-fence checkpoint blocks, and compaction omits them while retaining
 newer replacements. The retained base fence is the minimum cutoff across
 shrinks, so repeated shrink/grow cycles cannot resurrect old base data.
 Tests exercise an 8 GiB logical base without allocating it and two indexed
-metadata compactions. A kernel-only opt-in resizable mount now connects this
+metadata compactions. An opt-in resizable mount now connects this
 to rootfs `write`, `ftruncate`, `read`, and file-size reporting for existing,
 eligible image-backed regular files. Fixed-overwrite mounts reject the
 metadata record.
@@ -198,15 +198,21 @@ The generic journal can also buffer growing and sparse writes with the same
 64-block dirty limit. It tracks at most 64 pending file sizes; eviction
 commits a file's size with any of its evicted blocks, so a crash cannot leave
 a committed block hidden past EOF to reappear on later growth. `sync` flushes
-remaining blocks and sizes together. This is a journal-level API, not yet a
-Node/browser-configurable growing-file mount.
+remaining blocks and sizes together. Node and browser hosts can now select
+the growing-file mount.
 
-The kernel-only resizable mount replays file sizes on boot and uses metadata
+The resizable mount replays file sizes on boot and uses metadata
 compaction/checkpointing without copying image-sized file contents. A Rust
 rootfs test writes above 8 GiB, reopens it, shrinks, regrows, compacts, and
 reopens the indexed generation. It rejects namespace records and references
-to unknown inodes. This does not yet persist timestamps or support `O_TRUNC`,
-creation, unlink, or rename; Node and browser do not expose this mode.
+to unknown inodes. Node's `experimentalResizablePersistencePath` and the
+browser's `experimentalResizablePersistenceName` expose this mode for
+image-backed regular files. A guest grows `/state` sparsely past 8 GiB,
+reopens it, shrinks and regrows it, then reopens it again and checks that old
+bytes are zero; this passes in Node and Chromium, Firefox, and WebKit without
+allocating the 8 GiB file. Fixed-mode mounts reject the resizable journal.
+This does not yet persist timestamps or support `O_TRUNC`, creation, unlink,
+or rename.
 
 General POSIX replay then needs an overlay-backed regular-file inode kind,
 not `Regular(Vec<u8>)`, so newly created and grown files also remain larger
