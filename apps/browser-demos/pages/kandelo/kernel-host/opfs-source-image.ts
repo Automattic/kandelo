@@ -1,9 +1,164 @@
+import { Decompress } from "fzstd";
 import { VFS_IMAGE_MAX_DECOMPRESSED_BYTES } from "../../../../../host/src/vfs/vfs-image-transport";
 import type { OpfsImageIntegrity } from "../../../../../host/src/vfs/opfs-image-reader";
 import { identityEncodedContentLength } from "../../../../../web-libs/kandelo-session/src/sized-download";
 
 const CHUNK_BYTES = 1024 * 1024;
+const MAX_ZSTD_WINDOW_BYTES = 16 * 1024 * 1024;
+const MAX_ZSTD_BLOCK_BYTES = 128 * 1024;
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
+
+class StreamBytes {
+  private current: Uint8Array<ArrayBufferLike> = new Uint8Array();
+  private offset = 0;
+  private readonly pending: Uint8Array[];
+  private received: number;
+
+  constructor(
+    prefix: Uint8Array[],
+    private readonly reader: ReadableStreamDefaultReader<Uint8Array>,
+    private readonly onProgress: (loadedBytes: number, totalBytes: number | undefined) => void,
+    private readonly totalBytes: number | undefined,
+  ) {
+    this.pending = [...prefix];
+    this.received = prefix.reduce((total, chunk) => total + chunk.byteLength, 0);
+  }
+
+  async take(count: number, label: string, allowEnd = false): Promise<Uint8Array | null> {
+    const bytes = new Uint8Array(count);
+    let copied = 0;
+    while (copied < count) {
+      if (this.offset === this.current.byteLength) {
+        const pending = this.pending.shift();
+        if (pending !== undefined) {
+          this.current = pending;
+        } else {
+          const next = await this.reader.read();
+          if (next.done) {
+            if (allowEnd && copied === 0) return null;
+            throw new Error(`zstd VFS image has a truncated ${label}`);
+          }
+          this.current = next.value;
+          this.received += next.value.byteLength;
+          this.onProgress(this.received, this.totalBytes);
+        }
+        this.offset = 0;
+        if (this.current.byteLength === 0) continue;
+      }
+      const available = Math.min(count - copied, this.current.byteLength - this.offset);
+      bytes.set(this.current.subarray(this.offset, this.offset + available), copied);
+      this.offset += available;
+      copied += available;
+    }
+    return bytes;
+  }
+
+  async skip(count: number): Promise<void> {
+    while (count > 0) {
+      const step = Math.min(count, CHUNK_BYTES);
+      await this.take(step, "skippable frame");
+      count -= step;
+    }
+  }
+}
+
+async function decodeZstdToSource(
+  prefix: Uint8Array[],
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onProgress: (loadedBytes: number, totalBytes: number | undefined) => void,
+  totalBytes: number | undefined,
+  write: (bytes: Uint8Array) => Promise<void>,
+): Promise<void> {
+  const input = new StreamBytes(prefix, reader, onProgress, totalBytes);
+  const outputs: Uint8Array[] = [];
+  const decompressor = new Decompress((bytes) => {
+    if (bytes.byteLength > 0) outputs.push(bytes);
+  });
+  let frames = 0;
+  let declaredTotal = 0;
+  const take = async (count: number, label: string) => (await input.take(count, label))!;
+  const decode = async (bytes: Uint8Array) => {
+    decompressor.push(bytes);
+    for (const output of outputs) await write(output);
+    outputs.length = 0;
+  };
+  for (;;) {
+    const magicBytes = await input.take(4, "frame magic", true);
+    if (magicBytes === null) break;
+    const magic = new DataView(magicBytes.buffer).getUint32(0, true);
+    if (magic >= 0x184d2a50 && magic <= 0x184d2a5f) {
+      const sizeBytes = await take(4, "skippable frame size");
+      await input.skip(new DataView(sizeBytes.buffer).getUint32(0, true));
+      continue;
+    }
+    if (magic !== 0xfd2fb528) throw new Error("zstd VFS image contains an invalid frame magic");
+    frames++;
+    const descriptorBytes = await take(1, "frame descriptor");
+    const descriptor = descriptorBytes[0]!;
+    if ((descriptor & 0x08) !== 0) throw new Error("zstd VFS image uses a reserved frame descriptor bit");
+    const singleSegment = (descriptor & 0x20) !== 0;
+    const windowDescriptorBytes = singleSegment ? new Uint8Array() : await take(1, "window descriptor");
+    const dictionaryBytes = await take([0, 1, 2, 4][descriptor & 0x03]!, "dictionary identity");
+    const contentSizeFlag = descriptor >>> 6;
+    const contentSizeBytes = await take(contentSizeFlag === 0 ? (singleSegment ? 1 : 0) : 1 << contentSizeFlag, "frame header");
+    let contentSize: bigint | undefined;
+    if (contentSizeBytes.byteLength > 0) {
+      contentSize = 0n;
+      for (let index = 0; index < contentSizeBytes.byteLength; index++) {
+        contentSize |= BigInt(contentSizeBytes[index]!) << BigInt(index * 8);
+      }
+      if (contentSizeFlag === 1) contentSize += 256n;
+    }
+    let windowSize = contentSize;
+    if (!singleSegment) {
+      const descriptorValue = windowDescriptorBytes[0]!;
+      const base = 1n << BigInt(10 + (descriptorValue >>> 3));
+      windowSize = base + (base >> 3n) * BigInt(descriptorValue & 7);
+    }
+    if (windowSize !== undefined && windowSize > BigInt(MAX_ZSTD_WINDOW_BYTES)) {
+      throw new Error("zstd VFS image exceeds its streaming window bound");
+    }
+    if (contentSize !== undefined && contentSize > BigInt(VFS_IMAGE_MAX_DECOMPRESSED_BYTES - declaredTotal)) {
+      throw new Error("zstd VFS image exceeds its decompressed byte bound");
+    }
+    const frameHeader = new Uint8Array(5 + windowDescriptorBytes.byteLength + dictionaryBytes.byteLength + contentSizeBytes.byteLength);
+    frameHeader.set(magicBytes);
+    frameHeader.set(descriptorBytes, 4);
+    frameHeader.set(windowDescriptorBytes, 5);
+    frameHeader.set(dictionaryBytes, 5 + windowDescriptorBytes.byteLength);
+    frameHeader.set(contentSizeBytes, 5 + windowDescriptorBytes.byteLength + dictionaryBytes.byteLength);
+    await decode(frameHeader);
+    let frameBound = 0;
+    for (;;) {
+      const blockHeader = await take(3, "block header");
+      const header = blockHeader[0]! | (blockHeader[1]! << 8) | (blockHeader[2]! << 16);
+      const last = (header & 1) !== 0;
+      const blockType = (header >>> 1) & 3;
+      const blockSize = header >>> 3;
+      if (blockType === 3 || blockSize > MAX_ZSTD_BLOCK_BYTES) {
+        throw new Error("zstd VFS image contains an invalid block header");
+      }
+      frameBound += blockType === 2 ? MAX_ZSTD_BLOCK_BYTES : blockSize;
+      if (contentSize === undefined && frameBound > VFS_IMAGE_MAX_DECOMPRESSED_BYTES - declaredTotal) {
+        throw new Error("zstd VFS image exceeds its decompressed byte bound");
+      }
+      const payload = await take(blockType === 1 ? 1 : blockSize, "block payload");
+      const block = new Uint8Array(3 + payload.byteLength);
+      block.set(blockHeader);
+      block.set(payload, 3);
+      await decode(block);
+      if (last) break;
+    }
+    if ((descriptor & 0x04) !== 0) await decode(await take(4, "content checksum"));
+    if (contentSize !== undefined && contentSize > BigInt(frameBound)) {
+      throw new Error("zstd VFS image frame content exceeds its block bound");
+    }
+    declaredTotal += contentSize === undefined ? frameBound : Number(contentSize);
+  }
+  if (frames === 0) throw new Error("zstd VFS image contains no data frame");
+  decompressor.push(new Uint8Array(), true);
+  for (const output of outputs) await write(output);
+}
 
 export interface StagedSourceImage {
   file: FileSystemFileHandle;
@@ -15,7 +170,7 @@ export async function stageRawVfsSourceImage(
   response: Response,
   onProgress: (loadedBytes: number, totalBytes: number | undefined) => void,
   stagingDirectory?: FileSystemDirectoryHandle,
-): Promise<StagedSourceImage | Uint8Array> {
+): Promise<StagedSourceImage> {
   if (response.body === null) throw new Error("VFS image has no response body");
   const reader = response.body.getReader();
   const totalBytes = identityEncodedContentLength(response);
@@ -37,24 +192,7 @@ export async function stageRawVfsSourceImage(
       copied += count;
       if (copied === header.byteLength) break;
     }
-    if (ZSTD_MAGIC.every((byte, index) => header[index] === byte)) {
-      const chunks = [...prefix];
-      let length = prefixLength;
-      for (;;) {
-        const next = await reader.read();
-        if (next.done) break;
-        length += next.value.byteLength;
-        chunks.push(next.value);
-        onProgress(length, totalBytes);
-      }
-      const imageBytes = new Uint8Array(length);
-      let offset = 0;
-      for (const bytes of chunks) {
-        imageBytes.set(bytes, offset);
-        offset += bytes.byteLength;
-      }
-      return imageBytes;
-    }
+    const compressed = ZSTD_MAGIC.every((byte, index) => header[index] === byte);
 
     const directory = stagingDirectory ?? await (await navigator.storage.getDirectory()).getDirectoryHandle(
       "kandelo-persistent-overlay", { create: true },
@@ -88,12 +226,16 @@ export async function stageRawVfsSourceImage(
           }
         }
       };
-      for (const bytes of prefix) await write(bytes);
-      for (;;) {
-        const next = await reader.read();
-        if (next.done) break;
-        await write(next.value);
-        onProgress(length, totalBytes);
+      if (compressed) {
+        await decodeZstdToSource(prefix, reader, onProgress, totalBytes, write);
+      } else {
+        for (const bytes of prefix) await write(bytes);
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          await write(next.value);
+          onProgress(length, totalBytes);
+        }
       }
       if (fill > 0) {
         const tail = chunk.slice(0, fill);

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { zstdCompressSync } from "node:zlib";
 import { expect, test, type Page } from "@playwright/test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
@@ -63,61 +64,63 @@ async function expectBootCount(page: Page, count: number, errors: string[]): Pro
   }
 }
 
-test("Kandelo page restores a guest-written computer after reload", async ({ playwright, browserName, baseURL }, testInfo) => {
-  test.setTimeout(180_000);
-  const image = await probeImage();
-  const fixtureDirectory = resolve(repoRoot, ".context");
-  mkdirSync(fixtureDirectory, { recursive: true });
-  const imagePath = resolve(fixtureDirectory, `persistence-page-probe-${crypto.randomUUID()}.vfs`);
-  writeFileSync(imagePath, image);
-  const sourceUrl = new URL(`/@fs/${imagePath}`, baseURL).href;
-  const pageUrl = new URL("/", baseURL);
-  pageUrl.searchParams.set("vfs", sourceUrl);
-  pageUrl.searchParams.set("experimentalPersistence", `page-${crypto.randomUUID()}`);
-  const projectUse = testInfo.project.use as {
-    channel?: string;
-    launchOptions?: Record<string, unknown>;
-    proxy?: Record<string, unknown>;
-    extraHTTPHeaders?: Record<string, string>;
-  };
-  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-persistence-page-"));
-  try {
-    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
-      channel: projectUse.channel,
-      proxy: projectUse.proxy as never,
-      extraHTTPHeaders: projectUse.extraHTTPHeaders,
-      ...(projectUse.launchOptions ?? {}),
-    });
+for (const sourceEncoding of ["raw", "zstd"] as const) {
+  test(`Kandelo page restores a guest-written computer after reload from ${sourceEncoding}`, async ({ playwright, browserName, baseURL }, testInfo) => {
+    test.setTimeout(180_000);
+    const image = await probeImage();
+    const fixtureDirectory = resolve(repoRoot, ".context");
+    mkdirSync(fixtureDirectory, { recursive: true });
+    const imagePath = resolve(fixtureDirectory, `persistence-page-probe-${crypto.randomUUID()}.vfs${sourceEncoding === "zstd" ? ".zst" : ""}`);
+    writeFileSync(imagePath, sourceEncoding === "zstd" ? zstdCompressSync(Buffer.from(image)) : image);
+    const sourceUrl = new URL(`/@fs/${imagePath}`, baseURL).href;
+    const pageUrl = new URL("/", baseURL);
+    pageUrl.searchParams.set("vfs", sourceUrl);
+    pageUrl.searchParams.set("experimentalPersistence", `page-${crypto.randomUUID()}`);
+    const projectUse = testInfo.project.use as {
+      channel?: string;
+      launchOptions?: Record<string, unknown>;
+      proxy?: Record<string, unknown>;
+      extraHTTPHeaders?: Record<string, string>;
+    };
+    const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-persistence-page-"));
     try {
-      await context.addInitScript(() => { window.confirm = () => true; });
-      const page = context.pages()[0] ?? await context.newPage();
-      const pageErrors: string[] = [];
-      page.on("pageerror", (error) => pageErrors.push(error.message));
-      await page.goto(pageUrl.href, { waitUntil: "domcontentloaded" });
-      await expectBootCount(page, 1, pageErrors);
-      rmSync(imagePath);
-      await page.addInitScript(() => {
-        const original = File.prototype.arrayBuffer;
-        File.prototype.arrayBuffer = function () {
-          if (this.name.endsWith(".base")) {
-            throw new Error("restored OPFS image was loaded as one ArrayBuffer");
-          }
-          return original.call(this);
-        };
+      const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+        channel: projectUse.channel,
+        proxy: projectUse.proxy as never,
+        extraHTTPHeaders: projectUse.extraHTTPHeaders,
+        ...(projectUse.launchOptions ?? {}),
       });
-      await page.reload({ waitUntil: "domcontentloaded" });
-      await expectBootCount(page, 2, pageErrors);
+      try {
+        await context.addInitScript(() => { window.confirm = () => true; });
+        const page = context.pages()[0] ?? await context.newPage();
+        const pageErrors: string[] = [];
+        page.on("pageerror", (error) => pageErrors.push(error.message));
+        await page.goto(pageUrl.href, { waitUntil: "domcontentloaded" });
+        await expectBootCount(page, 1, pageErrors);
+        rmSync(imagePath);
+        await page.addInitScript(() => {
+          const original = File.prototype.arrayBuffer;
+          File.prototype.arrayBuffer = function () {
+            if (this.name.endsWith(".base")) {
+              throw new Error("restored OPFS image was loaded as one ArrayBuffer");
+            }
+            return original.call(this);
+          };
+        });
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await expectBootCount(page, 2, pageErrors);
 
-      const competitor = await context.newPage();
-      await competitor.goto(pageUrl.href, { waitUntil: "domcontentloaded" });
-      await expect(competitor.locator('.kdock-status-text[data-status="error"]')).toBeAttached({ timeout: 60_000 });
-      await expect(competitor.locator(".ksys-line").last()).toContainText(/NoModificationAllowedError|No modification allowed|InvalidStateError|invalid state|another open Access Handle/i);
-      await competitor.close();
+        const competitor = await context.newPage();
+        await competitor.goto(pageUrl.href, { waitUntil: "domcontentloaded" });
+        await expect(competitor.locator('.kdock-status-text[data-status="error"]')).toBeAttached({ timeout: 60_000 });
+        await expect(competitor.locator(".ksys-line").last()).toContainText(/NoModificationAllowedError|No modification allowed|InvalidStateError|invalid state|another open Access Handle/i);
+        await competitor.close();
+      } finally {
+        await context.close();
+      }
     } finally {
-      await context.close();
+      rmSync(userDataDir, { recursive: true, force: true });
+      rmSync(imagePath, { force: true });
     }
-  } finally {
-    rmSync(userDataDir, { recursive: true, force: true });
-    rmSync(imagePath, { force: true });
-  }
-});
+  });
+}

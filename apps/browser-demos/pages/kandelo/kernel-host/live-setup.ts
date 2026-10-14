@@ -2060,16 +2060,12 @@ async function loadVfsImage(
     if (persistentInstall) {
       const source = await stageRawVfsSourceImage(response, (loadedBytes, totalBytes) =>
         reportProgress({ loadedBytes, totalBytes, status: "loading" }), stagingDirectory);
-      if (!(source instanceof Uint8Array)) {
-        reportProgress({
-          loadedBytes: source.integrity.length,
-          totalBytes: source.integrity.length,
-          status: "complete",
-        });
-        return { imageBytes: new ArrayBuffer(0), positionedSource: source };
-      }
-      reportProgress({ loadedBytes: source.byteLength, totalBytes: source.byteLength, status: "complete" });
-      return { imageBytes: source.buffer as ArrayBuffer };
+      reportProgress({
+        loadedBytes: source.integrity.length,
+        totalBytes: source.integrity.length,
+        status: "complete",
+      });
+      return { imageBytes: new ArrayBuffer(0), positionedSource: source };
     }
     const bytes = await readStreamedBody(
       response,
