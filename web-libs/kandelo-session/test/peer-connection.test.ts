@@ -4,6 +4,7 @@ import {
   createPeerConnectionInvite,
   decodePeerSignal,
   encodePeerSignal,
+  parseIceServers,
   type PeerConnectionDeclaration,
 } from "../src/peer-connection";
 
@@ -77,6 +78,29 @@ beforeEach(() => {
   vi.stubGlobal("RTCPeerConnection", FakeConnection);
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+describe("deployment ICE servers", () => {
+  it("accepts STUN and TURN servers with credentials", () => {
+    expect(parseIceServers(JSON.stringify([
+      { urls: "stun:stun.example:3478" },
+      { urls: ["turn:turn.example:3478?transport=udp", "turns:turn.example:5349"], username: "u", credential: "c" },
+    ]))).toEqual([
+      { urls: ["stun:stun.example:3478"] },
+      { urls: ["turn:turn.example:3478?transport=udp", "turns:turn.example:5349"], username: "u", credential: "c" },
+    ]);
+  });
+
+  it("fails loudly on a list it cannot use", () => {
+    expect(() => parseIceServers("stun:stun.example")).toThrow(/not JSON/);
+    expect(() => parseIceServers("[]")).toThrow(/1 to 8 servers/);
+    expect(() => parseIceServers(JSON.stringify(Array(9).fill({ urls: "stun:a" })))).toThrow(/1 to 8 servers/);
+    expect(() => parseIceServers(JSON.stringify([{ urls: "https://stun.example" }]))).toThrow(/stun:, stuns:, turn: or turns:/);
+    expect(() => parseIceServers(JSON.stringify([{ urls: [] }]))).toThrow(/stun:, stuns:, turn: or turns:/);
+    expect(() => parseIceServers(JSON.stringify([{ urls: "turn:a", credential: 7 }]))).toThrow(/credential must be a string/);
+    expect(() => parseIceServers(JSON.stringify([{ urls: "stun:a", credentialType: "oauth" }]))).toThrow(/unknown fields: credentialType/);
+    expect(() => parseIceServers(`[${"{\"urls\":\"stun:a\"},".repeat(800)}]`)).toThrow(/8 KiB/);
+  });
+});
 
 describe("purpose-checked peer signalling", () => {
   it("round-trips the SDP and rejects a different purpose before allocating RTC", async () => {

@@ -2579,9 +2579,18 @@ messages in both directions and between joiners, plus two-player Doom and
 TyrQuake with both players behind a separate forwarding host. Visible Chromium
 checks used the normal browser launch and real PHP signalling server. These
 runs require the local loopback ICE fixture; default ICE failed to find a direct
-route in the first visible check and reported that boundary. Cross-computer/NAT
-connectivity, long-duration games, and Firefox/WebKit guest runtime behavior
-remain unverified. See the dated
+route in the first visible check and reported that boundary. A Linux network lab
+verifies a computer on another network joining with STUN only
+(`apps/browser-demos/test/network-lab/`, run with its `run.sh`; it needs Docker,
+which on macOS supplies the Linux VM). Each Chromium sits in its own home
+network behind its own NAT router, which masquerades the home behind one public
+address and drops unsolicited inbound traffic as a household router does; the
+only route between the homes is through both NATs, and the only ICE server is
+the lab's STUN server. The test checks that each side's selected ICE route is
+the other router's public address with nothing relayed, then carries a guest TCP
+stream across it. Networks STUN cannot cross (symmetric NATs, which need a TURN
+relay), real internet paths between computers, long-duration games, and
+Firefox/WebKit guest runtime behavior remain unverified. See the dated
 [design and validation record](plans/2026-10-06-webrtc-guest-udp.md).
 
 `web-libs/kandelo-session/src/peer-connection.ts` owns reusable WebRTC
@@ -2599,7 +2608,13 @@ there is no legacy compatibility path.
 ICE gathering waits at most three seconds before emitting the candidates
 available so far. The default servers provide STUN, with no TURN relay;
 failure to find a direct route is reported explicitly. Consumers may supply
-their own ICE servers. Missing channel arrival is bounded to 30 seconds after
+their own ICE servers. The Kandelo app takes its network sessions' ICE
+servers from `VITE_KANDELO_ICE_SERVERS` when it is built or served: a JSON
+array in `RTCIceServer` form, up to 8 servers with `stun:`, `stuns:`, `turn:`
+or `turns:` URLs and an optional username and credential. A malformed list
+fails the session with its reason rather than falling back to the public
+defaults, and a deployment that wants peers behind symmetric NATs to connect
+names a TURN server there. Missing channel arrival is bounded to 30 seconds after
 ICE connects; the manual answer exchange has no deadline. Cancellation closes
 pending channels and connections.
 Close and failure subscriptions expose established connection teardown.

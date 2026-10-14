@@ -66,6 +66,18 @@ test("product evidence runs only with both protected handoff paths", () => {
   );
 });
 
+test("the separate-networks lab runs only when named, on its own server", () => {
+  const lab = /kandelo-network-lab\.spec\.ts$/;
+  const hidden = (argv: string[]) =>
+    playwrightTestIgnoreForEnvironment({}, argv).some((pattern) => pattern.source === lab.source);
+  assert.equal(hidden([]), true);
+  assert.equal(hidden(["test/kandelo-network-session.spec.ts"]), true);
+  assert.equal(hidden(["test/kandelo-network-lab.spec.ts"]), false);
+  assert.equal(hidden(["/checkout/apps/browser-demos/test/kandelo-network-lab.spec.ts:12"]), false);
+  // The lab's server carries its ICE servers; a running one does not.
+  assert.equal(shouldReuseExistingPlaywrightServer({ KANDELO_NETWORK_LAB: "1" }), false);
+});
+
 test("exact product proofs never reuse another worktree's server", () => {
   assert.equal(shouldReuseExistingPlaywrightServer({}), true);
   assert.equal(shouldReuseExistingPlaywrightServer({ CI: "1" }), false);

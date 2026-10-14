@@ -13,6 +13,45 @@ const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.cloudflare.com:3478" },
 ];
 
+const MAX_ICE_SERVERS = 8;
+const MAX_ICE_SERVERS_TEXT = 8 * 1024;
+
+/**
+ * Parse a deployment's ICE server list, JSON in RTCIceServer form:
+ * `[{"urls": "stun:stun.example:3478"}, {"urls": ["turn:…"], "username": "…", "credential": "…"}]`.
+ * The list is deployment configuration, so a malformed one fails loudly
+ * instead of falling back to the defaults and connecting through servers the
+ * deployment did not choose.
+ */
+export function parseIceServers(text: string): RTCIceServer[] {
+  if (text.length > MAX_ICE_SERVERS_TEXT) throw new Error("the ICE server list exceeds 8 KiB");
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("the ICE server list is not JSON");
+  }
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ICE_SERVERS) {
+    throw new Error(`the ICE server list must be an array of 1 to ${MAX_ICE_SERVERS} servers`);
+  }
+  return value.map((entry, index) => {
+    const where = `ICE server ${index + 1}`;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`${where} is not an object`);
+    const { urls, username, credential, ...rest } = entry as Record<string, unknown>;
+    if (Object.keys(rest).length > 0) throw new Error(`${where} has unknown fields: ${Object.keys(rest).join(", ")}`);
+    const list = Array.isArray(urls) ? urls : [urls];
+    if (list.length === 0 || !list.every((url) => typeof url === "string" && /^(stuns?|turns?):\S+$/i.test(url))) {
+      throw new Error(`${where} needs stun:, stuns:, turn: or turns: urls`);
+    }
+    if (username !== undefined && typeof username !== "string") throw new Error(`${where} username must be a string`);
+    if (credential !== undefined && typeof credential !== "string") throw new Error(`${where} credential must be a string`);
+    const server: RTCIceServer = { urls: list as string[] };
+    if (username !== undefined) server.username = username;
+    if (credential !== undefined) server.credential = credential;
+    return server;
+  });
+}
+
 export interface PeerChannelDeclaration {
   readonly label: string;
   readonly options?: RTCDataChannelInit;
