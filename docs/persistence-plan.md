@@ -98,3 +98,32 @@ every byte offset of a torn 4 KiB block transaction; Node and browser tests
 reopen journals torn before and after the header and near the commit marker.
 This does not yet cover every host write and flush failure point, so the
 dirty-cache milestone remains open.
+
+## Next format boundary
+
+The current in-memory map of every changed block cannot be the production
+index. A checkpoint should instead be an immutable, sorted, checksummed table
+stored next to each journal generation. Its fixed-size pages can be searched
+with positioned reads and a bounded page cache; the in-memory map then holds
+only mutations appended since that checkpoint. The seal must bind the exact
+base image, table, journal prefix, and replay sequence. Boot may verify and
+open a sealed table without rebuilding its entire map, then replay only the
+bounded unsealed tail. A corrupt table or mismatched seal must reject that
+generation and try the prior valid one. Existing v1 journals need an explicit
+conversion path; no format change may silently reset a machine.
+
+Live compaction needs a two-phase handoff, unlike the current boot-only
+handoff. While guest operations are stopped at a kernel-worker boundary, copy
+live records into the inactive slot, flush its journal and table, publish and
+verify its seal, and only then switch the kernel's active storage handle. If
+any stage fails before publication, keep serving the old generation. The old
+slot must remain available after publication for fallback. The tail budget
+must trigger this handoff before its in-memory map can grow without bound;
+compaction cannot be deferred indefinitely to the next boot.
+
+General POSIX replay then needs an overlay-backed regular-file inode kind,
+not `Regular(Vec<u8>)`, so newly created and grown files also remain larger
+than runtime memory. Journal transactions must publish directory entries,
+inode metadata, file size, and blocks together; recovery must rebuild the
+same link counts, open-unlinked lifetime, and zero-filled truncate/extend
+behavior as the live kernel.
