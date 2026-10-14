@@ -6,8 +6,7 @@ import {
   writeOverlayGenerationSeal,
 } from "../src/vfs/overlay-generation-seal";
 import {
-  checkpointCompactedOverlayGenerationAtBoot,
-  compactOverlayGenerationAtBoot,
+  compactOverlayGeneration,
   enableBestOverlayGeneration,
   type OverlayGenerationFiles,
 } from "../src/vfs/overlay-generation-selection";
@@ -207,11 +206,6 @@ describe("overlay generation boot selection", () => {
     });
     expect(indexed.slot).toBe("g1");
     expect(indexed.index).toBe(entries["g1.index"]);
-    expect(await compactOverlayGenerationAtBoot(indexed, files(entries), {
-      prepare: () => { throw new Error("indexed compaction must be deferred"); },
-      activate: () => { throw new Error("indexed compaction must be deferred"); },
-      cancel: () => { throw new Error("indexed compaction must be deferred"); },
-    }, 0)).toBe(indexed);
     entries["g1.index"]!.bytes[1] ^= 1;
     expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
     entries["g0.seal"]!.truncate(0);
@@ -230,22 +224,28 @@ describe("overlay generation boot selection", () => {
     const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
     const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
     const stages: string[] = [];
-    const compacted = await compactOverlayGenerationAtBoot(selected, files(entries), {
+    const compacted = await compactOverlayGeneration(selected, files(entries), {
       prepare: (target) => {
         target.writeAllAt(0, source.bytes);
         target.flush();
         stages.push("prepare");
+        queueMicrotask(() => stages.push("microtask"));
+      },
+      checkpoint: (index) => {
+        index.writeAllAt(0, Uint8Array.of(1, 2, 3));
+        stages.push("checkpoint");
       },
       activate: () => {
-        expect(entries["g0.seal"]!.len()).toBeGreaterThan(88);
+        expect(entries["g0.seal"]!.len()).toBeGreaterThan(96);
         stages.push("activate");
       },
       cancel: () => { throw new Error("unexpected cancellation"); },
     }, 0);
-    expect(stages).toEqual(["prepare", "activate"]);
+    expect(stages).toEqual(["prepare", "checkpoint", "activate", "microtask"]);
     expect(compacted.slot).toBe("g0");
     expect(compacted.generation).toBe(1);
-    expect(entries["g0.seal"]!.len()).toBeGreaterThan(88);
+    expect(entries["g0.seal"]!.len()).toBeGreaterThan(96);
+    expect(compacted.index).toBe(entries["g0.index"]);
     expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
     expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
   });
@@ -254,11 +254,12 @@ describe("overlay generation boot selection", () => {
     const source = new MemoryStorage(new Uint8Array(72).fill(7));
     const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
     const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
-    await expect(compactOverlayGenerationAtBoot(selected, files(entries), {
+    await expect(compactOverlayGeneration(selected, files(entries), {
       prepare: (target) => {
         target.writeAllAt(0, Uint8Array.of(1, 2));
         throw new Error("injected target failure");
       },
+      checkpoint: () => { throw new Error("unexpected checkpoint"); },
       activate: () => { throw new Error("unexpected activation"); },
       cancel: () => {},
     }, 0)).rejects.toThrow("injected target failure");
@@ -271,8 +272,9 @@ describe("overlay generation boot selection", () => {
     const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
     const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
     let canceled = false;
-    await expect(compactOverlayGenerationAtBoot(selected, files(entries), {
+    await expect(compactOverlayGeneration(selected, files(entries), {
       prepare: (target) => { target.writeAllAt(0, source.bytes); },
+      checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(1, 2, 3)); },
       activate: () => { throw new Error("injected activation failure"); },
       cancel: () => { canceled = true; },
     }, 0)).rejects.toThrow("injected activation failure");
@@ -286,11 +288,12 @@ describe("overlay generation boot selection", () => {
     const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
     const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
     let canceled = false;
-    await expect(compactOverlayGenerationAtBoot(selected, files(entries), {
+    await expect(compactOverlayGeneration(selected, files(entries), {
       prepare: (target) => {
         target.writeAllAt(0, source.bytes);
         entries["g0.seal"]!.failNextFlush = true;
       },
+      checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(1, 2, 3)); },
       activate: () => { throw new Error("unexpected activation"); },
       cancel: () => { canceled = true; },
     }, 0)).rejects.toThrow("injected flush failure");
@@ -299,29 +302,22 @@ describe("overlay generation boot selection", () => {
     expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
   });
 
-  it("binds a kernel-written checkpoint to a newly compacted generation", async () => {
-    const journal = new MemoryStorage(new Uint8Array(72).fill(7));
-    const entries: Record<string, MemoryStorage> = { "g0.journal": journal, "g0.seal": new MemoryStorage() };
-    const selected = { journal, slot: "g0", generation: 1, sealedLength: 72 } as const;
-    await writeOverlayGenerationSeal(journal, entries["g0.seal"]!, 1, journal.bytes.slice(8, 40));
-    const indexed = await checkpointCompactedOverlayGenerationAtBoot(selected, files(entries), (index) => {
-      index.writeAllAt(0, Uint8Array.of(1, 2, 3));
-      index.flush();
-    });
-    expect(indexed.index).toBe(entries["g0.index"]);
-    expect((await verifyOverlayGenerationSeal(journal, entries["g0.seal"]!, undefined, false, indexed.index)).indexLength)
-      .toBe(3);
-  });
-
-  it("keeps the compacted seal usable when checkpoint creation fails", async () => {
-    const journal = new MemoryStorage(new Uint8Array(72).fill(7));
-    const entries: Record<string, MemoryStorage> = { "g0.journal": journal, "g0.seal": new MemoryStorage() };
-    const selected = { journal, slot: "g0", generation: 1, sealedLength: 72 } as const;
-    await writeOverlayGenerationSeal(journal, entries["g0.seal"]!, 1, journal.bytes.slice(8, 40));
-    await expect(checkpointCompactedOverlayGenerationAtBoot(selected, files(entries), (index) => {
-      index.writeAllAt(0, Uint8Array.of(1, 2));
-      throw new Error("injected checkpoint failure");
-    })).rejects.toThrow("injected checkpoint failure");
-    expect((await verifyOverlayGenerationSeal(journal, entries["g0.seal"]!)).indexLength).toBeUndefined();
+  it("keeps the source active when checkpoint creation fails", async () => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
+    let canceled = false;
+    await expect(compactOverlayGeneration(selected, files(entries), {
+      prepare: (target) => { target.writeAllAt(0, source.bytes); },
+      checkpoint: (index) => {
+        index.writeAllAt(0, Uint8Array.of(1, 2));
+        throw new Error("injected checkpoint failure");
+      },
+      activate: () => { throw new Error("unexpected activation"); },
+      cancel: () => { canceled = true; },
+    }, 0)).rejects.toThrow("injected checkpoint failure");
+    expect(canceled).toBe(true);
+    expect(entries["g0.seal"]!.len()).toBe(0);
+    expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
   });
 });

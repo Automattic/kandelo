@@ -39,7 +39,7 @@ import type {
 import { NodePlatformIO } from "./platform/node";
 import { OverlayStorageFile } from "./vfs/overlay-storage";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { checkpointCompactedOverlayGenerationAtBoot, compactOverlayGenerationAtBoot, enableBestOverlayGeneration } from "./vfs/overlay-generation-selection";
+import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor } from "./vfs/overlay-generation-selection";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
@@ -182,6 +182,7 @@ const port = parentPort;
 let kernelWorker: CentralizedKernelWorker;
 let persistentOverlay: PersistentOverlayStorage | null = null;
 let persistentOverlayIndex: PersistentOverlayStorage | null = null;
+let liveOverlayCompactor: LiveOverlayCompactor | null = null;
 let persistentOverlayLockDir: string | null = null;
 let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
@@ -1280,23 +1281,22 @@ async function handleInit(msg: InitMessage) {
         files,
         (storage, index, checkpointEnd) => kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd),
       );
-      const active = await compactOverlayGenerationAtBoot(
-        selected,
-        files,
-        {
-          prepare: (storage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
-          activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
-          cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
-        },
-      );
-      const indexed = active === selected ? active : await checkpointCompactedOverlayGenerationAtBoot(
-        active,
-        files,
-        (index) => kernelWorker.checkpointRootfsPersistence(index),
-      );
-      persistentOverlay = indexed.journal;
-      persistentOverlayIndex = indexed.index ?? null;
+      const handoff = {
+        prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
+        checkpoint: (index: PersistentOverlayStorage) => kernelWorker.checkpointPreparedRootfsPersistence(index),
+        activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
+        cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
+      };
+      const active = await compactOverlayGeneration(selected, files, handoff);
+      persistentOverlay = active.journal;
+      persistentOverlayIndex = active.index ?? null;
       persistentOverlayLockDir = lockDir;
+      liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
+        persistentOverlay = next.journal;
+        persistentOverlayIndex = next.index ?? null;
+      }, (error) => {
+        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${error}` });
+      });
     } catch (error) {
       rmdirSync(lockDir);
       throw error;
@@ -1304,6 +1304,7 @@ async function handleInit(msg: InitMessage) {
   }
 
   initReady = true;
+  liveOverlayCompactor?.start();
   post({ type: "ready" });
 }
 
@@ -3497,6 +3498,8 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 // --- Destroy ---
 
 async function performDestroy() {
+  liveOverlayCompactor?.stop();
+  liveOverlayCompactor = null;
   await repoLazyAssetResolver?.close();
   // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
   // WORKAROUND, remove when the engine bug is fixed; see

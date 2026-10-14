@@ -903,6 +903,7 @@ export class WasmPosixKernel {
     | undefined = undefined;
   #persistentOverlayStorage: PersistentOverlayStorage | null = null;
   #persistentOverlayTargetStorage: PersistentOverlayStorage | null = null;
+  #persistentOverlayCompactionStorage: PersistentOverlayStorage | null = null;
   private waitpidSab: SharedArrayBuffer | null = null;
   /**
    * A backend directory iterator may already have advanced before the host
@@ -1155,6 +1156,10 @@ export class WasmPosixKernel {
 
   setPersistentOverlayTargetStorage(storage: PersistentOverlayStorage | null): void {
     this.#persistentOverlayTargetStorage = storage;
+  }
+
+  setPersistentOverlayCompactionStorage(storage: PersistentOverlayStorage | null): void {
+    this.#persistentOverlayCompactionStorage = storage;
   }
 
   constructor(
@@ -1970,6 +1975,38 @@ export class WasmPosixKernel {
         },
         host_overlay_target_truncate: (length: bigint): number => {
           const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38;
+          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_compaction_len: (): bigint => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38n;
+          try { return BigInt(storage.len()); } catch (error) { return BigInt(negErrno(error)); }
+        },
+        host_overlay_compaction_read: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try {
+            const destination = this.#rustLentKernelDestination(ptr, len, "host_overlay_compaction_read destination");
+            const bytes = new Uint8Array(len);
+            storage.readExactAt(offset, bytes);
+            this.#writeKernelBytes(destination, bytes);
+            return 0;
+          } catch (error) { return negErrno(error); }
+        },
+        host_overlay_compaction_write: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
+          catch (error) { return negErrno(error); }
+        },
+        host_overlay_compaction_flush: (): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_compaction_truncate: (length: bigint): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
           if (storage === null) return -38;
           try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
         },

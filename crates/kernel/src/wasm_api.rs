@@ -136,6 +136,11 @@ unsafe extern "C" {
     fn host_overlay_target_write(offset: i64, ptr: *const u8, len: u32) -> i32;
     fn host_overlay_target_flush() -> i32;
     fn host_overlay_target_truncate(len: i64) -> i32;
+    fn host_overlay_compaction_len() -> i64;
+    fn host_overlay_compaction_read(offset: i64, ptr: *mut u8, len: u32) -> i32;
+    fn host_overlay_compaction_write(offset: i64, ptr: *const u8, len: u32) -> i32;
+    fn host_overlay_compaction_flush() -> i32;
+    fn host_overlay_compaction_truncate(len: i64) -> i32;
     fn host_pwrite(
         handle: i64,
         buf_ptr: *const u8,
@@ -2128,6 +2133,8 @@ struct HostOverlayStorage;
 
 struct HostOverlayTargetStorage;
 
+struct HostOverlayCompactionStorage;
+
 impl crate::persistent_overlay::OverlayStorage for HostOverlayStorage {
     fn len(&mut self) -> Result<u64, Errno> {
         let length = unsafe { host_overlay_len() };
@@ -2181,6 +2188,34 @@ impl crate::persistent_overlay::OverlayStorage for HostOverlayTargetStorage {
     fn truncate(&mut self, len: u64) -> Result<(), Errno> {
         let len = i64::try_from(len).map_err(|_| Errno::EOVERFLOW)?;
         i32_to_result(unsafe { host_overlay_target_truncate(len) })
+    }
+}
+
+impl crate::persistent_overlay::OverlayStorage for HostOverlayCompactionStorage {
+    fn len(&mut self) -> Result<u64, Errno> {
+        let length = unsafe { host_overlay_compaction_len() };
+        u64::try_from(length).map_err(|_| Errno::EIO)
+    }
+
+    fn read_exact_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let len = u32::try_from(dst.len()).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_compaction_read(offset, dst.as_mut_ptr(), len) })
+    }
+
+    fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let len = u32::try_from(src.len()).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_compaction_write(offset, src.as_ptr(), len) })
+    }
+
+    fn flush(&mut self) -> Result<(), Errno> {
+        i32_to_result(unsafe { host_overlay_compaction_flush() })
+    }
+
+    fn truncate(&mut self, len: u64) -> Result<(), Errno> {
+        let len = i64::try_from(len).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_compaction_truncate(len) })
     }
 }
 
@@ -2251,13 +2286,14 @@ pub extern "C" fn kernel_rootfs_sync_persistence() -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_rootfs_checkpoint_persistence(target_slot: u32) -> i32 {
-    let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match target_slot {
+pub extern "C" fn kernel_rootfs_checkpoint_prepared_persistence(index_slot: u32) -> i32 {
+    let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match index_slot {
         0 => Box::new(HostOverlayStorage),
         1 => Box::new(HostOverlayTargetStorage),
+        2 => Box::new(HostOverlayCompactionStorage),
         _ => return -(Errno::EINVAL as i32),
     };
-    match crate::rootfs::checkpoint_persistence(storage) {
+    match crate::rootfs::checkpoint_prepared_persistence(storage) {
         Ok(()) => 0,
         Err(error) => -(error as i32),
     }
@@ -2268,6 +2304,7 @@ pub extern "C" fn kernel_rootfs_prepare_persistence_compaction(target_slot: u32)
     let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match target_slot {
         0 => Box::new(HostOverlayStorage),
         1 => Box::new(HostOverlayTargetStorage),
+        2 => Box::new(HostOverlayCompactionStorage),
         _ => return -(Errno::EINVAL as i32),
     };
     match crate::rootfs::prepare_persistence_compaction(storage) {

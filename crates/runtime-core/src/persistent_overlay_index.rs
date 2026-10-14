@@ -63,12 +63,30 @@ pub struct BlockCheckpoint<S: OverlayStorage> {
 
 impl<S: OverlayStorage> BlockCheckpoint<S> {
     pub fn create(
-        mut storage: S,
+        storage: S,
         base_digest: [u8; 32],
         journal_digest: [u8; 32],
         journal_end: u64,
         next_sequence: u64,
         entries: impl IntoIterator<Item = BlockCheckpointEntry>,
+    ) -> Result<Self, Errno> {
+        Self::create_checked(
+            storage,
+            base_digest,
+            journal_digest,
+            journal_end,
+            next_sequence,
+            entries.into_iter().map(Ok),
+        )
+    }
+
+    pub fn create_checked(
+        mut storage: S,
+        base_digest: [u8; 32],
+        journal_digest: [u8; 32],
+        journal_end: u64,
+        next_sequence: u64,
+        entries: impl IntoIterator<Item = Result<BlockCheckpointEntry, Errno>>,
     ) -> Result<Self, Errno> {
         if storage.len()? != 0 {
             return Err(Errno::EEXIST);
@@ -82,6 +100,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         let mut digest = Sha256::new();
         let mut previous = None;
         for entry in entries {
+            let entry = entry?;
             entry.validate(journal_end)?;
             let key = (entry.inode, entry.block);
             if previous.is_some_and(|previous| previous >= key) {

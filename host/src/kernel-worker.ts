@@ -5539,6 +5539,7 @@ export class CentralizedKernelWorker {
     }
     this.#kernel.setPersistentOverlayStorage(storage);
     this.#kernel.setPersistentOverlayTargetStorage(index ?? null);
+    this.#kernel.setPersistentOverlayCompactionStorage(null);
     let status: number | undefined;
     try {
       this.#runImmediateKernelEntry("enable fixed rootfs persistence", (entry) => {
@@ -5558,7 +5559,8 @@ export class CentralizedKernelWorker {
       });
       if (status !== 0) throw new Error(`kernel refused fixed rootfs persistence (errno ${-(status ?? 5)})`);
       this.#persistentOverlayImportSlot = 0;
-      this.#persistentOverlayIndexActive = index !== undefined;
+      this.#persistentOverlayIndexSlot = index === undefined ? null : 1;
+      this.#persistentOverlayActiveStorage = storage;
     } catch (error) {
       this.#kernel.setPersistentOverlayStorage(null);
       this.#kernel.setPersistentOverlayTargetStorage(null);
@@ -5566,16 +5568,31 @@ export class CentralizedKernelWorker {
     }
   }
 
-  #persistentOverlayImportSlot: 0 | 1 = 0;
-  #persistentOverlayIndexActive = false;
-  #preparedOverlayImportSlot: 0 | 1 | null = null;
+  #persistentOverlayImportSlot: 0 | 1 | 2 = 0;
+  #persistentOverlayIndexSlot: 0 | 1 | 2 | null = null;
+  #preparedOverlayImportSlot: 0 | 1 | 2 | null = null;
+  #persistentOverlayActiveStorage: PersistentOverlayStorage | null = null;
+  #preparedOverlayStorage: PersistentOverlayStorage | null = null;
+  #preparedOverlayIndexStorage: PersistentOverlayStorage | null = null;
+
+  #setPersistentOverlaySlot(slot: 0 | 1 | 2, storage: PersistentOverlayStorage | null): void {
+    if (slot === 0) this.#kernel.setPersistentOverlayStorage(storage);
+    else if (slot === 1) this.#kernel.setPersistentOverlayTargetStorage(storage);
+    else this.#kernel.setPersistentOverlayCompactionStorage(storage);
+  }
+
+  #freePersistentOverlaySlot(): 0 | 1 | 2 {
+    const slot = ([0, 1, 2] as const).find((candidate) =>
+      candidate !== this.#persistentOverlayImportSlot && candidate !== this.#persistentOverlayIndexSlot,
+    );
+    if (slot === undefined) throw new Error("no persistent overlay storage slot is available");
+    return slot;
+  }
 
   prepareRootfsPersistenceCompaction(target: PersistentOverlayStorage): void {
-    if (this.#persistentOverlayIndexActive) throw new Error("indexed rootfs compaction needs a separate target storage import");
     if (this.#preparedOverlayImportSlot !== null) throw new Error("rootfs persistence compaction is already prepared");
-    const targetSlot = this.#persistentOverlayImportSlot === 0 ? 1 : 0;
-    if (targetSlot === 0) this.#kernel.setPersistentOverlayStorage(target);
-    else this.#kernel.setPersistentOverlayTargetStorage(target);
+    const targetSlot = this.#freePersistentOverlaySlot();
+    this.#setPersistentOverlaySlot(targetSlot, target);
     let status: number | undefined;
     try {
       this.#runImmediateKernelEntry("prepare rootfs persistence compaction", (entry) => {
@@ -5587,9 +5604,35 @@ export class CentralizedKernelWorker {
       });
       if (status !== 0) throw new Error(`rootfs persistence compaction preparation failed (errno ${-(status ?? 5)})`);
       this.#preparedOverlayImportSlot = targetSlot;
+      this.#preparedOverlayStorage = target;
     } catch (error) {
-      if (targetSlot === 0) this.#kernel.setPersistentOverlayStorage(null);
-      else this.#kernel.setPersistentOverlayTargetStorage(null);
+      this.#setPersistentOverlaySlot(targetSlot, null);
+      throw error;
+    }
+  }
+
+  checkpointPreparedRootfsPersistence(index: PersistentOverlayStorage): void {
+    if (this.#preparedOverlayImportSlot === null || this.#preparedOverlayStorage === null) {
+      throw new Error("rootfs persistence compaction is not prepared");
+    }
+    if (this.#preparedOverlayIndexStorage !== null) throw new Error("rootfs persistence checkpoint is already prepared");
+    const source = this.#persistentOverlayActiveStorage;
+    if (source === null) throw new Error("rootfs persistence has no active journal");
+    const indexSlot = this.#persistentOverlayImportSlot;
+    this.#setPersistentOverlaySlot(indexSlot, index);
+    let status: number | undefined;
+    try {
+      this.#runImmediateKernelEntry("checkpoint prepared rootfs persistence", (entry) => {
+        const checkpoint = this.#kernelInstanceForEntry(entry).exports
+          .kernel_rootfs_checkpoint_prepared_persistence as ((indexSlot: number) => number) | undefined;
+        if (typeof checkpoint !== "function") throw new Error("kernel lacks prepared rootfs persistence checkpoint export");
+        status = checkpoint(indexSlot);
+        return undefined;
+      });
+      if (status !== 0) throw new Error(`prepared rootfs persistence checkpoint failed (errno ${-(status ?? 5)})`);
+      this.#preparedOverlayIndexStorage = index;
+    } catch (error) {
+      this.#setPersistentOverlaySlot(indexSlot, source);
       throw error;
     }
   }
@@ -5606,47 +5649,38 @@ export class CentralizedKernelWorker {
       return undefined;
     });
     if (status !== 0) throw new Error(`rootfs persistence compaction activation failed (errno ${-(status ?? 5)})`);
-    if (targetSlot === 0) this.#kernel.setPersistentOverlayTargetStorage(null);
-    else this.#kernel.setPersistentOverlayStorage(null);
+    if (this.#preparedOverlayIndexStorage === null) {
+      this.#setPersistentOverlaySlot(this.#persistentOverlayImportSlot, null);
+    }
+    if (this.#persistentOverlayIndexSlot !== null) this.#setPersistentOverlaySlot(this.#persistentOverlayIndexSlot, null);
+    const newIndexSlot = this.#preparedOverlayIndexStorage === null ? null : this.#persistentOverlayImportSlot;
     this.#persistentOverlayImportSlot = targetSlot;
+    this.#persistentOverlayIndexSlot = newIndexSlot;
+    this.#persistentOverlayActiveStorage = this.#preparedOverlayStorage;
     this.#preparedOverlayImportSlot = null;
+    this.#preparedOverlayStorage = null;
+    this.#preparedOverlayIndexStorage = null;
   }
 
   cancelRootfsPersistenceCompaction(): void {
     const targetSlot = this.#preparedOverlayImportSlot;
     if (targetSlot === null) return;
-    this.#runImmediateKernelEntry("cancel rootfs persistence compaction", (entry) => {
-      const cancel = this.#kernelInstanceForEntry(entry).exports
-        .kernel_rootfs_cancel_persistence_compaction as (() => void) | undefined;
-      if (typeof cancel !== "function") throw new Error("kernel lacks rootfs persistence compaction cancellation export");
-      cancel();
-      return undefined;
-    });
-    if (targetSlot === 0) this.#kernel.setPersistentOverlayStorage(null);
-    else this.#kernel.setPersistentOverlayTargetStorage(null);
-    this.#preparedOverlayImportSlot = null;
-  }
-
-  checkpointRootfsPersistence(index: PersistentOverlayStorage): void {
-    if (this.#persistentOverlayIndexActive) throw new Error("rootfs persistence already has an index");
-    const indexSlot = this.#persistentOverlayImportSlot === 0 ? 1 : 0;
-    if (indexSlot === 0) this.#kernel.setPersistentOverlayStorage(index);
-    else this.#kernel.setPersistentOverlayTargetStorage(index);
-    let status: number | undefined;
     try {
-      this.#runImmediateKernelEntry("checkpoint rootfs persistence", (entry) => {
-        const checkpoint = this.#kernelInstanceForEntry(entry).exports
-          .kernel_rootfs_checkpoint_persistence as ((indexSlot: number) => number) | undefined;
-        if (typeof checkpoint !== "function") throw new Error("kernel lacks rootfs persistence checkpoint export");
-        status = checkpoint(indexSlot);
+      this.#runImmediateKernelEntry("cancel rootfs persistence compaction", (entry) => {
+        const cancel = this.#kernelInstanceForEntry(entry).exports
+          .kernel_rootfs_cancel_persistence_compaction as (() => void) | undefined;
+        if (typeof cancel !== "function") throw new Error("kernel lacks rootfs persistence compaction cancellation export");
+        cancel();
         return undefined;
       });
-      if (status !== 0) throw new Error(`rootfs persistence checkpoint failed (errno ${-(status ?? 5)})`);
-      this.#persistentOverlayIndexActive = true;
-    } catch (error) {
-      if (indexSlot === 0) this.#kernel.setPersistentOverlayStorage(null);
-      else this.#kernel.setPersistentOverlayTargetStorage(null);
-      throw error;
+    } finally {
+      if (this.#preparedOverlayIndexStorage !== null) {
+        this.#setPersistentOverlaySlot(this.#persistentOverlayImportSlot, this.#persistentOverlayActiveStorage);
+      }
+      this.#setPersistentOverlaySlot(targetSlot, null);
+      this.#preparedOverlayImportSlot = null;
+      this.#preparedOverlayStorage = null;
+      this.#preparedOverlayIndexStorage = null;
     }
   }
 

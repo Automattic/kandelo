@@ -72,18 +72,25 @@ against the grouped product digest before staging and composing them. Protected
 candidate boots explicitly reject experimental persistence. Ordinary
 nonpersistent boots still use resident image bytes. The browser writer's
 positioned import is isolated in a separate Wasm artifact; the default writer
-remains import-free. On Node and browser boots, an unindexed journal with at
-least 32 MiB of unsealed tail is compacted into the alternate slot before
-processes start. The old generation stays intact until the new journal is
-flushed, sealed, and verified. The kernel then writes a fixed-block checkpoint
-sidecar, and the host seals that sidecar as a v2 generation. The first recovery
-still scans the old journal and holds its changed-block map in memory. A later
-indexed boot scans the authenticated prefix and checkpoint with bounded I/O
-buffers, then holds only the appended tail's map. Indexed generations cannot
-yet compact again: their second storage import serves the checkpoint, leaving
-no import for a compaction target. The tail can therefore grow without bound.
-Live compaction and persistent namespace mutations remain separate milestones,
-not implicit guarantees of the current fixed-overwrite mode.
+remains import-free. On Node and browser boots, a journal with at least 32 MiB
+of unsealed tail is compacted into the alternate slot before processes start.
+The old generation stays intact until the new journal is flushed,
+checkpointed, sealed, and verified. The first recovery of an unindexed journal
+still scans it and holds its changed-block map in memory. An indexed boot scans
+the authenticated prefix and checkpoint with bounded I/O buffers, then holds
+only the appended tail's map. After boot, a worker timer checks every two
+seconds and can compact an indexed generation again while processes are
+running. A third storage import keeps the source journal, source checkpoint,
+and target journal open simultaneously. The copy, checkpoint, seal,
+verification, and activation occur synchronously on one kernel-worker turn,
+so guest syscalls cannot interleave with handoff. Compaction failures are
+reported and retried after 30 seconds. Fixed-overwrite writes fail with
+`ENOSPC` once the active journal tail reaches 63 MiB; a reserved margin lets
+already accepted dirty blocks flush. This bounds the active tail even if
+compaction repeatedly fails. Fixed-overwrite compaction now copies records
+without retaining the target block map, then scans the compacted journal with
+bounded buffers to write its sorted checkpoint sidecar.
+Persistent namespace mutations remain a separate milestone.
 
 Boot now checks two optional sealed journal slots (`g0` and `g1`) on Node and
 browser hosts, preferring the highest verified generation. A seal authenticates
@@ -91,14 +98,14 @@ the compacted prefix while the active journal may append later transactions;
 the kernel still validates and replays those transactions. If a slot is torn or
 its journal is rejected, boot tries the previous valid slot and then the
 legacy journal. If generation files exist without any valid journal, boot
-refuses to create an empty replacement. Boot-time handoff now prepares a
+refuses to create an empty replacement. Compaction prepares a
 compacted journal without switching the kernel's active handle, writes and
 verifies the target seal, and only then activates it. Failure cancels the
 prepared target and invalidates its seal. The kernel refuses activation if
-the source changed during preparation, but the host does not yet stop guest
-syscalls during the asynchronous seal. Thus this sequence is safe only at
-boot, before any guest can write; live compaction still needs an exclusive
-kernel-worker gate.
+the source changed during preparation. Synchronous storage and hash operations
+run on the dedicated kernel worker during live handoff; guest syscalls wait
+until that turn finishes. The pause has not yet been measured for large
+changed-block sets.
 
 Recovery truncates a torn append shorter than the minimum complete transaction,
 including a partially written transaction header. The writeback test exercises
@@ -132,19 +139,17 @@ replays only later transactions, reads older blocks through the table's
 bounded page cache, and merges the table with later mutations during
 compaction. Focused tests reject damaged prefix and committed-tail bytes while
 truncating an incomplete tail. This still scans the entire prefix to verify
-its digest and does not bound an active journal's tail without live compaction.
+its digest. Live compaction and a write-stop limit bound the active tail;
+fixed-overwrite compaction's target map is no longer resident. The old
+unindexed journal still needs its initial full-map recovery before conversion.
 Small legacy and v1 journals continue to use the full-memory map until they
 cross the boot-time compaction threshold; no conversion silently resets them.
 
-Live compaction needs the existing two-phase handoff under an exclusive
-kernel-worker gate and a third simultaneous storage handle. While guest
-operations are stopped at a kernel-worker boundary, copy
-live records into the inactive slot, flush its journal and table, publish and
-verify its seal, and only then switch the kernel's active storage handle. If
-any stage fails before publication, keep serving the old generation. The old
-slot must remain available after publication for fallback. The tail budget
-must trigger this handoff before its in-memory map can grow without bound;
-compaction cannot be deferred indefinitely to the next boot.
+The live handoff now uses that third handle and a dedicated kernel-worker turn.
+The fixed-overwrite checkpoint is streamed, but its worst-case memory and
+handoff pause duration have not been validated for an actually large writable
+image. General POSIX mutation replay also needs a checkpoint design for
+metadata, not just file blocks.
 
 General POSIX replay then needs an overlay-backed regular-file inode kind,
 not `Regular(Vec<u8>)`, so newly created and grown files also remain larger
