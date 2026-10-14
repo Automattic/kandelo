@@ -93,14 +93,14 @@ test("browser retains a persistent journal lease after an unacknowledged destroy
         }
         let retryRejected = false;
         try {
-          await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
         } catch (error) {
           retryRejected = String(error).includes("already running");
         }
         const competing = new BrowserKernel({ kernelOwnedFs: true });
         let competingRejected = false;
         try {
-          await competing.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          await competing.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: `${name}-different` });
         } catch (error) {
           competingRejected = String(error).includes("journal is already open");
         }
@@ -193,6 +193,7 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
             kernelWasm,
             vfsImageFile: imageFile,
             experimentalResizablePersistenceName: name,
+            persistentComputerName: name,
           });
           return kernel;
         };
@@ -300,6 +301,7 @@ test("browser reopens sparse image and created files after namespace changes", a
               kernelWasm,
               vfsImageFile: imageFile,
               experimentalResizablePersistenceName: name,
+              persistentComputerName: name,
             });
             const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", mode]);
             statuses.push(await exit);
@@ -372,7 +374,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         const open = async (phase: string) => {
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
           try {
-            await kernel.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+            await kernel.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
           } catch (error) {
             throw new Error(`${phase}: ${error}`);
           }
@@ -393,7 +395,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
             && cacheProbe[cacheProbe.byteLength - 1] === (cacheProbe.byteLength - 1) % 251;
           const competing = new BrowserKernel({ kernelOwnedFs: true });
           try {
-            await competing.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+            await competing.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: `${name}-different` });
           } catch (error) {
             locked = String(error).includes("journal is already open");
           } finally {
@@ -458,6 +460,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
               kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
               vfsImageFile: imageFile,
               experimentalFixedPersistenceName: name,
+              persistentComputerName: name,
             });
             outcomes.push({
               cut,
@@ -507,6 +510,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: imageFile,
             experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
           });
           const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
           const sealed = await (await directory.getFileHandle(`${name}.g0.seal`)).getFile();
@@ -543,7 +547,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         const indexed = new BrowserKernel({ kernelOwnedFs: true });
         let indexedState: string;
         try {
-          await indexed.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          await indexed.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
           indexedState = new TextDecoder().decode(await indexed.readFileFromVfs("/state"));
         } finally {
           await indexed.destroy();
@@ -552,7 +556,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         const fallback = new BrowserKernel({ kernelOwnedFs: true });
         let state: string;
         try {
-          await fallback.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          await fallback.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
           state = new TextDecoder().decode(await fallback.readFileFromVfs("/state"));
         } finally {
           await fallback.destroy();
@@ -564,7 +568,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         const empty = new BrowserKernel({ kernelOwnedFs: true });
         let emptyRejected = false;
         try {
-          await empty.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          await empty.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
         } catch (error) {
           emptyRejected = isNoValidOverlayGenerationError(error);
         } finally {
@@ -575,7 +579,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
         const missing = new BrowserKernel({ kernelOwnedFs: true });
         let rejected = false;
         try {
-          await missing.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          await missing.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
         } catch (error) {
           rejected = isNoValidOverlayGenerationError(error);
         } finally {
@@ -641,8 +645,8 @@ test(`browser ${mode} mode rejects a semantically invalid indexed generation and
               kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
               vfsImageFile: imageFile,
               ...(mode === "fixed"
-                ? { experimentalFixedPersistenceName: name }
-                : { experimentalResizablePersistenceName: name }),
+                ? { experimentalFixedPersistenceName: name, persistentComputerName: name }
+                : { experimentalResizablePersistenceName: name, persistentComputerName: name }),
             });
             return kernel;
           } catch (error) {
@@ -776,6 +780,7 @@ test("browser replays 8192 distinct blocks after live compaction", async ({ play
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: imageFile,
             experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
           });
           for (const slot of ["g0", "g1"]) {
             for (let iteration = 0; iteration < 17; iteration++) {
@@ -830,6 +835,7 @@ test("browser replays 8192 distinct blocks after live compaction", async ({ play
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: imageFile,
             experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
           });
           const verification = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-many"]);
           return { size: (await kernel.statVfsPath("/large"))?.size, verified: await verification.exit === 0 };
@@ -889,6 +895,7 @@ for (const keepOpen of [false, true]) {
               kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
               vfsImageFile: imageFile,
               experimentalResizablePersistenceName: name,
+              persistentComputerName: name,
             });
             return kernel;
           };
@@ -995,7 +1002,7 @@ test("browser termination loses unsynced writes without damaging the last durabl
         await writer.write(imageBytes);
         await writer.close();
         const kernel = new BrowserKernel({ kernelOwnedFs: true });
-        await kernel.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+        await kernel.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
         const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "unsynced"]);
         if (await exit !== 0) throw new Error("guest overwrite failed");
         (window as unknown as { crashKernel: unknown }).crashKernel = kernel;
@@ -1010,7 +1017,7 @@ test("browser termination loses unsynced writes without damaging the last durabl
         const imageFile = await directory.getFileHandle(`${name}.base`);
         const kernel = new BrowserKernel({ kernelOwnedFs: true });
         try {
-          await kernel.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name });
+          await kernel.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
           return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
         } finally {
           await kernel.destroy();
@@ -1091,8 +1098,8 @@ for (const { mode, fault } of quotaScenarios) {
               kernelWasm: kernelBytes,
               vfsImageFile: imageFile,
               ...(mode === "fixed"
-                ? { experimentalFixedPersistenceName: name }
-                : { experimentalResizablePersistenceName: name }),
+                ? { experimentalFixedPersistenceName: name, persistentComputerName: name }
+                : { experimentalResizablePersistenceName: name, persistentComputerName: name }),
             }),
             new Promise<never>((_, reject) => setTimeout(
               () => reject(new Error(`quota worker init timed out: redirected=${redirected}, errors=${workerErrors.join("|")}`)),
@@ -1139,8 +1146,8 @@ for (const { mode, fault } of quotaScenarios) {
               kernelWasm: kernelBytes,
               vfsImageFile: imageFile,
               ...(mode === "fixed"
-                ? { experimentalFixedPersistenceName: name }
-                : { experimentalResizablePersistenceName: name }),
+                ? { experimentalFixedPersistenceName: name, persistentComputerName: name }
+                : { experimentalResizablePersistenceName: name, persistentComputerName: name }),
             });
             const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
             const large = fault === "evict" ? await kernel.readFileFromVfs("/large") : null;

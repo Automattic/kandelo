@@ -1691,6 +1691,8 @@ async function bootProfile(
             ? {}
             : {
               experimentalFixedPersistenceName: experimentalPersistenceName,
+              persistentComputerName: experimentalPersistenceName,
+              persistenceComputerLease: experimentalPersistenceLease,
               requireExistingRootfsPersistence: restoredImage !== null,
             }),
         }

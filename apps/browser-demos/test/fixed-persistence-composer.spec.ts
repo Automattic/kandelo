@@ -499,6 +499,7 @@ for (const scenario of [
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: restored.file,
             experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
           });
           state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
           largeFileSize = (await kernel.statVfsPath("/large"))?.size;
@@ -518,6 +519,7 @@ for (const scenario of [
               kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
               vfsImageFile: restored.file,
               experimentalFixedPersistenceName: name,
+              persistentComputerName: name,
             });
             const snapshotFile = await stagingDirectory.getFileHandle(`${name}.snapshot`, { create: true });
             snapshotIntegrity = await snapshotKernel.exportRootfsImageToFile(snapshotFile);
@@ -569,6 +571,7 @@ for (const scenario of [
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: restored.file,
             experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
           });
           const tailVerify = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
           state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
@@ -696,6 +699,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
               kernelWasm: kernelBytes,
               vfsImageFile: restored!.file,
               experimentalFixedPersistenceName: restored.journalName,
+              persistentComputerName: name,
               requireExistingRootfsPersistence,
             });
             return kernel;
@@ -889,6 +893,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: pending.file,
             experimentalFixedPersistenceName: pending.journalName,
+            persistentComputerName: name,
             requireExistingRootfsPersistence: pending.journalInitialized,
           });
           await markFixedPersistenceJournalInitialized(name, identity, pending);
@@ -921,6 +926,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: ready.file,
             experimentalFixedPersistenceName: ready.journalName,
+            persistentComputerName: name,
             requireExistingRootfsPersistence: ready.journalInitialized,
           });
           return {
@@ -982,6 +988,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
             vfsImageFile: staged.file,
             integrity: { length: staged.length, chunkBytes: 1024 * 1024, chunkSha256: staged.chunkSha256 },
             experimentalFixedPersistenceName: staged.journalName,
+            persistentComputerName: name,
           });
           stagedState = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
         } finally {
@@ -1047,6 +1054,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: current.file,
             experimentalFixedPersistenceName: current.journalName,
+            persistentComputerName: name,
             requireExistingRootfsPersistence: current.journalInitialized,
           });
           return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
@@ -1091,6 +1099,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
             kernelWasm: kernelBytes,
             vfsImageFile: current.file,
             experimentalFixedPersistenceName: current.journalName,
+            persistentComputerName: name,
             requireExistingRootfsPersistence: true,
           });
         } catch (error) {
@@ -1108,6 +1117,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
             kernelWasm: kernelBytes,
             vfsImageFile: previous.file,
             experimentalFixedPersistenceName: previous.journalName,
+            persistentComputerName: name,
             requireExistingRootfsPersistence: true,
           });
           previousState = new TextDecoder().decode(await fallback.readFileFromVfs("/state"));
@@ -1141,6 +1151,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
               kernelWasm: kernelBytes,
               vfsImageFile: handle.file,
               experimentalFixedPersistenceName: handle.journalName,
+              persistentComputerName: name,
               requireExistingRootfsPersistence: handle.journalInitialized,
             });
             return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
@@ -1213,6 +1224,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: fallback.file,
             experimentalFixedPersistenceName: fallback.journalName,
+            persistentComputerName: name,
             requireExistingRootfsPersistence: fallback.journalInitialized,
           });
           state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
@@ -1351,6 +1363,7 @@ test("page retries an invalid new journal with the prior image's configuration",
           kernelWasm: kernelBytes,
           vfsImageFile: previous.file,
           experimentalFixedPersistenceName: previous.journalName,
+          persistentComputerName: name,
         });
         await markFixedPersistenceJournalInitialized(name, identity, previous);
       } finally {
@@ -1368,6 +1381,7 @@ test("page retries an invalid new journal with the prior image's configuration",
           kernelWasm: kernelBytes,
           vfsImageFile: staged.file,
           experimentalFixedPersistenceName: staged.journalName,
+          persistentComputerName: name,
         });
       } finally {
         await stagedKernel.destroy();
