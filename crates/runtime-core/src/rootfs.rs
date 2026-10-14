@@ -30,7 +30,7 @@
 //! files), so rootfs is not a shared-cursor backing.
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
@@ -755,8 +755,34 @@ fn commit_persistent_namespace(
     timestamps: &[(u32, NamespaceTimestamp)],
 ) -> Result<(), Errno> {
     let (sec, nsec) = now();
-    let changes = ROOTFS.with(|state| {
+    let (changes, present_dirents) = ROOTFS.with(|state| {
         let mut changes: Vec<PreparedPersistentMetadataChange> = Vec::new();
+        let mut present_dirents = Vec::new();
+        for mutation in mutations {
+            let key = match mutation {
+                Mutation::Put { key, .. } | Mutation::Delete { key } => key,
+            };
+            if let OverlayKey::Dirent { parent, name } = key {
+                let parent_index = timestamps
+                    .iter()
+                    .find_map(|(index, _)| {
+                        state
+                            .get(*index)
+                            .is_some_and(|inode| inode.ino == *parent)
+                            .then_some(*index)
+                    })
+                    .ok_or(Errno::EIO)?;
+                if let Some(InodeKind::Dir(entries)) =
+                    state.get(parent_index).map(|inode| &inode.kind)
+                {
+                    if entries.contains_key(name) {
+                        present_dirents.push(key.clone());
+                    }
+                } else {
+                    return Err(Errno::EIO);
+                }
+            }
+        }
         for &(index, stamp) in timestamps {
             if let Some(change) = changes.iter_mut().find(|change| change.index == index) {
                 if matches!(stamp, NamespaceTimestamp::Modified) {
@@ -777,15 +803,21 @@ fn commit_persistent_namespace(
             change.metadata.ctime_nsec = nsec;
             changes.push(change);
         }
-        Ok::<_, Errno>(changes)
+        Ok::<_, Errno>((changes, present_dirents))
     })?;
     let mut active = PERSISTENT_ROOTFS.lock();
-    let journal = &mut active.as_mut().ok_or(Errno::EIO)?.journal;
+    let mount = active.as_mut().ok_or(Errno::EIO)?;
+    let base_dirents = present_dirents
+        .into_iter()
+        .filter(|key| mount.journal.state().lookup(key).is_none())
+        .collect::<Vec<_>>();
+    let journal = &mut mount.journal;
     let mut transaction = mutations.to_vec();
     for change in &changes {
         transaction.push(change.mutation(journal)?);
     }
     journal.commit(&transaction)?;
+    mount.base_dirents.extend(base_dirents);
     ROOTFS.with(|state| {
         for change in changes {
             change.apply(state)?;
@@ -876,6 +908,7 @@ fn decode_persistent_inode(ino: u64, value: &[u8]) -> Result<Inode, Errno> {
 struct PersistentMount {
     journal: PersistentJournal,
     resizable: bool,
+    base_dirents: BTreeSet<OverlayKey>,
 }
 static PERSISTENT_ROOTFS: Mutex<Option<PersistentMount>> = Mutex::new(None);
 struct PreparedPersistence {
@@ -1028,6 +1061,47 @@ fn enable_persistence_internal(
     } else {
         journal.validate_fixed_image_blocks(&mut base_size)?;
     }
+    let base_dirents = if resizable {
+        let touched_parents: BTreeSet<_> = journal
+            .state()
+            .metadata_entries()
+            .filter_map(|(key, _)| match key {
+                OverlayKey::Dirent { parent, .. } => Some(*parent),
+                _ => None,
+            })
+            .collect();
+        if touched_parents.is_empty() {
+            BTreeSet::new()
+        } else {
+            ROOTFS.with(|state| {
+                let directories: BTreeMap<_, _> = state
+                    .inodes
+                    .iter()
+                    .flatten()
+                    .filter_map(|inode| match &inode.kind {
+                        InodeKind::Dir(entries) if touched_parents.contains(&inode.ino) => {
+                            Some((inode.ino, entries))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let mut base_dirents = BTreeSet::new();
+                for (key, _) in journal.state().metadata_entries() {
+                    if let OverlayKey::Dirent { parent, name } = key {
+                        if directories
+                            .get(parent)
+                            .is_some_and(|entries| entries.contains_key(name))
+                        {
+                            base_dirents.insert(key.clone());
+                        }
+                    }
+                }
+                base_dirents
+            })
+        }
+    } else {
+        BTreeSet::new()
+    };
     journal.limit_active_tail();
     let mut active = PERSISTENT_ROOTFS.lock();
     if active.is_some() {
@@ -1051,7 +1125,11 @@ fn enable_persistence_internal(
         })?;
         ROOTFS.with(|state| apply_persistent_dirents(state, &journal))?;
     }
-    *active = Some(PersistentMount { journal, resizable });
+    *active = Some(PersistentMount {
+        journal,
+        resizable,
+        base_dirents,
+    });
     Ok(())
 }
 
@@ -1348,7 +1426,13 @@ pub fn prepare_persistence_compaction(
     let source = active.as_mut().ok_or(Errno::EINVAL)?;
     let compacted = if source.resizable {
         let live_inodes = live_inodes.as_ref().ok_or(Errno::EIO)?;
-        source.journal.compact_metadata_reachable_into(storage, |key| {
+        source.journal.compact_metadata_reachable_into(storage, |key, value| {
+            if matches!(key, OverlayKey::Dirent { .. })
+                && value.is_none()
+                && !source.base_dirents.contains(key)
+            {
+                return false;
+            }
             let inode = match key {
                 OverlayKey::Inode(inode)
                 | OverlayKey::FileSize(inode)
@@ -1384,9 +1468,12 @@ pub fn activate_persistence_compaction() -> Result<(), Errno> {
     let prepared = pending.take().ok_or(Errno::EIO)?;
     let mut journal = prepared.journal;
     journal.limit_active_tail();
+    let mut base_dirents = active.take().ok_or(Errno::EIO)?.base_dirents;
+    base_dirents.retain(|key| journal.state().lookup(key).is_some());
     *active = Some(PersistentMount {
         journal,
         resizable: prepared.resizable,
+        base_dirents,
     });
     Ok(())
 }
@@ -9830,6 +9917,78 @@ mod tests {
         let replacement = open(b"/replacement", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
         assert_eq!(fstat(replacement).unwrap().st_size, 0);
         release_handle(replacement);
+    }
+
+    #[test]
+    fn resizable_compaction_drops_transient_dirent_tombstones_but_keeps_base_deletions() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let first = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let first_index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let second = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let second_index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source), base_digest).unwrap();
+        rename(b"/hello.txt", b"/moved").unwrap();
+        unlink(b"/moved").unwrap();
+        let replacement = open(b"/replacement", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        release_handle(replacement);
+        rename(b"/replacement", b"/big.txt").unwrap();
+        unlink(b"/big.txt").unwrap();
+        for index in 0..64 {
+            let path = alloc::format!("/temporary-{index}");
+            let handle = open(path.as_bytes(), O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+            release_handle(handle);
+            unlink(path.as_bytes()).unwrap();
+        }
+        prepare_persistence_compaction(Box::new(first.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(first_index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let base_key = OverlayKey::Dirent { parent: 1, name: b"hello.txt".to_vec() };
+        let replaced_base_key = OverlayKey::Dirent { parent: 1, name: b"big.txt".to_vec() };
+        let transient_key = OverlayKey::Dirent { parent: 1, name: b"temporary-0".to_vec() };
+        {
+            let active = PERSISTENT_ROOTFS.lock();
+            let state = active.as_ref().unwrap().journal.state();
+            assert_eq!(state.lookup(&base_key), Some(None));
+            assert_eq!(state.lookup(&replaced_base_key), Some(None));
+            assert_eq!(state.lookup(&transient_key), None);
+            assert_eq!(state.lookup(&OverlayKey::Dirent { parent: 1, name: b"moved".to_vec() }), None);
+        }
+        let first_len = first.0.lock().len();
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(
+            Box::new(first), Box::new(first_index), base_digest, first_len as u64,
+        ).unwrap();
+        assert!(matches!(lstat(b"/hello.txt"), Err(Errno::ENOENT)));
+        assert!(matches!(lstat(b"/big.txt"), Err(Errno::ENOENT)));
+        assert!(matches!(lstat(b"/moved"), Err(Errno::ENOENT)));
+        assert!(matches!(lstat(b"/temporary-0"), Err(Errno::ENOENT)));
+        let handle = open(b"/temporary-next", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        release_handle(handle);
+        unlink(b"/temporary-next").unwrap();
+        prepare_persistence_compaction(Box::new(second.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(second_index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        assert_eq!(PERSISTENT_ROOTFS.lock().as_ref().unwrap().journal.state().lookup(&base_key), Some(None));
+        assert_eq!(PERSISTENT_ROOTFS.lock().as_ref().unwrap().journal.state().lookup(&replaced_base_key), Some(None));
+        assert_eq!(PERSISTENT_ROOTFS.lock().as_ref().unwrap().journal.state().lookup(&OverlayKey::Dirent {
+            parent: 1, name: b"temporary-next".to_vec(),
+        }), None);
+        let second_len = second.0.lock().len();
+        assert_eq!(second_len, first_len);
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(
+            Box::new(second), Box::new(second_index), base_digest, second_len as u64,
+        ).unwrap();
+        assert!(matches!(lstat(b"/hello.txt"), Err(Errno::ENOENT)));
+        assert!(matches!(lstat(b"/big.txt"), Err(Errno::ENOENT)));
+        assert!(matches!(lstat(b"/temporary-next"), Err(Errno::ENOENT)));
     }
 
     #[test]

@@ -263,6 +263,13 @@ The live-inode filter uses a temporary
 sorted vector proportional to resident inodes, so large-file-count memory and
 handoff pause still need measurement. General POSIX replay still needs broader
 conformance of metadata, open-unlinked lifetime, and namespace edge cases.
+Compaction also drops deleted names that never existed in the immutable base,
+while retaining base-name tombstones so deleted image files cannot reappear.
+The mount tracks only touched base names and reconstructs that set from the
+unchanged base tree on restart; repeated create/delete cycles no longer grow
+the compacted journal with transient-name tombstones. This does not yet bound
+the in-memory metadata map between compactions or replace it with an on-disk
+metadata checkpoint.
 Journal transactions must continue publishing related directory
 entries, inode metadata, file size, and blocks together; recovery must rebuild
 the same link counts and zero-filled truncate/extend behavior as the live
