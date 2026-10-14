@@ -23,6 +23,72 @@ const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-over
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
 
+test("browser reopens a resizable journal after sparse growth and truncate", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(90_000);
+  const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.mkdir("/bin", 0o755);
+  filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+  filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+  const image = await filesystem.saveImage();
+  const kernelUrl = new URL("/resizable-rootfs-kernel.wasm", baseURL).href;
+  const imageUrl = new URL("/resizable-rootfs-image.vfs", baseURL).href;
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-resizable-rootfs-browser-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+        const imageBytes = await (await fetch(imageUrl)).arrayBuffer();
+        const name = `resizable-rootfs-${crypto.randomUUID()}`;
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+        const writer = await imageFile.createWritable();
+        await writer.write(imageBytes);
+        await writer.close();
+        const statuses = [];
+        for (const mode of ["resize", "verify-resize", "verify-zero"]) {
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm,
+              vfsImageFile: imageFile,
+              experimentalResizablePersistenceName: name,
+            });
+            const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", mode]);
+            statuses.push(await exit);
+          } finally {
+            await kernel.destroy();
+          }
+        }
+        const journal = await (await directory.getFileHandle(`${name}.journal`)).getFile();
+        return { statuses, journalSize: journal.size };
+      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
+      expect(result.statuses).toEqual([0, 0, 0]);
+      expect(result.journalSize).toBeLessThan(20_000);
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
 test("browser kernel mounts a named OPFS journal and reopens it after destroy", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));

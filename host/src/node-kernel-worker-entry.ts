@@ -1260,10 +1260,12 @@ async function handleInit(msg: InitMessage) {
   });
   await pcmDriver.prepare(pcmTransport);
 
-  if (msg.experimentalFixedPersistencePath !== undefined) {
-    const path = msg.experimentalFixedPersistencePath;
+  const persistencePath = msg.experimentalResizablePersistencePath ?? msg.experimentalFixedPersistencePath;
+  if (persistencePath !== undefined) {
+    const path = persistencePath;
+    const resizable = msg.experimentalResizablePersistencePath !== undefined;
     if (!isAbsolute(path) || basename(path) === "." || basename(path) === "..") {
-      throw new Error("fixed rootfs persistence path must be an absolute file path");
+      throw new Error("rootfs persistence path must be an absolute file path");
     }
     const lockDir = `${path}.lock`;
     mkdirSync(lockDir, { mode: 0o700 });
@@ -1278,7 +1280,10 @@ async function handleInit(msg: InitMessage) {
       } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
       const selected = await enableBestOverlayGeneration(
         files,
-        (storage, index, checkpointEnd) => kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd),
+        (storage, index, checkpointEnd) => {
+          if (resizable) kernelWorker.enableResizableRootfsPersistence(storage, index, checkpointEnd);
+          else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
+        },
       );
       const handoff = {
         prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),

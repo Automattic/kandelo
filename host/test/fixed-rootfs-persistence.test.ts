@@ -35,10 +35,12 @@ async function makeImage(state: string, includeLargeFile = false, largeFileBytes
   return filesystem.saveImage();
 }
 
-async function boot(image: Uint8Array, path: string): Promise<NodeKernelHost> {
+async function boot(image: Uint8Array, path: string, resizable = false): Promise<NodeKernelHost> {
   const host = new NodeKernelHost({
     rootfsImage: image,
-    experimentalFixedPersistencePath: path,
+    ...(resizable
+      ? { experimentalResizablePersistencePath: path }
+      : { experimentalFixedPersistencePath: path }),
   });
   const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
   try {
@@ -73,6 +75,29 @@ function expandJournalToCompactionThreshold(path: string): number {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
+  it.skipIf(guestProgramPath === null)("reopens a guest's 8 GiB sparse growth and zeroed regrowth", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-rootfs-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      for (const mode of ["resize", "verify-resize", "verify-zero"] as const) {
+        const host = await boot(image, path, true);
+        try {
+          const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
+          expect(await exit).toBe(0);
+        } finally {
+          await host.destroy();
+        }
+        if (mode === "resize") {
+          expect(readFileSync(path).byteLength).toBeLessThan(10_000);
+          await expect(boot(image, path)).rejects.toThrow(/errno 5/);
+        }
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it.skipIf(guestProgramPath === null)("rejects an authenticated but invalid index and falls back from a torn slot", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-slot-"));
     const path = join(directory, "machine.journal");

@@ -2926,6 +2926,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_enable_resizable_persistence",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_resizable_persistence_indexed",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_export_container_read",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },

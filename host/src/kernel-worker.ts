@@ -5531,6 +5531,23 @@ export class CentralizedKernelWorker {
     index?: PersistentOverlayStorage,
     checkpointEnd?: number,
   ): void {
+    this.#enableRootfsPersistence(storage, index, checkpointEnd, false);
+  }
+
+  enableResizableRootfsPersistence(
+    storage: PersistentOverlayStorage,
+    index?: PersistentOverlayStorage,
+    checkpointEnd?: number,
+  ): void {
+    this.#enableRootfsPersistence(storage, index, checkpointEnd, true);
+  }
+
+  #enableRootfsPersistence(
+    storage: PersistentOverlayStorage,
+    index: PersistentOverlayStorage | undefined,
+    checkpointEnd: number | undefined,
+    resizable: boolean,
+  ): void {
     if (this.#rootfsImageLength === 0) throw new Error("persistent rootfs requires a loaded image");
     if (index !== undefined && (!Number.isSafeInteger(checkpointEnd) || checkpointEnd! < 72)) {
       throw new Error("indexed rootfs persistence requires a valid checkpoint boundary");
@@ -5540,14 +5557,19 @@ export class CentralizedKernelWorker {
     this.#kernel.setPersistentOverlayCompactionStorage(null);
     let status: number | undefined;
     try {
-      this.#runImmediateKernelEntry("enable fixed rootfs persistence", (entry) => {
+      this.#runImmediateKernelEntry("enable rootfs persistence", (entry) => {
         const exports = this.#kernelInstanceForEntry(entry).exports;
-        const enable = (index === undefined
-          ? exports.kernel_rootfs_enable_fixed_persistence
-          : exports.kernel_rootfs_enable_fixed_persistence_indexed) as
+        const name = resizable
+          ? (index === undefined
+            ? "kernel_rootfs_enable_resizable_persistence"
+            : "kernel_rootfs_enable_resizable_persistence_indexed")
+          : (index === undefined
+            ? "kernel_rootfs_enable_fixed_persistence"
+            : "kernel_rootfs_enable_fixed_persistence_indexed");
+        const enable = exports[name] as
           | ((...args: number[]) => number)
           | undefined;
-        if (typeof enable !== "function") throw new Error("kernel lacks fixed rootfs persistence export");
+        if (typeof enable !== "function") throw new Error(`kernel lacks ${name} export`);
         const lengthLo = this.#rootfsImageLength >>> 0;
         const lengthHi = Math.floor(this.#rootfsImageLength / 0x1_0000_0000);
         status = index === undefined
@@ -5555,7 +5577,7 @@ export class CentralizedKernelWorker {
           : enable(lengthLo, lengthHi, checkpointEnd! >>> 0, Math.floor(checkpointEnd! / 0x1_0000_0000));
         return undefined;
       });
-      if (status !== 0) throw new Error(`kernel refused fixed rootfs persistence (errno ${-(status ?? 5)})`);
+      if (status !== 0) throw new Error(`kernel refused ${resizable ? "resizable" : "fixed"} rootfs persistence (errno ${-(status ?? 5)})`);
       this.#persistentOverlayImportSlot = 0;
       this.#persistentOverlayIndexSlot = index === undefined ? null : 1;
       this.#persistentOverlayActiveStorage = storage;

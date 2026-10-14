@@ -87,6 +87,8 @@ export interface NodeKernelHostOptions {
   remoteNetwork?: RemoteSegmentInit;
   /** Opt-in fixed-size image-file overwrites journaled at this absolute path. */
   experimentalFixedPersistencePath?: string;
+  /** Opt-in resizable image-file persistence at this absolute journal path. */
+  experimentalResizablePersistencePath?: string;
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
@@ -295,6 +297,13 @@ export class NodeKernelHost {
     if (this.options.experimentalFixedPersistencePath !== undefined && rootfsImage === null) {
       throw new Error("experimentalFixedPersistencePath requires rootfsImage");
     }
+    if (this.options.experimentalResizablePersistencePath !== undefined && rootfsImage === null) {
+      throw new Error("experimentalResizablePersistencePath requires rootfsImage");
+    }
+    if (this.options.experimentalFixedPersistencePath !== undefined
+      && this.options.experimentalResizablePersistencePath !== undefined) {
+      throw new Error("fixed and resizable persistence modes are mutually exclusive");
+    }
     if (this.options.rootfsLazyUrlBase === "") {
       throw new Error("rootfsLazyUrlBase must not be empty");
     }
@@ -463,6 +472,7 @@ export class NodeKernelHost {
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
           experimentalFixedPersistencePath: this.options.experimentalFixedPersistencePath,
+          experimentalResizablePersistencePath: this.options.experimentalResizablePersistencePath,
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
           rootfsLazyAssets,
           rootfsLazyAssetSources,
