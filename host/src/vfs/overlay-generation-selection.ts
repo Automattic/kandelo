@@ -153,6 +153,18 @@ export async function compactOverlayGeneration(
   let activated = false;
   let targetTouched = false;
   let sealedLength = 0;
+  const closeActivatedStorage = (storage: PersistentOverlayStorage | null | undefined): void => {
+    if (storage === null || storage === undefined) return;
+    try {
+      storage.close();
+    } catch (error) {
+      try {
+        reportCleanupFailure(error);
+      } catch (reportError) {
+        console.error("persistent overlay compaction cleanup report failed", error, reportError);
+      }
+    }
+  };
   try {
     seal = await files.open(slot, "seal", true);
     if (seal === null) throw new Error("could not create persistent overlay target seal");
@@ -182,10 +194,10 @@ export async function compactOverlayGeneration(
     handoff.activate();
     activated = true;
     prepared = false;
-    seal.close();
+    closeActivatedStorage(seal);
     seal = null;
-    selected.journal.close();
-    selected.index?.close();
+    closeActivatedStorage(selected.journal);
+    closeActivatedStorage(selected.index);
     return { journal: target, index, slot, generation, sealedLength };
   } catch (error) {
     if (activated && index !== null) {
