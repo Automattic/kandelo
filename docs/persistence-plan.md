@@ -21,7 +21,7 @@ semantics. Node and browser must expose the same guest-visible behavior.
   identity and digest before publishing a generation. An interrupted install
   must leave the previous bootable generation untouched. Do not allocate an
   image-sized JavaScript or Wasm buffer while installing.
-- [ ] Boot through positioned reads of that OPFS image, with a bounded clean
+- [x] Boot through positioned reads of that OPFS image, with a bounded clean
   block cache. The page, composer, browser host protocol, and kernel worker
   must not materialize the whole image. Demonstrate a read-only image larger
   than the configured runtime-memory budget on Chromium, Firefox, and WebKit.
@@ -53,12 +53,16 @@ acknowledged chunk in flight, verifies the stored bytes, and publishes only
 from the boot that still owns the session, under one exclusive lock. The next
 installation reclaims abandoned generation files. Reopening uses positioned OPFS
 reads and a bounded clean cache; fixed overwrites use a bounded dirty cache.
-For a first install from an uncompressed VFS URL, the page now stages bounded
+For a first install from a direct VFS URL, the page now stages bounded
 chunks into a temporary OPFS file and the image writer reads that file through
-positioned calls. A 68 MiB raw image can be composed with a 64 MiB VFS profile
-budget without returning source or composed image bytes to the page. The
+positioned calls. Zstd sources are decoded block-by-block with at most a
+16 MiB decompression window and staged as decoded bytes. A 68 MiB raw image
+can be composed with a 64 MiB VFS profile budget without returning source or
+composed image bytes to the page. A separate read-only test boots a 772 MiB
+decoded image under the constrained 768 MiB kernel memory ceiling on Chromium,
+Firefox, and WebKit, with no image-sized page or kernel-worker allocation. The
 temporary source is removed after composition; an interrupted browser process
-may leave an orphaned source file. Zstd images, Pages products, and protected
+may leave an orphaned source file. Pages products and protected
 candidate placements still materialize their source bytes, so the incremental
 install milestone is not complete. The browser writer's positioned import is
 isolated in a separate Wasm artifact; the default image writer remains

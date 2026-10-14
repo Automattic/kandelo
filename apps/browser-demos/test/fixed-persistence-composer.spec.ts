@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
-import { expect, test } from "@playwright/test";
+import { expect, test, type BrowserType, type Page, type TestInfo } from "@playwright/test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
@@ -28,7 +28,9 @@ test.skip(imageModulePath === null || programPath === null, "image writer and gu
 
 async function imageWithState(state: string, largeFileBytes = 0): Promise<Uint8Array> {
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
-  filesystem.setImageCapacity(largeFileBytes > 0 ? 96 * 1024 * 1024 : 64 * 1024 * 1024);
+  filesystem.setImageCapacity(largeFileBytes > 0
+    ? Math.max(96 * 1024 * 1024, largeFileBytes + 64 * 1024 * 1024)
+    : 64 * 1024 * 1024);
   filesystem.mkdir("/etc", 0o755);
   filesystem.mkdir("/etc/kandelo", 0o755);
   filesystem.mkdir("/bin", 0o755);
@@ -46,6 +48,36 @@ async function imageWithState(state: string, largeFileBytes = 0): Promise<Uint8A
     initial: { path: "/bin/persistence-overwrite", argv: ["persistence-overwrite"], uid: 0, gid: 0 },
   })), 0o644);
   return filesystem.saveImage();
+}
+
+async function withOpfsPage<Result>(
+  playwright: { chromium: BrowserType; firefox: BrowserType; webkit: BrowserType },
+  browserName: "chromium" | "firefox" | "webkit",
+  baseURL: string,
+  testInfo: TestInfo,
+  run: (page: Page) => Promise<Result>,
+): Promise<Result> {
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-composer-opfs-"));
+  const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+    channel: projectUse.channel,
+    proxy: projectUse.proxy as never,
+    extraHTTPHeaders: projectUse.extraHTTPHeaders,
+    ...(projectUse.launchOptions ?? {}),
+  });
+  try {
+    const page = context.pages()[0] ?? await context.newPage();
+    await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+    return await run(page);
+  } finally {
+    await context.close();
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
 }
 
 test("composer reuses exact frozen computer image despite a changed source", async ({ page, baseURL }) => {
@@ -95,145 +127,278 @@ test("composer reuses exact frozen computer image despite a changed source", asy
   expect(result).toEqual({ exact: true, differsFromChangedSource: true, profile: "probe" });
 });
 
-test("compressed source retains the resident fallback", async ({ page, baseURL }) => {
-  const compressed = zstdCompressSync(Buffer.from(await imageWithState("compressed")));
+test("compressed source decodes into a bounded OPFS staging file", async ({ playwright, browserName, baseURL }, testInfo) => {
+  const image = await imageWithState("compressed");
+  const compressed = zstdCompressSync(Buffer.from(image));
   const imageUrl = new URL("/fixed-composer-compressed.vfs.zst", baseURL).href;
-  await page.route(imageUrl, (route) => route.fulfill({ body: compressed }));
-  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-  const result = await page.evaluate(async ({ sourceStageUrl, imageUrl }) => {
-    const { stageRawVfsSourceImage } = await import(sourceStageUrl);
-    const source = await stageRawVfsSourceImage(await fetch(imageUrl), () => {});
-    return source instanceof Uint8Array
-      ? { length: source.byteLength, magic: Array.from(source.subarray(0, 4)) }
-      : { length: 0, magic: [] };
-  }, {
-    sourceStageUrl: new URL(`/@fs/${sourceStagePath}`, baseURL).href,
-    imageUrl,
-  });
-  expect(result).toEqual({ length: compressed.byteLength, magic: [0x28, 0xb5, 0x2f, 0xfd] });
-});
-
-test("positioned install boots an image larger than the composer VFS budget", async ({ playwright, browserName, baseURL }, testInfo) => {
-  test.setTimeout(180_000);
-  test.skip(kernelPath === null, "kernel artifact is required");
-  const image = await imageWithState("large-image", 68 * 1024 * 1024);
-  expect(image.byteLength).toBeGreaterThan(64 * 1024 * 1024);
-  const fixtureDir = mkdtempSync(join(repoRoot, ".context/large-source-"));
-  const imagePath = join(fixtureDir, "image.vfs");
-  writeFileSync(imagePath, image);
-  const server = createServer((_request, response) => {
-    response.writeHead(200, {
-      "content-type": "application/octet-stream",
-      "content-length": String(image.byteLength),
-      "access-control-allow-origin": "*",
-      "cross-origin-resource-policy": "cross-origin",
-    });
-    void (async () => {
-      for await (const bytes of createReadStream(imagePath, { highWaterMark: 64 * 1024 })) {
-        if (!response.write(bytes)) await once(response, "drain");
-        await new Promise((resolve) => setTimeout(resolve, 1));
-      }
-      response.end();
-    })().catch(() => response.destroy());
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("source server has no port");
-  const imageUrl = `http://127.0.0.1:${address.port}/image.vfs`;
-  const kernelUrl = new URL("/fixed-composer-kernel.wasm", baseURL).href;
-  const projectUse = testInfo.project.use as {
-    channel?: string;
-    launchOptions?: Record<string, unknown>;
-    proxy?: Record<string, unknown>;
-    extraHTTPHeaders?: Record<string, string>;
-  };
-  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-composer-large-"));
-  const context = await playwright[browserName].launchPersistentContext(userDataDir, {
-    channel: projectUse.channel,
-    proxy: projectUse.proxy as never,
-    extraHTTPHeaders: projectUse.extraHTTPHeaders,
-    ...(projectUse.launchOptions ?? {}),
-  });
-  try {
-    const page = context.pages()[0] ?? await context.newPage();
-    await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
-    await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-    const result = await page.evaluate(async ({ sourceStageUrl, composerUrl, persistenceUrl, browserKernelUrl, imageUrl, kernelUrl }) => {
+  const result = await withOpfsPage(playwright, browserName, baseURL!, testInfo, async (page) => {
+    await page.route(imageUrl, (route) => route.fulfill({ body: compressed }));
+    return page.evaluate(async ({ sourceStageUrl, imageUrl }) => {
       const { stageRawVfsSourceImage } = await import(sourceStageUrl);
-      const { composeImageInWorker } = await import(composerUrl);
-      const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
-      const { BrowserKernel } = await import(browserKernelUrl);
-      const stagingDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle(
-        "kandelo-persistent-overlay", { create: true },
-      );
-      const response = await fetch(imageUrl);
-      const source = await stageRawVfsSourceImage(response, () => {}, stagingDirectory);
-      if (source instanceof Uint8Array) throw new Error("large source was materialized");
-      const name = `large-${crypto.randomUUID()}`;
-      const identity = "large positioned install";
-      let composed;
+      const source = await stageRawVfsSourceImage(await fetch(imageUrl), () => {});
       try {
-        composed = await composeImageInWorker({
-          imageBytes: new Uint8Array(),
-          positionedSource: { file: source.file, integrity: source.integrity },
-          persistentImage: { name, identity },
-          maxVfsByteLength: 64 * 1024 * 1024,
-          imageLabel: "large positioned install",
-          requestedProfileId: "probe",
-          requestedProfileSource: "test",
-          hasCandidateEvidence: false,
-          descriptor: { boot: { inputs: [] } } as never,
-          appPath: "/pages/kandelo/",
-          proto: "http",
-          preforkServiceProcesses: 1,
-        }, {
-          onTick: () => {},
-          isCurrent: () => true,
-          supersededError: () => new Error("superseded"),
-        });
+        const file = await source.file.getFile();
+        return { length: source.integrity.length, magic: Array.from(new Uint8Array(await file.slice(0, 4).arrayBuffer())) };
       } finally {
         await source.remove();
       }
-      const restored = await loadFixedPersistenceImageHandle(name, identity);
-      if (restored === null) throw new Error("large image was not published");
-      const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    }, {
+      sourceStageUrl: new URL(`/@fs/${sourceStagePath}`, baseURL).href,
+      imageUrl,
+    });
+  });
+  expect(result).toEqual({ length: image.byteLength, magic: Array.from(image.subarray(0, 4)) });
+});
+
+test("compressed source rejects oversized windows without publishing a stage", async ({ playwright, browserName, baseURL }, testInfo) => {
+  const frame = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0xff, 0x01, 0x00, 0x00]);
+  const imageUrl = new URL("/fixed-composer-bad-window.vfs.zst", baseURL).href;
+  const result = await withOpfsPage(playwright, browserName, baseURL!, testInfo, async (page) => {
+    await page.route(imageUrl, (route) => route.fulfill({ body: frame }));
+    return page.evaluate(async ({ sourceStageUrl, imageUrl }) => {
+      const { stageRawVfsSourceImage } = await import(sourceStageUrl);
+      const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle(
+        "kandelo-persistent-overlay", { create: true },
+      );
+      const before: string[] = [];
+      for await (const name of directory.keys()) before.push(name);
+      let error = "";
       try {
-        await kernel.initFromOpfsImage({
-          kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
-          vfsImageFile: restored.file,
-          experimentalFixedPersistenceName: name,
-        });
+        await stageRawVfsSourceImage(await fetch(imageUrl), () => {}, directory);
+      } catch (caught) {
+        error = String(caught);
+      }
+      const after: string[] = [];
+      for await (const name of directory.keys()) after.push(name);
+      return { error, before: before.sort(), after: after.sort() };
+    }, {
+      sourceStageUrl: new URL(`/@fs/${sourceStagePath}`, baseURL).href,
+      imageUrl,
+    });
+  });
+  expect(result.error).toContain("streaming window bound");
+  expect(result.after).toEqual(result.before);
+});
+
+test("compressed source larger than the composer VFS budget stages without a decoded page buffer", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(120_000);
+  const image = await imageWithState("compressed-large", 68 * 1024 * 1024);
+  const compressed = zstdCompressSync(Buffer.from(image));
+  const imageUrl = new URL("/fixed-composer-large-compressed.vfs.zst", baseURL).href;
+  const result = await withOpfsPage(playwright, browserName, baseURL!, testInfo, async (page) => {
+    await page.route(imageUrl, (route) => route.fulfill({ body: compressed }));
+    return page.evaluate(async ({ sourceStageUrl, imageUrl }) => {
+      const { stageRawVfsSourceImage } = await import(sourceStageUrl);
+      const source = await stageRawVfsSourceImage(await fetch(imageUrl), () => {});
+      try {
+        const file = await source.file.getFile();
         return {
-          sourceLength: source.integrity.length,
-          composedLength: composed.imageFile?.length,
-          returnedBytes: composed.imageBytes.byteLength,
-          state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+          length: source.integrity.length,
+          fileLength: file.size,
+          magic: Array.from(new Uint8Array(await file.slice(0, 4).arrayBuffer())),
         };
       } finally {
-        await kernel.destroy();
+        await source.remove();
       }
     }, {
       sourceStageUrl: new URL(`/@fs/${sourceStagePath}`, baseURL).href,
-      composerUrl: new URL(`/@fs/${composerPath}`, baseURL).href,
-      persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
-      browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
       imageUrl,
-      kernelUrl,
     });
-    expect(result.sourceLength).toBeGreaterThan(64 * 1024 * 1024);
-    expect(result.composedLength).toBeGreaterThan(64 * 1024 * 1024);
-    expect(result.returnedBytes).toBe(0);
-    expect(result.state).toBe("large-image");
-  } finally {
-    await context.close();
-    rmSync(userDataDir, { recursive: true, force: true });
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    rmSync(fixtureDir, { recursive: true, force: true });
-  }
+  });
+  expect(result.length).toBe(image.byteLength);
+  expect(result.length).toBeGreaterThan(64 * 1024 * 1024);
+  expect(result.fileLength).toBe(image.byteLength);
+  expect(result.magic).toEqual(Array.from(image.subarray(0, 4)));
 });
+
+test("compressed source accepts concatenated frames and skips bounded padding", async ({ playwright, browserName, baseURL }, testInfo) => {
+  const image = await imageWithState("concatenated");
+  const middle = Math.floor(image.byteLength / 2);
+  const padding = Buffer.from([0x50, 0x2a, 0x4d, 0x18, 0x03, 0x00, 0x00, 0x00, 1, 2, 3]);
+  const compressed = Buffer.concat([
+    zstdCompressSync(Buffer.from(image.subarray(0, middle))),
+    padding,
+    zstdCompressSync(Buffer.from(image.subarray(middle))),
+  ]);
+  const imageUrl = new URL("/fixed-composer-multiframe.vfs.zst", baseURL).href;
+  const result = await withOpfsPage(playwright, browserName, baseURL!, testInfo, async (page) => {
+    await page.route(imageUrl, (route) => route.fulfill({ body: compressed }));
+    return page.evaluate(async ({ sourceStageUrl, imageUrl }) => {
+      const { stageRawVfsSourceImage } = await import(sourceStageUrl);
+      const source = await stageRawVfsSourceImage(await fetch(imageUrl), () => {});
+      try {
+        const bytes = new Uint8Array(await (await source.file.getFile()).arrayBuffer());
+        return { length: bytes.byteLength, last: Array.from(bytes.subarray(-16)) };
+      } finally {
+        await source.remove();
+      }
+    }, {
+      sourceStageUrl: new URL(`/@fs/${sourceStagePath}`, baseURL).href,
+      imageUrl,
+    });
+  });
+  expect(result).toEqual({ length: image.byteLength, last: Array.from(image.subarray(-16)) });
+});
+
+test("truncated compressed source removes its partial OPFS stage", async ({ playwright, browserName, baseURL }, testInfo) => {
+  const compressed = zstdCompressSync(Buffer.from(await imageWithState("truncated")));
+  const imageUrl = new URL("/fixed-composer-truncated.vfs.zst", baseURL).href;
+  const result = await withOpfsPage(playwright, browserName, baseURL!, testInfo, async (page) => {
+    await page.route(imageUrl, (route) => route.fulfill({ body: compressed.subarray(0, compressed.byteLength - 4) }));
+    return page.evaluate(async ({ sourceStageUrl, imageUrl }) => {
+      const { stageRawVfsSourceImage } = await import(sourceStageUrl);
+      const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle(
+        "kandelo-persistent-overlay", { create: true },
+      );
+      const before: string[] = [];
+      for await (const name of directory.keys()) before.push(name);
+      let error = "";
+      try {
+        await stageRawVfsSourceImage(await fetch(imageUrl), () => {}, directory);
+      } catch (caught) {
+        error = String(caught);
+      }
+      const after: string[] = [];
+      for await (const name of directory.keys()) after.push(name);
+      return { error, before: before.sort(), after: after.sort() };
+    }, {
+      sourceStageUrl: new URL(`/@fs/${sourceStagePath}`, baseURL).href,
+      imageUrl,
+    });
+  });
+  expect(result.error).toContain("truncated");
+  expect(result.after).toEqual(result.before);
+});
+
+for (const scenario of [
+  { title: "composer VFS budget", fileBytes: 68 * 1024 * 1024, budgetBytes: 64 * 1024 * 1024, memoryProfile: undefined },
+  { title: "@slow constrained kernel memory budget", fileBytes: 772 * 1024 * 1024, budgetBytes: 768 * 1024 * 1024, memoryProfile: "constrained" },
+] as const) {
+  test(`positioned install boots an image larger than the ${scenario.title}`, async ({ playwright, browserName, baseURL }, testInfo) => {
+    test.setTimeout(scenario.memoryProfile === undefined ? 180_000 : 600_000);
+    test.skip(kernelPath === null, "kernel artifact is required");
+    const image = await imageWithState("large-image", scenario.fileBytes);
+    expect(image.byteLength).toBeGreaterThan(scenario.budgetBytes);
+    const fixtureDir = mkdtempSync(join(repoRoot, ".context/large-source-"));
+    const imagePath = join(fixtureDir, "image.vfs");
+    writeFileSync(imagePath, image);
+    const server = createServer((_request, response) => {
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(image.byteLength),
+        "access-control-allow-origin": "*",
+        "cross-origin-resource-policy": "cross-origin",
+      });
+      void (async () => {
+        for await (const bytes of createReadStream(imagePath, { highWaterMark: 64 * 1024 })) {
+          if (!response.write(bytes)) await once(response, "drain");
+          await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+        response.end();
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("source server has no port");
+    const imageUrl = `http://127.0.0.1:${address.port}/image.vfs`;
+    const kernelUrl = new URL("/fixed-composer-kernel.wasm", baseURL).href;
+    const projectUse = testInfo.project.use as {
+      channel?: string;
+      launchOptions?: Record<string, unknown>;
+      proxy?: Record<string, unknown>;
+      extraHTTPHeaders?: Record<string, string>;
+    };
+    const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-composer-large-"));
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const page = context.pages()[0] ?? await context.newPage();
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const result = await page.evaluate(async ({ sourceStageUrl, composerUrl, persistenceUrl, browserKernelUrl, imageUrl, kernelUrl, memoryProfile }) => {
+        const { stageRawVfsSourceImage } = await import(sourceStageUrl);
+        const { composeImageInWorker } = await import(composerUrl);
+        const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
+        const { BrowserKernel } = await import(browserKernelUrl);
+        const stagingDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle(
+          "kandelo-persistent-overlay", { create: true },
+        );
+        const response = await fetch(imageUrl);
+        const source = await stageRawVfsSourceImage(response, () => {}, stagingDirectory);
+        if (source instanceof Uint8Array) throw new Error("large source was materialized");
+        const name = `large-${crypto.randomUUID()}`;
+        const identity = "large positioned install";
+        let composed;
+        try {
+          composed = await composeImageInWorker({
+            imageBytes: new Uint8Array(),
+            positionedSource: { file: source.file, integrity: source.integrity },
+            persistentImage: { name, identity },
+            maxVfsByteLength: 64 * 1024 * 1024,
+            imageLabel: "large positioned install",
+            requestedProfileId: "probe",
+            requestedProfileSource: "test",
+            hasCandidateEvidence: false,
+            descriptor: { boot: { inputs: [] } } as never,
+            appPath: "/pages/kandelo/",
+            proto: "http",
+            preforkServiceProcesses: 1,
+          }, {
+            onTick: () => {},
+            isCurrent: () => true,
+            supersededError: () => new Error("superseded"),
+          });
+        } finally {
+          await source.remove();
+        }
+        const restored = await loadFixedPersistenceImageHandle(name, identity);
+        if (restored === null) throw new Error("large image was not published");
+        const kernel = new BrowserKernel({ kernelOwnedFs: true, memoryProfile });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: restored.file,
+            experimentalFixedPersistenceName: name,
+          });
+          return {
+            sourceLength: source.integrity.length,
+            composedLength: composed.imageFile?.length,
+            returnedBytes: composed.imageBytes.byteLength,
+            state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+            largeFileSize: (await kernel.statVfsPath("/large"))?.size,
+          };
+        } finally {
+          await kernel.destroy();
+        }
+      }, {
+        sourceStageUrl: new URL(`/@fs/${sourceStagePath}`, baseURL).href,
+        composerUrl: new URL(`/@fs/${composerPath}`, baseURL).href,
+        persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        imageUrl,
+        kernelUrl,
+        memoryProfile: scenario.memoryProfile,
+      });
+      expect(result.sourceLength).toBeGreaterThan(scenario.budgetBytes);
+      expect(result.composedLength).toBeGreaterThan(scenario.budgetBytes);
+      expect(result.returnedBytes).toBe(0);
+      expect(result.state).toBe("large-image");
+      expect(result.largeFileSize).toBe(scenario.fileBytes);
+    } finally {
+      await context.close();
+      rmSync(userDataDir, { recursive: true, force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+}
 
 test("composer stages a persistent image in OPFS without returning its bytes", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
