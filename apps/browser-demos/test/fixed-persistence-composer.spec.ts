@@ -1189,7 +1189,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       }, result.pendingName);
       await page.reload();
       const fallbackBoot = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, name }) => {
-        const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
+        const { loadFixedPersistenceImageHandle, promoteFixedPersistenceRecovery } = await import(persistenceUrl);
         const { BrowserKernel } = await import(browserKernelUrl);
         const overlayDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const fallback = await loadFixedPersistenceImageHandle(name, "composer stream probe");
@@ -1207,24 +1207,57 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         } finally {
           await kernel.destroy();
         }
+        const selectedPrevious = fallback.recovery !== undefined;
+        const currentManifest = await overlayDirectory.getFileHandle(`${name}.base.json`);
+        const changedWriter = await currentManifest.createWritable();
+        await changedWriter.write("[]");
+        await changedWriter.close();
+        let changedManifestRejected = false;
+        try {
+          await promoteFixedPersistenceRecovery(name, "composer stream probe", fallback);
+        } catch {
+          changedManifestRejected = true;
+        }
+        const restoreWriter = await currentManifest.createWritable();
+        await restoreWriter.write("{");
+        await restoreWriter.close();
+        await promoteFixedPersistenceRecovery(name, "composer stream probe", fallback);
+        await promoteFixedPersistenceRecovery(name, "composer stream probe", fallback);
+        const promoted = await loadFixedPersistenceImageHandle(name, "composer stream probe");
+        const recoveryPromoted = promoted !== null && promoted.recovery === undefined &&
+          await promoted.file.isSameEntry(fallback.file);
         const previousManifest = await overlayDirectory.getFileHandle(`${name}.previous.base.json`);
         const previousWriter = await previousManifest.createWritable();
         await previousWriter.write("{");
         await previousWriter.close();
+        const afterBackupDamage = await loadFixedPersistenceImageHandle(name, "composer stream probe");
+        const retainedAfterBackupDamage = afterBackupDamage !== null &&
+          await afterBackupDamage.file.isSameEntry(fallback.file);
+        const currentWriter = await currentManifest.createWritable();
+        await currentWriter.write("{");
+        await currentWriter.close();
         let bothDamagedRejected = false;
         try {
           await loadFixedPersistenceImageHandle(name, "composer stream probe");
         } catch {
           bothDamagedRejected = true;
         }
-        return { fallbackReady: fallback.journalInitialized, state, bothDamagedRejected };
+        return { fallbackReady: fallback.journalInitialized, state, selectedPrevious, changedManifestRejected, recoveryPromoted, retainedAfterBackupDamage, bothDamagedRejected };
       }, {
         persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
         browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
         kernelUrl,
         name: result.pendingName,
       });
-      expect(fallbackBoot).toEqual({ fallbackReady: true, state: "XYcdefgh", bothDamagedRejected: true });
+      expect(fallbackBoot).toEqual({
+        fallbackReady: true,
+        state: "XYcdefgh",
+        selectedPrevious: true,
+        changedManifestRejected: true,
+        recoveryPromoted: true,
+        retainedAfterBackupDamage: true,
+        bothDamagedRejected: true,
+      });
     } finally {
       await context.close();
     }

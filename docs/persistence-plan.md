@@ -91,6 +91,13 @@ manifests identify different generations, selection verifies the new base in
 bounded chunks and its journal header before choosing it; a damaged base or
 header selects the verified prior generation. Chromium, Firefox, and WebKit
 exercise that handoff and fallback after image, header, and manifest damage.
+The selected prior manifest carries the exact primary and fallback manifest
+digests observed at selection. Only after the prior kernel initializes, and
+before guest processes launch, the page checks those digests under the
+manifest lock and promotes the prior manifest to primary. A changed manifest
+refuses promotion; a successful promotion prevents later repair of the newer
+image from silently switching away from writes made on the recovered branch.
+The damaged newer base and journal remain on OPFS for forensic recovery.
 The caller must quiesce the old kernel before taking a snapshot and both
 kernels before publication; Web Locks only serialize manifest operations,
 not guest journal writes. Later journal-record corruption is still handled by the
@@ -103,15 +110,16 @@ If the selected journal generation disappears or every sealed slot is invalid
 after manifest selection, Node and browser workers now report that specific
 no-valid-generation condition through a typed initialization error. The page
 can retry boot with the verified prior image and its own composition rather
-than keeping machine settings from the failed image. Other I/O errors and
+than keeping machine settings from the failed image, then promote it before
+running guests. Other I/O errors and
 kernel `EIO` refusals still fail closed; this is not recovery from arbitrary
 journal-record corruption. Focused Node and three-engine browser tests cover
 the typed error and prior-candidate boot. A full page retry race test is
 authored but remains unverified here because this workspace has no complete
 browser package artifact tier; it is gated on those artifacts.
-Direct low-level `BrowserKernel` callers must perform that transition after
-successful initialization and before launching guests; the page boot path does
-it automatically.
+Direct low-level `BrowserKernel` callers must mark pending journals ready and
+promote selected fallback manifests after successful initialization and before
+launching guests; the page boot path does both automatically.
 Older image manifests remain strict on reopen, so a crash before their first
 journal initialization can still leave them failing closed. Automatic,
 quiescence-safe base-plus-journal replacement and complete generation fallback
