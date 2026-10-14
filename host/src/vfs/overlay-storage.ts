@@ -142,7 +142,10 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
       stage = "access handle";
       return new OpfsOverlayStorageFile(await file.createSyncAccessHandle());
     } catch (error) {
-      if (!create && error instanceof DOMException && error.name === "NotFoundError") return null;
+      if (!create && stage === "file" && error instanceof DOMException && error.name === "NotFoundError") return null;
+      if (error instanceof DOMException && error.name === "QuotaExceededError") {
+        throw opfsStorageError(error);
+      }
       throw new Error(`persistent overlay OPFS ${stage}: ${error}`);
     }
   }

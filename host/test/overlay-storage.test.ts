@@ -72,6 +72,68 @@ describe("OverlayStorageFile", () => {
 });
 
 describe("OpfsOverlayStorageFile", () => {
+  it.each(["root", "directory", "file", "access handle"] as const)(
+    "preserves ENOSPC when OPFS %s opening exhausts quota",
+    async (stage) => {
+      const quotaFailure = new DOMException("quota exhausted", "QuotaExceededError");
+      const file = {
+        createSyncAccessHandle: async () => {
+          if (stage === "access handle") throw quotaFailure;
+          return { close: () => {} } as FileSystemSyncAccessHandle;
+        },
+      };
+      const directory = {
+        getFileHandle: async () => {
+          if (stage === "file") throw quotaFailure;
+          return file;
+        },
+      };
+      const root = {
+        getDirectoryHandle: async () => {
+          if (stage === "directory") throw quotaFailure;
+          return directory;
+        },
+      };
+      vi.stubGlobal("navigator", {
+        storage: {
+          getDirectory: async () => {
+            if (stage === "root") throw quotaFailure;
+            return root;
+          },
+        },
+      });
+      try {
+        await expect(OpfsOverlayStorageFile.openFile("quota-test", "g0", "journal", true))
+          .rejects.toMatchObject({ code: "ENOSPC" });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it("treats only an absent file as a missing generation", async () => {
+    const notFound = new DOMException("file disappeared", "NotFoundError");
+    let missing = true;
+    const directory = {
+      getFileHandle: async () => {
+        if (missing) throw notFound;
+        return { createSyncAccessHandle: async () => { throw notFound; } };
+      },
+    };
+    vi.stubGlobal("navigator", {
+      storage: { getDirectory: async () => ({ getDirectoryHandle: async () => directory }) },
+    });
+    try {
+      await expect(OpfsOverlayStorageFile.openFile("missing", "g0", "journal", false))
+        .resolves.toBeNull();
+      missing = false;
+      await expect(OpfsOverlayStorageFile.openFile("missing", "g0", "journal", false))
+        .rejects.toThrow(/access handle/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("maps OPFS quota failures to ENOSPC", async () => {
     const quotaFailure = new DOMException("quota exhausted", "QuotaExceededError");
     const access = {

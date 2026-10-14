@@ -121,6 +121,10 @@ the source changed during preparation. Synchronous storage and hash operations
 run on the dedicated kernel worker during live handoff; guest syscalls wait
 until that turn finishes. The pause has not yet been measured for large
 changed-block sets.
+OPFS quota exhaustion while opening the journal directory, generation file,
+or sync access handle retains `ENOSPC`; only a missing file at the file-lookup
+step counts as an absent generation. A file that disappears while its access
+handle is acquired is an operational failure, not a missing generation.
 
 Recovery truncates a torn append shorter than the minimum complete transaction,
 including a partially written transaction header. The writeback test exercises
