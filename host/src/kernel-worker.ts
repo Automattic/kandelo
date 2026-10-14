@@ -27,6 +27,7 @@ import type { VfsChangeEvent } from "./vfs/types";
  * explanatory only and generated-file drift tests cover the live values.
  */
 import { ERRNO } from "./generated/abi";
+import { RejectedOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import { decodeInspectionDirectory, decodeInspectionStat, decodeInspectionResourceLimits } from "./vfs/rootfs-inspection";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 
@@ -5577,7 +5578,8 @@ export class CentralizedKernelWorker {
           : enable(lengthLo, lengthHi, checkpointEnd! >>> 0, Math.floor(checkpointEnd! / 0x1_0000_0000));
         return undefined;
       });
-      if (status !== 0) throw new Error(`kernel refused ${resizable ? "resizable" : "fixed"} rootfs persistence (errno ${-(status ?? 5)})`);
+      if (status === undefined) throw new Error("kernel did not report rootfs persistence status");
+      if (status !== 0) throw new RejectedOverlayGenerationError(resizable ? "resizable" : "fixed", -status);
       this.#persistentOverlayImportSlot = 0;
       this.#persistentOverlayIndexSlot = index === undefined ? null : 1;
       this.#persistentOverlayActiveStorage = storage;

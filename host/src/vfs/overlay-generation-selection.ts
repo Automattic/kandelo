@@ -1,5 +1,12 @@
+import { ERRNO } from "../generated/abi";
 import { verifyOverlayGenerationSeal, verifyOverlayGenerationSealSync, writeOverlayGenerationSealSync } from "./overlay-generation-seal";
 import type { PersistentOverlayStorage } from "./overlay-storage";
+
+export class RejectedOverlayGenerationError extends Error {
+  constructor(readonly mode: "fixed" | "resizable", readonly errno: number) {
+    super(`kernel refused ${mode} rootfs persistence (errno ${errno})`);
+  }
+}
 
 export type OverlayGenerationSlot = "legacy" | "g0" | "g1";
 export type OverlayGenerationFile = "journal" | "seal" | "index";
@@ -83,7 +90,7 @@ export async function enableBestOverlayGeneration(
         candidates.splice(candidates.indexOf(candidate), 1);
         return candidate;
       } catch (error) {
-        if (!(error instanceof Error) || !error.message.startsWith("kernel refused fixed rootfs persistence")) {
+        if (!(error instanceof RejectedOverlayGenerationError) || error.errno !== ERRNO.EIO) {
           throw error;
         }
       }
