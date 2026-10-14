@@ -24,14 +24,14 @@ const encoder = new TextEncoder();
 
 const largeWriteBytes = 2 * 1024 * 1024;
 
-async function makeImage(state: string, includeLargeFile = false): Promise<Uint8Array> {
+async function makeImage(state: string, includeLargeFile = false, largeFileBytes = largeWriteBytes + 4096): Promise<Uint8Array> {
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   if (guestProgramPath !== null) {
     filesystem.mkdir("/bin", 0o755);
     filesystem.writeFile(guestProgramName, new Uint8Array(readFileSync(guestProgramPath)), 0o755);
   }
   filesystem.writeFile("/state", encoder.encode(state), 0o644);
-  if (includeLargeFile) filesystem.writeFile("/large", new Uint8Array(largeWriteBytes + 4096), 0o644);
+  if (includeLargeFile) filesystem.writeFile("/large", new Uint8Array(largeFileBytes), 0o644);
   return filesystem.saveImage();
 }
 
@@ -263,6 +263,35 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       rmSync(directory, { recursive: true, force: true });
     }
   }, 90_000);
+
+  it.skipIf(guestProgramPath === null)("checkpoints 8192 distinct dirty blocks and reopens them through the index", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-many-blocks-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh", true, 32 * 1024 * 1024);
+      const first = await boot(image, path);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "many"]);
+        expect(await exit).toBe(0);
+        await vi.waitFor(() => expect(readFileSync(`${path}.g0.seal`).byteLength).toBeGreaterThan(96), {
+          timeout: 60_000,
+          interval: 100,
+        });
+        expect(readFileSync(`${path}.g0.index`).readBigUInt64LE(80)).toBe(8192n);
+      } finally {
+        await first.destroy();
+      }
+      const reopened = await boot(image, path);
+      try {
+        const { exit } = await reopened.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-many"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 180_000);
 
   it.skipIf(guestProgramPath === null)("compacts an indexed journal twice while guests keep writing", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-live-"));

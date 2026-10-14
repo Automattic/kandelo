@@ -416,8 +416,8 @@ test("browser rejects a semantically invalid indexed generation and restores the
   }
 });
 
-test("browser replays a guest write larger than its bounded dirty cache", async ({ playwright, browserName, baseURL }, testInfo) => {
-  test.setTimeout(180_000);
+test("browser replays 8192 distinct blocks after live compaction", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(240_000);
   const projectUse = testInfo.project.use as {
     channel?: string;
     launchOptions?: Record<string, unknown>;
@@ -434,11 +434,11 @@ test("browser replays a guest write larger than its bounded dirty cache", async 
     });
     try {
       const page = context.pages()[0] ?? (await context.newPage());
-      const largeWriteBytes = 2 * 1024 * 1024;
+      const largeWriteBytes = 32 * 1024 * 1024;
       const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
       filesystem.mkdir("/bin", 0o755);
       filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
-      filesystem.writeFile("/large", new Uint8Array(largeWriteBytes + 4096), 0o644);
+      filesystem.writeFile("/large", new Uint8Array(largeWriteBytes), 0o644);
       const image = await filesystem.saveImage();
       const kernelUrl = new URL("/fixed-large-kernel.wasm", baseURL).href;
       const imageUrl = new URL("/fixed-large-image.vfs", baseURL).href;
@@ -480,6 +480,24 @@ test("browser replays a guest write larger than its bounded dirty cache", async 
             }
             if (!sealed) throw new Error(`live compaction did not seal ${slot}`);
           }
+          const many = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "many"]);
+          if (await many.exit !== 0) throw new Error("distinct-block guest write failed");
+          const deadline = Date.now() + 60_000;
+          let indexed = false;
+          while (Date.now() < deadline) {
+            try {
+              const seal = await (await directory.getFileHandle(`${name}.g0.seal`)).getFile();
+              const sealGeneration = new DataView(await seal.slice(0, 16).arrayBuffer()).getBigUint64(8, true);
+              const index = await (await directory.getFileHandle(`${name}.g0.index`)).getFile();
+              const blockCount = new DataView(await index.slice(0, 88).arrayBuffer()).getBigUint64(80, true);
+              indexed = sealGeneration >= 3n && blockCount === 8192n;
+            } catch {
+              indexed = false;
+            }
+            if (indexed) break;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          if (!indexed) throw new Error("live compaction did not checkpoint 8192 blocks");
         } finally {
           await kernel.destroy();
         }
@@ -497,19 +515,13 @@ test("browser replays a guest write larger than its bounded dirty cache", async 
             vfsImageFile: imageFile,
             experimentalFixedPersistenceName: name,
           });
-          const actual = await kernel.readFileFromVfs("/large");
-          if (!actual) throw new Error("large file missing");
-          for (let index = 0; index < largeWriteBytes; index++) {
-            if (actual[index + 13] !== (((index / 4096) ^ index) & 0xff)) {
-              return { size: actual.byteLength, mismatch: index };
-            }
-          }
-          return { size: actual.byteLength, mismatch: null };
+          const verification = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-many"]);
+          return { size: (await kernel.statVfsPath("/large"))?.size, verified: await verification.exit === 0 };
         } finally {
           await kernel.destroy();
         }
       }, { moduleUrl, kernelUrl, name, largeWriteBytes });
-      expect(result).toEqual({ size: largeWriteBytes + 4096, mismatch: null });
+      expect(result).toEqual({ size: largeWriteBytes, verified: true });
     } finally {
       await context.close();
     }

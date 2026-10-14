@@ -7,6 +7,30 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    int verify_many = argc >= 2 && strcmp(argv[1], "verify-many") == 0;
+    int write_many = argc >= 2 && strcmp(argv[1], "many") == 0;
+    if (verify_many || write_many) {
+        int large_fd = open("/large", O_RDWR);
+        if (large_fd < 0) return 12;
+        struct stat metadata;
+        if (fstat(large_fd, &metadata) != 0 || metadata.st_size < 32 * 1024 * 1024) return 13;
+        for (int chunk = 0; chunk < 16; chunk++) {
+            for (size_t index = 0; index < sizeof(large_write); index++) {
+                large_write[index] = (unsigned char)((index / 4096) ^ index ^ chunk ^ 0x5a);
+            }
+            off_t offset = (off_t)chunk * (off_t)sizeof(large_write);
+            if (verify_many) {
+                for (size_t index = 0; index < sizeof(large_write); index += sizeof(verify_buffer)) {
+                    if (pread(large_fd, verify_buffer, sizeof(verify_buffer), offset + (off_t)index) != (ssize_t)sizeof(verify_buffer)) return 14;
+                    if (memcmp(verify_buffer, large_write + index, sizeof(verify_buffer)) != 0) return 15;
+                }
+            } else if (pwrite(large_fd, large_write, sizeof(large_write), offset) != (ssize_t)sizeof(large_write)) {
+                return 16;
+            }
+        }
+        if (!verify_many && fsync(large_fd) != 0) return 17;
+        return close(large_fd) == 0 ? 0 : 18;
+    }
     int verify_tail = argc >= 2 && strcmp(argv[1], "verify-large-tail") == 0;
     int write_tail = argc >= 2 && strcmp(argv[1], "large-tail") == 0;
     if (verify_tail || write_tail || (argc >= 2 && strcmp(argv[1], "large") == 0)) {
