@@ -658,22 +658,29 @@ fn enable_fixed_persistence_internal(
         }
         None => OverlayJournal::open(storage, base_digest)?,
     };
+    let mut eligible_sizes = ROOTFS.with(|state| {
+        let mut sizes = Vec::new();
+        for inode in state.inodes.iter().flatten() {
+            if let InodeKind::BaseRegular {
+                size,
+                source: BaseSource::Image,
+                ..
+            } = inode.kind
+            {
+                if inode.deferred_digest == crate::sdef::DIGEST_NONE {
+                    sizes.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+                    sizes.push((inode.ino, size));
+                }
+            }
+        }
+        Ok::<_, Errno>(sizes)
+    })?;
+    eligible_sizes.sort_unstable_by_key(|&(ino, _)| ino);
     journal.validate_fixed_image_blocks(|ino| {
-        ROOTFS.with(|state| {
-            state.inodes.iter().flatten().find_map(|inode| {
-                if inode.ino != ino {
-                    return None;
-                }
-                match inode.kind {
-                    InodeKind::BaseRegular {
-                        size,
-                        source: BaseSource::Image,
-                        ..
-                    } if inode.deferred_digest == crate::sdef::DIGEST_NONE => Some(size),
-                    _ => None,
-                }
-            })
-        })
+        eligible_sizes
+            .binary_search_by_key(&ino, |&(candidate, _)| candidate)
+            .ok()
+            .map(|index| eligible_sizes[index].1)
     })?;
     journal.limit_active_tail();
     let mut active = PERSISTENT_ROOTFS.lock();
