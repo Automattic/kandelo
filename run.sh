@@ -2828,11 +2828,14 @@ cmd_build_browser() {
             "$KANDELO_PAGES_VFS_ASSET_GROUP_DIR" "$KANDELO_PAGES_PRODUCT_MAP"
         VITE_BASE="$2" npm --prefix apps/browser-demos run build -- \
             --outDir "$3" --emptyOutDir
+        # Copy after Vite empties the output so the default endpoint ships.
+        mkdir -p "$3/signalling"
+        cp apps/signalling/piplet.php "$3/signalling/piplet.php"
     ' build-browser "$REPO_ROOT" "$base" "$out"
 
     # Fail loudly on an incomplete site rather than letting it be uploaded.
     local missing=0 required
-    for required in index.html service-worker.js vfs-groups; do
+    for required in index.html service-worker.js vfs-groups signalling/piplet.php; do
         if [ ! -e "$out/$required" ]; then
             err "build-browser: $out/$required is missing"
             missing=1
