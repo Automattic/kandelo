@@ -1424,6 +1424,80 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
   }
 });
 
+test("page checkpoints a running persistent computer and reboots the published snapshot", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(120_000);
+  test.skip(kernelPath === null, "kernel artifact is required");
+  test.skip(!fullBrowserProductsReady, "complete browser package artifacts are required");
+  const image = await imageWithState("abcdefgh");
+  await withOpfsPage(playwright, browserName, baseURL!, testInfo, async (page) => {
+    const imageUrl = new URL("/page-checkpoint.vfs", baseURL).href;
+    await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+    await page.route(/kernel.*\.wasm(?:\?.*)?$/, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+    const result = await page.evaluate(async ({ liveSetupUrl, imageUrl }) => {
+      const { createLiveHost } = await import(liveSetupUrl);
+      const name = `page-checkpoint-${crypto.randomUUID()}`;
+      const host = await createLiveHost({ vfsUrl: imageUrl, profile: "probe", experimentalPersistenceName: name });
+      const waitForStatus = (expected: string) => new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          unsubscribe();
+          reject(new Error(`persistent page did not reach ${expected}: ${host.dmesgHistory().map((line) => line.msg).join(" | ")}`));
+        }, 60_000);
+        const unsubscribe = host.subscribeStatus((status) => {
+          if (status === "error") {
+            window.clearTimeout(timeout);
+            unsubscribe();
+            reject(new Error(`persistent page failed: ${host.dmesgHistory().map((line) => line.msg).join(" | ")}`));
+          } else if (status === expected) {
+            window.clearTimeout(timeout);
+            unsubscribe();
+            resolve();
+          }
+        });
+        if (host.getStatus() === expected) {
+          window.clearTimeout(timeout);
+          unsubscribe();
+          resolve();
+        }
+      });
+      await waitForStatus("running");
+      await host.startOwnedJob("checkpoint-write", "/bin/persistence-overwrite", ["persistence-overwrite"], { timeoutMs: 10_000 });
+      let before = "";
+      for (let attempt = 0; attempt < 50; attempt++) {
+        before = new TextDecoder().decode((await host.readVfsFile("/state")) ?? new Uint8Array());
+        if (before === "XYcdefgh") break;
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      }
+      if (before !== "XYcdefgh") throw new Error(`guest write did not become visible: ${before}`);
+      const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+      const manifestFile = await directory.getFileHandle(`${name}.base.json`);
+      const firstManifest = JSON.parse(await (await manifestFile.getFile()).text());
+      if (!host.supportsPersistentImageCheckpoint()) throw new Error("page did not expose checkpoint");
+      await host.checkpointPersistentImage();
+      await waitForStatus("running");
+      const after = new TextDecoder().decode((await host.readVfsFile("/state")) ?? new Uint8Array());
+      const secondManifest = JSON.parse(await (await manifestFile.getFile()).text());
+      const backupFile = await directory.getFileHandle(`${name}.previous.base.json`);
+      const backupManifest = JSON.parse(await (await backupFile.getFile()).text());
+      return {
+        before,
+        after,
+        firstJournal: firstManifest.journalName,
+        secondJournal: secondManifest.journalName,
+        backupJournal: backupManifest.journalName,
+        secondReady: secondManifest.journalInitialized,
+      };
+    }, {
+      liveSetupUrl: new URL(`/@fs/${resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts")}`, baseURL).href,
+      imageUrl,
+    });
+    expect(result.before).toBe("XYcdefgh");
+    expect(result.after).toBe("XYcdefgh");
+    expect(result.secondJournal).not.toBe(result.firstJournal);
+    expect(result.backupJournal).toBe(result.firstJournal);
+    expect(result.secondReady).toBe(true);
+  });
+});
+
 test("page retries an invalid new journal with the prior image's configuration", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   test.skip(kernelPath === null, "kernel artifact is required");

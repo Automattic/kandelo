@@ -3237,6 +3237,19 @@
   display: none;
 }
 
+.kinternals-checkpoint {
+  flex: 0 0 auto;
+  margin-left: auto;
+  border: 1px solid var(--k-border);
+  border-radius: 7px;
+  background: var(--k-surface);
+  color: var(--k-text);
+  padding: 5px 10px;
+  font: 700 11px var(--k-font-ui);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
 .kinternals-tab {
   height: 28px;
   border: 0;
