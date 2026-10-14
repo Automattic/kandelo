@@ -10,6 +10,16 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && strcmp(argv[1], "quota-write") == 0) {
+        int fd = open("/state", O_RDWR);
+        if (fd < 0) return 108;
+        if (pwrite(fd, "XY", 2, 0) != 2) return 109;
+        if (fsync(fd) != -1 || errno != ENOSPC) return 110;
+        char bytes[2];
+        if (pread(fd, bytes, sizeof(bytes), 0) != (ssize_t)sizeof(bytes) || memcmp(bytes, "XY", 2) != 0) return 111;
+        close(fd);
+        return 0;
+    }
     int set_metadata = argc >= 2 && strcmp(argv[1], "set-metadata") == 0;
     int verify_metadata = argc >= 2 && strcmp(argv[1], "verify-metadata") == 0;
     if (set_metadata || verify_metadata) {

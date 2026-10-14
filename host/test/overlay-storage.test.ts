@@ -69,6 +69,38 @@ describe("OverlayStorageFile", () => {
     storage.close();
     expect(() => storage.len()).toThrow(/EBADF/);
   });
+
+  it("preserves ENOSPC after a partial Node journal write or failed flush", () => {
+    const quotaFailure = Object.assign(new Error("disk full"), { code: "ENOSPC" });
+    let written = 0;
+    const backend = {
+      open: () => 7,
+      close: () => 0,
+      write: (_handle: number, _source: Uint8Array, offset: number, length: number) => {
+        if (offset !== 0) throw quotaFailure;
+        written = Math.min(128, length);
+        return written;
+      },
+      fsync: () => { throw quotaFailure; },
+    } as unknown as FileSystemBackend;
+    const storage = OverlayStorageFile.open(backend, "/overlay.log");
+    let writeFailure: unknown;
+    try {
+      storage.writeAllAt(0, new Uint8Array(256));
+    } catch (error) {
+      writeFailure = error;
+    }
+    expect(writeFailure).toBe(quotaFailure);
+    expect(written).toBe(128);
+    let flushFailure: unknown;
+    try {
+      storage.flush();
+    } catch (error) {
+      flushFailure = error;
+    }
+    expect(flushFailure).toBe(quotaFailure);
+    storage.close();
+  });
 });
 
 describe("OpfsOverlayStorageFile", () => {
