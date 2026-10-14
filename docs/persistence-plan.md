@@ -98,6 +98,10 @@ exercise that handoff and fallback after image, header, and manifest damage.
 The browser replacement workflow now injects cancellation at every publish
 checkpoint before the primary manifest closes, and checks that the prior
 generation remains selected before a later successful publication.
+It also injects write and pre-close failures at both the backup and primary
+manifest files; Chromium, Firefox, and WebKit keep selecting the prior image
+after each failure, then publish the staged image successfully. These cases
+do not cover a tab crash or failure after a successful manifest close.
 The selected prior manifest carries the exact primary and fallback manifest
 digests observed at selection. Only after the prior kernel initializes, and
 before guest processes launch, the page checks those digests under the

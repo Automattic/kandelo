@@ -1026,6 +1026,46 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
             await competing.destroy();
           }
         }
+        const filePrototype = Object.getPrototypeOf(previous.file) as FileSystemFileHandle;
+        const originalCreateWritable = filePrototype.createWritable;
+        const manifestFailures: boolean[] = [];
+        for (const fileName of [`${name}.previous.base.json`, `${name}.base.json`]) {
+          for (const operation of ["write", "close"] as const) {
+            let injected = false;
+            filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
+              const writer = await originalCreateWritable.call(this, options);
+              if (this.name !== fileName) return writer;
+              return {
+                write: async (...args: Parameters<typeof writer.write>) => {
+                  if (operation === "write" && !injected) {
+                    injected = true;
+                    throw new DOMException("injected manifest write failure", "QuotaExceededError");
+                  }
+                  return writer.write(...args);
+                },
+                close: async () => {
+                  if (operation === "close" && !injected) {
+                    injected = true;
+                    throw new DOMException("injected manifest close failure", "QuotaExceededError");
+                  }
+                  return writer.close();
+                },
+                abort: () => writer.abort(),
+              } as unknown as FileSystemWritableFileStream;
+            };
+            let rejected = false;
+            try {
+              await publishFixedPersistenceReplacement(name, identity, previous, staged);
+            } catch (error) {
+              rejected = String(error).includes("injected manifest");
+            } finally {
+              filePrototype.createWritable = originalCreateWritable;
+            }
+            const afterFailure = await loadFixedPersistenceImageHandle(name, identity);
+            manifestFailures.push(injected && rejected && afterFailure !== null &&
+              await afterFailure.file.isSameEntry(previous.file));
+          }
+        }
         const interruptedPublications: boolean[] = [];
         for (let cut = 1; cut <= staged.chunkSha256.length + 5; cut++) {
           let publicationChecks = 0;
@@ -1048,6 +1088,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           prematurePublishRejected,
           busyPublishRejected,
           journalWriterRejected,
+          manifestFailures,
           interruptedPublications,
           stagedState,
           newReady: current?.journalInitialized === true,
@@ -1065,6 +1106,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         prematurePublishRejected: true,
         busyPublishRejected: true,
         journalWriterRejected: [true, true],
+        manifestFailures: [true, true, true, true],
         interruptedPublications: [true, true, true, true, true, true],
         stagedState: "replacement",
         newReady: true,
