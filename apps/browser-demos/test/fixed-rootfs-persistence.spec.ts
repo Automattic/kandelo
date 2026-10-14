@@ -753,3 +753,124 @@ test("browser termination loses unsynced writes without damaging the last durabl
     rmSync(userDataDir, { recursive: true, force: true });
   }
 });
+
+const quotaScenarios = (["fixed", "resizable"] as const).flatMap((mode) =>
+  (["write", "partial", "flush"] as const).map((fault) => ({ mode, fault })));
+for (const { mode, fault } of quotaScenarios) {
+  test(`browser ${mode} ${fault} quota failure rejects fsync, preserves dirty reads, and recovers`, async ({ playwright, browserName, baseURL }, testInfo) => {
+    test.setTimeout(90_000);
+    const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+    filesystem.mkdir("/bin", 0o755);
+    filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+    filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+    const image = await filesystem.saveImage();
+    const kernelUrl = new URL(`/quota-${mode}-kernel.wasm`, baseURL).href;
+    const imageUrl = new URL(`/quota-${mode}-image.vfs`, baseURL).href;
+    const quotaWorkerPath = resolve(testDirectory, "fixtures/opfs-overlay-write-quota-worker.ts");
+    const projectUse = testInfo.project.use as {
+      channel?: string;
+      launchOptions?: Record<string, unknown>;
+      proxy?: Record<string, unknown>;
+      extraHTTPHeaders?: Record<string, string>;
+    };
+    const userDataDir = mkdtempSync(join(tmpdir(), `kandelo-${mode}-quota-browser-`));
+    try {
+      const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+        channel: projectUse.channel,
+        proxy: projectUse.proxy as never,
+        extraHTTPHeaders: projectUse.extraHTTPHeaders,
+        ...(projectUse.launchOptions ?? {}),
+      });
+      try {
+        const page = context.pages()[0] ?? await context.newPage();
+        await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+        await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+        await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+        const before = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, quotaWorkerUrl, mode, fault }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
+          const imageBytes = await (await fetch(imageUrl)).arrayBuffer();
+          const name = `${mode}-quota-${crypto.randomUUID()}`;
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+          const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+          const writer = await imageFile.createWritable();
+          await writer.write(imageBytes);
+          await writer.close();
+          const OriginalWorker = Worker;
+          let redirected = 0;
+          const workerErrors: string[] = [];
+          globalThis.Worker = class extends OriginalWorker {
+            constructor(url: string | URL, options?: WorkerOptions) {
+              if (String(url).includes("browser-kernel-worker-entry")) {
+                const faultUrl = new URL(quotaWorkerUrl);
+                faultUrl.searchParams.set("name", name);
+                faultUrl.searchParams.set("fault", fault);
+                redirected++;
+                super(faultUrl, options);
+              } else {
+                super(url, options);
+              }
+              this.addEventListener("error", (event) => workerErrors.push(event.message));
+            }
+          };
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          await Promise.race([
+            kernel.initFromOpfsImage({
+              kernelWasm: kernelBytes,
+              vfsImageFile: imageFile,
+              ...(mode === "fixed"
+                ? { experimentalFixedPersistenceName: name }
+                : { experimentalResizablePersistenceName: name }),
+            }),
+            new Promise<never>((_, reject) => setTimeout(
+              () => reject(new Error(`quota worker init timed out: redirected=${redirected}, errors=${workerErrors.join("|")}`)),
+              30_000,
+            )),
+          ]);
+          const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "quota-write"]);
+          const status = await exit;
+          const visible = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          (window as unknown as { crashKernel: unknown }).crashKernel = kernel;
+          return { name, status, visible, redirected };
+        }, {
+          moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+          kernelUrl,
+          imageUrl,
+          quotaWorkerUrl: new URL(`/@fs/${quotaWorkerPath}`, baseURL).href,
+          mode,
+          fault,
+        });
+        expect(before).toMatchObject({ status: 0, visible: "XYcdefgh", redirected: 1 });
+        await page.reload();
+        const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name, mode }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+          const imageFile = await directory.getFileHandle(`${name}.base`);
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: kernelBytes,
+              vfsImageFile: imageFile,
+              ...(mode === "fixed"
+                ? { experimentalFixedPersistenceName: name }
+                : { experimentalResizablePersistenceName: name }),
+            });
+            return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          } finally {
+            await kernel.destroy();
+          }
+        }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, name: before.name, mode });
+        if (fault === "flush") {
+          expect(["abcdefgh", "XYcdefgh"]).toContain(recovered);
+        } else {
+          expect(recovered).toBe("abcdefgh");
+        }
+      } finally {
+        await context.close();
+      }
+    } finally {
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+}
