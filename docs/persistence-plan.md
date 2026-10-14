@@ -122,8 +122,13 @@ map and the milestone remains open. A backward-compatible v2 generation seal
 can additionally bind an index sidecar by length and bounded chunk digests;
 Node and browser selection reject a byte-damaged indexed candidate and fall
 back to an older valid slot. Current compaction still publishes v1 seals, and
-the kernel does not yet parse a selected index, so this v2 path is not yet the
-normal boot format or a semantic index-validation guarantee.
+the host does not yet pass a selected index to the kernel, so this v2 path is
+not yet the normal boot format or a semantic index-validation guarantee. A
+Rust-only indexed open now verifies the journal prefix, replays only later
+transactions, reads older blocks through the table's bounded page cache, and
+merges the table with later mutations during compaction. This still scans the
+entire prefix to verify its digest and does not bound an active journal's tail
+without live compaction.
 
 Live compaction needs a two-phase handoff, unlike the current boot-only
 handoff. While guest operations are stopped at a kernel-worker boundary, copy

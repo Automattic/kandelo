@@ -630,8 +630,8 @@ pub fn enable_fixed_persistence(
     storage: Box<dyn OverlayStorage + Send>,
     base_digest: [u8; 32],
 ) -> Result<(), Errno> {
-    let journal = OverlayJournal::open(storage, base_digest)?;
-    journal.state().validate_fixed_image_blocks(|ino| {
+    let mut journal = OverlayJournal::open(storage, base_digest)?;
+    journal.validate_fixed_image_blocks(|ino| {
         ROOTFS.with(|state| {
             state.inodes.iter().flatten().find_map(|inode| {
                 if inode.ino != ino {

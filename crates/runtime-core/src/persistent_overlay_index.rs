@@ -55,6 +55,7 @@ impl BlockCheckpointEntry {
 pub struct BlockCheckpoint<S: OverlayStorage> {
     storage: S,
     count: u64,
+    journal_end: u64,
     next_sequence: u64,
     cached_page: [u8; PAGE_BYTES],
     cached_page_index: Option<u64>,
@@ -120,6 +121,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         Ok(Self {
             storage,
             count,
+            journal_end,
             next_sequence,
             cached_page: [0; PAGE_BYTES],
             cached_page_index: None,
@@ -180,6 +182,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         Ok(Self {
             storage,
             count,
+            journal_end,
             next_sequence,
             cached_page: [0; PAGE_BYTES],
             cached_page_index: None,
@@ -211,6 +214,17 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
 
     pub fn next_sequence(&self) -> u64 {
         self.next_sequence
+    }
+
+    pub fn journal_end(&self) -> u64 {
+        self.journal_end
+    }
+
+    pub fn entry_at(&mut self, index: u64) -> Result<Option<BlockCheckpointEntry>, Errno> {
+        if index >= self.count {
+            return Ok(None);
+        }
+        self.read_entry(index).map(Some)
     }
 
     pub fn into_storage(self) -> S {

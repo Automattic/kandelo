@@ -149,6 +149,7 @@ pub struct OverlayJournal<S: OverlayStorage> {
     storage: S,
     base_digest: [u8; 32],
     state: OverlayState,
+    checkpoint: Option<BlockCheckpoint<Box<dyn OverlayStorage + Send>>>,
     next_sequence: u64,
     end: u64,
     failed: bool,
@@ -157,9 +158,48 @@ pub struct OverlayJournal<S: OverlayStorage> {
 }
 
 impl<S: OverlayStorage> OverlayJournal<S> {
-    pub fn open(mut storage: S, base_digest: [u8; 32]) -> Result<Self, Errno> {
+    pub fn open(storage: S, base_digest: [u8; 32]) -> Result<Self, Errno> {
+        Self::open_internal(storage, base_digest, None)
+    }
+
+    pub fn open_with_checkpoint<T: OverlayStorage + Send + 'static>(
+        mut storage: S,
+        checkpoint_storage: T,
+        base_digest: [u8; 32],
+        checkpoint_end: u64,
+    ) -> Result<Self, Errno> {
+        if checkpoint_end < HEADER_BYTES as u64 || storage.len()? < checkpoint_end {
+            return Err(Errno::EIO);
+        }
+        let mut digest = Sha256::new();
+        let mut bytes = [0; 64 * 1024];
+        let mut offset = 0;
+        while offset < checkpoint_end {
+            let length = (checkpoint_end - offset).min(bytes.len() as u64) as usize;
+            storage.read_exact_at(offset, &mut bytes[..length])?;
+            digest.update(&bytes[..length]);
+            offset += length as u64;
+        }
+        let checkpoint_storage: Box<dyn OverlayStorage + Send> = Box::new(checkpoint_storage);
+        let checkpoint = BlockCheckpoint::open(
+            checkpoint_storage,
+            base_digest,
+            digest.finalize().into(),
+            checkpoint_end,
+        )?;
+        Self::open_internal(storage, base_digest, Some(checkpoint))
+    }
+
+    fn open_internal(
+        mut storage: S,
+        base_digest: [u8; 32],
+        checkpoint: Option<BlockCheckpoint<Box<dyn OverlayStorage + Send>>>,
+    ) -> Result<Self, Errno> {
         let size = storage.len()?;
         if size == 0 {
+            if checkpoint.is_some() {
+                return Err(Errno::EIO);
+            }
             let mut header = [0u8; HEADER_BYTES];
             header[..4].copy_from_slice(MAGIC);
             header[4..8].copy_from_slice(&VERSION.to_le_bytes());
@@ -184,8 +224,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         }
 
         let mut state = OverlayState::default();
-        let mut next_sequence = 1u64;
-        let mut end = HEADER_BYTES as u64;
+        let mut next_sequence = checkpoint.as_ref().map_or(1, BlockCheckpoint::next_sequence);
+        let mut end = checkpoint.as_ref().map_or(HEADER_BYTES as u64, BlockCheckpoint::journal_end);
         let size = storage.len()?;
         while end < size {
             let remaining = size - end;
@@ -251,6 +291,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             storage,
             base_digest,
             state,
+            checkpoint,
             next_sequence,
             end,
             failed: false,
@@ -263,11 +304,31 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         &self.state
     }
 
+    pub fn validate_fixed_image_blocks<F>(&mut self, mut base_size: F) -> Result<(), Errno>
+    where
+        F: FnMut(u64) -> Option<u64>,
+    {
+        self.state.validate_fixed_image_blocks(&mut base_size)?;
+        if let Some(checkpoint) = self.checkpoint.as_mut() {
+            for index in 0..checkpoint.count() {
+                let entry = checkpoint.entry_at(index)?.ok_or(Errno::EIO)?;
+                let offset = entry.block.checked_mul(FILE_BLOCK_BYTES as u64).ok_or(Errno::EIO)?;
+                if offset >= base_size(entry.inode).ok_or(Errno::EIO)? {
+                    return Err(Errno::EIO);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn checkpoint_fixed_blocks_into<T: OverlayStorage>(
         &mut self,
         target: T,
     ) -> Result<BlockCheckpoint<T>, Errno> {
         self.sync()?;
+        if self.checkpoint.is_some() {
+            return Err(Errno::EOPNOTSUPP);
+        }
         if !self.state.entries.is_empty() || self.state.blocks.values().any(Option::is_none) {
             return Err(Errno::EINVAL);
         }
@@ -335,10 +396,53 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 batch.clear();
             }
         }
-        for ((inode, block), location) in &self.state.blocks {
+        let mut checkpoint_position = 0;
+        let mut checkpoint_entry = match self.checkpoint.as_mut() {
+            Some(checkpoint) => checkpoint.entry_at(checkpoint_position)?,
+            None => None,
+        };
+        let mut tail_entries = self.state.blocks.iter();
+        let mut tail_entry = tail_entries.next();
+        while checkpoint_entry.is_some() || tail_entry.is_some() {
+            let take_checkpoint = match (checkpoint_entry.as_ref(), tail_entry) {
+                (Some(indexed), Some((key, _))) => (indexed.inode, indexed.block) < *key,
+                (Some(_), None) => true,
+                _ => false,
+            };
+            let ((inode, block), location) = if take_checkpoint {
+                let indexed = checkpoint_entry.take().ok_or(Errno::EIO)?;
+                checkpoint_position += 1;
+                checkpoint_entry = self
+                    .checkpoint
+                    .as_mut()
+                    .ok_or(Errno::EIO)?
+                    .entry_at(checkpoint_position)?;
+                (
+                    (indexed.inode, indexed.block),
+                    Some(BlockLocation {
+                        offset: indexed.offset,
+                        digest: indexed.digest,
+                    }),
+                )
+            } else {
+                let (key, location) = tail_entry.ok_or(Errno::EIO)?;
+                if checkpoint_entry
+                    .as_ref()
+                    .is_some_and(|indexed| (indexed.inode, indexed.block) == *key)
+                {
+                    checkpoint_position += 1;
+                    checkpoint_entry = self
+                        .checkpoint
+                        .as_mut()
+                        .ok_or(Errno::EIO)?
+                        .entry_at(checkpoint_position)?;
+                }
+                tail_entry = tail_entries.next();
+                (*key, *location)
+            };
             let key = OverlayKey::FileBlock {
-                inode: *inode,
-                block: *block,
+                inode,
+                block,
             };
             let mutation = match location {
                 Some(location) => {
@@ -654,7 +758,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 done += chunk;
                 continue;
             }
-            match self.state.blocks.get(&(inode, block)).copied() {
+            match self.block_location(inode, block)? {
                 Some(Some(location)) => {
                     self.read_cached_block((inode, block), location, within_block, target)?;
                 }
@@ -682,6 +786,25 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             done += chunk;
         }
         Ok(done)
+    }
+
+    fn block_location(
+        &mut self,
+        inode: u64,
+        block: u64,
+    ) -> Result<Option<Option<BlockLocation>>, Errno> {
+        if let Some(location) = self.state.blocks.get(&(inode, block)) {
+            return Ok(Some(*location));
+        }
+        match self.checkpoint.as_mut() {
+            Some(checkpoint) => Ok(checkpoint.lookup(inode, block)?.map(|entry| {
+                Some(BlockLocation {
+                    offset: entry.offset,
+                    digest: entry.digest,
+                })
+            })),
+            None => Ok(None),
+        }
     }
 
     fn read_cached_block(
@@ -1114,6 +1237,99 @@ mod tests {
             journal.checkpoint_fixed_blocks_into(MemoryStorage::default()),
             Err(Errno::EIO)
         ));
+    }
+
+    #[test]
+    fn indexed_recovery_replays_only_the_tail_and_reads_older_blocks_on_demand() {
+        let digest = [33; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        for block in 0..200 {
+            journal
+                .commit(&[Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block },
+                    value: vec![block as u8; FILE_BLOCK_BYTES],
+                }])
+                .unwrap();
+        }
+        let checkpoint_end = journal.end;
+        let checkpoint = journal
+            .checkpoint_fixed_blocks_into(MemoryStorage::default())
+            .unwrap();
+        journal
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 73 },
+                value: vec![9; FILE_BLOCK_BYTES],
+            }])
+            .unwrap();
+        let checkpoint_bytes = checkpoint.into_storage().bytes;
+        let mut reopened = OverlayJournal::open_with_checkpoint(
+            journal.into_storage(),
+            MemoryStorage {
+                bytes: checkpoint_bytes.clone(),
+                ..MemoryStorage::default()
+            },
+            digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        assert_eq!(reopened.state.blocks.len(), 1);
+        reopened
+            .validate_fixed_image_blocks(|inode| {
+                (inode == 7).then_some(200 * FILE_BLOCK_BYTES as u64)
+            })
+            .unwrap();
+        for (block, expected) in [(0, 0), (73, 9), (199, 199)] {
+            let mut byte = [0];
+            assert_eq!(
+                reopened.read_file_at(
+                    7,
+                    200 * FILE_BLOCK_BYTES as u64,
+                    block * FILE_BLOCK_BYTES as u64,
+                    &mut byte,
+                    |_, _| panic!("checkpoint or tail must satisfy read"),
+                ),
+                Ok(1)
+            );
+            assert_eq!(byte, [expected]);
+        }
+        reopened
+            .write_fixed_file_at_buffered(
+                7,
+                200 * FILE_BLOCK_BYTES as u64,
+                74 * FILE_BLOCK_BYTES as u64,
+                &[11; FILE_BLOCK_BYTES],
+                |_, _| panic!("full block needs no base read"),
+            )
+            .unwrap();
+        reopened.sync().unwrap();
+        let mut reopened = OverlayJournal::open_with_checkpoint(
+            reopened.into_storage(),
+            MemoryStorage {
+                bytes: checkpoint_bytes,
+                ..MemoryStorage::default()
+            },
+            digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        assert_eq!(reopened.state.blocks.len(), 2);
+        let compacted = reopened.compact_into(MemoryStorage::default()).unwrap();
+        assert_eq!(compacted.state.blocks.len(), 200);
+        let mut compacted = OverlayJournal::open(compacted.into_storage(), digest).unwrap();
+        for (block, expected) in [(0, 0), (73, 9), (74, 11), (199, 199)] {
+            let mut byte = [0];
+            assert_eq!(
+                compacted.read_file_at(
+                    7,
+                    200 * FILE_BLOCK_BYTES as u64,
+                    block * FILE_BLOCK_BYTES as u64,
+                    &mut byte,
+                    |_, _| panic!("compacted block must satisfy read"),
+                ),
+                Ok(1)
+            );
+            assert_eq!(byte, [expected]);
+        }
     }
 
     #[test]
