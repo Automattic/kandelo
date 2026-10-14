@@ -946,6 +946,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       const replacement = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, replacementUrl, name }) => {
         const {
           acquireFixedPersistenceRuntimeLease,
+          discardFixedPersistenceStagedReplacement,
           loadFixedPersistenceImageHandle,
           publishFixedPersistenceReplacement,
           stageFixedPersistenceSnapshotReplacement,
@@ -1110,6 +1111,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           filePrototype.createWritable = originalCreateWritable;
         }
         const current = await loadFixedPersistenceImageHandle(name, identity);
+        const publishedStagePreserved = await discardFixedPersistenceStagedReplacement(name, identity, staged) === false;
         let retryManifestWrites = 0;
         filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
           if (this.name === `${name}.base.json` || this.name === `${name}.previous.base.json`) {
@@ -1147,6 +1149,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           interruptedPublications,
           postCloseInjected,
           postCloseRejected,
+          publishedStagePreserved,
           retryManifestWrites,
           damagedBackupRejected,
           stagedState,
@@ -1170,6 +1173,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         interruptedPublications: [true, true, true, true, true, true],
         postCloseInjected: true,
         postCloseRejected: true,
+        publishedStagePreserved: true,
         retryManifestWrites: 0,
         damagedBackupRejected: true,
         stagedState: "replacement",

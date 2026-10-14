@@ -138,6 +138,15 @@ guest-write and reload test on Chromium, Firefox, and WebKit, but the full
 page transition test is authored and currently skipped without the shell
 package artifacts, so page-driven replacement is implemented but not yet
 validated end to end here.
+If staged-candidate validation or publication fails after acknowledged kernel
+shutdown, the checkpoint releases its computer lease and discards its
+unpublished image and journal files under the computer and journal locks.
+Discard checks both manifests first, so a committed publication whose
+acknowledgement was lost remains intact. Chromium, Firefox, and WebKit exercise
+forced candidate rejection with no staged files left, as well as refusal to
+discard the published generation after a lost close acknowledgement. A missing
+kernel shutdown acknowledgement still
+retains the lease and stage rather than risking deletion of an active writer.
 Before checkpoint publication or page guest launch, the browser compares the
 kernel's live demo configuration and experimental terminal session with the
 composition saved beside the image. It also rederives the selected dinit
@@ -200,8 +209,8 @@ Later committed journal-record corruption is detected by the kernel and
 rejected with `EIO`. Selection tries another valid slot on the same base,
 then reports no valid generation if a nonempty legacy journal also fails.
 The page can then retry the verified prior base, but the full page retry race
-remains unverified. Abandoned staged generations are not
-reclaimed, and selecting a replaced generation adds a full-image preflight
+remains unverified. Stages abandoned outside the explicit checkpoint workflow
+are not reclaimed. Selecting a replaced generation adds a full-image preflight
 read before the kernel's own verification. This remains a prototype, not a
 general atomic generation handoff.
 If the selected journal generation disappears, every sealed slot is invalid,

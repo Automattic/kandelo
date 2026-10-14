@@ -6,7 +6,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { parseKandeloDemoConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { parseExperimentalTerminalSession } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import { acquireBrowserPersistenceComputerLease, type BrowserPersistenceComputerLease } from "../../../../../host/src/browser-persistence-computer-lease";
-import { withIdleBrowserPersistenceJournals } from "../../../../../host/src/browser-persistence-journal-lease";
+import { browserPersistenceJournalLockName, withIdleBrowserPersistenceJournals } from "../../../../../host/src/browser-persistence-journal-lease";
 
 const DIRECTORY_NAME = "kandelo-persistent-overlay";
 const FORMAT_V1 = "kandelo-fixed-rootfs-image-v1";
@@ -534,6 +534,7 @@ function imageHandleFromSaved(
     saved.composition === undefined || !saved.lazyAssetsRecorded) return null;
   return {
     file: saved.imageFile,
+    imageFileName: saved.manifest.imageFileName,
     journalName: saved.manifest.journalName ?? name,
     journalInitialized: saved.manifest.format !== FORMAT_V4 || saved.manifest.journalInitialized === true,
     imageSha256: saved.manifest.imageSha256,
@@ -1001,6 +1002,53 @@ export async function publishFixedPersistenceReplacement(
         throw new Error("experimental persistence replacement was not published");
       }
     }),
+  ));
+}
+
+export async function discardFixedPersistenceStagedReplacement(
+  name: string,
+  identity: string,
+  staged: FixedPersistenceImageHandle,
+): Promise<boolean> {
+  fileNames(name);
+  if (!/^j-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(staged.journalName)) {
+    throw new Error("experimental persistence staged journal namespace is invalid");
+  }
+  const stagedManifest = await manifestForStagedImage(name, identity, staged, true);
+  return whenRuntimeIdle(name, () => navigator.locks.request(
+    browserPersistenceJournalLockName(staged.journalName),
+    { mode: "exclusive", ifAvailable: true },
+    (journalLock) => {
+      if (journalLock === null) throw new Error("experimental persistence journal is already open");
+      return locked(name, async () => {
+        const parent = await directory();
+        const names = fileNames(name);
+        const current = await readSavedImageAt(parent, name, identity, names.manifest);
+        const previous = await readSavedImageAt(parent, name, identity, names.previousManifest);
+        if ([current, previous].some((saved) => saved !== null && (
+          saved.manifest.imageFileName === stagedManifest.imageFileName ||
+          saved.manifest.journalName === staged.journalName
+        ))) return false;
+        const image = await existingFile(parent, stagedManifest.imageFileName!);
+        if (image !== null && !(await image.isSameEntry(staged.file))) {
+          throw new Error("experimental persistence staged image changed before discard");
+        }
+        const files = [
+          `${staged.journalName}.journal`,
+          `${staged.journalName}.index`,
+          `${staged.journalName}.seal`,
+          ...(["g0", "g1"] as const).flatMap((slot) => ["journal", "index", "seal"]
+            .map((suffix) => `${staged.journalName}.${slot}.${suffix}`)),
+        ];
+        for (const file of files) {
+          await parent.removeEntry(file).catch((error) => {
+            if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+          });
+        }
+        if (image !== null) await parent.removeEntry(stagedManifest.imageFileName!);
+        return true;
+      });
+    },
   ));
 }
 

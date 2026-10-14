@@ -836,10 +836,15 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
       expect(staged.stagedJournal).not.toBe(staged.previousJournal);
       await page.reload();
       const reopened = await page.evaluate(async ({ moduleUrl, browserKernelUrl, kernelUrl, name, identity }) => {
-        const { loadFixedPersistenceImageHandle, loadPreviousFixedPersistenceImageHandle } = await import(moduleUrl);
+        const {
+          discardFixedPersistenceStagedReplacement,
+          loadFixedPersistenceImageHandle,
+          loadPreviousFixedPersistenceImageHandle,
+        } = await import(moduleUrl);
         const { BrowserKernel } = await import(browserKernelUrl);
         const current = await loadFixedPersistenceImageHandle(name, identity);
         if (current === null) throw new Error("replacement disappeared after reload");
+        const discardedPublished = await discardFixedPersistenceStagedReplacement(name, identity, current);
         const previous = await loadPreviousFixedPersistenceImageHandle(name, identity, current);
         const kernel = new BrowserKernel({ kernelOwnedFs: true });
         try {
@@ -855,6 +860,7 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
             currentJournal: current.journalName,
             previousJournal: previous?.journalName ?? null,
             state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+            discardedPublished,
           };
         } finally {
           await kernel.destroy();
@@ -870,6 +876,7 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         currentJournal: staged.stagedJournal,
         previousJournal: staged.previousJournal,
         state: "XYcdefgh",
+        discardedPublished: false,
       });
       const changedMetadata = await page.evaluate(async ({ moduleUrl, checkpointUrl, browserKernelUrl, kernelUrl, name, identity }) => {
         const { loadFixedPersistenceImageHandle } = await import(moduleUrl);
@@ -878,6 +885,32 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         const current = await loadFixedPersistenceImageHandle(name, identity);
         if (current === null) throw new Error("replacement disappeared before config edit");
         const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const listEntries = async () => {
+          const entries: string[] = [];
+          for await (const [entry] of (directory as FileSystemDirectoryHandle & {
+            entries(): AsyncIterable<[string, FileSystemHandle]>;
+          }).entries()) entries.push(entry);
+          return entries.sort();
+        };
+        const beforeRejectedCandidate = await listEntries();
+        let rejectedCandidate = false;
+        try {
+          await checkpointPersistentImage({
+            name,
+            identity,
+            journalName: current.journalName,
+            kernelWasm,
+            createKernel: () => new BrowserKernel({ kernelOwnedFs: true }),
+            closeKernel: (instance) => instance.destroy(),
+            lazyUrlMapForImage: () => ({}),
+            releaseLease: async () => {},
+            validateCandidate: async () => { throw new Error("injected candidate validation failure"); },
+          });
+        } catch (error) {
+          rejectedCandidate = error instanceof Error && error.message === "injected candidate validation failure";
+        }
+        const discardedStage = JSON.stringify(await listEntries()) === JSON.stringify(beforeRejectedCandidate);
         const runGuestEdits = async (modes: string[]) => {
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
           try {
@@ -926,6 +959,8 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
           sessionRejected: sessionError?.includes("terminal session changed after composition"),
           serviceRejected: serviceError?.includes("dinit service closure changed after composition"),
           journalUnchanged: selected?.journalName === current.journalName,
+          rejectedCandidate,
+          discardedStage,
         };
       }, {
         moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href,
@@ -940,6 +975,8 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         sessionRejected: true,
         serviceRejected: true,
         journalUnchanged: true,
+        rejectedCandidate: true,
+        discardedStage: true,
       });
     } finally {
       await context.close();

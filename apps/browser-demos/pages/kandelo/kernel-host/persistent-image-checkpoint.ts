@@ -14,6 +14,7 @@ import {
   parseExperimentalTerminalSession,
 } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import {
+  discardFixedPersistenceStagedReplacement,
   loadFixedPersistenceImageHandle,
   publishFixedPersistenceReplacement,
   stageFixedPersistenceSnapshotReplacement,
@@ -127,27 +128,42 @@ export async function checkpointPersistentImage(
   } finally {
     await snapshotDirectory.removeEntry(snapshotName).catch(() => {});
   }
-  assertCurrent?.();
-  onProgress?.("validating persistent VFS image");
-  const candidate = createKernel();
+  let candidateQuiescent = true;
   try {
-    await candidate.initFromOpfsImage({
-      kernelWasm,
-      vfsImageFile: staged.file,
-      integrity: { length: staged.length, chunkBytes: 1024 * 1024, chunkSha256: staged.chunkSha256 },
-      lazyUrlMap,
-      experimentalFixedPersistenceName: staged.journalName,
-      persistentComputerName: name,
-      persistenceComputerLease,
-    });
-    await assertPersistentImageBootMetadata(candidate, previous.composition);
-    await validateCandidate?.(candidate);
-  } finally {
-    await closeKernel(candidate);
+    assertCurrent?.();
+    onProgress?.("validating persistent VFS image");
+    const candidate = createKernel();
+    candidateQuiescent = false;
+    try {
+      await candidate.initFromOpfsImage({
+        kernelWasm,
+        vfsImageFile: staged.file,
+        integrity: { length: staged.length, chunkBytes: 1024 * 1024, chunkSha256: staged.chunkSha256 },
+        lazyUrlMap,
+        experimentalFixedPersistenceName: staged.journalName,
+        persistentComputerName: name,
+        persistenceComputerLease,
+      });
+      await assertPersistentImageBootMetadata(candidate, previous.composition);
+      await validateCandidate?.(candidate);
+    } finally {
+      await closeKernel(candidate);
+      candidateQuiescent = true;
+    }
+    assertCurrent?.();
+    await releaseLease();
+    onProgress?.("publishing persistent VFS image");
+    await publishFixedPersistenceReplacement(name, identity, previous, staged, assertCurrent);
+    return { previous, staged };
+  } catch (error) {
+    if (candidateQuiescent) {
+      try {
+        await releaseLease();
+        await discardFixedPersistenceStagedReplacement(name, identity, staged);
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "persistent image checkpoint cleanup failed");
+      }
+    }
+    throw error;
   }
-  assertCurrent?.();
-  await releaseLease();
-  onProgress?.("publishing persistent VFS image");
-  await publishFixedPersistenceReplacement(name, identity, previous, staged, assertCurrent);
-  return { previous, staged };
 }
