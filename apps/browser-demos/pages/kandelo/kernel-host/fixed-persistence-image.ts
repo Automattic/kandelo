@@ -54,6 +54,10 @@ export interface FixedPersistenceImageHandle {
   chunkSha256: readonly string[];
   lazyAssets?: ImageOwnedRuntimeLazyAssets;
   composition: StoredComposition;
+  recovery?: {
+    currentManifestSha256: string | null;
+    previousManifestSha256: string;
+  };
 }
 
 export function assertFixedPersistenceBootAllowed(
@@ -103,6 +107,14 @@ async function sha256(bytes: Uint8Array): Promise<string> {
     : bytes.slice().buffer;
   const digest = await crypto.subtle.digest("SHA-256", input);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function manifestSha256(
+  parent: FileSystemDirectoryHandle,
+  fileName: string,
+): Promise<string | null> {
+  const file = await existingFile(parent, fileName);
+  return file === null ? null : sha256(new Uint8Array(await (await file.getFile()).arrayBuffer()));
 }
 
 async function readSavedImageAt(
@@ -234,11 +246,13 @@ async function readSavedImageAt(
   return { manifest, imageFile, lazyAssets, lazyAssetsRecorded, composition };
 }
 
-async function readSavedImage(
+type SavedImage = NonNullable<Awaited<ReturnType<typeof readSavedImageAt>>>;
+
+async function selectSavedImage(
   parent: FileSystemDirectoryHandle,
   name: string,
   identity: string,
-): ReturnType<typeof readSavedImageAt> {
+): Promise<{ saved: SavedImage; fromPrevious: boolean } | null> {
   const names = fileNames(name);
   let current: Awaited<ReturnType<typeof readSavedImageAt>>;
   try {
@@ -248,20 +262,20 @@ async function readSavedImage(
     const previous = await readSavedImageAt(parent, name, identity, names.previousManifest);
     if (previous !== null) {
       await verifySavedImage(parent, previous);
-      return previous;
+      return { saved: previous, fromPrevious: true };
     }
     throw error;
   }
   if (current === null) {
     const previous = await readSavedImageAt(parent, name, identity, names.previousManifest);
     if (previous !== null) await verifySavedImage(parent, previous);
-    return previous;
+    return previous === null ? null : { saved: previous, fromPrevious: true };
   }
   let previous: Awaited<ReturnType<typeof readSavedImageAt>>;
   try {
     previous = await readSavedImageAt(parent, name, identity, names.previousManifest);
   } catch {
-    return current;
+    return { saved: current, fromPrevious: false };
   }
   if (previous !== null && !(await previous.imageFile.isSameEntry(current.imageFile))) {
     try {
@@ -269,10 +283,18 @@ async function readSavedImage(
     } catch (error) {
       if (!(error instanceof Error) || !error.message.startsWith("experimental persistence")) throw error;
       await verifySavedImage(parent, previous);
-      return previous;
+      return { saved: previous, fromPrevious: true };
     }
   }
-  return current;
+  return { saved: current, fromPrevious: false };
+}
+
+async function readSavedImage(
+  parent: FileSystemDirectoryHandle,
+  name: string,
+  identity: string,
+): Promise<SavedImage | null> {
+  return (await selectSavedImage(parent, name, identity))?.saved ?? null;
 }
 
 async function verifySavedImage(
@@ -391,8 +413,18 @@ export async function loadFixedPersistenceImageHandle(
 ): Promise<FixedPersistenceImageHandle | null> {
   fileNames(name);
   return locked(name, async () => {
-    const saved = await readSavedImage(await directory(), name, identity);
-    return saved === null ? null : imageHandleFromSaved(name, saved);
+    const parent = await directory();
+    const selected = await selectSavedImage(parent, name, identity);
+    if (selected === null) return null;
+    const handle = imageHandleFromSaved(name, selected.saved);
+    if (handle !== null && selected.fromPrevious) {
+      if (selected.saved.manifest.format !== FORMAT_V4 ||
+        !selected.saved.manifest.journalInitialized) {
+        throw new Error("experimental persistence previous generation is not ready");
+      }
+      handle.recovery = await recoverySelection(parent, name);
+    }
+    return handle;
   });
 }
 
@@ -414,7 +446,64 @@ export async function loadPreviousFixedPersistenceImageHandle(
       previous.manifest.journalName === failed.journalName ||
       await previous.imageFile.isSameEntry(failed.file)) return null;
     await verifySavedImage(parent, previous);
-    return imageHandleFromSaved(name, previous);
+    const handle = imageHandleFromSaved(name, previous);
+    if (handle !== null) handle.recovery = await recoverySelection(parent, name);
+    return handle;
+  });
+}
+
+async function recoverySelection(
+  parent: FileSystemDirectoryHandle,
+  name: string,
+): Promise<NonNullable<FixedPersistenceImageHandle["recovery"]>> {
+  const names = fileNames(name);
+  const previousManifestSha256 = await manifestSha256(parent, names.previousManifest);
+  if (previousManifestSha256 === null) {
+    throw new Error("experimental persistence previous generation disappeared");
+  }
+  return {
+    currentManifestSha256: await manifestSha256(parent, names.manifest),
+    previousManifestSha256,
+  };
+}
+
+export async function promoteFixedPersistenceRecovery(
+  name: string,
+  identity: string,
+  recovered: FixedPersistenceImageHandle,
+  assertCurrent?: () => void,
+): Promise<void> {
+  const recovery = recovered.recovery;
+  if (recovery === undefined) return;
+  fileNames(name);
+  await locked(name, async () => {
+    assertCurrent?.();
+    const parent = await directory();
+    const names = fileNames(name);
+    const previousDigest = await manifestSha256(parent, names.previousManifest);
+    if (previousDigest !== recovery.previousManifestSha256) {
+      throw new Error("experimental persistence prior generation changed before recovery");
+    }
+    const previous = await readSavedImageAt(parent, name, identity, names.previousManifest);
+    if (previous === null || previous.manifest.format !== FORMAT_V4 || !previous.manifest.journalInitialized ||
+      previous.manifest.journalName !== recovered.journalName ||
+      !(await previous.imageFile.isSameEntry(recovered.file))) {
+      throw new Error("experimental persistence prior generation changed before recovery");
+    }
+    const currentDigest = await manifestSha256(parent, names.manifest);
+    if (currentDigest !== recovery.currentManifestSha256) {
+      const current = await readSavedImageAt(parent, name, identity, names.manifest);
+      if (current !== null &&
+        JSON.stringify(current.manifest) === JSON.stringify(previous.manifest)) return;
+      throw new Error("experimental persistence current generation changed before recovery");
+    }
+    await verifySavedImage(parent, previous);
+    await writeManifest(parent, names.manifest, previous.manifest, assertCurrent);
+    const promoted = await readSavedImageAt(parent, name, identity, names.manifest);
+    if (promoted === null || promoted.manifest.journalName !== recovered.journalName ||
+      !(await promoted.imageFile.isSameEntry(recovered.file))) {
+      throw new Error("experimental persistence recovery was not published");
+    }
   });
 }
 

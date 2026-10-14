@@ -14,6 +14,7 @@ import {
   loadFixedPersistenceImageHandle,
   loadPreviousFixedPersistenceImageHandle,
   markFixedPersistenceJournalInitialized,
+  promoteFixedPersistenceRecovery,
   type FixedPersistenceImageHandle,
 } from "./fixed-persistence-image";
 import {
@@ -789,14 +790,6 @@ export async function createLiveHost(
       } catch (error) {
         if (!(error instanceof RetryPreviousPersistenceGeneration) || seq !== bootSeq) throw error;
         kernel = await boot(error.previous);
-        if (seq === bootSeq) {
-          h.pushDmesg({
-            t: bootElapsedMs(bootStartedAt),
-            level: "warn",
-            facility: "kandelo",
-            msg: "new persistent journal generation is invalid; booted the prior verified image",
-          });
-        }
       }
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
@@ -1618,6 +1611,17 @@ async function bootProfile(
       }
       if (!opfsImage.journalInitialized) {
         await markFixedPersistenceJournalInitialized(persistence.name, persistence.identity, opfsImage);
+      }
+      if (opfsImage.recovery !== undefined) {
+        await promoteFixedPersistenceRecovery(
+          persistence.name, persistence.identity, opfsImage, assertCurrent,
+        );
+        host.pushDmesg({
+          t: bootElapsedMs(bootStartedAt),
+          level: "warn",
+          facility: "kandelo",
+          msg: "persistent image recovery retired a damaged newer generation and booted the prior verified image",
+        });
       }
     } else {
       const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =
