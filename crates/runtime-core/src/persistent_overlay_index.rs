@@ -4,7 +4,7 @@ use wasm_posix_shared::Errno;
 
 const MAGIC: &[u8; 4] = b"KIDX";
 const VERSION: u32 = 1;
-const HEADER_BYTES: usize = 152;
+const HEADER_BYTES: usize = 160;
 const RECORD_BYTES: usize = 56;
 const RECORDS_PER_PAGE: usize = 73;
 const PAGE_BYTES: usize = RECORD_BYTES * RECORDS_PER_PAGE;
@@ -55,6 +55,7 @@ impl BlockCheckpointEntry {
 pub struct BlockCheckpoint<S: OverlayStorage> {
     storage: S,
     count: u64,
+    next_sequence: u64,
     cached_page: [u8; PAGE_BYTES],
     cached_page_index: Option<u64>,
 }
@@ -65,12 +66,13 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         base_digest: [u8; 32],
         journal_digest: [u8; 32],
         journal_end: u64,
+        next_sequence: u64,
         entries: impl IntoIterator<Item = BlockCheckpointEntry>,
     ) -> Result<Self, Errno> {
         if storage.len()? != 0 {
             return Err(Errno::EEXIST);
         }
-        if journal_end < 72 {
+        if journal_end < 72 || next_sequence == 0 {
             return Err(Errno::EINVAL);
         }
         let mut page = [0; PAGE_BYTES];
@@ -109,14 +111,16 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         header[40..72].copy_from_slice(&journal_digest);
         header[72..80].copy_from_slice(&journal_end.to_le_bytes());
         header[80..88].copy_from_slice(&count.to_le_bytes());
-        header[88..120].copy_from_slice(&digest.finalize());
-        let header_digest = Sha256::digest(&header[..120]);
-        header[120..].copy_from_slice(&header_digest);
+        header[88..96].copy_from_slice(&next_sequence.to_le_bytes());
+        header[96..128].copy_from_slice(&digest.finalize());
+        let header_digest = Sha256::digest(&header[..128]);
+        header[128..].copy_from_slice(&header_digest);
         storage.write_all_at(0, &header)?;
         storage.flush()?;
         Ok(Self {
             storage,
             count,
+            next_sequence,
             cached_page: [0; PAGE_BYTES],
             cached_page_index: None,
         })
@@ -138,11 +142,15 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
             || header[8..40] != base_digest
             || header[40..72] != journal_digest
             || u64::from_le_bytes(header[72..80].try_into().map_err(|_| Errno::EIO)?) != journal_end
-            || header[120..] != Sha256::digest(&header[..120])[..]
+            || header[128..] != Sha256::digest(&header[..128])[..]
         {
             return Err(Errno::EIO);
         }
         let count = u64::from_le_bytes(header[80..88].try_into().map_err(|_| Errno::EIO)?);
+        let next_sequence = u64::from_le_bytes(header[88..96].try_into().map_err(|_| Errno::EIO)?);
+        if next_sequence == 0 {
+            return Err(Errno::EIO);
+        }
         if storage.len()? != record_offset(count)? {
             return Err(Errno::EIO);
         }
@@ -166,12 +174,13 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
             }
             scanned += entries as u64;
         }
-        if header[88..120] != digest.finalize()[..] {
+        if header[96..128] != digest.finalize()[..] {
             return Err(Errno::EIO);
         }
         Ok(Self {
             storage,
             count,
+            next_sequence,
             cached_page: [0; PAGE_BYTES],
             cached_page_index: None,
         })
@@ -198,6 +207,10 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
 
     pub fn count(&self) -> u64 {
         self.count
+    }
+
+    pub fn next_sequence(&self) -> u64 {
+        self.next_sequence
     }
 
     pub fn into_storage(self) -> S {
@@ -296,6 +309,7 @@ mod tests {
             [1; 32],
             [2; 32],
             72 + 200 * 4096,
+            201,
             records.clone(),
         )
         .unwrap();
@@ -303,6 +317,7 @@ mod tests {
             BlockCheckpoint::open(checkpoint.into_storage(), [1; 32], [2; 32], 72 + 200 * 4096)
                 .unwrap();
         assert_eq!(reopened.count(), 200);
+        assert_eq!(reopened.next_sequence(), 201);
         for record in records {
             assert_eq!(
                 reopened.lookup(record.inode, record.block),
@@ -320,6 +335,7 @@ mod tests {
             [1; 32],
             [2; 32],
             72 + 200 * 4096,
+            201,
             entries(),
         )
         .unwrap();
@@ -388,6 +404,7 @@ mod tests {
                 [1; 32],
                 [2; 32],
                 72 + 200 * 4096,
+                201,
                 unsorted
             ),
             Err(Errno::EINVAL)
@@ -401,6 +418,7 @@ mod tests {
                 [1; 32],
                 [2; 32],
                 72 + 200 * 4096,
+                201,
                 entries()
             ),
             Err(Errno::EIO)

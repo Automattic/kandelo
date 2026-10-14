@@ -2,7 +2,7 @@ import { verifyOverlayGenerationSeal, writeOverlayGenerationSeal } from "./overl
 import type { PersistentOverlayStorage } from "./overlay-storage";
 
 export type OverlayGenerationSlot = "legacy" | "g0" | "g1";
-export type OverlayGenerationFile = "journal" | "seal";
+export type OverlayGenerationFile = "journal" | "seal" | "index";
 
 export interface OverlayGenerationFiles {
   open(
@@ -35,21 +35,25 @@ export async function enableBestOverlayGeneration(
   try {
     for (const slot of ["g0", "g1"] as const) {
       const journal = await files.open(slot, "journal", false);
-      let seal: PersistentOverlayStorage | null;
+      let seal: PersistentOverlayStorage | null = null;
+      let index: PersistentOverlayStorage | null = null;
       try {
         seal = await files.open(slot, "seal", false);
+        index = await files.open(slot, "index", false);
       } catch (error) {
         journal?.close();
+        seal?.close();
         throw error;
       }
-      foundGenerationFile ||= journal !== null || seal !== null;
+      foundGenerationFile ||= journal !== null || seal !== null || index !== null;
       if (journal === null || seal === null) {
         journal?.close();
         seal?.close();
+        index?.close();
         continue;
       }
       try {
-        const verified = await verifyOverlayGenerationSeal(journal, seal, undefined, true);
+        const verified = await verifyOverlayGenerationSeal(journal, seal, undefined, true, index);
         candidates.push({ journal, generation: verified.generation, sealedLength: verified.journalLength, slot });
       } catch (error) {
         journal.close();
@@ -58,6 +62,7 @@ export async function enableBestOverlayGeneration(
         }
       } finally {
         seal.close();
+        index?.close();
       }
     }
     candidates.sort((left, right) => right.generation - left.generation);

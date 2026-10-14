@@ -118,7 +118,12 @@ copy, binds their checksum to the base and exact journal prefix, verifies all
 records on open, and uses one cached page for binary-search lookups. The
 journal can build it only after flushing and verifying every indexed block.
 No host generation uses this table yet; boot still rebuilds the old in-memory
-map and the milestone remains open.
+map and the milestone remains open. A backward-compatible v2 generation seal
+can additionally bind an index sidecar by length and bounded chunk digests;
+Node and browser selection reject a byte-damaged indexed candidate and fall
+back to an older valid slot. Current compaction still publishes v1 seals, and
+the kernel does not yet parse a selected index, so this v2 path is not yet the
+normal boot format or a semantic index-validation guarantee.
 
 Live compaction needs a two-phase handoff, unlike the current boot-only
 handoff. While guest operations are stopped at a kernel-worker boundary, copy
