@@ -689,7 +689,6 @@ for (const keepOpen of [false, true]) {
               }
               if (nextBlockCount !== 8192n) throw new Error(`closed orphan checkpoint block count: ${nextBlockCount}`);
             }
-          }
           } finally {
             await first.destroy();
           }

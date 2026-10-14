@@ -104,6 +104,9 @@ Resizable mounts now journal regular-file, symlink, and directory namespace
 mutations. Explicit chmod, chown, and utimensat updates also use inode records;
 fsync and compaction flush timestamps for writes and truncates. Persistent
 regular files reject attempts to set set-ID bits on unauthenticated bytes.
+Activation checks whether a prepared checkpoint can release its resident
+metadata before replacing the active mount; an activation error leaves the
+source journal and its base-name tombstones available for further writes.
 
 Boot now checks two optional sealed journal slots (`g0` and `g1`) on Node and
 browser hosts, preferring the highest verified generation. A seal authenticates

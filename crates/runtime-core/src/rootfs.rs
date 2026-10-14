@@ -1545,12 +1545,20 @@ pub fn activate_persistence_compaction() -> Result<(), Errno> {
         *pending = None;
         return Err(Errno::EBUSY);
     }
+    let source = active.as_mut().ok_or(Errno::EIO)?;
+    pending
+        .as_mut()
+        .ok_or(Errno::EIO)?
+        .journal
+        .release_checkpoint_metadata_with(|state| {
+            source
+                .base_dirents
+                .retain(|key| state.lookup(key).is_some());
+        })?;
     let prepared = pending.take().ok_or(Errno::EIO)?;
     let mut journal = prepared.journal;
     journal.limit_active_tail();
-    let mut base_dirents = active.take().ok_or(Errno::EIO)?.base_dirents;
-    base_dirents.retain(|key| journal.state().lookup(key).is_some());
-    journal.release_checkpoint_metadata()?;
+    let base_dirents = active.take().ok_or(Errno::EIO)?.base_dirents;
     *active = Some(PersistentMount {
         journal,
         resizable: prepared.resizable,
@@ -9519,6 +9527,64 @@ mod tests {
         let mut changed = [0u8; 16];
         let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
         assert_eq!(&changed[..count], b"hello live\n");
+        release_handle(handle);
+    }
+
+    #[test]
+    fn failed_compaction_activation_keeps_the_active_mount() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source.clone()), base_digest).unwrap();
+
+        let handle = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(handle, 0, b"live", &mut image_bytes), Ok(4));
+        rename(b"/hello.txt", b"/moved").unwrap();
+        sync_persistence().unwrap();
+        let base_dirents = PERSISTENT_ROOTFS
+            .lock()
+            .as_ref()
+            .unwrap()
+            .base_dirents
+            .clone();
+        assert!(!base_dirents.is_empty());
+        prepare_persistence_compaction(Box::new(target)).unwrap();
+        checkpoint_prepared_persistence(Box::new(index)).unwrap();
+        let ino = fstat(handle).unwrap().st_ino;
+        PREPARED_PERSISTENCE
+            .lock()
+            .as_mut()
+            .unwrap()
+            .journal
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileSize(ino),
+                value: 11u64.to_le_bytes().to_vec(),
+            }])
+            .unwrap();
+        assert_eq!(activate_persistence_compaction(), Err(Errno::EBUSY));
+        assert!(PERSISTENT_ROOTFS.lock().is_some());
+        assert_eq!(
+            PERSISTENT_ROOTFS.lock().as_ref().unwrap().base_dirents,
+            base_dirents
+        );
+        cancel_persistence_compaction();
+        assert_eq!(write(handle, 0, b"safe", &mut image_bytes), Ok(4));
+        sync_persistence().unwrap();
+        release_handle(handle);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source), base_digest).unwrap();
+        assert!(matches!(lstat(b"/hello.txt"), Err(Errno::ENOENT)));
+        let handle = open(b"/moved", O_RDONLY, 0, 0, 0).unwrap();
+        let mut changed = [0u8; 16];
+        let count = read(handle, 0, &mut changed, &mut image_bytes).unwrap();
+        assert_eq!(&changed[..count], b"safeo sffs\n");
         release_handle(handle);
     }
 
