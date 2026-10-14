@@ -32,8 +32,11 @@ int main(int argc, char **argv) {
     int verify_tree_removed = argc >= 2 && strcmp(argv[1], "verify-tree-removed") == 0;
     if (create_tree || verify_tree || verify_tree_moved || verify_tree_removed) {
         if (create_tree) {
+            const struct timespec old_times[2] = {{1, 0}, {1, 0}};
+            if (utimensat(AT_FDCWD, "/", old_times, 0) != 0) return 100;
             if (mkdir("/persist-tree", 0750) != 0) return 80;
             if (mkdir("/persist-tree/nested", 0700) != 0) return 81;
+            if (utimensat(AT_FDCWD, "/persist-tree/nested", old_times, 0) != 0) return 101;
             int fd = open("/persist-tree/nested/file", O_CREAT | O_WRONLY, 0640);
             if (fd < 0) return 82;
             if (write(fd, "TREE", 4) != 4 || fsync(fd) != 0 || close(fd) != 0) return 83;
@@ -47,6 +50,8 @@ int main(int argc, char **argv) {
         const char *link_path = verify_tree ? "/persist-tree/nested/link" : "/persist-moved/nested/link";
         struct stat metadata;
         if (stat(parent, &metadata) != 0 || !S_ISDIR(metadata.st_mode) || metadata.st_nlink != 3) return 86;
+        if (stat("/", &metadata) != 0 || metadata.st_mtim.tv_sec <= 1) return 102;
+        if (stat(verify_tree ? "/persist-tree/nested" : "/persist-moved/nested", &metadata) != 0 || metadata.st_mtim.tv_sec <= 1) return 103;
         int fd = open(link_path, O_RDONLY);
         if (fd < 0) return 87;
         char bytes[4];
