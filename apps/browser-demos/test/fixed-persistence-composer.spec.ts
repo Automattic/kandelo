@@ -642,7 +642,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       const result = await page.evaluate(async ({ composerUrl, sourceStageUrl, persistenceUrl, browserKernelUrl, imageUrl, kernelUrl }) => {
         const { composeImageInWorker } = await import(composerUrl);
         const { stageRawVfsSourceImage } = await import(sourceStageUrl);
-        const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
+        const { loadFixedPersistenceImageHandle, markFixedPersistenceJournalInitialized } = await import(persistenceUrl);
         const { BrowserKernel } = await import(browserKernelUrl);
         const name = `composer-${crypto.randomUUID()}`;
         const identity = "composer stream probe";
@@ -676,6 +676,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         await source.remove();
         const restored = await loadFixedPersistenceImageHandle(name, identity);
         if (restored?.journalName !== journalName) throw new Error("journal namespace was not retained");
+        const initialJournalPending = restored.journalInitialized === false;
         const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
         const open = async (requireExistingRootfsPersistence = false) => {
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
@@ -695,12 +696,14 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         const firstKernel = await open();
         let initial: string;
         try {
+          await markFixedPersistenceJournalInitialized(name, identity, restored);
           initial = new TextDecoder().decode(await firstKernel.readFileFromVfs("/state"));
           const { exit } = await firstKernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite"]);
           if (await exit !== 0) throw new Error("guest persistence write failed");
         } finally {
           await firstKernel.destroy();
         }
+        const journalReady = (await loadFixedPersistenceImageHandle(name, identity))?.journalInitialized === true;
         const secondKernel = await open(true);
         let recovered: string;
         try {
@@ -790,13 +793,34 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         } finally {
           await damagedSource.remove();
         }
+        const pendingName = `composer-pending-${crypto.randomUUID()}`;
+        await composeImageInWorker({
+          imageBytes: new Uint8Array(await (await fetch(imageUrl)).arrayBuffer()),
+          persistentImage: { name: pendingName, identity },
+          maxVfsByteLength: 64 * 1024 * 1024,
+          imageLabel: "persistence probe",
+          requestedProfileId: "probe",
+          requestedProfileSource: "test",
+          hasCandidateEvidence: false,
+          descriptor: { boot: { inputs: [] } } as never,
+          appPath: "/pages/kandelo/",
+          proto: "http",
+          preforkServiceProcesses: 1,
+        }, {
+          onTick: () => {},
+          isCurrent: () => true,
+          supersededError: () => new Error("superseded"),
+        });
         return {
+          pendingName,
           returnedBytes: composed.imageBytes.byteLength,
           stagedLength: composed.imageFile?.length,
           restoredLength: restored?.length,
           profile: restored?.composition.profileId,
           initial,
           recovered,
+          initialJournalPending,
+          journalReady,
           missingJournalRejected,
           missingJournalRecreated,
           emptyJournalRejected,
@@ -823,6 +847,8 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       expect(result.profile).toBe("probe");
       expect(result.initial).toBe("abcdefgh");
       expect(result.recovered).toBe("XYcdefgh");
+      expect(result.initialJournalPending).toBe(true);
+      expect(result.journalReady).toBe(true);
       expect(result.missingJournalRejected).toBe(true);
       expect(result.missingJournalRecreated).toBe(false);
       expect(result.emptyJournalRejected).toBe(true);
@@ -832,6 +858,74 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
       expect(result.supersededUnpublished).toBe(true);
       expect(result.damagedRefused).toBe(true);
       expect(result.damagedUnpublished).toBe(true);
+      await page.reload();
+      const pendingBoot = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, name }) => {
+        const { loadFixedPersistenceImageHandle, markFixedPersistenceJournalInitialized } = await import(persistenceUrl);
+        const { BrowserKernel } = await import(browserKernelUrl);
+        const identity = "composer stream probe";
+        const pending = await loadFixedPersistenceImageHandle(name, identity);
+        if (pending === null) throw new Error("pending image disappeared after reload");
+        const overlayDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        let journalMissingBeforeBoot = false;
+        try {
+          await overlayDirectory.getFileHandle(`${pending.journalName}.journal`);
+        } catch (error) {
+          journalMissingBeforeBoot = error instanceof DOMException && error.name === "NotFoundError";
+        }
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: pending.file,
+            experimentalFixedPersistenceName: pending.journalName,
+            requireExistingRootfsPersistence: pending.journalInitialized,
+          });
+          await markFixedPersistenceJournalInitialized(name, identity, pending);
+          const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite"]);
+          if (await exit !== 0) throw new Error("pending-image guest write failed");
+        } finally {
+          await kernel.destroy();
+        }
+        return {
+          wasPending: pending.journalInitialized === false,
+          journalMissingBeforeBoot,
+          nowReady: (await loadFixedPersistenceImageHandle(name, identity))?.journalInitialized === true,
+        };
+      }, {
+        persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        name: result.pendingName,
+      });
+      expect(pendingBoot).toEqual({ wasPending: true, journalMissingBeforeBoot: true, nowReady: true });
+      await page.reload();
+      const readyBoot = await page.evaluate(async ({ persistenceUrl, browserKernelUrl, kernelUrl, name }) => {
+        const { loadFixedPersistenceImageHandle } = await import(persistenceUrl);
+        const { BrowserKernel } = await import(browserKernelUrl);
+        const ready = await loadFixedPersistenceImageHandle(name, "composer stream probe");
+        if (ready === null) throw new Error("ready image disappeared after reload");
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: ready.file,
+            experimentalFixedPersistenceName: ready.journalName,
+            requireExistingRootfsPersistence: ready.journalInitialized,
+          });
+          return {
+            ready: ready.journalInitialized,
+            state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+          };
+        } finally {
+          await kernel.destroy();
+        }
+      }, {
+        persistenceUrl: new URL(`/@fs/${persistenceModulePath}`, baseURL).href,
+        browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+        kernelUrl,
+        name: result.pendingName,
+      });
+      expect(readyBoot).toEqual({ ready: true, state: "XYcdefgh" });
     } finally {
       await context.close();
     }

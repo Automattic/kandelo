@@ -162,7 +162,7 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
       const page = context.pages()[0] ?? await context.newPage();
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
       const result = await page.evaluate(async ({ url, workerUrl }) => {
-        const { loadFixedPersistenceImageHandle, publishFixedPersistenceSnapshot, saveFixedPersistenceImageStream } = await import(url);
+        const { loadFixedPersistenceImageHandle, markFixedPersistenceJournalInitialized, publishFixedPersistenceSnapshot, saveFixedPersistenceImageStream } = await import(url);
         const name = `stream-${crypto.randomUUID()}`;
         const identity = "streamed image";
         const journalName = `j-${crypto.randomUUID()}`;
@@ -196,6 +196,29 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           worker.postMessage({ name, identity, journalName });
         }).finally(() => worker.terminate());
         const restored = await loadFixedPersistenceImageHandle(name, identity);
+        let prematureInitializationRejected = false;
+        try {
+          await markFixedPersistenceJournalInitialized(name, identity, restored!);
+        } catch {
+          prematureInitializationRejected = true;
+        }
+        const stillPending = (await loadFixedPersistenceImageHandle(name, identity))?.journalInitialized === false;
+        const foreignHeader = new Uint8Array(72);
+        foreignHeader.set(new TextEncoder().encode("KOVL"));
+        new DataView(foreignHeader.buffer).setUint32(4, 1, true);
+        foreignHeader.fill(3, 8, 40);
+        foreignHeader.set(new Uint8Array(await crypto.subtle.digest("SHA-256", foreignHeader.subarray(0, 40))), 40);
+        const foreignJournal = await directory.getFileHandle(`${journalName}.journal`, { create: true });
+        const foreignWriter = await foreignJournal.createWritable();
+        await foreignWriter.write(foreignHeader);
+        await foreignWriter.close();
+        let foreignJournalRejected = false;
+        try {
+          await markFixedPersistenceJournalInitialized(name, identity, restored!);
+        } catch {
+          foreignJournalRejected = true;
+        }
+        await directory.removeEntry(`${journalName}.journal`);
         const cloneName = `snapshot-${crypto.randomUUID()}`;
         const integrity = {
           length: restored!.length,
@@ -222,6 +245,21 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         const restoreWriter = await manifestFile.createWritable();
         await restoreWriter.write(manifestText);
         await restoreWriter.close();
+        const version3Manifest = JSON.parse(manifestText);
+        version3Manifest.format = "kandelo-fixed-rootfs-image-v3";
+        delete version3Manifest.journalInitialized;
+        delete version3Manifest.imageSha256;
+        const version3Binding = new TextEncoder().encode(JSON.stringify([
+          identity, version3Manifest.imageFileName, journalName,
+        ]));
+        version3Manifest.journalNameSha256 = Array.from(
+          new Uint8Array(await crypto.subtle.digest("SHA-256", version3Binding)),
+          (byte) => byte.toString(16).padStart(2, "0"),
+        ).join("");
+        const version3Writer = await manifestFile.createWritable();
+        await version3Writer.write(JSON.stringify(version3Manifest));
+        await version3Writer.close();
+        const version3Handle = await loadFixedPersistenceImageHandle(name, identity);
         const legacyManifest = JSON.parse(manifestText);
         delete legacyManifest.journalName;
         delete legacyManifest.journalNameSha256;
@@ -235,6 +273,8 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           missingJournalRejected = true;
         }
         legacyManifest.format = "kandelo-fixed-rootfs-image-v2";
+        delete legacyManifest.journalInitialized;
+        delete legacyManifest.imageSha256;
         const legacyVersionWriter = await manifestFile.createWritable();
         await legacyVersionWriter.write(JSON.stringify(legacyManifest));
         await legacyVersionWriter.close();
@@ -334,6 +374,11 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
           restoredJournalName: restored?.journalName,
           digestCount: restored?.chunkSha256.length,
           journalBindingRejected,
+          version3JournalName: version3Handle?.journalName,
+          version3Ready: version3Handle?.journalInitialized,
+          prematureInitializationRejected,
+          stillPending,
+          foreignJournalRejected,
           missingJournalRejected,
           legacyJournalName,
           orphanRemoved,
@@ -353,8 +398,9 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         url: new URL(`/@fs/${modulePath}`, baseURL).href,
         workerUrl: new URL(`/@fs/${streamWorkerPath}`, baseURL).href,
       });
-      const { cloneName, journalName, restoredJournalName, name, legacyJournalName, ...observed } = result;
+      const { cloneName, journalName, restoredJournalName, version3JournalName, name, legacyJournalName, ...observed } = result;
       expect(restoredJournalName).toBe(journalName);
+      expect(version3JournalName).toBe(journalName);
       expect(legacyJournalName).toBe(name);
       expect(observed).toEqual({
         savedLength: 1024 * 1024 + 3,
@@ -362,6 +408,10 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
         restoredLength: 1024 * 1024 + 3,
         digestCount: 2,
         journalBindingRejected: true,
+        version3Ready: true,
+        prematureInitializationRejected: true,
+        stillPending: true,
+        foreignJournalRejected: true,
         missingJournalRejected: true,
         orphanRemoved: true,
         last: [1, 2, 3],

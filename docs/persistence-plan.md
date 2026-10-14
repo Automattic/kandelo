@@ -45,8 +45,9 @@ semantics. Node and browser must expose the same guest-visible behavior.
   integrity descriptor accepted by browser positioned boot. Browser snapshots
   can now be verified and published as a new computer through the existing
   manifest-last stream installer, without replacing a computer's live base or
-  journal. Version 3 manifests require a hashed journal namespace bound to the
-  base generation; older manifests continue using the computer name.
+  journal. Version 4 manifests require a hashed journal namespace bound to the
+  base generation and record whether its journal was initialized; older
+  manifests continue using the computer name or the version 3 namespace.
   An in-place, crash-safe base-and-journal handoff remains open. The
   writer coalesces deferred content references into
   extents; the legacy byte-array API still materializes output, and inode-table
@@ -68,12 +69,21 @@ acknowledged chunk in flight, verifies the stored bytes, and publishes only
 from the boot that still owns the session, under one exclusive lock. The next
 installation reclaims abandoned generation files. Reopening uses positioned OPFS
 reads and a bounded clean cache; fixed overwrites use a bounded dirty cache.
-Restoring an already published browser image now refuses an absent or empty
-journal rather than initializing a blank one; Node exposes the same strict
-reopen option. Fresh installs may still initialize the journal. A crash after
-publishing the base manifest but before the first journal initialization can
-therefore leave an image that fails closed on the next boot. Atomic initial
-base-plus-journal publication and generation fallback remain open.
+Version 4 browser manifests publish as pending. After the kernel initializes
+the journal, and before any guest starts, the page verifies its flushed header
+against a streamed whole-image SHA-256 digest and marks the manifest ready.
+Reopening a pending image may initialize an absent journal because no guest
+has yet run; reopening a ready image refuses an absent or empty journal rather
+than silently resetting it. Node exposes the same strict reopen option.
+Chromium, Firefox, and WebKit now exercise a page reload between manifest
+publication and the first kernel boot, followed by a guest write, a ready-state
+transition, and a strict reboot that recovers the write.
+Direct low-level `BrowserKernel` callers must perform that transition after
+successful initialization and before launching guests; the page boot path does
+it automatically.
+Older image manifests remain strict on reopen, so a crash before their first
+journal initialization can still leave them failing closed. Atomic
+base-plus-journal replacement and generation fallback remain open.
 ABI 51, following main's networking ABI 50, adds the third host storage handle
 needed to compact an indexed journal while its checkpoint remains open.
 Writes spanning more than 64 cache blocks are split into bounded chunks;
@@ -339,7 +349,8 @@ Chromium, Firefox, and WebKit. The browser can publish such a snapshot as a
 new computer: it checks each source chunk against the descriptor while copying
 through the bounded stream installer, then read-back verifies the copied
 generation before writing its manifest. A bad source leaves the new computer
-unpublished. The version 3 manifest requires a distinct, hashed journal namespace;
+unpublished. Version 4 manifests require a hashed journal namespace and
+streamed whole-image digest;
 the browser boot uses that name when opening the overlay, and rejects a changed
 namespace rather than silently starting an empty journal. Existing manifests
 without that field retain their original name. A composer guest write survives

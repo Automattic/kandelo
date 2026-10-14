@@ -11,6 +11,7 @@ import {
   assertFixedPersistenceBootAllowed,
   loadFixedPersistenceImage,
   loadFixedPersistenceImageHandle,
+  markFixedPersistenceJournalInitialized,
 } from "./fixed-persistence-image";
 import {
   initialDestroyProgress,
@@ -1582,8 +1583,11 @@ async function bootProfile(
         },
         lazyUrlMap,
         experimentalFixedPersistenceName: opfsImage.journalName,
-        requireExistingRootfsPersistence: restoredHandle !== null,
+        requireExistingRootfsPersistence: opfsImage.journalInitialized,
       });
+      if (!opfsImage.journalInitialized) {
+        await markFixedPersistenceJournalInitialized(persistence.name, persistence.identity, opfsImage);
+      }
     } else {
       const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =
         profile.candidateEvidence === undefined
@@ -1593,7 +1597,10 @@ async function bootProfile(
           lazyUrlMap,
           ...(experimentalPersistenceName === undefined
             ? {}
-            : { experimentalFixedPersistenceName: experimentalPersistenceName }),
+            : {
+              experimentalFixedPersistenceName: experimentalPersistenceName,
+              requireExistingRootfsPersistence: restoredImage !== null,
+            }),
         }
         : candidateEvidenceKernelInitOptions(
           profile.candidateEvidence,
