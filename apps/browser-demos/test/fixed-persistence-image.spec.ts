@@ -7,6 +7,7 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const modulePath = resolve(fileURLToPath(new URL(".", import.meta.url)), "../pages/kandelo/kernel-host/fixed-persistence-image.ts");
+const checkpointModulePath = resolve(fileURLToPath(new URL(".", import.meta.url)), "../pages/kandelo/kernel-host/persistent-image-checkpoint.ts");
 const streamWorkerPath = resolve(fileURLToPath(new URL(".", import.meta.url)), "fixtures/fixed-persistence-stream-worker.ts");
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
 const imageModulePath = [
@@ -749,14 +750,13 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const staged = await page.evaluate(async ({ moduleUrl, browserKernelUrl, kernelUrl, imageUrl }) => {
+      const staged = await page.evaluate(async ({ moduleUrl, checkpointUrl, browserKernelUrl, kernelUrl, imageUrl }) => {
         const {
           loadFixedPersistenceImageHandle,
           markFixedPersistenceJournalInitialized,
-          publishFixedPersistenceReplacement,
           saveFixedPersistenceImageStream,
-          stageFixedPersistenceSnapshotReplacement,
         } = await import(moduleUrl);
+        const { checkpointPersistentImage } = await import(checkpointUrl);
         const { BrowserKernel } = await import(browserKernelUrl);
         const name = `snapshot-replacement-${crypto.randomUUID()}`;
         const identity = "snapshot replacement";
@@ -791,46 +791,27 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         }
         const ready = await loadFixedPersistenceImageHandle(name, identity);
         if (ready === null) throw new Error("previous generation disappeared");
-        const snapshotDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
-        const snapshotName = `${name}.snapshot`;
-        const snapshotFile = await snapshotDirectory.getFileHandle(snapshotName, { create: true });
-        const source = new BrowserKernel({ kernelOwnedFs: true });
-        let integrity;
-        try {
-          await source.initFromOpfsImage({
-            kernelWasm,
-            vfsImageFile: ready.file,
-            integrity: { length: ready.length, chunkBytes: 1024 * 1024, chunkSha256: ready.chunkSha256 },
-            experimentalFixedPersistenceName: ready.journalName,
-            persistentComputerName: name,
-            requireExistingRootfsPersistence: true,
-          });
-          integrity = await source.exportRootfsImageToFile(snapshotFile);
-        } finally {
-          await source.destroy();
-        }
-        const replacement = await stageFixedPersistenceSnapshotReplacement(
-          name, identity, snapshotFile, integrity, ready.lazyAssets, ready.composition,
-        );
-        await snapshotDirectory.removeEntry(snapshotName);
-        const candidate = new BrowserKernel({ kernelOwnedFs: true });
-        let stagedState: string;
-        try {
-          await candidate.initFromOpfsImage({
-            kernelWasm,
-            vfsImageFile: replacement.file,
-            integrity: { length: replacement.length, chunkBytes: 1024 * 1024, chunkSha256: replacement.chunkSha256 },
-            experimentalFixedPersistenceName: replacement.journalName,
-            persistentComputerName: name,
-          });
-          stagedState = new TextDecoder().decode(await candidate.readFileFromVfs("/state"));
-        } finally {
-          await candidate.destroy();
-        }
-        await publishFixedPersistenceReplacement(name, identity, ready, replacement);
-        return { name, identity, previousJournal: ready.journalName, stagedJournal: replacement.journalName, stagedState };
+        let stagedState = "";
+        const { previous: checkpointSource, staged } = await checkpointPersistentImage({
+          name,
+          identity,
+          journalName: ready.journalName,
+          kernelWasm,
+          createKernel: () => new BrowserKernel({ kernelOwnedFs: true }),
+          closeKernel: (kernel) => kernel.destroy(),
+          lazyUrlMapForImage: (assets) => {
+            if (assets) throw new Error("fixture unexpectedly has lazy assets");
+            return {};
+          },
+          releaseLease: async () => {},
+          validateCandidate: async (kernel) => {
+            stagedState = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          },
+        });
+        return { name, identity, previousJournal: checkpointSource.journalName, stagedJournal: staged.journalName, stagedState };
       }, {
         moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href,
+        checkpointUrl: new URL(`/@fs/${checkpointModulePath}`, baseURL).href,
         browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
         kernelUrl,
         imageUrl,

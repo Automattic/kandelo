@@ -18,6 +18,7 @@ import {
   promoteFixedPersistenceRecovery,
   type FixedPersistenceImageHandle,
 } from "./fixed-persistence-image";
+import { checkpointPersistentImage as publishPersistentImageCheckpoint } from "./persistent-image-checkpoint";
 import {
   initialDestroyProgress,
   subscribeDestroyProgress,
@@ -604,6 +605,10 @@ export async function createLiveHost(
   }
   let currentKernel: BrowserKernel | null = null;
   let currentPersistenceLease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null;
+  let currentPersistenceIdentity: string | null = null;
+  let currentPersistenceJournalName: string | null = null;
+  let currentProfile: LiveProfile | null = null;
+  let currentRequestedDescriptor: BootDescriptor | null = null;
   let persistenceShutdownFailure: string | null = null;
   let bootInFlight: Promise<void> = Promise.resolve();
   let bootSeq = 0;
@@ -683,6 +688,7 @@ export async function createLiveHost(
       // visitor ARRIVED on and must not follow them onto a different image.
       await startBoot(h, profileForDescriptor(desc, "none", null), desc);
     },
+    checkpointPersistentImage: persistenceName === undefined ? undefined : checkpointPersistentImage,
   });
 
   const requireServiceWorker = (
@@ -833,24 +839,28 @@ export async function createLiveHost(
           requireServiceWorker, legacyScriptIgnored,
           persistenceName, persistenceLease ?? undefined, preferred,
         );
-        let kernel: BrowserKernel;
+        let booted: Awaited<ReturnType<typeof boot>>;
         try {
-          kernel = await boot();
+          booted = await boot();
         } catch (error) {
           if (!(error instanceof RetryPreviousPersistenceGeneration) || seq !== bootSeq) throw error;
-          kernel = await boot(error.previous);
+          booted = await boot(error.previous);
         }
         if (seq !== bootSeq) {
-          await kernel.destroy().catch(() => {});
-          if (persistenceName !== undefined && kernel.hasUnconfirmedKernelQuiescence()) {
-            currentKernel = kernel;
+          await booted.kernel.destroy().catch(() => {});
+          if (persistenceName !== undefined && booted.kernel.hasUnconfirmedKernelQuiescence()) {
+            currentKernel = booted.kernel;
             currentPersistenceLease = persistenceLease;
             persistenceLease = null;
           }
           return;
         }
-        currentKernel = kernel;
+        currentKernel = booted.kernel;
         currentPersistenceLease = persistenceLease;
+        currentPersistenceIdentity = booted.persistenceIdentity;
+        currentPersistenceJournalName = booted.persistenceJournalName;
+        currentProfile = profile;
+        currentRequestedDescriptor = descriptor;
         persistenceLease = null;
       } catch (err) {
         // A failed or superseded composition frees its own staging filesystem:
@@ -871,6 +881,109 @@ export async function createLiveHost(
       }
     } finally {
       completeBoot();
+    }
+  }
+
+  async function checkpointPersistentImage(h: LiveKernelHost): Promise<void> {
+    if (persistenceName === undefined) throw new Error("persistent image checkpoint is unavailable");
+    const seq = ++bootSeq;
+    const bootStartedAt = performance.now();
+    const precedingBoot = bootInFlight;
+    let completeBoot!: () => void;
+    bootInFlight = new Promise<void>((resolve) => { completeBoot = resolve; });
+    let lease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null;
+    let restart: { profile: LiveProfile; descriptor: BootDescriptor } | null = null;
+    let detached = false;
+    const assertCurrent = () => {
+      if (seq !== bootSeq) throw new BootSuperseded();
+    };
+    const showCheckpointProgress = (label: string) => {
+      if (seq === bootSeq) {
+        h.setMachineProgress({ phase: "image", label, completed: 0, unit: "bytes", status: "loading" });
+      }
+    };
+    const closeKernel = async (kernel: BrowserKernel) => {
+      let destroyError: unknown;
+      try {
+        await kernel.destroy();
+      } catch (error) {
+        destroyError = error;
+      }
+      if (kernel.hasUnconfirmedKernelQuiescence()) {
+        throw new UnconfirmedPersistentKernelQuiescence(kernel);
+      }
+      const failure = kernel.getPersistenceShutdownFailure();
+      if (failure !== null) {
+        persistenceShutdownFailure = `Persistent computer shutdown could not synchronize writes: ${failure}. Reload before starting this computer again.`;
+        throw new Error(persistenceShutdownFailure);
+      }
+      if (destroyError !== undefined) throw destroyError;
+    };
+    try {
+      await precedingBoot;
+      assertCurrent();
+      if (persistenceShutdownFailure !== null) throw new Error(persistenceShutdownFailure);
+      const kernel = currentKernel;
+      const activeLease = currentPersistenceLease;
+      const identity = currentPersistenceIdentity;
+      const journalName = currentPersistenceJournalName;
+      const profile = currentProfile;
+      const descriptor = currentRequestedDescriptor;
+      if (kernel === null || activeLease === null || identity === null || journalName === null ||
+        profile === null || descriptor === null || h.getStatus() !== "running") {
+        throw new Error("persistent image checkpoint requires a running saved computer");
+      }
+      lease = activeLease;
+      currentKernel = null;
+      currentPersistenceLease = null;
+      currentPersistenceIdentity = null;
+      currentPersistenceJournalName = null;
+      currentProfile = null;
+      currentRequestedDescriptor = null;
+      setWebMcpSession(h, null);
+      h.detachKernel();
+      detached = true;
+      h.setStatus("booting");
+      h.setMachineProgress(initialDestroyProgress(descriptor.title));
+      await closeKernel(kernel);
+      assertCurrent();
+      const kernelWasm = await fetch(kernelWasmUrl).then(failOn("kernel.wasm")).then((response) => response.arrayBuffer());
+      await publishPersistentImageCheckpoint({
+        name: persistenceName,
+        identity,
+        journalName,
+        kernelWasm,
+        createKernel: () => new BrowserKernel({
+          kernelOwnedFs: true,
+          memoryProfile: memoryProfileOverride(),
+          corsProxy: BROWSER_CORS_PROXY,
+        }),
+        closeKernel,
+        lazyUrlMapForImage: imageOwnedRuntimeUrlTable,
+        persistenceComputerLease: lease,
+        releaseLease: async () => {
+          await lease?.();
+          lease = null;
+        },
+        assertCurrent,
+        onProgress: showCheckpointProgress,
+      });
+      restart = { profile, descriptor };
+    } catch (error) {
+      if (error instanceof UnconfirmedPersistentKernelQuiescence) {
+        currentKernel = error.kernel;
+        currentPersistenceLease = lease;
+        lease = null;
+      }
+      if (error instanceof BootSuperseded || seq !== bootSeq) return;
+      if (detached) showBootError(h, h.getBootDescriptor(), error, bootStartedAt);
+      throw error;
+    } finally {
+      await lease?.();
+      completeBoot();
+    }
+    if (restart !== null && seq === bootSeq) {
+      await startBoot(h, restart.profile, restart.descriptor);
     }
   }
 }
@@ -1266,7 +1379,11 @@ async function bootProfile(
   experimentalPersistenceName?: string,
   experimentalPersistenceLease?: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>>,
   preferredPersistenceImage?: FixedPersistenceImageHandle,
-): Promise<BrowserKernel> {
+): Promise<{
+  kernel: BrowserKernel;
+  persistenceIdentity: string | null;
+  persistenceJournalName: string | null;
+}> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
   };
@@ -1967,7 +2084,11 @@ async function bootProfile(
       tick("ready");
       host.setStatus("running");
     }
-    return kernel;
+    return {
+      kernel,
+      persistenceIdentity: persistence?.identity ?? null,
+      persistenceJournalName: opfsImage?.journalName ?? null,
+    };
   } catch (err) {
     if (kernel) {
       if (isCurrent()) setWebMcpSession(host, null);

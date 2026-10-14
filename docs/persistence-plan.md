@@ -47,12 +47,16 @@ semantics. Node and browser must expose the same guest-visible behavior.
   manifest-last stream installer, or staged as a replacement under a fresh
   journal namespace. Publication now refuses while either the source or
   staged journal is open by a `BrowserKernel`, even under a different computer
-  identity. The replacement still needs a successful staged boot and a
-  separate publish call; the page does not drive that sequence. Version 4
-  manifests require a hashed journal namespace
-  bound to the base generation and record whether its journal was initialized; older
-  manifests continue using the computer name or the version 3 namespace.
-  A fully orchestrated, crash-safe base-and-journal handoff remains open. The
+  identity. The page now offers an explicit Internals checkpoint action that
+  shuts down the old machine, exports from a fresh quiescent kernel, stages and
+  boots the candidate, publishes it, then reboots the computer. That page
+  path has an end-to-end test gated on complete browser package artifacts,
+  which this workspace lacks. Its shared export/stage/boot/publish path is
+  exercised with a guest-written fixture on Chromium, Firefox, and WebKit.
+  Version 4 manifests require a hashed journal namespace bound to the base
+  generation and record whether its journal was initialized; older manifests
+  continue using the computer name or the version 3 namespace. A
+  production-validated, crash-safe base-and-journal handoff remains open. The
   writer coalesces deferred content references into
   extents; the legacy byte-array API still materializes output, and inode-table
   and indirect-block memory scale with image size. An 8 GiB sparse file
@@ -122,8 +126,18 @@ OPFS staging file, stages it under a fresh journal, boots it, publishes the
 replacement, and reopens it after reload. Snapshot export requires a fresh
 quiescent kernel after the guest-writing kernel has been destroyed; waiting
 for a process exit alone does not make that kernel quiescent.
-This does not prove page-driven replacement, browser-process crash, or
-power-loss durability at that cut.
+That tab-close test does not prove page-driven replacement, browser-process
+crash, or power-loss durability at that cut.
+The page checkpoint action uses the held per-computer lease until both the
+source and staged kernels have closed their journals, then releases it before
+the manifest-locked publish and boots the selected manifest. Superseded work
+cannot start publication; a lost publication acknowledgement leaves recovery
+to the next reload. Errors stop the page instead of silently restarting from
+an unverified generation. The shared checkpoint handoff passes a browser
+guest-write and reload test on Chromium, Firefox, and WebKit, but the full
+page transition test is authored and currently skipped without the shell
+package artifacts, so page-driven replacement is implemented but not yet
+validated end to end here.
 The selected prior manifest carries the exact primary and fallback manifest
 digests observed at selection. Only after the prior kernel initializes, and
 before guest processes launch, the page checks those digests under the
@@ -170,13 +184,13 @@ computer lease. A low-level kernel using a different computer identity but
 either journal namespace blocks publication. Raw OPFS writers that bypass
 these locks remain outside this protection. Callers must stop the old kernel
 before taking a snapshot and complete the staged boot before publication;
-the page still does not orchestrate those transitions.
+the explicit page checkpoint action now orchestrates those transitions for
+fixed-overwrite computers.
 Later committed journal-record corruption is detected by the kernel and
 rejected with `EIO`. Selection tries another valid slot on the same base,
 then reports no valid generation if a nonempty legacy journal also fails.
 The page can then retry the verified prior base, but the full page retry race
-remains unverified. The page does not
-yet orchestrate in-place replacement, abandoned staged generations are not
+remains unverified. Abandoned staged generations are not
 reclaimed, and selecting a replaced generation adds a full-image preflight
 read before the kernel's own verification. This remains a prototype, not a
 general atomic generation handoff.
