@@ -114,9 +114,11 @@ journals, then succeeds without rewriting either manifest. A damaged backup
 refuses that retry. A persistent-browser-context test closes the publishing
 tab immediately before or after the primary manifest close, then opens a new
 tab: Chromium, Firefox, and WebKit select the prior or staged generation,
-respectively, while retaining the prior image after commit. This test uses
-synthetic journal headers; it does not prove staged guest boot, browser-process
-crash, or power-loss durability at that cut.
+respectively, while retaining the prior image after commit. Both generations
+boot through the real browser kernel; before-commit recovery replays a guest
+write from the prior journal, and after-commit recovery reads the staged base.
+This does not prove page-driven replacement, browser-process crash, or
+power-loss durability at that cut.
 The selected prior manifest carries the exact primary and fallback manifest
 digests observed at selection. Only after the prior kernel initializes, and
 before guest processes launch, the page checks those digests under the
