@@ -39,11 +39,13 @@ semantics. Node and browser must expose the same guest-visible behavior.
   images, quota exhaustion, tab contention, browser termination, corruption,
   and recovery; run applicable POSIX/conformance and Node/browser benchmark
   suites before claiming general support or a speedup.
-- [ ] Bound the image writer's per-block structure for composed snapshots,
-  authenticate the staged output, and publish only after completion. The new
-  Node and browser staging-file APIs stream the host output, but the legacy
-  byte-array API still materializes it. An 8 GiB sparse file exceeds the
-  writer's per-file block-map limit.
+- [ ] Authenticate staged composed snapshots and publish only after
+  completion. Node and browser staging-file APIs stream the host output, and
+  the writer now coalesces deferred content references into contiguous extents
+  instead of keeping a map entry per data block. The legacy byte-array API
+  still materializes the output; inode-table and indirect-block memory scale
+  with image size. An 8 GiB sparse file exceeds the format's per-file block
+  limit, so >RAM snapshot export remains unproven.
 
 The first >RAM acceptance target is deliberately read-only. It proves that
 boot and image reads no longer require an image-sized allocation before
@@ -315,9 +317,12 @@ snapshots reboot without the source journal. The public host export still
 collects the whole output in memory; separate Node and browser staging-file
 APIs now write one kernel chunk at a time without retaining the output in JS.
 Node refuses to overwrite an existing path; browser requires an empty OPFS
-target and truncates partial output on failure. The image writer still retains
-structural metadata proportional to exported blocks, so >RAM snapshot export
-remains open rather than a production guarantee.
+target and truncates partial output on failure. The image writer coalesces
+adjacent deferred content blocks into extents: a 32 MiB file occupies fewer
+than 20 extent records while reads across direct and indirect boundaries
+return the expected bytes. Inode-table and indirect-block memory still scale
+with capacity, so >RAM snapshot export remains open rather than a production
+guarantee.
 Node and browser guest workflows also replace an open created file by rename:
 the displaced descriptor retains its data with link count zero, while the
 replacement file's content and metadata survive a reboot.

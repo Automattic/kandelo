@@ -160,14 +160,27 @@ impl Content<'_> {
     }
 }
 
-/// What one block of the emitted image contains.
-enum BlockContent {
-    /// Materialized metadata: directory data, indirect blocks, too-long
-    /// symlink targets, and small file content. Always `BLOCK_SIZE` bytes.
-    Owned(Vec<u8>),
-    /// A window into a [`ContentSource`]. The block's remaining bytes are
-    /// zero, which is what the vendor allocator leaves behind.
-    Content { id: u64, offset: u64, len: u32 },
+#[derive(Clone, Copy)]
+struct ContentExtent {
+    blocks: u32,
+    id: u64,
+    offset: u64,
+    last_len: u32,
+}
+
+fn content_block(extents: &BTreeMap<u32, ContentExtent>, phys: u32) -> Option<(u64, u64, u32)> {
+    let (&start, extent) = extents.range(..=phys).next_back()?;
+    let block = phys - start;
+    if block >= extent.blocks {
+        return None;
+    }
+    let offset = extent.offset + block as u64 * BLOCK_SIZE as u64;
+    let len = if block + 1 == extent.blocks {
+        extent.last_len
+    } else {
+        BLOCK_SIZE as u32
+    };
+    Some((extent.id, offset, len))
 }
 
 /// One free (deleted or padding) directory record the vendor's directory
@@ -237,7 +250,8 @@ pub struct KandeloImageWriter {
     inode_bitmap: Vec<u8>,
     block_bitmap: Vec<u8>,
     inode_table: Vec<u8>,
-    blocks: BTreeMap<u32, BlockContent>,
+    blocks: BTreeMap<u32, Vec<u8>>,
+    content_extents: BTreeMap<u32, ContentExtent>,
     dir_indexes: BTreeMap<u32, Vec<FreeSlot>>,
     /// Whether this writer states its deferred files in-body even when there
     /// are none. Set by [`Self::declare_deferred_section`]; see
@@ -350,6 +364,7 @@ impl KandeloImageWriter {
             block_bitmap: vec![0u8; block_bitmap_blocks as usize * BLOCK_SIZE],
             inode_table: vec![0u8; inode_table_blocks as usize * BLOCK_SIZE],
             blocks: BTreeMap::new(),
+            content_extents: BTreeMap::new(),
             dir_indexes: BTreeMap::new(),
             declares_deferred: false,
             deferred: Vec::new(),
@@ -416,28 +431,21 @@ impl KandeloImageWriter {
         if phys < self.data_start || phys >= self.total_blocks {
             return Err(Errno::EIO);
         }
-        match self
+        if content_block(&self.content_extents, phys).is_some() {
+            return Err(Errno::EIO);
+        }
+        Ok(self
             .blocks
             .entry(phys)
-            .or_insert_with(|| BlockContent::Owned(vec![0u8; BLOCK_SIZE]))
-        {
-            BlockContent::Owned(v) => Ok(v),
-            BlockContent::Content { .. } => Err(Errno::EIO),
-        }
+            .or_insert_with(|| vec![0u8; BLOCK_SIZE]))
     }
 
     fn block_r16(&self, phys: u32, off: usize) -> u16 {
-        match self.blocks.get(&phys) {
-            Some(BlockContent::Owned(v)) => r16(v, off),
-            _ => 0,
-        }
+        self.blocks.get(&phys).map_or(0, |block| r16(block, off))
     }
 
     fn block_r32(&self, phys: u32, off: usize) -> u32 {
-        match self.blocks.get(&phys) {
-            Some(BlockContent::Owned(v)) => r32(v, off),
-            _ => 0,
-        }
+        self.blocks.get(&phys).map_or(0, |block| r32(block, off))
     }
 
     // ── Allocators ───────────────────────────────────────────────────
@@ -619,24 +627,24 @@ impl KandeloImageWriter {
     // ── Directory records ────────────────────────────────────────────
 
     fn write_dot_entries(&mut self, phys: u32, self_ino: u32, parent_ino: u32) {
+        if content_block(&self.content_extents, phys).is_some() {
+            return;
+        }
         let dot = align4(DIRENT_HEADER + 1);
         let dotdot = align4(DIRENT_HEADER + 2);
         let block = self
             .blocks
             .entry(phys)
-            .or_insert_with(|| BlockContent::Owned(vec![0u8; BLOCK_SIZE]));
-        let BlockContent::Owned(b) = block else {
-            return;
-        };
-        w32(b, 0, self_ino);
-        w16(b, 4, dot as u16);
-        w16(b, 6, 1);
-        b[DIRENT_HEADER] = b'.';
-        w32(b, dot, parent_ino);
-        w16(b, dot + 4, dotdot as u16);
-        w16(b, dot + 6, 2);
-        b[dot + DIRENT_HEADER] = b'.';
-        b[dot + DIRENT_HEADER + 1] = b'.';
+            .or_insert_with(|| vec![0u8; BLOCK_SIZE]);
+        w32(block, 0, self_ino);
+        w16(block, 4, dot as u16);
+        w16(block, 6, 1);
+        block[DIRENT_HEADER] = b'.';
+        w32(block, dot, parent_ino);
+        w16(block, dot + 4, dotdot as u16);
+        w16(block, dot + 6, 2);
+        block[dot + DIRENT_HEADER] = b'.';
+        block[dot + DIRENT_HEADER + 1] = b'.';
     }
 
     fn touch_directory_mutation(&mut self, dir_ino: u32) {
@@ -947,12 +955,9 @@ impl KandeloImageWriter {
                     return Err(Errno::EIO);
                 }
                 if ent_ino != 0 && name_len == name.len() {
-                    let matches = match self.blocks.get(&phys) {
-                        Some(BlockContent::Owned(v)) => {
-                            &v[off + DIRENT_HEADER..off + DIRENT_HEADER + name_len] == name
-                        }
-                        _ => false,
-                    };
+                    let matches = self.blocks.get(&phys).is_some_and(|block| {
+                        &block[off + DIRENT_HEADER..off + DIRENT_HEADER + name_len] == name
+                    });
                     if matches {
                         return Ok(Some(ent_ino));
                     }
@@ -1337,14 +1342,31 @@ impl KandeloImageWriter {
                     block[..chunk].copy_from_slice(&bytes[start..start + chunk]);
                 }
                 Content::Deferred { id, .. } => {
-                    self.blocks.insert(
-                        phys,
-                        BlockContent::Content {
-                            id: *id,
-                            offset: pos,
-                            len: chunk as u32,
-                        },
-                    );
+                    let extend = self
+                        .content_extents
+                        .last_key_value()
+                        .and_then(|(&start, extent)| {
+                            (start.checked_add(extent.blocks) == Some(phys)
+                                && extent.id == *id
+                                && extent.offset + extent.blocks as u64 * BLOCK_SIZE as u64 == pos
+                                && extent.last_len == BLOCK_SIZE as u32)
+                                .then_some(start)
+                        });
+                    if let Some(start) = extend {
+                        let extent = self.content_extents.get_mut(&start).ok_or(Errno::EIO)?;
+                        extent.blocks += 1;
+                        extent.last_len = chunk as u32;
+                    } else {
+                        self.content_extents.insert(
+                            phys,
+                            ContentExtent {
+                                blocks: 1,
+                                id: *id,
+                                offset: pos,
+                                last_len: chunk as u32,
+                            },
+                        );
+                    }
                 }
             }
             pos += chunk as u64;
@@ -1412,6 +1434,7 @@ impl KandeloImageWriter {
             block_bitmap: self.block_bitmap,
             inode_table: self.inode_table,
             blocks: self.blocks,
+            content_extents: self.content_extents,
             total_blocks: self.total_blocks,
             inode_bitmap_start: self.inode_bitmap_start,
             block_bitmap_start: self.block_bitmap_start,
@@ -1427,7 +1450,8 @@ pub struct KandeloImage {
     inode_bitmap: Vec<u8>,
     block_bitmap: Vec<u8>,
     inode_table: Vec<u8>,
-    blocks: BTreeMap<u32, BlockContent>,
+    blocks: BTreeMap<u32, Vec<u8>>,
+    content_extents: BTreeMap<u32, ContentExtent>,
     total_blocks: u32,
     inode_bitmap_start: u32,
     block_bitmap_start: u32,
@@ -1450,28 +1474,23 @@ impl KandeloImage {
         self.total_blocks == 0
     }
 
-    /// Bytes this image actually holds in memory.
+    /// Materialized image payload and extent-record bytes, excluding map
+    /// allocator overhead.
     ///
     /// The whole point of the deferred path is that emitting a 249 MiB image
     /// does not cost 249 MiB of kernel memory, and "the design says so" is not
     /// evidence. This makes the claim measurable: it counts the materialized
     /// metadata — superblock, both bitmaps, the inode table, directory data,
-    /// indirect blocks — and excludes every block that is a reference into a
-    /// [`ContentSource`].
+    /// indirect blocks, and extent records — but not referenced file content
+    /// or the map allocator's node overhead.
     pub fn resident_bytes(&self) -> u64 {
-        let owned: u64 = self
-            .blocks
-            .values()
-            .map(|b| match b {
-                BlockContent::Owned(v) => v.len() as u64,
-                BlockContent::Content { .. } => 0,
-            })
-            .sum();
+        let owned: u64 = self.blocks.values().map(|block| block.len() as u64).sum();
         owned
             + self.superblock.len() as u64
             + self.inode_bitmap.len() as u64
             + self.block_bitmap.len() as u64
             + self.inode_table.len() as u64
+            + (self.content_extents.len() * core::mem::size_of::<(u32, ContentExtent)>()) as u64
     }
 
     fn block_view(&self, n: u32) -> BlockView<'_> {
@@ -1490,13 +1509,11 @@ impl KandeloImage {
             let off = (n - self.inode_table_start) as usize * BLOCK_SIZE;
             return BlockView::Bytes(&self.inode_table[off..off + BLOCK_SIZE]);
         }
-        match self.blocks.get(&n) {
-            Some(BlockContent::Owned(v)) => BlockView::Bytes(v),
-            Some(BlockContent::Content { id, offset, len }) => BlockView::Content {
-                id: *id,
-                offset: *offset,
-                len: *len,
-            },
+        if let Some(block) = self.blocks.get(&n) {
+            return BlockView::Bytes(block);
+        }
+        match content_block(&self.content_extents, n) {
+            Some((id, offset, len)) => BlockView::Content { id, offset, len },
             None => BlockView::Zeros,
         }
     }
@@ -2217,20 +2234,69 @@ mod tests {
         let len = 2 * 1024 * 1024u64;
         w.create_file(root, b"f", 0o644, Content::Deferred { id: 0, len })
             .expect("create");
-        let materialized = w
-            .blocks
-            .values()
-            .filter(|b| matches!(b, BlockContent::Owned(_)))
-            .count();
-        let referenced = w
-            .blocks
-            .values()
-            .filter(|b| matches!(b, BlockContent::Content { .. }))
-            .count();
-        assert_eq!(referenced, (len / BLOCK_SIZE as u64) as usize);
+        let materialized = w.blocks.len();
+        let referenced: u32 = w.content_extents.values().map(|extent| extent.blocks).sum();
+        assert_eq!(referenced, (len / BLOCK_SIZE as u64) as u32);
+        assert_eq!(w.content_extents.len(), 2);
         // Only the root directory block and the file's single indirect block
         // are materialized.
         assert_eq!(materialized, 2, "only metadata may be resident");
+    }
+
+    #[test]
+    fn large_deferred_file_uses_metadata_sized_extents() {
+        struct OffsetPattern;
+
+        impl ContentSource for OffsetPattern {
+            fn read_exact_at(&self, _id: u64, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+                for (index, byte) in dst.iter_mut().enumerate() {
+                    *byte = ((offset + index as u64) % 251) as u8;
+                }
+                Ok(())
+            }
+        }
+
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024 * 1024))
+            .expect("mkfs");
+        let len = 32 * 1024 * 1024u64 + 17;
+        let file = writer
+            .create_file(
+                writer.root(),
+                b"large",
+                0o644,
+                Content::Deferred { id: 7, len },
+            )
+            .expect("create");
+        let file_blocks = [0u32, 11, 12, 1035, 1036, 8192];
+        let positions: Vec<(u32, u32)> = file_blocks
+            .iter()
+            .map(|&block| {
+                (
+                    block,
+                    writer.inode_block_map(file, block, false).expect("mapped"),
+                )
+            })
+            .collect();
+        assert!(
+            writer.content_extents.len() < 20,
+            "one extent per metadata gap"
+        );
+        let image = writer.finish().expect("finish");
+        assert!(image.resident_bytes() < 3 * 1024 * 1024);
+
+        for (block, phys) in positions {
+            let mut bytes = [0u8; 32];
+            assert_eq!(
+                image.read_at(&OffsetPattern, phys as u64 * BLOCK_SIZE as u64, &mut bytes),
+                Ok(32)
+            );
+            let content_len = if block == 8192 { 17 } else { bytes.len() };
+            for (index, &byte) in bytes[..content_len].iter().enumerate() {
+                let offset = block as u64 * BLOCK_SIZE as u64 + index as u64;
+                assert_eq!(byte, (offset % 251) as u8, "file block {block}");
+            }
+            assert!(bytes[content_len..].iter().all(|&byte| byte == 0));
+        }
     }
 
     // ── Geometry and failure modes ───────────────────────────────────
