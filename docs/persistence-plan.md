@@ -168,8 +168,11 @@ semantically invalid checkpoint. Indexed open verifies the journal prefix,
 replays only later transactions, reads older blocks through the table's
 bounded page cache, and merges the table with later mutations during
 compaction. Focused tests reject damaged prefix and committed-tail bytes while
-truncating an incomplete tail. This still scans the entire prefix to verify
-its digest. Live compaction and a write-stop limit bound the active tail;
+truncating an incomplete tail. Indexed open now hashes each validated prefix
+transaction during replay instead of reading the full prefix once for hashing
+and again for replay; an I/O-count test covers the journal read volume. It
+still scans the entire prefix and retains the resizable metadata map. Live
+compaction and a write-stop limit bound the active tail;
 fixed-overwrite compaction's target map is no longer resident. The old
 unindexed journal still needs its initial full-map recovery before conversion.
 Small legacy and v1 journals continue to use the full-memory map until they
@@ -203,8 +206,8 @@ replay; resizable mounts now use the metadata path for persistent namespace
 mutations.
 Fixed-overwrite indexed open parses the authenticated prefix with a
 transaction-sized buffer and rejects metadata hidden behind a block-only
-checkpoint. This adds a second sequential prefix pass after digest
-verification, so indexed boot latency needs measurement.
+checkpoint. The same pass hashes the prefix; indexed boot latency still
+needs measurement.
 The generic journal also has a file zero-fence record (key kind 5, an
 inclusive starting block). A shrink atomically records the new size and
 fence, preserving the boundary block's prefix and zeroing its suffix. Later

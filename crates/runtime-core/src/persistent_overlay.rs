@@ -190,6 +190,22 @@ pub struct OverlayJournal<S: OverlayStorage> {
     track_committed_state: bool,
 }
 
+fn read_overlay_header<S: OverlayStorage>(
+    storage: &mut S,
+    base_digest: [u8; 32],
+) -> Result<[u8; HEADER_BYTES], Errno> {
+    let mut header = [0u8; HEADER_BYTES];
+    storage.read_exact_at(0, &mut header)?;
+    if &header[..4] != MAGIC
+        || u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?) != VERSION
+        || header[8..40] != base_digest
+        || header[40..] != Sha256::digest(&header[..40])[..]
+    {
+        return Err(Errno::EIO);
+    }
+    Ok(header)
+}
+
 impl<S: OverlayStorage> OverlayJournal<S> {
     pub fn open(storage: S, base_digest: [u8; 32]) -> Result<Self, Errno> {
         Self::open_internal(storage, base_digest, None, OverlayState::default())
@@ -235,22 +251,9 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         if checkpoint_end < HEADER_BYTES as u64 || storage.len()? < checkpoint_end {
             return Err(Errno::EIO);
         }
+        let header = read_overlay_header(&mut storage, base_digest)?;
         let mut digest = Sha256::new();
-        let mut bytes = [0; 64 * 1024];
-        let mut offset = 0;
-        while offset < checkpoint_end {
-            let length = (checkpoint_end - offset).min(bytes.len() as u64) as usize;
-            storage.read_exact_at(offset, &mut bytes[..length])?;
-            digest.update(&bytes[..length]);
-            offset += length as u64;
-        }
-        let checkpoint_storage: Box<dyn OverlayStorage + Send> = Box::new(checkpoint_storage);
-        let checkpoint = BlockCheckpoint::open(
-            checkpoint_storage,
-            base_digest,
-            digest.finalize().into(),
-            checkpoint_end,
-        )?;
+        digest.update(header);
         let mut state = OverlayState::default();
         let filter = if replay_metadata {
             ReplayFilter::MetadataOnly
@@ -266,6 +269,14 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             filter,
             false,
             false,
+            Some(&mut digest),
+        )?;
+        let checkpoint_storage: Box<dyn OverlayStorage + Send> = Box::new(checkpoint_storage);
+        let checkpoint = BlockCheckpoint::open(
+            checkpoint_storage,
+            base_digest,
+            digest.finalize().into(),
+            checkpoint_end,
         )?;
         if replayed_end != checkpoint_end || next_sequence != checkpoint.next_sequence() {
             return Err(Errno::EIO);
@@ -296,15 +307,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             if size < HEADER_BYTES as u64 {
                 return Err(Errno::EIO);
             }
-            let mut header = [0u8; HEADER_BYTES];
-            storage.read_exact_at(0, &mut header)?;
-            if &header[..4] != MAGIC
-                || u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?) != VERSION
-                || header[8..40] != base_digest
-                || header[40..] != Sha256::digest(&header[..40])[..]
-            {
-                return Err(Errno::EIO);
-            }
+            read_overlay_header(&mut storage, base_digest)?;
         }
 
         let next_sequence = checkpoint
@@ -323,6 +326,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             ReplayFilter::All,
             true,
             checkpoint.is_some(),
+            None,
         )?;
         if end < size {
             storage.truncate(end)?;
@@ -1453,6 +1457,7 @@ fn replay_transactions<S: OverlayStorage>(
     filter: ReplayFilter,
     allow_torn_tail: bool,
     has_checkpoint: bool,
+    mut prefix_digest: Option<&mut Sha256>,
 ) -> Result<(u64, u64), Errno> {
     while end < size {
         let remaining = size - end;
@@ -1515,6 +1520,9 @@ fn replay_transactions<S: OverlayStorage>(
             let value_offset =
                 relative_offset.map(|offset| end + TRANSACTION_HEADER_BYTES as u64 + offset);
             state.apply(mutation, value_offset, has_checkpoint);
+        }
+        if let Some(digest) = &mut prefix_digest {
+            digest.update(&transaction);
         }
         next_sequence = next_sequence.checked_add(1).ok_or(Errno::EOVERFLOW)?;
         end = end.checked_add(length as u64).ok_or(Errno::EOVERFLOW)?;
@@ -1626,6 +1634,8 @@ fn decode_mutations(mut bytes: &[u8]) -> Result<Vec<(Mutation, Option<u64>)>, Er
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicU64, Ordering};
 
     #[derive(Default)]
     struct MemoryStorage {
@@ -1635,6 +1645,7 @@ mod tests {
         fail_errno: Option<Errno>,
         fail_after_flushes: Option<usize>,
         fail_write_after_bytes: Option<usize>,
+        read_bytes: Option<Arc<AtomicU64>>,
     }
 
     impl OverlayStorage for MemoryStorage {
@@ -1646,6 +1657,9 @@ mod tests {
             let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
             let end = start.checked_add(dst.len()).ok_or(Errno::EIO)?;
             dst.copy_from_slice(self.bytes.get(start..end).ok_or(Errno::EIO)?);
+            if let Some(read_bytes) = &self.read_bytes {
+                read_bytes.fetch_add(dst.len() as u64, Ordering::Relaxed);
+            }
             Ok(())
         }
 
@@ -2067,6 +2081,46 @@ mod tests {
             ),
             Err(Errno::EIO)
         ));
+    }
+
+    #[test]
+    fn indexed_metadata_open_reads_the_prefix_once() {
+        let base_digest = [50; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), base_digest).unwrap();
+        journal
+            .commit(&[
+                Mutation::Put {
+                    key: inode_key(),
+                    value: b"metadata".to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                    value: vec![b'a'; FILE_BLOCK_BYTES],
+                },
+            ])
+            .unwrap();
+        let checkpoint_end = journal.end;
+        let checkpoint = journal
+            .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
+            .unwrap()
+            .into_storage();
+        let read_bytes = Arc::new(AtomicU64::new(0));
+        let reopened = OverlayJournal::open_with_checkpoint_metadata(
+            MemoryStorage {
+                bytes: journal.into_storage().bytes,
+                read_bytes: Some(Arc::clone(&read_bytes)),
+                ..MemoryStorage::default()
+            },
+            checkpoint,
+            base_digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        assert_eq!(reopened.state().lookup(&inode_key()), Some(Some(&b"metadata"[..])));
+        assert_eq!(
+            read_bytes.load(Ordering::Relaxed),
+            checkpoint_end + HEADER_BYTES as u64 + TRANSACTION_HEADER_BYTES as u64
+        );
     }
 
     #[test]
