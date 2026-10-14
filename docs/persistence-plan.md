@@ -95,5 +95,6 @@ live compaction does not.
 Recovery truncates a torn append shorter than the minimum complete transaction,
 including a partially written transaction header. The writeback test exercises
 every byte offset of a torn 4 KiB block transaction; Node and browser tests
-also reopen a journal with a torn header. This does not yet cover every host
-write and flush failure point, so the dirty-cache milestone remains open.
+reopen journals torn before and after the header and near the commit marker.
+This does not yet cover every host write and flush failure point, so the
+dirty-cache milestone remains open.

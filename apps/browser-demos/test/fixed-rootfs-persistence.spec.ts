@@ -132,42 +132,55 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
       expect(result).toMatchObject({ initial: "abcdefgh", written: "XYcdefgh", locked: true, rejected: true, cacheProbeMatches: true, recovered: "XYcdefgh" });
 
-      const tornHeader = await page.evaluate(async ({ moduleUrl, kernelUrl, name, journalBytes }) => {
+      const original = Buffer.from(result.journalBytes);
+      const transactionLength = original.readUInt32LE(76);
+      expect(original.byteLength).toBe(72 + transactionLength);
+      const transaction = Buffer.from(original.subarray(72));
+      transaction.writeBigUInt64LE(2n, 8);
+      createHash("sha256")
+        .update(transaction.subarray(0, transaction.length - 36))
+        .digest()
+        .copy(transaction, transaction.length - 36);
+      const cuts = [1, 24, 60, transaction.length - 1];
+      const tornWrites = await page.evaluate(async ({ moduleUrl, kernelUrl, name, journalBytes, transactionBytes, cuts }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const journalFile = await directory.getFileHandle(`${name}.journal`);
-        const bytes = new Uint8Array(journalBytes.length + 24);
-        bytes.set(journalBytes);
-        bytes.set(new TextEncoder().encode("KTXN"), journalBytes.length);
-        const writer = await journalFile.createWritable();
-        await writer.write(bytes);
-        await writer.close();
         const imageFile = await directory.getFileHandle(`${name}.base`);
-        const kernel = new BrowserKernel({ kernelOwnedFs: true });
-        try {
-          await kernel.initFromOpfsImage({
-            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
-            vfsImageFile: imageFile,
-            experimentalFixedPersistenceName: name,
-          });
-          return {
-            state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
-            journalSize: (await journalFile.getFile()).size,
-          };
-        } finally {
-          await kernel.destroy();
+        const outcomes = [];
+        for (const cut of cuts) {
+          const bytes = new Uint8Array(journalBytes.length + cut);
+          bytes.set(journalBytes);
+          bytes.set(transactionBytes.slice(0, cut), journalBytes.length);
+          const writer = await journalFile.createWritable();
+          await writer.write(bytes);
+          await writer.close();
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: imageFile,
+              experimentalFixedPersistenceName: name,
+            });
+            outcomes.push({
+              cut,
+              state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+              journalSize: (await journalFile.getFile()).size,
+            });
+          } finally {
+            await kernel.destroy();
+          }
         }
+        return outcomes;
       }, {
         moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
         kernelUrl,
         name: result.name,
         journalBytes: result.journalBytes,
+        transactionBytes: Array.from(transaction),
+        cuts,
       });
-      expect(tornHeader).toEqual({ state: "XYcdefgh", journalSize: result.journalBytes.length });
-
-      const original = Buffer.from(result.journalBytes);
-      const transactionLength = original.readUInt32LE(76);
-      expect(original.byteLength).toBe(72 + transactionLength);
+      expect(tornWrites).toEqual(cuts.map((cut) => ({ cut, state: "XYcdefgh", journalSize: original.length })));
       const count = Math.ceil((32 * 1024 * 1024 - original.byteLength) / transactionLength) + 1;
       const repeated = Buffer.allocUnsafe(count * transactionLength);
       for (let index = 0; index < count; index++) {

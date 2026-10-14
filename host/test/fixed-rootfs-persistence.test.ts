@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -263,14 +263,23 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         await recovered.destroy();
       }
       const committed = readFileSync(path);
-      appendFileSync(path, Buffer.concat([Buffer.from("KTXN"), Buffer.alloc(20)]));
-      const afterTail = await boot(image, path);
-      try {
-        expect(new TextDecoder().decode((await afterTail.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
-      } finally {
-        await afterTail.destroy();
+      const transaction = Buffer.from(committed.subarray(72));
+      transaction.writeBigUInt64LE(2n, 8);
+      createHash("sha256")
+        .update(transaction.subarray(0, transaction.length - 36))
+        .digest()
+        .copy(transaction, transaction.length - 36);
+      const cuts = [0, 1, 23, 24, 59, 60, 100, Math.floor(transaction.length / 2), transaction.length - 1];
+      for (const cut of cuts) {
+        writeFileSync(path, Buffer.concat([committed, transaction.subarray(0, cut)]));
+        const afterTail = await boot(image, path);
+        try {
+          expect(new TextDecoder().decode((await afterTail.readFileFromVfs("/state"))!), `cut ${cut}`).toBe("XYcdefgh");
+        } finally {
+          await afterTail.destroy();
+        }
+        expect(readFileSync(path), `cut ${cut}`).toEqual(committed);
       }
-      expect(readFileSync(path)).toEqual(committed);
       const damaged = readFileSync(path);
       damaged[damaged.length - 37] ^= 1;
       writeFileSync(path, damaged);
