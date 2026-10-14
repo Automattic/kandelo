@@ -674,7 +674,15 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     }
 
     pub fn commit(&mut self, mutations: &[Mutation]) -> Result<(), Errno> {
+        if self.failed {
+            return Err(Errno::EIO);
+        }
+        if mutations.is_empty() {
+            return self.flush_dirty();
+        }
+        self.check_active_tail_limit()?;
         self.flush_dirty()?;
+        self.check_active_tail_limit()?;
         self.commit_transaction(mutations)
     }
 
@@ -3194,6 +3202,63 @@ mod tests {
             ),
             Ok(3)
         );
+    }
+
+    #[test]
+    fn active_tail_limit_rejects_metadata_without_blocking_dirty_flush() {
+        let mut metadata_only = OverlayJournal::open(MemoryStorage::default(), [48; 32]).unwrap();
+        metadata_only.tail_limit_bytes = Some(1);
+        metadata_only
+            .commit(&[Mutation::Put {
+                key: inode_key(),
+                value: b"metadata".to_vec(),
+            }])
+            .unwrap();
+        let metadata_end = metadata_only.storage.bytes.len();
+        assert_eq!(
+            metadata_only.commit(&[Mutation::Put {
+                key: OverlayKey::Inode(8),
+                value: b"more metadata".to_vec(),
+            }]),
+            Err(Errno::ENOSPC)
+        );
+        assert_eq!(metadata_only.storage.bytes.len(), metadata_end);
+
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), [47; 32]).unwrap();
+        journal.tail_limit_bytes = Some(100);
+        journal
+            .write_fixed_file_at_buffered(7, FILE_BLOCK_BYTES as u64, 0, b"data", |_, dst| {
+                dst.fill(0);
+                Ok(dst.len())
+            })
+            .unwrap();
+        journal
+            .commit(&[Mutation::Put {
+                key: inode_key(),
+                value: b"metadata".to_vec(),
+            }])
+            .unwrap_err();
+        assert_eq!(journal.dirty_blocks.len(), 0);
+        assert_eq!(journal.state().lookup(&inode_key()), None);
+        let end = journal.storage.bytes.len();
+        assert_eq!(
+            journal.commit(&[Mutation::Put {
+                key: inode_key(),
+                value: b"metadata".to_vec(),
+            }]),
+            Err(Errno::ENOSPC)
+        );
+        assert_eq!(journal.storage.bytes.len(), end);
+        journal.commit(&[]).unwrap();
+        let mut recovered = OverlayJournal::open(journal.into_storage(), [47; 32]).unwrap();
+        let mut visible = [0; 4];
+        recovered
+            .read_file_at(7, FILE_BLOCK_BYTES as u64, 0, &mut visible, |_, dst| {
+                dst.fill(0);
+                Ok(dst.len())
+            })
+            .unwrap();
+        assert_eq!(&visible, b"data");
     }
 
     #[test]

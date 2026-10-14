@@ -53,6 +53,8 @@ acknowledged chunk in flight, verifies the stored bytes, and publishes only
 from the boot that still owns the session, under one exclusive lock. The next
 installation reclaims abandoned generation files. Reopening uses positioned OPFS
 reads and a bounded clean cache; fixed overwrites use a bounded dirty cache.
+ABI 51, following main's networking ABI 50, adds the third host storage handle
+needed to compact an indexed journal while its checkpoint remains open.
 Writes spanning more than 64 cache blocks are split into bounded chunks;
 later writeback failure returns a short count rather than claiming the entire
 write succeeded. A 2 MiB guest `pwrite` followed by `fsync` survives a Node
@@ -93,7 +95,9 @@ so guest syscalls cannot interleave with handoff. Compaction failures are
 reported and retried after 30 seconds. Fixed-overwrite writes fail with
 `ENOSPC` once the active journal tail reaches 63 MiB; a reserved margin lets
 already accepted dirty blocks flush. This bounds the active tail even if
-compaction repeatedly fails. Fixed-overwrite compaction now copies records
+compaction repeatedly fails. Resizable namespace and metadata transactions
+obey the same write-stop limit; previously accepted dirty blocks can still
+flush. Fixed-overwrite compaction now copies records
 without retaining the target block map, then scans the compacted journal with
 bounded buffers to write its sorted checkpoint sidecar.
 Resizable mounts now journal regular-file, symlink, and directory namespace
@@ -238,7 +242,9 @@ the first such update to a base inode uses a versioned metadata-only record.
 Write and truncate timestamps are staged in memory and committed in batches
 on fsync, graceful shutdown, or compaction. Each sync scans resident rootfs
 inodes for modified content, so its cost still needs measurement on a large
-file-count image. Image
+file-count image. Session-injected files such as the browser CA bundle are
+not journal-backed and are deliberately excluded from timestamp writeback;
+they are recreated at boot. Image
 snapshot export rejects mounted persistence rather than silently exporting
 stale base bytes; exporting a consistent composed snapshot remains open.
 
