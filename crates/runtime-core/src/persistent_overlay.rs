@@ -392,7 +392,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     {
         let max_zero_block = i64::MAX as u64 / FILE_BLOCK_BYTES as u64 + 1;
         for (key, value) in &self.state.entries {
-            if matches!(key, OverlayKey::Dirent { .. }) {
+            if matches!(key, OverlayKey::Dirent { .. } | OverlayKey::Inode(_)) {
                 continue;
             }
             let value = value
@@ -2745,6 +2745,49 @@ mod tests {
                     old_end
                 }
             );
+        }
+    }
+
+    #[test]
+    fn every_torn_namespace_create_replays_both_records_or_neither() {
+        let digest = [47; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        let initial_end = journal.end as usize;
+        let inode = OverlayKey::Inode(7);
+        let dirent = directory_key(b"created");
+        journal
+            .commit(&[
+                Mutation::Put {
+                    key: inode.clone(),
+                    value: b"inode record".to_vec(),
+                },
+                Mutation::Put {
+                    key: dirent.clone(),
+                    value: 7u64.to_le_bytes().to_vec(),
+                },
+            ])
+            .unwrap();
+        let bytes = journal.into_storage().bytes;
+        for cut in initial_end..=bytes.len() {
+            let recovered = OverlayJournal::open(
+                MemoryStorage {
+                    bytes: bytes[..cut].to_vec(),
+                    ..MemoryStorage::default()
+                },
+                digest,
+            )
+            .unwrap();
+            if cut == bytes.len() {
+                assert_eq!(recovered.state().lookup(&inode), Some(Some(&b"inode record"[..])));
+                assert_eq!(
+                    recovered.state().lookup(&dirent),
+                    Some(Some(&7u64.to_le_bytes()[..]))
+                );
+            } else {
+                assert_eq!(recovered.state().lookup(&inode), None);
+                assert_eq!(recovered.state().lookup(&dirent), None);
+                assert_eq!(recovered.end as usize, initial_end);
+            }
         }
     }
 

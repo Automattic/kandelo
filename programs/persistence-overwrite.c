@@ -9,6 +9,47 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    int create_file = argc >= 2 && strcmp(argv[1], "create-file") == 0;
+    int verify_created = argc >= 2 && strcmp(argv[1], "verify-created") == 0;
+    int verify_created_shrunk = argc >= 2 && strcmp(argv[1], "verify-created-shrunk") == 0;
+    int verify_created_link = argc >= 2 && strcmp(argv[1], "verify-created-link") == 0;
+    if (create_file || verify_created || verify_created_shrunk || verify_created_link) {
+        off_t offset = 8LL * 1024 * 1024 * 1024 + 7;
+        if (create_file) {
+            int fd = open("/created", O_CREAT | O_EXCL | O_RDWR, 0640);
+            if (fd < 0) return 53;
+            if (pwrite(fd, "NEWW", 4, offset) != 4) return 54;
+            if (fsync(fd) != 0) return 55;
+            return close(fd) == 0 ? 0 : 56;
+        }
+        const char *path = verify_created_link ? "/created-link" : "/created";
+        int fd = open(path, verify_created ? O_RDWR | O_APPEND : O_RDONLY);
+        if (fd < 0) return 57;
+        struct stat metadata;
+        if (fstat(fd, &metadata) != 0) return 58;
+        if (verify_created) {
+            if (metadata.st_size != offset + 4) return 59;
+            if (write(fd, "!", 1) != 1) return 60;
+            if (fstat(fd, &metadata) != 0 || metadata.st_size != offset + 5) return 61;
+            unsigned char bytes[5];
+            if (pread(fd, bytes, sizeof(bytes), offset) != (ssize_t)sizeof(bytes)) return 62;
+            if (memcmp(bytes, "NEWW!", sizeof(bytes)) != 0) return 63;
+            if (ftruncate(fd, 3) != 0 || fsync(fd) != 0) return 64;
+        } else {
+            if (metadata.st_size != 3) return 65;
+            unsigned char bytes[3];
+            if (pread(fd, bytes, sizeof(bytes), 0) != (ssize_t)sizeof(bytes)) return 66;
+            if (memcmp(bytes, "\0\0\0", sizeof(bytes)) != 0) return 67;
+            if (verify_created_shrunk) {
+                if (link("/created", "/created-link") != 0) return 68;
+                if (rename("/created", "/created-moved") != 0) return 69;
+                if (unlink("/created-moved") != 0) return 70;
+            } else if (metadata.st_nlink != 1) {
+                return 71;
+            }
+        }
+        return close(fd) == 0 ? 0 : 72;
+    }
     int rename_state = argc >= 2 && strcmp(argv[1], "rename-state") == 0;
     int verify_rename = argc >= 2 && strcmp(argv[1], "verify-rename") == 0;
     int unlink_state = argc >= 2 && strcmp(argv[1], "unlink-state") == 0;
