@@ -154,8 +154,12 @@ after manifest selection, Node and browser workers now report that specific
 no-valid-generation condition through a typed initialization error. The page
 can retry boot with the verified prior image and its own composition rather
 than keeping machine settings from the failed image, then promote it before
-running guests. Other I/O errors and
-kernel `EIO` refusals still fail closed; this is not recovery from arbitrary
+running guests. Journal backend failures during kernel initialization now fail
+closed even when a host import mapped them to `EIO`; the host preserves the
+original exception rather than treating it as a corrupt sealed generation.
+An unexpected end of file remains a corrupt-generation signal, not a backend
+failure, so a truncated indexed checkpoint can still select the prior slot.
+Other kernel `EIO` refusals still fail closed; this is not recovery from arbitrary
 journal-record corruption. Focused Node and three-engine browser tests cover
 the typed error and prior-candidate boot. A full page retry race test is
 authored but remains unverified here because this workspace has no complete
@@ -229,7 +233,8 @@ the compacted prefix while the active journal may append later transactions;
 the kernel still validates and replays those transactions. If a slot is torn or
 its journal or indexed checkpoint is rejected with `EIO`, boot tries the
 previous valid slot and then the legacy journal. Other kernel refusals and
-errors thrown directly by the host propagate rather than triggering fallback.
+host backend failures, including errors mapped to kernel `EIO` imports,
+propagate rather than triggering fallback.
 If generation files exist without any valid journal, boot refuses to create
 or reuse an empty legacy journal as a replacement, even for a non-strict
 low-level caller. Node and Chromium, Firefox, and WebKit exercise that torn

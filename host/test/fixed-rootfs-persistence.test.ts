@@ -5,9 +5,12 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { CentralizedKernelWorker } from "../src/kernel-worker";
 import { NodeKernelHost } from "../src/node-kernel-host";
+import { NodePlatformIO } from "../src/platform/node";
+import { configureRootfsOverlayFromImage } from "../src/process-lifecycle";
 import { HostFileSystem } from "../src/vfs/host-fs";
-import { OverlayStorageFile } from "../src/vfs/overlay-storage";
+import { OverlayStorageFile, type PersistentOverlayStorage } from "../src/vfs/overlay-storage";
 import { writeOverlayGenerationSeal } from "../src/vfs/overlay-generation-seal";
 import { NoValidOverlayGenerationError } from "../src/vfs/overlay-generation-selection";
 
@@ -77,6 +80,48 @@ function expandJournalToCompactionThreshold(path: string): number {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
+  it.each(["fixed", "resizable"] as const)("preserves %s host storage failures instead of reporting a corrupt generation", async (mode) => {
+    const image = await makeImage("abcdefgh");
+    const worker = new CentralizedKernelWorker(
+      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      new NodePlatformIO(),
+    );
+    configureRootfsOverlayFromImage(worker, {
+      imageLength: image.byteLength,
+      imageRead: (offset, destination) => {
+        const bytes = image.subarray(offset, offset + destination.byteLength);
+        destination.set(bytes);
+        return bytes.byteLength;
+      },
+      foreignPrefixes: [],
+      nosuid: false,
+    });
+    const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
+    await worker.init(kernelBytes.buffer.slice(kernelBytes.byteOffset, kernelBytes.byteOffset + kernelBytes.byteLength));
+    const failure = Object.assign(new Error("injected host journal read failure"), { code: "EIO" });
+    const storage: PersistentOverlayStorage = {
+      len: () => 72,
+      readExactAt: () => { throw failure; },
+      writeAllAt: () => {},
+      flush: () => {},
+      truncate: () => {},
+      close: () => {},
+    };
+    const enable = () => mode === "fixed"
+      ? worker.enableFixedRootfsPersistence(storage)
+      : worker.enableResizableRootfsPersistence(storage);
+    let rejection: unknown;
+    try {
+      enable();
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error).message).toContain("persistent overlay host storage failed during kernel initialization");
+    expect((rejection as Error).message).toContain("injected host journal read failure");
+    expect((rejection as Error).cause).toBe(failure);
+  });
+
   it.skipIf(guestProgramPath === null)("refuses to reset a restored computer whose journal disappeared", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-missing-journal-"));
     const path = join(directory, "machine.journal");

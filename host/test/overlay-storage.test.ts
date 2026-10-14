@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { HostFileSystem } from "../src/vfs/host-fs";
-import { OpfsOverlayStorageFile, OverlayStorageFile } from "../src/vfs/overlay-storage";
+import { OpfsOverlayStorageFile, OverlayStorageFile, OverlayStorageUnexpectedEofError } from "../src/vfs/overlay-storage";
 import type { FileSystemBackend } from "../src/vfs/types";
 
 describe("OverlayStorageFile", () => {
@@ -64,7 +64,7 @@ describe("OverlayStorageFile", () => {
     const destination = new Uint8Array(5);
     storage.readExactAt(3n, destination);
     expect([...destination]).toEqual([5, 6, 7, 8, 9]);
-    expect(() => storage.readExactAt(7, new Uint8Array(2))).toThrow(/EIO/);
+    expect(() => storage.readExactAt(7, new Uint8Array(2))).toThrow(OverlayStorageUnexpectedEofError);
     expect(() => storage.writeAllAt(2 ** 53, Uint8Array.of(1))).toThrow(/EOVERFLOW/);
     storage.close();
     expect(() => storage.len()).toThrow(/EBADF/);
