@@ -52,6 +52,11 @@ import {
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroyOutcome } from "./kernel-realm-destroy";
+import {
+  acquireBrowserPersistenceComputerLease,
+  claimBrowserPersistenceComputerLease,
+  type BrowserPersistenceComputerLease,
+} from "./browser-persistence-computer-lease";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
@@ -177,6 +182,8 @@ export interface BrowserKernelBootOptions {
   experimentalFixedPersistenceName?: string;
   /** Opt-in resizable image-file persistence in a named OPFS journal. */
   experimentalResizablePersistenceName?: string;
+  persistentComputerName?: string;
+  persistenceComputerLease?: BrowserPersistenceComputerLease;
   requireExistingRootfsPersistence?: boolean;
   /** Kernel wasm bytes; if omitted, fetched from the bundled URL. */
   kernelWasm?: ArrayBuffer;
@@ -229,6 +236,8 @@ export interface BrowserKernelOwnedImageInitOptions {
   /** Opt-in fixed-size image-file overwrites in a named OPFS journal. */
   experimentalFixedPersistenceName?: string;
   experimentalResizablePersistenceName?: string;
+  persistentComputerName?: string;
+  persistenceComputerLease?: BrowserPersistenceComputerLease;
   requireExistingRootfsPersistence?: boolean;
   kernelWasm?: ArrayBuffer;
   /**
@@ -351,6 +360,7 @@ export class BrowserKernel {
   private workerStarting = false;
   private persistentJournalQuiescenceUnproven = false;
   private releasePersistentJournalLease: (() => Promise<void>) | null = null;
+  private releasePersistentComputerLease: (() => Promise<void>) | null = null;
   private initialized = false;
   private maxPages: number;
   private readonly memoryProfile: RuntimeMemoryProfile;
@@ -520,6 +530,8 @@ export class BrowserKernel {
   async initFromImage(options: {
     experimentalFixedPersistenceName?: string;
     experimentalResizablePersistenceName?: string;
+    persistentComputerName?: string;
+    persistenceComputerLease?: BrowserPersistenceComputerLease;
     requireExistingRootfsPersistence?: boolean;
     kernelWasm?: ArrayBuffer;
     vfsImage: Uint8Array | "default";
@@ -547,6 +559,8 @@ export class BrowserKernel {
       rootfsMountSpec: options.rootfsMountSpec,
       experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
       experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
+      persistentComputerName: options.persistentComputerName,
+      persistenceComputerLease: options.persistenceComputerLease,
       requireExistingRootfsPersistence: options.requireExistingRootfsPersistence,
       takeVfsImageOwnership: false,
     });
@@ -580,6 +594,8 @@ export class BrowserKernel {
       rootfsMountSpec: options.rootfsMountSpec,
       experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
       experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
+      persistentComputerName: options.persistentComputerName,
+      persistenceComputerLease: options.persistenceComputerLease,
       requireExistingRootfsPersistence: options.requireExistingRootfsPersistence,
       takeVfsImageOwnership: true,
     });
@@ -600,6 +616,8 @@ export class BrowserKernel {
       rootfsMountSpec: options.rootfsMountSpec,
       experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
       experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
+      persistentComputerName: options.persistentComputerName,
+      persistenceComputerLease: options.persistenceComputerLease,
       requireExistingRootfsPersistence: options.requireExistingRootfsPersistence,
       takeVfsImageOwnership: false,
     });
@@ -612,6 +630,8 @@ export class BrowserKernel {
   private async bootWorker(opts: {
     experimentalFixedPersistenceName?: string;
     experimentalResizablePersistenceName?: string;
+    persistentComputerName?: string;
+    persistenceComputerLease?: BrowserPersistenceComputerLease;
     requireExistingRootfsPersistence?: boolean;
     kernelWasmBytes: ArrayBuffer;
     vfsImage: Uint8Array;
@@ -648,19 +668,37 @@ export class BrowserKernel {
     }
     const journalName = opts.experimentalFixedPersistenceName ?? opts.experimentalResizablePersistenceName;
     let releaseJournalLease: (() => Promise<void>) | null = null;
+    let releaseComputerLease: (() => Promise<void>) | null = null;
     this.workerStarting = true;
     try {
+      if (journalName === undefined && (opts.persistentComputerName !== undefined || opts.persistenceComputerLease !== undefined)) {
+        throw new Error("persistent computer lease requires a journal");
+      }
+      if (opts.persistenceComputerLease !== undefined) {
+        if (opts.persistentComputerName !== undefined && opts.persistentComputerName !== opts.persistenceComputerLease.computerName) {
+          throw new Error("persistent computer lease names do not match");
+        }
+        const releaseClaim = claimBrowserPersistenceComputerLease(opts.persistenceComputerLease);
+        releaseComputerLease = async () => { releaseClaim(); };
+      } else if (opts.persistentComputerName !== undefined) {
+        releaseComputerLease = await acquireBrowserPersistenceComputerLease(opts.persistentComputerName);
+      }
       releaseJournalLease = journalName === undefined
         ? null
         : await acquirePersistentJournalLease(journalName);
       this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
     } catch (error) {
       this.workerStarting = false;
-      await releaseJournalLease?.();
+      try {
+        await releaseJournalLease?.();
+      } finally {
+        await releaseComputerLease?.();
+      }
       throw error;
     }
     this.workerStarting = false;
     this.releasePersistentJournalLease = releaseJournalLease;
+    this.releasePersistentComputerLease = releaseComputerLease;
     this.workerStarted = true;
 
     this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
@@ -1876,8 +1914,14 @@ export class BrowserKernel {
     this.workerStarted = realmTerminationFailure !== undefined;
     if (!this.workerStarted && !this.persistentJournalQuiescenceUnproven) {
       const releaseJournalLease = this.releasePersistentJournalLease;
+      const releaseComputerLease = this.releasePersistentComputerLease;
       this.releasePersistentJournalLease = null;
-      await releaseJournalLease?.();
+      this.releasePersistentComputerLease = null;
+      try {
+        await releaseJournalLease?.();
+      } finally {
+        await releaseComputerLease?.();
+      }
     }
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();

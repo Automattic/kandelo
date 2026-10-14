@@ -111,9 +111,12 @@ out, page teardown retains the computer lease even after calling
 `Worker.terminate()`: browser termination has no join acknowledgement, so a
 same-page restart cannot prove the old writer stopped. The tab must close to
 release this fail-closed lease; fallback boot cannot launch a second generation.
-Low-level kernel callers do not yet acquire that per-computer runtime lease.
-BrowserKernel also holds a second exclusive Web Lock on the exact journal
-namespace from before worker initialization through an acknowledged storage
+The page passes its lease to BrowserKernel as an in-process claim, so kernel
+initialization cannot release it while a worker still owns the computer.
+Low-level callers can opt into the same per-computer Web Lock by supplying a
+computer name; callers that omit both a name and a lease remain uncoordinated
+across journal namespaces. BrowserKernel also holds a second exclusive Web Lock
+on the exact journal namespace from before worker initialization through an acknowledged storage
 close and worker termination, including low-level callers. A competing
 same-journal browser kernel fails before opening storage. Pre-ready init
 failure releases the lock after worker termination; a missing destroy response
@@ -125,10 +128,10 @@ the old tab refuses same-journal boots after the timeout, and a new tab can
 reopen the journal after the old tab closes.
 Concurrent initialization on one BrowserKernel is rejected before it can
 overwrite the first worker handle. This does not exclude
-low-level writers using different journal namespaces for the same computer.
-Replacement publication refuses while a page holds the computer lease, but
-cannot detect such unleased writers. Callers must quiesce the old kernel before
-taking a snapshot and both kernels before publication; manifest Web Locks alone
+low-level writers that omit a computer identity or use different names for
+the same computer. Replacement publication refuses while a page holds the
+computer lease, but cannot detect such unleased writers. Callers must quiesce
+the old kernel before taking a snapshot and both kernels before publication; manifest Web Locks alone
 do not stop guest journal writes.
 Later journal-record corruption is still handled by the
 kernel's recovery rules, not by cross-generation fallback. The page does not

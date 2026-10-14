@@ -1616,6 +1616,60 @@ describe("BrowserKernel", () => {
     }
   });
 
+  it("shares a page computer lease with its kernel and blocks another journal namespace", async () => {
+    const held = stubPersistenceWebLocks();
+    const { acquireBrowserPersistenceComputerLease } = await import("../src/browser-persistence-computer-lease");
+    const BrowserKernel = await loadBrowserKernel();
+    const lease = await acquireBrowserPersistenceComputerLease("shared-computer");
+    const options = {
+      kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle,
+      experimentalFixedPersistenceName: "first-computer-journal",
+      persistentComputerName: "shared-computer",
+      persistenceComputerLease: lease,
+    };
+    const first = new BrowserKernel({ kernelOwnedFs: true });
+    const initialization = first.initFromOpfsImage(options);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
+    MockWorker.instances[0]!.simulateMessage({ type: "ready" });
+    await initialization;
+    await expect(lease()).rejects.toThrow("still owned by a kernel");
+
+    const competing = new BrowserKernel({ kernelOwnedFs: true });
+    const otherJournal = { ...options, experimentalFixedPersistenceName: "second-computer-journal", persistenceComputerLease: undefined };
+    await expect(competing.initFromOpfsImage(otherJournal)).rejects.toThrow("computer is already running");
+    expect(MockWorker.instances).toHaveLength(1);
+    (first as unknown as { request(): Promise<{ gracefulDetachComplete: true }> }).request =
+      vi.fn(async () => ({ gracefulDetachComplete: true }));
+    await first.destroy();
+    await expect(competing.initFromOpfsImage(otherJournal)).rejects.toThrow("computer is already running");
+    await lease();
+
+    const retry = competing.initFromOpfsImage(otherJournal);
+    await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
+    MockWorker.instances[1]!.simulateMessage({ type: "ready" });
+    await retry;
+    (competing as unknown as { request(): Promise<{ gracefulDetachComplete: true }> }).request =
+      vi.fn(async () => ({ gracefulDetachComplete: true }));
+    await competing.destroy();
+    expect(held.size).toBe(0);
+  });
+
+  it("does not let an old kernel claim release a newer computer lease claim", async () => {
+    const held = stubPersistenceWebLocks();
+    const { acquireBrowserPersistenceComputerLease, claimBrowserPersistenceComputerLease } =
+      await import("../src/browser-persistence-computer-lease");
+    const lease = await acquireBrowserPersistenceComputerLease("claim-generation");
+    const releaseOldClaim = claimBrowserPersistenceComputerLease(lease);
+    releaseOldClaim();
+    const releaseNewClaim = claimBrowserPersistenceComputerLease(lease);
+    releaseOldClaim();
+    await expect(lease()).rejects.toThrow("still owned by a kernel");
+    releaseNewClaim();
+    await lease();
+    expect(held.size).toBe(0);
+  });
+
   it("releases a journal lease after an acknowledged storage close with other teardown errors", async () => {
     const held = stubPersistenceWebLocks();
     const BrowserKernel = await loadBrowserKernel();
