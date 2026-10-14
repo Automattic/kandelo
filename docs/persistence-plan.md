@@ -113,9 +113,9 @@ same-page restart cannot prove the old writer stopped. The tab must close to
 release this fail-closed lease; fallback boot cannot launch a second generation.
 The page passes its lease to BrowserKernel as an in-process claim, so kernel
 initialization cannot release it while a worker still owns the computer.
-Low-level callers can opt into the same per-computer Web Lock by supplying a
-computer name; callers that omit both a name and a lease remain uncoordinated
-across journal namespaces. BrowserKernel also holds a second exclusive Web Lock
+Low-level persistent callers must supply a computer name or a claimed page
+lease; BrowserKernel refuses a journal without either. Supplying a name acquires
+the per-computer Web Lock. BrowserKernel also holds a second exclusive Web Lock
 on the exact journal namespace from before worker initialization through an acknowledged storage
 close and worker termination, including low-level callers. A competing
 same-journal browser kernel fails before opening storage. Pre-ready init
@@ -128,9 +128,9 @@ the old tab refuses same-journal boots after the timeout, and a new tab can
 reopen the journal after the old tab closes.
 Concurrent initialization on one BrowserKernel is rejected before it can
 overwrite the first worker handle. This does not exclude
-low-level writers that omit a computer identity or use different names for
-the same computer. Replacement publication refuses while a page holds the
-computer lease, but cannot detect such unleased writers. Callers must quiesce
+low-level writers that use different names for the same computer. Replacement
+publication refuses while a page holds the computer lease, but cannot detect
+writers using a different identity. Callers must quiesce
 the old kernel before taking a snapshot and both kernels before publication; manifest Web Locks alone
 do not stop guest journal writes.
 Later journal-record corruption is still handled by the

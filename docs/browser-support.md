@@ -261,8 +261,9 @@ pipe pair.
   terminates; a timed-out destroy retains the lock until the tab closes.
   The page also leases the computer name across boot and kernel lifetime and
   passes that lease into BrowserKernel. Low-level callers can acquire the same
-  computer lock by naming the computer; callers that omit or misname it can
-  still fork one computer across different journal names.
+  computer lock by naming the computer. BrowserKernel refuses persistent boot
+  without a computer name or claimed page lease; callers that misname the
+  computer can still fork it across different journal names.
   Larger guest writes are split into cache-sized chunks and
   may return a short count after a later writeback failure. Browser termination
   loses unsynced writes without changing

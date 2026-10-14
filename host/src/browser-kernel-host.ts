@@ -674,6 +674,9 @@ export class BrowserKernel {
       if (journalName === undefined && (opts.persistentComputerName !== undefined || opts.persistenceComputerLease !== undefined)) {
         throw new Error("persistent computer lease requires a journal");
       }
+      if (journalName !== undefined && opts.persistentComputerName === undefined && opts.persistenceComputerLease === undefined) {
+        throw new Error("browser rootfs persistence requires a computer name or lease");
+      }
       if (opts.persistenceComputerLease !== undefined) {
         if (opts.persistentComputerName !== undefined && opts.persistentComputerName !== opts.persistenceComputerLease.computerName) {
           throw new Error("persistent computer lease names do not match");

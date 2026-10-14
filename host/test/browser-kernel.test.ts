@@ -1518,6 +1518,17 @@ describe("BrowserKernel", () => {
     ]);
   });
 
+  it("requires a computer identity for browser rootfs persistence", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    await expect(kernel.initFromOpfsImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImageFile: {} as FileSystemFileHandle,
+      experimentalFixedPersistenceName: "unnamed-computer-journal",
+    })).rejects.toThrow("requires a computer name or lease");
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
   it("holds a persistent journal lease until its worker realm terminates", async () => {
     const held = stubPersistenceWebLocks();
     const BrowserKernel = await loadBrowserKernel();
@@ -1525,6 +1536,7 @@ describe("BrowserKernel", () => {
       kernelWasm: new ArrayBuffer(8),
       vfsImageFile: {} as FileSystemFileHandle,
       experimentalFixedPersistenceName: "journal-lease-probe",
+      persistentComputerName: "journal-lease-probe",
     };
     const first = new BrowserKernel({ kernelOwnedFs: true });
     const initialBoot = first.initFromOpfsImage(options);
@@ -1539,7 +1551,8 @@ describe("BrowserKernel", () => {
     await expect(first.initFromOpfsImage(options)).rejects.toThrow("already running");
 
     const competing = new BrowserKernel({ kernelOwnedFs: true });
-    await expect(competing.initFromOpfsImage(options)).rejects.toThrow("journal is already open");
+    const competingOptions = { ...options, persistentComputerName: "other-journal-lease-computer" };
+    await expect(competing.initFromOpfsImage(competingOptions)).rejects.toThrow("journal is already open");
     expect(MockWorker.instances).toHaveLength(1);
 
     const testable = first as unknown as {
@@ -1552,7 +1565,7 @@ describe("BrowserKernel", () => {
     await first.destroy();
     expect(testable.workerStarted).toBe(true);
     expect(first.hasUnconfirmedKernelQuiescence()).toBe(true);
-    await expect(competing.initFromOpfsImage(options)).rejects.toThrow("journal is already open");
+    await expect(competing.initFromOpfsImage(competingOptions)).rejects.toThrow("journal is already open");
 
     firstWorker.terminate = () => { firstWorker.terminated = true; };
     await first.destroy();
@@ -1560,7 +1573,7 @@ describe("BrowserKernel", () => {
     expect(first.hasUnconfirmedKernelQuiescence()).toBe(false);
     expect(held.size).toBe(0);
 
-    const retry = competing.initFromOpfsImage(options);
+    const retry = competing.initFromOpfsImage(competingOptions);
     await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(2));
     MockWorker.instances[1]!.simulateMessage({ type: "ready" });
     await retry;
@@ -1585,6 +1598,7 @@ describe("BrowserKernel", () => {
       kernelWasm: new ArrayBuffer(8),
       vfsImageFile: {} as FileSystemFileHandle,
       experimentalFixedPersistenceName: "timed-out-journal",
+      persistentComputerName: "timed-out-journal",
     };
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
     const initialization = kernel.initFromOpfsImage(options);
@@ -1610,7 +1624,7 @@ describe("BrowserKernel", () => {
       expect(kernel.hasUnconfirmedKernelQuiescence()).toBe(true);
       await expect(kernel.initFromOpfsImage(options)).rejects.toThrow("already running");
       const competing = new BrowserKernel({ kernelOwnedFs: true });
-      await expect(competing.initFromOpfsImage(options)).rejects.toThrow("journal is already open");
+      await expect(competing.initFromOpfsImage({ ...options, persistentComputerName: "other-timed-out-computer" })).rejects.toThrow("journal is already open");
     } finally {
       vi.useRealTimers();
     }
@@ -1678,6 +1692,7 @@ describe("BrowserKernel", () => {
       kernelWasm: new ArrayBuffer(8),
       vfsImageFile: {} as FileSystemFileHandle,
       experimentalFixedPersistenceName: "acknowledged-journal",
+      persistentComputerName: "acknowledged-journal",
     });
     await vi.waitFor(() => expect(MockWorker.instances).toHaveLength(1));
     MockWorker.instances[0]!.simulateMessage({ type: "ready" });
