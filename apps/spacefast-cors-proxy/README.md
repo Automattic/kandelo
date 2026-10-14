@@ -1,7 +1,7 @@
 # Kandelo CORS proxy for Spacefast
 
-A standalone Spacefast Functions worker implementing the Playground CORS
-proxy protocol. Authentication and publication are deliberately deferred.
+A Spacefast Functions worker implementing the Playground CORS proxy
+protocol. It can run alone or beside a Kandelo production build.
 The production entry is `handler.ts`; `sf.jsonc` declares the Functions
 runtime. There are no runtime npm dependencies or Node imports.
 
@@ -96,10 +96,17 @@ destination compatibility is not claimed.
 
 ## Configuration
 
-Like Playground, the default fails closed with 503 until rate limiting has
-been addressed. Supply a durable limiter using `createCorsProxy({ rateLimit })`
-in the entry module. It returns a denial Response (for example 429 with
-Retry-After), or void to admit. A limiter failure returns 503.
+The entry module uses Spacefast's `env.DB` binding for a durable, Space-wide
+budget of 600 requests per database-clock minute. It creates its own MySQL
+counter table, increments atomically across isolates, and retains only the
+current and preceding minute. Concurrent reads can conservatively deny an
+earlier increment but cannot increase the budget. Delayed requests cannot
+use an expired window. OPTIONS does not consume the budget. A denial is 429
+with `Retry-After: 60`; a missing or failing database is 503. The SQL/broker
+behavior is covered locally by contract fixtures and remains unverified live.
+
+The reusable core also accepts `createCorsProxy({ rateLimit })` for an
+alternative durable limiter. It returns a denial Response, or void to admit.
 
 Alternatively, explicitly set `CORS_PROXY_DISABLE_RATE_LIMIT` to `true` or `1`
 in the deployment environment. This is an operator choice; the repository
@@ -117,18 +124,36 @@ cross-origin grants; the proxy's own origin remains supported. The origin
 rules control browser CORS grants, not non-browser access; deployment access
 control and rate limiting remain separate.
 
-For Kandelo, use the future proxy origin with `VITE_CORS_PROXY_URL`, for example
-`https://your-proxy.example/?url=`. Its existing range alias profile works with
-this implementation. The canonical `./run.sh build-browser` currently enters
-an isolated dev shell that does not preserve this environment variable, so
-deployment integration must pass it explicitly inside the production build
-command. This change does not select a proxy URL or alter the existing build.
+For Kandelo, pass the proxy prefix with `./run.sh build-browser --cors-proxy
+URL`. This explicitly carries `VITE_CORS_PROXY_URL` into the clean development
+shell. Its existing range alias profile works with this implementation.
 
 Publish a generated bundle and `sf.jsonc`, not this source directory's tests,
 fixture keys or local output. A root worker claims the whole site; deploy it
-as its own proxy Space. If later colocated with Kandelo, use a file-router
-entry at a non-underscore route and update the configured proxy prefix.
-Authentication, access settings and publication are outside this draft.
+as its own proxy Space. The combined build below instead uses a file-router
+entry, so only `/cors-proxy` and its descendants wake the worker. Static
+files keep their normal serving path. Live Spacefast socket admission and database behavior still
+need verification before claiming a functioning deployment.
+
+### Combined Kandelo site
+
+Build the app with the same-origin proxy, then package the generated output:
+
+```sh
+./run.sh build-browser --base / --out .context/kandelo-spacefast-static \
+  --cors-proxy '/cors-proxy?url='
+scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
+  .context/kandelo-spacefast-static
+```
+
+The second command prints a unique `.context/spacefast-kandelo-build-*`
+directory. It contains the static app, a bundled
+`functions/cors-proxy/[...rest].mjs`,
+`sf.jsonc` and the COOP/COEP/CORP response headers required for shared memory.
+Publish that directory through the Functions-aware Spacefast publishing flow.
+The packager rejects symlinks, dotenv files, dependency/auth directories and
+the private VFS product map. It does not copy test files or fixture keys.
+Keep the Space's access settings private unless public access is requested.
 
 Create the publishable output using the repository's existing esbuild tool:
 
@@ -161,4 +186,4 @@ certificate trust and hostname mismatch without contacting the public network.
 Mock transports cover protocol edge cases independently.
 
 This is local code/transport evidence, not a Spacefast gateway integration
-test. Live Spacefast validation remains deferred with authentication.
+test. Live socket admission and database-broker behavior remain unverified.

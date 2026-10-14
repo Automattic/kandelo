@@ -2348,14 +2348,16 @@ only when building a deployable directory-scoped distribution.
 ### Directory-scoped production hosting
 
 The standalone [`apps/spacefast-cors-proxy`](../apps/spacefast-cors-proxy/README.md)
-draft implements the Playground proxy protocol for Spacefast Functions,
+implements the Playground proxy protocol for Spacefast Functions,
 including the range alias used by this browser app. It owns DNS validation
 and pins TCP/TLS connections to validated public addresses rather than fetching
 the target hostname through the platform gateway. Its local tests include real
 TCP/TLS fixtures; live Spacefast socket admission is unverified. Cloudflare
 socket destination restrictions can prevent access to hosts reached by the
-existing PHP proxy. Authentication, publication and switching this browser
-app's proxy are deferred.
+existing PHP proxy. Its entry uses the Space's database for a shared request
+budget; live SQL/broker behavior also remains unverified. The app's build
+command can select this proxy explicitly, and its packager can colocate the
+app and `/cors-proxy` in one Space. See that app's README for the commands.
 
 A production build owns one normalized absolute deployment prefix. Build and
 host the output with the same value: output built with `VITE_BASE=/a/` must be
@@ -2363,10 +2365,15 @@ served at `/a/`, and output built with `VITE_BASE=/candidate-b/` must be served
 at `/candidate-b/`. A completed build is not freely relocatable, and
 `base: "./"` is not a supported substitute for choosing its public path.
 
-`./run.sh build-browser [--base /prefix/] [--out DIR]` performs every step
+`./run.sh build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL]` performs every step
 below for one prefix (default `/`, output `apps/browser-demos/dist`) and
 fails if the output lacks `index.html`, `service-worker.js`, or the VFS
 group, or contains the private product map.
+
+`--cors-proxy` sets the production `VITE_CORS_PROXY_URL` explicitly inside
+the clean development shell. It accepts an absolute proxy prefix or a
+same-origin prefix such as `/cors-proxy?url=`. Without it, the existing
+Playground production default is retained.
 
 The SourceOnly local DAG described in
 [Package Management](package-management.md#local-dag-build) is the canonical

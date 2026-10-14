@@ -1,5 +1,6 @@
 import { validateTarget } from "./network-policy.ts";
 import { createPinnedFetch } from "./pinned-fetch.ts";
+import type { ProxyDatabase } from "./rate-limit.ts";
 
 /**
  * Playground-compatible HTTP relay for Spacefast Functions.
@@ -16,6 +17,7 @@ export type OriginRule =
   | { type: "match-subdomain"; scheme: "http" | "https"; host: string; port: number | null };
 
 export interface ProxyEnvironment {
+  DB?: ProxyDatabase;
   CUSTOM_SUPPORTED_ORIGINS_SPACE_SEPARATED?: string;
   CORS_PROXY_DISABLE_RATE_LIMIT?: string;
 }

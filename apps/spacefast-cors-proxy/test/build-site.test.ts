@@ -1,0 +1,56 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const execute = promisify(execFile);
+const builder = fileURLToPath(new URL("../build-site.mjs", import.meta.url));
+async function fixture() {
+  const root = await mkdtemp(join(tmpdir(), "kandelo-spacefast-site-"));
+  await writeFile(join(root, "index.html"), "<h1>Kandelo</h1>");
+  await writeFile(join(root, "service-worker.js"), "// built worker");
+  await mkdir(join(root, "vfs-groups"));
+  await writeFile(join(root, "vfs-groups", "manifest.json"), "{}");
+  return root;
+}
+
+test("site packager preserves the built app and emits a compiled file-router handler", async t => {
+  const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
+  const { stdout } = await execute(process.execPath, [builder, root]);
+  const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
+  assert.deepEqual((await readdir(output)).sort(), ["_headers", "functions", "index.html", "service-worker.js", "sf.jsonc", "vfs-groups"]);
+  assert.deepEqual(await readdir(join(output, "functions")), ["cors-proxy"]);
+  assert.deepEqual(await readdir(join(output, "functions", "cors-proxy")), ["[...rest].mjs"]);
+  assert.equal(await readFile(join(output, "index.html"), "utf8"), "<h1>Kandelo</h1>");
+  assert.equal(await readFile(join(output, "vfs-groups", "manifest.json"), "utf8"), "{}");
+  const config = JSON.parse(await readFile(join(output, "sf.jsonc"), "utf8"));
+  assert.equal(config.runtime.kind, "functions"); assert.equal(config.runtime.entry, undefined);
+  const headers = await readFile(join(output, "_headers"), "utf8");
+  for (const line of ["Cross-Origin-Opener-Policy: same-origin", "Cross-Origin-Embedder-Policy: require-corp", "Cross-Origin-Resource-Policy: same-origin"]) assert.ok(headers.includes(line));
+  const workerPath = join(output, "functions", "cors-proxy", "[...rest].mjs");
+  const worker = await readFile(workerPath, "utf8");
+  assert.ok(worker.includes('import("cloudflare:sockets")'));
+  assert.ok(!/node:|BEGIN PRIVATE KEY/.test(worker));
+  const { default: route } = await import(pathToFileURL(workerPath).href);
+  const preflight = await route(new Request("https://site.example/cors-proxy", { method: "OPTIONS" }), { env: {} });
+  assert.equal(preflight.status, 204);
+  const unconfigured = await route(new Request("https://site.example/cors-proxy"), { env: {} });
+  assert.equal(unconfigured.status, 503);
+});
+
+test("site packager rejects private build inputs and symlinks", async t => {
+  for (const forbidden of [".env.local", "pages-vfs-products.private.json", ".git", ".spacefast", "node_modules"]) {
+    const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
+    await writeFile(join(root, forbidden), "private input");
+    await assert.rejects(execute(process.execPath, [builder, root]), /Not a publishable build/);
+  }
+  const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
+  await symlink(join(root, "index.html"), join(root, "linked.html"));
+  await assert.rejects(execute(process.execPath, [builder, root]), /Not a publishable build/);
+  await rm(join(root, "service-worker.js"));
+  await assert.rejects(execute(process.execPath, [builder, root]), /ENOENT/);
+});
