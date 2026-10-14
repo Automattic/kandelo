@@ -126,9 +126,10 @@ the host does not yet pass a selected index to the kernel, so this v2 path is
 not yet the normal boot format or a semantic index-validation guarantee. A
 Rust-only indexed open now verifies the journal prefix, replays only later
 transactions, reads older blocks through the table's bounded page cache, and
-merges the table with later mutations during compaction. This still scans the
-entire prefix to verify its digest and does not bound an active journal's tail
-without live compaction.
+merges the table with later mutations during compaction. Focused tests reject
+damaged prefix and committed-tail bytes while truncating an incomplete tail.
+This still scans the entire prefix to verify its digest and does not bound an
+active journal's tail without live compaction.
 
 Live compaction needs a two-phase handoff, unlike the current boot-only
 handoff. While guest operations are stopped at a kernel-worker boundary, copy
