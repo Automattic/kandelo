@@ -178,11 +178,24 @@ unindexed journal still needs its initial full-map recovery before conversion.
 Small legacy and v1 journals continue to use the full-memory map until they
 cross the boot-time compaction threshold; no conversion silently resets them.
 
+Compacted resizable generations now write a version 3 checkpoint with a
+sorted, checksummed metadata table in the same sidecar as the block table.
+Its fixed-size records locate current inode, size, zero-fence, and dirent
+values in the authenticated journal; deleted records are tombstones. The
+table is streamed from compacted transactions with bounded buffers and
+searched through one cached page. Indexed boot verifies its order, checksum,
+and values against replayed metadata, rejecting a self-consistent table that
+points to the wrong journal bytes. Versions 1 and 2 remain readable. This is
+format groundwork, not yet a bounded metadata boot: replay still builds the
+entire metadata map, and the resident rootfs inode/directory tree also scales
+with namespace size. The 280-byte fixed metadata record adds sidecar space;
+its size and compaction pause need measurement before general release.
+
 The live handoff now uses that third handle and a dedicated kernel-worker turn.
 The fixed-overwrite checkpoint is streamed, but its worst-case memory and
 handoff pause duration have not been validated for an actually large writable
-image. General POSIX mutation replay also needs a checkpoint design for
-metadata, not just file blocks.
+image. General POSIX mutation replay still needs to consume metadata from
+the new checkpoint without materializing every record in the overlay map.
 Indexed boot validates block references against a temporary sorted table of
 eligible image-file sizes, rather than walking every rootfs inode for each
 checkpoint block. The table uses memory proportional to eligible files, not
