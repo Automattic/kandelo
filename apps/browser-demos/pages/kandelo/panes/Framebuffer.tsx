@@ -42,6 +42,12 @@ import {
 } from "./TouchControls";
 
 const FRAMEBUFFER_REBIND_TIMEOUT_MS = 10_000;
+const CAPTURE_LABELS = [
+  "mouse locked · Esc to release",
+  "captured · click locks mouse",
+  "click to play",
+  "waiting for /dev/fb0",
+] as const;
 
 export interface FramebufferProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
@@ -320,16 +326,17 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     touchTapRef.current = null;
   };
   const captureLabel = mouseCaptured
-    ? "mouse locked · Esc to release"
+    ? CAPTURE_LABELS[0]
     : focused
-    ? "captured · click locks mouse"
-    : boundPid !== null ? "click to play" : "waiting for /dev/fb0";
+    ? CAPTURE_LABELS[1]
+    : boundPid !== null ? CAPTURE_LABELS[2] : CAPTURE_LABELS[3];
   const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, 16 / 10);
   const busy = ingestPhase !== null;
   const dockControls = React.useMemo(() => (
     <DemoSurfaceDockControls
       title={`FRAMEBUFFER · /DEV/FB0${boundPid !== null ? ` · pid ${boundPid}` : ""}`}
       status={captureLabel}
+      reserve={CAPTURE_LABELS}
       active={focused || mouseCaptured}
     >
       {dockActions.controls}
@@ -458,18 +465,31 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   );
 };
 
+/**
+ * The display pane's dock row. The badge sits right of the actions, so a
+ * badge that changes width moves every action button. `reserve` lists every
+ * message the badge can show; the badge keeps the width of the widest, so
+ * focusing a button (which changes the focus message) cannot slide it away
+ * from the pointer.
+ */
 export const DemoSurfaceDockControls: React.FC<{
   title: string;
   status: string;
+  reserve?: readonly string[];
   active?: boolean;
   children?: React.ReactNode;
-}> = ({ title, status, active = false, children }) => (
+}> = ({ title, status, reserve = [], active = false, children }) => (
   <div className="kdemo-surface-controls">
     <span className="kdemo-surface-title">{title}</span>
     <span className="kdemo-surface-spacer" />
     {children}
     <span className="kdemo-surface-badge" data-active={active ? "true" : "false"}>
-      {status}
+      <span className="kdemo-surface-badge-text">{status}</span>
+      {reserve.map((text) => (
+        <span key={text} className="kdemo-surface-badge-text" data-reserve="true" aria-hidden="true">
+          {text}
+        </span>
+      ))}
     </span>
   </div>
 );
