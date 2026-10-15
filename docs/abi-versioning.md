@@ -1674,7 +1674,7 @@ added before anything shipped under the number:
   address, and a null `ifa_addr` for an interface without an address. It
   reports no `AF_PACKET` or IPv6 entries, because the kernel models neither
   on these interfaces.
-### ABI 51 persistent overlay compaction storage
+### ABI 53 persistent overlay compaction storage
 
 The kernel now requires `env.host_overlay_compaction_len`,
 `env.host_overlay_compaction_read`, `env.host_overlay_compaction_write`,
@@ -1687,7 +1687,13 @@ same signed-length and negative-errno conventions as the existing overlay
 storage families. Adding required Wasm imports is incompatible with older
 host adapters, so this is a new ABI epoch even though guest syscall numbers
 and marshalling are unchanged. Programs, packages, and ABI-bound VFS images
-must be rebuilt for ABI 51.
+must be rebuilt for ABI 53.
+
+Within ABI 53, `sync()` and `syncfs(fd)` no longer acknowledge a persistent
+rootfs journal without flushing it. `syncfs` also validates its descriptor and
+returns `ENOTSUP` for host-mounted filesystems, which do not expose a mount-wide
+sync operation. The syscall numbers and marshalling are unchanged, but the
+guest-visible behavior differs from ABI 52.
 
 ### ABI 52 heap safepoints in the syscall wait
 

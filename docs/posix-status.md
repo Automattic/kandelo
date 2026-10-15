@@ -245,7 +245,7 @@ to a different directory than the original OFD.
 | `access()` | Partial | Resolves the pathname component-wise and checks traversal plus target permissions with real credentials. `faccessat(..., AT_EACCESS)` selects effective credentials. Both use effective GID and the process's complete supplementary-group membership for group checks. |
 | `realpath()` | Full | Uses the global component walker against cwd, including mount crossings and relative or absolute symlinks; `missing/..` fails instead of being collapsed lexically, trailing slash requires a directory, and more than 40 symlinks returns ELOOP. |
 | `symlink()` / `readlink()` | Partial | Served in the kernel for `/` (the in-kernel root filesystem built from the VFS image) and the scratch mounts (in-kernel tmpfs); host-delegated only under a host-mounted directory. Symlink target stored as-is, linkpath resolved. |
-| `sync()` / `syncfs()` | Stub | Returns 0 (no-op). Filesystem sync managed by host. |
+| `sync()` / `syncfs()` | Partial | `sync()` flushes the persistent rootfs journal; guest-visible errors from the underlying storage can still only be observed with `fsync`, `fdatasync`, or `syncfs`. `syncfs(fd)` validates an open regular-file or directory descriptor, flushes the rootfs journal for rootfs descriptors, and succeeds for memory-backed tmpfs. Neither call forces an unpublished sole-writer `MAP_SHARED` store into the journal; `msync(MS_SYNC)` does. A host-mounted filesystem has no mount-wide sync adapter and returns `ENOTSUP` rather than pretending that syncing one file covers its mount. `sync()` does not yet flush host-mounted filesystems. |
 | `sync_file_range()` | Stub | Returns 0 (no-op). |
 | `chroot()` | Stub | Returns EPERM. No filesystem namespace isolation. |
 | `mount()` / `umount2()` | Stub | Returns ENOSYS: syscalls 266 and 267 reach the kernel's unimplemented-syscall stub arm. The distinction from EPERM matters: EPERM tells a caller it lacks permission and may retry with privilege, while ENOSYS tells it the call does not exist. Mounts are configured by the host at boot (the Node and browser hosts' default mounts plus `extraMounts`); there is no guest-initiated runtime mount path, and no shipped guest calls `mount()`. |
@@ -787,7 +787,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - **Kernel syscalls:** rt_sigtimedwait, preadv/pwritev, sendfile, statx
 - **Scheduler stubs:** sched_getparam/setparam/getscheduler/setscheduler/priorities/affinity (9 syscalls)
 - **File I/O extensions:** preadv2/pwritev2, fallocate, copy_file_range, splice/tee/vmsplice, readahead
-- **Filesystem stubs:** sync/syncfs, chroot, mount/umount2, mknod/mknodat, renameat2, faccessat2/fchmodat2
+- **Filesystem stubs:** sync_file_range, chroot, mount/umount2, mknod/mknodat, renameat2, faccessat2/fchmodat2
 - **Time stubs:** clock_settime, settimeofday, adjtimex, utimes/futimesat
 - **Process stubs:** fork/vfork/clone (ENOSYS), execve/execveat, personality, unshare/setns
 - **Event stubs:** eventfd2, signalfd4, timerfd_*, inotify_*, fanotify_*
