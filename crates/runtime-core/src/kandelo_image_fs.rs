@@ -18,7 +18,9 @@ use wasm_posix_shared::Errno; // same import syscalls.rs uses
 
 const VFSI_MAGIC: u32 = 0x5646_5349; // "VFSI" LE
 const VFSI_VERSION: u32 = 1;
+const VFSI_EXTENDED_VERSION: u32 = 2;
 const VFSI_HEADER: usize = 16;
+const VFSI_EXTENDED_HEADER: usize = 24;
 
 /// A positioned, read-only byte source for one image.
 ///
@@ -113,21 +115,30 @@ fn container_errno(error: Errno) -> Errno {
 
 /// Byte span of the inner KIFS filesystem inside a VFSI container.
 ///
-/// The container is `magic | version | flags | sabLen | sab[sabLen] | ...`;
-/// everything after the SAB is host-side metadata (see [`kernel_lazy_span`]).
+/// Version 1 stores a 32-bit body length in a 16-byte header. Version 2
+/// stores a 64-bit body length after its 24-byte header size field.
+/// Everything after the body is host-side metadata (see [`kernel_lazy_span`]).
 pub fn kandelo_image_span(source: &impl BlockSource) -> Result<(u64, u64), Errno> {
     if source_u32(source, 0).map_err(container_errno)? != VFSI_MAGIC {
         return Err(Errno::EINVAL);
     }
-    if source_u32(source, 4).map_err(container_errno)? != VFSI_VERSION {
-        return Err(Errno::EINVAL);
-    }
-    let sab_len = source_u32(source, 12).map_err(container_errno)? as u64;
-    let end = (VFSI_HEADER as u64).checked_add(sab_len).ok_or(Errno::EINVAL)?;
+    let (body_offset, sab_len) = match source_u32(source, 4).map_err(container_errno)? {
+        VFSI_VERSION => (VFSI_HEADER as u64, source_u32(source, 12).map_err(container_errno)? as u64),
+        VFSI_EXTENDED_VERSION => {
+            if source_u32(source, 12).map_err(container_errno)? != VFSI_EXTENDED_HEADER as u32 {
+                return Err(Errno::EINVAL);
+            }
+            let mut length = [0u8; 8];
+            source.read_exact_at(16, &mut length).map_err(container_errno)?;
+            (VFSI_EXTENDED_HEADER as u64, u64::from_le_bytes(length))
+        }
+        _ => return Err(Errno::EINVAL),
+    };
+    let end = body_offset.checked_add(sab_len).ok_or(Errno::EINVAL)?;
     if end > source.len() {
         return Err(Errno::EINVAL);
     }
-    Ok((VFSI_HEADER as u64, sab_len))
+    Ok((body_offset, sab_len))
 }
 
 pub fn unwrap_vfsi(image: &[u8]) -> Result<&[u8], Errno> {
@@ -156,12 +167,15 @@ pub const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES: u32 = 1 << 3;
 
 /// Container header: magic(4) | version(4) | flags(4) | body length(4).
 pub const VFSI_HEADER_SIZE: usize = VFSI_HEADER;
+pub const VFSI_EXTENDED_HEADER_SIZE: usize = VFSI_EXTENDED_HEADER;
 
 /// The container magic, for the writer.
 pub const VFSI_CONTAINER_MAGIC: u32 = VFSI_MAGIC;
 
-/// The container version this repository writes and reads.
+/// The container version used for bodies with a 32-bit length.
 pub const VFSI_CONTAINER_VERSION: u32 = VFSI_VERSION;
+/// The container version used for bodies requiring a 64-bit length.
+pub const VFSI_EXTENDED_CONTAINER_VERSION: u32 = VFSI_EXTENDED_VERSION;
 
 /// The container's flag word.
 ///

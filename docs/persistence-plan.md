@@ -61,13 +61,18 @@ semantics. Node and browser must expose the same guest-visible behavior.
   unallocated bitmap and inode-table pages implicit in memory; the legacy
   byte-array API still materializes output, and indirect-block memory scales
   with file size. KIFS v1 addresses at most 10 + 1,024 + 1,024² blocks per
-  file, while the VFSI v1 container's 32-bit body length imposes a tighter
-  snapshot limit below 4 GiB. An 8 GiB sparse file exceeds both limits.
-  Snapshot planning now rejects either limit with `EFBIG` before allocating
-  or mutating an image writer, clears any earlier export plan, and leaves the
-  live journal usable. A 772 MiB snapshot now boots under the 768 MiB kernel
-  ceiling on all three browser engines, but this is
-  a narrow acceptance case, not a general memory or performance bound.
+  file. VFSI v2 now uses a 64-bit body length above the v1 32-bit limit;
+  v1 images keep their original header. A sparse 4 GiB file can export a v2
+  container header with less than 32 MiB of counted writer metadata in a
+  Rust test. Node boots a small v2 container; all three browser engines boot
+  one, commit a guest write, and reopen its journal. A full >4 GiB v2 body is
+  not yet streamed or booted. An 8 GiB sparse file still exceeds the KIFS
+  per-file limit; snapshot planning rejects it with `EFBIG` before mutating
+  an image writer, clears any earlier export plan, and leaves the live journal
+  usable. Sparse holes still consume physical body blocks on export. A 772 MiB
+  snapshot now boots under the 768 MiB kernel ceiling on all three browser
+  engines, but this is a narrow acceptance case, not a general memory or
+  performance bound.
 
 The first >RAM acceptance target is deliberately read-only. It proves that
 boot and image reads no longer require an image-sized allocation before

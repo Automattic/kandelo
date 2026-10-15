@@ -141,6 +141,29 @@ class FaultingNodeFileSystem extends HostFileSystem {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
+  it("boots an extended VFSI container through the Node kernel host", async () => {
+    const original = await makeImage("abcdefgh");
+    const bodyLength = new DataView(original.buffer, original.byteOffset, original.byteLength).getUint32(12, true);
+    const extended = new Uint8Array(original.byteLength + 8);
+    extended.set(original.subarray(0, 12));
+    const header = new DataView(extended.buffer);
+    header.setUint32(4, 2, true);
+    header.setUint32(12, 24, true);
+    header.setBigUint64(16, BigInt(bodyLength), true);
+    extended.set(original.subarray(16), 24);
+    const host = new NodeKernelHost({ rootfsImage: extended });
+    const kernelBytes = new Uint8Array(readFileSync(directKernelPath));
+    try {
+      await host.init(kernelBytes.buffer.slice(
+        kernelBytes.byteOffset,
+        kernelBytes.byteOffset + kernelBytes.byteLength,
+      ) as ArrayBuffer);
+      expect(new TextDecoder().decode((await host.readFileFromVfs("/state"))!)).toBe("abcdefgh");
+    } finally {
+      await host.destroy();
+    }
+  });
+
   it.skipIf(guestProgramPath === null).each(["mmap-sync", "mmap-syncfs", "mmap-sync-all", "mmap-fsync", "mmap-fdatasync", "sync", "syncfs"] as const)("makes %s durable before host shutdown", async (mode) => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-mmap-persistence-"));
     const path = join(directory, "machine.journal");

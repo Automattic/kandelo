@@ -2582,21 +2582,27 @@ image, give it to `NodeKernelHost`, and start `/sbin/dinit` with
 `spawnFromVfs()`.
 
 **Binary format.** A `.vfs.zst` file is one zstd frame around a VFSI
-container (`crates/runtime-core/src/vfsi_container.rs`). Decompressed:
+container (`crates/runtime-core/src/vfsi_container.rs`). Raw `.vfs` files
+carry the same container without compression. Decompressed:
 
 ```
 Offset   Size   Field
 0        4      Magic: 0x56465349 ("VFSI")
-4        4      Version: 1
+4        4      Version: 1 or 2
 8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata,
                 bit 3 = typed lazy archives, bit 4 = kernel lazy linkage (KLZY)
-12       4      Filesystem body length (N)
-16       N      KIFS filesystem body (superblock magic "KIFS"); deferred-file
+12       4      V1: filesystem body length (N); V2: header size (24)
+16       8      V2 only: 64-bit filesystem body length (N)
+H        N      KIFS filesystem body (superblock magic "KIFS"); deferred-file
                 records live inside it in the SDEF section
-16+N     ...    Optional trailing sections, each a 4-byte length and bytes:
+H+N      ...    Optional trailing sections, each a 4-byte length and bytes:
                 lazy-file JSON (bit 0), lazy-archive JSON (bit 1), image-metadata
                 JSON (bit 2), and the KLZY section (bit 4)
 ```
+
+`H` is 16 for v1 and 24 for v2. The writer preserves v1 for bodies that fit
+its 32-bit length and uses v2 only above that boundary. The KIFS v1 per-file
+block map is a separate limit; a larger container header does not remove it.
 
 ## Networking
 
