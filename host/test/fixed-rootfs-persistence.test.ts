@@ -1123,6 +1123,84 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 120_000);
 
+  it.skipIf(guestProgramPath === null)("rejects a resealed v3 block index with a false digest", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-v3-index-fallback-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh", true);
+      const first = await boot(image, path, true);
+      try {
+        for (const mode of ["create-file", "large"] as const) {
+          const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
+          expect(await exit, mode).toBe(0);
+        }
+      } finally {
+        await first.destroy();
+      }
+      const sourceLength = expandLargestJournalTransactionToCompactionThreshold(path);
+      const compacted = await boot(image, path, true);
+      await compacted.destroy();
+      const indexPath = `${path}.g0.index`;
+      const current = readFileSync(indexPath);
+      expect(current.readUInt32LE(4)).toBe(4);
+      const blockEnd = 160 + Number(current.readBigUInt64LE(80)) * 56;
+      const metadataCount = (current.byteLength - blockEnd) / 312;
+      expect(metadataCount).toBeGreaterThan(0);
+      const v3 = Buffer.alloc(blockEnd + metadataCount * 280);
+      current.copy(v3, 0, 0, blockEnd);
+      for (let position = 0; position < metadataCount; position++) {
+        current.copy(v3, blockEnd + position * 280, blockEnd + position * 312, blockEnd + position * 312 + 280);
+      }
+      const rehashIndex = () => {
+        const blockDigest = createHash("sha256").update(v3.subarray(160, blockEnd)).digest();
+        const metadataDigest = createHash("sha256").update(v3.subarray(blockEnd)).digest();
+        createHash("sha256").update(blockDigest).update(metadataDigest).digest().copy(v3, 96);
+        createHash("sha256").update(v3.subarray(0, 128)).digest().copy(v3, 128);
+      };
+      v3.writeUInt32LE(3, 4);
+      rehashIndex();
+      const backend = new HostFileSystem(directory);
+      const digest = new Uint8Array(createHash("sha256").update(image).digest());
+      const reseal = async () => {
+        writeFileSync(indexPath, v3);
+        const journal = OverlayStorageFile.open(backend, "/machine.journal.g0.journal", false);
+        const index = OverlayStorageFile.open(backend, "/machine.journal.g0.index", false);
+        const seal = OverlayStorageFile.open(backend, "/machine.journal.g0.seal", false);
+        try {
+          await writeOverlayGenerationSeal(journal, seal, 1, digest, index,
+            { slot: "legacy", journalLength: sourceLength });
+        } finally {
+          seal.close();
+          index.close();
+          journal.close();
+        }
+      };
+      await reseal();
+      const legacyV3 = await boot(image, path, true);
+      try {
+        const tail = await legacyV3.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4);
+        expect(new TextDecoder().decode(tail!)).toBe("NEWW");
+      } finally {
+        await legacyV3.destroy();
+      }
+      expect(readFileSync(indexPath).readUInt32LE(4)).toBe(3);
+      v3[160 + 24] ^= 1;
+      rehashIndex();
+      await reseal();
+      const recovered = await boot(image, path, true);
+      try {
+        const tail = await recovered.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4);
+        expect(new TextDecoder().decode(tail!)).toBe("NEWW");
+      } finally {
+        await recovered.destroy();
+      }
+      expect(readFileSync(path).byteLength).toBe(sourceLength);
+      expect(readFileSync(indexPath).readUInt32LE(4)).toBe(4);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it.skipIf(guestProgramPath === null)("falls back from a sealed v5 index with a false block digest", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-index-fallback-"));
     const path = join(directory, "machine.journal");

@@ -335,7 +335,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                     key: mutation_key(mutation).clone(),
                     value,
                     value_digest: match mutation {
-                        Mutation::Put { value, .. } if verify_blocks => {
+                        Mutation::Put { value, .. } if checkpoint.has_metadata_value_digests() => {
                             Some(Sha256::digest(value).into())
                         }
                         _ => None,
@@ -4398,10 +4398,16 @@ mod tests {
         let base_digest = [57; 32];
         let mut source = OverlayJournal::open(MemoryStorage::default(), base_digest).unwrap();
         source
-            .commit(&[Mutation::Put {
-                key: inode_key(),
-                value: b"metadata".to_vec(),
-            }])
+            .commit(&[
+                Mutation::Put {
+                    key: inode_key(),
+                    value: b"metadata".to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                    value: vec![b'v'; FILE_BLOCK_BYTES],
+                },
+            ])
             .unwrap();
         let mut compacted = source.compact_metadata_into(MemoryStorage::default()).unwrap();
         let end = compacted.end;
@@ -4409,18 +4415,19 @@ mod tests {
             .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
             .unwrap();
         let mut index_bytes = checkpoint.into_storage().bytes;
-        index_bytes.truncate(160 + 280);
+        index_bytes.truncate(160 + 56 + 280);
         index_bytes[4..8].copy_from_slice(&3u32.to_le_bytes());
         let mut combined = Sha256::new();
-        combined.update(Sha256::digest([]));
-        combined.update(Sha256::digest(&index_bytes[160..]));
+        combined.update(Sha256::digest(&index_bytes[160..216]));
+        combined.update(Sha256::digest(&index_bytes[216..]));
         index_bytes[96..128].copy_from_slice(&combined.finalize());
         let header_digest = Sha256::digest(&index_bytes[..128]);
         index_bytes[128..160].copy_from_slice(&header_digest);
+        let journal_bytes = compacted.into_storage().bytes;
         let mut reopened = OverlayJournal::open_with_checkpoint_metadata(
-            compacted.into_storage(),
+            MemoryStorage { bytes: journal_bytes.clone(), ..MemoryStorage::default() },
             MemoryStorage {
-                bytes: index_bytes,
+                bytes: index_bytes.clone(),
                 ..MemoryStorage::default()
             },
             base_digest,
@@ -4428,6 +4435,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reopened.metadata_value(&inode_key()), Ok(Some(Some(b"metadata".to_vec()))));
+        let mut block = [0; FILE_BLOCK_BYTES];
+        assert_eq!(reopened.read_file_at(7, FILE_BLOCK_BYTES as u64, 0, &mut block, |_, _| panic!("block is journaled")), Ok(FILE_BLOCK_BYTES));
+        assert_eq!(block, [b'v'; FILE_BLOCK_BYTES]);
+        index_bytes[160 + 24] ^= 1;
+        let mut combined = Sha256::new();
+        combined.update(Sha256::digest(&index_bytes[160..216]));
+        combined.update(Sha256::digest(&index_bytes[216..]));
+        index_bytes[96..128].copy_from_slice(&combined.finalize());
+        let header_digest = Sha256::digest(&index_bytes[..128]);
+        index_bytes[128..160].copy_from_slice(&header_digest);
+        assert!(matches!(
+            OverlayJournal::open_with_checkpoint_metadata(
+                MemoryStorage { bytes: journal_bytes, ..MemoryStorage::default() },
+                MemoryStorage { bytes: index_bytes, ..MemoryStorage::default() },
+                base_digest,
+                end,
+            ),
+            Err(Errno::EIO)
+        ));
     }
 
     #[test]
