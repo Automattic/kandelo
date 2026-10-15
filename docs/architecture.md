@@ -2574,6 +2574,8 @@ On dereference, the kernel rejects nonzero data and indirect pointers outside
 the superblock's declared data-block range, so a damaged pointer cannot alias
 filesystem metadata or a trailing section. This is a bounds check, not a
 replacement for the staged image's whole-file integrity verification.
+Malformed directory records and incomplete terminal records now return `EIO`
+instead of silently omitting later names from a listing or lookup.
 Snapshot export leaves unwritten blocks of new journal-backed regular files
 unallocated in KIFS, so their logical size need not determine body size. The
 kernel records sparse block maps for image-backed regular files during boot
