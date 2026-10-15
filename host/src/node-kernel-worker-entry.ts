@@ -1309,7 +1309,8 @@ async function handleInit(msg: InitMessage) {
       throw new Error("rootfs persistence path must be an absolute file path");
     }
     const lockPath = `${path}.lock`;
-    if (existsSync(lockPath) && !lstatSync(lockPath).isFile()) {
+    const lockStat = lstatSync(lockPath, { throwIfNoEntry: false });
+    if (lockStat !== undefined && (!lockStat.isFile() || lockStat.nlink !== 1)) {
       throw new Error(`rootfs persistence has a legacy or invalid lock at ${lockPath}; verify its owner has stopped before removing it`);
     }
     const sqliteModuleName = "node:sqlite";

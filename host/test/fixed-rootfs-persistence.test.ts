@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -330,6 +330,36 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       expect(lstatSync(lockPath).isFile()).toBe(true);
       const reopened = await boot(image, path, true, true);
       await reopened.destroy();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a dangling symlink lock without creating its target", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-overlay-symlink-lock-"));
+    const path = join(directory, "machine.journal");
+    const target = join(directory, "missing-target");
+    try {
+      symlinkSync(target, `${path}.lock`);
+      await expect(boot(await makeImage("abcdefgh"), path, true)).rejects.toThrow(/legacy or invalid lock/);
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a lock hard-linked to journal data before opening SQLite", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-overlay-aliased-lock-"));
+    const path = join(directory, "machine.journal");
+    const image = await makeImage("abcdefgh");
+    try {
+      const first = await boot(image, path, true);
+      await first.destroy();
+      unlinkSync(`${path}.lock`);
+      const journalBefore = readFileSync(path);
+      linkSync(path, `${path}.lock`);
+      await expect(boot(image, path, true, true)).rejects.toThrow(/legacy or invalid lock/);
+      expect(readFileSync(path)).toEqual(journalBefore);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
