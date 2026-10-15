@@ -1128,6 +1128,79 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 120_000);
 
+  it.skipIf(guestProgramPath === null)("upgrades an oversized v1 checkpoint with three valid generation slots", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-v1-four-slot-upgrade-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      expandJournalToCompactionThreshold(path);
+      const firstCompacted = await boot(image, path);
+      await firstCompacted.destroy();
+      expandJournalToCompactionThreshold(`${path}.g0.journal`);
+      const secondCompacted = await boot(image, path);
+      await secondCompacted.destroy();
+      const g1Length = expandJournalToCompactionThreshold(`${path}.g1.journal`);
+      const thirdCompacted = await boot(image, path);
+      await thirdCompacted.destroy();
+      const fallbackSeals = ["g0", "g1"].map((slot) => readFileSync(`${path}.${slot}.seal`));
+      const indexPath = `${path}.g2.index`;
+      const oldIndex = Buffer.from(readFileSync(indexPath));
+      expect(oldIndex.readUInt32LE(4)).toBe(5);
+      oldIndex.writeUInt32LE(1, 4);
+      createHash("sha256").update(oldIndex.subarray(0, 128)).digest().copy(oldIndex, 128);
+      writeFileSync(indexPath, oldIndex);
+      const backend = new HostFileSystem(directory);
+      const journal = OverlayStorageFile.open(backend, "/machine.journal.g2.journal", false);
+      const index = OverlayStorageFile.open(backend, "/machine.journal.g2.index", false);
+      const seal = OverlayStorageFile.open(backend, "/machine.journal.g2.seal", false);
+      try {
+        await writeOverlayGenerationSeal(journal, seal, 3,
+          new Uint8Array(createHash("sha256").update(image).digest()), index,
+          { slot: "g1", journalLength: g1Length });
+      } finally {
+        seal.close();
+        index.close();
+        journal.close();
+      }
+      const g2Length = expandJournalToCompactionThreshold(`${path}.g2.journal`);
+      const upgraded = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await upgraded.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await upgraded.destroy();
+      }
+      expect(readFileSync(`${path}.g2.journal`).byteLength).toBe(g2Length);
+      expect(readFileSync(indexPath)).toEqual(oldIndex);
+      expect(readFileSync(`${path}.g3.index`).readUInt32LE(4)).toBe(5);
+      for (const [position, slot] of ["g0", "g1"].entries()) {
+        expect(readFileSync(`${path}.${slot}.seal`)).toEqual(fallbackSeals[position]);
+      }
+      const reopened = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await reopened.destroy();
+      }
+      expandJournalToCompactionThreshold(`${path}.g3.journal`);
+      const compacted = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await compacted.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await compacted.destroy();
+      }
+      expect(readFileSync(`${path}.g0.index`).readUInt32LE(4)).toBe(5);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it.skipIf(guestProgramPath === null)("upgrades an oversized sealed v2 resizable checkpoint with metadata", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-v2-resizable-upgrade-"));
     const path = join(directory, "machine.journal");

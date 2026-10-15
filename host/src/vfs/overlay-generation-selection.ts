@@ -22,7 +22,8 @@ export function isNoValidOverlayGenerationError(error: unknown): error is NoVali
     "recovery" in error && error.recovery === "no-valid-overlay-generation";
 }
 
-const GENERATION_SLOTS = ["g0", "g1", "g2"] as const;
+const COMPACTION_SLOTS = ["g0", "g1", "g2"] as const;
+const GENERATION_SLOTS = [...COMPACTION_SLOTS, "g3"] as const;
 
 export type OverlayGenerationSlot = "legacy" | (typeof GENERATION_SLOTS)[number];
 export type OverlayGenerationFile = "journal" | "seal" | "index";
@@ -302,8 +303,8 @@ export async function compactOverlayGeneration(
   if (!Number.isSafeInteger(selected.generation + 1)) {
     throw new Error("persistent overlay generation number exhausted");
   }
-  const slot = selected.slot === "legacy" ? "g0"
-    : GENERATION_SLOTS[(GENERATION_SLOTS.indexOf(selected.slot) + 1) % GENERATION_SLOTS.length];
+  const slot = selected.slot === "legacy" || selected.slot === "g3" ? "g0"
+    : COMPACTION_SLOTS[(COMPACTION_SLOTS.indexOf(selected.slot) + 1) % COMPACTION_SLOTS.length];
   const target = await files.open(slot, "journal", true);
   if (target === null) throw new Error("could not create persistent overlay target journal");
   let seal: PersistentOverlayStorage | null = null;
