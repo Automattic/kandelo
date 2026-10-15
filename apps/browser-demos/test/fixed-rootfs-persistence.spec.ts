@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createReadStream, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,9 +24,128 @@ const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
 const persistenceImagePath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/fixed-persistence-image.ts");
 const overlaySelectionPath = resolve(repoRoot, "host/src/vfs/overlay-generation-selection.ts");
 const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
+const largeImageFixture = process.env.KANDELO_LARGE_VFSI_FIXTURE;
 
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
+
+test("browser exports and reboots a physical >4 GiB OPFS image", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.skip(!largeImageFixture, "requires the opt-in physical large-image fixture");
+  test.setTimeout(1_200_000);
+  const fixturePath = largeImageFixture!;
+  const fixtureLength = statSync(fixturePath).size;
+  expect(fixtureLength).toBeGreaterThan(2 ** 32);
+  const server = createServer((request, response) => {
+    if (request.url !== "/large.vfs") {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, {
+      "access-control-allow-origin": "*",
+      "content-length": fixtureLength,
+      "content-type": "application/octet-stream",
+    });
+    const source = createReadStream(fixturePath);
+    source.on("error", (error) => response.destroy(error));
+    source.pipe(response);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  const fixtureUrl = `http://127.0.0.1:${address.port}/large.vfs`;
+  const kernelUrl = new URL("/large-vfsi-kernel.wasm", baseURL).href;
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-large-vfsi-browser-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const page = context.pages()[0] ?? await context.newPage();
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, fixtureUrl }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+        const directory = await (await navigator.storage.getDirectory())
+          .getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const imageFile = await directory.getFileHandle("large.base", { create: true });
+        const fetched = await fetch(fixtureUrl);
+        if (!fetched.ok || fetched.body === null) throw new Error("large fixture stream unavailable");
+        const reader = fetched.body.getReader();
+        const writer = await imageFile.createWritable();
+        let installedBytes = 0;
+        try {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            await writer.write(value);
+            installedBytes += value.byteLength;
+          }
+          await writer.close();
+        } catch (error) {
+          await writer.abort();
+          throw error;
+        }
+        if (installedBytes !== Number(fetched.headers.get("content-length"))) {
+          throw new Error("large fixture stream was truncated");
+        }
+        const first = new BrowserKernel({ kernelOwnedFs: true });
+        const snapshotFile = await directory.getFileHandle("large.snapshot", { create: true });
+        let integrity: OpfsImageIntegrity;
+        try {
+          await first.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile });
+          const stat = await first.statVfsPath("/large");
+          if (stat?.size !== 2 ** 32 - 16 * 1024 * 1024) {
+            throw new Error("large base file has the wrong size");
+          }
+          integrity = await first.exportRootfsImageToFile(snapshotFile);
+        } finally {
+          await first.destroy();
+        }
+        const rebooted = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await rebooted.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile, integrity });
+          const stat = await rebooted.statVfsPath("/large");
+          if (stat?.size !== 2 ** 32 - 16 * 1024 * 1024) {
+            throw new Error("large snapshot file has the wrong size");
+          }
+          const { exit } = await rebooted.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
+          return {
+            installedBytes,
+            snapshotBytes: integrity.length,
+            storedBytes: (await snapshotFile.getFile()).size,
+            state: new TextDecoder().decode((await rebooted.readFileFromVfs("/state"))!),
+            verifyExit: await exit,
+          };
+        } finally {
+          await rebooted.destroy();
+        }
+      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, fixtureUrl });
+      expect(result).toEqual({
+        installedBytes: fixtureLength,
+        snapshotBytes: expect.any(Number),
+        storedBytes: expect.any(Number),
+        state: "before\n",
+        verifyExit: 0,
+      });
+      expect(result.snapshotBytes).toBeGreaterThan(2 ** 32);
+      expect(result.storedBytes).toBe(result.snapshotBytes);
+    } finally {
+      await context.close();
+    }
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
 
 test("browser boots an extended VFSI container from OPFS and reopens its journal", async ({ playwright, browserName, baseURL }, testInfo) => {
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));

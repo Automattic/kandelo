@@ -99,9 +99,14 @@ semantics. Node and browser must expose the same guest-visible behavior.
   builds a dense KIFS body without holding its file bytes in memory; a guest
   verifies the 2 MiB tail at its 64-bit offset both before and after the
   snapshot. The opt-in test checks Node RSS growth stays under 1 GiB and
-  rejects a damaged snapshot byte beyond 4 GiB. The same physical export
-  has not yet been staged and booted on browser/OPFS. An 8 GiB sparse file
-  still exceeds the KIFS per-file limit;
+  rejects a damaged snapshot byte beyond 4 GiB. Chromium, Firefox, and WebKit
+  now stream that physical fixture into OPFS, boot it, export its >4 GiB body
+  to a second OPFS file with staged read-back verification, and reboot that
+  snapshot with per-chunk integrity. A guest verifies the large file's tail
+  after the reboot. The browser test does not allocate an image-sized
+  JavaScript array, but it does not measure browser peak memory or prove OPFS
+  storage sparsity or general snapshot throughput. An 8 GiB sparse file still
+  exceeds the KIFS per-file limit;
   snapshot planning rejects it with `EFBIG` before mutating an image writer,
   clears any earlier export plan, and leaves the live journal usable. A 772 MiB
   snapshot boots under the 768 MiB kernel ceiling on all three browser engines,
@@ -114,14 +119,17 @@ including unwritten ranges, before returning per-chunk digests. This reduces
 explicit zero writes but does not guarantee that an OPFS implementation stores
 those ranges sparsely.
 
-The opt-in Node large-export test needs roughly 8 GiB of temporary disk space.
-From the repository root, generate its fixture and run the exact acceptance
-case with the ABI-matched guest program:
+The opt-in large-export tests need substantial temporary disk space; allow at
+least 12 GiB for the fixture, OPFS source, staged snapshot, and browser
+profile. From the repository root, generate the fixture and run the exact
+acceptance cases with the ABI-matched guest program. Set the Playwright port to
+an unused value so another workspace's Vite server cannot serve stale files:
 
 ```sh
 host_target=$(scripts/dev-shell.sh rustc -vV | awk '/^host:/ {print $2}')
 scripts/dev-shell.sh cargo run -p runtime-core --example large_vfsi_fixture --target "$host_target" -- "$PWD/.context/large-dense-fixture.vfs" local-binaries/test-fixtures/wasm32/persistence-overwrite.wasm
 scripts/dev-shell.sh sh -c "cd host && KANDELO_LARGE_VFSI_FIXTURE='$PWD/.context/large-dense-fixture.vfs' npx vitest run test/node-rootfs-export.test.ts -t 'exports and reboots a physical >4 GiB dense VFSI body'"
+scripts/dev-shell.sh sh -c "cd apps/browser-demos && KANDELO_PLAYWRIGHT_PORT=57133 KANDELO_LARGE_VFSI_FIXTURE='$PWD/.context/large-dense-fixture.vfs' npx playwright test test/fixed-rootfs-persistence.spec.ts -g 'browser exports and reboots a physical >4 GiB OPFS image' --project=chromium --project=firefox --project=webkit --workers=1"
 rm .context/large-dense-fixture.vfs
 ```
 
