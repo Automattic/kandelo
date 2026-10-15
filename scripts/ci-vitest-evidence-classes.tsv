@@ -221,6 +221,7 @@ host/test/pcm-transport.test.ts	source-only
 host/test/pcm-wake-observer.test.ts	source-only
 host/test/php-browser-kernel-owned-vfs.test.ts	source-only
 host/test/php-phpt-harness.test.ts	prepared-product
+host/test/php-shell-lazy.test.ts	prepared-product
 host/test/php-test-fixtures.test.ts	prepared-product
 host/test/php-test-lazy-assets.test.ts	prepared-product
 host/test/pixman-smoke.test.ts	prepared-product

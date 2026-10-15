@@ -163,6 +163,8 @@ export interface InitMessage {
   rootfsMountSpec?: MountSpec[];
   /** Base used to resolve relative lazy URLs embedded in rootfsImage. */
   rootfsLazyUrlBase?: string;
+  /** Image lazy URL token to transport URL; takes precedence over the base. */
+  rootfsLazyUrlMap?: Record<string, string>;
   /** Exhaustive exact-byte lazy transport for this rootfs; no network fallback. */
   rootfsLazyAssets?: ClosedLazyAsset[];
   /** Exhaustive verified sources fetched only on first use of their exact URL. */
