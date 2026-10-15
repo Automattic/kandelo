@@ -284,7 +284,7 @@ run_exact_abi_source_vitest() {
         listed_names="$inventory_root/resource-$resource_file_number-listed"
         if ! (
             cd host
-            npx vitest list "$selected_path" --json="$inventory_json"
+            npx vitest list --no-static-parse "$selected_path" --json="$inventory_json"
         ); then
             echo "ci-run-test-suite: could not enumerate source-only resource-isolated file: $test_file" >&2
             exit 2
@@ -766,7 +766,7 @@ case "$suite" in
             listed_names="$vitest_resource_inventory_dir/listed-$resource_file_number"
             if ! (
                 cd host
-                npx vitest list \
+                npx vitest list --no-static-parse \
                     "../$test_file" \
                     --json="$inventory_json"
             ); then

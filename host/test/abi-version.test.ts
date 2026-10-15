@@ -166,6 +166,8 @@ describe("ABI version marker", () => {
   });
 
   it("freshly-built user programs export a matching __abi_version", async () => {
+    // Include provenance verification and Wasm compilation in this budget.
+    // Those are integration work; the ABI comparisons remain exact.
     // Pick a program we know build-programs.sh regenerates every run.
     const userProg = readFileSync(resolveBinary("programs/exec-caller.wasm"));
     const module = await WebAssembly.compile(userProg as BufferSource);
@@ -244,5 +246,5 @@ describe("ABI version marker", () => {
     const instance = await WebAssembly.instantiate(module, importObject);
     const userVer = (instance.exports.__abi_version as () => number)();
     expect(userVer).toBe(kernelVer);
-  });
+  }, 30_000);
 });

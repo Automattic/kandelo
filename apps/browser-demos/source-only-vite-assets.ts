@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parse } from "@babel/parser";
+import { browserSourceParserPlugins } from "./browser-binary-imports.mjs";
 import type { Plugin, ResolvedConfig, ViteDevServer } from "vite";
 import type {
   SourceOnlyBinarySnapshot,
@@ -204,7 +205,7 @@ export function rewriteBinaryMirrorUrlGlobs(
   const ast = parse(code, {
     sourceType: "unambiguous",
     sourceFilename: importer,
-    plugins: ["jsx", "typescript", "importAttributes"],
+    plugins: browserSourceParserPlugins(importer),
   });
   const replacements: Array<{ start: number; end: number; text: string }> = [];
   const pending: unknown[] = [ast.program];
