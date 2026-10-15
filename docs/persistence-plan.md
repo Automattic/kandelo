@@ -687,8 +687,13 @@ journal is not deleted without another semantically validated handoff. Node
 and Chromium, Firefox, and WebKit reboot with injected orphan files; the three
 browser engines also remove an injected empty legacy file before serving
 guests. Host fault tests keep boot available when the retry itself fails.
-Near-quota cleanup and power-loss
-ordering still need fault tests.
+Browser crash-cut tests now stop conversion immediately after flushing the
+checkpoint index or seal, then reboot the same OPFS profile. Chromium crashes
+the browser process; Firefox and WebKit close the tab and its blocked worker.
+All three recover the synced guest bytes from an oversized legacy journal at
+both cuts, with the original journal intact. These tests cover browser-process
+and tab termination, not OS power loss or storage-device flush guarantees.
+Near-quota cleanup and power-loss ordering still need fault tests.
 Numbered spill slots remove the fixed four-slot recovery exception, but these
 remaining cases keep generation storage reclamation open.
 
