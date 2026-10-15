@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { tryResolveBinaries } from "../src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
-import { prepareRunExampleRootfs } from "../../examples/run-example-rootfs";
+import { preparePersistentRunExampleRootfs, prepareRunExampleRootfs } from "../../examples/run-example-rootfs";
 
 vi.mock("../src/binary-resolver", () => ({ tryResolveBinaries: vi.fn() }));
 const directories: string[] = [];
@@ -30,6 +30,21 @@ async function imageWithSources(sources: Array<{ url: string; size: number }>) {
 }
 
 describe("isolated runner rootfs transport", () => {
+  it("seeds a persistent fixture into the image and rejects host symlinks", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-runner-persistent-image-"));
+    directories.push(directory);
+    mkdirSync(join(directory, "work"));
+    writeFileSync(join(directory, "work", "test.wasm"), Uint8Array.of(0, 97, 115, 109), { mode: 0o755 });
+    const base = await imageWithSources([]);
+    const derived = await preparePersistentRunExampleRootfs(base, directory);
+    const filesystem = KandeloImageFs.create();
+    filesystem.loadImage(derived);
+    expect(filesystem.readFile("/run/kandelo-run/work/test.wasm")).toEqual(Uint8Array.of(0, 97, 115, 109));
+    expect(filesystem.stat("/run/kandelo-run/work/test.wasm").mode & 0o777).toBe(0o755);
+    symlinkSync(join(directory, "work"), join(directory, "linked"));
+    await expect(preparePersistentRunExampleRootfs(base, directory)).rejects.toThrow(/unsupported entry/);
+  });
+
   it("reads transport hints without constructing shared memory", async () => {
     const image = await imageWithSources([
       { url: "binaries/programs/wasm32/bash.wasm", size: 4 },

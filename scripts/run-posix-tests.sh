@@ -12,6 +12,7 @@ set -euo pipefail
 #   scripts/run-posix-tests.sh signal raise kill    # run specific interfaces
 #   scripts/run-posix-tests.sh --report             # run all + write report
 #   scripts/run-posix-tests.sh --list               # list available interfaces
+#   scripts/run-posix-tests.sh --persistent rename   # run on the resizable journaled rootfs
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # WHY: the SDK driver finds its sysroot and glue dir by walking up from the
@@ -241,13 +242,22 @@ run_test() {
     # stdin is redirected to /dev/null so node/run-example.ts (which reads
     # process.stdin when not a TTY) does not drain the outer while-loop's
     # process-substitution pipe and cause it to exit after the first test.
+    local runner_mode="isolated"
+    local journal_dir=""
+    local journal_path=""
+    if $PERSISTENT_MODE; then
+        runner_mode="persistent"
+        journal_dir=$(mktemp -d)
+        journal_path="$journal_dir/rootfs.journal"
+    fi
     set +e
     output=$(cd "$REPO_ROOT" && \
         KERNEL_CWD= \
         KANDELO_RUNNER_FIXTURE_ROOT="$fixture_root" \
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM="$fixture_program" \
-        KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_VFS="$runner_mode" \
+        KANDELO_RUNNER_PERSISTENCE_PATH="$journal_path" \
         KANDELO_RUNNER_BUILTINS=explicit \
         WASM_POSIX_XTASK_BIN="$PROGRAM_INDEX_CHECKER" \
         TIMEOUT="$((TEST_TIMEOUT * 1000))" \
@@ -256,6 +266,9 @@ run_test() {
             </dev/null 2>&1)
     rc=$?
     set -e
+    if [ -n "$journal_dir" ]; then
+        rm -rf "$journal_dir"
+    fi
 
     case $rc in
         0)  # PTS_PASS
@@ -341,12 +354,14 @@ run_test() {
 
 REPORT_MODE=false
 LIST_MODE=false
+PERSISTENT_MODE=false
 INTERFACES=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --report) REPORT_MODE=true; shift ;;
         --list) LIST_MODE=true; shift ;;
+        --persistent) PERSISTENT_MODE=true; shift ;;
         *) INTERFACES+=("$1"); shift ;;
     esac
 done
@@ -471,7 +486,11 @@ done
 # ── Report mode ───────────────────────────────────────────
 
 if $REPORT_MODE; then
-    REPORT="$REPO_ROOT/docs/posix-test-report.md"
+    if $PERSISTENT_MODE; then
+        REPORT="$REPO_ROOT/docs/posix-persistent-test-report.md"
+    else
+        REPORT="$REPO_ROOT/docs/posix-test-report.md"
+    fi
     {
         echo "# Open POSIX Test Suite Report"
         echo ""

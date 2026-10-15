@@ -708,5 +708,16 @@ kernel.
 With the ABI 51 canonical rootfs rebuilt, the Open POSIX Test Suite's full
 available interface set reports 174 passes, three expected failures, and two
 unsupported cases; the focused Sortix directory-`fsync` case passes. These
-conformance runners do not mount the experimental persistent overlay, so
-their results do not establish persistent namespace or restart semantics.
+default conformance runners do not mount the experimental persistent overlay,
+so their results do not establish persistent namespace or restart semantics.
+The Open POSIX runner now has an opt-in `--persistent` mode that derives the
+canonical image with each test fixture under the rootfs-owned `/run`, mounts
+a fresh resizable journal, and points `TMPDIR` at that image-backed work
+directory. The full available interface set on that mount reports 174 passes,
+three expected failures, and two unsupported cases, matching the default
+isolated run. Its `fsync` interface passes all three available cases in both
+modes. The interface's success case unlinks an open file before syncing it;
+the two other cases reject invalid file descriptors. The available Open POSIX
+inventory is mostly non-filesystem interfaces, and this run does not reboot
+any test's journal. It therefore does not establish persistent namespace or
+restart conformance.
