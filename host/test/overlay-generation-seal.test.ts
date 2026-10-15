@@ -547,6 +547,110 @@ describe("overlay generation boot selection", () => {
     expect(entries["g2.journal"].bytes).toBe(originalSource);
   });
 
+  it.each(["rejected", "stale"] as const)("reuses a %s higher slot before compaction can duplicate its generation", async (reason) => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const entries: Record<string, MemoryStorage> = {
+      "g2.journal": source,
+      "g2.seal": new MemoryStorage(),
+      "g3.journal": new MemoryStorage(new Uint8Array(72).fill(8)),
+      "g3.index": new MemoryStorage(Uint8Array.of(1)),
+      "g3.seal": new MemoryStorage(),
+    };
+    const digest = source.bytes.slice(8, 40);
+    await writeOverlayGenerationSeal(source, entries["g2.seal"], 3, digest);
+    await writeOverlayGenerationSeal(
+      entries["g3.journal"], entries["g3.seal"], 4, digest,
+      entries["g3.index"], { slot: "g2", journalLength: source.len() },
+    );
+    if (reason === "stale") source.writeAllAt(source.len(), Uint8Array.of(9));
+    const selected = await enableBestOverlayGeneration(files(entries), (journal) => {
+      if (journal === entries["g3.journal"] && reason === "rejected") {
+        throw new RejectedOverlayGenerationError("fixed", 5);
+      }
+    }, true);
+    expect(selected.slot).toBe("g2");
+    const compacted = await compactOverlayGeneration(selected, files(entries), {
+      prepare: (target) => { target.writeAllAt(0, source.bytes); },
+      checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(1)); },
+      activate: () => {},
+      cancel: () => { throw new Error("unexpected cancellation"); },
+    }, 0);
+    expect(compacted.slot).toBe("g3");
+    expect(compacted.generation).toBe(4);
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g3");
+  });
+
+  it("retains later rejected slots across successive live compactions", async () => {
+    const entries: Record<string, MemoryStorage> = {};
+    const digest = new Uint8Array(32).fill(7);
+    for (const [position, slot] of ["g0", "g1", "g2", "g3"].entries()) {
+      entries[`${slot}.journal`] = new MemoryStorage(new Uint8Array(72).fill(7 + position));
+      entries[`${slot}.seal`] = new MemoryStorage();
+      await writeOverlayGenerationSeal(entries[`${slot}.journal`], entries[`${slot}.seal`], position + 1, digest);
+    }
+    let selected = await enableBestOverlayGeneration(files(entries), (journal) => {
+      if (journal !== entries["g0.journal"]) throw new RejectedOverlayGenerationError("fixed", 5);
+    }, true);
+    expect(selected.slot).toBe("g0");
+    for (const [position, slot] of ["g1", "g2", "g3"].entries()) {
+      const source = selected;
+      selected = await compactOverlayGeneration(source, files(entries), {
+        prepare: (target) => { target.writeAllAt(0, (source.journal as MemoryStorage).bytes); },
+        checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(1)); },
+        activate: () => {},
+        cancel: () => { throw new Error("unexpected cancellation"); },
+      }, 0);
+      expect(selected.slot).toBe(slot);
+      expect(selected.generation).toBe(position + 2);
+    }
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g3");
+  });
+
+  it("retries an oversized legacy source when its converted target is rejected", async () => {
+    const source = new MemoryStorage(new Uint8Array(32 * 1024 * 1024));
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    const originalSource = source.bytes;
+    const selected = await enableBestOverlayGeneration(files(entries), (journal) => {
+      if (journal !== source) throw new RejectedOverlayGenerationError("fixed", 5);
+    }, true, (_source, target, checkpoint) => {
+      target.writeAllAt(0, originalSource.subarray(0, 72));
+      checkpoint.writeAllAt(0, Uint8Array.of(1));
+    });
+    expect(selected.slot).toBe("legacy");
+    expect(source.bytes).toBe(originalSource);
+    expect(entries["g0.seal"]!.len()).toBe(0);
+  });
+
+  it("forgets a rejected slot when legacy conversion overwrites it at another generation", async () => {
+    const legacy = new MemoryStorage(new Uint8Array(32 * 1024 * 1024));
+    const rejected = new MemoryStorage(new Uint8Array(72));
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": legacy,
+      "g0.journal": rejected,
+      "g0.seal": new MemoryStorage(),
+    };
+    const digest = new Uint8Array(32);
+    await writeOverlayGenerationSeal(rejected, entries["g0.seal"], 2, digest);
+    let targetAttempts = 0;
+    const selected = await enableBestOverlayGeneration(files(entries), (journal) => {
+      if (journal === rejected && targetAttempts++ === 0) {
+        throw new RejectedOverlayGenerationError("fixed", 5);
+      }
+    }, true, (_source, target, checkpoint) => {
+      target.writeAllAt(0, legacy.bytes.subarray(0, 72));
+      checkpoint.writeAllAt(0, Uint8Array.of(1));
+    });
+    expect(selected.slot).toBe("g0");
+    const compacted = await compactOverlayGeneration(selected, files(entries), {
+      prepare: (target) => { target.writeAllAt(0, (selected.journal as MemoryStorage).bytes); },
+      checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(1)); },
+      activate: () => {},
+      cancel: () => { throw new Error("unexpected cancellation"); },
+    }, 0);
+    expect(compacted.slot).toBe("g1");
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g1");
+  });
+
   it("replaces a semantically rejected slot after validating the older v1 source", async () => {
     const source = new Uint8Array(32 * 1024 * 1024);
     source.set(new Uint8Array(32).fill(7), 8);
