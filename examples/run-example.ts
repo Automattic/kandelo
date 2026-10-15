@@ -605,6 +605,30 @@ async function main() {
         } else {
             status = outcome;
         }
+        if (runnerFilesystem.verifyPersistenceReopen && outcome !== timedOut) {
+            if (persistentImage === undefined || runnerFilesystem.experimentalResizablePersistencePath === undefined) {
+                throw new Error("persistent runner reboot requires a composed image and journal");
+            }
+            await host.destroy();
+            const shutdownFailure = host.getPersistenceShutdownFailure();
+            host = undefined;
+            if (shutdownFailure !== null) {
+                throw new Error(`persistent runner shutdown sync failed: ${shutdownFailure}`);
+            }
+            const reopened = new NodeKernelHost({
+                maxWorkers: 4,
+                rootfsImage: persistentImage,
+                rootfsLazyUrlBase: rootfs?.rootfsLazyUrlBase,
+                rootfsLazyAssets: rootfs?.rootfsLazyAssets,
+                experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,
+                requireExistingRootfsPersistence: true,
+            });
+            try {
+                await reopened.init();
+            } finally {
+                await reopened.destroy();
+            }
+        }
     } finally {
         await host?.destroy().catch(() => {});
         if (guestOutputFd !== null) closeSync(guestOutputFd);

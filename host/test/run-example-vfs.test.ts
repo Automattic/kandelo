@@ -94,6 +94,14 @@ describe("run-example isolated filesystem", () => {
         persistentFixtureRoot: realpathSync(sourceRoot),
         experimentalResizablePersistencePath: journalPath,
       });
+      expect(resolveRunExampleFilesystem({
+        KANDELO_RUNNER_VFS: "persistent",
+        KANDELO_RUNNER_PERSISTENCE_PATH: journalPath,
+        KANDELO_RUNNER_VERIFY_REOPEN: "1",
+        KANDELO_RUNNER_FIXTURE_ROOT: sourceRoot,
+        KANDELO_RUNNER_FIXTURE_CWD: "work",
+        KANDELO_RUNNER_GUEST_PROGRAM: "work/test.wasm",
+      }, "/ignored").verifyPersistenceReopen).toBe(true);
     } finally {
       rmSync(sourceRoot, { recursive: true, force: true });
     }
@@ -128,6 +136,15 @@ describe("run-example isolated filesystem", () => {
       KANDELO_RUNNER_VFS: "isolated",
       KANDELO_RUNNER_PERSISTENCE_PATH: "/tmp/journal",
     }, "/host/cwd")).toThrow(/persistent mode/);
+    expect(() => resolveRunExampleFilesystem({
+      KANDELO_RUNNER_VFS: "isolated",
+      KANDELO_RUNNER_VERIFY_REOPEN: "1",
+    }, "/host/cwd")).toThrow(/requires persistent mode/);
+    expect(() => resolveRunExampleFilesystem({
+      KANDELO_RUNNER_VFS: "persistent",
+      KANDELO_RUNNER_PERSISTENCE_PATH: "/tmp/journal",
+      KANDELO_RUNNER_VERIFY_REOPEN: "0",
+    }, "/host/cwd")).toThrow(/VERIFY_REOPEN=1/);
   });
 
   it("does not leak runner controls or host-only path variables into a guest", () => {
