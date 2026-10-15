@@ -4,7 +4,7 @@ self.onmessage = (event) => queuedMessages.push(event);
 const parameters = new URL(self.location.href).searchParams;
 const name = parameters.get("name");
 const cut = parameters.get("cut");
-if (name === null || (cut !== "index" && cut !== "seal")) throw new Error("invalid overlay crash cut");
+if (name === null || (cut !== "journal" && cut !== "index" && cut !== "seal")) throw new Error("invalid overlay crash cut");
 
 const root = await navigator.storage.getDirectory();
 const directory = await root.getDirectoryHandle("kandelo-persistent-overlay", { create: true });

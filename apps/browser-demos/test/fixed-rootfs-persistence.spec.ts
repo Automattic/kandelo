@@ -1545,7 +1545,7 @@ test("browser converts an oversized unindexed fixed journal before mounting", as
   }
 });
 
-for (const cut of ["index", "seal"] as const) {
+for (const cut of ["journal", "index", "seal"] as const) {
   test(`browser recovers oversized journal after ${cut} flush crash cut`, async ({ playwright, browserName, baseURL }, testInfo) => {
     test.setTimeout(180_000);
     const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
@@ -1735,6 +1735,167 @@ for (const cut of ["index", "seal"] as const) {
           await kernel.destroy();
         }
       }, { moduleUrl, kernelUrl, name: prepared.name });
+      expect(rewritten).toBe("MScdefgh");
+    } finally {
+      await activeContext.close().catch(() => {});
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const cut of ["journal", "index", "seal"] as const) {
+  test(`browser recovers live compaction after ${cut} flush crash cut`, async ({ playwright, browserName, baseURL }, testInfo) => {
+    test.setTimeout(180_000);
+    const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+    filesystem.mkdir("/bin", 0o755);
+    filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+    filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+    filesystem.writeFile("/large", new Uint8Array(2 * 1024 * 1024 + 4096), 0o644);
+    const image = await filesystem.saveImage();
+    const kernelUrl = new URL("/live-cut-kernel.wasm", baseURL).href;
+    const imageUrl = new URL("/live-cut-image.vfs", baseURL).href;
+    const moduleUrl = new URL(`/@fs/${browserKernelPath}`, baseURL).href;
+    const crashWorkerUrl = new URL(`/@fs/${resolve(testDirectory, "fixtures/opfs-overlay-crash-cut-worker.ts")}`, baseURL).href;
+    const projectUse = testInfo.project.use as {
+      channel?: string;
+      launchOptions?: Record<string, unknown>;
+      proxy?: Record<string, unknown>;
+      extraHTTPHeaders?: Record<string, string>;
+    };
+    const userDataDir = mkdtempSync(join(tmpdir(), `kandelo-live-crash-cut-${cut}-`));
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    let activeContext = context;
+    try {
+      let page = context.pages()[0] ?? await context.newPage();
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const name = await page.evaluate(async ({ imageUrl }) => {
+        const name = `live-cut-${crypto.randomUUID()}`;
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+        const writer = await imageFile.createWritable();
+        await writer.write(await (await fetch(imageUrl)).arrayBuffer());
+        await writer.close();
+        return name;
+      }, { imageUrl });
+      await page.reload();
+      const reached = await page.evaluate(async ({ moduleUrl, kernelUrl, name, crashWorkerUrl, cut }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const OriginalWorker = Worker;
+        let redirected = 0;
+        const cutReached = new Promise<string>((resolve, reject) => {
+          const timeout = window.setTimeout(() => reject(new Error("live compaction crash cut was not reached")), 60_000);
+          globalThis.Worker = class extends OriginalWorker {
+            constructor(url: string | URL, options?: WorkerOptions) {
+              if (String(url).includes("browser-kernel-worker-entry")) {
+                const faultUrl = new URL(crashWorkerUrl);
+                faultUrl.searchParams.set("name", name);
+                faultUrl.searchParams.set("cut", cut);
+                redirected++;
+                super(faultUrl, options);
+              } else {
+                super(url, options);
+              }
+              this.addEventListener("message", (event) => {
+                if (event.data?.type === "overlay_crash_cut") {
+                  window.clearTimeout(timeout);
+                  resolve(event.data.cut);
+                }
+              });
+              this.addEventListener("error", (event) => {
+                window.clearTimeout(timeout);
+                reject(new Error(event.message));
+              });
+            }
+          };
+        });
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        (window as unknown as { crashCutKernel: unknown }).crashCutKernel = kernel;
+        void (async () => {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: await directory.getFileHandle(`${name}.base`),
+            experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
+          });
+          for (const mode of ["persistence-overwrite", ...Array(17).fill("large")]) {
+            const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", mode]);
+            if (await exit !== 0) throw new Error(`guest ${mode} write failed before live compaction`);
+          }
+        })().catch((error) => { (window as unknown as { crashCutError: string }).crashCutError = String(error); });
+        return { cut: await cutReached, redirected };
+      }, { moduleUrl, kernelUrl, name, crashWorkerUrl, cut });
+      expect(reached).toEqual({ cut, redirected: 1 });
+      if (browserName === "chromium") {
+        const session = await context.newCDPSession(page);
+        const closed = context.waitForEvent("close", { timeout: 15_000 });
+        void session.send("Browser.crash").catch(() => {});
+        await closed;
+        activeContext = await playwright[browserName].launchPersistentContext(userDataDir, {
+          channel: projectUse.channel,
+          proxy: projectUse.proxy as never,
+          extraHTTPHeaders: projectUse.extraHTTPHeaders,
+          ...(projectUse.launchOptions ?? {}),
+        });
+        page = activeContext.pages()[0] ?? await activeContext.newPage();
+      } else {
+        await page.close();
+        page = await context.newPage();
+      }
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const seal = await (await directory.getFileHandle(`${name}.g0.seal`)).getFile();
+        const source = await (await directory.getFileHandle(`${name}.journal`)).getFile();
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: await directory.getFileHandle(`${name}.base`),
+            experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
+            requireExistingRootfsPersistence: true,
+          });
+          const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          const large = await kernel.readFileRangeFromVfs("/large", 13, 4096);
+          const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "mmap-fsync"]);
+          return { sealLength: seal.size, sourceLength: source.size, state, largeValid: large?.every((byte, position) => byte === (position & 255)), writeExit: await exit };
+        } finally {
+          await kernel.destroy();
+        }
+      }, { moduleUrl, kernelUrl, name });
+      expect(recovered.sealLength > 96).toBe(cut === "seal");
+      expect(recovered.sourceLength).toBeGreaterThan(32 * 1024 * 1024);
+      expect(recovered.state).toBe("XYcdefgh");
+      expect(recovered.largeValid).toBe(true);
+      expect(recovered.writeExit).toBe(0);
+      await page.reload();
+      const rewritten = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: await directory.getFileHandle(`${name}.base`),
+            experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
+            requireExistingRootfsPersistence: true,
+          });
+          return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+        } finally {
+          await kernel.destroy();
+        }
+      }, { moduleUrl, kernelUrl, name });
       expect(rewritten).toBe("MScdefgh");
     } finally {
       await activeContext.close().catch(() => {});
