@@ -26,7 +26,7 @@ const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-over
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
 
-for (const mode of ["mmap-sync", "sync", "syncfs"] as const) {
+for (const mode of ["mmap-sync", "mmap-syncfs", "mmap-sync-all", "sync", "syncfs"] as const) {
 test(`browser ${mode} commits the OPFS journal before shutdown`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
@@ -90,7 +90,7 @@ test(`browser ${mode} commits the OPFS journal before shutdown`, async ({ playwr
         }
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl, mode });
       expect(result.journalSize).toBeGreaterThan(72);
-      expect(result.state).toBe(mode === "mmap-sync" ? "MScdefgh" : "XYcdefgh");
+      expect(result.state).toBe(mode.startsWith("mmap-") ? "MScdefgh" : "XYcdefgh");
     } finally {
       await context.close();
     }

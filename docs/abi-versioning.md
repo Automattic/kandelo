@@ -1694,6 +1694,8 @@ rootfs journal without flushing it. `syncfs` also validates its descriptor and
 returns `ENOTSUP` for host-mounted filesystems, which do not expose a mount-wide
 sync operation. The syscall numbers and marshalling are unchanged, but the
 guest-visible behavior differs from ABI 52.
+Both calls publish kernel-owned rootfs `MAP_SHARED` mappings before flushing
+the journal, including stores held by a sole observer.
 
 ### ABI 52 heap safepoints in the syscall wait
 

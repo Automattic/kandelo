@@ -2316,6 +2316,17 @@ pub extern "C" fn kernel_rootfs_sync_persistence() -> i32 {
     }
 }
 
+fn sync_rootfs_mappings_and_persistence() -> Result<(), Errno> {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if table.has_file_backings() {
+        let mut io = WasmSharedMappingIo::for_table(table);
+        table
+            .flush_file_backings_matching(&runtime_core::rootfs::is_rootfs_file_handle, &mut io)?;
+    }
+    crate::rootfs::sync_persistence()
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_checkpoint_prepared_persistence(index_slot: u32) -> i32 {
     let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match index_slot {
@@ -7107,13 +7118,21 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
 
         // -- Memory/sync stubs --
         257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
-        273 => match crate::rootfs::sync_persistence() {
+        273 => match sync_rootfs_mappings_and_persistence() {
             Ok(()) => 0,
             Err(error) => -(error as i32),
         },
         274 => {
-            let (_gkl, proc) = unsafe { get_process() };
-            match syscalls::sys_syncfs(proc, a1) {
+            let targets_rootfs = {
+                let (_gkl, proc) = unsafe { get_process() };
+                syscalls::syncfs_targets_rootfs(proc, a1)
+            };
+            let result = match targets_rootfs {
+                Ok(true) => sync_rootfs_mappings_and_persistence(),
+                Ok(false) => Ok(()),
+                Err(error) => Err(error),
+            };
+            match result {
                 Ok(()) => 0,
                 Err(error) => -(error as i32),
             }

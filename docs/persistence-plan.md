@@ -253,9 +253,11 @@ browser restart tests check the committed journal before shutdown.
 `syncfs` reports storage failures and rejects host-mounted filesystems without
 a mount-wide sync adapter. Guest tests reopen journal bytes captured before
 clean shutdown on Node and all three browser engines.
-`sync` and `syncfs` do not yet force an otherwise unobserved sole-writer
-`MAP_SHARED` mapping to publish its stores; `msync(MS_SYNC)` is the verified
-barrier for that case.
+`sync` and rootfs `syncfs` now force kernel-owned rootfs `MAP_SHARED` mappings
+to publish their stores before flushing the journal, including sole-writer
+mappings. The mapping pass selects rootfs backings, leaving tmpfs and memfd
+backings outside the rootfs durability barrier. Node and three-engine browser
+tests recover mapped writes from the journal captured before clean shutdown.
 The positioned-install browser test also runs a guest overwrite and a 2 MiB
 write near the end of a large file, then reopens the saved image after a page
 reload and verifies both writes through guest reads. Its 68 MiB and 772 MiB

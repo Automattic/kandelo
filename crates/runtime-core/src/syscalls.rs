@@ -19627,7 +19627,7 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
     }
 }
 
-pub fn sys_syncfs(proc: &Process, fd: i32) -> Result<(), Errno> {
+pub fn syncfs_targets_rootfs(proc: &Process, fd: i32) -> Result<bool, Errno> {
     require_io_fd(proc, fd)?;
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
@@ -19639,13 +19639,13 @@ pub fn sys_syncfs(proc: &Process, fd: i32) -> Result<(), Errno> {
         || crate::rootfs::is_rootfs_dir_handle(handle)
         || handle == crate::rootfs::ROOTFS_DIR_SENTINEL
     {
-        return crate::rootfs::sync_persistence();
+        return Ok(true);
     }
     if crate::tmpfs::is_tmpfs_file_handle(handle)
         || crate::tmpfs::is_tmpfs_dir_handle(handle)
         || handle == crate::tmpfs::TMPFS_DIR_SENTINEL
     {
-        return Ok(());
+        return Ok(false);
     }
     Err(Errno::ENOTSUP)
 }
@@ -36402,11 +36402,11 @@ mod tests {
     fn test_syncfs_validates_fd_and_rejects_host_mounts() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        assert_eq!(sys_syncfs(&proc, 99), Err(Errno::EBADF));
+        assert_eq!(syncfs_targets_rootfs(&proc, 99), Err(Errno::EBADF));
         let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
-        assert_eq!(sys_syncfs(&proc, read_fd), Err(Errno::EINVAL));
+        assert_eq!(syncfs_targets_rootfs(&proc, read_fd), Err(Errno::EINVAL));
         let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_CREAT | O_RDWR, 0o644).unwrap();
-        assert_eq!(sys_syncfs(&proc, fd), Err(Errno::ENOTSUP));
+        assert_eq!(syncfs_targets_rootfs(&proc, fd), Err(Errno::ENOTSUP));
     }
 
     #[test]
@@ -36425,8 +36425,11 @@ mod tests {
         let tmp_file =
             sys_open(&mut proc, &mut host, b"/srv/file", O_CREAT | O_RDWR, 0o644).unwrap();
         let tmp_dir = sys_open(&mut proc, &mut host, b"/srv", O_RDONLY | O_DIRECTORY, 0).unwrap();
-        for fd in [root_file, root_dir, tmp_file, tmp_dir] {
-            assert_eq!(sys_syncfs(&proc, fd), Ok(()));
+        for fd in [root_file, root_dir] {
+            assert_eq!(syncfs_targets_rootfs(&proc, fd), Ok(true));
+        }
+        for fd in [tmp_file, tmp_dir] {
+            assert_eq!(syncfs_targets_rootfs(&proc, fd), Ok(false));
         }
         assert!(host.fsync_calls.is_empty());
     }
