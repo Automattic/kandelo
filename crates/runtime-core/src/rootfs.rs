@@ -989,7 +989,7 @@ fn enable_persistence_internal(
     let minimum_created_ino = ROOTFS.with(|state| state.next_ino);
     let mut created = Vec::new();
     let mut base_updates = BTreeMap::new();
-    let mut base_indices: Option<BTreeMap<u64, u32>> = None;
+    let mut base_indices: Option<Vec<(u64, u32)>> = None;
     let mut namespace_replay = false;
     let mut touched_parents = BTreeSet::new();
     journal.for_each_metadata(|key, value| {
@@ -1012,18 +1012,28 @@ fn enable_persistence_internal(
                 }
                 if base_indices.is_none() {
                     base_indices = Some(ROOTFS.with(|state| {
-                        let mut indices = BTreeMap::new();
+                        let mut indices = Vec::new();
                         for (index, inode) in state.inodes.iter().enumerate() {
                             if let Some(inode) = inode {
-                                if indices.insert(inode.ino, index as u32).is_some() {
-                                    return Err(Errno::EIO);
-                                }
+                                indices.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+                                indices.push((
+                                    inode.ino,
+                                    u32::try_from(index).map_err(|_| Errno::EIO)?,
+                                ));
                             }
+                        }
+                        indices.sort_unstable_by_key(|entry| entry.0);
+                        if indices.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                            return Err(Errno::EIO);
                         }
                         Ok::<_, Errno>(indices)
                     })?);
                 }
-                let index = *base_indices.as_ref().unwrap().get(ino).ok_or(Errno::EIO)?;
+                let indices = base_indices.as_ref().ok_or(Errno::EIO)?;
+                let position = indices
+                    .binary_search_by_key(ino, |entry| entry.0)
+                    .map_err(|_| Errno::EIO)?;
+                let index = indices[position].1;
                 let valid = ROOTFS.with(|state| {
                     let inode = state.get(index).ok_or(Errno::EIO)?;
                     if matches!(inode.kind, InodeKind::Regular(_) | InodeKind::PersistentRegular)

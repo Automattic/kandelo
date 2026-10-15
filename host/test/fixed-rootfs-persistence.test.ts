@@ -1003,7 +1003,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       const image = await makeImage("abcdefgh", true);
       const first = await boot(image, path, true);
       try {
-        for (const mode of ["create-file", "verify-created", "verify-created-shrunk", "set-metadata", "resize", "verify-resize", "large"] as const) {
+        for (const mode of ["create-file", "verify-created", "verify-created-shrunk", "resize", "verify-resize", "large", "set-metadata"] as const) {
           const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
           expect(await exit, mode).toBe(0);
         }

@@ -855,6 +855,14 @@ vectors rather than per-inode `BTreeMap` nodes for their temporary lookups.
 Graph validation also uses one byte of parent/reachability flags per known
 inode instead of separate ordered maps for parent counts and reached
 directories; a disconnected directory-cycle regression checks rejection.
+Replaying explicit metadata changes on base-image inodes now resolves their
+numbers through a sorted vector rather than allocating a tree-map node for
+every resident base inode. A guest changes and verifies base-file mode and
+times after reboot through a surviving hard link, and through the original
+name across oversized resizable-journal conversion on Node and Chromium,
+Firefox, and WebKit. This changes scratch representation, not the fact that
+its entry count scales with resident inodes; allocation and boot-time effects
+have not been measured.
 The remaining scratch structures and resident rootfs tree still scale with
 file count; peak boot memory is not yet measured. Data-only or
 base-metadata-only restarts skip namespace graph validation and link-count
