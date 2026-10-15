@@ -8,6 +8,12 @@ export class RejectedOverlayGenerationError extends Error {
   }
 }
 
+class RejectedConvertedTargetError extends Error {
+  constructor(readonly cause: RejectedOverlayGenerationError) {
+    super(cause.message);
+  }
+}
+
 export class NoValidOverlayGenerationError extends Error {
   readonly recovery = "no-valid-overlay-generation" as const;
 
@@ -114,11 +120,26 @@ async function convertOversizedGeneration(
       { slot: sourceSlot, journalLength: sourceLength });
     verifyOverlayGenerationSealSync(target, seal, baseDigest, false, index);
     const sealedLength = target.len();
-    enable(target, index, sealedLength);
+    try {
+      enable(target, index, sealedLength);
+    } catch (error) {
+      if (error instanceof RejectedOverlayGenerationError && error.errno === ERRNO.EIO) {
+        throw new RejectedConvertedTargetError(error);
+      }
+      throw error;
+    }
     published = true;
     return { journal: target, index, slot: targetSlot, generation, sealedLength };
   } catch (error) {
     failure = error;
+    if (seal !== null && !published) {
+      try {
+        seal.truncate(0);
+        seal.flush();
+      } catch (cleanupError) {
+        failure = new AggregateError([error, cleanupError], "persistent overlay conversion seal cleanup failed");
+      }
+    }
     throw failure;
   } finally {
     const cleanupFailures: unknown[] = [];
@@ -227,12 +248,19 @@ export async function enableBestOverlayGeneration(
           if (version === 1 || version === 2) {
             const targetSlot = GENERATION_SLOTS.find((slot) => !candidates.some((other) => other.slot === slot));
             if (targetSlot === undefined) throw new Error("persistent overlay conversion has no safe target slot");
-            const converted = await convertOversizedGeneration(
-              files, candidate.journal, candidate.slot, targetSlot, candidate.generation, enable, convertJournal,
-            );
-            candidates.splice(candidates.indexOf(candidate), 1);
-            closeCandidate(candidate);
-            return converted;
+            try {
+              const converted = await convertOversizedGeneration(
+                files, candidate.journal, candidate.slot, targetSlot, candidate.generation, enable, convertJournal,
+              );
+              candidates.splice(candidates.indexOf(candidate), 1);
+              closeCandidate(candidate);
+              return converted;
+            } catch (error) {
+              if (!(error instanceof RejectedConvertedTargetError)) throw error;
+              enable(candidate.journal, candidate.index, candidate.sealedLength);
+              candidates.splice(candidates.indexOf(candidate), 1);
+              return candidate;
+            }
           }
         }
         enable(candidate.journal, candidate.index, candidate.sealedLength);

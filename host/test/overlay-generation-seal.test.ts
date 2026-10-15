@@ -512,6 +512,41 @@ describe("overlay generation boot selection", () => {
     }
   });
 
+  it.each([true, false])("tries the source after a converted target is rejected (source valid: %s)", async (sourceValid) => {
+    const sourceBytes = new Uint8Array(32 * 1024 * 1024);
+    sourceBytes.set(new Uint8Array(32).fill(7), 8);
+    const oldIndex = new Uint8Array(160);
+    new DataView(oldIndex.buffer).setUint32(4, 1, true);
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(Uint8Array.of(1)),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(Uint8Array.of(2)),
+      "g1.seal": new MemoryStorage(),
+      "g2.journal": new MemoryStorage(sourceBytes),
+      "g2.index": new MemoryStorage(oldIndex),
+      "g2.seal": new MemoryStorage(),
+    };
+    const digest = sourceBytes.slice(8, 40);
+    for (const [slot, generation] of [["g0", 1], ["g1", 2]] as const) {
+      await writeOverlayGenerationSeal(entries[`${slot}.journal`], entries[`${slot}.seal`], generation, digest);
+    }
+    await writeOverlayGenerationSeal(entries["g2.journal"], entries["g2.seal"], 3, digest, entries["g2.index"]);
+    const originalSource = entries["g2.journal"].bytes;
+    const selected = await enableBestOverlayGeneration(files(entries), (journal) => {
+      if (journal === entries["g3.journal"]) throw new RejectedOverlayGenerationError("fixed", 5);
+      if (journal === entries["g2.journal"] && !sourceValid) throw new RejectedOverlayGenerationError("fixed", 5);
+      if (journal !== entries[sourceValid ? "g2.journal" : "g1.journal"]) {
+        throw new Error("selected the wrong fallback");
+      }
+    }, true, (_source, target, checkpoint) => {
+      target.writeAllAt(0, sourceBytes.subarray(0, 72));
+      checkpoint.writeAllAt(0, Uint8Array.of(4));
+    });
+    expect(selected.slot).toBe(sourceValid ? "g2" : "g1");
+    expect(entries["g3.seal"]!.len()).toBe(0);
+    expect(entries["g2.journal"].bytes).toBe(originalSource);
+  });
+
   it("replaces a semantically rejected slot after validating the older v1 source", async () => {
     const source = new Uint8Array(32 * 1024 * 1024);
     source.set(new Uint8Array(32).fill(7), 8);
