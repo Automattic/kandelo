@@ -749,6 +749,8 @@ _run_runtime_test_worker() {
         KANDELO_RUNNER_FIXTURE_CWD="$suite" \
         KANDELO_RUNNER_GUEST_PROGRAM="$suite/$test_name" \
         KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_BUILTINS=explicit \
+        WASM_POSIX_XTASK_BIN="$PROGRAM_INDEX_CHECKER" \
         TIMEOUT="$((this_timeout * 1000))" \
         run_with_timeout "$((this_timeout + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
@@ -1218,6 +1220,17 @@ if [ ! -f "$KERNEL_WASM" ]; then
 fi
 if [ ! -d "$OS_TEST" ]; then
     echo "Error: os-test not found. Run: git submodule update --init tests/sortix/os-test" >&2
+    exit 1
+fi
+RUST_HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+if [ -z "$RUST_HOST_TARGET" ]; then
+    echo "Error: could not determine the Rust host target." >&2
+    exit 1
+fi
+cargo build --release -p xtask --target "$RUST_HOST_TARGET" --quiet
+PROGRAM_INDEX_CHECKER="$REPO_ROOT/target/$RUST_HOST_TARGET/release/xtask"
+if [ ! -f "$PROGRAM_INDEX_CHECKER" ]; then
+    echo "Error: prepared xtask was not found at $PROGRAM_INDEX_CHECKER" >&2
     exit 1
 fi
 abi_contract_stamp_prepare || exit 1
