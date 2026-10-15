@@ -580,6 +580,12 @@ The version 4 table binds exact value locations and SHA-256 value digests at
 boot, then checks each indexed value on its next storage read. A value already
 in the 64-entry cache is not reread until eviction or reboot. Legacy version 3
 tables have no on-demand value authentication.
+Indexed version 4 boot now also checks every compacted block record against
+the corresponding sorted checkpoint entry while replaying the journal prefix.
+It rejects a self-consistent but false block location or digest with `EIO`
+instead of exposing another block's bytes. The check uses the checkpoint's
+bounded page cache; older index versions retain their previous validation.
+The extra per-block hash work at boot has not yet been benchmarked.
 
 The live handoff now uses that third handle and a dedicated kernel-worker turn.
 The fixed-overwrite checkpoint is streamed, but its worst-case memory and
