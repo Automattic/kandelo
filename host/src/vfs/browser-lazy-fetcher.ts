@@ -34,6 +34,8 @@ export function createBrowserLazyFetcher(
     options.runtimeUrl ?? globalThis.location.href,
   );
   const proxyUrl = new URL(configuredProxyUrl, runtimeUrl).href;
+  const proxyCredentials = new URL(proxyUrl).origin === runtimeUrl.origin
+    ? "same-origin" : "omit";
 
   return (url, init) => {
     const target = new URL(url, runtimeUrl);
@@ -46,12 +48,14 @@ export function createBrowserLazyFetcher(
         : fetchImpl(url, init);
     }
 
-    // WHY: proxy requests can be same-origin even though the package asset is
-    // public. Do not attach the application's cookies or reveal its referrer
-    // to an artifact transport selected by VFS metadata.
+    // The deployment config, not VFS metadata, chooses this proxy. A private
+    // same-origin proxy needs the application's session to admit the request;
+    // it must strip that cookie before contacting the artifact destination.
+    // External proxies never receive browser credentials. Do not reveal the
+    // application's referrer to either transport.
     return fetchImpl(corsProxyFetchUrl(proxyUrl, target.href), {
       ...(init ?? {}),
-      credentials: "omit",
+      credentials: proxyCredentials,
       referrerPolicy: "no-referrer",
     });
   };

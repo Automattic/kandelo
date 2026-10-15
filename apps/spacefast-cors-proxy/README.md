@@ -215,3 +215,17 @@ and exited 0. Desktop and 390px mobile captures showed no page errors or mobile
 horizontal overflow. These checks did not cover Firefox or WebKit. The platform
 header/target limitations listed above remain; no live DNS-rebinding guarantee
 is claimed.
+
+Lazy browser assets need authentication to the private Space's proxy as well.
+The browser lazy fetcher and the service worker's proxy reprojection use
+same-origin credentials for the deployment's same-origin proxy, while external
+proxies stay anonymous. The worker strips
+application cookies before forwarding to the artifact destination. This avoids
+Spacefast's pre-worker 403 for public assets such as the Doom shareware WAD;
+it does not make the Space public or grant browser credentials to a CDN.
+
+The v7 live Chromium check on 2026-10-15 fetched the WAD through `/cors-proxy`
+with HTTP 200 and rendered fbDOOM's 640×400 framebuffer. The full 4,196,020-byte
+WAD also matched its declared SHA-256 through the unchanged proxy backend.
+The credential regression uses real HTTP servers and the actual service worker
+in Chromium, Firefox and WebKit to check both direct and reprojected requests.

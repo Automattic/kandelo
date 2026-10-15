@@ -1169,7 +1169,12 @@ if (typeof window !== "undefined") {
     var init = {
       method: request.method,
       headers: headers,
-      credentials: "omit",
+      // The deployment selects this proxy. Authenticate only to its own
+      // origin; the proxy must remove application cookies before forwarding.
+      // Reprojection must not anonymize a private same-origin proxy request.
+      credentials: new URL(outgoingUrl).origin === self.location.origin
+        ? "same-origin" : "omit",
+      referrerPolicy: "no-referrer",
       mode: "cors",
       redirect: request.redirect,
       signal: request.signal,

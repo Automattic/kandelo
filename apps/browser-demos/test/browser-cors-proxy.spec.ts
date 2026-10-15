@@ -5,6 +5,118 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 
+test.describe("lazy artifact proxy authentication", () => {
+  test.use({ serviceWorkers: "allow" });
+  test("lazy assets authenticate only to a configured same-origin proxy", async ({ page }) => {
+    const { build } = await import("esbuild");
+    const modulePath = fileURLToPath(new URL("../../../host/src/vfs/browser-lazy-fetcher.ts", import.meta.url));
+    const bundle = await build({ entryPoints: [modulePath], bundle: true, write: false,
+      format: "esm", platform: "browser" });
+    const rawServiceWorker = await readFile(serviceWorkerPath, "utf8");
+    let origin = "";
+    let externalOrigin = "";
+    const browserErrors: string[] = [];
+    page.on("console", message => {
+      if (message.type() === "error") browserErrors.push(message.text());
+    });
+    const observed: Array<{ url: string; cookie?: string; referer?: string }> = [];
+    const proxy = (privateProxy: boolean) => createServer((request, response) => {
+      if (request.url === "/") {
+        response.writeHead(200, { "Content-Type": "text/html",
+          "Set-Cookie": "private-space-session=fixture-session; Path=/; HttpOnly; SameSite=Lax",
+          "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" });
+        response.end('<!doctype html><title>Private proxy fixture</title><link rel="icon" href="data:,">');
+      } else if (request.url === "/fetcher.js") {
+        response.writeHead(200, { "Content-Type": "text/javascript" });
+        response.end(bundle.outputFiles[0].text);
+      } else if (request.url === "/service-worker.js") {
+        response.writeHead(200, { "Content-Type": "text/javascript",
+          "Cross-Origin-Embedder-Policy": "require-corp" });
+        response.end(rawServiceWorker.replace('"__CORS_PROXY_CONFIG__"', JSON.stringify({
+          url: `${origin}/proxy?url=`, allowedRequestHeaderNames: ["accept", "content-type"],
+          allowAnonymousGetHeaderOmission: true,
+        })));
+      } else if (!request.url?.startsWith("/proxy?")) {
+        response.writeHead(404); response.end();
+      } else {
+        const url = new URL(request.url!, privateProxy ? origin : externalOrigin);
+        observed.push({ url: url.href, cookie: request.headers.cookie, referer: request.headers.referer });
+        response.setHeader("Access-Control-Allow-Origin", request.headers.origin ?? origin);
+        response.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        response.setHeader("Cache-Control", "no-store");
+        if (privateProxy && !request.headers.cookie?.includes("private-space-session=fixture-session")) {
+          response.writeHead(403); response.end("private proxy requires a session");
+        } else if (url.searchParams.get("url")?.endsWith("/redirect")) {
+          response.writeHead(302, { Location: `${externalOrigin}/proxy?url=https://cdn.example.test/asset` });
+          response.end();
+        } else {
+          response.end("verified fixture bytes");
+        }
+      }
+    });
+    const sameOriginProxy = proxy(true);
+    const externalProxy = proxy(false);
+    try {
+      origin = await listen(sameOriginProxy);
+      externalOrigin = await listen(externalProxy);
+      await page.goto(origin);
+      const results = await page.evaluate(async ({ origin, externalOrigin }) => {
+        const { createBrowserLazyFetcher } = await import(`${origin}/fetcher.js`);
+        const results = [];
+        for (const [proxyOrigin, asset] of [[origin, "asset"], [externalOrigin, "asset"], [origin, "redirect"]]) {
+          const fetcher = createBrowserLazyFetcher({ url: `${proxyOrigin}/proxy?url=`,
+            allowedRequestHeaderNames: [], allowAnonymousGetHeaderOmission: true });
+          const response = await fetcher(`https://cdn.example.test/${asset}`, { credentials: "omit" });
+          results.push({ status: response.status, body: await response.text() });
+        }
+        return results;
+      }, { origin, externalOrigin }).catch(error => {
+        throw new Error(JSON.stringify({ error: String(error), browserErrors, observed }));
+      });
+      expect(results, JSON.stringify(observed)).toEqual(Array.from({ length: 3 }, () => ({ status: 200, body: "verified fixture bytes" })));
+      expect(observed).toHaveLength(4);
+      for (const request of observed) {
+        expect(request.referer).toBeUndefined();
+        if (new URL(request.url).origin === origin) {
+          expect(request.cookie).toContain("private-space-session=fixture-session");
+        } else {
+          expect(request.cookie).toBeUndefined();
+        }
+      }
+      // Production reprojects even already-proxied requests in the service
+      // worker. Exercise that second authority with real cookies too.
+      observed.length = 0;
+      await page.evaluate(async () => {
+        await navigator.serviceWorker.register("/service-worker.js", { scope: "/" });
+        await navigator.serviceWorker.ready;
+        if (!navigator.serviceWorker.controller) {
+          await new Promise<void>(resolve => navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true }));
+        }
+      });
+      const controlledResults = await page.evaluate(async origin => {
+        const { createBrowserLazyFetcher } = await import(`${origin}/fetcher.js`);
+        const fetcher = createBrowserLazyFetcher({ url: `${origin}/proxy?url=`,
+          allowedRequestHeaderNames: [], allowAnonymousGetHeaderOmission: true });
+        const responses = [
+          await fetcher("https://cdn.example.test/asset", { credentials: "omit" }),
+          await fetch("https://cdn.example.test/direct", { credentials: "omit" }),
+          await fetcher("https://cdn.example.test/redirect", { credentials: "omit" }),
+        ];
+        return Promise.all(responses.map(async response => ({ status: response.status, body: await response.text() })));
+      }, origin);
+      expect(controlledResults).toEqual(Array.from({ length: 3 }, () => ({ status: 200, body: "verified fixture bytes" })));
+      expect(observed).toHaveLength(4);
+      for (const request of observed) {
+        expect(request.referer).toBeUndefined();
+        expect(request.cookie).toBe(new URL(request.url).origin === origin
+          ? "private-space-session=fixture-session" : undefined);
+      }
+    } finally {
+      await Promise.all([close(sameOriginProxy), close(externalProxy)]);
+    }
+  });
+});
+
 const curlPath = resolveBinary("programs/curl.wasm");
 const wgetPath = resolveBinary("programs/wget.wasm");
 const serviceWorkerPath = fileURLToPath(

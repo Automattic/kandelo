@@ -104,6 +104,8 @@ interface SentRequest {
   url: string;
   method: string;
   cache: RequestCache;
+  credentials: RequestCredentials;
+  referrerPolicy: ReferrerPolicy;
   headers: Record<string, string>;
 }
 
@@ -135,6 +137,8 @@ function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
       url: request.url,
       method: request.method,
       cache: request.cache,
+      credentials: request.credentials,
+      referrerPolicy: request.referrerPolicy,
       headers: Object.fromEntries(request.headers.entries()),
     };
     sent.push(record);
@@ -146,7 +150,7 @@ function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
     "fetch",
     `${section}; return fetchThroughCorsProxy;`,
   )(
-    { location: { href: "https://kandelo.test/" } },
+    { location: new URL("https://kandelo.test/") },
     { warn: (message: string) => warnings.push(message) },
     fakeFetch,
   ) as (request: Request, outgoingUrl: string, targetUrl: string) => Promise<Response>;
@@ -165,6 +169,17 @@ function partial(etag: string) {
 }
 
 describe("service worker proxy dispatch", () => {
+  it("authenticates only to same-origin proxies, including already-projected requests", async () => {
+    const { dispatch, sent } = serviceWorkerDispatch(() => new Response("ok"));
+    for (const proxy of ["https://kandelo.test/proxy?url=", "https://proxy.example/?"]) {
+      for (const input of [TARGET, `${proxy}${encodeURIComponent(TARGET)}`]) {
+        await dispatch(new Request(input, { credentials: "omit" }), `${proxy}${encodeURIComponent(TARGET)}`, TARGET);
+      }
+    }
+    expect(sent.map(request => request.credentials)).toEqual(["same-origin", "same-origin", "omit", "omit"]);
+    expect(sent.every(request => request.referrerPolicy === "no-referrer")).toBe(true);
+  });
+
   it("accepts the kernel worker's already-projected alias without a diagnostic", async () => {
     // Guest traffic reaches the proxy URL projected by BrowserCorsProxy, and
     // a controlled kernel worker's fetch passes through this service worker.

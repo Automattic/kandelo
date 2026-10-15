@@ -1357,8 +1357,16 @@ satisfy a COEP embedding check, but it does not make an opaque no-CORS response
 body readable to JavaScript. Public release assets do not necessarily grant
 CORS even though an ordinary command-line client can read them. An explicit
 `closedLazyAssets` set remains exhaustive and takes precedence over the network
-proxy. The Node.js host is unaffected and continues to fetch its lazy URLs
-directly.
+proxy. A deployment-configured same-origin proxy uses `credentials: "same-origin"`
+to admit requests on authenticated hosting, including private Spacefast Spaces.
+VFS metadata chooses the artifact target, never this trusted proxy URL. An
+external proxy receives `credentials: "omit"`; all proxied lazy requests omit
+the referrer. Service-worker reprojection uses the same credential rule for
+already-proxied requests and automatic cross-origin GET/HEAD wrapping.
+The proxy must strip application cookies before contacting the
+artifact destination. Redirects to another origin cannot carry those cookies.
+Direct same-origin artifact requests keep their caller's credential policy.
+The Node.js host is unaffected and continues to fetch its lazy URLs directly.
 
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
 `Range`, `wp_blog`, and `wp_install`, and copies `Range` into
