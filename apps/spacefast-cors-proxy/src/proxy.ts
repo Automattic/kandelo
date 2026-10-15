@@ -35,6 +35,8 @@ export interface ProxyOptions {
   disableRateLimit?: boolean;
   maxRequestBytes?: number;
   maxResponseBytes?: number;
+  /** Server-side diagnostics; never include transport failures in responses. */
+  onUpstreamError?: (error: unknown) => void;
 }
 
 const DEFAULT_ORIGINS = [
@@ -259,9 +261,11 @@ export function createCorsProxy(options: ProxyOptions = {}): (request: Request) 
       }
       return new Response(boundedBody(upstream.body, responseLimit, abort, cleanup),
         { status: upstream.status, statusText: upstream.statusText, headers, encodeBody: "manual" } as ResponseInit);
-    } catch {
+    } catch (cause) {
       cleanup(); abort.abort();
       await upstream?.body?.cancel().catch(() => {});
+      // A logging sink must not replace the proxy's failure or its cleanup.
+      try { options.onUpstreamError?.(cause); } catch { /* best-effort diagnostic */ }
       // An error gets only proxy-owned headers, including CORS, never a
       // partially copied target Location/cache/authority header.
       for (const name of [...headers.keys()]) {

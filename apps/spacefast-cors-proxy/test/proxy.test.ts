@@ -34,6 +34,8 @@ test("default limits equal Playground's constants", () => {
 
 test("standalone Spacefast handler uses env and the runtime fetch", async t => {
   const calls: unknown[] = [];
+  const errors: unknown[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { errors.push(args); });
   t.mock.method(globalThis, "fetch", async (...args: unknown[]) => {
     calls.push(args); return Response.json({ Status: 0, Answer: [{ type: 1, data: "8.8.8.8" }] });
   });
@@ -45,8 +47,25 @@ test("standalone Spacefast handler uses env and the runtime fetch", async t => {
     assert.equal(await result.text(), "Bad Gateway");
   }
   assert.equal(calls.length, 4);
+  assert.equal(errors.length, 2);
   const defaultOptions = await createCorsProxy()(request());
   assert.equal(defaultOptions.status, 503);
+});
+
+test("upstream failures can be diagnosed without exposing their details to clients", async () => {
+  const failure = new Error("fixture transport failure");
+  const errors: unknown[] = [];
+  const { response, body } = await outcome(request(), {
+    fetch: async () => { throw failure; }, onUpstreamError: error => errors.push(error),
+  });
+  assert.equal(response.status, 502);
+  assert.equal(body, "Bad Gateway");
+  assert.deepEqual(errors, [failure]);
+  const brokenLog = await outcome(request(), {
+    fetch: async () => { throw failure; }, onUpstreamError: () => { throw new Error("logging failed"); },
+  });
+  assert.equal(brokenLog.response.status, 502);
+  assert.equal(brokenLog.body, "Bad Gateway");
 });
 
 test("unconfigured and failing rate limiters fail closed", async () => {

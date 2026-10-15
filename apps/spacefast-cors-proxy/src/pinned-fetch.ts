@@ -36,7 +36,9 @@ export async function resolvePublicAddresses(host: string, dnsFetch: typeof fetc
     // Fixed public IP: this bootstrap fetch cannot be rebound by the target.
     // TLS verifies 1.1.1.1's certificate; redirects are forbidden.
     const response = await dnsFetch(`https://1.1.1.1/dns-query?name=${encodeURIComponent(host)}&type=${type}`,
-      { headers: { Accept: "application/dns-json" }, redirect: "error", signal, cache: "no-store" });
+      // Workers supports manual redirects; its Fetch rejects redirect: "error".
+      // The non-2xx check below rejects redirects without contacting Location.
+      { headers: { Accept: "application/dns-json" }, redirect: "manual", signal, cache: "no-store" });
     if (!response.ok) { await response.body?.cancel(); throw new Error("DNS lookup failed"); }
     const reader = response.body!.getReader();
     const chunks: Uint8Array[] = [];

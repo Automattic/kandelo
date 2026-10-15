@@ -38,7 +38,7 @@ function fixture(wire = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
 test("DNS uses only the fixed HTTPS resolver and requests both address families", async () => {
   const queries: string[] = [];
   const dns: typeof fetch = async (url, options) => {
-    queries.push(String(url)); assert.equal(options!.redirect, "error");
+    queries.push(String(url)); assert.equal(options!.redirect, "manual");
     assert.equal(new Headers(options!.headers).get("accept"), "application/dns-json");
     return Response.json({ Status: 0, Answer: String(url).endsWith("type=A")
       ? [{ type: 5, data: "alias.example" }, { type: 1, data: "8.8.8.8" }, { type: 1, data: "8.8.8.8" }]
@@ -54,6 +54,17 @@ test("literal addresses bypass DNS but never bypass the public-address check", a
     assert.deepEqual(await resolvePublicAddresses(host, forbiddenDns, new AbortController().signal), [host]);
   }
   for (const host of ["127.0.0.1", "[::1]"]) await assert.rejects(resolvePublicAddresses(host, forbiddenDns, new AbortController().signal), /Forbidden/);
+});
+
+test("DNS redirects are rejected without following their destination", async () => {
+  const urls: string[] = [];
+  const dns: typeof fetch = async (url, options) => {
+    urls.push(String(url));
+    assert.equal(options?.redirect, "manual");
+    return new Response(null, { status: 302, headers: { Location: "http://127.0.0.1/dns" } });
+  };
+  await assert.rejects(resolvePublicAddresses("public.example", dns, new AbortController().signal), /DNS lookup failed/);
+  assert.ok(urls.every(url => url.startsWith("https://1.1.1.1/dns-query?")));
 });
 
 test("mixed public/private DNS answers fail before any socket can open", async () => {

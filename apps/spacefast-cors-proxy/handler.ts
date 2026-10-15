@@ -5,6 +5,7 @@ import { createDatabaseRateLimit } from "./src/rate-limit.ts";
 const handler = {
   fetch(request: Request, env: ProxyEnvironment): Promise<Response> {
     return createCorsProxy({ env,
+      onUpstreamError: error => console.error("CORS proxy upstream request failed", error),
       rateLimit: env.DB && !["true", "1"].includes(env.CORS_PROXY_DISABLE_RATE_LIMIT ?? "")
         ? createDatabaseRateLimit(env.DB) : undefined,
     })(request);

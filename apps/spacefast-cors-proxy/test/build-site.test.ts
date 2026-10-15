@@ -54,3 +54,21 @@ test("site packager rejects private build inputs and symlinks", async t => {
   await rm(join(root, "service-worker.js"));
   await assert.rejects(execute(process.execPath, [builder, root]), /ENOENT/);
 });
+
+test("isolation headers cover documents and workers without claiming large binary downloads", async t => {
+  const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "pages", "demo"), { recursive: true });
+  await mkdir(join(root, "assets"));
+  for (const path of ["pages/demo/index.html", "pages/help.html", "assets/worker.mjs", "assets/examples.zip", "assets/kernel.wasm"]) {
+    await writeFile(join(root, path), "fixture");
+  }
+  const { stdout } = await execute(process.execPath, [builder, root]);
+  const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
+  const headers = await readFile(join(output, "_headers"), "utf8");
+  const paths = headers.split("\n").filter(line => line.startsWith("/"));
+  assert.deepEqual(paths, ["/", "/assets/worker.mjs", "/index", "/index.html", "/pages/demo", "/pages/demo/", "/pages/demo/index", "/pages/demo/index.html", "/pages/help", "/pages/help.html", "/service-worker.js"]);
+  assert.ok(!headers.includes("*"));
+  assert.ok(!headers.includes("examples.zip"));
+  assert.ok(!headers.includes("kernel.wasm"));
+  assert.equal(headers.match(/Cross-Origin-Embedder-Policy: require-corp/g)?.length, paths.length);
+});

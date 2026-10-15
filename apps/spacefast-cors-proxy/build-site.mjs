@@ -7,13 +7,27 @@ import { join, resolve } from "node:path";
 const source = process.argv[2] ? resolve(process.argv[2])
   : fileURLToPath(new URL("../browser-demos/dist/", import.meta.url));
 for (const name of ["index.html", "service-worker.js", "vfs-groups"]) await stat(join(source, name));
-async function checkDirectory(directory) {
+const isolationPaths = new Set(["/"]);
+async function checkDirectory(directory, prefix = "") {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (entry.isSymbolicLink() || entry.name.startsWith(".env") ||
         [".git", ".spacefast", "node_modules", "pages-vfs-products.private.json"].includes(entry.name)) {
       throw new Error(`Not a publishable build: ${join(directory, entry.name)}`);
     }
-    if (entry.isDirectory()) await checkDirectory(join(directory, entry.name));
+    const path = `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) await checkDirectory(join(directory, entry.name), path);
+    else if (/\.(?:html|m?js)$/.test(entry.name)) {
+      isolationPaths.add(path);
+      if (entry.name.endsWith(".html")) {
+        // Header matching uses the requested URL, including clean URL aliases.
+        const clean = path.replace(/\.html$/, "");
+        isolationPaths.add(clean);
+        if (entry.name === "index.html") {
+          isolationPaths.add(`${prefix}/`);
+          if (prefix) isolationPaths.add(prefix);
+        }
+      }
+    }
   }
 }
 await checkDirectory(source);
@@ -36,10 +50,11 @@ await writeFile(join(output, "sf.jsonc"), JSON.stringify({
   $schema: "https://spacefast.com/schemas/sf.json",
   runtime: { kind: "functions", compatibilityDate: "2026-07-01" },
 }, null, 2) + "\n");
-// These response headers are required for the kernel's SharedArrayBuffer.
-await writeFile(join(output, "_headers"), `/*
+// Pages and workers need isolation, but binary assets do not. A blanket rule
+// forces assets above Spacefast's 100 MiB PHP-lane limit into an unservable path.
+await writeFile(join(output, "_headers"), [...isolationPaths].sort().map(path => `${path}
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin
-`);
+`).join("\n"));
 console.log(output);

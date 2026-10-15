@@ -77,7 +77,7 @@ The resolver's authenticated DNS answers and the socket runtime's documented
 numeric-address/TLS semantics are the trust roots. Protection does not rely on
 Spacefast's generic fetch gateway filtering the target hostname.
 
-### Deployment boundary still to verify
+### Live deployment boundary
 
 Spacefast's published npm runtime contract identifies Functions as Cloudflare
 Dynamic Workers. Its compiler preserves `cloudflare:*` imports. Cloudflare's
@@ -86,13 +86,23 @@ supports IP connections and the runtime's TLS options include
 `expectedServerHostname`.
 
 Spacefast's own outbound gateway must admit socket connections for this worker
-to operate. This has **not** been verified against a deployed Spacefast Space.
+to operate. Live testing on 2026-10-15 found that the claimed Space's worker
+rejects connections to public numeric destinations, including HTTP requests to
+`66.241.125.232` (httpbingo.org) and `93.184.215.14`. These literal-address
+requests bypass DNS, isolating the failure to socket egress. The runtime reports
+`proxy request failed, cannot connect to the specified address`. The deployed
+app boots with cross-origin isolation and runs shell commands, but its CORS
+proxy cannot forward public requests on this deployment. This requires a
+supported pinned-egress facility from Spacefast; it is not a functioning live
+replacement for the Playground proxy yet.
 Cloudflare also blocks socket connections to Cloudflare IP ranges and certain
 other destinations; these restrictions can prevent access to hosts the
 Playground PHP proxy reaches. Unsupported sockets, rejected connections,
 DNS failures and TLS failures produce 502; there is no weaker hostname-fetch
 fallback. Protocol compatibility is implemented, but unrestricted live
-destination compatibility is not claimed.
+destination compatibility is not claimed. Upstream failures are logged on the
+server without including their details in client responses. The worker returns
+502; the tested Spacefast serving path exposed these failures as HTTP 500.
 
 ## Configuration
 
@@ -103,7 +113,9 @@ current and preceding minute. Concurrent reads can conservatively deny an
 earlier increment but cannot increase the budget. Delayed requests cannot
 use an expired window. OPTIONS does not consume the budget. A denial is 429
 with `Retry-After: 60`; a missing or failing database is 503. The SQL/broker
-behavior is covered locally by contract fixtures and remains unverified live.
+behavior is covered locally by contract fixtures. Live requests reached target
+validation after the limiter, confirming that the counter queries succeed on
+Spacefast's broker. The live 600-request ceiling was not stress-tested.
 
 The reusable core also accepts `createCorsProxy({ rateLimit })` for an
 alternative durable limiter. It returns a denial Response, or void to admit.
@@ -132,8 +144,8 @@ Publish a generated bundle and `sf.jsonc`, not this source directory's tests,
 fixture keys or local output. A root worker claims the whole site; deploy it
 as its own proxy Space. The combined build below instead uses a file-router
 entry, so only `/cors-proxy` and its descendants wake the worker. Static
-files keep their normal serving path. Live Spacefast socket admission and database behavior still
-need verification before claiming a functioning deployment.
+files keep their normal serving path. See the live deployment boundary above:
+the tested Spacefast worker cannot forward pinned outbound connections.
 
 ### Combined Kandelo site
 
@@ -149,7 +161,10 @@ scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
 The second command prints a unique `.context/spacefast-kandelo-build-*`
 directory. It contains the static app, a bundled
 `functions/cors-proxy/[...rest].mjs`,
-`sf.jsonc` and the COOP/COEP/CORP response headers required for shared memory.
+`sf.jsonc` and the COOP/COEP/CORP response headers for documents and worker
+scripts, including clean document URLs. Binary downloads have no custom
+isolation headers: Spacefast cannot serve files above 100 MiB through its
+PHP header-serving lane. Shared memory isolation remains on pages and workers.
 Publish that directory through the Functions-aware Spacefast publishing flow.
 The packager rejects symlinks, dotenv files, dependency/auth directories and
 the private VFS product map. It does not copy test files or fixture keys.
@@ -185,5 +200,7 @@ fixtures. Tests check the requested public destination, original Host/SNI,
 certificate trust and hostname mismatch without contacting the public network.
 Mock transports cover protocol edge cases independently.
 
-This is local code/transport evidence, not a Spacefast gateway integration
-test. Live socket admission and database-broker behavior remain unverified.
+These are local code/transport tests. Separate live integration checks confirm
+boot, service-worker isolation, shell execution, preflight, private/self-target
+rejection and basic database-counter operation. Public HTTP/HTTPS proxying is
+blocked by the socket-egress boundary above; live forwarding parity is unproven.

@@ -2352,12 +2352,20 @@ implements the Playground proxy protocol for Spacefast Functions,
 including the range alias used by this browser app. It owns DNS validation
 and pins TCP/TLS connections to validated public addresses rather than fetching
 the target hostname through the platform gateway. Its local tests include real
-TCP/TLS fixtures; live Spacefast socket admission is unverified. Cloudflare
+TCP/TLS fixtures. Live testing on 2026-10-15 found that Spacefast rejects its
+pinned connections even to public numeric destinations, so proxy networking
+is blocked on that deployment while the app can boot and run shell commands.
+The proxy fails closed without a hostname-fetch fallback. Cloudflare
 socket destination restrictions can prevent access to hosts reached by the
 existing PHP proxy. Its entry uses the Space's database for a shared request
-budget; live SQL/broker behavior also remains unverified. The app's build
+budget; basic counter queries succeeded live, though the 600-request ceiling
+was not stress-tested. The app's build
 command can select this proxy explicitly, and its packager can colocate the
 app and `/cors-proxy` in one Space. See that app's README for the commands.
+The packager applies isolation headers to document URLs and worker scripts,
+including clean document aliases. It leaves large binary downloads on
+Spacefast's static serving path: custom isolation headers on files above
+100 MiB cause `response_headers_unservable` during finalization.
 
 A production build owns one normalized absolute deployment prefix. Build and
 host the output with the same value: output built with `VITE_BASE=/a/` must be
