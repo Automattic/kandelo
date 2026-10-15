@@ -2273,6 +2273,10 @@ The command set includes jq 1.8.2 at `/usr/bin/jq` (also `/bin/jq`),
 with its bundled Oniguruma regular expressions and decimal-number support.
 Its executable stays lazy until first use, including for commands such as
 `printf '%s\n' '{"answer":42}' | jq '.answer'`.
+PHP 8.3.15's CLI is also a lazy executable at `/usr/bin/php` (with a
+`/bin/php` alias). Running `php -r 'echo 6 * 7, PHP_EOL;'` fetches it on
+first use. The base shell adds only the CLI; PHP-FPM and shared extensions
+are not installed by this declaration.
 `./run.sh --fetch-only build shell-vfs` refuses source fallback.
 
 Shell-derived packages consume that resolved image as a declared dependency.
