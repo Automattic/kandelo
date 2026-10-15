@@ -5978,6 +5978,26 @@ fn blocks_for_file(size: u64) -> u64 {
     total
 }
 
+fn blocks_for_sparse_file(blocks: &[u32]) -> u64 {
+    let mut total = blocks.len() as u64;
+    let mut indirect = false;
+    let mut double_indirect = false;
+    let mut last_group = None;
+    for &block in blocks {
+        if block >= 10 + 1024 {
+            double_indirect = true;
+            let group = (block - 10 - 1024) / 1024;
+            if last_group != Some(group) {
+                total += 1;
+                last_group = Some(group);
+            }
+        } else if block >= 10 {
+            indirect = true;
+        }
+    }
+    total + u64::from(indirect) + u64::from(double_indirect)
+}
+
 /// Collect a directory's children onto the walk stack in reverse, so popping
 /// yields the directory's own `BTreeMap` order. The emitted image is therefore
 /// deterministic for a given tree, which is what lets it be compared at all.
@@ -6053,10 +6073,11 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
 
     // Pass one: size the image, under a single borrow so the tree cannot be
     // observed in two states.
-    let (inode_count, data_blocks, oversized_file) = ROOTFS.with(|state| {
+    let (inode_count, mut data_blocks, oversized_file, sparse_candidates) = ROOTFS.with(|state| {
         let mut inode_count = 0u64;
         let mut data_blocks = 0u64;
         let mut oversized_file = false;
+        let mut sparse_candidates = Vec::new();
         let mut count_file = |size: u64| {
             if size > crate::kandelo_image_write::MAX_FILE_BYTES {
                 oversized_file = true;
@@ -6097,7 +6118,12 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 }
                 InodeKind::Regular(data) => data_blocks += count_file(data.len() as u64),
                 InodeKind::PersistentRegular => {
-                    data_blocks += count_file(inode.persistent_size.unwrap_or(0));
+                    let size = inode.persistent_size.unwrap_or(0);
+                    if size > crate::kandelo_image_write::MAX_FILE_BYTES {
+                        let _ = count_file(size);
+                    } else {
+                        sparse_candidates.push((inode.ino, size));
+                    }
                 }
                 InodeKind::Symlink(target) => {
                     if target.len() as u64 > 40 {
@@ -6107,10 +6133,22 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 InodeKind::Special(_) | InodeKind::LazyMember { .. } => {}
             }
         }
-        (inode_count, data_blocks, oversized_file)
+        (inode_count, data_blocks, oversized_file, sparse_candidates)
     });
     if oversized_file {
         return Err(Errno::EFBIG);
+    }
+    let mut sparse_blocks = BTreeMap::new();
+    if !sparse_candidates.is_empty() {
+        let mut mount = PERSISTENT_ROOTFS.lock();
+        let journal = &mut mount.as_mut().ok_or(Errno::EIO)?.journal;
+        for (inode, size) in sparse_candidates {
+            let blocks = journal.allocated_file_blocks(inode, size)?;
+            data_blocks = data_blocks
+                .checked_add(blocks_for_sparse_file(&blocks))
+                .ok_or(Errno::EFBIG)?;
+            sparse_blocks.insert(inode, blocks);
+        }
     }
 
     // Inodes drive `total_inodes = max_blocks / 4`, so a tree of many tiny
@@ -6385,11 +6423,19 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
             ExportNode::PersistentFile { inode, image_inode, base_size, size } => {
                 let id = contents.len() as u64;
                 contents.push(ImageContent::Persistent { inode, image_inode, base_size });
+                let content = match sparse_blocks.get(&inode) {
+                    Some(blocks) if image_inode.is_none() => Content::SparseDeferred {
+                        id,
+                        len: size,
+                        blocks,
+                    },
+                    _ => Content::Deferred { id, len: size },
+                };
                 writer.create_file(
                     item.parent_out,
                     &item.name,
                     mode,
-                    Content::Deferred { id, len: size },
+                    content,
                 )?
             }
         };
@@ -9862,7 +9908,7 @@ mod tests {
     }
 
     #[test]
-    fn sparse_four_gib_file_exports_an_extended_container_header() {
+    fn sparse_four_gib_file_exports_and_reopens_without_materializing_its_hole() {
         let _guard = TestGuard::acquire();
         let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
         let base_digest: [u8; 32] = Sha256::digest(&image).into();
@@ -9875,13 +9921,65 @@ mod tests {
         release_handle(handle);
 
         let mut head = [0u8; 24];
-        assert_eq!(export_container_read(0, &mut head, &mut image_bytes), Ok(24));
-        assert_eq!(u32::from_le_bytes(head[4..8].try_into().unwrap()), 2);
-        assert_eq!(u32::from_le_bytes(head[12..16].try_into().unwrap()), 24);
-        assert!(u64::from_le_bytes(head[16..24].try_into().unwrap()) > u32::MAX as u64);
+        assert_eq!(export_container_read(0, &mut head, &mut image_bytes), Ok(16));
+        assert_eq!(u32::from_le_bytes(head[4..8].try_into().unwrap()), 1);
+        let body_len = u32::from_le_bytes(head[12..16].try_into().unwrap());
+        assert!(body_len < 64 * 1024 * 1024, "snapshot body used {body_len} bytes");
         let resident = IMAGE_EXPORT_CACHE.with(|slot| slot.as_ref().unwrap().image.resident_bytes());
         assert!(resident < 32 * 1024 * 1024, "snapshot metadata used {resident} bytes");
-        reset_image_export();
+        let exported = drain_container(4096, &mut image_bytes);
+        reset();
+        let mut exported_bytes = image_host(&exported);
+        load_image(exported.len() as u64, &mut exported_bytes).unwrap();
+        let handle = open(b"/large", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(fstat(handle).unwrap().st_size, u32::MAX as u64 + 1);
+        let mut bytes = [1u8; 2];
+        assert_eq!(read(handle, u32::MAX as i64 - 1, &mut bytes, &mut exported_bytes), Ok(2));
+        assert_eq!(bytes, [0, b'x']);
+        release_handle(handle);
+    }
+
+    #[test]
+    fn indexed_sparse_file_exports_only_its_live_blocks() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let source = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(source), base_digest).unwrap();
+        let handle = open(b"/indexed-sparse", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        let offset = 512 * 1024 * 1024i64 + 7;
+        assert_eq!(write(handle, offset, b"TAIL", &mut image_bytes), Ok(4));
+        sync_persistence().unwrap();
+        release_handle(handle);
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let checkpoint_end = target.0.lock().len() as u64;
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence_indexed(
+            Box::new(target),
+            Box::new(index),
+            base_digest,
+            checkpoint_end,
+        )
+        .unwrap();
+        let exported = drain_container(4096, &mut image_bytes);
+        assert!(exported.len() < 64 * 1024 * 1024);
+        reset();
+        let mut exported_bytes = image_host(&exported);
+        load_image(exported.len() as u64, &mut exported_bytes).unwrap();
+        let handle = open(b"/indexed-sparse", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(fstat(handle).unwrap().st_size, offset as u64 + 4);
+        let mut bytes = [1u8; 6];
+        assert_eq!(read(handle, offset - 2, &mut bytes, &mut exported_bytes), Ok(6));
+        assert_eq!(&bytes, b"\0\0TAIL");
+        release_handle(handle);
     }
 
     #[test]

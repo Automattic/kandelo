@@ -332,7 +332,7 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
     });
     try {
       const page = context.pages()[0] ?? (await context.newPage());
-      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(existsSync(directKernelPath) ? directKernelPath : kernelPath!) }));
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
       const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
@@ -362,6 +362,8 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
           if (await exit !== 0) throw new Error("guest could not create FIFO");
           const socket = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "create-socket"]);
           if (await socket.exit !== 0) throw new Error("guest could not create socket node");
+          const sparse = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "snapshot-sparse"]);
+          if (await sparse.exit !== 0) throw new Error("guest could not create sparse file");
         } finally {
           await first.destroy();
         }
@@ -370,6 +372,9 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
         let snapshotIntegrity: OpfsImageIntegrity;
         try {
           snapshotIntegrity = await reopened.exportRootfsImageToFile(snapshotFile);
+          if (snapshotIntegrity.length >= 64 * 1024 * 1024) {
+            throw new Error("snapshot export materialized the sparse hole");
+          }
           let overwriteRejected = false;
           try {
             await reopened.exportRootfsImageToFile(snapshotFile);
@@ -387,6 +392,7 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
         let created: string;
         let fifoExit: number;
         let socketExit: number;
+        let sparseExit: number;
         try {
           await restored.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile, integrity: snapshotIntegrity });
           state = new TextDecoder().decode((await restored.readFileFromVfs("/state"))!);
@@ -395,6 +401,8 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
           fifoExit = await exit;
           const socket = await restored.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-socket"]);
           socketExit = await socket.exit;
+          const sparse = await restored.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-snapshot-sparse"]);
+          sparseExit = await sparse.exit;
         } finally {
           await restored.destroy();
         }
@@ -410,9 +418,9 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
         } finally {
           await damaged.destroy();
         }
-        return { state, created, fifoExit, socketExit, snapshotBytes: snapshotIntegrity.length, damageRejected };
+        return { state, created, fifoExit, socketExit, sparseExit, snapshotBytes: snapshotIntegrity.length, damageRejected };
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result).toEqual({ state: "SNAP", created: "created", fifoExit: 0, socketExit: 0, snapshotBytes: expect.any(Number), damageRejected: true });
+      expect(result).toEqual({ state: "SNAP", created: "created", fifoExit: 0, socketExit: 0, sparseExit: 0, snapshotBytes: expect.any(Number), damageRejected: true });
       expect(result.snapshotBytes).toBeGreaterThan(0);
     } finally {
       await context.close();

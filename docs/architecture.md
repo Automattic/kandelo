@@ -2603,6 +2603,8 @@ H+N      ...    Optional trailing sections, each a 4-byte length and bytes:
 `H` is 16 for v1 and 24 for v2. The writer preserves v1 for bodies that fit
 its 32-bit length and uses v2 only above that boundary. The KIFS v1 per-file
 block map is a separate limit; a larger container header does not remove it.
+Snapshot export leaves unwritten blocks of new journal-backed regular files
+unallocated in KIFS, so their logical size need not determine body size.
 
 ## Networking
 

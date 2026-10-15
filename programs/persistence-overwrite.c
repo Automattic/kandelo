@@ -15,6 +15,25 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && (strcmp(argv[1], "snapshot-sparse") == 0
+        || strcmp(argv[1], "verify-snapshot-sparse") == 0)) {
+        const off_t offset = 512LL * 1024 * 1024 + 7;
+        if (strcmp(argv[1], "snapshot-sparse") == 0) {
+            int fd = open("/snapshot-sparse", O_CREAT | O_EXCL | O_RDWR, 0640);
+            if (fd < 0) return 184;
+            if (pwrite(fd, "TAIL", 4, offset) != 4) return 185;
+            if (fsync(fd) != 0) return 186;
+            return close(fd) == 0 ? 0 : 187;
+        }
+        int fd = open("/snapshot-sparse", O_RDONLY);
+        if (fd < 0) return 188;
+        struct stat metadata;
+        if (fstat(fd, &metadata) != 0 || metadata.st_size != offset + 4) return 189;
+        char bytes[6];
+        if (pread(fd, bytes, sizeof(bytes), offset - 2) != (ssize_t)sizeof(bytes)
+            || memcmp(bytes, "\0\0TAIL", sizeof(bytes)) != 0) return 190;
+        return close(fd) == 0 ? 0 : 191;
+    }
     if (argc >= 2 && (strcmp(argv[1], "sync") == 0 || strcmp(argv[1], "syncfs") == 0)) {
         int fd = open("/state", O_RDWR);
         if (fd < 0) return 172;
