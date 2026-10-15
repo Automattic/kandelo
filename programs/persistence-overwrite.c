@@ -15,6 +15,17 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && strcmp(argv[1], "quota-rename") == 0) {
+        if (rename("/state", "/quota-renamed") != -1 || errno != ENOSPC) return 203;
+        struct stat metadata;
+        if (lstat("/quota-renamed", &metadata) != -1 || errno != ENOENT) return 204;
+        int fd = open("/state", O_RDONLY);
+        if (fd < 0) return 205;
+        char bytes[8];
+        if (read(fd, bytes, sizeof(bytes)) != (ssize_t)sizeof(bytes)
+            || memcmp(bytes, "abcdefgh", sizeof(bytes)) != 0) return 206;
+        return close(fd) == 0 ? 0 : 207;
+    }
     if (argc >= 2 && (strcmp(argv[1], "snapshot-dense-reextend") == 0
         || strcmp(argv[1], "verify-snapshot-dense-reextend") == 0)) {
         const off_t offset = 512LL * 1024 * 1024 + 7;

@@ -10661,6 +10661,55 @@ mod tests {
     }
 
     #[test]
+    fn failed_persistent_namespace_changes_leave_live_and_reopened_names_intact() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let mut image_bytes = image_host(&image);
+        for operation in ["rename", "rename-over", "unlink", "link"] {
+            reset();
+            load_image(image.len() as u64, &mut image_bytes).unwrap();
+            let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+            let fail_writes = Arc::new(AtomicBool::new(false));
+            enable_resizable_persistence(
+                Box::new(FailingCreateStorage {
+                    inner: storage.clone(),
+                    fail_writes: fail_writes.clone(),
+                }),
+                base_digest,
+            )
+            .unwrap();
+            let root_before = lstat(b"/").unwrap();
+            let file_before = lstat(b"/hello.txt").unwrap();
+            let replacement_before = lstat(b"/big.txt").unwrap();
+            fail_writes.store(true, Ordering::SeqCst);
+            let result = match operation {
+                "rename" => rename(b"/hello.txt", b"/moved"),
+                "rename-over" => rename(b"/hello.txt", b"/big.txt"),
+                "unlink" => unlink(b"/hello.txt"),
+                _ => link(b"/hello.txt", b"/linked"),
+            };
+            assert_eq!(result, Err(Errno::ENOSPC), "{operation}");
+            for reopened in [false, true] {
+                if reopened {
+                    reset();
+                    load_image(image.len() as u64, &mut image_bytes).unwrap();
+                    enable_resizable_persistence(Box::new(storage.clone()), base_digest).unwrap();
+                }
+                let root_after = lstat(b"/").unwrap();
+                let file_after = lstat(b"/hello.txt").unwrap();
+                assert_eq!(file_after.st_ino, file_before.st_ino, "{operation}");
+                assert_eq!(file_after.st_nlink, file_before.st_nlink, "{operation}");
+                assert_eq!(lstat(b"/big.txt").unwrap().st_ino, replacement_before.st_ino, "{operation}");
+                assert_eq!(root_after.st_mtime_sec, root_before.st_mtime_sec, "{operation}");
+                assert_eq!(root_after.st_mtime_nsec, root_before.st_mtime_nsec, "{operation}");
+                assert!(matches!(lstat(b"/moved"), Err(Errno::ENOENT)), "{operation}");
+                assert!(matches!(lstat(b"/linked"), Err(Errno::ENOENT)), "{operation}");
+            }
+        }
+    }
+
+    #[test]
     fn resizable_persistence_replays_namespace_timestamps() {
         let _guard = TestGuard::acquire();
         let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));

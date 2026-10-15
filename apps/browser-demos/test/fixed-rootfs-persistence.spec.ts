@@ -1496,9 +1496,16 @@ const quotaScenarios = (["fixed", "resizable"] as const).flatMap((mode) => [
   ...([128, -1] as const).map((cut) => ({ mode, fault: "short" as const, cut, guestMode: "quota-write" })),
   ...(["quota-mmap-fsync", "quota-mmap-fdatasync"] as const).flatMap((guestMode) =>
     (["write", "flush"] as const).map((fault) => ({ mode, fault, cut: undefined, guestMode }))),
+  ...(mode === "resizable" ? (["write", "flush", "partial"] as const).map((fault) => ({
+    mode,
+    fault,
+    cut: fault === "partial" ? -1 : undefined,
+    guestMode: "quota-rename",
+  })) : []),
 ]);
 for (const { mode, fault, cut, guestMode } of quotaScenarios) {
-  test(`browser ${mode} ${guestMode} ${fault}${cut === undefined ? "" : cut === -1 ? " cut before transaction end" : ` cut ${cut}`} quota failure rejects durability sync, preserves dirty reads, and recovers`, async ({ playwright, browserName, baseURL }, testInfo) => {
+  const outcome = guestMode === "quota-rename" ? "keeps namespace atomic" : "rejects durability sync, preserves dirty reads";
+  test(`browser ${mode} ${guestMode} ${fault}${cut === undefined ? "" : cut === -1 ? " cut before transaction end" : ` cut ${cut}`} quota failure ${outcome} and recovers`, async ({ playwright, browserName, baseURL }, testInfo) => {
     test.setTimeout(90_000);
     const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
     filesystem.mkdir("/bin", 0o755);
@@ -1573,12 +1580,14 @@ for (const { mode, fault, cut, guestMode } of quotaScenarios) {
           const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", guestMode]);
           const status = await exit;
           const visible = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          const renamedMissing = await kernel.readFileFromVfs("/quota-renamed") === null;
           const large = fault === "evict" ? await kernel.readFileFromVfs("/large") : null;
           (window as unknown as { crashKernel: unknown }).crashKernel = kernel;
           return {
             name,
             status,
             visible,
+            renamedMissing,
             redirected,
             dirtyPrefix: large === null || large.subarray(0, 64 * 4096).every((byte) => byte === 88),
             unwrittenTail: large === null || large.subarray(64 * 4096).every((byte) => byte === 0),
@@ -1595,7 +1604,8 @@ for (const { mode, fault, cut, guestMode } of quotaScenarios) {
         });
         expect(before).toMatchObject({
           status: 0,
-          visible: fault === "evict" ? "abcdefgh" : "XYcdefgh",
+          visible: fault === "evict" || guestMode === "quota-rename" ? "abcdefgh" : "XYcdefgh",
+          renamedMissing: true,
           redirected: 1,
           dirtyPrefix: true,
           unwrittenTail: true,
@@ -1625,18 +1635,25 @@ for (const { mode, fault, cut, guestMode } of quotaScenarios) {
                 ? { experimentalFixedPersistenceName: name, persistentComputerName: name }
                 : { experimentalResizablePersistenceName: name, persistentComputerName: name }),
             });
-            const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+            const stateBytes = await kernel.readFileFromVfs("/state");
+            const renamedBytes = await kernel.readFileFromVfs("/quota-renamed");
+            const state = stateBytes === null ? null : new TextDecoder().decode(stateBytes);
+            const renamed = renamedBytes === null ? null : new TextDecoder().decode(renamedBytes);
             const large = fault === "evict" ? await kernel.readFileFromVfs("/large") : null;
-            return { state, largeIsZero: large === null || large.every((byte) => byte === 0) };
+            return { state, renamed, largeIsZero: large === null || large.every((byte) => byte === 0) };
           } finally {
             await kernel.destroy();
           }
         }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, name: before.name, mode, fault });
-        if (fault === "flush") {
+        if (guestMode === "quota-rename" && fault === "flush") {
+          expect([{ state: "abcdefgh", renamed: null }, { state: null, renamed: "abcdefgh" }])
+            .toContainEqual({ state: recovered.state, renamed: recovered.renamed });
+        } else if (fault === "flush") {
           expect(["abcdefgh", "XYcdefgh"]).toContain(recovered.state);
         } else {
           expect(recovered.state).toBe("abcdefgh");
         }
+        if (guestMode === "quota-rename" && fault !== "flush") expect(recovered.renamed).toBeNull();
         expect(recovered.largeIsZero).toBe(true);
       } finally {
         await context.close();
