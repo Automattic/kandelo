@@ -1364,7 +1364,10 @@ for (const keepOpen of [false, true]) {
   });
 }
 
-test("browser termination loses unsynced writes without damaging the last durable image", async ({ playwright, browserName, baseURL }, testInfo) => {
+const terminationCases = (["fixed", "resizable"] as const).flatMap((persistenceMode) =>
+  (["synced", "unsynced"] as const).map((writeMode) => ({ persistenceMode, writeMode })));
+for (const { persistenceMode, writeMode } of terminationCases) {
+test(`browser ${persistenceMode} termination recovers ${writeMode} writes`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.mkdir("/bin", 0o755);
@@ -1392,39 +1395,54 @@ test("browser termination loses unsynced writes without damaging the last durabl
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const before = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
+      const before = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, persistenceMode, writeMode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
         const imageBytes = new Uint8Array(await (await fetch(imageUrl)).arrayBuffer());
-        const name = `fixed-crash-${crypto.randomUUID()}`;
+        const name = `${persistenceMode}-crash-${crypto.randomUUID()}`;
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
         const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
         const writer = await imageFile.createWritable();
         await writer.write(imageBytes);
         await writer.close();
         const kernel = new BrowserKernel({ kernelOwnedFs: true });
-        await kernel.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
-        const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "unsynced"]);
+        await kernel.initFromOpfsImage({
+          kernelWasm: kernelBytes,
+          vfsImageFile: imageFile,
+          ...(persistenceMode === "fixed"
+            ? { experimentalFixedPersistenceName: name }
+            : { experimentalResizablePersistenceName: name }),
+          persistentComputerName: name,
+        });
+        const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", writeMode]);
         if (await exit !== 0) throw new Error("guest overwrite failed");
         (window as unknown as { crashKernel: unknown }).crashKernel = kernel;
         return { name, visible: new TextDecoder().decode(await kernel.readFileFromVfs("/state")) };
-      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
+      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl, persistenceMode, writeMode });
       expect(before.visible).toBe("XYcdefgh");
       await page.reload();
-      const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+      const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name, persistenceMode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const imageFile = await directory.getFileHandle(`${name}.base`);
         const kernel = new BrowserKernel({ kernelOwnedFs: true });
         try {
-          await kernel.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: name });
+          await kernel.initFromOpfsImage({
+            kernelWasm: kernelBytes,
+            vfsImageFile: imageFile,
+            ...(persistenceMode === "fixed"
+              ? { experimentalFixedPersistenceName: name }
+              : { experimentalResizablePersistenceName: name }),
+            persistentComputerName: name,
+            requireExistingRootfsPersistence: true,
+          });
           return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
         } finally {
           await kernel.destroy();
         }
-      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, name: before.name });
-      expect(recovered).toBe("abcdefgh");
+      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, name: before.name, persistenceMode });
+      expect(recovered).toBe(writeMode === "synced" ? "XYcdefgh" : "abcdefgh");
     } finally {
       await context.close();
     }
@@ -1432,6 +1450,7 @@ test("browser termination loses unsynced writes without damaging the last durabl
     rmSync(userDataDir, { recursive: true, force: true });
   }
 });
+}
 
 const quotaScenarios = (["fixed", "resizable"] as const).flatMap((mode) => [
   ...(["write", "flush", "evict"] as const).map((fault) => ({ mode, fault, cut: undefined, guestMode: fault === "evict" ? "quota-evict" : "quota-write" })),

@@ -21,12 +21,12 @@ import {
   ftruncateSync,
   fstatSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readSync,
   readFileSync,
-  rmdirSync,
   rmSync,
   unlinkSync,
   writeSync,
@@ -200,7 +200,7 @@ let kernelWorker: CentralizedKernelWorker;
 let persistentOverlay: PersistentOverlayStorage | null = null;
 let persistentOverlayIndex: PersistentOverlayStorage | null = null;
 let liveOverlayCompactor: LiveOverlayCompactor | null = null;
-let persistentOverlayLockDir: string | null = null;
+let persistentOverlayLock: import("node:sqlite").DatabaseSync | null = null;
 let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
 let maxPages: number = DEFAULT_MAX_PAGES;
@@ -1309,9 +1309,15 @@ async function handleInit(msg: InitMessage) {
     if (!isAbsolute(path) || basename(path) === "." || basename(path) === "..") {
       throw new Error("rootfs persistence path must be an absolute file path");
     }
-    const lockDir = `${path}.lock`;
-    mkdirSync(lockDir, { mode: 0o700 });
+    const lockPath = `${path}.lock`;
+    if (existsSync(lockPath) && !lstatSync(lockPath).isFile()) {
+      throw new Error(`rootfs persistence has a legacy or invalid lock at ${lockPath}; verify its owner has stopped before removing it`);
+    }
+    const sqliteModuleName = "node:sqlite";
+    const { DatabaseSync }: typeof import("node:sqlite") = await import(sqliteModuleName);
+    const lock = new DatabaseSync(lockPath, { timeout: 0 });
     try {
+      lock.exec("BEGIN EXCLUSIVE");
       const backend = new HostFileSystem(dirname(path));
       const files = {
         open: async (slot, file, create) => {
@@ -1337,7 +1343,7 @@ async function handleInit(msg: InitMessage) {
       const active = await compactOverlayGeneration(selected, files, handoff);
       persistentOverlay = active.journal;
       persistentOverlayIndex = active.index ?? null;
-      persistentOverlayLockDir = lockDir;
+      persistentOverlayLock = lock;
       liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
         persistentOverlay = next.journal;
         persistentOverlayIndex = next.index ?? null;
@@ -1345,7 +1351,8 @@ async function handleInit(msg: InitMessage) {
         post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${error}` });
       });
     } catch (error) {
-      rmdirSync(lockDir);
+      if (persistentOverlayLock === lock) persistentOverlayLock = null;
+      lock.close();
       throw error;
     }
   }
@@ -3691,9 +3698,9 @@ async function performDestroy() {
   persistentOverlay = null;
   persistentOverlayIndex?.close();
   persistentOverlayIndex = null;
-  if (persistentOverlayLockDir !== null) {
-    rmdirSync(persistentOverlayLockDir);
-    persistentOverlayLockDir = null;
+  if (persistentOverlayLock !== null) {
+    persistentOverlayLock.close();
+    persistentOverlayLock = null;
   }
   if (gracefulDetachComplete) {
     try {

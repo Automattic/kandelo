@@ -283,6 +283,22 @@ refuses same-page persistent restarts, including superseded boots, instead of
 silently starting from potentially older journal contents; a reload is needed
 to attempt recovery. Browser quota-failure tests exercise this shutdown result
 in fixed and resizable modes on Chromium, Firefox, and WebKit.
+Node now holds a non-waiting OS-backed exclusive lock on each persistent
+journal's `.lock` SQLite file for the kernel lifetime. Unlike the previous
+directory lock, it is released by the OS after a process `SIGKILL`. Fixed and
+resizable Node mounts strictly reboot with a synced guest overwrite and lose
+an unsynced dirty-cache overwrite without calling shutdown. A second Node
+process cannot acquire the same journal while its owner remains live. The
+lock file remains after clean shutdown and must not be removed while a writer
+may be active. An old directory-form `.lock` fails closed and requires explicit
+operator removal after verifying the old owner has stopped; there is no safe
+automatic way to distinguish its stale and live forms. Browser Web Locks and
+OPFS sync access handles remain the browser-side ownership mechanism.
+Chromium, Firefox, and WebKit each reload a page without destroying its
+kernel after synced and unsynced guest writes in both fixed and resizable
+modes. All 12 strict reboots recover exactly the durable state.
+Browser-process crash and power-loss
+recovery still need separate validation.
 Chromium, Firefox, and WebKit exercise a worker that drops destroy requests:
 the old tab refuses same-journal boots after the timeout, and a new tab can
 reopen the journal after the old tab closes.
@@ -740,9 +756,8 @@ parallel workers: 941 pass, eight are expected failures, and none fail
 unexpectedly. This broadens live POSIX coverage, but still does not inspect
 each journal after reboot or measure peak memory and compaction latency.
 The persistent stdio, process, and paths suites add 79 passes with no failures
-or skips. Together with basic and I/O, 1,083 Sortix runtime cases ran on fresh
-resizable journals; the remaining suites and test-specific restart assertions
-are still open.
+or skips. Together with basic and I/O, 1,083 Sortix runtime cases first ran on
+fresh resizable journals without restart checks.
 Sortix now has an opt-in `--persistent-reboot` mode. After the guest exits, the
 runner inspects the image-owned fixture tree, checks for shutdown sync failure,
 destroys the first kernel, and boots the exact same composed image and journal
@@ -755,10 +770,14 @@ with this state comparison. A comparison or reboot failure forces runner exit
 125 and a host diagnostic marker, which the persistent-reboot runner records
 as an unexpected failure even when the guest's output matched an expectation.
 The 79-case stdio, process, and paths suites also pass with the comparison.
-The 949-case basic suite at 14 parallel workers produced 938 passes, eight
-expected failures, and three
-timeouts; the three timed-out cases each pass when rerun sequentially. The
-runner now exits nonzero for any unexpected timeout. This
-checks journal replay and fixture namespace reconstruction, but not changes
-outside the fixture, complete content of larger files, test-specific expected
-state, or abrupt crashes; those remain separate conformance work.
+The 949-case basic suite at four parallel workers produces 941 passes, eight
+expected failures, and no unexpected outcomes or timeouts. At 14 parallel
+workers it produced three timeouts; those cases each pass when rerun
+sequentially. The runner now exits nonzero for any unexpected timeout. This
+checks journal replay and fixture namespace reconstruction. The remaining
+limits, malloc, signal, and UDP suites add 282 passes, 13 expected failures,
+and two skips across 297 cases, with no unexpected failures or timeouts. In
+total, 1,380 Sortix runtime cases have run under strict post-test reboot, but
+the comparison still omits changes outside the fixture, complete content of
+larger files, and test-specific expected state; those remain separate
+conformance work.
