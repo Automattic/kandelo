@@ -1003,6 +1003,7 @@ const SYS_BRK = ABI_SYSCALLS.Brk;
 const SYS_MREMAP = ABI_SYSCALLS.Mremap;
 const SYS_MADVISE = ABI_SYSCALLS.Madvise;
 const SYS_MSYNC = ABI_SYSCALLS.Msync;
+const MS_SYNC = 4;
 const SYS_MLOCK = ABI_SYSCALLS.Mlock;
 const SYS_MLOCK2 = ABI_SYSCALLS.Mlock2;
 const SYS_MUNLOCK = ABI_SYSCALLS.Munlock;
@@ -14337,6 +14338,16 @@ export class CentralizedKernelWorker {
           retVal = -1;
           publicationRetVal = -1;
           errVal = EIO;
+        } else if ((origArgs[2] & MS_SYNC) !== 0 && this.#rootfsImageLength !== 0) {
+          const sync = this.#kernelInstanceForEntry(entry).exports
+            .kernel_rootfs_sync_persistence as (() => number) | undefined;
+          if (typeof sync !== "function") throw new Error("kernel lacks rootfs persistence sync export");
+          const status = sync();
+          if (status < 0) {
+            retVal = -1;
+            publicationRetVal = -1;
+            errVal = -status;
+          }
         }
         if (this.hostReaped?.has(channel.pid)) return;
       }

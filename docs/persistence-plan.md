@@ -246,6 +246,9 @@ Writes spanning more than 64 cache blocks are split into bounded chunks;
 later writeback failure returns a short count rather than claiming the entire
 write succeeded. A 2 MiB guest `pwrite` followed by `fsync` survives a Node
 worker restart and Chromium, Firefox, and WebKit page reloads.
+`msync(MS_SYNC)` now flushes the rootfs journal after publishing `MAP_SHARED`
+bytes, rather than waiting for a later `fsync` or clean shutdown; Node and
+browser restart tests check the committed journal before shutdown.
 The positioned-install browser test also runs a guest overwrite and a 2 MiB
 write near the end of a large file, then reopens the saved image after a page
 reload and verifies both writes through guest reads. Its 68 MiB and 772 MiB

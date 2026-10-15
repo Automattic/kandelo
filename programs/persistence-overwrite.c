@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <time.h>
@@ -13,6 +14,17 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && strcmp(argv[1], "mmap-sync") == 0) {
+        int fd = open("/state", O_RDWR);
+        if (fd < 0) return 167;
+        char *mapped = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (mapped == MAP_FAILED) return 168;
+        mapped[0] = 'M';
+        mapped[1] = 'S';
+        if (msync(mapped, 4096, MS_SYNC) != 0) return 169;
+        if (munmap(mapped, 4096) != 0) return 170;
+        return close(fd) == 0 ? 0 : 171;
+    }
     int change_config = argc >= 2 && strcmp(argv[1], "change-boot-config") == 0;
     int restore_config = argc >= 2 && strcmp(argv[1], "restore-boot-config") == 0;
     if (change_config || restore_config) {

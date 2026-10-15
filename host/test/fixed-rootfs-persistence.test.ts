@@ -80,6 +80,32 @@ function expandJournalToCompactionThreshold(path: string): number {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
+  it.skipIf(guestProgramPath === null)("makes MAP_SHARED msync durable before host shutdown", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-mmap-persistence-"));
+    const path = join(directory, "machine.journal");
+    const committedPath = join(directory, "committed.journal");
+    const image = await makeImage("abcdefgh");
+    try {
+      const first = await boot(image, path);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "mmap-sync"]);
+        expect(await exit).toBe(0);
+        expect(readFileSync(path).byteLength).toBeGreaterThan(72);
+        copyFileSync(path, committedPath);
+      } finally {
+        await first.destroy();
+      }
+      const reopened = await boot(image, committedPath, false, true);
+      try {
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("MScdefgh");
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["fixed", "resizable"] as const)("preserves %s host storage failures instead of reporting a corrupt generation", async (mode) => {
     const image = await makeImage("abcdefgh");
     const worker = new CentralizedKernelWorker(
