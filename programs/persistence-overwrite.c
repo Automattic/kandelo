@@ -26,14 +26,22 @@ int main(int argc, char **argv) {
         }
         return close(fd) == 0 ? 0 : 175;
     }
-    if (argc >= 2 && strcmp(argv[1], "mmap-sync") == 0) {
+    if (argc >= 2 && (strcmp(argv[1], "mmap-sync") == 0
+        || strcmp(argv[1], "mmap-syncfs") == 0
+        || strcmp(argv[1], "mmap-sync-all") == 0)) {
         int fd = open("/state", O_RDWR);
         if (fd < 0) return 167;
         char *mapped = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         if (mapped == MAP_FAILED) return 168;
         mapped[0] = 'M';
         mapped[1] = 'S';
-        if (msync(mapped, 4096, MS_SYNC) != 0) return 169;
+        if (strcmp(argv[1], "mmap-sync") == 0) {
+            if (msync(mapped, 4096, MS_SYNC) != 0) return 169;
+        } else if (strcmp(argv[1], "mmap-syncfs") == 0) {
+            if (syncfs(fd) != 0) return 176;
+        } else {
+            sync();
+        }
         if (munmap(mapped, 4096) != 0) return 170;
         return close(fd) == 0 ? 0 : 171;
     }

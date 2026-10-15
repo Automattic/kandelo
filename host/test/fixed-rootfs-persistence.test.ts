@@ -80,7 +80,7 @@ function expandJournalToCompactionThreshold(path: string): number {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
-  it.skipIf(guestProgramPath === null).each(["mmap-sync", "sync", "syncfs"] as const)("makes %s durable before host shutdown", async (mode) => {
+  it.skipIf(guestProgramPath === null).each(["mmap-sync", "mmap-syncfs", "mmap-sync-all", "sync", "syncfs"] as const)("makes %s durable before host shutdown", async (mode) => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-mmap-persistence-"));
     const path = join(directory, "machine.journal");
     const committedPath = join(directory, "committed.journal");
@@ -97,7 +97,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       }
       const reopened = await boot(image, committedPath, false, true);
       try {
-        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe(mode === "mmap-sync" ? "MScdefgh" : "XYcdefgh");
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe(mode.startsWith("mmap-") ? "MScdefgh" : "XYcdefgh");
       } finally {
         await reopened.destroy();
       }
