@@ -1825,6 +1825,11 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
             await migrated.destroy();
           }
           const targetVersion = new DataView(await (await (await directory.getFileHandle(`${name}.g4.index`)).getFile()).slice(4, 8).arrayBuffer()).getUint32(0, true);
+          const bootNames = new Set<string>();
+          for await (const filename of directory.keys()) bootNames.add(filename);
+          const retiredAtBoot = ["g0", "g1", "g2"].every((slot) => ["journal", "index", "seal"]
+            .every((suffix) => !bootNames.has(`${name}.${slot}.${suffix}`)));
+          const bootSourceRetained = bootNames.has(`${name}.g3.seal`);
           await grow(await directory.getFileHandle(`${name}.g4.journal`), true);
           const compacted = await boot();
           let compactedState: string;
@@ -1838,6 +1843,8 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
           return {
             state: migratedState,
             targetVersion,
+            retiredAtBoot,
+            bootSourceRetained,
             compactedState,
             retired: ["g1", "g2", "g3"].every((slot) => ["journal", "index", "seal"]
               .every((suffix) => !names.has(`${name}.${slot}.${suffix}`))),
@@ -1845,7 +1852,8 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
           };
         }, { moduleUrl, kernelUrl, name: prepared.name });
         expect(migrated).toEqual({
-          state: "XYcdefgh", targetVersion: 5, compactedState: "XYcdefgh",
+          state: "XYcdefgh", targetVersion: 5, retiredAtBoot: true, bootSourceRetained: true,
+          compactedState: "XYcdefgh",
           retired: true, sourceRetained: true,
         });
         await page.reload();

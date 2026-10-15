@@ -598,6 +598,13 @@ conversion into `g4` or `g5`. A Node guest migration and Chromium, Firefox,
 and WebKit OPFS guest migrations now convert a four-slot fixed v1 source into
 `g4`, then reboot it; Node also compacts that `g4` generation back to `g0`.
 Staged browser replacement cleanup discovers and removes numbered spill files.
+After a successful boot conversion into `g4` or a later slot, the host has
+mounted the new target and validated its source. It keeps those two copies,
+flush-invalidates older seals, and removes their files before guests start.
+Node and all three browser engines verify that a four-slot fixed v1 migration
+removes `g0`–`g2` at boot while retaining `g3` and the new `g4` generation.
+An injected boot-retirement removal failure leaves both copies selectable;
+cleanup errors do not turn a mounted target into a failed boot.
 After a live compaction with a discovered spill slot, the host retains the
 newly active generation and its semantically mounted source fallback, then
 invalidates older seals with a flush before removing their checkpoints and
@@ -623,8 +630,10 @@ later compaction cannot overwrite its active source.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.
-A boot-only conversion retains its older sealed generations until a later
-live compaction. The legacy unsealed journal is not yet collected, and a
+A boot-only conversion into `g3` still retains older sealed generations until
+a later live compaction. The legacy unsealed journal is not yet collected:
+existing source-bound seals record only its length, not a content digest, so
+deleting it automatically needs a stronger provenance check. A
 retirement failure may leave invalid orphan files until another spill-slot
 compaction; near-quota cleanup and power-loss ordering still need fault tests.
 Numbered spill slots remove the fixed four-slot recovery exception, but these
