@@ -57,7 +57,7 @@ import { BrowserTimeProvider } from "./vfs/time";
 import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
 import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { collectBootOverlayGenerations, compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
+import { collectBootOverlayGenerations, compactOverlayGenerationForBoot, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -1330,7 +1330,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     const recovered = await collectBootOverlayGenerations(selected, files, (error) => {
       post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `generation retirement failed: ${formatError(error)}` });
     });
-    const active = await compactOverlayGeneration(recovered, files, handoff);
+    const active = await compactOverlayGenerationForBoot(recovered, files, handoff, (error) => {
+      post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `boot compaction deferred (ENOSPC): ${formatError(error)}` });
+    });
     persistentOverlay = active.journal;
     persistentOverlayIndex = active.index ?? null;
     liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {

@@ -3031,6 +3031,14 @@ function kmsProbeChecksum(pixels: Uint8Array): number {
   return h;
 }
 
+function preservePersistentOverlayQuotaCode(error: Error, cause: unknown): Error {
+  if (cause === -ERRNO.ENOSPC || (typeof cause === "object" && cause !== null
+    && "code" in cause && cause.code === "ENOSPC")) {
+    Object.assign(error, { code: "ENOSPC" });
+  }
+  return error;
+}
+
 export class CentralizedKernelWorker {
   #kernel: WasmPosixKernel;
   #kernelEntryGate: KernelEntryGate;
@@ -5585,10 +5593,10 @@ export class CentralizedKernelWorker {
         return undefined;
       });
       if (observed.failure !== null) {
-        throw new Error(
+        throw preservePersistentOverlayQuotaCode(new Error(
           `persistent overlay host storage failed during kernel initialization: ${String(observed.failure.cause)}`,
           observed.failure,
-        );
+        ), observed.failure.cause);
       }
       if (status === undefined) throw new Error("kernel did not report rootfs persistence status");
       if (status !== 0) throw new RejectedOverlayGenerationError(resizable ? "resizable" : "fixed", -status);
@@ -5660,10 +5668,10 @@ export class CentralizedKernelWorker {
         return undefined;
       });
       if (observed.failure !== null) {
-        throw new Error(
+        throw preservePersistentOverlayQuotaCode(new Error(
           `persistent overlay host storage failed during legacy conversion: ${String(observed.failure.cause)}`,
           observed.failure,
-        );
+        ), observed.failure.cause);
       }
       if (status !== 0) throw new RejectedOverlayGenerationError(resizable ? "resizable" : "fixed", -(status ?? 5));
     } finally {
@@ -5700,7 +5708,9 @@ export class CentralizedKernelWorker {
         status = prepare(targetSlot);
         return undefined;
       });
-      if (status !== 0) throw new Error(`rootfs persistence compaction preparation failed (errno ${-(status ?? 5)})`);
+      if (status !== 0) throw preservePersistentOverlayQuotaCode(
+        new Error(`rootfs persistence compaction preparation failed (errno ${-(status ?? 5)})`), status,
+      );
       this.#preparedOverlayImportSlot = targetSlot;
       this.#preparedOverlayStorage = target;
     } catch (error) {
@@ -5727,7 +5737,9 @@ export class CentralizedKernelWorker {
         status = checkpoint(indexSlot);
         return undefined;
       });
-      if (status !== 0) throw new Error(`prepared rootfs persistence checkpoint failed (errno ${-(status ?? 5)})`);
+      if (status !== 0) throw preservePersistentOverlayQuotaCode(
+        new Error(`prepared rootfs persistence checkpoint failed (errno ${-(status ?? 5)})`), status,
+      );
       this.#preparedOverlayIndexStorage = index;
     } catch (error) {
       this.#setPersistentOverlaySlot(indexSlot, source);

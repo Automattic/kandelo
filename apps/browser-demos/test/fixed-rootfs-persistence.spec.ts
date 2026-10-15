@@ -1287,7 +1287,7 @@ test("browser recovers a committed source write instead of a stale sealed target
 });
 
 test("browser converts an oversized unindexed fixed journal before mounting", async ({ playwright, browserName, baseURL }, testInfo) => {
-  test.setTimeout(180_000);
+  test.setTimeout(240_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.mkdir("/bin", 0o755);
   filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
@@ -1370,6 +1370,61 @@ test("browser converts an oversized unindexed fixed journal before mounting", as
         }
         return { name, sourceLength: position };
       }, { moduleUrl, kernelUrl, imageUrl });
+      await page.reload();
+      const quotaMounted = await page.evaluate(async ({ moduleUrl, kernelUrl, name, quotaWorkerUrl }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const OriginalWorker = Worker;
+        let redirected = 0;
+        const workerErrors: string[] = [];
+        globalThis.Worker = class extends OriginalWorker {
+          constructor(url: string | URL, options?: WorkerOptions) {
+            if (String(url).includes("browser-kernel-worker-entry")) {
+              const faultUrl = new URL(quotaWorkerUrl);
+              faultUrl.searchParams.set("name", name);
+              redirected++;
+              super(faultUrl, options);
+            } else {
+              super(url, options);
+            }
+            this.addEventListener("error", (event) => workerErrors.push(event.message));
+          }
+        };
+        const diagnostics: string[] = [];
+        const kernel = new BrowserKernel({ kernelOwnedFs: true, onHostDiagnostic: (diagnostic) => {
+          diagnostics.push(diagnostic.message);
+        } });
+        try {
+          await Promise.race([
+            kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: await directory.getFileHandle(`${name}.base`),
+              experimentalFixedPersistenceName: name,
+              persistentComputerName: name,
+            }),
+            new Promise<never>((_, reject) => setTimeout(
+              () => reject(new Error(`conversion quota worker timed out: redirected=${redirected}, errors=${workerErrors.join("|")}`)),
+              30_000,
+            )),
+          ]);
+          return {
+            state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+            redirected,
+            deferred: diagnostics.find((message) => message.includes("boot compaction deferred")) ?? diagnostics.join(" | "),
+            sealLength: (await (await directory.getFileHandle(`${name}.g0.seal`)).getFile()).size,
+            sourceLength: (await (await directory.getFileHandle(`${name}.journal`)).getFile()).size,
+          };
+        } finally {
+          await kernel.destroy();
+        }
+      }, {
+        moduleUrl,
+        kernelUrl,
+        name: prepared.name,
+        quotaWorkerUrl: new URL(`/@fs/${resolve(testDirectory, "fixtures/opfs-overlay-conversion-quota-worker.ts")}`, baseURL).href,
+      });
+      expect(quotaMounted).toMatchObject({ state: "XYcdefgh", redirected: 1, sealLength: 0, sourceLength: prepared.sourceLength });
+      expect(quotaMounted.deferred).toContain("ENOSPC");
       await page.reload();
       const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
         const { BrowserKernel } = await import(moduleUrl);

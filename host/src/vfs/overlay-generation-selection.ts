@@ -14,6 +14,10 @@ class RejectedConvertedTargetError extends Error {
   }
 }
 
+function isStorageQuotaError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOSPC";
+}
+
 export class NoValidOverlayGenerationError extends Error {
   readonly recovery = "no-valid-overlay-generation" as const;
 
@@ -454,7 +458,7 @@ export async function enableBestOverlayGeneration(
               closeCandidate(candidate);
               return select(converted);
             } catch (error) {
-              if (!(error instanceof RejectedConvertedTargetError)) throw error;
+              if (!(error instanceof RejectedConvertedTargetError) && !isStorageQuotaError(error)) throw error;
               enable(candidate.journal, candidate.index, candidate.sealedLength);
               candidates.splice(candidates.indexOf(candidate), 1);
               return select(candidate);
@@ -491,7 +495,7 @@ export async function enableBestOverlayGeneration(
             files, legacy, "legacy", targetSlot, 0, enable, convertJournal,
           );
         } catch (error) {
-          if (error instanceof RejectedConvertedTargetError) {
+          if (error instanceof RejectedConvertedTargetError || isStorageQuotaError(error)) {
             try {
               enable(legacy);
             } catch (sourceError) {
@@ -646,6 +650,28 @@ export async function compactOverlayGeneration(
     if (openedIndex !== null) cleanup(() => openedIndex.close());
     cleanup(() => target.close());
     throw failure;
+  }
+}
+
+export async function compactOverlayGenerationForBoot(
+  selected: SelectedOverlayGeneration,
+  files: OverlayGenerationFiles,
+  handoff: OverlayCompactionHandoff,
+  reportDeferred: (error: unknown) => void,
+): Promise<SelectedOverlayGeneration> {
+  let activationAttempted = false;
+  try {
+    return await compactOverlayGeneration(selected, files, {
+      ...handoff,
+      activate: () => {
+        activationAttempted = true;
+        handoff.activate();
+      },
+    });
+  } catch (error) {
+    if (activationAttempted || !isStorageQuotaError(error)) throw error;
+    reportDeferred(error);
+    return selected;
   }
 }
 

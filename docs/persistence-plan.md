@@ -646,12 +646,20 @@ including several consecutive live compactions and a failed legacy conversion.
 Reusing a slot also clears any older reuse hint for that physical slot, so a
 later compaction cannot overwrite its active source.
 Conversion needs quota for the temporary sorted references and target journal;
-an `ENOSPC` failure does not publish the target or discard the source. Peak
-resident memory and conversion latency on a near-capacity image remain unmeasured.
-Host fault tests cap the conversion journal, index, and seal separately; after
-each `ENOSPC`, the legacy journal remains selectable, and conversion succeeds
-when the cap is lifted. This does not establish behavior under a shared OPFS
-quota or actual near-capacity browser storage.
+an `ENOSPC` failure does not publish the target or discard the source. Boot
+now mounts that source instead of requiring conversion space; if the automatic
+compaction also runs out of space, it reports a diagnostic and continues with
+the source. A quota error after activation is attempted, or any non-quota
+storage failure, still aborts boot rather than assuming the source is active.
+Host fault tests cap the conversion journal, index, and seal separately and
+cover an indexed source; after each `ENOSPC`, the source remains selectable,
+and conversion succeeds when the cap is lifted. Chromium, Firefox, and WebKit
+inject a shared 128 KiB growth budget across target OPFS generation files.
+All three boot the guest-written legacy journal, observe deferred compaction,
+and convert it after space returns.
+This does not establish behavior under actual near-capacity browser storage.
+Peak resident memory and conversion latency on a near-capacity image remain
+unmeasured.
 A boot-only conversion into `g3` now retains its source `g2` while retiring
 older `g0` and `g1` generations before guests start. Version-4 legacy seals
 allow the unsealed legacy journal to be retired after a second sealed copy is
