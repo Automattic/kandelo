@@ -16,7 +16,7 @@ import { NodePlatformIO } from "../src/platform/node";
 import { configureRootfsOverlayFromImage } from "../src/process-lifecycle";
 import { HostFileSystem } from "../src/vfs/host-fs";
 import { OverlayStorageFile, type PersistentOverlayStorage } from "../src/vfs/overlay-storage";
-import { writeOverlayGenerationSeal } from "../src/vfs/overlay-generation-seal";
+import { verifyOverlayGenerationSeal, writeOverlayGenerationSeal } from "../src/vfs/overlay-generation-seal";
 import { NoValidOverlayGenerationError } from "../src/vfs/overlay-generation-selection";
 
 const directKernelPath = join(import.meta.dirname, "../../target/wasm32-unknown-unknown/release/kandelo_kernel.wasm");
@@ -933,6 +933,59 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       const secondSlot = await boot(image, path);
       await secondSlot.destroy();
       expect(readFileSync(`${path}.g1.journal`).byteLength).toBeLessThan(firstSlotLength / 2);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it.skipIf(guestProgramPath === null)("falls back from a sealed v5 index with a false block digest", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-index-fallback-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      expandJournalToCompactionThreshold(path);
+      const compacted = await boot(image, path);
+      await compacted.destroy();
+      const priorJournal = readFileSync(`${path}.g0.journal`);
+      const priorIndex = readFileSync(`${path}.g0.index`);
+      expect(priorIndex.readUInt32LE(4)).toBe(5);
+      expect(priorIndex.readBigUInt64LE(80)).toBeGreaterThan(0n);
+      writeFileSync(`${path}.g1.journal`, priorJournal);
+      const forgedIndex = Buffer.from(priorIndex);
+      forgedIndex[160 + 24] ^= 1;
+      createHash("sha256").update(forgedIndex.subarray(160)).digest().copy(forgedIndex, 96);
+      createHash("sha256").update(forgedIndex.subarray(0, 128)).digest().copy(forgedIndex, 128);
+      writeFileSync(`${path}.g1.index`, forgedIndex);
+      const backend = new HostFileSystem(directory);
+      const journal = OverlayStorageFile.open(backend, "/machine.journal.g1.journal", false);
+      const index = OverlayStorageFile.open(backend, "/machine.journal.g1.index", false);
+      const seal = OverlayStorageFile.open(backend, "/machine.journal.g1.seal");
+      try {
+        const digest = new Uint8Array(createHash("sha256").update(image).digest());
+        await writeOverlayGenerationSeal(journal, seal, 2, digest, index, {
+          slot: "g0",
+          journalLength: priorJournal.byteLength,
+        });
+        expect((await verifyOverlayGenerationSeal(journal, seal, digest, false, index)).generation).toBe(2);
+      } finally {
+        seal.close();
+        index.close();
+        journal.close();
+      }
+      const recovered = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await recovered.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await recovered.destroy();
+      }
+      expect(readFileSync(`${path}.g1.index`)).toEqual(forgedIndex);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

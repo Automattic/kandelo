@@ -591,7 +591,9 @@ sidecar to mark their block stream as canonical. Boot checks every indexed
 block against the corresponding journal mutation with the same bounded page
 cache and rejects a false location or digest with `EIO`. Existing version 1/2
 fixed indexes stay readable through their older recovery path; unindexed
-legacy journals still need a bounded conversion path.
+legacy journals still need a bounded conversion path. Node and all three
+browser engines now exercise a re-sealed, internally checksummed v5 index
+with a false block digest and recover through the prior valid generation.
 
 The live handoff now uses that third handle and a dedicated kernel-worker turn.
 The fixed-overwrite checkpoint is streamed, but its worst-case memory and
