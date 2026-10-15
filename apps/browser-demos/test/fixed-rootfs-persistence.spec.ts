@@ -26,6 +26,87 @@ const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-over
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
 
+test("browser boots an extended VFSI container from OPFS and reopens its journal", async ({ playwright, browserName, baseURL }, testInfo) => {
+  const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.mkdir("/bin", 0o755);
+  filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+  filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+  const original = await filesystem.saveImage();
+  const bodyLength = new DataView(original.buffer, original.byteOffset, original.byteLength).getUint32(12, true);
+  const extended = new Uint8Array(original.byteLength + 8);
+  extended.set(original.subarray(0, 12));
+  const header = new DataView(extended.buffer);
+  header.setUint32(4, 2, true);
+  header.setUint32(12, 24, true);
+  header.setBigUint64(16, BigInt(bodyLength), true);
+  extended.set(original.subarray(16), 24);
+  const kernelUrl = new URL("/extended-vfsi-kernel.wasm", baseURL).href;
+  const imageUrl = new URL("/extended-vfsi-image.vfs", baseURL).href;
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-extended-vfsi-browser-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const page = context.pages()[0] ?? await context.newPage();
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(directKernelPath) }));
+      await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(extended) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+        const directory = await (await navigator.storage.getDirectory())
+          .getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const name = `extended-vfsi-${crypto.randomUUID()}`;
+        const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+        const writer = await imageFile.createWritable();
+        await writer.write(await (await fetch(imageUrl)).arrayBuffer());
+        await writer.close();
+        const boot = async (requireExisting: boolean) => {
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          await kernel.initFromOpfsImage({
+            kernelWasm,
+            vfsImageFile: imageFile,
+            experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
+            requireExistingRootfsPersistence: requireExisting,
+          });
+          return kernel;
+        };
+        const first = await boot(false);
+        let initial: string;
+        try {
+          initial = new TextDecoder().decode((await first.readFileFromVfs("/state"))!);
+          const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "sync"]);
+          if (await exit !== 0) throw new Error("extended VFSI guest sync failed");
+        } finally {
+          await first.destroy();
+        }
+        const reopened = await boot(true);
+        try {
+          return { initial, recovered: new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!) };
+        } finally {
+          await reopened.destroy();
+        }
+      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
+      expect(result).toEqual({ initial: "abcdefgh", recovered: "XYcdefgh" });
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
 for (const mode of ["mmap-sync", "mmap-syncfs", "mmap-sync-all", "mmap-fsync", "mmap-fdatasync", "sync", "syncfs"] as const) {
 test(`browser ${mode} commits the OPFS journal before shutdown`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);

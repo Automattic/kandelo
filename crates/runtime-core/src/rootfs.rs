@@ -6129,9 +6129,6 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
         u32::try_from(u64::from(data_start) + data_blocks + 64).map_err(|_| Errno::EIO)?,
     );
     let total_blocks = core::cmp::max(total_blocks, 16);
-    if u64::from(total_blocks) * 4096 > u32::MAX as u64 {
-        return Err(Errno::EFBIG);
-    }
 
     let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig {
         size_bytes: u64::from(total_blocks) * 4096,
@@ -6814,10 +6811,7 @@ where
         Ok(slot.as_ref().map(|plan| plan.len()).unwrap_or(0))
     })?;
 
-    let head = crate::vfsi_container::header(
-        usize::try_from(body_len).map_err(|_| Errno::EINVAL)?,
-        sections.flags(),
-    )?;
+    let head = crate::vfsi_container::header_for_body(body_len, sections.flags())?;
     let head_len = head.len() as u64;
     let total = head_len
         .checked_add(body_len)
@@ -9631,6 +9625,25 @@ mod tests {
     }
 
     #[test]
+    fn extended_container_header_loads_a_real_rootfs_image() {
+        let _guard = TestGuard::acquire();
+        let original = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let body_len = u32::from_le_bytes(original[12..16].try_into().unwrap()) as u64;
+        let mut extended = original[..12].to_vec();
+        extended[4..8].copy_from_slice(&2u32.to_le_bytes());
+        extended.extend_from_slice(&24u32.to_le_bytes());
+        extended.extend_from_slice(&body_len.to_le_bytes());
+        extended.extend_from_slice(&original[16..]);
+        let mut host = image_host(&extended);
+        assert_eq!(load_image(extended.len() as u64, &mut host), Ok(6));
+        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).expect("open");
+        let mut bytes = [0u8; 11];
+        assert_eq!(read(handle, 0, &mut bytes, &mut host), Ok(11));
+        assert_eq!(&bytes, b"hello sffs\n");
+        release_handle(handle);
+    }
+
+    #[test]
     fn fixed_persistence_replays_image_file_overwrite_after_reset() {
         let _guard = TestGuard::acquire();
         let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
@@ -9743,8 +9756,8 @@ mod tests {
         let handle = open(b"/large", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
         let mut export_chunk = [0; 4096];
         assert!(export_container_read(0, &mut export_chunk, &mut image_bytes).unwrap() > 0);
-        let container_offset = u32::MAX as i64 - 1;
-        assert_eq!(write(handle, container_offset, b"x", &mut image_bytes), Ok(1));
+        let offset = crate::kandelo_image_write::MAX_FILE_BYTES as i64;
+        assert_eq!(write(handle, offset, b"x", &mut image_bytes), Ok(1));
         assert_eq!(
             export_container_read(0, &mut export_chunk, &mut image_bytes),
             Err(Errno::EFBIG)
@@ -9752,7 +9765,6 @@ mod tests {
         assert!(IMAGE_EXPORT_CACHE.with(|slot| slot.is_none()));
         truncate_handle(handle, 0, &mut image_bytes).unwrap();
         assert!(export_image_read(0, &mut export_chunk, &mut image_bytes).unwrap() > 0);
-        let offset = crate::kandelo_image_write::MAX_FILE_BYTES as i64;
         assert_eq!(write(handle, offset, b"x", &mut image_bytes), Ok(1));
         assert_eq!(
             export_image_read(0, &mut export_chunk, &mut image_bytes),
@@ -9771,6 +9783,29 @@ mod tests {
         assert_eq!(read(handle, offset, &mut byte, &mut image_bytes), Ok(1));
         assert_eq!(byte, *b"x");
         release_handle(handle);
+    }
+
+    #[test]
+    fn sparse_four_gib_file_exports_an_extended_container_header() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        let handle = open(b"/large", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        assert_eq!(write(handle, u32::MAX as i64, b"x", &mut image_bytes), Ok(1));
+        release_handle(handle);
+
+        let mut head = [0u8; 24];
+        assert_eq!(export_container_read(0, &mut head, &mut image_bytes), Ok(24));
+        assert_eq!(u32::from_le_bytes(head[4..8].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(head[12..16].try_into().unwrap()), 24);
+        assert!(u64::from_le_bytes(head[16..24].try_into().unwrap()) > u32::MAX as u64);
+        let resident = IMAGE_EXPORT_CACHE.with(|slot| slot.as_ref().unwrap().image.resident_bytes());
+        assert!(resident < 32 * 1024 * 1024, "snapshot metadata used {resident} bytes");
+        reset_image_export();
     }
 
     #[test]
