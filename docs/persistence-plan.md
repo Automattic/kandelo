@@ -195,11 +195,12 @@ checkpoint before the primary manifest closes, and checks that the prior
 generation remains selected before a later successful publication.
 It also injects write and pre-close failures at both the backup and primary
 manifest files; Chromium, Firefox, and WebKit keep selecting the prior image
-after each failure. A lost acknowledgement after the primary manifest closes
-reports an error to the caller, but reload selects the staged image. Retrying
-publication verifies both the committed image and preserved prior image and
-journals, then succeeds without rewriting either manifest. A damaged backup
-refuses that retry. A persistent-browser-context test closes the publishing
+after each failure. If either manifest close commits but loses its
+acknowledgement, the writer reads back the exact manifest and continues;
+publication succeeds without a false error. Retrying publication verifies
+both the committed image and preserved prior image and journals, then succeeds
+without rewriting either manifest. A damaged backup refuses that retry. A
+persistent-browser-context test closes the publishing
 tab immediately before or after the primary manifest close, then opens a new
 tab: Chromium, Firefox, and WebKit select the prior or staged generation,
 respectively, while retaining the prior image after commit. Both generations
@@ -215,8 +216,9 @@ crash, or power-loss durability at that cut.
 The page checkpoint action uses the held per-computer lease until both the
 source and staged kernels have closed their journals, then releases it before
 the manifest-locked publish and boots the selected manifest. Superseded work
-cannot start publication; a lost publication acknowledgement leaves recovery
-to the next reload. Errors stop the page instead of silently restarting from
+cannot start publication; a lost close acknowledgement is confirmed by exact
+manifest read-back, while an unconfirmed commit remains an error. Errors stop
+the page instead of silently restarting from
 an unverified generation. The shared checkpoint handoff passes a browser
 guest-write and reload test on Chromium, Firefox, and WebKit, but the full
 page transition test is authored and currently skipped without the shell
@@ -645,9 +647,9 @@ the browser boot uses that name when opening the overlay, and rejects a changed
 namespace rather than silently starting an empty journal. Existing manifests
 without that field retain their original name. A composer guest write survives
 a reboot through a non-default journal namespace on Chromium, Firefox, and
-WebKit. Automatic replacement of an existing computer's base and journal,
-with kernel quiescence and complete failure recovery, is still needed. The
-image writer coalesces
+WebKit. Explicit page-initiated replacement now uses a quiescent kernel
+handoff; full page validation with shell artifacts, browser-process crash,
+and power-loss recovery remain open. The image writer coalesces
 adjacent deferred content blocks into extents: a 32 MiB file occupies fewer
 than 20 extent records while reads across direct and indirect boundaries
 return the expected bytes. Unallocated bitmap and inode-table pages now emit
