@@ -6053,9 +6053,18 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
 
     // Pass one: size the image, under a single borrow so the tree cannot be
     // observed in two states.
-    let (inode_count, data_blocks) = ROOTFS.with(|state| {
+    let (inode_count, data_blocks, oversized_file) = ROOTFS.with(|state| {
         let mut inode_count = 0u64;
         let mut data_blocks = 0u64;
+        let mut oversized_file = false;
+        let mut count_file = |size: u64| {
+            if size > crate::kandelo_image_write::MAX_FILE_BYTES {
+                oversized_file = true;
+                0
+            } else {
+                blocks_for_file(size)
+            }
+        };
         let mut stack: Vec<u32> = Vec::new();
         let mut seen: alloc::collections::BTreeSet<u32> = alloc::collections::BTreeSet::new();
         if let Some(root) = state.root {
@@ -6078,7 +6087,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 }
                 InodeKind::BaseRegular { size, source, .. } => {
                     if matches!(source, BaseSource::Image) {
-                        data_blocks += blocks_for_file(if persistent {
+                        data_blocks += count_file(if persistent {
                             inode.persistent_size.unwrap_or(*size)
                         } else {
                             *size
@@ -6086,20 +6095,23 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                     }
                     // A `Host`-sourced base file stays a lazy stub: no blocks.
                 }
-                InodeKind::Regular(data) => data_blocks += blocks_for_file(data.len() as u64),
+                InodeKind::Regular(data) => data_blocks += count_file(data.len() as u64),
                 InodeKind::PersistentRegular => {
-                    data_blocks += blocks_for_file(inode.persistent_size.unwrap_or(0));
+                    data_blocks += count_file(inode.persistent_size.unwrap_or(0));
                 }
                 InodeKind::Symlink(target) => {
                     if target.len() as u64 > 40 {
-                        data_blocks += blocks_for_file(target.len() as u64);
+                        data_blocks += count_file(target.len() as u64);
                     }
                 }
                 InodeKind::Special(_) | InodeKind::LazyMember { .. } => {}
             }
         }
-        (inode_count, data_blocks)
+        (inode_count, data_blocks, oversized_file)
     });
+    if oversized_file {
+        return Err(Errno::EFBIG);
+    }
 
     // Inodes drive `total_inodes = max_blocks / 4`, so a tree of many tiny
     // files can need a larger maximum than its bytes do.
@@ -9788,6 +9800,33 @@ mod tests {
         assert_eq!(read(fresh, 8189, &mut fresh_bytes, &mut exported_bytes), Ok(7));
         assert_eq!(&fresh_bytes, b"\0\0\0TAIL");
         release_handle(fresh);
+    }
+
+    #[test]
+    fn oversized_persistent_file_refuses_snapshot_without_losing_journal_data() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage.clone()), base_digest).unwrap();
+        let handle = open(b"/large", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        let offset = crate::kandelo_image_write::MAX_FILE_BYTES as i64;
+        assert_eq!(write(handle, offset, b"x", &mut image_bytes), Ok(1));
+        assert!(matches!(build_export_image(), Err(Errno::EFBIG)));
+        sync_persistence().unwrap();
+        release_handle(handle);
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        let handle = open(b"/large", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(fstat(handle).unwrap().st_size, offset as u64 + 1);
+        let mut byte = [0];
+        assert_eq!(read(handle, offset, &mut byte, &mut image_bytes), Ok(1));
+        assert_eq!(byte, *b"x");
+        release_handle(handle);
     }
 
     #[test]

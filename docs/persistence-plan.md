@@ -60,8 +60,10 @@ semantics. Node and browser must expose the same guest-visible behavior.
   writer coalesces deferred content references into extents and keeps
   unallocated bitmap and inode-table pages implicit in memory; the legacy
   byte-array API still materializes output, and indirect-block memory scales
-  with file size. An 8 GiB sparse file
-  exceeds the format's per-file block limit. A 772 MiB snapshot now boots
+  with file size. KIFS v1 addresses at most 10 + 1,024 + 1,024² blocks per
+  file; an 8 GiB sparse file exceeds that limit. Snapshot planning now
+  rejects such a file with `EFBIG` before allocating or mutating an image
+  writer, leaving the live journal usable. A 772 MiB snapshot now boots
   under the 768 MiB kernel ceiling on all three browser engines, but this is
   a narrow acceptance case, not a general memory or performance bound.
 
