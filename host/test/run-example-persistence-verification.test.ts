@@ -21,6 +21,7 @@ function fixture() {
   let state = new TextEncoder().encode("data");
   let largeTail = 0;
   let largestRead = 0;
+  let highestOffset = 0;
   const host = {
     async statVfsPath(path: string) { return path === root ? directory : null; },
     async readDirFromVfs(path: string) {
@@ -28,8 +29,8 @@ function fixture() {
     },
     async readFileRangeFromVfs(path: string, offset: number, length: number) {
       largestRead = Math.max(largestRead, length);
+      highestOffset = Math.max(highestOffset, offset);
       if (path === `${root}/work/large`) {
-        if (work[1].size > 32 * 1024 * 1024) throw new Error("file exceeds inspection budget");
         const bytes = new Uint8Array(length);
         if (offset + length === work[1].size) bytes[bytes.length - 1] = largeTail;
         return bytes;
@@ -41,6 +42,7 @@ function fixture() {
   return {
     host, children, work,
     getLargestRead: () => largestRead,
+    getHighestOffset: () => highestOffset,
     setState: (bytes: string) => { state = new TextEncoder().encode(bytes); },
     setLargeTail: (value: number) => { largeTail = value; },
   };
@@ -90,13 +92,19 @@ describe("persistent runner fixture inspection", () => {
     await expect(inspectPersistentFixture(machine.host)).rejects.toThrow(/changed during inspection/);
   });
 
-  it("keeps oversized files in metadata comparison without reading them", async () => {
+  it("samples the head, middle, and tail of oversized files without materializing them", async () => {
     const machine = fixture();
-    machine.work[1].size = 32 * 1024 * 1024 + 1;
-    const entries = await inspectPersistentFixture(machine.host);
-    expect(entries.find((entry) => entry.path === `${root}/work/large`)).toMatchObject({
-      size: 32 * 1024 * 1024 + 1,
+    machine.work[1].size = 8 * 1024 * 1024 * 1024 + 7;
+    const before = await inspectPersistentFixture(machine.host);
+    expect(before.find((entry) => entry.path === `${root}/work/large`)).toMatchObject({
+      size: 8 * 1024 * 1024 * 1024 + 7,
+      sampleSha256: expect.any(String),
     });
-    expect(entries.find((entry) => entry.path === `${root}/work/large`)).not.toHaveProperty("sha256");
+    expect(before.find((entry) => entry.path === `${root}/work/large`)).not.toHaveProperty("sha256");
+    expect(machine.getLargestRead()).toBe(4096);
+    expect(machine.getHighestOffset()).toBe(machine.work[1].size - 4096);
+    machine.setLargeTail(1);
+    const after = await inspectPersistentFixture(machine.host);
+    expect(() => assertPersistentFixtureUnchanged(before, after)).toThrow(/large/);
   });
 });
