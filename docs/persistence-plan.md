@@ -716,8 +716,11 @@ directory entries and overlay names instead of cloning every base directory
 entry into a second tree; a wide-directory Rust regression covers replacements,
 deletions, and new links. Validation and replay now use sorted inode-number
 vectors rather than per-inode `BTreeMap` nodes for their temporary lookups.
-These scratch structures and the resident rootfs tree still scale with file
-count; peak boot memory is not yet measured. Data-only or
+Graph validation also uses one byte of parent/reachability flags per known
+inode instead of separate ordered maps for parent counts and reached
+directories; a disconnected directory-cycle regression checks rejection.
+The remaining scratch structures and resident rootfs tree still scale with
+file count; peak boot memory is not yet measured. Data-only or
 base-metadata-only restarts skip namespace graph validation and link-count
 reconstruction entirely; inode creation or any dirent record still takes the
 validated replay path. Guest restart tests create, move, and remove a nested

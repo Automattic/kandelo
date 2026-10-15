@@ -1184,10 +1184,9 @@ fn validate_persistent_dirents(
     if known.windows(2).any(|pair| pair[0].0 == pair[1].0) {
         return Err(Errno::EIO);
     }
-    let known_entry = |ino| {
+    let known_index = |ino| {
         known
             .binary_search_by_key(&ino, |entry| entry.0)
-            .map(|index| known[index].1)
             .map_err(|_| Errno::EIO)
     };
     let mut changes = BTreeMap::<u64, BTreeMap<Vec<u8>, Option<u64>>>::new();
@@ -1195,13 +1194,13 @@ fn validate_persistent_dirents(
         let OverlayKey::Dirent { parent, name } = key else {
             return Ok(());
         };
-        if known_entry(*parent)?.is_none() {
+        if known[known_index(*parent)?].1.is_none() {
             return Err(Errno::EIO);
         }
         let target = value
             .map(|bytes| {
                 let ino = u64::from_le_bytes(bytes.try_into().map_err(|_| Errno::EIO)?);
-                known_entry(ino)?;
+                known_index(ino)?;
                 Ok::<_, Errno>(ino)
             })
             .transpose()?;
@@ -1212,48 +1211,55 @@ fn validate_persistent_dirents(
         .get(state.root.ok_or(Errno::EIO)?)
         .ok_or(Errno::EIO)?
         .ino;
-    let mut incoming = BTreeMap::<u64, u32>::new();
+    let mut directory_flags = Vec::new();
+    directory_flags
+        .try_reserve_exact(known.len())
+        .map_err(|_| Errno::ENOMEM)?;
+    directory_flags.resize(known.len(), 0u8);
+    const HAS_PARENT: u8 = 1;
+    const REACHED: u8 = 2;
     for &(directory, entries) in &known {
         let Some(entries) = entries else {
             continue;
         };
         visit_persistent_children(state, entries, changes.get(&directory), |child| {
-            if known_entry(child)?.is_some() {
-                let count = incoming.entry(child).or_default();
-                *count = count.checked_add(1).ok_or(Errno::EIO)?;
-                if *count > 1 || child == root {
+            let index = known_index(child)?;
+            if known[index].1.is_some() {
+                if directory_flags[index] & HAS_PARENT != 0 || child == root {
                     return Err(Errno::EIO);
                 }
+                directory_flags[index] |= HAS_PARENT;
             }
             Ok(())
         })?;
     }
-    let mut reached = alloc::collections::BTreeSet::new();
-    let mut pending = vec![root];
-    while let Some(directory) = pending.pop() {
-        if !reached.insert(directory) {
+    let mut pending = vec![known_index(root)?];
+    while let Some(index) = pending.pop() {
+        if directory_flags[index] & REACHED != 0 {
             return Err(Errno::EIO);
         }
-        let entries = known_entry(directory)?.ok_or(Errno::EIO)?;
+        directory_flags[index] |= REACHED;
+        let (directory, entries) = known[index];
+        let entries = entries.ok_or(Errno::EIO)?;
         visit_persistent_children(state, entries, changes.get(&directory), |child| {
-            if known_entry(child)?.is_some() {
-                pending.push(child);
+            let child_index = known_index(child)?;
+            if known[child_index].1.is_some() {
+                pending.push(child_index);
             }
             Ok(())
         })?;
     }
-    for &(directory, entries) in &known {
+    for (index, &(directory, entries)) in known.iter().enumerate() {
         let Some(entries) = entries else {
             continue;
         };
         if directory == root {
             continue;
         }
-        let count = incoming.get(&directory).copied().unwrap_or(0);
-        if count == 1 && !reached.contains(&directory) {
+        if directory_flags[index] & HAS_PARENT != 0 && directory_flags[index] & REACHED == 0 {
             return Err(Errno::EIO);
         }
-        if count == 0
+        if directory_flags[index] & HAS_PARENT == 0
             && visit_persistent_children(state, entries, changes.get(&directory), |_| Ok(()))?
         {
             return Err(Errno::EIO);
@@ -11490,6 +11496,47 @@ mod tests {
         assert_eq!(
             validate_persistent_dirents(&state, &mut journal, &created),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn persistent_graph_validation_rejects_disconnected_directory_cycle() {
+        let mut state = RootfsState::new();
+        state.mount_root();
+        let created = vec![
+            (
+                10,
+                Inode::new(InodeKind::Dir(BTreeMap::new()), 0o755, 0, 0, 2, 10),
+            ),
+            (
+                11,
+                Inode::new(InodeKind::Dir(BTreeMap::new()), 0o755, 0, 0, 2, 11),
+            ),
+        ];
+        let storage: Box<dyn OverlayStorage + Send> =
+            Box::new(SharedJournalStorage(Arc::new(Mutex::new(Vec::new()))));
+        let mut journal = OverlayJournal::open(storage, [0; 32]).unwrap();
+        journal
+            .commit(&[
+                Mutation::Put {
+                    key: OverlayKey::Dirent {
+                        parent: 10,
+                        name: b"child".to_vec(),
+                    },
+                    value: 11u64.to_le_bytes().to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::Dirent {
+                        parent: 11,
+                        name: b"parent".to_vec(),
+                    },
+                    value: 10u64.to_le_bytes().to_vec(),
+                },
+            ])
+            .unwrap();
+        assert_eq!(
+            validate_persistent_dirents(&state, &mut journal, &created),
+            Err(Errno::EIO)
         );
     }
 
