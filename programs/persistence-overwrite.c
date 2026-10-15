@@ -245,17 +245,24 @@ int main(int argc, char **argv) {
     int set_metadata = argc >= 2 && strcmp(argv[1], "set-metadata") == 0;
     int verify_metadata = argc >= 2 && strcmp(argv[1], "verify-metadata") == 0;
     if (set_metadata || verify_metadata) {
+        const char *base_path = access("/state", F_OK) == 0 ? "/state" : "/alias";
         if (set_metadata) {
             int fd = open("/created-link", O_RDONLY);
             if (fd < 0) return 94;
             if (fchmod(fd, 0600) != 0 || close(fd) != 0) return 95;
             const struct timespec times[2] = {{123456, 234}, {234567, 345}};
-            return utimensat(AT_FDCWD, "/created-link", times, 0) == 0 ? 0 : 96;
+            if (utimensat(AT_FDCWD, "/created-link", times, 0) != 0) return 96;
+            if (chmod(base_path, 0640) != 0) return 214;
+            const struct timespec base_times[2] = {{345678, 456}, {456789, 567}};
+            return utimensat(AT_FDCWD, base_path, base_times, 0) == 0 ? 0 : 215;
         }
         struct stat metadata;
         if (stat("/created-link", &metadata) != 0) return 97;
         if ((metadata.st_mode & 0777) != 0600 || metadata.st_atim.tv_sec != 123456 || metadata.st_atim.tv_nsec != 234) return 98;
         if (metadata.st_mtim.tv_sec != 234567 || metadata.st_mtim.tv_nsec != 345) return 99;
+        if (stat(base_path, &metadata) != 0) return 216;
+        if ((metadata.st_mode & 0777) != 0640 || metadata.st_atim.tv_sec != 345678 || metadata.st_atim.tv_nsec != 456) return 217;
+        if (metadata.st_mtim.tv_sec != 456789 || metadata.st_mtim.tv_nsec != 567) return 218;
         return 0;
     }
     int replace_open = argc >= 2 && strcmp(argv[1], "replace-open") == 0;

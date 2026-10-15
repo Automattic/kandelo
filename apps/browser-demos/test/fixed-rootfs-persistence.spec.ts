@@ -2071,7 +2071,7 @@ test("browser converts an oversized unindexed resizable journal before mounting"
             experimentalResizablePersistenceName: name,
             persistentComputerName: name,
           });
-          for (const mode of ["create-file", "verify-created", "verify-created-shrunk", "set-metadata", "resize", "verify-resize", "large"]) {
+          for (const mode of ["create-file", "verify-created", "verify-created-shrunk", "resize", "verify-resize", "large", "set-metadata"]) {
             const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", mode]);
             if (await exit !== 0) throw new Error(`guest ${mode} failed`);
           }
