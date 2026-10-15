@@ -58,12 +58,22 @@ export class OverlayStorageFile implements PersistentOverlayStorage {
     this.handle = handle;
   }
 
-  static open(backend: OverlayStorageBackend, path: string, create = true): OverlayStorageFile {
+  static open(backend: OverlayStorageBackend, path: string, create = true, requireSingleLink = false): OverlayStorageFile {
     const handle = backend.open(
       path,
       OPEN_FLAGS.O_RDWR | (create ? OPEN_FLAGS.O_CREAT : 0) | OPEN_FLAGS.O_NOFOLLOW,
       0o600,
     );
+    if (requireSingleLink) {
+      try {
+        if (backend.fstat(handle).nlink !== 1) {
+          throw new Error(`rootfs persistence storage has multiple hard links: ${path}`);
+        }
+      } catch (error) {
+        backend.close(handle);
+        throw error;
+      }
+    }
     return new OverlayStorageFile(backend, handle);
   }
 

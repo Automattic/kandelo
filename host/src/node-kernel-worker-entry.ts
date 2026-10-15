@@ -1322,7 +1322,7 @@ async function handleInit(msg: InitMessage) {
         open: async (slot, file, create) => {
           const name = slot === "legacy" ? basename(path) : `${basename(path)}.${slot}.${file}`;
           if (!create && !existsSync(join(dirname(path), name))) return null;
-          return OverlayStorageFile.open(backend, `/${name}`, create);
+          return OverlayStorageFile.open(backend, `/${name}`, create, true);
         },
       } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
       const selected = await enableBestOverlayGeneration(

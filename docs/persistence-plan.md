@@ -295,6 +295,10 @@ may be active. An old directory-form `.lock` fails closed and requires explicit
 operator removal after verifying the old owner has stopped; there is no safe
 automatic way to distinguish its stale and live forms. Browser Web Locks and
 OPFS sync access handles remain the browser-side ownership mechanism.
+Node also rejects journal, checkpoint, and seal files with more than one hard
+link after opening them; otherwise two path aliases could take different lock
+files while writing the same journal inode. A strict reboot test rejects both
+aliases and reopens the original after the extra link is removed.
 Chromium, Firefox, and WebKit each recover after termination without destroying
 the kernel, with synced and unsynced guest writes in both fixed and resizable
 modes. All 12 strict reboots recover exactly the durable state. The Chromium
