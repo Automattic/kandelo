@@ -18,6 +18,7 @@ import { parentPort } from "node:worker_threads";
 import {
   closeSync,
   existsSync,
+  ftruncateSync,
   fstatSync,
   fsyncSync,
   mkdirSync,
@@ -3876,6 +3877,7 @@ async function handleExportRootfsImageToFile(
                 read += count;
               }
             },
+            setSize: (length) => ftruncateSync(file, length),
             flush: () => fsyncSync(file),
             getSize: () => fstatSync(file).size,
           },

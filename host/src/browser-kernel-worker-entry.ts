@@ -3951,6 +3951,7 @@ async function handleExportRootfsImageToFile(
                 read += count;
               }
             },
+            setSize: (length) => handle.truncate(length),
             flush: () => handle.flush(),
             getSize: () => handle.getSize(),
           },
