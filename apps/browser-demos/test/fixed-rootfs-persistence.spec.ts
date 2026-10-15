@@ -1150,12 +1150,14 @@ test("browser termination loses unsynced writes without damaging the last durabl
 });
 
 const quotaScenarios = (["fixed", "resizable"] as const).flatMap((mode) => [
-  ...(["write", "flush", "evict"] as const).map((fault) => ({ mode, fault, cut: undefined })),
-  ...([1, 23, 24, 128, 4096, -1] as const).map((cut) => ({ mode, fault: "partial" as const, cut })),
-  ...([128, -1] as const).map((cut) => ({ mode, fault: "short" as const, cut })),
+  ...(["write", "flush", "evict"] as const).map((fault) => ({ mode, fault, cut: undefined, guestMode: fault === "evict" ? "quota-evict" : "quota-write" })),
+  ...([1, 23, 24, 128, 4096, -1] as const).map((cut) => ({ mode, fault: "partial" as const, cut, guestMode: "quota-write" })),
+  ...([128, -1] as const).map((cut) => ({ mode, fault: "short" as const, cut, guestMode: "quota-write" })),
+  ...(["quota-mmap-fsync", "quota-mmap-fdatasync"] as const).flatMap((guestMode) =>
+    (["write", "flush"] as const).map((fault) => ({ mode, fault, cut: undefined, guestMode }))),
 ]);
-for (const { mode, fault, cut } of quotaScenarios) {
-  test(`browser ${mode} ${fault}${cut === undefined ? "" : cut === -1 ? " cut before transaction end" : ` cut ${cut}`} quota failure rejects durability sync, preserves dirty reads, and recovers`, async ({ playwright, browserName, baseURL }, testInfo) => {
+for (const { mode, fault, cut, guestMode } of quotaScenarios) {
+  test(`browser ${mode} ${guestMode} ${fault}${cut === undefined ? "" : cut === -1 ? " cut before transaction end" : ` cut ${cut}`} quota failure rejects durability sync, preserves dirty reads, and recovers`, async ({ playwright, browserName, baseURL }, testInfo) => {
     test.setTimeout(90_000);
     const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
     filesystem.mkdir("/bin", 0o755);
@@ -1185,7 +1187,7 @@ for (const { mode, fault, cut } of quotaScenarios) {
         await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
         await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
         await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-        const before = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, quotaWorkerUrl, mode, fault, cut }) => {
+        const before = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, quotaWorkerUrl, mode, fault, cut, guestMode }) => {
           const { BrowserKernel } = await import(moduleUrl);
           const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
           const imageBytes = await (await fetch(imageUrl)).arrayBuffer();
@@ -1227,7 +1229,7 @@ for (const { mode, fault, cut } of quotaScenarios) {
               30_000,
             )),
           ]);
-          const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", fault === "evict" ? "quota-evict" : "quota-write"]);
+          const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", guestMode]);
           const status = await exit;
           const visible = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
           const large = fault === "evict" ? await kernel.readFileFromVfs("/large") : null;
@@ -1248,6 +1250,7 @@ for (const { mode, fault, cut } of quotaScenarios) {
           mode,
           fault,
           cut,
+          guestMode,
         });
         expect(before).toMatchObject({
           status: 0,

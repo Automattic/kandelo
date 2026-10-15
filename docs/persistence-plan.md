@@ -360,6 +360,13 @@ accepted dirty blocks readable, and keeps `ENOSPC` available to a later
 `fdatasync` rather than replacing it with `EIO`. Rust unit coverage and guest
 runs on Chromium, Firefox, and WebKit exercise that boundary in both
 fixed and resizable modes, including recovery of the previous durable bytes.
+Guest `MAP_SHARED` stores followed by `fsync` or `fdatasync` also report
+`ENOSPC` when the OPFS journal write or flush fails. The live file remains
+readable from the dirty cache, and restart accepts only an intact old or new
+transaction. Fixed and resizable mounts pass these fault injections on
+Chromium, Firefox, and WebKit; Node host fault injection for mapped sync
+remains untested.
+
 This does not yet cover every host write and flush failure point, so the
 dirty-cache milestone remains open.
 
