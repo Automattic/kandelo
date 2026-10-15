@@ -605,8 +605,10 @@ Generation-one seals made from a legacy journal now include its SHA-256
 digest (seal version 4), read in bounded chunks. Boot rejects that generation
 if a still-present legacy journal changes even without changing length; old
 version-3 seals remain readable and keep their length-only source check. A
-stale source also invalidates its sealed descendants, preventing boot from
-selecting an image derived from that source. After a version-4 generation has
+source superseded by changed journal bytes also invalidates its sealed
+descendants, preventing boot from selecting an image derived from that source.
+An absent legacy file alone does not invalidate a later sealed descendant of
+an old version-3 source. After a version-4 generation has
 been compacted into a second sealed generation,
 the host verifies the legacy source again, truncates and flushes it, then
 removes it. The two sealed generations remain available for recovery even if

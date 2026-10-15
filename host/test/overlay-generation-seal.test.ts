@@ -379,6 +379,8 @@ describe("overlay generation boot selection", () => {
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g1");
     await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, baseDigest,
       entries["g0.index"]!, { slot: "legacy", journalLength: legacy.len() });
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g1");
+    entries["g1.seal"]!.truncate(0);
     await expect(enableBestOverlayGeneration(files(entries), () => {}, true))
       .rejects.toBeInstanceOf(NoValidOverlayGenerationError);
   });
