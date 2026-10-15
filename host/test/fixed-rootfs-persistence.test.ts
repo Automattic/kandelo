@@ -32,7 +32,7 @@ const encoder = new TextEncoder();
 
 const largeWriteBytes = 2 * 1024 * 1024;
 
-async function makeImage(state: string, includeLargeFile = false, largeFileBytes = largeWriteBytes + 4096): Promise<Uint8Array> {
+async function makeImage(state: string, includeLargeFile = false, largeFileBytes = largeWriteBytes + 4096, includeDenseSnapshotFile = false): Promise<Uint8Array> {
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   if (guestProgramPath !== null) {
     filesystem.mkdir("/bin", 0o755);
@@ -40,6 +40,7 @@ async function makeImage(state: string, includeLargeFile = false, largeFileBytes
   }
   filesystem.writeFile("/state", encoder.encode(state), 0o644);
   if (includeLargeFile) filesystem.writeFile("/large", new Uint8Array(largeFileBytes), 0o644);
+  if (includeDenseSnapshotFile) filesystem.writeFile("/snapshot-dense-base", encoder.encode("original"), 0o644);
   return filesystem.saveImage();
 }
 
@@ -357,7 +358,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     const snapshotPath = join(directory, "snapshot.vfs");
     const repeatedSnapshotPath = join(directory, "snapshot-again.vfs");
     try {
-      const image = await makeImage("abcdefgh");
+      const image = await makeImage("abcdefgh", false, undefined, true);
       const first = await boot(image, path, true);
       try {
         await first.writeFileToVfs("/state", encoder.encode("SNAP"));
@@ -368,6 +369,8 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         expect(await socket.exit).toBe(0);
         const sparse = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "snapshot-sparse"]);
         expect(await sparse.exit).toBe(0);
+        const dense = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "snapshot-dense-reextend"]);
+        expect(await dense.exit).toBe(0);
       } finally {
         await first.destroy();
       }
@@ -400,6 +403,8 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         expect(await socket.exit).toBe(0);
         const sparse = await withoutJournal.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-snapshot-sparse"]);
         expect(await sparse.exit).toBe(0);
+        const dense = await withoutJournal.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-snapshot-dense-reextend"]);
+        expect(await dense.exit).toBe(0);
       } finally {
         await withoutJournal.destroy();
       }
@@ -424,6 +429,8 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         ) as ArrayBuffer);
         const sparse = await repeated.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-snapshot-sparse"]);
         expect(await sparse.exit).toBe(0);
+        const dense = await repeated.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-snapshot-dense-reextend"]);
+        expect(await dense.exit).toBe(0);
       } finally {
         await repeated.destroy();
       }

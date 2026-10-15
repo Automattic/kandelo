@@ -313,6 +313,7 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
   filesystem.mkdir("/bin", 0o755);
   filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
   filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+  filesystem.writeFile("/snapshot-dense-base", new TextEncoder().encode("original"), 0o644);
   const image = await filesystem.saveImage();
   const kernelUrl = new URL("/resizable-export-kernel.wasm", baseURL).href;
   const imageUrl = new URL("/resizable-export-image.vfs", baseURL).href;
@@ -364,6 +365,8 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
           if (await socket.exit !== 0) throw new Error("guest could not create socket node");
           const sparse = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "snapshot-sparse"]);
           if (await sparse.exit !== 0) throw new Error("guest could not create sparse file");
+          const dense = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "snapshot-dense-reextend"]);
+          if (await dense.exit !== 0) throw new Error("guest could not re-extend dense base file");
         } finally {
           await first.destroy();
         }
@@ -403,6 +406,8 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
           socketExit = await socket.exit;
           const sparse = await restored.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-snapshot-sparse"]);
           sparseExit = await sparse.exit;
+          const dense = await restored.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-snapshot-dense-reextend"]);
+          if (await dense.exit !== 0) throw new Error("dense base file changed after snapshot");
         } finally {
           await restored.destroy();
         }
@@ -423,6 +428,8 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
           await repeated.initFromOpfsImage({ kernelWasm, vfsImageFile: repeatedFile, integrity: repeatedIntegrity });
           const sparse = await repeated.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-snapshot-sparse"]);
           if (await sparse.exit !== 0) throw new Error("re-exported sparse file did not reopen");
+          const dense = await repeated.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-snapshot-dense-reextend"]);
+          if (await dense.exit !== 0) throw new Error("re-exported dense base file did not reopen");
         } finally {
           await repeated.destroy();
         }

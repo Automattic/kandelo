@@ -1519,6 +1519,62 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         Ok(blocks)
     }
 
+    pub fn dense_base_needs_sparse_export(
+        &mut self,
+        inode: u64,
+        base_size: u64,
+        size: u64,
+    ) -> Result<bool, Errno> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        if inode == 0 {
+            return Err(Errno::EINVAL);
+        }
+        if size > base_size || self.visible_zero_from(inode)?.is_some() {
+            return Ok(true);
+        }
+        let limit = size.div_ceil(FILE_BLOCK_BYTES as u64);
+        if self
+            .state
+            .blocks
+            .range((inode, 0)..(inode, limit))
+            .any(|(_, location)| location.is_none())
+        {
+            return Ok(true);
+        }
+        if let Some(checkpoint) = self.checkpoint.as_mut() {
+            let mut low = 0;
+            let mut high = checkpoint.count();
+            while low < high {
+                let middle = low + (high - low) / 2;
+                let entry = checkpoint.entry_at(middle)?.ok_or(Errno::EIO)?;
+                if entry.inode < inode {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            for index in low..checkpoint.count() {
+                let entry = checkpoint.entry_at(index)?.ok_or(Errno::EIO)?;
+                if entry.inode != inode || entry.block >= limit {
+                    break;
+                }
+                if entry.is_tombstone()
+                    && !self.state.blocks.contains_key(&(inode, entry.block))
+                    && self
+                        .state
+                        .invalid_checkpoint_from
+                        .get(&inode)
+                        .is_none_or(|from| entry.block < *from)
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     fn block_location(
         &mut self,
         inode: u64,
@@ -3321,6 +3377,7 @@ mod tests {
             first_end,
         )
         .unwrap();
+        assert_eq!(reopened.dense_base_needs_sparse_export(7, 8192, 8192), Ok(true));
         assert_eq!(
             reopened.validate_fixed_image_blocks(|_| Some(8192)),
             Err(Errno::EIO)
@@ -3358,6 +3415,7 @@ mod tests {
             second_end,
         )
         .unwrap();
+        assert_eq!(recovered.dense_base_needs_sparse_export(7, 8192, 8192), Ok(true));
         assert_eq!(
             recovered.read_file_at(7, 8192, 0, &mut byte, |_, _| {
                 panic!("indexed block must satisfy read")

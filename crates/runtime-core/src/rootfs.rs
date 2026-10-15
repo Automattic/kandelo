@@ -6083,6 +6083,7 @@ fn apply_export_metadata(
 pub fn build_export_image() -> Result<ExportPlan, Errno> {
     use crate::kandelo_image_write::{Content, KandeloImageConfig, KandeloImageWriter};
     let persistent = fixed_persistence_enabled();
+    let resizable = resizable_persistence_enabled();
 
     // Pass one: size the image, under a single borrow so the tree cannot be
     // observed in two states.
@@ -6130,18 +6131,16 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                         } else {
                             *size
                         };
-                        if let Some(blocks) = &inode.base_blocks {
-                            if export_size > crate::kandelo_image_write::MAX_FILE_BYTES {
-                                let _ = count_file(export_size);
-                            } else {
-                                base_sparse_candidates.push((
-                                    inode.ino,
-                                    *size,
-                                    export_size,
-                                    blocks.clone(),
-                                    journal_backed,
-                                ));
-                            }
+                        if export_size > crate::kandelo_image_write::MAX_FILE_BYTES {
+                            let _ = count_file(export_size);
+                        } else if inode.base_blocks.is_some() || (journal_backed && resizable) {
+                            base_sparse_candidates.push((
+                                inode.ino,
+                                *size,
+                                export_size,
+                                inode.base_blocks.clone(),
+                                journal_backed,
+                            ));
                         } else {
                             data_blocks += count_file(export_size);
                         }
@@ -6182,17 +6181,27 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
             sparse_blocks.insert(inode, blocks);
         }
     }
-    for (inode, base_size, size, mut blocks, journal_backed) in base_sparse_candidates {
-        if journal_backed {
-            blocks = PERSISTENT_ROOTFS
-                .lock()
-                .as_mut()
-                .ok_or(Errno::EIO)?
-                .journal
-                .composed_file_blocks(inode, base_size, size, &blocks)?;
+    for (inode, base_size, size, base_blocks, journal_backed) in base_sparse_candidates {
+        let blocks = if journal_backed {
+            let mut mount = PERSISTENT_ROOTFS.lock();
+            let journal = &mut mount.as_mut().ok_or(Errno::EIO)?.journal;
+            let base_blocks = match base_blocks {
+                Some(blocks) => blocks,
+                None if journal.dense_base_needs_sparse_export(inode, base_size, size)? => {
+                    let count = u32::try_from(base_size.div_ceil(4096)).map_err(|_| Errno::EFBIG)?;
+                    (0..count).collect()
+                }
+                None => {
+                    data_blocks += blocks_for_file(size);
+                    continue;
+                }
+            };
+            journal.composed_file_blocks(inode, base_size, size, &base_blocks)?
         } else {
+            let mut blocks = base_blocks.ok_or(Errno::EIO)?;
             blocks.retain(|block| u64::from(*block) * 4096 < size);
-        }
+            blocks
+        };
         data_blocks = data_blocks
             .checked_add(blocks_for_sparse_file(&blocks))
             .ok_or(Errno::EFBIG)?;
@@ -10000,6 +10009,62 @@ mod tests {
             assert_eq!(byte[0], expected);
         }
         release_handle(handle);
+    }
+
+    #[test]
+    fn dense_base_extension_and_reextension_export_without_filling_holes() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut source = image_host(&image);
+        load_image(image.len() as u64, &mut source).unwrap();
+        enable_resizable_persistence(Box::new(storage), digest).unwrap();
+        let size = 512 * 1024 * 1024i64 + 11;
+        let hello = open(b"/hello.txt", O_RDWR, 0, 0, 0).unwrap();
+        truncate_handle(hello, size, &mut source).unwrap();
+        assert_eq!(write(hello, size - 1, b"H", &mut source), Ok(1));
+        release_handle(hello);
+        let big = open(b"/big.txt", O_RDWR, 0, 0, 0).unwrap();
+        truncate_handle(big, 0, &mut source).unwrap();
+        truncate_handle(big, size, &mut source).unwrap();
+        assert_eq!(write(big, size - 1, b"B", &mut source), Ok(1));
+        release_handle(big);
+        sync_persistence().unwrap();
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let checkpoint_end = target.0.lock().len() as u64;
+        reset();
+        load_image(image.len() as u64, &mut source).unwrap();
+        enable_resizable_persistence_indexed(
+            Box::new(target),
+            Box::new(index),
+            digest,
+            checkpoint_end,
+        )
+        .unwrap();
+
+        let exported = drain_container(4096, &mut source);
+        assert!(exported.len() < 64 * 1024 * 1024);
+        reset();
+        let mut snapshot_source = image_host(&exported);
+        load_image(exported.len() as u64, &mut snapshot_source).unwrap();
+        for (path, head, tail) in [
+            (b"/hello.txt".as_slice(), b'h', b'H'),
+            (b"/big.txt".as_slice(), 0, b'B'),
+        ] {
+            let handle = open(path, O_RDONLY, 0, 0, 0).unwrap();
+            assert_eq!(fstat(handle).unwrap().st_size, size as u64);
+            for (position, expected) in [(0, head), (256 * 1024 * 1024, 0), (size - 1, tail)] {
+                let mut byte = [1];
+                assert_eq!(read(handle, position, &mut byte, &mut snapshot_source), Ok(1));
+                assert_eq!(byte[0], expected);
+            }
+            release_handle(handle);
+        }
     }
 
     #[test]

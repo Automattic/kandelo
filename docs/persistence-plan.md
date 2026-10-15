@@ -65,11 +65,16 @@ semantics. Node and browser must expose the same guest-visible behavior.
   Node and all three browser engines guest-create a 512 MiB sparse file,
   export a sub-64 MiB composed snapshot, reopen its hole and tail without
   the journal, then re-export and reopen it without materializing the hole.
+  The same guest workflow truncates and re-extends a dense base file to
+  512 MiB, and verifies its zero range after both snapshot boots.
   The kernel also retains sparse block maps from image-backed regular files
-  at boot; their holes survive snapshots, including journal
-  writes and truncate/re-extend. Originally dense base-image files and
-  in-memory regular files still use dense export mapping. Indirect-block
-  memory scales with allocated blocks. KIFS v1 addresses at most
+  at boot; their holes survive snapshots, including journal writes and
+  truncate/re-extend. Journal-backed dense base files also export sparse
+  after growth, truncate/re-extend, or a block tombstone; unmodified dense
+  base files and in-memory regular files retain dense export mapping. A Rust
+  round trip covers dense-base growth and truncate/re-extend after indexed
+  compaction.
+  Indirect-block memory scales with allocated blocks. KIFS v1 addresses at most
   10 + 1,024 + 1,024² blocks per file. VFSI v2 uses a 64-bit body length
   above the v1 32-bit limit; smaller bodies keep their v1 header. The
   ABI 51 kernel also boots a synthetic >4 GiB sparse v2 container through Node

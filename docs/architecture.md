@@ -2607,6 +2607,8 @@ Snapshot export leaves unwritten blocks of new journal-backed regular files
 unallocated in KIFS, so their logical size need not determine body size. The
 kernel records sparse block maps for image-backed regular files during boot
 and preserves their holes when exporting, including through journal changes.
+Growing or truncating and re-extending an originally dense image-backed file
+also leaves its new zero range unallocated in a composed snapshot.
 
 ## Networking
 
