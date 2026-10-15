@@ -1524,13 +1524,13 @@ test("browser converts an oversized unindexed resizable journal before mounting"
   }
 });
 
-for (const mode of ["fixed-v1", "resizable-v2"] as const) test(`browser upgrades an oversized sealed ${mode} checkpoint without changing its source`, async ({ playwright, browserName, baseURL }, testInfo) => {
+for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`browser recovers an oversized sealed ${mode} checkpoint from a valid source`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(180_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.mkdir("/bin", 0o755);
   filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
   filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
-  if (mode === "resizable-v2") filesystem.writeFile("/large", new Uint8Array(2 * 1024 * 1024 + 4096), 0o644);
+  if (mode !== "fixed-v1") filesystem.writeFile("/large", new Uint8Array(2 * 1024 * 1024 + 4096), 0o644);
   const image = await filesystem.saveImage();
   const kernelUrl = new URL("/v1-upgrade-kernel.wasm", baseURL).href;
   const imageUrl = new URL("/v1-upgrade-image.vfs", baseURL).href;
@@ -1613,7 +1613,7 @@ for (const mode of ["fixed-v1", "resizable-v2"] as const) test(`browser upgrades
           }
           return position;
         };
-        await grow(await directory.getFileHandle(`${name}.journal`));
+        const legacyLength = await grow(await directory.getFileHandle(`${name}.journal`));
         const compacted = await boot();
         await compacted.destroy();
         const indexFile = await directory.getFileHandle(`${name}.g0.index`);
@@ -1623,27 +1623,84 @@ for (const mode of ["fixed-v1", "resizable-v2"] as const) test(`browser upgrades
         const expectedVersion = mode === "fixed-v1" ? 5 : 4;
         if (new DataView(index.buffer).getUint32(4, true) !== expectedVersion) throw new Error("unexpected source index version");
         const blockEnd = 160 + Number(new DataView(index.buffer).getBigUint64(80, true)) * 56;
-        const legacyIndex = mode === "fixed-v1" ? index : index.slice(0, blockEnd);
-        new DataView(legacyIndex.buffer).setUint32(4, mode === "fixed-v1" ? 1 : 2, true);
-        if (mode === "resizable-v2") {
-          legacyIndex.set(new Uint8Array(await crypto.subtle.digest("SHA-256", legacyIndex.slice(160).buffer)), 96);
+        let legacyIndex = mode === "fixed-v1" ? index : index.slice(0, blockEnd);
+        if (mode === "resizable-v3") {
+          const metadataCount = (index.length - blockEnd) / 312;
+          if (!Number.isInteger(metadataCount) || metadataCount === 0) throw new Error("missing metadata index");
+          legacyIndex = new Uint8Array(blockEnd + metadataCount * 280);
+          legacyIndex.set(index.subarray(0, blockEnd));
+          for (let position = 0; position < metadataCount; position++) {
+            legacyIndex.set(index.subarray(blockEnd + position * 312, blockEnd + position * 312 + 280), blockEnd + position * 280);
+          }
         }
-        legacyIndex.set(new Uint8Array(await crypto.subtle.digest("SHA-256", legacyIndex.slice(0, 128).buffer)), 128);
+        const hash = async (bytes: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice().buffer));
+        new DataView(legacyIndex.buffer).setUint32(4, mode === "fixed-v1" ? 1 : mode === "resizable-v2" ? 2 : 3, true);
+        if (mode === "resizable-v2") {
+          legacyIndex.set(await hash(legacyIndex.subarray(160)), 96);
+        } else if (mode === "resizable-v3") {
+          const blockDigest = await hash(legacyIndex.subarray(160, blockEnd));
+          const metadataDigest = await hash(legacyIndex.subarray(blockEnd));
+          const combined = new Uint8Array(64);
+          combined.set(blockDigest);
+          combined.set(metadataDigest, 32);
+          legacyIndex.set(await hash(combined), 96);
+        }
+        legacyIndex.set(await hash(legacyIndex.subarray(0, 128)), 128);
         const indexWriter = await indexFile.createWritable();
         await indexWriter.write(legacyIndex);
         await indexWriter.close();
-        if (mode === "resizable-v2") {
+        if (mode !== "fixed-v1") {
           new DataView(seal.buffer).setBigUint64(56, BigInt(legacyIndex.length), true);
-          seal.set(new Uint8Array(await crypto.subtle.digest("SHA-256", seal.slice(0, 80).buffer)), 80);
+          seal.set(await hash(seal.subarray(0, 80)), 80);
         }
-        seal.set(new Uint8Array(await crypto.subtle.digest("SHA-256", legacyIndex.slice().buffer)), seal.length - 32);
+        seal.set(await hash(legacyIndex), seal.length - 32);
         const sealWriter = await sealFile.createWritable();
         await sealWriter.write(seal);
         await sealWriter.close();
         const sourceLength = await grow(await directory.getFileHandle(`${name}.g0.journal`));
-        return { name, sourceLength };
+        return { name, sourceLength: mode === "resizable-v3" ? legacyLength : sourceLength };
       }, { moduleUrl, kernelUrl, imageUrl, mode });
       await page.reload();
+      if (mode === "resizable-v3") {
+        await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: await directory.getFileHandle(`${name}.base`),
+              experimentalResizablePersistenceName: name,
+              persistentComputerName: name,
+            });
+            const tail = await kernel.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4);
+            if (new TextDecoder().decode(tail) !== "NEWW") throw new Error("valid v3 checkpoint failed to mount");
+          } finally {
+            await kernel.destroy();
+          }
+          const indexFile = await directory.getFileHandle(`${name}.g0.index`);
+          const sealFile = await directory.getFileHandle(`${name}.g0.seal`);
+          const index = new Uint8Array(await (await indexFile.getFile()).arrayBuffer());
+          const seal = new Uint8Array(await (await sealFile.getFile()).arrayBuffer());
+          const blockEnd = 160 + Number(new DataView(index.buffer).getBigUint64(80, true)) * 56;
+          const hash = async (bytes: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice().buffer));
+          if (new DataView(index.buffer).getUint32(4, true) !== 3) throw new Error("valid v3 source was replaced");
+          index[160 + 24] ^= 1;
+          const combined = new Uint8Array(64);
+          combined.set(await hash(index.subarray(160, blockEnd)));
+          combined.set(await hash(index.subarray(blockEnd)), 32);
+          index.set(await hash(combined), 96);
+          index.set(await hash(index.subarray(0, 128)), 128);
+          const indexWriter = await indexFile.createWritable();
+          await indexWriter.write(index);
+          await indexWriter.close();
+          seal.set(await hash(index), seal.length - 32);
+          const sealWriter = await sealFile.createWritable();
+          await sealWriter.write(seal);
+          await sealWriter.close();
+        }, { moduleUrl, kernelUrl, name: prepared.name });
+        await page.reload();
+      }
       const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name, mode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
@@ -1658,16 +1715,16 @@ for (const mode of ["fixed-v1", "resizable-v2"] as const) test(`browser upgrades
             persistentComputerName: name,
           });
           const state = new TextDecoder().decode((await kernel.readFileFromVfs("/state"))!);
-          const created = mode === "resizable-v2"
+          const created = mode !== "fixed-v1"
             ? new TextDecoder().decode((await kernel.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4))!)
             : null;
-          const source = await (await directory.getFileHandle(`${name}.g0.journal`)).getFile();
+          const source = await (await directory.getFileHandle(mode === "resizable-v3" ? `${name}.journal` : `${name}.g0.journal`)).getFile();
           const oldIndex = await (await directory.getFileHandle(`${name}.g0.index`)).getFile();
-          const nextIndex = await (await directory.getFileHandle(`${name}.g1.index`)).getFile();
+          const nextIndex = mode === "resizable-v3" ? oldIndex : await (await directory.getFileHandle(`${name}.g1.index`)).getFile();
           return {
             state, created,
             sourceLength: source.size,
-            sourceVersion: new DataView(await oldIndex.slice(4, 8).arrayBuffer()).getUint32(0, true),
+            sourceVersion: mode === "resizable-v3" ? null : new DataView(await oldIndex.slice(4, 8).arrayBuffer()).getUint32(0, true),
             targetVersion: new DataView(await nextIndex.slice(4, 8).arrayBuffer()).getUint32(0, true),
           };
         } finally {
@@ -1678,7 +1735,7 @@ for (const mode of ["fixed-v1", "resizable-v2"] as const) test(`browser upgrades
         state: mode === "fixed-v1" ? "XYcdefgh" : "abcdefgh",
         created: mode === "fixed-v1" ? null : "NEWW",
         sourceLength: prepared.sourceLength,
-        sourceVersion: mode === "fixed-v1" ? 1 : 2,
+        sourceVersion: mode === "fixed-v1" ? 1 : mode === "resizable-v2" ? 2 : null,
         targetVersion: mode === "fixed-v1" ? 5 : 4,
       });
     } finally {

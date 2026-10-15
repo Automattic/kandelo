@@ -605,8 +605,9 @@ in the 64-entry cache is not reread until eviction or reboot. Legacy version 3
 tables have no on-demand metadata value authentication, but their compacted
 block stream is now checked against the journal prefix at boot. A forged block
 location or digest is rejected even when the old table is internally
-rechecksummed and resealed. Indexed version 4 boot also checks every compacted
-block record against
+rechecksummed and resealed. A valid v3 source and recovery from a forged v3
+block digest are exercised on Node and Chromium, Firefox, and WebKit. Indexed
+version 4 boot also checks every compacted block record against
 the corresponding sorted checkpoint entry while replaying the journal prefix.
 It rejects a self-consistent but false block location or digest with `EIO`
 instead of exposing another block's bytes. The check uses the checkpoint's
