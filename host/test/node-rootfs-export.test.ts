@@ -1,5 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import {
+  closeSync, existsSync, ftruncateSync, mkdtempSync, openSync, readFileSync,
+  rmSync, writeSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -136,6 +140,111 @@ async function createExecutableRootfs(
 }
 
 describe("NodeKernelHost rootfs export contract", () => {
+  it.skipIf(!haveKernel)("boots a physical >4 GiB VFSI file and recovers guest writes", async () => {
+    const original = await createRootfs();
+    const originalBodyLength = new DataView(
+      original.buffer,
+      original.byteOffset,
+      original.byteLength,
+    ).getUint32(12, true);
+    const body = original.subarray(16, 16 + originalBodyLength);
+    const trailer = original.subarray(16 + originalBodyLength);
+    const bodyLength = 2 ** 32 + 4096;
+    const header = new Uint8Array(24);
+    header.set(original.subarray(0, 12));
+    const headerView = new DataView(header.buffer);
+    headerView.setUint32(4, 2, true);
+    headerView.setUint32(12, 24, true);
+    headerView.setBigUint64(16, BigInt(bodyLength), true);
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-large-node-image-"));
+    const imagePath = join(directory, "large.vfs");
+    const journalPath = join(directory, "large.journal");
+    const snapshotPath = join(directory, "snapshot.vfs");
+    try {
+      const file = openSync(imagePath, "wx+");
+      try {
+        const writeAt = (bytes: Uint8Array, offset: number) => {
+          let written = 0;
+          while (written < bytes.length) {
+            const count = writeSync(file, bytes, written, bytes.length - written, offset + written);
+            if (count <= 0) throw new Error("short physical image write");
+            written += count;
+          }
+        };
+        writeAt(header, 0);
+        writeAt(body, header.length);
+        writeAt(trailer, header.length + bodyLength);
+        ftruncateSync(file, header.length + bodyLength + trailer.length);
+      } finally {
+        closeSync(file);
+      }
+      const kernel = asArrayBuffer(new Uint8Array(readFileSync(kernelPath!)));
+      const first = new NodeKernelHost({
+        rootfsImageFile: imagePath,
+        experimentalResizablePersistencePath: journalPath,
+      });
+      let integrity: Awaited<ReturnType<NodeKernelHost["exportRootfsImageToFile"]>>;
+      try {
+        const rssBefore = process.memoryUsage.rss();
+        await first.init(kernel);
+        expect(process.memoryUsage.rss() - rssBefore).toBeLessThan(1024 * 1024 * 1024);
+        expect(new TextDecoder().decode(
+          (await first.readFileFromVfs("/var/lib/persisted-state"))!,
+        )).toBe("survives reboot\n");
+        await first.writeFileToVfs(
+          "/var/lib/persisted-state",
+          new TextEncoder().encode("large-backed\n"),
+        );
+      } finally {
+        await first.destroy();
+      }
+      const recovered = new NodeKernelHost({
+        rootfsImageFile: imagePath,
+        experimentalResizablePersistencePath: journalPath,
+        requireExistingRootfsPersistence: true,
+      });
+      try {
+        await recovered.init(kernel);
+        expect(new TextDecoder().decode(
+          (await recovered.readFileFromVfs("/var/lib/persisted-state"))!,
+        )).toBe("large-backed\n");
+        integrity = await recovered.exportRootfsImageToFile(snapshotPath);
+        expect(integrity.length).toBeLessThan(64 * 1024 * 1024);
+      } finally {
+        await recovered.destroy();
+      }
+      const rebooted = new NodeKernelHost({
+        rootfsImageFile: snapshotPath,
+        rootfsImageIntegrity: integrity,
+      });
+      try {
+        await rebooted.init(kernel);
+        expect(new TextDecoder().decode(
+          (await rebooted.readFileFromVfs("/var/lib/persisted-state"))!,
+        )).toBe("large-backed\n");
+      } finally {
+        await rebooted.destroy();
+      }
+      const changed = openSync(snapshotPath, "r+");
+      try {
+        writeSync(changed, Uint8Array.of(0), 0, 1, 0);
+      } finally {
+        closeSync(changed);
+      }
+      const damaged = new NodeKernelHost({
+        rootfsImageFile: snapshotPath,
+        rootfsImageIntegrity: integrity,
+      });
+      try {
+        await expect(damaged.init(kernel)).rejects.toThrow("rootfs image file is damaged");
+      } finally {
+        await damaged.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 180_000);
+
   it("rejects ambiguous path and byte exec sources before starting a worker", async () => {
     const host = new NodeKernelHost({
       execPrograms: { "/bin/tool": wasiHelloPath },

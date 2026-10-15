@@ -21,7 +21,7 @@ import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
 import type { ImageBuildDeterminism } from "./types";
 import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
@@ -184,7 +184,11 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
-  /** Exact image/scratch mount contract. Requires `rootfsImage`. */
+  /** Absolute path to a decoded, quiescent VFSI image read in bounded pages. */
+  rootfsImageFile?: string;
+  /** Optional chunk hashes from a verified staged image. */
+  rootfsImageIntegrity?: OpfsImageIntegrity;
+  /** Exact image/scratch mount contract. Requires an image byte or file source. */
   rootfsMountSpec?: readonly MountSpec[];
   /**
    * Resolve relative lazy URLs embedded in rootfsImage before transport.
@@ -279,12 +283,24 @@ export class NodeKernelHost {
   /** Initialize the kernel by spawning a dedicated worker_thread */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
     if (this.kernelFatalError !== null) throw this.kernelFatalError;
+    if (this.options.rootfsImageFile !== undefined && this.options.rootfsImage !== undefined) {
+      throw new Error("rootfs image cannot have both file and in-memory sources");
+    }
+    if (this.options.rootfsImageFile !== undefined && !isAbsolute(this.options.rootfsImageFile)) {
+      throw new Error("rootfs image file path must be absolute");
+    }
+    if (this.options.rootfsImageIntegrity !== undefined
+      && (this.options.rootfsImageFile === undefined
+        || !isStagedRootfsImageIntegrity(this.options.rootfsImageIntegrity))) {
+      throw new Error("rootfs image file integrity metadata is invalid");
+    }
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
     const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
-    if (this.options.rootfsLazyAssets !== undefined && rootfsImage === null) {
+    const hasRootfsImage = rootfsImage !== null || this.options.rootfsImageFile !== undefined;
+    if (this.options.rootfsLazyAssets !== undefined && !hasRootfsImage) {
       throw new Error("rootfsLazyAssets requires rootfsImage");
     }
-    if (this.options.rootfsLazyAssetSources !== undefined && rootfsImage === null) {
+    if (this.options.rootfsLazyAssetSources !== undefined && !hasRootfsImage) {
       throw new Error("rootfsLazyAssetSources requires rootfsImage");
     }
     if (
@@ -293,16 +309,16 @@ export class NodeKernelHost {
     ) {
       throw new Error("rootfs lazy bytes and on-demand sources are mutually exclusive");
     }
-    if (this.options.rootfsLazyUrlBase !== undefined && rootfsImage === null) {
+    if (this.options.rootfsLazyUrlBase !== undefined && !hasRootfsImage) {
       throw new Error("rootfsLazyUrlBase requires rootfsImage");
     }
-    if (this.options.rootfsMountSpec !== undefined && rootfsImage === null) {
+    if (this.options.rootfsMountSpec !== undefined && !hasRootfsImage) {
       throw new Error("rootfsMountSpec requires rootfsImage");
     }
-    if (this.options.experimentalFixedPersistencePath !== undefined && rootfsImage === null) {
+    if (this.options.experimentalFixedPersistencePath !== undefined && !hasRootfsImage) {
       throw new Error("experimentalFixedPersistencePath requires rootfsImage");
     }
-    if (this.options.experimentalResizablePersistencePath !== undefined && rootfsImage === null) {
+    if (this.options.experimentalResizablePersistencePath !== undefined && !hasRootfsImage) {
       throw new Error("experimentalResizablePersistencePath requires rootfsImage");
     }
     if (this.options.experimentalFixedPersistencePath !== undefined
@@ -342,7 +358,7 @@ export class NodeKernelHost {
     if (
       sessionSeedTrees !== undefined
       && sessionSeedTrees.length > 0
-      && rootfsImage === null
+      && !hasRootfsImage
     ) {
       throw new Error("sessionSeedTrees requires rootfsImage");
     }
@@ -476,6 +492,8 @@ export class NodeKernelHost {
           execPrograms: this.options.execPrograms,
           execProgramBytes,
           rootfsImage: rootfsImage ?? undefined,
+          rootfsImageFile: this.options.rootfsImageFile,
+          rootfsImageIntegrity: this.options.rootfsImageIntegrity,
           rootfsMountSpec: this.options.rootfsMountSpec === undefined
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),

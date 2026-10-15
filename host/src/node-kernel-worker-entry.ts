@@ -67,6 +67,7 @@ import {
 import * as rootImage from "./vfs/root-image-facts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
+import { NodeImageReader } from "./vfs/node-image-reader";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { MountConfig } from "./vfs/types";
 import type { MountSpec } from "./vfs/default-mounts";
@@ -251,6 +252,7 @@ let injectedExecWorkerConstructionFailure = false;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
+let nodeImageReader: NodeImageReader | null = null;
 const ENOEXEC = 8;
 // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
 // Destroy-time drain bounds; see handleDestroy.
@@ -938,7 +940,7 @@ function createRepoLazyAssetFetcher(): (url: string) => Promise<Response> {
  * `cleanupSessionDir` on `destroy`.
  */
 async function buildVirtualPlatformIO(
-  rootfsImage: ArrayBuffer,
+  rootfsImage: ArrayBuffer | undefined,
   rootfsMountSpec?: MountSpec[],
   extraMounts?: Array<{
     mountPoint: string;
@@ -958,7 +960,7 @@ async function buildVirtualPlatformIO(
   try {
     specMounts = await resolveForNodeKernelSession(
       rootfsMountSpec ?? DEFAULT_MOUNT_SPEC,
-      new Uint8Array(rootfsImage),
+      rootfsImage === undefined ? new Uint8Array() : new Uint8Array(rootfsImage),
       bootSessionDir,
       sessionSeedTrees,
       (extraMounts ?? []).map((mount) => mount.mountPoint),
@@ -1007,6 +1009,12 @@ let repoLazyAssetResolver: NodeLazyAssetResolver | undefined;
 function cleanupSessionDir(): void {
   void repoLazyAssetResolver?.close();
   repoLazyAssetResolver = undefined;
+  try {
+    nodeImageReader?.close();
+  } catch (error) {
+    console.warn("[node-kernel-worker] rootfs image file close failed", error);
+  }
+  nodeImageReader = null;
   if (sessionDir) {
     try {
       rmSync(sessionDir, { recursive: true, force: true });
@@ -1029,6 +1037,15 @@ const remoteSegmentRuntime = new RemoteSegmentRuntime();
 async function handleInit(msg: InitMessage) {
   initReady = false;
   injectedExecWorkerConstructionFailure = false;
+  if (msg.rootfsImageFile !== undefined) {
+    if (msg.rootfsImage !== undefined) {
+      throw new Error("rootfs image cannot have both file and in-memory sources");
+    }
+    nodeImageReader = NodeImageReader.open(msg.rootfsImageFile, msg.rootfsImageIntegrity);
+  } else if (msg.rootfsImageIntegrity !== undefined) {
+    throw new Error("rootfs image file integrity requires a file source");
+  }
+  const hasRootfsImage = msg.rootfsImage !== undefined || nodeImageReader !== null;
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   processMemoryAllocator = new ProcessMemoryAllocator({
@@ -1046,11 +1063,11 @@ async function handleInit(msg: InitMessage) {
   execPrograms = msg.execPrograms ?? {};
   execProgramBytes = msg.execProgramBytes ?? {};
   workerAdapter = new NodeWorkerAdapter();
-  if (!msg.rootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
+  if (!hasRootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
     throw new Error("sessionSeedTrees requires rootfsImage");
   }
 
-  const io: PlatformIO = msg.rootfsImage
+  const io: PlatformIO = hasRootfsImage
     ? await buildVirtualPlatformIO(
       msg.rootfsImage,
       msg.rootfsMountSpec,
@@ -1060,7 +1077,7 @@ async function handleInit(msg: InitMessage) {
       msg.rootfsLazyAssetSources,
     )
     : new NodePlatformIO();
-  vfsExecIO = msg.rootfsImage ? io : null;
+  vfsExecIO = hasRootfsImage ? io : null;
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
   }
@@ -1241,10 +1258,15 @@ async function handleInit(msg: InitMessage) {
   // image does not carry before `init` loads them.
   let finalizeRootfsTransport: (() => void) | undefined;
   if (rootImage.has()) {
-    const rootfsContainer = new Uint8Array(msg.rootfsImage!);
+    const reader = nodeImageReader;
+    const rootfsContainer = msg.rootfsImage === undefined
+      ? null
+      : new Uint8Array(msg.rootfsImage);
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
-      imageRead: imageReadFromContainer(rootfsContainer),
-      imageLength: rootfsContainer.byteLength,
+      imageRead: reader === null
+        ? imageReadFromContainer(rootfsContainer!)
+        : (at, destination) => reader.readAt(at, destination),
+      imageLength: reader?.length ?? rootfsContainer!.byteLength,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),

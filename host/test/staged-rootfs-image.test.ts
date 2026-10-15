@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { NodeImageReader } from "../src/vfs/node-image-reader";
 import {
   isStagedRootfsImageIntegrity,
   writeAndVerifyRootfsImage,
@@ -8,6 +12,32 @@ import {
 const CHUNK_BYTES = 1024 * 1024;
 
 describe("staged rootfs image verification", () => {
+  it("opens only regular positioned files and closes its reader", () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-node-image-reader-"));
+    const path = join(directory, "image.vfs");
+    const link = join(directory, "link.vfs");
+    try {
+      writeFileSync(path, Uint8Array.of(1, 2, 3));
+      symlinkSync(path, link);
+      expect(() => NodeImageReader.open(link)).toThrow();
+      expect(() => NodeImageReader.open(directory)).toThrow();
+      expect(() => NodeImageReader.open(path, {
+        length: 4,
+        chunkBytes: CHUNK_BYTES,
+        chunkSha256: [createHash("sha256").update(Uint8Array.of(1, 2, 3)).digest("hex")],
+      })).toThrow("rootfs image file integrity metadata is invalid");
+      const reader = NodeImageReader.open(path);
+      const bytes = new Uint8Array(4);
+      expect(reader.readAt(1, bytes)).toBe(2);
+      expect(bytes.subarray(0, 2)).toEqual(Uint8Array.of(2, 3));
+      expect(reader.readAt(-1, bytes)).toBe(-22);
+      reader.close();
+      expect(reader.readAt(0, bytes)).toBe(-5);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("hashes chunk boundaries independently of export writes", () => {
     const source = new Uint8Array(CHUNK_BYTES + 19);
     for (let index = 0; index < source.length; index++) source[index] = index % 251;

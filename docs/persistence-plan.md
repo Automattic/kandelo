@@ -81,13 +81,20 @@ semantics. Node and browser must expose the same guest-visible behavior.
   above the v1 32-bit limit; smaller bodies keep their v1 header. The
   ABI 51 kernel also boots a synthetic >4 GiB sparse v2 container through Node
   positioned reads, including a trailer beyond the 32-bit offset boundary,
-  while reading less than 16 MiB. A Rust round trip now builds a virtual
+  while reading less than 16 MiB. Node now also boots a physical sparse
+  >4 GiB v2 file through a worker-owned, bounded positioned reader. A guest
+  write survives strict resizable-journal reboot against that file; Node
+  exports a small snapshot, reboots the snapshot with per-chunk integrity,
+  and refuses a damaged stage. A changed file-backed base is rejected without
+  resetting its journal, and restoring the original base recovers its write.
+  The default Node image and byte-array options
+  still materialize decoded images. A Rust round trip now builds a virtual
   >4 GiB dense KIFS body, grows its file under an indexed journal after
   compaction, exports it through the v2 container cursor, mounts that output
   with positioned reads, and verifies the file tail without a 4 GiB resident
   buffer. Node boots a small v2 container; all three
   browser engines boot one, commit a guest write, and reopen its journal. A
-  physically staged >4 GiB v2 body has not yet been streamed or booted on
+  physically exported >4 GiB v2 body has not yet been staged and booted on
   Node or browser. An 8 GiB sparse file still exceeds the KIFS per-file limit;
   snapshot planning rejects it with `EFBIG` before mutating an image writer,
   clears any earlier export plan, and leaves the live journal usable. A 772 MiB
