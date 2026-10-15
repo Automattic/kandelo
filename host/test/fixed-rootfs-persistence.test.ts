@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -330,6 +330,33 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       expect(lstatSync(lockPath).isFile()).toBe(true);
       const reopened = await boot(image, path, true, true);
       await reopened.destroy();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a hard-linked journal alias rather than admitting a second writer", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-overlay-hardlink-"));
+    const path = join(directory, "machine.journal");
+    const alias = join(directory, "alias.journal");
+    const image = await makeImage("abcdefgh");
+    try {
+      const first = await boot(image, path, true);
+      try {
+        linkSync(path, alias);
+        await expect(boot(image, alias, true, true)).rejects.toThrow(/multiple hard links/);
+        expect(new TextDecoder().decode((await first.readFileFromVfs("/state"))!)).toBe("abcdefgh");
+      } finally {
+        await first.destroy();
+      }
+      await expect(boot(image, path, true, true)).rejects.toThrow(/multiple hard links/);
+      unlinkSync(alias);
+      const reopened = await boot(image, path, true, true);
+      try {
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("abcdefgh");
+      } finally {
+        await reopened.destroy();
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
