@@ -295,6 +295,8 @@ may be active. An old directory-form `.lock` fails closed and requires explicit
 operator removal after verifying the old owner has stopped; there is no safe
 automatic way to distinguish its stale and live forms. Browser Web Locks and
 OPFS sync access handles remain the browser-side ownership mechanism.
+Node refuses symlinked or hard-linked `.lock` files before SQLite opens them,
+including a dangling symlink or a lock hard-linked to journal data.
 Node also rejects journal, checkpoint, and seal files with more than one hard
 link after opening them; otherwise two path aliases could take different lock
 files while writing the same journal inode. A strict reboot test rejects both
