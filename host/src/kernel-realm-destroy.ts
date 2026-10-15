@@ -8,12 +8,14 @@
  */
 export interface KernelRealmDestroyResult {
   readonly gracefulDetachComplete: boolean;
+  readonly persistenceSyncFailure?: string;
 }
 
 export function kernelRealmDestroyResult(
   gracefulDetachComplete: boolean,
+  persistenceSyncFailure?: string,
 ): KernelRealmDestroyResult {
-  return Object.freeze({ gracefulDetachComplete });
+  return Object.freeze({ gracefulDetachComplete, persistenceSyncFailure });
 }
 
 export function readKernelRealmDestroyResult(
@@ -24,6 +26,9 @@ export function readKernelRealmDestroyResult(
     || value === null
     || typeof (value as { gracefulDetachComplete?: unknown })
       .gracefulDetachComplete !== "boolean"
+    || ("persistenceSyncFailure" in value
+      && (value as { persistenceSyncFailure?: unknown }).persistenceSyncFailure !== undefined
+      && typeof (value as { persistenceSyncFailure?: unknown }).persistenceSyncFailure !== "string")
   ) {
     return null;
   }
@@ -31,6 +36,7 @@ export function readKernelRealmDestroyResult(
     gracefulDetachComplete: (
       value as { gracefulDetachComplete: boolean }
     ).gracefulDetachComplete,
+    persistenceSyncFailure: (value as KernelRealmDestroyResult).persistenceSyncFailure,
   };
 }
 
@@ -39,10 +45,10 @@ export function readKernelRealmDestroyResult(
  * ownership authority. The caller must terminate the worker realm afterward
  * whether this returns success or a diagnostic.
  */
-export async function awaitGracefulKernelRealmDestroy(
+export async function awaitGracefulKernelRealmDestroyOutcome(
   request: () => Promise<unknown>,
   timeoutMs: number,
-): Promise<string | undefined> {
+): Promise<{ result: KernelRealmDestroyResult | null; failure?: string }> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     const outcome = await Promise.race([
@@ -55,20 +61,30 @@ export async function awaitGracefulKernelRealmDestroy(
       }),
     ]);
     if (outcome.type === "timeout") {
-      return `graceful kernel-worker detach timed out after ${timeoutMs}ms`;
+      return { result: null, failure: `graceful kernel-worker detach timed out after ${timeoutMs}ms` };
     }
     const result = readKernelRealmDestroyResult(outcome.result);
     if (!result) {
-      return "kernel worker returned an invalid destroy result";
+      return { result: null, failure: "kernel worker returned an invalid destroy result" };
     }
-    if (!result.gracefulDetachComplete) {
-      return "kernel worker reported incomplete graceful generation detach";
-    }
-    return undefined;
+    const failures = [
+      !result.gracefulDetachComplete
+        ? "kernel worker reported incomplete graceful generation detach"
+        : undefined,
+      result.persistenceSyncFailure,
+    ].filter((failure): failure is string => failure !== undefined);
+    return { result, failure: failures.length > 0 ? failures.join("; ") : undefined };
   } catch (error) {
-    return "graceful kernel-worker detach failed: " +
-      (error instanceof Error ? error.message : String(error));
+    return { result: null, failure: "graceful kernel-worker detach failed: " +
+      (error instanceof Error ? error.message : String(error)) };
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
+}
+
+export async function awaitGracefulKernelRealmDestroy(
+  request: () => Promise<unknown>,
+  timeoutMs: number,
+): Promise<string | undefined> {
+  return (await awaitGracefulKernelRealmDestroyOutcome(request, timeoutMs)).failure;
 }

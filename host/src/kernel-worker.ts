@@ -27,6 +27,7 @@ import type { VfsChangeEvent } from "./vfs/types";
  * explanatory only and generated-file drift tests cover the live values.
  */
 import { ERRNO } from "./generated/abi";
+import { RejectedOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import { decodeInspectionDirectory, decodeInspectionStat, decodeInspectionResourceLimits } from "./vfs/rootfs-inspection";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 
@@ -87,6 +88,7 @@ import {
   type PreparedExecKernel,
 } from "./exec-target";
 import type { DeferredFetchSettled } from "./vfs/rootfs-lazy-archives";
+import { OverlayStorageUnexpectedEofError, type PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { WasmModuleCache } from "./wasm-module-cache";
 import {
   buildRawHttpRequest,
@@ -998,6 +1000,7 @@ const SYS_BRK = ABI_SYSCALLS.Brk;
 const SYS_MREMAP = ABI_SYSCALLS.Mremap;
 const SYS_MADVISE = ABI_SYSCALLS.Madvise;
 const SYS_MSYNC = ABI_SYSCALLS.Msync;
+const MS_SYNC = 4;
 const SYS_MLOCK = ABI_SYSCALLS.Mlock;
 const SYS_MLOCK2 = ABI_SYSCALLS.Mlock2;
 const SYS_MUNLOCK = ABI_SYSCALLS.Munlock;
@@ -3077,9 +3080,9 @@ export class CentralizedKernelWorker {
    */
   #rootfsNosuid = false;
   /**
-   * Raw bytes of the `/` VFS image, and the source of the whole `/` tree.
+   * Length of the `/` VFS image, whose positioned reader supplies its bytes.
    *
-   * `#maybeLoadKernelRootfs` installs a positioned window onto these bytes and
+   * `#maybeLoadKernelRootfs` installs the positioned byte reader and
    * asks the kernel to parse the image itself (`kernel_rootfs_load_image`). The
    * host resolves no names: the kernel mounts the image's own filesystem, walks
    * it, and reads the image's own deferred-file section (`SDEF`, or the older
@@ -3091,25 +3094,21 @@ export class CentralizedKernelWorker {
    * JSON I cannot read". That failure is loud and the fix is to rebuild the
    * image; there is no host-walked fallback to absorb it.
    *
-   * Null when the entry supplied no image, which is the no-`/` boot — and null
-   * again once the load succeeds: the load is the only reader of the whole
-   * container (header, trailing JSON sections, `KLZY`). The filesystem body
-   * the kernel keeps reading after that is served through
-   * {@link #rootfsImageRead}, which the entry backs with the same bytes.
+   * Zero when the entry supplied no image, which is the no-`/` boot. The
+   * reader remains available after load for image-backed file content.
    */
-  #rootfsImage: Uint8Array | null = null;
+  #rootfsImageLength = 0;
   /**
    * A positioned reader over the `/` image, in container coordinates. The
-   * worker entry backs it with the image bytes it was handed at boot
-   * (`imageReadFromContainer`), which is the only copy the host keeps.
+   * worker entry backs it with memory or a positioned storage handle.
    *
    * KERNEL_IMAGE_WINDOW. The kernel reads base-file CONTENT out of the image
    * for the life of the session, so `host_image_read` stays installed after
    * boot. Two properties make that correct:
    *
-   *  - *One copy.* The host never decodes the image into a filesystem of its
-   *    own; the kernel's in-memory tree holds metadata and copy-on-written
-   *    data, and unmodified file content stays in these bytes.
+   *  - *One authority.* The host never decodes the image into a filesystem of
+   *    its own; the kernel's in-memory tree holds metadata and copy-on-written
+   *    data, and unmodified file content stays in the image source.
    *  - *Immutable bytes.* Nothing on the host writes to the image after boot.
    *    Guest writes land in the kernel's copy-on-write overlay, and a
    *    URL-backed lazy file's bytes come from `host_fetch_deferred` because
@@ -5493,11 +5492,11 @@ export class CentralizedKernelWorker {
 
   /**
    * Hand the kernel's rootfs the `/` image and its byte provider. Called by the
-   * worker entry, which holds the image bytes, before {@link init}.
+   * worker entry, which owns the image byte source, before {@link init}.
    * `#maybeLoadKernelRootfs` applies them once the kernel instance exists. A no-op path when there is no `/` image (the
    * entry simply never calls this).
    *
-   * The kernel parses `image` itself. The host supplies bytes, not a tree.
+   * The kernel parses the image itself. The host supplies bytes, not a tree.
    */
   configureRootfsOverlay(
     deferredProvider: (
@@ -5507,7 +5506,7 @@ export class CentralizedKernelWorker {
     ) => number,
     foreignMountPrefixes: string[] | undefined,
     rootNosuid: boolean | undefined,
-    image: Uint8Array,
+    imageLength: number,
     /** Read at a CONTAINER offset; `0` at or past the end. Positioned rather
      *  than a whole-body callback, so a backend need not hold the body as one
      *  addressable buffer. */
@@ -5522,8 +5521,232 @@ export class CentralizedKernelWorker {
     this.#rootfsDeferredInvalidator = deferredInvalidator;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
-    this.#rootfsImage = image;
+    if (!Number.isSafeInteger(imageLength) || imageLength <= 0) {
+      throw new Error("rootfs image length must be a positive safe integer");
+    }
+    this.#rootfsImageLength = imageLength;
     this.#rootfsImageRead = imageRead;
+  }
+
+  enableFixedRootfsPersistence(
+    storage: PersistentOverlayStorage,
+    index?: PersistentOverlayStorage,
+    checkpointEnd?: number,
+  ): void {
+    this.#enableRootfsPersistence(storage, index, checkpointEnd, false);
+  }
+
+  enableResizableRootfsPersistence(
+    storage: PersistentOverlayStorage,
+    index?: PersistentOverlayStorage,
+    checkpointEnd?: number,
+  ): void {
+    this.#enableRootfsPersistence(storage, index, checkpointEnd, true);
+  }
+
+  #enableRootfsPersistence(
+    storage: PersistentOverlayStorage,
+    index: PersistentOverlayStorage | undefined,
+    checkpointEnd: number | undefined,
+    resizable: boolean,
+  ): void {
+    if (this.#rootfsImageLength === 0) throw new Error("persistent rootfs requires a loaded image");
+    if (index !== undefined && (!Number.isSafeInteger(checkpointEnd) || checkpointEnd! < 72)) {
+      throw new Error("indexed rootfs persistence requires a valid checkpoint boundary");
+    }
+    const observed = { failure: null as { cause: unknown } | null };
+    const monitor = (backing: PersistentOverlayStorage): PersistentOverlayStorage => {
+      const call = <Result>(operation: () => Result): Result => {
+        try {
+          return operation();
+        } catch (error) {
+          if (!(error instanceof OverlayStorageUnexpectedEofError)) {
+            observed.failure ??= { cause: error };
+          }
+          throw error;
+        }
+      };
+      return {
+        len: () => call(() => backing.len()),
+        readExactAt: (offset, destination) => call(() => backing.readExactAt(offset, destination)),
+        writeAllAt: (offset, source) => call(() => backing.writeAllAt(offset, source)),
+        flush: () => call(() => backing.flush()),
+        truncate: (length) => call(() => backing.truncate(length)),
+        close: () => backing.close(),
+      };
+    };
+    this.#kernel.setPersistentOverlayStorage(monitor(storage));
+    this.#kernel.setPersistentOverlayTargetStorage(index === undefined ? null : monitor(index));
+    this.#kernel.setPersistentOverlayCompactionStorage(null);
+    let status: number | undefined;
+    try {
+      this.#runImmediateKernelEntry("enable rootfs persistence", (entry) => {
+        const exports = this.#kernelInstanceForEntry(entry).exports;
+        const name = resizable
+          ? (index === undefined
+            ? "kernel_rootfs_enable_resizable_persistence"
+            : "kernel_rootfs_enable_resizable_persistence_indexed")
+          : (index === undefined
+            ? "kernel_rootfs_enable_fixed_persistence"
+            : "kernel_rootfs_enable_fixed_persistence_indexed");
+        const enable = exports[name] as
+          | ((...args: number[]) => number)
+          | undefined;
+        if (typeof enable !== "function") throw new Error(`kernel lacks ${name} export`);
+        const lengthLo = this.#rootfsImageLength >>> 0;
+        const lengthHi = Math.floor(this.#rootfsImageLength / 0x1_0000_0000);
+        status = index === undefined
+          ? enable(lengthLo, lengthHi)
+          : enable(lengthLo, lengthHi, checkpointEnd! >>> 0, Math.floor(checkpointEnd! / 0x1_0000_0000));
+        return undefined;
+      });
+      if (observed.failure !== null) {
+        throw new Error(
+          `persistent overlay host storage failed during kernel initialization: ${String(observed.failure.cause)}`,
+          observed.failure,
+        );
+      }
+      if (status === undefined) throw new Error("kernel did not report rootfs persistence status");
+      if (status !== 0) throw new RejectedOverlayGenerationError(resizable ? "resizable" : "fixed", -status);
+      this.#kernel.setPersistentOverlayStorage(storage);
+      this.#kernel.setPersistentOverlayTargetStorage(index ?? null);
+      this.#persistentOverlayImportSlot = 0;
+      this.#persistentOverlayIndexSlot = index === undefined ? null : 1;
+      this.#persistentOverlayActiveStorage = storage;
+    } catch (error) {
+      this.#kernel.setPersistentOverlayStorage(null);
+      this.#kernel.setPersistentOverlayTargetStorage(null);
+      throw error;
+    }
+  }
+
+  #persistentOverlayImportSlot: 0 | 1 | 2 = 0;
+  #persistentOverlayIndexSlot: 0 | 1 | 2 | null = null;
+  #preparedOverlayImportSlot: 0 | 1 | 2 | null = null;
+  #persistentOverlayActiveStorage: PersistentOverlayStorage | null = null;
+  #preparedOverlayStorage: PersistentOverlayStorage | null = null;
+  #preparedOverlayIndexStorage: PersistentOverlayStorage | null = null;
+
+  #setPersistentOverlaySlot(slot: 0 | 1 | 2, storage: PersistentOverlayStorage | null): void {
+    if (slot === 0) this.#kernel.setPersistentOverlayStorage(storage);
+    else if (slot === 1) this.#kernel.setPersistentOverlayTargetStorage(storage);
+    else this.#kernel.setPersistentOverlayCompactionStorage(storage);
+  }
+
+  #freePersistentOverlaySlot(): 0 | 1 | 2 {
+    const slot = ([0, 1, 2] as const).find((candidate) =>
+      candidate !== this.#persistentOverlayImportSlot && candidate !== this.#persistentOverlayIndexSlot,
+    );
+    if (slot === undefined) throw new Error("no persistent overlay storage slot is available");
+    return slot;
+  }
+
+  prepareRootfsPersistenceCompaction(target: PersistentOverlayStorage): void {
+    if (this.#preparedOverlayImportSlot !== null) throw new Error("rootfs persistence compaction is already prepared");
+    const targetSlot = this.#freePersistentOverlaySlot();
+    this.#setPersistentOverlaySlot(targetSlot, target);
+    let status: number | undefined;
+    try {
+      this.#runImmediateKernelEntry("prepare rootfs persistence compaction", (entry) => {
+        const prepare = this.#kernelInstanceForEntry(entry).exports
+          .kernel_rootfs_prepare_persistence_compaction as ((targetSlot: number) => number) | undefined;
+        if (typeof prepare !== "function") throw new Error("kernel lacks rootfs persistence compaction preparation export");
+        status = prepare(targetSlot);
+        return undefined;
+      });
+      if (status !== 0) throw new Error(`rootfs persistence compaction preparation failed (errno ${-(status ?? 5)})`);
+      this.#preparedOverlayImportSlot = targetSlot;
+      this.#preparedOverlayStorage = target;
+    } catch (error) {
+      this.#setPersistentOverlaySlot(targetSlot, null);
+      throw error;
+    }
+  }
+
+  checkpointPreparedRootfsPersistence(index: PersistentOverlayStorage): void {
+    if (this.#preparedOverlayImportSlot === null || this.#preparedOverlayStorage === null) {
+      throw new Error("rootfs persistence compaction is not prepared");
+    }
+    if (this.#preparedOverlayIndexStorage !== null) throw new Error("rootfs persistence checkpoint is already prepared");
+    const source = this.#persistentOverlayActiveStorage;
+    if (source === null) throw new Error("rootfs persistence has no active journal");
+    const indexSlot = this.#persistentOverlayImportSlot;
+    this.#setPersistentOverlaySlot(indexSlot, index);
+    let status: number | undefined;
+    try {
+      this.#runImmediateKernelEntry("checkpoint prepared rootfs persistence", (entry) => {
+        const checkpoint = this.#kernelInstanceForEntry(entry).exports
+          .kernel_rootfs_checkpoint_prepared_persistence as ((indexSlot: number) => number) | undefined;
+        if (typeof checkpoint !== "function") throw new Error("kernel lacks prepared rootfs persistence checkpoint export");
+        status = checkpoint(indexSlot);
+        return undefined;
+      });
+      if (status !== 0) throw new Error(`prepared rootfs persistence checkpoint failed (errno ${-(status ?? 5)})`);
+      this.#preparedOverlayIndexStorage = index;
+    } catch (error) {
+      this.#setPersistentOverlaySlot(indexSlot, source);
+      throw error;
+    }
+  }
+
+  activateRootfsPersistenceCompaction(): void {
+    const targetSlot = this.#preparedOverlayImportSlot;
+    if (targetSlot === null) throw new Error("rootfs persistence compaction is not prepared");
+    let status: number | undefined;
+    this.#runImmediateKernelEntry("activate rootfs persistence compaction", (entry) => {
+      const activate = this.#kernelInstanceForEntry(entry).exports
+        .kernel_rootfs_activate_persistence_compaction as (() => number) | undefined;
+      if (typeof activate !== "function") throw new Error("kernel lacks rootfs persistence compaction activation export");
+      status = activate();
+      return undefined;
+    });
+    if (status !== 0) throw new Error(`rootfs persistence compaction activation failed (errno ${-(status ?? 5)})`);
+    if (this.#preparedOverlayIndexStorage === null) {
+      this.#setPersistentOverlaySlot(this.#persistentOverlayImportSlot, null);
+    }
+    if (this.#persistentOverlayIndexSlot !== null) this.#setPersistentOverlaySlot(this.#persistentOverlayIndexSlot, null);
+    const newIndexSlot = this.#preparedOverlayIndexStorage === null ? null : this.#persistentOverlayImportSlot;
+    this.#persistentOverlayImportSlot = targetSlot;
+    this.#persistentOverlayIndexSlot = newIndexSlot;
+    this.#persistentOverlayActiveStorage = this.#preparedOverlayStorage;
+    this.#preparedOverlayImportSlot = null;
+    this.#preparedOverlayStorage = null;
+    this.#preparedOverlayIndexStorage = null;
+  }
+
+  cancelRootfsPersistenceCompaction(): void {
+    const targetSlot = this.#preparedOverlayImportSlot;
+    if (targetSlot === null) return;
+    try {
+      this.#runImmediateKernelEntry("cancel rootfs persistence compaction", (entry) => {
+        const cancel = this.#kernelInstanceForEntry(entry).exports
+          .kernel_rootfs_cancel_persistence_compaction as (() => void) | undefined;
+        if (typeof cancel !== "function") throw new Error("kernel lacks rootfs persistence compaction cancellation export");
+        cancel();
+        return undefined;
+      });
+    } finally {
+      if (this.#preparedOverlayIndexStorage !== null) {
+        this.#setPersistentOverlaySlot(this.#persistentOverlayImportSlot, this.#persistentOverlayActiveStorage);
+      }
+      this.#setPersistentOverlaySlot(targetSlot, null);
+      this.#preparedOverlayImportSlot = null;
+      this.#preparedOverlayStorage = null;
+      this.#preparedOverlayIndexStorage = null;
+    }
+  }
+
+  syncRootfsPersistence(): void {
+    if (this.#rootfsImageLength === 0) return;
+    let status: number | undefined;
+    this.#runImmediateKernelEntry("sync rootfs persistence", (entry) => {
+      const sync = this.#kernelInstanceForEntry(entry).exports
+        .kernel_rootfs_sync_persistence as (() => number) | undefined;
+      if (typeof sync !== "function") throw new Error("kernel lacks rootfs persistence sync export");
+      status = sync();
+      return undefined;
+    });
+    if (status !== 0) throw new Error(`rootfs persistence sync failed (errno ${-(status ?? 5)})`);
   }
 
   /**
@@ -5538,9 +5761,11 @@ export class CentralizedKernelWorker {
    * become a `/`-less boot: it throws, and the boot fails at the real cause.
    */
   #maybeLoadKernelRootfs(instance: WebAssembly.Instance): void {
-    const image = this.#rootfsImage;
+    const imageLength = this.#rootfsImageLength;
+    const imageRead = this.#rootfsImageRead;
     const provider = this.#rootfsDeferredProvider;
-    if (image === null || provider === null) return;
+    if (imageLength === 0 || provider === null) return;
+    if (imageRead === null) throw new Error("rootfs image has no byte reader");
     const memory = this.#kernelMemory;
     if (memory === null) return;
 
@@ -5582,13 +5807,11 @@ export class CentralizedKernelWorker {
     this.#kernel.setRootfsImageProvider((offset, dest) => {
       const start = Number(offset);
       if (!Number.isSafeInteger(start) || start < 0) return -22; // EINVAL
-      if (start >= image.byteLength) return 0; // end of image
-      const n = Math.min(dest.byteLength, image.byteLength - start);
-      dest.set(image.subarray(start, start + n));
-      return n;
+      if (start >= imageLength) return 0; // end of image
+      return imageRead(start, dest);
     });
-    const imageLenLo = image.byteLength >>> 0;
-    const imageLenHi = Math.floor(image.byteLength / 0x1_0000_0000);
+    const imageLenLo = imageLength >>> 0;
+    const imageLenHi = Math.floor(imageLength / 0x1_0000_0000);
     const loaded = loadImage(imageLenLo, imageLenHi);
     if (loaded < 0) {
       // `-EINVAL` here is most often an image that declares neither deferred-
@@ -5637,35 +5860,8 @@ export class CentralizedKernelWorker {
     }
     enable(1);
 
-    // Drop the load-time container reference and re-point the window at the
-    // filesystem body.
-    //
-    // The container's header and trailing sections (lazy JSON, archive JSON,
-    // metadata, `KLZY`) exist for the load and are never read again. The body
-    // is different: the kernel serves every image-backed base file's content
-    // out of it, through its own KIFS reader, for the life of the session. So
-    // the window stays open, through the entry's reader. See
-    // KERNEL_IMAGE_WINDOW on `#rootfsImageRead`.
-    //
-    // Container coordinates are preserved: the kernel cached the image's own
-    // KIFS span at load and keeps addressing bytes by their offset in the
-    // container, so the body is served at `VFS_IMAGE_HEADER_SIZE`. A read of
-    // the header after load is refused rather than guessed at; nothing in the
-    // kernel asks for one, and a change that made it would find out here
-    // instead of reading a tree of empty files.
-    const imageRead = this.#rootfsImageRead;
-    this.#rootfsImage = null;
-    if (imageRead === null) {
-      this.#kernel.setRootfsImageProvider(() => -38); // ENOSYS
-      return;
-    }
-    this.#kernel.setRootfsImageProvider((offset, dest) => {
-      const at = Number(offset);
-      if (!Number.isSafeInteger(at) || at < 0) return -22; // EINVAL
-      if (at < VFS_IMAGE_HEADER_SIZE) return -22; // EINVAL: the header is gone
-      // The backend owns where its bytes live; this stays the guard only.
-      return imageRead(at, dest);
-    });
+    // The positioned reader remains installed for image-backed files and
+    // the fixed-persistence digest of the complete container.
   }
 
   /**
@@ -5802,9 +5998,27 @@ export class CentralizedKernelWorker {
    * mount.
    */
   rootfsExportContainerRead(): Uint8Array {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    this.rootfsExportContainerVisit((_offset, bytes) => {
+      chunks.push(bytes);
+      total += bytes.byteLength;
+    });
+    const output = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    return output;
+  }
+
+  rootfsExportContainerVisit(visit: (offset: number, bytes: Uint8Array) => void): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
-    let output = new Uint8Array(0);
     let failErrno = 0;
+    let sinkError: unknown;
+    let sinkFailed = false;
+    let offset = 0;
     this.#runImmediateKernelEntry("kernel rootfs export image", (entry) => {
       if (
         typeof entry.instance.exports.kernel_rootfs_export_container_read
@@ -5819,8 +6033,6 @@ export class CentralizedKernelWorker {
         failErrno = EIO;
         return undefined;
       }
-      const chunks: Uint8Array[] = [];
-      let offset = 0;
       for (;;) {
         const res: { errno: number; bytes: Uint8Array | null } =
           region.withLease((lease) => {
@@ -5849,26 +6061,26 @@ export class CentralizedKernelWorker {
         }
         // Zero is the end of the image. A short chunk is not.
         if (res.bytes === null) break;
-        chunks.push(res.bytes);
-        offset += res.bytes.byteLength;
-      }
-      if (failErrno === 0) {
-        let total = 0;
-        for (const c of chunks) total += c.byteLength;
-        const merged = new Uint8Array(total);
-        let at = 0;
-        for (const c of chunks) {
-          merged.set(c, at);
-          at += c.byteLength;
+        if (!Number.isSafeInteger(offset + res.bytes.byteLength)) {
+          failErrno = EIO;
+          break;
         }
-        output = merged;
+        try {
+          visit(offset, res.bytes);
+        } catch (error) {
+          sinkError = error;
+          sinkFailed = true;
+          break;
+        }
+        offset += res.bytes.byteLength;
       }
       return undefined;
     });
+    if (sinkFailed) throw sinkError;
     if (failErrno !== 0) {
       throw new KernelScratchError("rootfs export image failed", failErrno);
     }
-    return output;
+    return offset;
   }
 
   /**
@@ -14092,6 +14304,16 @@ export class CentralizedKernelWorker {
           retVal = -1;
           publicationRetVal = -1;
           errVal = EIO;
+        } else if ((origArgs[2] & MS_SYNC) !== 0 && this.#rootfsImageLength !== 0) {
+          const sync = this.#kernelInstanceForEntry(entry).exports
+            .kernel_rootfs_sync_persistence as (() => number) | undefined;
+          if (typeof sync !== "function") throw new Error("kernel lacks rootfs persistence sync export");
+          const status = sync();
+          if (status < 0) {
+            retVal = -1;
+            publicationRetVal = -1;
+            errVal = -status;
+          }
         }
         if (this.hostReaped?.has(channel.pid)) return;
       }

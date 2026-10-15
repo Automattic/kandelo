@@ -27,6 +27,11 @@ The runner has two explicit filesystem modes. Its default `raw` mode preserves
 the legacy direct host-filesystem behavior and accepts `KERNEL_CWD`.
 `KANDELO_RUNNER_VFS=isolated` instead boots the canonical root image with
 lifecycle-owned scratch storage and uses `/tmp` as the guest working directory.
+`KANDELO_RUNNER_VFS=persistent` derives that image with the fixture under
+`/run/kandelo-run`, uses the fixture working directory for `TMPDIR`, and mounts
+the resizable journal at the absolute `KANDELO_RUNNER_PERSISTENCE_PATH`.
+It requires a fixture root and exercises rootfs writes rather than host-backed
+`/run` or in-kernel `/tmp`; the caller owns journal cleanup.
 Conformance harnesses may additionally provide one quiescent fixture directory
 with `KANDELO_RUNNER_FIXTURE_ROOT`, a relative
 `KANDELO_RUNNER_FIXTURE_CWD`, and an optional relative
@@ -37,6 +42,12 @@ the source, and ambient host executable lookup is disabled. These controls are
 runner plumbing, not guest environment variables.
 
 See [docs/sdk-guide.md](../docs/sdk-guide.md) for full SDK documentation.
+
+The Open POSIX runner exposes this path with
+`scripts/run-posix-tests.sh --persistent fsync`. It gives each test a fresh
+temporary journal and removes it after the test. The default runner remains
+isolated and host-backed at `/run`; the persistent option does not by itself
+reboot a test's journal or establish full persistent POSIX conformance.
 
 ## Programs
 

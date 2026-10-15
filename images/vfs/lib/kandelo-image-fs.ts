@@ -19,13 +19,14 @@ import {
  * packages go in the LAMP image, how WordPress is preinstalled — are product
  * configuration and are not touched. This is the seam they sit on.
  *
- * # The module imports nothing
+ * # The default module imports nothing
  *
  * `WebAssembly.instantiate(bytes)` is called with NO import object, because
  * `crates/kandelo-image-module` has no import section at all — not even `env.memory`.
  * That is verified on every build of the module rather than assumed here, and
  * it is what makes this a bridge to a self-contained component rather than a
- * new host surface: a host implements nothing for it.
+ * new host surface: a host implements nothing for it. The separate positioned
+ * variant imports one read function for OPFS-backed composition.
  */
 
 /** Metadata a builder reads back, as `lstat` returns it. */
@@ -57,6 +58,7 @@ interface ModuleExports {
   sm_unlink(p: number, pl: number): number;
   sm_write_file(p: number, pl: number, mode: number, c: number, cl: number): number;
   sm_load_image(ptr: number, len: number): number;
+  sm_load_image_positioned?: (lengthLo: number, lengthHi: number) => number;
   sm_lstat(p: number, pl: number, o: number, ol: number): number;
   sm_readlink(p: number, pl: number, o: number, ol: number): number;
   sm_read_file(p: number, pl: number, offset: bigint, o: number, ol: number): number;
@@ -208,6 +210,67 @@ export class KandeloImageFs {
     );
     const fs = new KandeloImageFs(instance.exports as unknown as ModuleExports);
     fs.check(fs.exports.sm_reset(rootMode, 0, 0), "reset", "/");
+    return fs;
+  }
+
+  static createFromPositionedImage(
+    moduleBytes: Uint8Array,
+    imageLength: number,
+    readAt: (offset: number, destination: Uint8Array) => number,
+  ): KandeloImageFs {
+    if (!Number.isSafeInteger(imageLength) || imageLength <= 0) {
+      throw new Error("positioned VFS image length is invalid");
+    }
+    const module = new WebAssembly.Module(
+      moduleBytes.buffer.slice(
+        moduleBytes.byteOffset,
+        moduleBytes.byteOffset + moduleBytes.byteLength,
+      ) as ArrayBuffer,
+    );
+    const imports = WebAssembly.Module.imports(module);
+    if (
+      imports.length !== 1 ||
+      imports[0]?.module !== "env" ||
+      imports[0]?.name !== "host_image_read" ||
+      imports[0]?.kind !== "function"
+    ) {
+      throw new Error("positioned VFS image module has an unexpected import contract");
+    }
+    let memory: WebAssembly.Memory | undefined;
+    const instance = new WebAssembly.Instance(module, {
+      env: {
+        host_image_read: (offset: bigint, ptr: number, len: number): number => {
+          if (
+            memory === undefined ||
+            !Number.isSafeInteger(ptr) || ptr < 0 ||
+            !Number.isSafeInteger(len) || len < 0 ||
+            ptr + len > memory.buffer.byteLength
+          ) return -ERRNO.EFAULT;
+          const position = Number(offset);
+          if (!Number.isSafeInteger(position) || position < 0) return -ERRNO.EOVERFLOW;
+          try {
+            const count = readAt(position, new Uint8Array(memory.buffer, ptr, len));
+            if (!Number.isInteger(count) || count > len || count < -4095) return -ERRNO.EIO;
+            return count;
+          } catch {
+            return -ERRNO.EIO;
+          }
+        },
+      },
+    });
+    const exports = instance.exports as unknown as ModuleExports;
+    memory = exports.memory;
+    const load = exports.sm_load_image_positioned;
+    if (typeof load !== "function") {
+      throw new Error("positioned VFS image module lacks its load export");
+    }
+    const fs = new KandeloImageFs(exports);
+    fs.check(
+      load(imageLength >>> 0, Math.floor(imageLength / 0x1_0000_0000)),
+      "loadImagePositioned",
+      "",
+    );
+    fs.refreshLoadedImageState();
     return fs;
   }
 
@@ -1379,56 +1442,22 @@ export class KandeloImageFs {
         "loadImage",
         "",
       );
-      // GAP 17. `sm_set_image_options` carries capacity and metadata together,
-      // so `setImageCapacity` re-sends the metadata from `lastMetadata` — which
-      // is correct only while this bridge is the metadata's only author. A load
-      // makes the KERNEL an author: it restores what the image declared, and
-      // this bridge still remembers null. Sizing a derived image after loading
-      // its base would then clear the base's declared ABI, which is exactly the
-      // sequence the shell and php-test builders perform. Refreshed here
-      // because this is the only moment it can change behind the bridge's back.
-      this.lastMetadata = this.getImageMetadata();
-      // The same hazard on the OTHER field the one entry point carries. `sm_set_image_options` sends capacity AND metadata
-      // together, so each has to survive a load that the kernel authored --
-      // and only the metadata was refreshed here.
-      //
-      // A load restores the image's declared capacity inside the module; this
-      // bridge went on remembering 0, so the next `setImageMetadata` sent 0
-      // and CLEARED it. The shell composer does exactly that: load a 256 MiB
-      // base, write files, then save with metadata. The image came out
-      // declaring 143 MiB -- sized to its own tree -- and failed its product
-      // profile at the publication gate.
-      //
-      // `sm_check_headroom` answers this without building an export, so a load
-      // pays one ABI crossing rather than a plan for a 250 MiB image.
-      this.requestedCapacityBytes = this.exportCapacityBytes();
-      // GAP 25, the same shape once more, on the counter rather than a field.
-      //
-      // Archive ids are assigned HERE, by this bridge, counting up from zero —
-      // and a load fills the tree with archives the bridge never assigned. The
-      // next `registerLazyArchive` then minted id 1 again, collided with the
-      // loaded image's archive 1, and failed `EINVAL` from the module's own
-      // "one id, two archives" refusal.
-      //
-      // It is reachable in production, not only in a fixture: the shell
-      // composer loads a source rootfs and registers the shell's lazy archives
-      // into it. It has not fired only because today's source rootfs carries
-      // none — so the first base image that ships with an archive would have
-      // broken the build that composes from it.
-      //
-      // Asked of the MODULE, which holds the tree, rather than tracked
-      // alongside it: a counter the bridge maintains through a load is a second
-      // author for a fact the image already carries.
-      const loadedArchives = this.lazyEntries().archives;
-      for (const archive of loadedArchives) {
-        if (archive.archiveId > this.lastArchiveId) {
-          this.lastArchiveId = archive.archiveId;
-        }
-      }
+      this.refreshLoadedImageState();
       return entries;
     } catch (error) {
       this.exports.sm_free(ptr, image.byteLength);
       throw error;
+    }
+  }
+
+  private refreshLoadedImageState(): void {
+    this.lastMetadata = this.getImageMetadata();
+    this.requestedCapacityBytes = this.exportCapacityBytes();
+    const loadedArchives = this.lazyEntries().archives;
+    for (const archive of loadedArchives) {
+      if (archive.archiveId > this.lastArchiveId) {
+        this.lastArchiveId = archive.archiveId;
+      }
     }
   }
 
@@ -1567,12 +1596,13 @@ export class KandeloImageFs {
     }
   }
 
-  exportImage(chunkBytes = 1 << 20): Uint8Array {
+  *exportImageChunks(chunkBytes = 1 << 20): IterableIterator<Uint8Array> {
+    if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0) {
+      throw new Error("kandelo-image-module: invalid export chunk size");
+    }
     const ptr = this.exports.sm_alloc(chunkBytes);
     if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
-      const parts: Uint8Array[] = [];
-      let total = 0;
       let offset = 0n;
       for (;;) {
         const n = this.check(
@@ -1583,20 +1613,28 @@ export class KandeloImageFs {
         if (n === 0) break;
         // A fresh view per chunk: the module may have grown its memory while
         // building the image, which detaches any view taken before.
-        parts.push(this.mem.slice(ptr, ptr + n));
-        total += n;
+        yield this.mem.slice(ptr, ptr + n);
         offset += BigInt(n);
       }
-      const out = new Uint8Array(total);
-      let at = 0;
-      for (const part of parts) {
-        out.set(part, at);
-        at += part.byteLength;
-      }
-      return out;
     } finally {
       this.exports.sm_free(ptr, chunkBytes);
     }
+  }
+
+  exportImage(chunkBytes = 1 << 20): Uint8Array {
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    for (const part of this.exportImageChunks(chunkBytes)) {
+      parts.push(part);
+      total += part.byteLength;
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const part of parts) {
+      out.set(part, at);
+      at += part.byteLength;
+    }
+    return out;
   }
 }
 

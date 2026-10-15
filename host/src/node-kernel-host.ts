@@ -2,6 +2,8 @@ import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-s
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
+import { isStagedRootfsImageIntegrity } from "./vfs/staged-rootfs-image";
+import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
 /**
  * NodeKernelHost — Main-thread proxy that communicates with a dedicated
  * kernel worker_thread via messages. The kernel worker owns the Wasm
@@ -19,7 +21,7 @@ import type { VfsChangeEvent } from "./vfs/types";
 import type { ImageBuildDeterminism } from "./types";
 import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
@@ -29,6 +31,7 @@ import {
 } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
+import { NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -55,7 +58,7 @@ import {
 } from "./constants";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
-import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+import { awaitGracefulKernelRealmDestroyOutcome } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import {
   encodeClipboardText,
@@ -85,6 +88,11 @@ const DEFAULT_SSL_ENV = [
 export interface NodeKernelHostOptions {
   /** Worker-owned remote UDP segment; a joiner transfers its native peer port. */
   remoteNetwork?: RemoteSegmentInit;
+  /** Opt-in fixed-size image-file overwrites journaled at this absolute path. */
+  experimentalFixedPersistencePath?: string;
+  /** Opt-in resizable image-file persistence at this absolute journal path. */
+  experimentalResizablePersistencePath?: string;
+  requireExistingRootfsPersistence?: boolean;
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
@@ -176,7 +184,11 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
-  /** Exact image/scratch mount contract. Requires `rootfsImage`. */
+  /** Absolute path to a decoded, quiescent VFSI image read in bounded pages. */
+  rootfsImageFile?: string;
+  /** Optional chunk hashes from a verified staged image. */
+  rootfsImageIntegrity?: OpfsImageIntegrity;
+  /** Exact image/scratch mount contract. Requires an image byte or file source. */
   rootfsMountSpec?: readonly MountSpec[];
   /**
    * Resolve relative lazy URLs embedded in rootfsImage before transport.
@@ -246,6 +258,7 @@ export interface SpawnOptions {
 export class NodeKernelHost {
   private worker!: NodeThreadWorker;
   private workerStarted = false;
+  private persistenceShutdownFailure: string | null = null;
   private initialized = false;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private exitResolvers = new Map<number, {
@@ -270,12 +283,24 @@ export class NodeKernelHost {
   /** Initialize the kernel by spawning a dedicated worker_thread */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
     if (this.kernelFatalError !== null) throw this.kernelFatalError;
+    if (this.options.rootfsImageFile !== undefined && this.options.rootfsImage !== undefined) {
+      throw new Error("rootfs image cannot have both file and in-memory sources");
+    }
+    if (this.options.rootfsImageFile !== undefined && !isAbsolute(this.options.rootfsImageFile)) {
+      throw new Error("rootfs image file path must be absolute");
+    }
+    if (this.options.rootfsImageIntegrity !== undefined
+      && (this.options.rootfsImageFile === undefined
+        || !isStagedRootfsImageIntegrity(this.options.rootfsImageIntegrity))) {
+      throw new Error("rootfs image file integrity metadata is invalid");
+    }
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
     const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
-    if (this.options.rootfsLazyAssets !== undefined && rootfsImage === null) {
+    const hasRootfsImage = rootfsImage !== null || this.options.rootfsImageFile !== undefined;
+    if (this.options.rootfsLazyAssets !== undefined && !hasRootfsImage) {
       throw new Error("rootfsLazyAssets requires rootfsImage");
     }
-    if (this.options.rootfsLazyAssetSources !== undefined && rootfsImage === null) {
+    if (this.options.rootfsLazyAssetSources !== undefined && !hasRootfsImage) {
       throw new Error("rootfsLazyAssetSources requires rootfsImage");
     }
     if (
@@ -284,11 +309,21 @@ export class NodeKernelHost {
     ) {
       throw new Error("rootfs lazy bytes and on-demand sources are mutually exclusive");
     }
-    if (this.options.rootfsLazyUrlBase !== undefined && rootfsImage === null) {
+    if (this.options.rootfsLazyUrlBase !== undefined && !hasRootfsImage) {
       throw new Error("rootfsLazyUrlBase requires rootfsImage");
     }
-    if (this.options.rootfsMountSpec !== undefined && rootfsImage === null) {
+    if (this.options.rootfsMountSpec !== undefined && !hasRootfsImage) {
       throw new Error("rootfsMountSpec requires rootfsImage");
+    }
+    if (this.options.experimentalFixedPersistencePath !== undefined && !hasRootfsImage) {
+      throw new Error("experimentalFixedPersistencePath requires rootfsImage");
+    }
+    if (this.options.experimentalResizablePersistencePath !== undefined && !hasRootfsImage) {
+      throw new Error("experimentalResizablePersistencePath requires rootfsImage");
+    }
+    if (this.options.experimentalFixedPersistencePath !== undefined
+      && this.options.experimentalResizablePersistencePath !== undefined) {
+      throw new Error("fixed and resizable persistence modes are mutually exclusive");
     }
     if (this.options.rootfsLazyUrlBase === "") {
       throw new Error("rootfsLazyUrlBase must not be empty");
@@ -323,12 +358,13 @@ export class NodeKernelHost {
     if (
       sessionSeedTrees !== undefined
       && sessionSeedTrees.length > 0
-      && rootfsImage === null
+      && !hasRootfsImage
     ) {
       throw new Error("sessionSeedTrees requires rootfsImage");
     }
 
     this.worker = spawnKernelWorkerThread();
+    this.persistenceShutdownFailure = null;
     this.workerStarted = true;
     this.kernelWorkerExitExpected = false;
     this.workerTermination = null;
@@ -405,7 +441,9 @@ export class NodeKernelHost {
             }
           } else if (msg.type === "init_error") {
             settle(() =>
-              reject(new Error(`Kernel worker init failed: ${msg.error}`))
+              reject(msg.recovery === "no-valid-overlay-generation"
+                ? new NoValidOverlayGenerationError()
+                : new Error(`Kernel worker init failed: ${msg.error}`))
             );
           } else if (msg.type === "kernel_fatal") {
             settle(() =>
@@ -454,9 +492,14 @@ export class NodeKernelHost {
           execPrograms: this.options.execPrograms,
           execProgramBytes,
           rootfsImage: rootfsImage ?? undefined,
+          rootfsImageFile: this.options.rootfsImageFile,
+          rootfsImageIntegrity: this.options.rootfsImageIntegrity,
           rootfsMountSpec: this.options.rootfsMountSpec === undefined
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
+          experimentalFixedPersistencePath: this.options.experimentalFixedPersistencePath,
+          experimentalResizablePersistencePath: this.options.experimentalResizablePersistencePath,
+          requireExistingRootfsPersistence: this.options.requireExistingRootfsPersistence,
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
           rootfsLazyAssets,
           rootfsLazyAssetSources,
@@ -1210,6 +1253,23 @@ export class NodeKernelHost {
     return result;
   }
 
+  /** Write a quiescent snapshot to a new staging path without buffering its bytes in JS. */
+  async exportRootfsImageToFile(path: string): Promise<OpfsImageIntegrity> {
+    if (!this.initialized) {
+      throw new Error("rootfs export requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "export_rootfs_image_to_file",
+      requestId,
+      path,
+    });
+    if (!isStagedRootfsImageIntegrity(result)) {
+      throw new Error("kernel worker returned invalid rootfs image integrity");
+    }
+    return result;
+  }
+
   /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
   async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> {
     const requestId = this._nextRequestId++;
@@ -1252,6 +1312,10 @@ export class NodeKernelHost {
     await this.request(requestId, { type: "remote_network_leave", requestId });
   }
 
+  getPersistenceShutdownFailure(): string | null {
+    return this.persistenceShutdownFailure;
+  }
+
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
     this.attachedInputSource?.stop();
@@ -1261,10 +1325,14 @@ export class NodeKernelHost {
     this.kernelWorkerExitExpected = true;
     if (this.initialized && this.kernelFatalError === null) {
       const requestId = this._nextRequestId++;
-      gracefulDetachFailure = await awaitGracefulKernelRealmDestroy(
+      const outcome = await awaitGracefulKernelRealmDestroyOutcome(
         () => this.request(requestId, { type: "destroy", requestId }),
         DESTROY_REQUEST_TIMEOUT_MS,
       );
+      gracefulDetachFailure = outcome.failure;
+      if (outcome.result !== null) {
+        this.persistenceShutdownFailure = outcome.result.persistenceSyncFailure ?? null;
+      }
     }
     // WHY: the kernel worker owns every nested process/pthread worker. Once
     // those children have been terminated or contained inside this realm,

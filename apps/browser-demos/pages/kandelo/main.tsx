@@ -23,6 +23,7 @@ const bootQuery = readKandeloBootQuery(location.search);
 // deliberately NOT part of any image's demo.json: it belongs to whoever is
 // debugging the host, not to the machine.
 const fbDemo = qs.get("fb"); // "test" | null
+const experimentalPersistenceName = qs.get("experimentalPersistence");
 
 const mount = (host: KernelHost) => {
   ReactDOM.createRoot(container).render(
@@ -36,6 +37,14 @@ const mount = (host: KernelHost) => {
 
 void (async () => {
   try {
+    if (experimentalPersistenceName !== null && !window.confirm(
+      `Experimental persistence for computer "${experimentalPersistenceName}"?\n\n` +
+      "Only overwrites within existing files persist. Creating files, appending, " +
+      "truncating, and renaming will fail. Data stays in this browser profile " +
+      "and can be lost if site storage is cleared. Do not use valuable data.",
+    )) {
+      throw new Error("experimental persistent computer boot was not approved");
+    }
     // URL fragments are untrusted input. A malformed or oversized #k1= boot
     // link must fail loudly here, not silently boot as if it were absent.
     const linkDescriptor = await decodeBootDescriptor(location.hash).catch(
@@ -73,6 +82,7 @@ void (async () => {
         inputs: linkDescriptor?.boot.inputs ?? null,
         parameters: linkDescriptor?.boot.parameters ?? null,
         legacyScriptIgnored,
+        experimentalPersistenceName,
       }));
     mount(host);
   } catch (err) {

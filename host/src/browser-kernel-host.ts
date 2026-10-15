@@ -2,6 +2,7 @@ import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-s
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
+import { isStagedRootfsImageIntegrity } from "./vfs/staged-rootfs-image";
 import type { OwnedJobRead } from "./owned-jobs";
 /**
  * BrowserKernel — Thin proxy that communicates with a dedicated kernel
@@ -49,11 +50,19 @@ import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
-import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+import { awaitGracefulKernelRealmDestroyOutcome } from "./kernel-realm-destroy";
+import {
+  acquireBrowserPersistenceComputerLease,
+  claimBrowserPersistenceComputerLease,
+  type BrowserPersistenceComputerLease,
+} from "./browser-persistence-computer-lease";
+import { browserPersistenceJournalLockName } from "./browser-persistence-journal-lease";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
+import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
+import { NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import {
   encodeClipboardText,
   type ClipboardOfferResult,
@@ -168,6 +177,13 @@ export interface BrowserKernelOptions {
 
 /** Options for {@link BrowserKernel.boot}. */
 export interface BrowserKernelBootOptions {
+  /** Opt-in fixed-size image-file overwrites in a named OPFS journal. */
+  experimentalFixedPersistenceName?: string;
+  /** Opt-in resizable image-file persistence in a named OPFS journal. */
+  experimentalResizablePersistenceName?: string;
+  persistentComputerName?: string;
+  persistenceComputerLease?: BrowserPersistenceComputerLease;
+  requireExistingRootfsPersistence?: boolean;
   /** Kernel wasm bytes; if omitted, fetched from the bundled URL. */
   kernelWasm?: ArrayBuffer;
   /**
@@ -216,6 +232,12 @@ export type BrowserKernelOwnedImageBootOptions = Omit<
 };
 
 export interface BrowserKernelOwnedImageInitOptions {
+  /** Opt-in fixed-size image-file overwrites in a named OPFS journal. */
+  experimentalFixedPersistenceName?: string;
+  experimentalResizablePersistenceName?: string;
+  persistentComputerName?: string;
+  persistenceComputerLease?: BrowserPersistenceComputerLease;
+  requireExistingRootfsPersistence?: boolean;
   kernelWasm?: ArrayBuffer;
   /**
    * One whole ordinary ArrayBuffer whose ownership is transferred to the
@@ -226,6 +248,15 @@ export interface BrowserKernelOwnedImageInitOptions {
   closedLazyAssets?: readonly ClosedLazyAsset[];
   /** Exact image/scratch mount contract for this boot. */
   rootfsMountSpec?: readonly MountSpec[];
+}
+
+export interface BrowserKernelOpfsImageInitOptions extends Omit<
+  BrowserKernelOwnedImageInitOptions,
+  "vfsImage"
+> {
+  vfsImageFile: FileSystemFileHandle;
+  integrity?: OpfsImageIntegrity;
+  lazyUrlMap?: Readonly<Record<string, string>>;
 }
 
 async function fetchDefaultBrowserKernelArtifact(
@@ -289,9 +320,47 @@ function decodeVfsImage(image: Uint8Array): Uint8Array {
   return whole;
 }
 
+async function acquirePersistentJournalLease(name: string): Promise<() => Promise<void>> {
+  if (typeof navigator === "undefined" || !navigator.locks) {
+    throw new Error("browser rootfs persistence requires Web Locks");
+  }
+  let signalRelease!: () => void;
+  const released = new Promise<void>((resolve) => { signalRelease = resolve; });
+  let signalAcquired!: () => void;
+  let signalFailed!: (error: unknown) => void;
+  const acquired = new Promise<void>((resolve, reject) => {
+    signalAcquired = resolve;
+    signalFailed = reject;
+  });
+  const holding = navigator.locks.request(
+    browserPersistenceJournalLockName(name),
+    { mode: "exclusive", ifAvailable: true },
+    async (lock) => {
+      if (lock === null) throw new Error("browser rootfs persistence journal is already open");
+      signalAcquired();
+      await released;
+    },
+  );
+  void holding.catch(signalFailed);
+  await acquired;
+  let didRelease = false;
+  return async () => {
+    if (!didRelease) {
+      didRelease = true;
+      signalRelease();
+    }
+    await holding;
+  };
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
+  private workerStarting = false;
+  private persistentJournalQuiescenceUnproven = false;
+  private persistenceShutdownFailure: string | null = null;
+  private releasePersistentJournalLease: (() => Promise<void>) | null = null;
+  private releasePersistentComputerLease: (() => Promise<void>) | null = null;
   private initialized = false;
   private maxPages: number;
   private readonly memoryProfile: RuntimeMemoryProfile;
@@ -462,6 +531,11 @@ export class BrowserKernel {
    * in one step.
    */
   async initFromImage(options: {
+    experimentalFixedPersistenceName?: string;
+    experimentalResizablePersistenceName?: string;
+    persistentComputerName?: string;
+    persistenceComputerLease?: BrowserPersistenceComputerLease;
+    requireExistingRootfsPersistence?: boolean;
     kernelWasm?: ArrayBuffer;
     vfsImage: Uint8Array | "default";
     lazyUrlBase?: string;
@@ -486,6 +560,11 @@ export class BrowserKernel {
       lazyUrlMap: options.lazyUrlMap,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
+      experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
+      experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
+      persistentComputerName: options.persistentComputerName,
+      persistenceComputerLease: options.persistenceComputerLease,
+      requireExistingRootfsPersistence: options.requireExistingRootfsPersistence,
       takeVfsImageOwnership: false,
     });
   }
@@ -516,7 +595,34 @@ export class BrowserKernel {
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
+      experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
+      experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
+      persistentComputerName: options.persistentComputerName,
+      persistenceComputerLease: options.persistenceComputerLease,
+      requireExistingRootfsPersistence: options.requireExistingRootfsPersistence,
       takeVfsImageOwnership: true,
+    });
+  }
+
+  async initFromOpfsImage(options: BrowserKernelOpfsImageInitOptions): Promise<void> {
+    const wasmBytes = options.kernelWasm
+      ? options.kernelWasm
+      : await fetchDefaultBrowserKernelArtifact("kernelWasm");
+    await this.bootWorker({
+      kernelWasmBytes: wasmBytes,
+      vfsImage: new Uint8Array(),
+      opfsImage: options.vfsImageFile,
+      opfsImageIntegrity: options.integrity,
+      lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
+      lazyUrlMap: options.lazyUrlMap,
+      closedLazyAssets: options.closedLazyAssets,
+      rootfsMountSpec: options.rootfsMountSpec,
+      experimentalFixedPersistenceName: options.experimentalFixedPersistenceName,
+      experimentalResizablePersistenceName: options.experimentalResizablePersistenceName,
+      persistentComputerName: options.persistentComputerName,
+      persistenceComputerLease: options.persistenceComputerLease,
+      requireExistingRootfsPersistence: options.requireExistingRootfsPersistence,
+      takeVfsImageOwnership: false,
     });
   }
 
@@ -525,14 +631,24 @@ export class BrowserKernel {
    * message (with the demo's `vfsImage`), and await ready.
    */
   private async bootWorker(opts: {
+    experimentalFixedPersistenceName?: string;
+    experimentalResizablePersistenceName?: string;
+    persistentComputerName?: string;
+    persistenceComputerLease?: BrowserPersistenceComputerLease;
+    requireExistingRootfsPersistence?: boolean;
     kernelWasmBytes: ArrayBuffer;
     vfsImage: Uint8Array;
+    opfsImage?: FileSystemFileHandle;
+    opfsImageIntegrity?: OpfsImageIntegrity;
     lazyUrlBase?: string;
     lazyUrlMap?: Readonly<Record<string, string>>;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
   }): Promise<void> {
+    if (this.workerStarted || this.workerStarting || this.persistentJournalQuiescenceUnproven) {
+      throw new Error("browser kernel worker is already running");
+    }
     if (
       opts.takeVfsImageOwnership &&
       (
@@ -549,8 +665,47 @@ export class BrowserKernel {
     const closedLazyAssets = opts.closedLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
-    // Create the kernel worker
-    this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
+    if (opts.experimentalFixedPersistenceName !== undefined &&
+      opts.experimentalResizablePersistenceName !== undefined) {
+      throw new Error("browser rootfs persistence modes are mutually exclusive");
+    }
+    const journalName = opts.experimentalFixedPersistenceName ?? opts.experimentalResizablePersistenceName;
+    let releaseJournalLease: (() => Promise<void>) | null = null;
+    let releaseComputerLease: (() => Promise<void>) | null = null;
+    this.workerStarting = true;
+    try {
+      if (journalName === undefined && (opts.persistentComputerName !== undefined || opts.persistenceComputerLease !== undefined)) {
+        throw new Error("persistent computer lease requires a journal");
+      }
+      if (journalName !== undefined && opts.persistentComputerName === undefined && opts.persistenceComputerLease === undefined) {
+        throw new Error("browser rootfs persistence requires a computer name or lease");
+      }
+      if (opts.persistenceComputerLease !== undefined) {
+        if (opts.persistentComputerName !== undefined && opts.persistentComputerName !== opts.persistenceComputerLease.computerName) {
+          throw new Error("persistent computer lease names do not match");
+        }
+        const releaseClaim = claimBrowserPersistenceComputerLease(opts.persistenceComputerLease);
+        releaseComputerLease = async () => { releaseClaim(); };
+      } else if (opts.persistentComputerName !== undefined) {
+        releaseComputerLease = await acquireBrowserPersistenceComputerLease(opts.persistentComputerName);
+      }
+      releaseJournalLease = journalName === undefined
+        ? null
+        : await acquirePersistentJournalLease(journalName);
+      this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
+    } catch (error) {
+      this.workerStarting = false;
+      try {
+        await releaseJournalLease?.();
+      } finally {
+        await releaseComputerLease?.();
+      }
+      throw error;
+    }
+    this.workerStarting = false;
+    this.releasePersistentJournalLease = releaseJournalLease;
+    this.releasePersistentComputerLease = releaseComputerLease;
+    this.persistenceShutdownFailure = null;
     this.workerStarted = true;
 
     this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
@@ -577,9 +732,8 @@ export class BrowserKernel {
       }
     };
 
-    this.reportMemoryProfile();
-
     try {
+      this.reportMemoryProfile();
       await new Promise<void>((resolve, reject) => {
         let settled = false;
         const cleanup = () => {
@@ -603,7 +757,9 @@ export class BrowserKernel {
           if (e.data?.type === "ready") {
             settleResolve();
           } else if (e.data?.type === "init_error") {
-            settleReject(new Error(`Kernel worker init failed: ${e.data.error}`));
+            settleReject(e.data.recovery === "no-valid-overlay-generation"
+              ? new NoValidOverlayGenerationError()
+              : new Error(`Kernel worker init failed: ${e.data.error}`));
           } else if (e.data?.type === "kernel_fatal") {
             settleReject(new Error(`Kernel worker failed: ${e.data.error}`));
           }
@@ -625,6 +781,8 @@ export class BrowserKernel {
           remoteNetwork: this.options.remoteNetwork,
           kernelWasmBytes: transferBuf,
           vfsImage: opts.vfsImage,
+          opfsImage: opts.opfsImage,
+          opfsImageIntegrity: opts.opfsImageIntegrity,
           lazyUrlBase: opts.lazyUrlBase,
           lazyUrlMap: opts.lazyUrlMap === undefined
             ? undefined
@@ -633,6 +791,9 @@ export class BrowserKernel {
           rootfsMountSpec: opts.rootfsMountSpec === undefined
             ? undefined
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
+          experimentalFixedPersistenceName: opts.experimentalFixedPersistenceName,
+          experimentalResizablePersistenceName: opts.experimentalResizablePersistenceName,
+          requireExistingRootfsPersistence: opts.requireExistingRootfsPersistence,
           workerEntryUrl,
           config: {
             maxWorkers: this.options.maxWorkers,
@@ -676,6 +837,7 @@ export class BrowserKernel {
       throw error;
     }
     this.initialized = true;
+    this.persistentJournalQuiescenceUnproven = journalName !== undefined;
   }
 
   /**
@@ -1643,6 +1805,23 @@ export class BrowserKernel {
     return result;
   }
 
+  /** Write a quiescent snapshot to an empty OPFS staging file without buffering it in JS. */
+  async exportRootfsImageToFile(file: FileSystemFileHandle): Promise<OpfsImageIntegrity> {
+    if (!this.initialized) {
+      throw new Error("rootfs export requires an initialized kernel");
+    }
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "export_rootfs_image_to_file",
+      requestId,
+      file,
+    });
+    if (!isStagedRootfsImageIntegrity(result)) {
+      throw new Error("kernel worker returned invalid rootfs image integrity");
+    }
+    return result;
+  }
+
   /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
   async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> {
     const requestId = this.nextRequestId++;
@@ -1685,6 +1864,14 @@ export class BrowserKernel {
     await this.request(requestId, { type: "remote_network_leave", requestId });
   }
 
+  hasUnconfirmedKernelQuiescence(): boolean {
+    return this.workerStarted || this.persistentJournalQuiescenceUnproven;
+  }
+
+  getPersistenceShutdownFailure(): string | null {
+    return this.persistenceShutdownFailure;
+  }
+
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
     // Remove input-source DOM listeners regardless of worker state.
@@ -1694,7 +1881,7 @@ export class BrowserKernel {
     let gracefulDetachFailure: string | undefined;
     if (this.initialized && this.kernelFatalError === null) {
       const requestId = this.nextRequestId++;
-      gracefulDetachFailure = await awaitGracefulKernelRealmDestroy(
+      const outcome = await awaitGracefulKernelRealmDestroyOutcome(
         () =>
           this.request(requestId, {
             type: "destroy",
@@ -1702,6 +1889,11 @@ export class BrowserKernel {
           }),
         DESTROY_REQUEST_TIMEOUT_MS,
       );
+      gracefulDetachFailure = outcome.failure;
+      if (outcome.result !== null) {
+        this.persistentJournalQuiescenceUnproven = false;
+        this.persistenceShutdownFailure = outcome.result.persistenceSyncFailure ?? null;
+      }
     }
     this.initialized = false;
     await this.pcmDriver?.settleOutputPipeline().catch(() => {});
@@ -1722,7 +1914,18 @@ export class BrowserKernel {
         "kernel-worker realm termination failed: " +
         (error instanceof Error ? error.message : String(error));
     }
-    this.workerStarted = false;
+    this.workerStarted = realmTerminationFailure !== undefined;
+    if (!this.workerStarted && !this.persistentJournalQuiescenceUnproven) {
+      const releaseJournalLease = this.releasePersistentJournalLease;
+      const releaseComputerLease = this.releasePersistentComputerLease;
+      this.releasePersistentJournalLease = null;
+      this.releasePersistentComputerLease = null;
+      try {
+        await releaseJournalLease?.();
+      } finally {
+        await releaseComputerLease?.();
+      }
+    }
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();

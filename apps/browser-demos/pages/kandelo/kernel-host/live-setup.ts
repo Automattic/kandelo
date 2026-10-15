@@ -2,11 +2,26 @@ import { observePreviewRequest } from "../panes/preview-progress";
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import { isNoValidOverlayGenerationError } from "@host/vfs/overlay-generation-selection";
 import { setWebMcpSession, type WebMcpIdentity } from "../webmcp/runtime";
 import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
 import { connectorModeSize } from "@host/dri/kms-registry";
 import { composeImageInWorker } from "./image-composer-client";
-import { imageMachine, type ImageMachine } from "./image-composer";
+import { imageMachine, type ComposeImageResult, type ImageMachine } from "./image-composer";
+import {
+  acquireFixedPersistenceRuntimeLease,
+  assertFixedPersistenceBootAllowed,
+  loadFixedPersistenceImage,
+  loadFixedPersistenceImageHandle,
+  loadPreviousFixedPersistenceImageHandle,
+  markFixedPersistenceJournalInitialized,
+  promoteFixedPersistenceRecovery,
+  type FixedPersistenceImageHandle,
+} from "./fixed-persistence-image";
+import {
+  assertPersistentImageBootMetadata,
+  checkpointPersistentImage as publishPersistentImageCheckpoint,
+} from "./persistent-image-checkpoint";
 import {
   initialDestroyProgress,
   subscribeDestroyProgress,
@@ -98,6 +113,7 @@ import {
   type PagesVfsProductEntry,
 } from "./pages-vfs-product-loader";
 import { readStreamedBody } from "../../../../../web-libs/kandelo-session/src/sized-download";
+import { stageRawVfsSourceImage, type StagedSourceImage } from "./opfs-source-image";
 import {
   deploymentScopeFromServiceWorkerUrl,
 } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
@@ -117,6 +133,7 @@ const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
   : createPagesVfsProductLoader(
     CANONICAL_PAGES_VFS_PRODUCTS,
     (url, init) => fetch(url, init),
+    { prefetchEager: false },
   );
 
 const OPTIONAL_BINARY_URLS = {
@@ -282,6 +299,18 @@ function dinitContainerArgv(target: string): string[] {
 class BootSuperseded extends Error {
   constructor() {
     super("boot superseded");
+  }
+}
+
+class RetryPreviousPersistenceGeneration extends Error {
+  constructor(readonly previous: FixedPersistenceImageHandle) {
+    super("retrying the prior persistent image generation");
+  }
+}
+
+class UnconfirmedPersistentKernelQuiescence extends Error {
+  constructor(readonly kernel: BrowserKernel) {
+    super("persistent kernel storage quiescence is unconfirmed; computer remains locked");
   }
 }
 
@@ -544,6 +573,7 @@ const FBTEST_ENV: string[] = [
 export type FbDemo = "none" | "test";
 
 export interface CreateLiveHostOptions {
+  experimentalPersistenceName?: string | null;
   /**
    * `&profile=<id>` — which machine inside the image to boot. The app knows
    * no profile names; an id the image does not declare is a loud boot error,
@@ -569,7 +599,7 @@ export interface CreateLiveHostOptions {
 export async function createLiveHost(
   opts: CreateLiveHostOptions = {},
 ): Promise<LiveKernelHost> {
-  if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
+  if (CANONICAL_PAGES_VFS_LOADER !== undefined && !opts.experimentalPersistenceName) {
     // WHY only the shell: this prefetches the default boot image. The platform
     // rootfs is a lazy product now — a supporting artifact that on-demand paths
     // activate for themselves — so awaiting it here would make every boot,
@@ -577,7 +607,15 @@ export async function createLiveHost(
     await CANONICAL_PAGES_VFS_LOADER.activate("browser-main-shell");
   }
   let currentKernel: BrowserKernel | null = null;
+  let currentPersistenceLease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null;
+  let currentPersistenceIdentity: string | null = null;
+  let currentPersistenceJournalName: string | null = null;
+  let currentProfile: LiveProfile | null = null;
+  let currentRequestedDescriptor: BootDescriptor | null = null;
+  let persistenceShutdownFailure: string | null = null;
+  let bootInFlight: Promise<void> = Promise.resolve();
   let bootSeq = 0;
+  const persistenceName = opts.experimentalPersistenceName ?? undefined;
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
   const candidateEvidence = readInjectedProtectedBrowserEvidence(
     window.__KANDELO_ABI_STAGING_BROWSER_EVIDENCE__,
@@ -653,6 +691,7 @@ export async function createLiveHost(
       // visitor ARRIVED on and must not follow them onto a different image.
       await startBoot(h, profileForDescriptor(desc, "none", null), desc);
     },
+    checkpointPersistentImage: persistenceName === undefined ? undefined : checkpointPersistentImage,
   });
 
   const requireServiceWorker = (
@@ -729,60 +768,225 @@ export async function createLiveHost(
     legacyScriptIgnored = false,
   ): Promise<void> {
     const seq = ++bootSeq;
-    const previousKernel = currentKernel;
-    // The descriptor still names the OUTGOING machine here: setDescriptor for
-    // the incoming one runs inside bootProfile, after this teardown.
-    const outgoingTitle = h.getBootDescriptor().title;
-    currentKernel = null;
-    // WHY: detach while this activation still owns the previous generation.
-    // If we await teardown first, a newer boot can attach its kernel and this
-    // superseded activation would detach that newer generation on resume.
-    setWebMcpSession(h, null);
-    h.detachKernel();
-    if (previousKernel) {
-      // No reclamation nudge needed after destroy: the previous machine's
-      // workers are terminated inside destroy(), and this boot path leaves no
-      // main-thread SharedArrayBuffer behind — image composition runs in a
-      // disposable worker whose buffer dies with its realm.
-      h.setMachineProgress(initialDestroyProgress(outgoingTitle));
-      const offDestroyProgress = subscribeDestroyProgress(
-        previousKernel,
-        outgoingTitle,
-        () => seq === bootSeq,
-        (progress) => h.setMachineProgress(progress),
-      );
-      try {
-        await previousKernel.destroy().catch(() => {});
-      } finally {
-        offDestroyProgress();
-      }
-    }
     const bootStartedAt = performance.now();
-
+    const precedingBoot = bootInFlight;
+    let completeBoot!: () => void;
+    bootInFlight = new Promise<void>((resolve) => { completeBoot = resolve; });
     try {
-      const kernel = await bootProfile(
-        h,
-        profile,
-        descriptor,
-        bootStartedAt,
-        () => seq === bootSeq,
-        requireServiceWorker,
-        legacyScriptIgnored,
-      );
-      if (seq !== bootSeq) {
-        await kernel.destroy().catch(() => {});
-        return;
+      if (persistenceName !== undefined) {
+        await precedingBoot;
+        if (seq !== bootSeq) return;
+        if (persistenceShutdownFailure !== null) {
+          showBootError(h, descriptor, new Error(persistenceShutdownFailure), bootStartedAt);
+          return;
+        }
       }
-      currentKernel = kernel;
-    } catch (err) {
-      // A failed or superseded composition frees its own staging filesystem:
-      // the composer worker is terminated on every non-success path, which is
-      // WebKit's deterministic reclamation. Nothing to nudge here.
-      if (err instanceof BootSuperseded || seq !== bootSeq) return;
+      const previousKernel = currentKernel;
+      const previousLease = currentPersistenceLease;
+      // The descriptor still names the OUTGOING machine here: setDescriptor for
+      // the incoming one runs inside bootProfile, after this teardown.
+      const outgoingTitle = h.getBootDescriptor().title;
       currentKernel = null;
+      currentPersistenceLease = null;
+      // WHY: detach while this activation still owns the previous generation.
+      // If we await teardown first, a newer boot can attach its kernel and this
+      // superseded activation would detach that newer generation on resume.
       setWebMcpSession(h, null);
       h.detachKernel();
-      showBootError(h, descriptor, err, bootStartedAt);
+      if (previousKernel) {
+        // No reclamation nudge needed after destroy: the previous machine's
+        // workers are terminated inside destroy(), and this boot path leaves no
+        // main-thread SharedArrayBuffer behind — image composition runs in a
+        // disposable worker whose buffer dies with its realm.
+        h.setMachineProgress(initialDestroyProgress(outgoingTitle));
+        const offDestroyProgress = subscribeDestroyProgress(
+          previousKernel,
+          outgoingTitle,
+          () => seq === bootSeq,
+          (progress) => h.setMachineProgress(progress),
+        );
+        try {
+          await previousKernel.destroy().catch(() => {});
+        } finally {
+          offDestroyProgress();
+        }
+        if (persistenceName !== undefined && previousKernel.hasUnconfirmedKernelQuiescence()) {
+          currentKernel = previousKernel;
+          currentPersistenceLease = previousLease;
+          if (seq === bootSeq) {
+            showBootError(h, descriptor, new UnconfirmedPersistentKernelQuiescence(previousKernel), bootStartedAt);
+          }
+          return;
+        }
+        const shutdownFailure = previousKernel.getPersistenceShutdownFailure();
+        if (persistenceName !== undefined && shutdownFailure !== null) {
+          persistenceShutdownFailure = `Persistent computer shutdown could not synchronize writes: ${shutdownFailure}. Reload before starting this computer again.`;
+        }
+      }
+      await previousLease?.();
+      if (persistenceShutdownFailure !== null) {
+        if (seq === bootSeq) {
+          showBootError(h, descriptor, new Error(persistenceShutdownFailure), bootStartedAt);
+        }
+        return;
+      }
+
+      let persistenceLease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null;
+      try {
+        if (persistenceName !== undefined) {
+          persistenceLease = await acquireFixedPersistenceRuntimeLease(persistenceName);
+          if (seq !== bootSeq) throw new BootSuperseded();
+        }
+        const boot = (preferred?: FixedPersistenceImageHandle) => bootProfile(
+          h, profile, descriptor, bootStartedAt, () => seq === bootSeq,
+          requireServiceWorker, legacyScriptIgnored,
+          persistenceName, persistenceLease ?? undefined, preferred,
+        );
+        let booted: Awaited<ReturnType<typeof boot>>;
+        try {
+          booted = await boot();
+        } catch (error) {
+          if (!(error instanceof RetryPreviousPersistenceGeneration) || seq !== bootSeq) throw error;
+          booted = await boot(error.previous);
+        }
+        if (seq !== bootSeq) {
+          await booted.kernel.destroy().catch(() => {});
+          if (persistenceName !== undefined && booted.kernel.hasUnconfirmedKernelQuiescence()) {
+            currentKernel = booted.kernel;
+            currentPersistenceLease = persistenceLease;
+            persistenceLease = null;
+          }
+          return;
+        }
+        currentKernel = booted.kernel;
+        currentPersistenceLease = persistenceLease;
+        currentPersistenceIdentity = booted.persistenceIdentity;
+        currentPersistenceJournalName = booted.persistenceJournalName;
+        currentProfile = profile;
+        currentRequestedDescriptor = descriptor;
+        persistenceLease = null;
+      } catch (err) {
+        // A failed or superseded composition frees its own staging filesystem:
+        // the composer worker is terminated on every non-success path, which is
+        // WebKit's deterministic reclamation. Nothing to nudge here.
+        if (err instanceof UnconfirmedPersistentKernelQuiescence) {
+          currentKernel = err.kernel;
+          currentPersistenceLease = persistenceLease;
+          persistenceLease = null;
+        }
+        if (err instanceof BootSuperseded || seq !== bootSeq) return;
+        if (!(err instanceof UnconfirmedPersistentKernelQuiescence)) currentKernel = null;
+        setWebMcpSession(h, null);
+        h.detachKernel();
+        showBootError(h, descriptor, err, bootStartedAt);
+      } finally {
+        await persistenceLease?.();
+      }
+    } finally {
+      completeBoot();
+    }
+  }
+
+  async function checkpointPersistentImage(h: LiveKernelHost): Promise<void> {
+    if (persistenceName === undefined) throw new Error("persistent image checkpoint is unavailable");
+    const seq = ++bootSeq;
+    const bootStartedAt = performance.now();
+    const precedingBoot = bootInFlight;
+    let completeBoot!: () => void;
+    bootInFlight = new Promise<void>((resolve) => { completeBoot = resolve; });
+    let lease: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>> | null = null;
+    let restart: { profile: LiveProfile; descriptor: BootDescriptor } | null = null;
+    let detached = false;
+    const assertCurrent = () => {
+      if (seq !== bootSeq) throw new BootSuperseded();
+    };
+    const showCheckpointProgress = (label: string) => {
+      if (seq === bootSeq) {
+        h.setMachineProgress({ phase: "image", label, completed: 0, unit: "bytes", status: "loading" });
+      }
+    };
+    const closeKernel = async (kernel: BrowserKernel) => {
+      let destroyError: unknown;
+      try {
+        await kernel.destroy();
+      } catch (error) {
+        destroyError = error;
+      }
+      if (kernel.hasUnconfirmedKernelQuiescence()) {
+        throw new UnconfirmedPersistentKernelQuiescence(kernel);
+      }
+      const failure = kernel.getPersistenceShutdownFailure();
+      if (failure !== null) {
+        persistenceShutdownFailure = `Persistent computer shutdown could not synchronize writes: ${failure}. Reload before starting this computer again.`;
+        throw new Error(persistenceShutdownFailure);
+      }
+      if (destroyError !== undefined) throw destroyError;
+    };
+    try {
+      await precedingBoot;
+      assertCurrent();
+      if (persistenceShutdownFailure !== null) throw new Error(persistenceShutdownFailure);
+      const kernel = currentKernel;
+      const activeLease = currentPersistenceLease;
+      const identity = currentPersistenceIdentity;
+      const journalName = currentPersistenceJournalName;
+      const profile = currentProfile;
+      const descriptor = currentRequestedDescriptor;
+      if (kernel === null || activeLease === null || identity === null || journalName === null ||
+        profile === null || descriptor === null || h.getStatus() !== "running") {
+        throw new Error("persistent image checkpoint requires a running saved computer");
+      }
+      lease = activeLease;
+      currentKernel = null;
+      currentPersistenceLease = null;
+      currentPersistenceIdentity = null;
+      currentPersistenceJournalName = null;
+      currentProfile = null;
+      currentRequestedDescriptor = null;
+      setWebMcpSession(h, null);
+      h.detachKernel();
+      detached = true;
+      h.setStatus("booting");
+      h.setMachineProgress(initialDestroyProgress(descriptor.title));
+      await closeKernel(kernel);
+      assertCurrent();
+      const kernelWasm = await fetch(kernelWasmUrl).then(failOn("kernel.wasm")).then((response) => response.arrayBuffer());
+      await publishPersistentImageCheckpoint({
+        name: persistenceName,
+        identity,
+        journalName,
+        kernelWasm,
+        createKernel: () => new BrowserKernel({
+          kernelOwnedFs: true,
+          memoryProfile: memoryProfileOverride(),
+          corsProxy: BROWSER_CORS_PROXY,
+        }),
+        closeKernel,
+        lazyUrlMapForImage: imageOwnedRuntimeUrlTable,
+        persistenceComputerLease: lease,
+        releaseLease: async () => {
+          await lease?.();
+          lease = null;
+        },
+        assertCurrent,
+        onProgress: showCheckpointProgress,
+      });
+      restart = { profile, descriptor };
+    } catch (error) {
+      if (error instanceof UnconfirmedPersistentKernelQuiescence) {
+        currentKernel = error.kernel;
+        currentPersistenceLease = lease;
+        lease = null;
+      }
+      if (error instanceof BootSuperseded || seq !== bootSeq) return;
+      if (detached) showBootError(h, h.getBootDescriptor(), error, bootStartedAt);
+      throw error;
+    } finally {
+      await lease?.();
+      completeBoot();
+    }
+    if (restart !== null && seq === bootSeq) {
+      await startBoot(h, restart.profile, restart.descriptor);
     }
   }
 }
@@ -1175,7 +1379,14 @@ async function bootProfile(
     tick?: (msg: string) => void,
   ) => Promise<ServiceWorker>,
   legacyScriptIgnored = false,
-): Promise<BrowserKernel> {
+  experimentalPersistenceName?: string,
+  experimentalPersistenceLease?: Awaited<ReturnType<typeof acquireFixedPersistenceRuntimeLease>>,
+  preferredPersistenceImage?: FixedPersistenceImageHandle,
+): Promise<{
+  kernel: BrowserKernel;
+  persistenceIdentity: string | null;
+  persistenceJournalName: string | null;
+}> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
   };
@@ -1193,6 +1404,16 @@ async function bootProfile(
       ...requestedDescriptor.boot.env,
     },
   };
+  if (experimentalPersistenceName !== undefined) {
+    if (experimentalPersistenceLease === undefined) {
+      throw new Error("persistent computer boot requires its runtime lease");
+    }
+    assertFixedPersistenceBootAllowed(
+      experimentalPersistenceName,
+      profile.candidateEvidence !== undefined,
+      effectiveBoot,
+    );
+  }
   host.setDescriptor({
     ...profile.descriptor,
     title: requestedDescriptor.title || profile.descriptor.title,
@@ -1275,9 +1496,33 @@ async function bootProfile(
   profile = await bindVfsProduct(profile);
   assertCurrent();
 
+  const persistence = experimentalPersistenceName === undefined
+    ? null
+    : {
+      name: experimentalPersistenceName,
+      identity: JSON.stringify({
+        vfsUrl: profile.vfsUrl,
+        profileId: profile.requestedProfileId,
+        appPath: APP_PATH,
+        proto: PROTO,
+        preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
+        mounts: requestedDescriptor.mounts,
+      }),
+    };
+  const restoredHandle = persistence === null
+    ? null
+    : preferredPersistenceImage ?? await loadFixedPersistenceImageHandle(persistence.name, persistence.identity);
+  const restoredImage = persistence === null || restoredHandle !== null
+    ? null
+    : await loadFixedPersistenceImage(persistence.name, persistence.identity);
+  const frozenImageBytes = restoredImage?.imageBytes ?? null;
+  assertCurrent();
+
   tick("service worker active and cross-origin isolated");
   const vfsImageLabel = imageLabel(profile);
-  tick(`loading ${vfsImageLabel}...`);
+  tick(restoredImage === null && restoredHandle === null
+    ? `loading ${vfsImageLabel}...`
+    : `restoring ${vfsImageLabel} from OPFS...`);
   const reportVfsImageProgress: VfsImageProgressReport = (report) => {
     // A superseded boot must not keep driving the current boot screen.
     if (!isCurrent()) return;
@@ -1295,12 +1540,33 @@ async function bootProfile(
     fetch(kernelWasmUrl)
       .then(failOn("kernel.wasm"))
       .then((r) => r.arrayBuffer()),
-    loadVfsImage(profile, reportVfsImageProgress),
+    restoredHandle === null && (restoredImage === null || !restoredImage.lazyAssetsRecorded)
+      ? loadVfsImage(profile, reportVfsImageProgress, persistence !== null)
+      : Promise.resolve({
+        imageBytes: new ArrayBuffer(0),
+        lazyAssets: restoredHandle?.lazyAssets ?? restoredImage?.lazyAssets,
+      } as LoadedVfsImage),
   ]);
-  assertCurrent();
+  try {
+    assertCurrent();
+  } catch (error) {
+    await loadedVfs.positionedSource?.remove();
+    throw error;
+  }
+  if (restoredHandle !== null || (frozenImageBytes !== null && restoredImage?.lazyAssetsRecorded)) {
+    const length = restoredHandle?.length ?? frozenImageBytes!.byteLength;
+    reportVfsImageProgress({
+      loadedBytes: length,
+      totalBytes: length,
+      status: "complete",
+    });
+  }
 
   tick(
-    `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(loadedVfs.imageBytes.byteLength)}`,
+    `kernel: ${kib(kernelBytes.byteLength)} · vfs: ${kib(
+      restoredHandle?.length ?? frozenImageBytes?.byteLength
+        ?? loadedVfs.positionedSource?.integrity.length ?? loadedVfs.imageBytes.byteLength
+    )}`,
   );
   // Compose the boot image in a DISPOSABLE worker, never on this thread.
   // Composition instantiates the image-writer module (KandeloImageFs), whose
@@ -1308,34 +1574,60 @@ async function bootProfile(
   // reclaims such memory deterministically — memory this persistent thread
   // merely dropped waits on a GC that reserved memory rarely provokes,
   // accumulating across machine switches until Safari throws "Out of memory".
-  // The worker returns plain transferable bytes plus the image-read machine
-  // data; the kernel worker then rebuilds and owns the live VFS
+  // The worker returns plain transferable bytes for ephemeral boots or streams
+  // bounded chunks into OPFS for persistent boots. The kernel worker then
+  // rebuilds and owns the live VFS
   // (kernelOwnedFs). Supersession is enforced by terminating the worker,
   // which also frees its staging memory. See image-composer.ts for the
   // composition itself.
-  const composed = await composeImageInWorker(
-    {
-      imageBytes: new Uint8Array(loadedVfs.imageBytes),
-      maxVfsByteLength: profile.maxVfsByteLength,
-      imageLabel: imageLabel(profile),
-      requestedProfileId: profile.requestedProfileId,
-      requestedProfileSource: profile.requestedProfileSource,
-      hasCandidateEvidence: profile.candidateEvidence !== undefined,
-      descriptor: requestedDescriptor,
-      appPath: APP_PATH,
-      proto: PROTO,
-      preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
-    },
-    {
-      onTick: tick,
-      isCurrent,
-      supersededError: () => new BootSuperseded(),
-    },
-  );
+  let composed: ComposeImageResult;
+  try {
+    composed = restoredHandle === null ? await composeImageInWorker(
+      {
+        imageBytes: frozenImageBytes === null
+          ? new Uint8Array(loadedVfs.imageBytes)
+          : new Uint8Array(),
+        ...(loadedVfs.positionedSource === undefined ? {} : {
+          positionedSource: {
+            file: loadedVfs.positionedSource.file,
+            integrity: loadedVfs.positionedSource.integrity,
+          },
+        }),
+        ...(frozenImageBytes === null ? {} : { frozenImageBytes }),
+        ...(persistence !== null && frozenImageBytes === null
+          ? {
+            persistentImage: {
+              name: persistence.name,
+              identity: persistence.identity,
+              lazyAssets: loadedVfs.lazyAssets,
+            },
+          }
+          : {}),
+        maxVfsByteLength: profile.maxVfsByteLength,
+        imageLabel: imageLabel(profile),
+        requestedProfileId: profile.requestedProfileId,
+        requestedProfileSource: profile.requestedProfileSource,
+        hasCandidateEvidence: profile.candidateEvidence !== undefined,
+        descriptor: requestedDescriptor,
+        appPath: APP_PATH,
+        proto: PROTO,
+        preforkServiceProcesses: HOST_MEMORY_PROFILE.preforkServiceProcesses,
+      },
+      {
+        onTick: tick,
+        isCurrent,
+        supersededError: () => new BootSuperseded(),
+      },
+    ) : { ...restoredHandle.composition, imageBytes: new Uint8Array() };
+  } finally {
+    await loadedVfs.positionedSource?.remove();
+  }
   assertCurrent();
   const { imageConfig, profileId, terminalSession, bootInputManifest } =
     composed;
   const vfsImageBytes = composed.imageBytes;
+  const opfsImage = restoredHandle ?? composed.imageFile;
+  assertCurrent();
   // The image keeps its canonical lazy addresses: nothing rewrites them. WHERE
   // this deployment serves them is transport policy, which travels beside the
   // image as a table for the kernel worker's lazy fetcher, so the deferred
@@ -1483,19 +1775,70 @@ async function bootProfile(
     // Typed against the host's own init contract, so an option the host does
     // not accept (the lazy URL table above) is a type error, never a field the
     // host silently drops.
-    const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =
-      profile.candidateEvidence === undefined
-      ? {
-        kernelWasm: kernelBytes,
-        vfsImage: vfsImageBytes,
-        lazyUrlMap,
+    if (opfsImage !== undefined && opfsImage !== null && persistence !== null) {
+      try {
+        await kernel.initFromOpfsImage({
+          kernelWasm: kernelBytes,
+          vfsImageFile: opfsImage.file,
+          integrity: {
+            length: opfsImage.length,
+            chunkBytes: 1024 * 1024,
+            chunkSha256: opfsImage.chunkSha256,
+          },
+          lazyUrlMap,
+          experimentalFixedPersistenceName: opfsImage.journalName,
+          persistentComputerName: experimentalPersistenceName,
+          persistenceComputerLease: experimentalPersistenceLease,
+          requireExistingRootfsPersistence: opfsImage.journalInitialized,
+        });
+      } catch (error) {
+        if (isNoValidOverlayGenerationError(error) &&
+          preferredPersistenceImage === undefined && restoredHandle !== null) {
+          const previous = await loadPreviousFixedPersistenceImageHandle(
+            persistence.name, persistence.identity, restoredHandle,
+          );
+          if (previous !== null) throw new RetryPreviousPersistenceGeneration(previous);
+        }
+        throw error;
       }
-      : candidateEvidenceKernelInitOptions(
-        profile.candidateEvidence,
-        kernelBytes,
-        vfsImageBytes,
-      );
-    await kernel.initFromImage(kernelInitOptions);
+      await assertPersistentImageBootMetadata(kernel, opfsImage.composition);
+      if (!opfsImage.journalInitialized) {
+        await markFixedPersistenceJournalInitialized(persistence.name, persistence.identity, opfsImage);
+      }
+      if (opfsImage.recovery !== undefined) {
+        await promoteFixedPersistenceRecovery(
+          persistence.name, persistence.identity, opfsImage, assertCurrent,
+        );
+        host.pushDmesg({
+          t: bootElapsedMs(bootStartedAt),
+          level: "warn",
+          facility: "kandelo",
+          msg: "persistent image recovery retired a damaged newer generation and booted the prior verified image",
+        });
+      }
+    } else {
+      const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =
+        profile.candidateEvidence === undefined
+        ? {
+          kernelWasm: kernelBytes,
+          vfsImage: vfsImageBytes,
+          lazyUrlMap,
+          ...(experimentalPersistenceName === undefined
+            ? {}
+            : {
+              experimentalFixedPersistenceName: experimentalPersistenceName,
+              persistentComputerName: experimentalPersistenceName,
+              persistenceComputerLease: experimentalPersistenceLease,
+              requireExistingRootfsPersistence: restoredImage !== null,
+            }),
+        }
+        : candidateEvidenceKernelInitOptions(
+          profile.candidateEvidence,
+          kernelBytes,
+          vfsImageBytes,
+        );
+      await kernel.initFromImage(kernelInitOptions);
+    }
     assertCurrent();
     host.attachKernel(kernel);
     setWebMcpSession(host, agentIdentity());
@@ -1709,14 +2052,9 @@ async function bootProfile(
               + machineShellCommand,
           );
         }
-        // ⚠️ CONSENT REQUIRED BEFORE PERSISTENT MACHINES ⚠️
-        // This auto-runs a URL-supplied script with no confirmation, which is
-        // acceptable ONLY because every machine this app boots is ephemeral: a
-        // hostile link can at worst waste the visitor's own tab. The moment
-        // Kandelo restores persistent machines (OPFS-backed images, restored
-        // snapshots), auto-run becomes a drive-by attack on user data. Any
-        // persistence feature MUST first add an explicit show-the-script
-        // Run/Skip consent step here. See
+        // Experimental persistence refuses boot-link scripts before boot.
+        // Do not allow one into this branch for a restored machine without
+        // first adding a show-the-script Run/Skip consent step here. See
         // docs/superpowers/specs/2026-09-21-script-bearing-links-design.md.
         const runScriptShell = requestedDescriptor.boot.parameters.runScriptShell;
         void runLinkScript(host, scriptInput.path, runScriptShell, tick).catch((err) => {
@@ -1750,11 +2088,18 @@ async function bootProfile(
       tick("ready");
       host.setStatus("running");
     }
-    return kernel;
+    return {
+      kernel,
+      persistenceIdentity: persistence?.identity ?? null,
+      persistenceJournalName: opfsImage?.journalName ?? null,
+    };
   } catch (err) {
     if (kernel) {
       if (isCurrent()) setWebMcpSession(host, null);
       await kernel.destroy().catch(() => {});
+      if (experimentalPersistenceName !== undefined && kernel.hasUnconfirmedKernelQuiescence()) {
+        throw new UnconfirmedPersistentKernelQuiescence(kernel);
+      }
     }
     throw err;
   }
@@ -1899,6 +2244,7 @@ function attachDeclaredInputSource(
 interface LoadedVfsImage {
   imageBytes: ArrayBuffer;
   lazyAssets?: ImageOwnedRuntimeLazyAssets;
+  positionedSource?: StagedSourceImage;
 }
 
 /**
@@ -1923,6 +2269,7 @@ type VfsImageProgressReport = (report: {
 async function loadVfsImage(
   profile: LiveProfile,
   reportProgress: VfsImageProgressReport,
+  persistentInstall = false,
 ): Promise<LoadedVfsImage> {
   if (profile.candidateEvidence !== undefined) {
     if (profile.candidateVfsPlacement === undefined) {
@@ -1942,6 +2289,19 @@ async function loadVfsImage(
       reportProgress(progress);
     });
     try {
+      if (persistentInstall) {
+        const stagingDirectory = await (await navigator.storage.getDirectory()).getDirectoryHandle(
+          "kandelo-persistent-overlay", { create: true },
+        );
+        const activation = await CANONICAL_PAGES_VFS_LOADER.activatePositioned(productId, stagingDirectory);
+        return {
+          imageBytes: new ArrayBuffer(0),
+          positionedSource: activation.source,
+          lazyAssets: activation.lazyAssets === undefined
+            ? undefined
+            : Object.freeze({ ...activation.lazyAssets }),
+        };
+      }
       const activation = await CANONICAL_PAGES_VFS_LOADER.activate(productId);
       return {
         imageBytes: activation.imageBytes.slice(0),
@@ -1957,7 +2317,22 @@ async function loadVfsImage(
   const vfsUrl = await resolveProfileVfsUrl(profile);
   const label = imageLabel(profile);
   try {
+    const stagingDirectory = persistentInstall
+      ? await (await navigator.storage.getDirectory()).getDirectoryHandle(
+        "kandelo-persistent-overlay", { create: true },
+      )
+      : undefined;
     const response = await fetch(vfsUrl).then(failOn(label));
+    if (persistentInstall) {
+      const source = await stageRawVfsSourceImage(response, (loadedBytes, totalBytes) =>
+        reportProgress({ loadedBytes, totalBytes, status: "loading" }), stagingDirectory);
+      reportProgress({
+        loadedBytes: source.integrity.length,
+        totalBytes: source.integrity.length,
+        status: "complete",
+      });
+      return { imageBytes: new ArrayBuffer(0), positionedSource: source };
+    }
     const bytes = await readStreamedBody(
       response,
       label,
@@ -2382,7 +2757,7 @@ function localProductBuildCommand(source: VfsProductSource): string | undefined 
 async function resolveVfsProductUrl(source: VfsProductSource): Promise<string> {
   if (source.kind === "url") {
     if (CANONICAL_PAGES_VFS_LOADER === undefined) return source.url;
-    return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
+    return (await CANONICAL_PAGES_VFS_LOADER.resolve(source.productId)).imageUrl;
   }
   if (source.kind === "optional-demo") {
     return resolveOptionalDemoVfsUrl(
@@ -2391,11 +2766,11 @@ async function resolveVfsProductUrl(source: VfsProductSource): Promise<string> {
       undefined,
       CANONICAL_PAGES_VFS_LOADER === undefined
         ? undefined
-        : async () => (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl,
+        : async () => (await CANONICAL_PAGES_VFS_LOADER.resolve(source.productId)).imageUrl,
     );
   }
   if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
-    return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
+    return (await CANONICAL_PAGES_VFS_LOADER.resolve(source.productId)).imageUrl;
   }
   return optionalBinaryUrl(source.relPaths, source.label);
 }
@@ -2404,7 +2779,7 @@ async function resolveTrustedVfsProductUrl(
   source: VfsProductSource,
 ): Promise<string> {
   if (CANONICAL_PAGES_VFS_LOADER !== undefined) {
-    return (await CANONICAL_PAGES_VFS_LOADER.activate(source.productId)).imageUrl;
+    return (await CANONICAL_PAGES_VFS_LOADER.resolve(source.productId)).imageUrl;
   }
   return resolveVfsProductUrl(source);
 }

@@ -18802,25 +18802,43 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
 
     match ofd.file_type {
         FileType::Regular | FileType::Directory => {
-            // A synthetic in-kernel handle (tmpfs scratch mount or the rootfs
-            // overlay/COW file) has no durable host backing, so fsync/fdatasync
-            // is correctly a no-op success — mirroring the host memfs backend
-            // (where fsync is already a no-op) and matching the read/write/lseek
-            // short-circuit convention. Reaching host_fsync with a sentinel
-            // handle would hit the host with a bad fd and fail spuriously.
-            // Directories on those filesystems too: fsync of a directory fd is
-            // how software makes a newly created name durable.
             if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle)
                 || ofd.host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
-                || crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
-                || ofd.host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
             {
                 return Ok(());
+            }
+            if crate::rootfs::is_rootfs_file_handle(ofd.host_handle)
+                || ofd.host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
+            {
+                return crate::rootfs::sync_persistence();
             }
             host.host_fsync(ofd.host_handle)
         }
         _ => Err(Errno::EINVAL),
     }
+}
+
+pub fn syncfs_targets_rootfs(proc: &Process, fd: i32) -> Result<bool, Errno> {
+    require_io_fd(proc, fd)?;
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if !matches!(ofd.file_type, FileType::Regular | FileType::Directory) {
+        return Err(Errno::EINVAL);
+    }
+    let handle = ofd.host_handle;
+    if crate::rootfs::is_rootfs_file_handle(handle)
+        || crate::rootfs::is_rootfs_dir_handle(handle)
+        || handle == crate::rootfs::ROOTFS_DIR_SENTINEL
+    {
+        return Ok(true);
+    }
+    if crate::tmpfs::is_tmpfs_file_handle(handle)
+        || crate::tmpfs::is_tmpfs_dir_handle(handle)
+        || handle == crate::tmpfs::TMPFS_DIR_SENTINEL
+    {
+        return Ok(false);
+    }
+    Err(Errno::ENOTSUP)
 }
 
 /// truncate -- truncate a file to a specified length (path-based).
@@ -35532,6 +35550,42 @@ mod tests {
         let result = sys_fsync(&mut proc, &mut host, fd);
         assert!(result.is_ok());
         assert_eq!(host.fsync_calls, vec![100]);
+    }
+
+    #[test]
+    fn test_syncfs_validates_fd_and_rejects_host_mounts() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        assert_eq!(syncfs_targets_rootfs(&proc, 99), Err(Errno::EBADF));
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        assert_eq!(syncfs_targets_rootfs(&proc, read_fd), Err(Errno::EINVAL));
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/test", O_CREAT | O_RDWR, 0o644).unwrap();
+        assert_eq!(syncfs_targets_rootfs(&proc, fd), Err(Errno::ENOTSUP));
+    }
+
+    #[test]
+    fn test_syncfs_accepts_in_kernel_filesystems() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/data", 0o755, 0, 0, 2).unwrap();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let root_file =
+            sys_open(&mut proc, &mut host, b"/data/file", O_CREAT | O_RDWR, 0o644).unwrap();
+        let root_dir = sys_open(&mut proc, &mut host, b"/data", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let tmp_file =
+            sys_open(&mut proc, &mut host, b"/srv/file", O_CREAT | O_RDWR, 0o644).unwrap();
+        let tmp_dir = sys_open(&mut proc, &mut host, b"/srv", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        for fd in [root_file, root_dir] {
+            assert_eq!(syncfs_targets_rootfs(&proc, fd), Ok(true));
+        }
+        for fd in [tmp_file, tmp_dir] {
+            assert_eq!(syncfs_targets_rootfs(&proc, fd), Ok(false));
+        }
+        assert!(host.fsync_calls.is_empty());
     }
 
     #[test]

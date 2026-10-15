@@ -152,13 +152,16 @@ export interface InitMessage {
    */
   execProgramBytes?: Record<string, ArrayBuffer>;
   /**
-   * Bytes of `host/wasm/rootfs.vfs.zst`, read on the main thread and forwarded
-   * to the worker. When present, the worker materialises the default mount
-   * spec (rootfs at `/`, scratch dirs at `/tmp` etc.) and constructs a
-   * `VirtualPlatformIO`. Absent → worker falls back to `NodePlatformIO`
-   * (custom-io / legacy path).
+   * Decoded image bytes forwarded to the worker. Either this or
+   * `rootfsImageFile` selects the kernel-owned rootfs and its mount spec.
+   * With neither source, the worker falls back to `NodePlatformIO`.
    */
   rootfsImage?: ArrayBuffer;
+  rootfsImageFile?: string;
+  rootfsImageIntegrity?: import("./vfs/opfs-image-reader").OpfsImageIntegrity;
+  experimentalFixedPersistencePath?: string;
+  experimentalResizablePersistencePath?: string;
+  requireExistingRootfsPersistence?: boolean;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base used to resolve relative lazy URLs embedded in rootfsImage. */
@@ -324,6 +327,12 @@ export interface ClipboardGuestWaitMessage {
   timeoutMs?: number;
 }
 
+export interface ExportRootfsImageToFileMessage {
+  type: "export_rootfs_image_to_file";
+  requestId: number;
+  path: string;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | AttachRemotePeerMessage
@@ -348,6 +357,7 @@ export type MainToKernelMessage =
   | TerminateProcessMessage
   | DestroyMessage
   | ExportRootfsImageMessage
+  | ExportRootfsImageToFileMessage
   | ClipboardOfferMessage
   | ClipboardGuestWaitMessage
   | ReadVfsFileMessage

@@ -1,7 +1,8 @@
 //! The VFS image builder module: `runtime-core`'s in-kernel filesystem and
-//! image writer, compiled as a standalone Wasm module with zero host imports so
-//! the TypeScript image builders (`images/vfs/lib/kandelo-image-fs.ts`) can
-//! build, load and export images with the same Rust code the kernel runs.
+//! image writer, compiled by default as a standalone Wasm module with zero host
+//! imports so TypeScript image builders can use the same Rust code the kernel
+//! runs. The optional positioned-image variant reads an external image through
+//! one synchronous host import instead of adopting an image-sized buffer.
 #![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_std)]
 extern crate alloc;
 
@@ -155,7 +156,13 @@ pub unsafe extern "C" fn sm_free(ptr: usize, len: usize) {
 /// hands out `BaseSource::Image` nodes, each a promise that the kernel can come
 /// back for those bytes later. Freeing after the walk would make every base
 /// file in a derived build unreadable.
-struct AdoptedImage(core::cell::UnsafeCell<Option<(usize, usize)>>);
+enum ImageBacking {
+    Adopted(usize, usize),
+    #[cfg(feature = "positioned-image")]
+    Positioned(u64),
+}
+
+struct AdoptedImage(core::cell::UnsafeCell<Option<ImageBacking>>);
 
 // SAFETY: one builder drives this module on one thread, as for the allocator.
 unsafe impl Sync for AdoptedImage {}
@@ -166,20 +173,31 @@ static IMAGE: AdoptedImage = AdoptedImage(core::cell::UnsafeCell::new(None));
 fn release_image() {
     // SAFETY: single-threaded module; no reference into the cell outlives this.
     let slot = unsafe { &mut *IMAGE.0.get() };
-    if let Some((ptr, len)) = slot.take() {
+    if let Some(ImageBacking::Adopted(ptr, len)) = slot.take() {
         unsafe { sm_free(ptr, len) };
     }
 }
 
 /// The adopted image's bytes, or `None` when nothing is loaded.
+#[cfg(test)]
 fn image_bytes() -> Option<&'static [u8]> {
     // SAFETY: the buffer is freed only by `release_image`, which first clears
     // the slot, so a `Some` here describes live memory.
     let slot = unsafe { &*IMAGE.0.get() };
-    slot.map(|(ptr, len)| unsafe { core::slice::from_raw_parts(ptr as *const u8, len) })
+    match slot {
+        Some(ImageBacking::Adopted(ptr, len)) => {
+            Some(unsafe { core::slice::from_raw_parts(*ptr as *const u8, *len) })
+        }
+        _ => None,
+    }
 }
 
-/// Serve the kernel's byte requests from the adopted image.
+#[cfg(feature = "positioned-image")]
+unsafe extern "C" {
+    fn host_image_read(offset: i64, ptr: *mut u8, len: u32) -> i32;
+}
+
+/// Serve the kernel's byte requests from the loaded image.
 ///
 /// Only [`rootfs::ByteReq::Image`] can be answered: a blob store and an archive
 /// transport are host capabilities this module does not have and will not grow.
@@ -189,14 +207,38 @@ fn image_source(req: rootfs::ByteReq, dst: &mut [u8]) -> Result<usize, Errno> {
     let rootfs::ByteReq::Image { offset } = req else {
         return Err(Errno::EIO);
     };
-    let bytes = image_bytes().ok_or(Errno::EIO)?;
-    let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
-    if start >= bytes.len() {
-        return Ok(0);
+    let slot = unsafe { &*IMAGE.0.get() };
+    match slot {
+        Some(ImageBacking::Adopted(ptr, len)) => {
+            let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
+            if start >= *len {
+                return Ok(0);
+            }
+            let n = core::cmp::min(dst.len(), len - start);
+            let bytes = unsafe { core::slice::from_raw_parts(*ptr as *const u8, *len) };
+            dst[..n].copy_from_slice(&bytes[start..start + n]);
+            Ok(n)
+        }
+        #[cfg(feature = "positioned-image")]
+        Some(ImageBacking::Positioned(len)) => {
+            if offset >= *len {
+                return Ok(0);
+            }
+            let count = core::cmp::min(dst.len() as u64, len - offset);
+            let count = u32::try_from(count).map_err(|_| Errno::EOVERFLOW)?;
+            let at = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+            let result = unsafe { host_image_read(at, dst.as_mut_ptr(), count) };
+            if result < 0 {
+                return Err(Errno::from_u32(result.unsigned_abs()).unwrap_or(Errno::EIO));
+            }
+            let read = usize::try_from(result).map_err(|_| Errno::EIO)?;
+            if read > count as usize {
+                return Err(Errno::EIO);
+            }
+            Ok(read)
+        }
+        None => Err(Errno::EIO),
     }
-    let n = core::cmp::min(dst.len(), bytes.len() - start);
-    dst[..n].copy_from_slice(&bytes[start..start + n]);
-    Ok(n)
 }
 
 /// Load a VFS image as the base layer: the kernel mounts it, walks it, and
@@ -231,7 +273,7 @@ pub unsafe extern "C" fn sm_load_image(ptr: usize, len: usize) -> i32 {
     // builder writes on top of it.
     use_reference_clock();
     // SAFETY: single-threaded module.
-    unsafe { *IMAGE.0.get() = Some((ptr, len)) };
+    unsafe { *IMAGE.0.get() = Some(ImageBacking::Adopted(ptr, len)) };
 
     match rootfs::load_image(len as u64, image_source) {
         // The cohort seals are authenticated by `rootfs::load_image` itself,
@@ -253,6 +295,25 @@ pub unsafe extern "C" fn sm_load_image(ptr: usize, len: usize) -> i32 {
             // SAFETY: single-threaded module.
             unsafe { *IMAGE.0.get() = None };
             err(e)
+        }
+    }
+}
+
+#[cfg(feature = "positioned-image")]
+#[unsafe(no_mangle)]
+pub extern "C" fn sm_load_image_positioned(len_lo: u32, len_hi: u32) -> i32 {
+    let len = (u64::from(len_hi) << 32) | u64::from(len_lo);
+    if len == 0 || len > i64::MAX as u64 {
+        return err(Errno::EINVAL);
+    }
+    release_image();
+    use_reference_clock();
+    unsafe { *IMAGE.0.get() = Some(ImageBacking::Positioned(len)) };
+    match rootfs::load_image(len, image_source) {
+        Ok(entries) => i32::try_from(entries).unwrap_or(i32::MAX),
+        Err(error) => {
+            unsafe { *IMAGE.0.get() = None };
+            err(error)
         }
     }
 }
@@ -1308,6 +1369,30 @@ pub unsafe extern "C" fn sm_unlink(path_ptr: usize, path_len: usize) -> i32 {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "positioned-image")]
+    static POSITIONED_SOURCE: std::sync::Mutex<Option<alloc::vec::Vec<u8>>> =
+        std::sync::Mutex::new(None);
+
+    #[cfg(feature = "positioned-image")]
+    #[unsafe(no_mangle)]
+    extern "C" fn host_image_read(offset: i64, ptr: *mut u8, len: u32) -> i32 {
+        let source = POSITIONED_SOURCE.lock().unwrap();
+        let Some(bytes) = source.as_ref() else {
+            return -(Errno::EIO as i32);
+        };
+        let Ok(start) = usize::try_from(offset) else {
+            return -(Errno::EINVAL as i32);
+        };
+        let Some(end) = start.checked_add(len as usize) else {
+            return -(Errno::EOVERFLOW as i32);
+        };
+        let Some(chunk) = bytes.get(start..end) else {
+            return -(Errno::EIO as i32);
+        };
+        unsafe { core::ptr::copy_nonoverlapping(chunk.as_ptr(), ptr, chunk.len()) };
+        i32::try_from(chunk.len()).unwrap_or(-(Errno::EOVERFLOW as i32))
+    }
+
     /// Drive the module the way the bridge will: allocate a buffer, write a
     /// path into it, call through the ABI, and read the result back through
     /// the same filesystem the kernel uses.
@@ -2136,6 +2221,47 @@ mod tests {
         unsafe { core::ptr::copy_nonoverlapping(image.as_ptr(), ptr as *mut u8, image.len()) };
         // Ownership transfers on success; nothing here frees it.
         unsafe { sm_load_image(ptr, image.len()) }
+    }
+
+    #[cfg(feature = "positioned-image")]
+    #[test]
+    fn positioned_image_loads_and_exports_without_adopting_its_bytes() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/source", b"positioned data", |path, path_len, content, content_len| unsafe {
+            sm_write_file(path, path_len, 0o644, content, content_len)
+        }), 0);
+        let image = drain_export();
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        *POSITIONED_SOURCE.lock().unwrap() = Some(image.clone());
+        let count = sm_load_image_positioned(image.len() as u32, 0);
+        assert!(count > 0, "positioned image load failed: {count}");
+        assert!(image_bytes().is_none());
+        let buffer = sm_alloc(32);
+        let read = with_path(b"/source", |path, path_len| unsafe {
+            sm_read_file(path, path_len, 0, buffer, 32)
+        });
+        assert_eq!(read, 15);
+        assert_eq!(unsafe { core::slice::from_raw_parts(buffer as *const u8, 15) }, b"positioned data");
+        unsafe { sm_free(buffer, 32) };
+        assert_eq!(with_two(b"/added", b"after", |path, path_len, content, content_len| unsafe {
+            sm_write_file(path, path_len, 0o644, content, content_len)
+        }), 0);
+        let exported = drain_export();
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert!(load_image_bytes(&exported) > 0);
+        let buffer = sm_alloc(32);
+        let read = with_path(b"/source", |path, path_len| unsafe {
+            sm_read_file(path, path_len, 0, buffer, 32)
+        });
+        assert_eq!(read, 15);
+        assert_eq!(unsafe { core::slice::from_raw_parts(buffer as *const u8, 15) }, b"positioned data");
+        let read = with_path(b"/added", |path, path_len| unsafe {
+            sm_read_file(path, path_len, 0, buffer, 32)
+        });
+        assert_eq!(read, 5);
+        assert_eq!(unsafe { core::slice::from_raw_parts(buffer as *const u8, 5) }, b"after");
+        unsafe { sm_free(buffer, 32) };
+        *POSITIONED_SOURCE.lock().unwrap() = None;
     }
 
     /// `sm_image_read` serves the loaded image's own bytes, in container

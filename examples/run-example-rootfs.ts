@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readSync } from "node:fs";
+import { join, posix } from "node:path";
 
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import {
@@ -87,4 +88,31 @@ export function prepareRunExampleRootfs(image: Uint8Array): {
     };
   });
   return { rootfsImage, rootfsLazyUrlBase: ROOTFS_LAZY_URL_BASE, rootfsLazyAssets };
+}
+
+export async function preparePersistentRunExampleRootfs(
+  image: Uint8Array,
+  fixtureRoot: string,
+): Promise<Uint8Array> {
+  const filesystem = KandeloImageFs.create();
+  filesystem.loadImage(image);
+  filesystem.mkdir("/run", 0o755);
+  filesystem.mkdir("/run/kandelo-run", 0o755);
+  const copyTree = (source: string, destination: string): void => {
+    for (const entry of readdirSync(source, { withFileTypes: true })) {
+      const sourcePath = join(source, entry.name);
+      const destinationPath = posix.join(destination, entry.name);
+      const metadata = lstatSync(sourcePath);
+      if (metadata.isDirectory()) {
+        filesystem.mkdir(destinationPath, metadata.mode & 0o7777);
+        copyTree(sourcePath, destinationPath);
+      } else if (metadata.isFile()) {
+        filesystem.writeFile(destinationPath, new Uint8Array(readFileSync(sourcePath)), metadata.mode & 0o7777);
+      } else {
+        throw new Error(`persistent runner fixture has an unsupported entry: ${sourcePath}`);
+      }
+    }
+  };
+  copyTree(fixtureRoot, "/run/kandelo-run");
+  return filesystem.saveImage();
 }

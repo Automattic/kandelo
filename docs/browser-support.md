@@ -228,6 +228,57 @@ pipe pair.
 
 ### Filesystem
 - The in-kernel root filesystem and tmpfs hold `/`, the scratch mounts and `/dev/shm`; the browser host mounts no filesystem of its own beneath them (`resolveForBrowser` refuses a scratch mount the tmpfs does not serve).
+- The Kandelo page has a manual, experimental fixed-overwrite mode:
+  `?experimentalPersistence=<name>` (1–128 ASCII letters, digits, `_`, or
+  `-`). Confirming the warning freezes that computer's composed base image
+  in OPFS and boots the existing kernel journal with the same name. Reloading
+  with the same image URL, profile, and name reuses the exact saved bytes;
+  a mismatched identity or damaged image fails boot instead of resetting it.
+  The OPFS manifest checks image length and per-MiB chunk digests, plus a
+  SHA-256 for saved lazy-asset transport metadata. The page refuses
+  boot-link inputs and scripts in this mode, rather than auto-running a
+  URL-supplied script against saved state. This is a developer smoke path,
+  not a general persistent computer: only overwrites inside existing regular
+  image files persist; create, append, truncate, rename, and metadata changes
+  are unsupported. Restoring a newly saved custom image does not re-fetch its
+  VFS source; the OPFS manifest also retains lazy-asset transport metadata.
+  Older manifests may re-fetch the source. Scoped Pages products authenticate
+  their compressed source digest while staging into OPFS. The app, kernel, and
+  lazy assets can still need
+  the network, so this is not an offline computer. There is no per-computer
+  reset or upgrade UI; clearing site data removes this origin's machines
+  and other site data. A newly composed base image is streamed into OPFS in
+  acknowledged 1 MiB chunks and published only by the current boot. Direct
+  VFS URLs and scoped Pages products stage source bytes incrementally in OPFS;
+  staging is capped at 64 GiB, independently of the roughly 1 GiB limit on
+  legacy in-memory image decoding and of the browser's available OPFS quota.
+  This is a transport safety bound, not a promise that the browser can store
+  or boot every image below it.
+  Zstd decoding uses at most a 16 MiB window. The image writer reads that
+  source through positioned calls rather than an image-sized staging buffer.
+  A restored image is read from OPFS in positioned pages with a
+  bounded 4 MiB cache; boot verifies its 1 MiB chunk digests without a
+  whole-image JavaScript buffer. The 256 KiB dirty-block cache holds
+  unsynced fixed-size overwrites; `fsync`, `fdatasync`, eviction, and graceful
+  destroy flush it. Once initialized, a persistent browser kernel retains its
+  exclusive journal Web Lock until the worker acknowledges storage closure and
+  terminates; a timed-out destroy retains the lock until the tab closes.
+  The page also leases the computer name across boot and kernel lifetime and
+  passes that lease into BrowserKernel. Low-level callers can acquire the same
+  computer lock by naming the computer. BrowserKernel refuses persistent boot
+  without a computer name or claimed page lease; callers that misname the
+  computer can still fork it across different journal names.
+  Larger guest writes are split into cache-sized chunks and
+  may return a short count after a later writeback failure. Browser termination
+  loses unsynced writes without changing
+  the last durable image; an abrupt crash can do the same. Image capacity,
+  runtime memory, and OPFS quota are distinct limits. A 772 MiB decoded image
+  boots under the constrained 768 MiB kernel ceiling in browser tests; this
+  does not make mutable POSIX persistence complete.
+  Browser quota or eviction can remove OPFS data. If the entire
+  computer's OPFS state disappears, its name is
+  treated as new; this mode cannot detect a complete eviction. Do not use
+  valuable data.
 - `OpfsFileSystem` — Origin Private File System for browser persistence. Its
   worker assigns session-scoped inode tokens to regular files and uses
   `FileSystemHandle.isSameEntry()` to unify simultaneous opens. Tokens remain
@@ -2273,7 +2324,8 @@ The command set includes jq 1.8.2 at `/usr/bin/jq` (also `/bin/jq`),
 with its bundled Oniguruma regular expressions and decimal-number support.
 Its executable stays lazy until first use, including for commands such as
 `printf '%s\n' '{"answer":42}' | jq '.answer'`.
-`./run.sh --fetch-only build shell-vfs` refuses source fallback.
+`./run.sh build shell-vfs` builds the declared package closure; `run.sh` has
+no `--fetch-only` option.
 
 Shell-derived packages consume that resolved image as a declared dependency.
 Their builders preserve capacity, ABI identity, package-backed lazy transports

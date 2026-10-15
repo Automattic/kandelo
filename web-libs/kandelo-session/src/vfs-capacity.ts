@@ -30,6 +30,26 @@ export function assertVfsImageFitsProfile(
   declaredMaxBytes: unknown,
   label: string,
 ): void {
+  assertVfsImageCapacityMetadata(capacity, declaredMaxBytes, label);
+  if (!Number.isSafeInteger(profileMaxBytes) || profileMaxBytes <= 0) {
+    throw new Error(`${label} profile has an invalid filesystem capacity limit`);
+  }
+  if (
+    capacity.byteLength > profileMaxBytes ||
+    capacity.maxByteLength > profileMaxBytes
+  ) {
+    throw new Error(
+      `${label} requires ${capacity.maxByteLength} VFS bytes, ` +
+        `but its profile permits ${profileMaxBytes}`,
+    );
+  }
+}
+
+export function assertVfsImageCapacityMetadata(
+  capacity: KandeloVfsImageCapacity,
+  declaredMaxBytes: unknown,
+  label: string,
+): void {
   if (
     !Number.isSafeInteger(capacity.byteLength) ||
     !Number.isSafeInteger(capacity.maxByteLength) ||
@@ -37,9 +57,6 @@ export function assertVfsImageFitsProfile(
     capacity.maxByteLength < capacity.byteLength
   ) {
     throw new Error(`${label} has an invalid filesystem capacity`);
-  }
-  if (!Number.isSafeInteger(profileMaxBytes) || profileMaxBytes <= 0) {
-    throw new Error(`${label} profile has an invalid filesystem capacity limit`);
   }
   if (declaredMaxBytes !== undefined) {
     if (
@@ -50,15 +67,6 @@ export function assertVfsImageFitsProfile(
         `${label} capacity metadata does not match its filesystem superblock`,
       );
     }
-  }
-  if (
-    capacity.byteLength > profileMaxBytes ||
-    capacity.maxByteLength > profileMaxBytes
-  ) {
-    throw new Error(
-      `${label} requires ${capacity.maxByteLength} VFS bytes, ` +
-        `but its profile permits ${profileMaxBytes}`,
-    );
   }
 }
 

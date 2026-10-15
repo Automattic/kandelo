@@ -4,11 +4,11 @@
 //! Consumes DECOMPRESSED bytes (zstd is a host-side transport codec).
 //!
 //! The reader is a positioned cursor over a [`BlockSource`], not a resident
-//! buffer. A `/` image is 16-256 MiB, but a full tree build reads only its
-//! superblock, the inode-table blocks it actually touches, directory data
-//! blocks, and indirect blocks: under 9.5 MiB even for the largest image in
-//! the repo. Holding the whole image resident in kernel memory would duplicate
-//! a decompressed copy the host already owns.
+//! buffer. A `/` image can be larger than runtime memory, but a tree build
+//! reads its superblock, inode and directory metadata, and regular-file
+//! pointer blocks to retain sparse maps; it does not read file contents.
+//! Holding the whole image resident in kernel memory would duplicate a
+//! decompressed copy the host already owns.
 //!
 //! `impl BlockSource for [u8]` keeps a plain slice a first-class source, so a
 //! resident image costs a small `memcpy` per field read rather than a fetch.
@@ -18,14 +18,15 @@ use wasm_posix_shared::Errno; // same import syscalls.rs uses
 
 const VFSI_MAGIC: u32 = 0x5646_5349; // "VFSI" LE
 const VFSI_VERSION: u32 = 1;
+const VFSI_EXTENDED_VERSION: u32 = 2;
 const VFSI_HEADER: usize = 16;
+const VFSI_EXTENDED_HEADER: usize = 24;
 
 /// A positioned, read-only byte source for one image.
 ///
-/// Every read must answer synchronously: the decompressed image already lives
-/// in the kernel worker's own memory on both hosts, so an image read is a
-/// `memcpy`, never a parked syscall. A source that could park would make the
-/// whole tree build restartable, which is a much larger design than this.
+/// Every read must answer synchronously. Resident images use a `memcpy`;
+/// browser OPFS images use positioned reads from a worker-owned sync handle.
+/// A source that could park would make the whole tree build restartable.
 pub trait BlockSource {
     /// Total length of the image in bytes.
     fn len(&self) -> u64;
@@ -114,21 +115,30 @@ fn container_errno(error: Errno) -> Errno {
 
 /// Byte span of the inner KIFS filesystem inside a VFSI container.
 ///
-/// The container is `magic | version | flags | sabLen | sab[sabLen] | ...`;
-/// everything after the SAB is host-side metadata (see [`kernel_lazy_span`]).
+/// Version 1 stores a 32-bit body length in a 16-byte header. Version 2
+/// stores a 64-bit body length after its 24-byte header size field.
+/// Everything after the body is host-side metadata (see [`kernel_lazy_span`]).
 pub fn kandelo_image_span(source: &impl BlockSource) -> Result<(u64, u64), Errno> {
     if source_u32(source, 0).map_err(container_errno)? != VFSI_MAGIC {
         return Err(Errno::EINVAL);
     }
-    if source_u32(source, 4).map_err(container_errno)? != VFSI_VERSION {
-        return Err(Errno::EINVAL);
-    }
-    let sab_len = source_u32(source, 12).map_err(container_errno)? as u64;
-    let end = (VFSI_HEADER as u64).checked_add(sab_len).ok_or(Errno::EINVAL)?;
+    let (body_offset, sab_len) = match source_u32(source, 4).map_err(container_errno)? {
+        VFSI_VERSION => (VFSI_HEADER as u64, source_u32(source, 12).map_err(container_errno)? as u64),
+        VFSI_EXTENDED_VERSION => {
+            if source_u32(source, 12).map_err(container_errno)? != VFSI_EXTENDED_HEADER as u32 {
+                return Err(Errno::EINVAL);
+            }
+            let mut length = [0u8; 8];
+            source.read_exact_at(16, &mut length).map_err(container_errno)?;
+            (VFSI_EXTENDED_HEADER as u64, u64::from_le_bytes(length))
+        }
+        _ => return Err(Errno::EINVAL),
+    };
+    let end = body_offset.checked_add(sab_len).ok_or(Errno::EINVAL)?;
     if end > source.len() {
         return Err(Errno::EINVAL);
     }
-    Ok((VFSI_HEADER as u64, sab_len))
+    Ok((body_offset, sab_len))
 }
 
 pub fn unwrap_vfsi(image: &[u8]) -> Result<&[u8], Errno> {
@@ -157,12 +167,15 @@ pub const VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES: u32 = 1 << 3;
 
 /// Container header: magic(4) | version(4) | flags(4) | body length(4).
 pub const VFSI_HEADER_SIZE: usize = VFSI_HEADER;
+pub const VFSI_EXTENDED_HEADER_SIZE: usize = VFSI_EXTENDED_HEADER;
 
 /// The container magic, for the writer.
 pub const VFSI_CONTAINER_MAGIC: u32 = VFSI_MAGIC;
 
-/// The container version this repository writes and reads.
+/// The container version used for bodies with a 32-bit length.
 pub const VFSI_CONTAINER_VERSION: u32 = VFSI_VERSION;
+/// The container version used for bodies requiring a 64-bit length.
+pub const VFSI_EXTENDED_CONTAINER_VERSION: u32 = VFSI_EXTENDED_VERSION;
 
 /// The container's flag word.
 ///
@@ -385,6 +398,12 @@ pub(crate) const SB_TOTAL_INODES: u64 = 16;
 pub const KANDELO_IMAGE_SUPER_MAGIC: u32 = 0x5346_494B;
 
 pub(crate) const SB_TOTAL_BLOCKS: u64 = 12;
+const SB_INODE_BITMAP_START: u64 = 28;
+const SB_BLOCK_BITMAP_START: u64 = 32;
+const SB_BLOCK_BITMAP_BLOCKS: u64 = 48;
+const SB_INODE_BITMAP_BLOCKS: u64 = 44;
+const SB_INODE_TABLE_BLOCKS: u64 = 52;
+const SB_DATA_START: u64 = 40;
 pub(crate) const SB_FREE_BLOCKS: u64 = 20;
 pub(crate) const SB_FREE_INODES: u64 = 24;
 pub(crate) const SB_MAX_SIZE_BLOCKS: u64 = 68;
@@ -396,18 +415,27 @@ const SB_DEFERRED_INODE: u64 = 76;
 
 impl<S: BlockSource> KandeloImageFs<S> {
     pub fn mount(source: S) -> Result<KandeloImageFs<S>, Errno> {
-        if source_u32(&source, 0).map_err(container_errno)? != KANDELO_IMAGE_MAGIC {
+        let mut superblock = [0u8; BLOCK_SIZE];
+        source.read_exact_at(0, &mut superblock).map_err(container_errno)?;
+        let word = |offset: u64| r32(&superblock, offset as usize).ok_or(Errno::EINVAL);
+        if word(0)? != KANDELO_IMAGE_MAGIC {
             return Err(Errno::EINVAL);
         }
-        if source_u32(&source, 4).map_err(container_errno)? != KANDELO_IMAGE_VERSION {
+        if word(4)? != KANDELO_IMAGE_VERSION {
             return Err(Errno::EINVAL);
         }
-        if source_u32(&source, 8).map_err(container_errno)? != BLOCK_SIZE as u32 {
+        if word(8)? != BLOCK_SIZE as u32 {
             return Err(Errno::EINVAL);
         }
-        let inode_table_start =
-            source_u32(&source, SB_INODE_TABLE_START).map_err(container_errno)?;
-        let total_inodes = source_u32(&source, SB_TOTAL_INODES).map_err(container_errno)?;
+        let total_blocks = word(SB_TOTAL_BLOCKS)?;
+        let total_inodes = word(SB_TOTAL_INODES)?;
+        let inode_bitmap_start = word(SB_INODE_BITMAP_START)?;
+        let inode_bitmap_blocks = word(SB_INODE_BITMAP_BLOCKS)?;
+        let block_bitmap_start = word(SB_BLOCK_BITMAP_START)?;
+        let block_bitmap_blocks = word(SB_BLOCK_BITMAP_BLOCKS)?;
+        let inode_table_start = word(SB_INODE_TABLE_START)?;
+        let inode_table_blocks = word(SB_INODE_TABLE_BLOCKS)?;
+        let data_start = word(SB_DATA_START)?;
         // The inode table spans `total_inodes.div_ceil(32)` blocks starting at
         // `inode_table_start`; require the whole region to fit in the source
         // so every accepted `ino < total_inodes` yields an in-bounds
@@ -416,11 +444,24 @@ impl<S: BlockSource> KandeloImageFs<S> {
         let table_end = (inode_table_start as u64 + table_blocks)
             .checked_mul(BLOCK_SIZE as u64)
             .ok_or(Errno::EINVAL)?;
-        if table_end > source.len() { return Err(Errno::EINVAL); }
+        if total_inodes <= ROOT_INO
+            || inode_bitmap_start == 0
+            || inode_bitmap_start.checked_add(inode_bitmap_blocks) != Some(block_bitmap_start)
+            || block_bitmap_start.checked_add(block_bitmap_blocks) != Some(inode_table_start)
+            || inode_table_start.checked_add(inode_table_blocks) != Some(data_start)
+            || data_start >= total_blocks
+            || u64::from(inode_bitmap_blocks) * BLOCK_SIZE as u64 * 8 < u64::from(total_inodes)
+            || u64::from(block_bitmap_blocks) * BLOCK_SIZE as u64 * 8 < u64::from(total_blocks)
+            || u64::from(inode_table_blocks) < table_blocks
+            || u64::from(total_blocks) * BLOCK_SIZE as u64 > source.len()
+            || table_end > source.len()
+        {
+            return Err(Errno::EINVAL);
+        }
         // Read unvalidated: 0 means "no section", which is what every image
         // written before this field existed carries here, so an older image
         // reads as having none rather than as corrupt.
-        let deferred_inode = source_u32(&source, SB_DEFERRED_INODE).map_err(container_errno)?;
+        let deferred_inode = word(SB_DEFERRED_INODE)?;
         Ok(KandeloImageFs { source, inode_table_start, total_inodes, deferred_inode })
     }
 
@@ -585,6 +626,77 @@ impl<S: BlockSource> KandeloImageFs<S> {
             return self.block_ptr_in(l1, fb % PTRS_PER_BLOCK);
         }
         Err(Errno::EINVAL) // beyond MAX_FILE_BLOCKS
+    }
+
+    fn pointer_block(&self, block: u32) -> Result<[u8; BLOCK_SIZE], Errno> {
+        let mut pointers = [0; BLOCK_SIZE];
+        self.source
+            .read_exact_at(u64::from(block) * BLOCK_SIZE as u64, &mut pointers)?;
+        Ok(pointers)
+    }
+
+    /// Return the logical block numbers backed by data in a regular file.
+    /// Missing indirect branches cost no reads or output memory.
+    pub fn allocated_file_blocks(&self, ino: u32) -> Result<Vec<u32>, Errno> {
+        let raw = self.read_inode(ino)?;
+        if r32(&raw, INO_LINK_COUNT).ok_or(Errno::EIO)? == 0 {
+            return Err(Errno::ENOENT);
+        }
+        if r32(&raw, INO_MODE).ok_or(Errno::EIO)? & 0xf000 != 0x8000 {
+            return Err(Errno::EINVAL);
+        }
+        let count = r64(&raw, INO_SIZE)
+            .ok_or(Errno::EIO)?
+            .div_ceil(BLOCK_SIZE as u64);
+        let maximum = u64::from(DIRECT_BLOCKS)
+            + u64::from(PTRS_PER_BLOCK)
+            + u64::from(PTRS_PER_BLOCK) * u64::from(PTRS_PER_BLOCK);
+        if count > maximum {
+            return Err(Errno::EFBIG);
+        }
+        let mut blocks = Vec::new();
+        for index in 0..count.min(u64::from(DIRECT_BLOCKS)) {
+            if r32(&raw, INO_DIRECT + index as usize * 4).ok_or(Errno::EIO)? != 0 {
+                blocks.push(index as u32);
+            }
+        }
+        if count > u64::from(DIRECT_BLOCKS) {
+            let indirect = r32(&raw, INO_INDIRECT).ok_or(Errno::EIO)?;
+            if indirect != 0 {
+                let pointers = self.pointer_block(indirect)?;
+                let entries = (count - u64::from(DIRECT_BLOCKS)).min(u64::from(PTRS_PER_BLOCK));
+                for index in 0..entries {
+                    if r32(&pointers, index as usize * 4).ok_or(Errno::EIO)? != 0 {
+                        blocks.push(DIRECT_BLOCKS + index as u32);
+                    }
+                }
+            }
+        }
+        let double_start = u64::from(DIRECT_BLOCKS) + u64::from(PTRS_PER_BLOCK);
+        if count > double_start {
+            let double_indirect = r32(&raw, INO_DOUBLE_INDIRECT).ok_or(Errno::EIO)?;
+            if double_indirect != 0 {
+                let first_level = self.pointer_block(double_indirect)?;
+                let groups = (count - double_start).div_ceil(u64::from(PTRS_PER_BLOCK));
+                for group in 0..groups {
+                    let pointer = r32(&first_level, group as usize * 4).ok_or(Errno::EIO)?;
+                    if pointer == 0 {
+                        continue;
+                    }
+                    let second_level = self.pointer_block(pointer)?;
+                    let entries = (count - double_start - group * u64::from(PTRS_PER_BLOCK))
+                        .min(u64::from(PTRS_PER_BLOCK));
+                    for index in 0..entries {
+                        if r32(&second_level, index as usize * 4).ok_or(Errno::EIO)? != 0 {
+                            blocks.push(
+                                (double_start + group * u64::from(PTRS_PER_BLOCK) + index) as u32,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(blocks)
     }
 
     /// `block_map_in` for a caller that has only the inode number. Every
@@ -976,6 +1088,31 @@ mod tests {
     }
 
     #[test]
+    fn mount_rejects_bitmap_that_cannot_describe_the_image() {
+        let mut bad = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        bad[SB_BLOCK_BITMAP_BLOCKS as usize..SB_BLOCK_BITMAP_BLOCKS as usize + 4].fill(0);
+        assert!(KandeloImageFs::mount(bad.as_slice()).is_err());
+        bad[SB_TOTAL_BLOCKS as usize..SB_TOTAL_BLOCKS as usize + 4].fill(0);
+        assert!(KandeloImageFs::mount(bad.as_slice()).is_err());
+    }
+
+    #[test]
+    fn mount_rejects_overlapping_or_truncated_metadata_regions() {
+        let original = unwrap_vfsi(TINY_VFS).unwrap();
+        let mut overlapping = original.to_vec();
+        overlapping[32..36].copy_from_slice(&1u32.to_le_bytes());
+        assert!(matches!(KandeloImageFs::mount(overlapping.as_slice()), Err(Errno::EINVAL)));
+
+        let mut missing_inode_bitmap = original.to_vec();
+        missing_inode_bitmap[44..48].fill(0);
+        assert!(matches!(KandeloImageFs::mount(missing_inode_bitmap.as_slice()), Err(Errno::EINVAL)));
+
+        let mut truncated = original.to_vec();
+        truncated.pop();
+        assert!(matches!(KandeloImageFs::mount(truncated.as_slice()), Err(Errno::EINVAL)));
+    }
+
+    #[test]
     fn mount_accepts_an_owned_source() {
         // `Vec<u8>` is a `BlockSource` too, so a caller that owns the image
         // does not have to keep a borrow alive alongside the mount.
@@ -1001,6 +1138,60 @@ mod tests {
         assert_eq!(fs.block_map(ROOT_INO, 5).unwrap(), 0, "unallocated direct block is a hole");
         // A file block beyond the double-indirect range is EINVAL, not a hole.
         assert!(fs.block_map(ROOT_INO, 2_000_000).is_err(), "beyond max file blocks -> EINVAL");
+    }
+
+    #[test]
+    fn allocated_file_blocks_skip_sparse_indirect_branches() {
+        use crate::kandelo_image_write::{
+            Content, ContentSource, KandeloImageConfig, KandeloImageSource, KandeloImageWriter,
+        };
+
+        struct TailContent;
+
+        impl ContentSource for TailContent {
+            fn read_exact_at(&self, _id: u64, _offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+                dst.fill(b'x');
+                Ok(())
+            }
+        }
+
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).unwrap();
+        let blocks = [0, 10, 1034, 105_000];
+        writer
+            .create_file(
+                writer.root(),
+                b"sparse",
+                0o644,
+                Content::SparseDeferred {
+                    id: 1,
+                    len: 512 * 1024 * 1024 + 1,
+                    blocks: &blocks,
+                },
+            )
+            .unwrap();
+        let image = writer.finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource {
+            image: &image,
+            content: &TailContent,
+        })
+        .unwrap();
+        let inode = filesystem.resolve(b"/sparse", true).unwrap();
+        assert_eq!(filesystem.allocated_file_blocks(inode), Ok(blocks.to_vec()));
+        assert_eq!(filesystem.allocated_file_blocks(ROOT_INO), Err(Errno::EINVAL));
+        let mut hole = [1; 8];
+        assert_eq!(filesystem.read_at(inode, 100 * BLOCK_SIZE as u64, &mut hole), Ok(8));
+        assert_eq!(hole, [0; 8]);
+    }
+
+    #[test]
+    fn allocated_file_blocks_reject_out_of_bounds_indirect_pointer() {
+        let mut image = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        let filesystem = KandeloImageFs::mount(image.as_slice()).unwrap();
+        let inode = filesystem.resolve(b"/big.txt", true).unwrap();
+        let pointer_offset = filesystem.inode_offset(inode) as usize + INO_INDIRECT;
+        image[pointer_offset..pointer_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let damaged = KandeloImageFs::mount(image.as_slice()).unwrap();
+        assert_eq!(damaged.allocated_file_blocks(inode), Err(Errno::EIO));
     }
 
     #[test]

@@ -2126,12 +2126,84 @@ either description, or whose metadata declares a different `kernelAbi`, is
 refused (`EINVAL` / `EPROTO`), and the boot fails at that cause; there is no
 host-side fallback.
 
-The kernel keeps the tree's metadata, every guest change, and every file the
-guest creates in its own memory. Unmodified file content stays in the image:
+Normally, the kernel keeps the tree's metadata, every guest change, and
+every file the guest creates in its own memory. Unmodified file content stays
+in the image:
 the kernel reads it on demand through `host_image_read`, a positioned window
 onto the bytes the worker entry holds (`imageReadFromContainer` in
 `host/src/vfs/rootfs-lazy-archives.ts`). Writing to an image-backed file
-copies it into kernel memory first.
+copies it into kernel memory first unless the experimental fixed-overwrite
+mode is enabled.
+
+`crates/runtime-core/src/persistent_overlay.rs` prototypes a separate,
+append-only durable overlay bound to a specific base-image SHA-256 digest. It
+records inode metadata, fixed-size file blocks, and directory-entry changes
+in checksummed transactions, publishes them after a storage flush, and drops
+an incomplete trailing transaction during recovery. Its experimental file
+helpers read unchanged blocks from the base image, journal only blocks touched
+by writes, and record logical length separately, so sparse offsets need not
+allocate the gap. Recovery keeps file-block locations and digests, not file-block
+contents, in memory. Reads verify changed blocks against their digests and keep
+at most 64 recently used 4 KiB blocks (256 KiB) in a cache. The metadata and
+block-location index is not yet bounded. `host/src/vfs/overlay-storage.ts`
+supplies an exact, positioned I/O adapter over the existing Node and OPFS
+filesystem backends. `crates/overlay-prototype` is a separate Wasm harness that
+connects the Rust journal to this OPFS adapter. Its browser test creates a
+named file, writes across base-image blocks and at an 8 GiB sparse offset,
+restarts both workers, and checks namespace recovery and wrong-base rejection
+in Chromium, Firefox, and WebKit.
+The live kernel can opt into a narrow first integration with
+`NodeKernelHost.experimentalFixedPersistencePath` or
+`BrowserKernel.experimentalFixedPersistenceName` (on boot or init). It hashes
+the loaded VFS image, opens the corresponding journal, and replays changes to
+existing image-backed regular files. Writes within their original length enter
+a 64-block (256 KiB) dirty cache and are immediately visible to reads. Dirty
+eviction, `fsync`, `fdatasync`, and graceful destroy commit and flush these
+blocks. A crash may lose writes without a successful flush; a failed flush
+reports an error and poisons further writes rather than claiming durability.
+One guest write spanning more than 64 blocks is processed in cache-sized
+chunks; failure after earlier chunks returns their short byte count.
+OPFS quota exhaustion reports `ENOSPC` at the flush or eviction that reaches
+storage, not necessarily at the earlier buffered write.
+The read cache is separately bounded to 64 blocks. Creation, deletion, rename,
+truncation, explicit metadata changes,
+growth past EOF,
+writes to deferred/digest-declared/set-ID files, and writes to files created
+in memory during boot fail with `EROFS` or `EFBIG`. This is an intentionally
+incomplete opt-in filesystem contract, not general persistent POSIX storage.
+Write-induced mtime/ctime updates are visible during a session but not replayed.
+The journal may describe inode and namespace changes, but this mode rejects
+them during recovery until rootfs can replay them accurately.
+
+Browser sessions can restore a saved OPFS image through positioned reads with
+a separate 4 MiB clean-page cache. First installation streams the composed
+image from the Rust writer to a generation file in OPFS in 1 MiB chunks,
+with one acknowledged chunk in flight between composer and page. The page
+checks each chunk from storage, then publishes a manifest only while that boot
+still owns the session, under the same exclusive Web Lock as the write. A
+superseded boot cannot publish its staged image; an interrupted generation
+without a manifest is reclaimed before the next installation of that name.
+Persistent direct and scoped Pages source fetches stage decoded bytes in OPFS
+with bounded chunks, and composition reads the source through positioned calls.
+Journal recovery metadata remains unbounded, so this is not yet general
+persistent POSIX storage. Browser sessions use
+an OPFS `FileSystemSyncAccessHandle` in the kernel worker;
+its exclusive handle provides the single-writer lease and is closed on destroy.
+Node sessions use an absolute journal path and a sibling `.lock` directory;
+concurrent Node sessions fail closed, and a crash may require manual removal
+of a stale lock after confirming no writer remains. Journal paths must be
+private; neither adapter protects against an external writer. Offsets must
+fit JavaScript's safe-integer range. Nonpersistent boots still materialize
+source bytes, and the journal's block-location index grows
+with changed blocks.
+The Rust journal can stage a compacted copy in separate storage after
+verifying every live block, but the live host has no generation handoff yet;
+its journal still grows and its recovery index is not bounded. A prototype
+generation seal verifies a candidate journal in 1 MiB chunks; no host boot
+selects it yet. There is no
+measured performance claim. The file helper rejects
+writes exceeding one 1 MiB transaction rather than implementing POSIX
+partial-write behavior.
 
 A deferred file is one the image names but does not carry: a URL-backed lazy
 file, or a member of a lazy ZIP archive. The image records its real size, the
@@ -2474,21 +2546,40 @@ image, give it to `NodeKernelHost`, and start `/sbin/dinit` with
 `spawnFromVfs()`.
 
 **Binary format.** A `.vfs.zst` file is one zstd frame around a VFSI
-container (`crates/runtime-core/src/vfsi_container.rs`). Decompressed:
+container (`crates/runtime-core/src/vfsi_container.rs`). Raw `.vfs` files
+carry the same container without compression. Decompressed:
 
 ```
 Offset   Size   Field
 0        4      Magic: 0x56465349 ("VFSI")
-4        4      Version: 1
+4        4      Version: 1 or 2
 8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata,
                 bit 3 = typed lazy archives, bit 4 = kernel lazy linkage (KLZY)
-12       4      Filesystem body length (N)
-16       N      KIFS filesystem body (superblock magic "KIFS"); deferred-file
+12       4      V1: filesystem body length (N); V2: header size (24)
+16       8      V2 only: 64-bit filesystem body length (N)
+H        N      KIFS filesystem body (superblock magic "KIFS"); deferred-file
                 records live inside it in the SDEF section
-16+N     ...    Optional trailing sections, each a 4-byte length and bytes:
+H+N      ...    Optional trailing sections, each a 4-byte length and bytes:
                 lazy-file JSON (bit 0), lazy-archive JSON (bit 1), image-metadata
                 JSON (bit 2), and the KLZY section (bit 4)
 ```
+
+`H` is 16 for v1 and 24 for v2. The writer preserves v1 for bodies that fit
+its 32-bit length and uses v2 only above that boundary. The KIFS v1 per-file
+block map is a separate limit; a larger container header does not remove it.
+Snapshot export leaves unwritten blocks of new journal-backed regular files
+unallocated in KIFS, so their logical size need not determine body size. The
+kernel records sparse block maps for image-backed regular files during boot
+and preserves their holes when exporting, including through journal changes.
+Growing or truncating and re-extending an originally dense image-backed file
+also leaves its new zero range unallocated in a composed snapshot.
+Node can boot a decoded `.vfs` file through `NodeKernelHost.rootfsImageFile`:
+the kernel worker owns a read-only, no-follow file descriptor and a bounded
+64-page positioned-read cache instead of copying the image into an
+`ArrayBuffer`. An optional staged-image integrity descriptor verifies every
+chunk before boot. The byte-array and default compressed-image Node paths
+still materialize their decoded images; external native writers can race a
+file-backed boot unless the caller keeps the source quiescent.
 
 ## Networking
 

@@ -15,9 +15,24 @@ import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/r
  *                  pty_output, resolve_exec, lazy_download
  */
 import { parentPort } from "node:worker_threads";
-import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  ftruncateSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CAPTURED_STDIO,
@@ -37,6 +52,10 @@ import type {
   ThreadChannelAttachment,
 } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
+import { OverlayStorageFile } from "./vfs/overlay-storage";
+import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
+import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
+import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
@@ -48,6 +67,7 @@ import {
 import * as rootImage from "./vfs/root-image-facts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
+import { NodeImageReader } from "./vfs/node-image-reader";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { MountConfig } from "./vfs/types";
 import type { MountSpec } from "./vfs/default-mounts";
@@ -177,6 +197,10 @@ const port = parentPort;
 // --- State ---
 
 let kernelWorker: CentralizedKernelWorker;
+let persistentOverlay: PersistentOverlayStorage | null = null;
+let persistentOverlayIndex: PersistentOverlayStorage | null = null;
+let liveOverlayCompactor: LiveOverlayCompactor | null = null;
+let persistentOverlayLock: import("node:sqlite").DatabaseSync | null = null;
 let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
 let maxPages: number = DEFAULT_MAX_PAGES;
@@ -228,6 +252,7 @@ let injectedExecWorkerConstructionFailure = false;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
+let nodeImageReader: NodeImageReader | null = null;
 const ENOEXEC = 8;
 // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] destroy-time drain bounds; see handleDestroy.
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
@@ -914,7 +939,7 @@ function createRepoLazyAssetFetcher(): (url: string) => Promise<Response> {
  * `cleanupSessionDir` on `destroy`.
  */
 async function buildVirtualPlatformIO(
-  rootfsImage: ArrayBuffer,
+  rootfsImage: ArrayBuffer | undefined,
   rootfsMountSpec?: MountSpec[],
   extraMounts?: Array<{
     mountPoint: string;
@@ -934,7 +959,7 @@ async function buildVirtualPlatformIO(
   try {
     specMounts = await resolveForNodeKernelSession(
       rootfsMountSpec ?? DEFAULT_MOUNT_SPEC,
-      new Uint8Array(rootfsImage),
+      rootfsImage === undefined ? new Uint8Array() : new Uint8Array(rootfsImage),
       bootSessionDir,
       sessionSeedTrees,
       (extraMounts ?? []).map((mount) => mount.mountPoint),
@@ -983,6 +1008,12 @@ let repoLazyAssetResolver: NodeLazyAssetResolver | undefined;
 function cleanupSessionDir(): void {
   void repoLazyAssetResolver?.close();
   repoLazyAssetResolver = undefined;
+  try {
+    nodeImageReader?.close();
+  } catch (error) {
+    console.warn("[node-kernel-worker] rootfs image file close failed", error);
+  }
+  nodeImageReader = null;
   if (sessionDir) {
     try {
       rmSync(sessionDir, { recursive: true, force: true });
@@ -1005,6 +1036,15 @@ const remoteSegmentRuntime = new RemoteSegmentRuntime();
 async function handleInit(msg: InitMessage) {
   initReady = false;
   injectedExecWorkerConstructionFailure = false;
+  if (msg.rootfsImageFile !== undefined) {
+    if (msg.rootfsImage !== undefined) {
+      throw new Error("rootfs image cannot have both file and in-memory sources");
+    }
+    nodeImageReader = NodeImageReader.open(msg.rootfsImageFile, msg.rootfsImageIntegrity);
+  } else if (msg.rootfsImageIntegrity !== undefined) {
+    throw new Error("rootfs image file integrity requires a file source");
+  }
+  const hasRootfsImage = msg.rootfsImage !== undefined || nodeImageReader !== null;
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   processMemoryAllocator = new ProcessMemoryAllocator({
@@ -1022,11 +1062,11 @@ async function handleInit(msg: InitMessage) {
   execPrograms = msg.execPrograms ?? {};
   execProgramBytes = msg.execProgramBytes ?? {};
   workerAdapter = new NodeWorkerAdapter();
-  if (!msg.rootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
+  if (!hasRootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
     throw new Error("sessionSeedTrees requires rootfsImage");
   }
 
-  const io: PlatformIO = msg.rootfsImage
+  const io: PlatformIO = hasRootfsImage
     ? await buildVirtualPlatformIO(
       msg.rootfsImage,
       msg.rootfsMountSpec,
@@ -1036,7 +1076,7 @@ async function handleInit(msg: InitMessage) {
       msg.rootfsLazyAssetSources,
     )
     : new NodePlatformIO();
-  vfsExecIO = msg.rootfsImage ? io : null;
+  vfsExecIO = hasRootfsImage ? io : null;
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
   }
@@ -1217,10 +1257,15 @@ async function handleInit(msg: InitMessage) {
   // image does not carry before `init` loads them.
   let finalizeRootfsTransport: (() => void) | undefined;
   if (rootImage.has()) {
-    const rootfsContainer = new Uint8Array(msg.rootfsImage!);
+    const reader = nodeImageReader;
+    const rootfsContainer = msg.rootfsImage === undefined
+      ? null
+      : new Uint8Array(msg.rootfsImage);
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
-      imageRead: imageReadFromContainer(rootfsContainer),
-      imageBytes: rootfsContainer,
+      imageRead: reader === null
+        ? imageReadFromContainer(rootfsContainer!)
+        : (at, destination) => reader.readAt(at, destination),
+      imageLength: reader?.length ?? rootfsContainer!.byteLength,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
@@ -1253,7 +1298,67 @@ async function handleInit(msg: InitMessage) {
   });
   await pcmDriver.prepare(pcmTransport);
 
+  const persistencePath = msg.experimentalResizablePersistencePath ?? msg.experimentalFixedPersistencePath;
+  if (msg.requireExistingRootfsPersistence && persistencePath === undefined) {
+    throw new Error("requireExistingRootfsPersistence requires a journal path");
+  }
+  if (persistencePath !== undefined) {
+    const path = persistencePath;
+    const resizable = msg.experimentalResizablePersistencePath !== undefined;
+    if (!isAbsolute(path) || basename(path) === "." || basename(path) === "..") {
+      throw new Error("rootfs persistence path must be an absolute file path");
+    }
+    const lockPath = `${path}.lock`;
+    const lockStat = lstatSync(lockPath, { throwIfNoEntry: false });
+    if (lockStat !== undefined && (!lockStat.isFile() || lockStat.nlink !== 1)) {
+      throw new Error(`rootfs persistence has a legacy or invalid lock at ${lockPath}; verify its owner has stopped before removing it`);
+    }
+    const sqliteModuleName = "node:sqlite";
+    const { DatabaseSync }: typeof import("node:sqlite") = await import(sqliteModuleName);
+    const lock = new DatabaseSync(lockPath, { timeout: 0 });
+    try {
+      lock.exec("BEGIN EXCLUSIVE");
+      const backend = new HostFileSystem(dirname(path));
+      const files = {
+        open: async (slot, file, create) => {
+          const name = slot === "legacy" ? basename(path) : `${basename(path)}.${slot}.${file}`;
+          if (!create && !existsSync(join(dirname(path), name))) return null;
+          return OverlayStorageFile.open(backend, `/${name}`, create, true);
+        },
+      } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
+      const selected = await enableBestOverlayGeneration(
+        files,
+        (storage, index, checkpointEnd) => {
+          if (resizable) kernelWorker.enableResizableRootfsPersistence(storage, index, checkpointEnd);
+          else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
+        },
+        msg.requireExistingRootfsPersistence,
+      );
+      const handoff = {
+        prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
+        checkpoint: (index: PersistentOverlayStorage) => kernelWorker.checkpointPreparedRootfsPersistence(index),
+        activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
+        cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
+      };
+      const active = await compactOverlayGeneration(selected, files, handoff);
+      persistentOverlay = active.journal;
+      persistentOverlayIndex = active.index ?? null;
+      persistentOverlayLock = lock;
+      liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
+        persistentOverlay = next.journal;
+        persistentOverlayIndex = next.index ?? null;
+      }, (error) => {
+        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${error}` });
+      });
+    } catch (error) {
+      if (persistentOverlayLock === lock) persistentOverlayLock = null;
+      lock.close();
+      throw error;
+    }
+  }
+
   initReady = true;
+  liveOverlayCompactor?.start();
   post({ type: "ready" });
 }
 
@@ -3436,6 +3541,8 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 // --- Destroy ---
 
 async function performDestroy() {
+  liveOverlayCompactor?.stop();
+  liveOverlayCompactor = null;
   await repoLazyAssetResolver?.close();
   // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
   // is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
@@ -3565,6 +3672,23 @@ async function performDestroy() {
   pcmDriver = null;
   remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
+  let persistenceSyncFailure: string | undefined;
+  if (persistentOverlay !== null) {
+    try {
+      kernelWorker.syncRootfsPersistence();
+    } catch (error) {
+      persistenceSyncFailure = `rootfs persistence shutdown sync failed: ${error}`;
+      console.error(persistenceSyncFailure);
+    }
+  }
+  persistentOverlay?.close();
+  persistentOverlay = null;
+  persistentOverlayIndex?.close();
+  persistentOverlayIndex = null;
+  if (persistentOverlayLock !== null) {
+    persistentOverlayLock.close();
+    persistentOverlayLock = null;
+  }
   if (gracefulDetachComplete) {
     try {
       processMemoryAllocator.clear();
@@ -3584,7 +3708,7 @@ async function performDestroy() {
     );
   }
   cleanupSessionDir();
-  return kernelRealmDestroyResult(gracefulDetachComplete);
+  return kernelRealmDestroyResult(gracefulDetachComplete, persistenceSyncFailure);
 }
 
 async function handleDestroy(msg: { requestId: number }) {
@@ -3742,6 +3866,66 @@ async function handleExportRootfsImage(
   }
 }
 
+async function handleExportRootfsImageToFile(
+  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image_to_file" }>,
+) {
+  if (!rootImage.has()) {
+    respondError(msg.requestId, "rootfs export requires a VFS-backed kernel");
+    return;
+  }
+  if (!initReady) {
+    respondError(msg.requestId, "rootfs export requires an initialized kernel");
+    return;
+  }
+  try {
+    const integrity = await rootfsSnapshotGate.runSnapshot(async () => {
+      if (processes.size !== 0 || processTeardowns.size !== 0) {
+        throw new Error("rootfs export requires a quiescent kernel with no live or tearing-down processes");
+      }
+      const file = openSync(msg.path, "wx+", 0o600);
+      try {
+        const integrity = writeAndVerifyRootfsImage(
+          (visit) => kernelWorker.rootfsExportContainerVisit(visit),
+          {
+            writeAllAt(offset, bytes) {
+              let written = 0;
+              while (written < bytes.byteLength) {
+                const count = writeSync(file, bytes, written, bytes.byteLength - written, offset + written);
+                if (count <= 0 || count > bytes.byteLength - written) {
+                  throw new Error("rootfs export file write made no progress");
+                }
+                written += count;
+              }
+            },
+            readExactAt(offset, bytes) {
+              let read = 0;
+              while (read < bytes.byteLength) {
+                const count = readSync(file, bytes, read, bytes.byteLength - read, offset + read);
+                if (count <= 0 || count > bytes.byteLength - read) {
+                  throw new Error("rootfs export file read made no progress");
+                }
+                read += count;
+              }
+            },
+            setSize: (length) => ftruncateSync(file, length),
+            flush: () => fsyncSync(file),
+            getSize: () => fstatSync(file).size,
+          },
+        );
+        closeSync(file);
+        return integrity;
+      } catch (error) {
+        try { closeSync(file); } catch {}
+        try { unlinkSync(msg.path); } catch {}
+        throw error;
+      }
+    });
+    respond(msg.requestId, integrity);
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
 async function handleReadVfsFile(
   msg: Extract<MainToKernelMessage, { type: "read_vfs_file" }>,
 ) {
@@ -3874,6 +4058,9 @@ port.on("message", (msg: MainToKernelMessage) => {
         post({
           type: "init_error",
           error: error instanceof Error ? error.message : String(error),
+          ...(error instanceof NoValidOverlayGenerationError
+            ? { recovery: "no-valid-overlay-generation" as const }
+            : {}),
         });
       });
       break;
@@ -3944,6 +4131,9 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "export_rootfs_image":
       void handleExportRootfsImage(msg);
+      break;
+    case "export_rootfs_image_to_file":
+      void handleExportRootfsImageToFile(msg);
       break;
     case "clipboard_offer":
       void handleClipboardOffer(msg);

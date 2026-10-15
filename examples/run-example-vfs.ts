@@ -52,6 +52,9 @@ export interface RunExampleFilesystem {
   guestCwd: string;
   guestProgram?: string;
   rootfsImage?: "default";
+  persistentFixtureRoot?: string;
+  experimentalResizablePersistencePath?: string;
+  verifyPersistenceReopen?: true;
   /** Overrides `DEFAULT_MOUNT_SPEC` when the boot needs an extra fixture mount. */
   rootfsMountSpec?: readonly MountSpec[];
   sessionSeedTrees?: readonly NodeSessionSeedTree[];
@@ -132,11 +135,20 @@ export function resolveRunExampleFilesystem(
   hostCwd: string,
 ): RunExampleFilesystem {
   const requestedMode = nonEmptyControl(env, "KANDELO_RUNNER_VFS");
-  if (requestedMode !== undefined && requestedMode !== "raw" && requestedMode !== "isolated") {
-    throw new Error('KANDELO_RUNNER_VFS must be "raw" or "isolated"');
+  if (requestedMode !== undefined && requestedMode !== "raw" && requestedMode !== "isolated" && requestedMode !== "persistent") {
+    throw new Error('KANDELO_RUNNER_VFS must be "raw", "isolated", or "persistent"');
   }
 
-  const isolated = requestedMode === "isolated";
+  const isolated = requestedMode === "isolated" || requestedMode === "persistent";
+  const persistent = requestedMode === "persistent";
+  const persistencePath = nonEmptyControl(env, "KANDELO_RUNNER_PERSISTENCE_PATH");
+  if (persistent ? persistencePath === undefined || !isAbsolute(persistencePath) : persistencePath !== undefined) {
+    throw new Error("KANDELO_RUNNER_PERSISTENCE_PATH requires persistent mode and an absolute path");
+  }
+  const reopenControl = nonEmptyControl(env, "KANDELO_RUNNER_VERIFY_REOPEN");
+  if (reopenControl !== undefined && (reopenControl !== "1" || !persistent)) {
+    throw new Error("KANDELO_RUNNER_VERIFY_REOPEN=1 requires persistent mode");
+  }
   const fixtureRootInput = nonEmptyControl(
     env,
     "KANDELO_RUNNER_FIXTURE_ROOT",
@@ -170,6 +182,9 @@ export function resolveRunExampleFilesystem(
     );
   }
   if (fixtureRootInput === undefined) {
+    if (persistent) {
+      throw new Error("persistent runner mode requires KANDELO_RUNNER_FIXTURE_ROOT");
+    }
     if (fixtureCwdInput !== undefined) {
       throw new Error(
         "KANDELO_RUNNER_FIXTURE_CWD requires KANDELO_RUNNER_FIXTURE_ROOT",
@@ -217,11 +232,19 @@ export function resolveRunExampleFilesystem(
     ...(guestProgram === undefined ? {} : { guestProgram }),
     isolated: true,
     rootfsImage: "default",
-    rootfsMountSpec: [...DEFAULT_MOUNT_SPEC, ISOLATED_FIXTURE_MOUNT],
-    sessionSeedTrees: [{
-      destinationPath: ISOLATED_FIXTURE_DESTINATION,
-      sourcePath: sourceRoot,
-    }],
+    ...(persistent
+      ? {
+        persistentFixtureRoot: sourceRoot,
+        experimentalResizablePersistencePath: persistencePath,
+        ...(reopenControl === undefined ? {} : { verifyPersistenceReopen: true as const }),
+      }
+      : {
+        rootfsMountSpec: [...DEFAULT_MOUNT_SPEC, ISOLATED_FIXTURE_MOUNT],
+        sessionSeedTrees: [{
+          destinationPath: ISOLATED_FIXTURE_DESTINATION,
+          sourcePath: sourceRoot,
+        }],
+      }),
   };
 }
 
@@ -236,6 +259,7 @@ export function buildRunExampleGuestEnvironment(
   isolated: boolean,
   kernelPath: string,
   guestHome = "/root",
+  guestTmpdir = "/tmp",
 ): string[] {
   const inherited = Object.entries(env)
     .filter(([name, value]) =>
@@ -254,7 +278,7 @@ export function buildRunExampleGuestEnvironment(
     ...(isolated
       ? [
         `PWD=${guestCwd}`,
-        "TMPDIR=/tmp",
+        `TMPDIR=${guestTmpdir}`,
         `HOME=${guestHome}`,
       ]
       : []),

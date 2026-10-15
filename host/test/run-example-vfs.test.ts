@@ -74,6 +74,39 @@ describe("run-example isolated filesystem", () => {
     }
   });
 
+  it("places persistent fixtures in the journaled root image instead of the host scratch mount", () => {
+    const sourceRoot = mkdtempSync(join(tmpdir(), "kandelo-runner-persistent-"));
+    mkdirSync(join(sourceRoot, "work"));
+    writeFileSync(join(sourceRoot, "work", "test.wasm"), "wasm fixture");
+    const journalPath = join(sourceRoot, "journal");
+    try {
+      expect(resolveRunExampleFilesystem({
+        KANDELO_RUNNER_VFS: "persistent",
+        KANDELO_RUNNER_PERSISTENCE_PATH: journalPath,
+        KANDELO_RUNNER_FIXTURE_ROOT: sourceRoot,
+        KANDELO_RUNNER_FIXTURE_CWD: "work",
+        KANDELO_RUNNER_GUEST_PROGRAM: "work/test.wasm",
+      }, "/ignored")).toEqual({
+        guestCwd: "/run/kandelo-run/work",
+        guestProgram: "/run/kandelo-run/work/test.wasm",
+        isolated: true,
+        rootfsImage: "default",
+        persistentFixtureRoot: realpathSync(sourceRoot),
+        experimentalResizablePersistencePath: journalPath,
+      });
+      expect(resolveRunExampleFilesystem({
+        KANDELO_RUNNER_VFS: "persistent",
+        KANDELO_RUNNER_PERSISTENCE_PATH: journalPath,
+        KANDELO_RUNNER_VERIFY_REOPEN: "1",
+        KANDELO_RUNNER_FIXTURE_ROOT: sourceRoot,
+        KANDELO_RUNNER_FIXTURE_CWD: "work",
+        KANDELO_RUNNER_GUEST_PROGRAM: "work/test.wasm",
+      }, "/ignored").verifyPersistenceReopen).toBe(true);
+    } finally {
+      rmSync(sourceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects ambiguous modes and guest programs outside the owned snapshot", () => {
     expect(() =>
       resolveRunExampleFilesystem({
@@ -94,6 +127,24 @@ describe("run-example isolated filesystem", () => {
         KERNEL_CWD: "/",
       }, "/host/cwd")
     ).toThrow(/KERNEL_CWD.*raw/i);
+
+    expect(() => resolveRunExampleFilesystem({
+      KANDELO_RUNNER_VFS: "persistent",
+      KANDELO_RUNNER_PERSISTENCE_PATH: "relative",
+    }, "/host/cwd")).toThrow(/absolute path/);
+    expect(() => resolveRunExampleFilesystem({
+      KANDELO_RUNNER_VFS: "isolated",
+      KANDELO_RUNNER_PERSISTENCE_PATH: "/tmp/journal",
+    }, "/host/cwd")).toThrow(/persistent mode/);
+    expect(() => resolveRunExampleFilesystem({
+      KANDELO_RUNNER_VFS: "isolated",
+      KANDELO_RUNNER_VERIFY_REOPEN: "1",
+    }, "/host/cwd")).toThrow(/requires persistent mode/);
+    expect(() => resolveRunExampleFilesystem({
+      KANDELO_RUNNER_VFS: "persistent",
+      KANDELO_RUNNER_PERSISTENCE_PATH: "/tmp/journal",
+      KANDELO_RUNNER_VERIFY_REOPEN: "0",
+    }, "/host/cwd")).toThrow(/VERIFY_REOPEN=1/);
   });
 
   it("does not leak runner controls or host-only path variables into a guest", () => {
@@ -116,6 +167,7 @@ describe("run-example isolated filesystem", () => {
         KANDELO_RUNNER_FIXTURE_ROOT: "/host/fixture-root",
         KANDELO_RUNNER_FIXTURE_CWD: "suite",
         KANDELO_RUNNER_GUEST_PROGRAM: "suite/test",
+        KANDELO_RUNNER_VERIFY_REOPEN: "1",
       },
       "/guest/cwd",
       true,
@@ -131,6 +183,15 @@ describe("run-example isolated filesystem", () => {
     expect(entries.some((entry) => entry.startsWith("KERNEL_CWD="))).toBe(false);
     expect(entries.some((entry) => entry.startsWith("KERNEL_"))).toBe(false);
     expect(entries.some((entry) => entry.startsWith("KANDELO_"))).toBe(false);
+    const persistentEntries = buildRunExampleGuestEnvironment(
+      { TMPDIR: "/host/tmp" },
+      "/run/kandelo-run/work",
+      true,
+      "/usr/bin",
+      "/root",
+      "/run/kandelo-run/work",
+    );
+    expect(persistentEntries).toContain("TMPDIR=/run/kandelo-run/work");
   });
 
   it("keeps legacy KERNEL_* guest entries only in raw-host mode", () => {

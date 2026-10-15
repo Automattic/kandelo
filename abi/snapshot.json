@@ -1,5 +1,5 @@
 {
-  "abi_version": 50,
+  "abi_version": 51,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1152,7 +1152,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 50,
+      "abi_version": 51,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -2901,6 +2901,41 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_activate_persistence_compaction",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_cancel_persistence_compaction",
+      "signature": "() -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_checkpoint_prepared_persistence",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_fixed_persistence",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_fixed_persistence_indexed",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_resizable_persistence",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_resizable_persistence_indexed",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_export_container_read",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -2946,6 +2981,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_prepare_persistence_compaction",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_read_file",
       "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -2963,6 +3003,11 @@
       "kind": "func",
       "name": "kernel_rootfs_stat_mode",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_sync_persistence",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",

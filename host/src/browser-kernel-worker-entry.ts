@@ -48,7 +48,12 @@ import * as rootImage from "./vfs/root-image-facts";
 import { DEFAULT_MOUNT_SPEC } from "./vfs/default-mounts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
+import { OpfsImageReader } from "./vfs/opfs-image-reader";
 import { BrowserTimeProvider } from "./vfs/time";
+import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
+import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
+import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
+import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -162,6 +167,10 @@ const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 // State
 let kernelWorker: CentralizedKernelWorker;
+let persistentOverlay: PersistentOverlayStorage | null = null;
+let persistentOverlayIndex: PersistentOverlayStorage | null = null;
+let liveOverlayCompactor: LiveOverlayCompactor | null = null;
+let opfsImageReader: OpfsImageReader | null = null;
 let workerAdapter: BrowserWorkerAdapter;
 let io: VirtualPlatformIO;
 const vfsChangeSubscriptions = new Map<string, () => void>();
@@ -865,6 +874,12 @@ const remoteSegmentRuntime = new RemoteSegmentRuntime();
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = false;
   initFailure = null;
+  if (msg.opfsImage !== undefined) {
+    if (msg.vfsImage.byteLength !== 0) {
+      throw new Error("rootfs image cannot have both OPFS and in-memory sources");
+    }
+    opfsImageReader = await OpfsImageReader.open(msg.opfsImage, msg.opfsImageIntegrity);
+  }
   // WHY: structured cloning strips the host-side freeze. Revalidate into one
   // worker-owned immutable copy before either browser network path sees it.
   const {
@@ -1148,8 +1163,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   let finalizeRootfsTransport: (() => void) | undefined;
   if (rootImage.has()) {
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
-      imageRead: imageReadFromContainer(msg.vfsImage),
-      imageBytes: msg.vfsImage,
+      imageRead: opfsImageReader === null
+        ? imageReadFromContainer(msg.vfsImage)
+        : (at, destination) => opfsImageReader!.readAt(at, destination),
+      imageLength: opfsImageReader?.length ?? msg.vfsImage.byteLength,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
@@ -1296,7 +1313,49 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     resetBridgePendingRequests();
   }
 
+  const persistenceName = msg.experimentalResizablePersistenceName ?? msg.experimentalFixedPersistenceName;
+  if (msg.requireExistingRootfsPersistence && persistenceName === undefined) {
+    throw new Error("requireExistingRootfsPersistence requires a journal name");
+  }
+  if (persistenceName !== undefined) {
+    if (msg.experimentalResizablePersistenceName !== undefined
+      && msg.experimentalFixedPersistenceName !== undefined) {
+      throw new Error("fixed and resizable persistence modes are mutually exclusive");
+    }
+    if (!rootImage.has()) throw new Error("rootfs persistence requires a rootfs image");
+    const resizable = msg.experimentalResizablePersistenceName !== undefined;
+    const files = {
+      open: (slot, file, create) => OpfsOverlayStorageFile.openFile(
+        persistenceName, slot, file, create,
+      ),
+    } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
+    const selected = await enableBestOverlayGeneration(
+      files,
+      (storage, index, checkpointEnd) => {
+        if (resizable) kernelWorker.enableResizableRootfsPersistence(storage, index, checkpointEnd);
+        else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
+      },
+      msg.requireExistingRootfsPersistence,
+    );
+    const handoff = {
+      prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
+      checkpoint: (index: PersistentOverlayStorage) => kernelWorker.checkpointPreparedRootfsPersistence(index),
+      activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
+      cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
+    };
+    const active = await compactOverlayGeneration(selected, files, handoff);
+    persistentOverlay = active.journal;
+    persistentOverlayIndex = active.index ?? null;
+    liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
+      persistentOverlay = next.journal;
+      persistentOverlayIndex = next.index ?? null;
+    }, (error) => {
+      post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${formatError(error)}` });
+    });
+  }
+
   initReady = true;
+  liveOverlayCompactor?.start();
 
   const pcmTransport = kernelWorker.claimPcmTransport(true);
   post({ type: "ready", pcmTransport });
@@ -3845,6 +3904,76 @@ async function handleExportRootfsImage(
   }
 }
 
+async function handleExportRootfsImageToFile(
+  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image_to_file" }>,
+) {
+  if (!rootImage.has()) {
+    respondError(msg.requestId, "VFS is not initialized");
+    return;
+  }
+  if (!initReady) {
+    respondError(msg.requestId, "rootfs export requires an initialized kernel");
+    return;
+  }
+  try {
+    const integrity = await rootfsSnapshotGate.runSnapshot(async () => {
+      if (processes.size !== 0 || processTeardowns.size !== 0 || workerTeardowns.size !== 0) {
+        throw new Error("rootfs export requires a quiescent kernel with no live or tearing-down processes");
+      }
+      const handle = await msg.file.createSyncAccessHandle();
+      let completed = false;
+      let started = false;
+      try {
+        if (handle.getSize() !== 0) {
+          throw new Error("rootfs export requires an empty OPFS staging file");
+        }
+        started = true;
+        const integrity = writeAndVerifyRootfsImage(
+          (visit) => kernelWorker.rootfsExportContainerVisit(visit),
+          {
+            writeAllAt(offset, bytes) {
+              let written = 0;
+              while (written < bytes.byteLength) {
+                const count = handle.write(bytes.subarray(written), { at: offset + written });
+                if (count <= 0 || count > bytes.byteLength - written) {
+                  throw new Error("rootfs export OPFS write made no progress");
+                }
+                written += count;
+              }
+            },
+            readExactAt(offset, bytes) {
+              let read = 0;
+              while (read < bytes.byteLength) {
+                const count = handle.read(bytes.subarray(read), { at: offset + read });
+                if (count <= 0 || count > bytes.byteLength - read) {
+                  throw new Error("rootfs export OPFS read made no progress");
+                }
+                read += count;
+              }
+            },
+            setSize: (length) => handle.truncate(length),
+            flush: () => handle.flush(),
+            getSize: () => handle.getSize(),
+          },
+        );
+        completed = true;
+        return integrity;
+      } finally {
+        if (started && !completed) {
+          try {
+            handle.truncate(0);
+            handle.flush();
+          } catch {}
+        }
+        handle.close();
+      }
+    });
+    respond(msg.requestId, integrity);
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
+  }
+}
+
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
   const info = processes.get(pid);
@@ -4083,6 +4212,8 @@ function handlePickListenerTarget(
 }
 
 async function performDestroy() {
+  liveOverlayCompactor?.stop();
+  liveOverlayCompactor = null;
   // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively exits.
   // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug is
   // fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
@@ -4203,6 +4334,21 @@ async function performDestroy() {
   }
   remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
+  let persistenceSyncFailure: string | undefined;
+  if (persistentOverlay !== null) {
+    try {
+      kernelWorker.syncRootfsPersistence();
+    } catch (error) {
+      persistenceSyncFailure = `rootfs persistence shutdown sync failed: ${formatError(error)}`;
+      console.error(persistenceSyncFailure);
+    }
+  }
+  persistentOverlay?.close();
+  persistentOverlay = null;
+  persistentOverlayIndex?.close();
+  persistentOverlayIndex = null;
+  opfsImageReader?.close();
+  opfsImageReader = null;
   initReady = false;
   initFailure = "kernel worker destroyed";
   if (gracefulDetachComplete) {
@@ -4223,7 +4369,7 @@ async function performDestroy() {
       "fallback",
     );
   }
-  return kernelRealmDestroyResult(gracefulDetachComplete);
+  return kernelRealmDestroyResult(gracefulDetachComplete, persistenceSyncFailure);
 }
 
 async function handleDestroy(
@@ -4444,12 +4590,20 @@ sw.onmessage = (e: MessageEvent) => {
   switch (msg.type) {
     case "init":
       void handleInit(msg).catch((err) => {
+        opfsImageReader?.close();
+        opfsImageReader = null;
         const error = formatError(err);
         remoteSegmentRuntime.close();
         initReady = false;
         initFailure = error;
         console.error("[kernel-worker] init failed:", err);
-        post({ type: "init_error", error });
+        post({
+          type: "init_error",
+          error,
+          ...(err instanceof NoValidOverlayGenerationError
+            ? { recovery: "no-valid-overlay-generation" as const }
+            : {}),
+        });
       });
       break;
     case "read_owned_job":
@@ -4477,6 +4631,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
+    case "export_rootfs_image_to_file": void handleExportRootfsImageToFile(msg); break;
     case "clipboard_offer": void handleClipboardOffer(msg); break;
     case "clipboard_guest_wait": void handleClipboardGuestWait(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;

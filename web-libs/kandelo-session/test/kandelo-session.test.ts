@@ -1947,6 +1947,17 @@ describe("LiveKernelHost: descriptor + gallery lifecycle defaults", () => {
     expect(host.getStatus()).toBe("running");
   });
 
+  it("exposes persistent image checkpoint only when the page installs its hook", async () => {
+    const unavailable = new LiveKernelHost();
+    expect(unavailable.supportsPersistentImageCheckpoint()).toBe(false);
+    await expect(unavailable.checkpointPersistentImage()).rejects.toThrow("unavailable");
+    const checkpoint = vi.fn(async (_host: LiveKernelHost) => {});
+    const host = new LiveKernelHost({ checkpointPersistentImage: checkpoint });
+    expect(host.supportsPersistentImageCheckpoint()).toBe(true);
+    await host.checkpointPersistentImage();
+    expect(checkpoint).toHaveBeenCalledWith(host);
+  });
+
   it("halt sets status to halted", async () => {
     const host = new LiveKernelHost({ status: "running" });
     await host.halt();

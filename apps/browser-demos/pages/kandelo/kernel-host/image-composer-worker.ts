@@ -20,9 +20,30 @@ function post(message: ComposerToMainMessage, transfer?: Transferable[]): void {
   (self as unknown as Worker).postMessage(message, transfer ?? []);
 }
 
+let continuePersistent: (() => void) | undefined;
+
 self.onmessage = (event: MessageEvent<MainToComposerMessage>) => {
+  if ("type" in event.data) {
+    const resume = continuePersistent;
+    continuePersistent = undefined;
+    resume?.();
+    return;
+  }
   const job = event.data.job as ComposeImageJob;
-  void composeKandeloImage(job, (message) => post({ type: "tick", message }))
+  const awaitMain = () => new Promise<void>((resolve) => { continuePersistent = resolve; });
+  void composeKandeloImage(
+    job,
+    (message) => post({ type: "tick", message }),
+    async (chunks, composition) => {
+      post({ type: "persistent-start", composition });
+      for (const bytes of chunks) {
+        post({ type: "persistent-chunk", bytes }, [bytes.buffer as ArrayBuffer]);
+        await awaitMain();
+      }
+      post({ type: "persistent-end" });
+      await awaitMain();
+    },
+  )
     .then((result) => {
       post(
         { type: "done", ...result },

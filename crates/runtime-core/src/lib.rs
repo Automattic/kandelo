@@ -44,6 +44,8 @@ pub mod msghdr;
 pub mod net_readiness;
 pub mod netif;
 pub mod ofd;
+pub mod persistent_overlay;
+pub mod persistent_overlay_index;
 pub mod path;
 pub mod complete_copy;
 pub mod pipe;

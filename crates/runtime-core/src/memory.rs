@@ -2773,6 +2773,16 @@ impl SharedMappingTable {
         force: bool,
         io: &mut dyn SharedMappingIo,
     ) -> Result<(), Errno> {
+        self.sync_file_from_process_matching(pid, force, &|_| true, io)
+    }
+
+    fn sync_file_from_process_matching(
+        &mut self,
+        pid: u32,
+        force: bool,
+        matches_handle: &dyn Fn(i64) -> bool,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
         let Some(mem_len) = io.process_memory_len(pid) else {
             return Ok(());
         };
@@ -2786,6 +2796,11 @@ impl SharedMappingTable {
                 m.values()
                     .filter(|mapping| mapping.backing_kind == Some(BackingKind::File))
                     .filter_map(|mapping| mapping.backing_key.clone())
+                    .filter(|key| {
+                        self.file_backings
+                            .get(key)
+                            .is_some_and(|backing| matches_handle(backing.handle))
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -2812,6 +2827,9 @@ impl SharedMappingTable {
                 let Some(backing) = self.file_backings.get(key) else {
                     continue;
                 };
+                if !matches_handle(backing.handle) {
+                    continue;
+                }
                 if map_addr.saturating_add(mapping.len as u64) > mem_len {
                     continue;
                 }
@@ -2922,6 +2940,34 @@ impl SharedMappingTable {
             if let Some(backing) = self.file_backings.get_mut(key) {
                 backing.settle();
             }
+        }
+        Ok(())
+    }
+
+    pub fn flush_file_backings_matching(
+        &mut self,
+        matches_handle: &dyn Fn(i64) -> bool,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        let pids: Vec<u32> = self.mappings.keys().copied().collect();
+        for pid in pids {
+            self.sync_file_from_process_matching(pid, true, matches_handle, io)?;
+        }
+        let keys: Vec<String> = self
+            .file_backings
+            .iter()
+            .filter(|(_, backing)| matches_handle(backing.handle))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in keys {
+            let Some(backing) = self.file_backings.get_mut(&key) else {
+                continue;
+            };
+            if !backing.flush_all(io) {
+                return Err(Errno::EIO);
+            }
+            backing.settle();
+            self.discard_unreferenced_file_backing(&key, io);
         }
         Ok(())
     }
@@ -4646,6 +4692,105 @@ mod shared_mapping_tests {
         let backing = table.file_backing(&key).unwrap();
         assert_eq!(backing.dirty_page_count(), 0);
         assert_eq!(backing.cached_page_count(), 0, "a write-through backing caches nothing at rest");
+    }
+
+    #[test]
+    fn flushing_selected_kernel_file_backings_does_not_publish_other_files() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_kernel_file(10, 1, 2, b"........".to_vec())
+            .with_kernel_file(11, 1, 3, b"........".to_vec());
+        let mut table = SharedMappingTable::new();
+        for (handle, address) in [(10, 0), (11, 32)] {
+            let key = io.key_of(handle);
+            let stat = io.stat_of(handle);
+            table
+                .get_or_create_file_backing(&key, &stat, true, &mut io)
+                .unwrap()
+                .ref_count = 1;
+            let initial = table
+                .file_backing_mut(&key)
+                .unwrap()
+                .read_range(0, 8, &mut io)
+                .unwrap();
+            io.write_process(1, address, &initial).unwrap();
+            table.insert_mapping(
+                1,
+                address,
+                SharedMapping::file(3, 0, 8, true, true, key, initial, 0),
+            );
+        }
+        io.poke(1, 0, b"ROOT....");
+        io.poke(1, 32, b"TEMP....");
+
+        table
+            .flush_file_backings_matching(&|handle| handle == 10, &mut io)
+            .unwrap();
+        assert_eq!(io.files[&10], b"ROOT....".to_vec());
+        assert_eq!(io.files[&11], b"........".to_vec());
+        assert_eq!(io.peek(1, 32, 8), b"TEMP....".to_vec());
+
+        table
+            .flush_file_backings_matching(&|handle| handle == 11, &mut io)
+            .unwrap();
+        assert_eq!(io.files[&11], b"TEMP....".to_vec());
+    }
+
+    #[test]
+    fn flushing_selected_kernel_file_backings_publishes_every_process() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_process(2, 64)
+            .with_kernel_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        io.poke(1, 0, b"LEFT....");
+        io.poke(2, 0, b"....RITE");
+
+        table
+            .flush_file_backings_matching(&|handle| handle == 10, &mut io)
+            .unwrap();
+
+        assert_eq!(io.files[&10], b"LEFTRITE".to_vec());
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        assert_eq!(io.peek(1, 0, 8), b"LEFTRITE".to_vec());
+        assert_eq!(io.peek(2, 0, 8), b"LEFTRITE".to_vec());
+    }
+
+    #[test]
+    fn failed_selected_flush_retains_mapped_stores_for_retry() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_kernel_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        let stat = io.stat_of(10);
+        table
+            .get_or_create_file_backing(&key, &stat, true, &mut io)
+            .unwrap()
+            .ref_count = 1;
+        io.write_process(1, 0, b"........").unwrap();
+        table.insert_mapping(
+            1,
+            0,
+            SharedMapping::file(3, 0, 8, true, true, key.clone(), b"........".to_vec(), 0),
+        );
+        io.poke(1, 0, b"RETRY...");
+        io.fail_pwrite = true;
+
+        assert_eq!(
+            table.flush_file_backings_matching(&|handle| handle == 10, &mut io),
+            Err(Errno::EIO)
+        );
+        assert_eq!(io.files[&10], b"........".to_vec());
+        assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 1);
+
+        io.fail_pwrite = false;
+        table
+            .flush_file_backings_matching(&|handle| handle == 10, &mut io)
+            .unwrap();
+        assert_eq!(io.files[&10], b"RETRY...".to_vec());
+        assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
     }
 
     /// A `write` through a descriptor reaches the file without passing

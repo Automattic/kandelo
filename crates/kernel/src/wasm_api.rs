@@ -16,9 +16,11 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::slice;
+use sha2::{Digest, Sha256};
 
 use wasm_posix_shared::{
     abi,
@@ -124,6 +126,21 @@ unsafe extern "C" {
     // source installed answers `-ENOSYS`, which is what keeps the image path
     // dormant until it is wired.
     fn host_image_read(buf_ptr: *mut u8, buf_len: u32, offset_lo: u32, offset_hi: u32) -> i32;
+    fn host_overlay_len() -> i64;
+    fn host_overlay_read(offset: i64, ptr: *mut u8, len: u32) -> i32;
+    fn host_overlay_write(offset: i64, ptr: *const u8, len: u32) -> i32;
+    fn host_overlay_flush() -> i32;
+    fn host_overlay_truncate(len: i64) -> i32;
+    fn host_overlay_target_len() -> i64;
+    fn host_overlay_target_read(offset: i64, ptr: *mut u8, len: u32) -> i32;
+    fn host_overlay_target_write(offset: i64, ptr: *const u8, len: u32) -> i32;
+    fn host_overlay_target_flush() -> i32;
+    fn host_overlay_target_truncate(len: i64) -> i32;
+    fn host_overlay_compaction_len() -> i64;
+    fn host_overlay_compaction_read(offset: i64, ptr: *mut u8, len: u32) -> i32;
+    fn host_overlay_compaction_write(offset: i64, ptr: *const u8, len: u32) -> i32;
+    fn host_overlay_compaction_flush() -> i32;
+    fn host_overlay_compaction_truncate(len: i64) -> i32;
     fn host_pwrite(
         handle: i64,
         buf_ptr: *const u8,
@@ -2077,6 +2094,268 @@ pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32)
     }
 }
 
+struct HostOverlayStorage;
+
+struct HostOverlayTargetStorage;
+
+struct HostOverlayCompactionStorage;
+
+impl crate::persistent_overlay::OverlayStorage for HostOverlayStorage {
+    fn len(&mut self) -> Result<u64, Errno> {
+        let length = unsafe { host_overlay_len() };
+        u64::try_from(length).map_err(|_| Errno::EIO)
+    }
+
+    fn read_exact_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let len = u32::try_from(dst.len()).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_read(offset, dst.as_mut_ptr(), len) })
+    }
+
+    fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let len = u32::try_from(src.len()).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_write(offset, src.as_ptr(), len) })
+    }
+
+    fn flush(&mut self) -> Result<(), Errno> {
+        i32_to_result(unsafe { host_overlay_flush() })
+    }
+
+    fn truncate(&mut self, len: u64) -> Result<(), Errno> {
+        let len = i64::try_from(len).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_truncate(len) })
+    }
+}
+
+impl crate::persistent_overlay::OverlayStorage for HostOverlayTargetStorage {
+    fn len(&mut self) -> Result<u64, Errno> {
+        let length = unsafe { host_overlay_target_len() };
+        u64::try_from(length).map_err(|_| Errno::EIO)
+    }
+
+    fn read_exact_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let len = u32::try_from(dst.len()).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_target_read(offset, dst.as_mut_ptr(), len) })
+    }
+
+    fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let len = u32::try_from(src.len()).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_target_write(offset, src.as_ptr(), len) })
+    }
+
+    fn flush(&mut self) -> Result<(), Errno> {
+        i32_to_result(unsafe { host_overlay_target_flush() })
+    }
+
+    fn truncate(&mut self, len: u64) -> Result<(), Errno> {
+        let len = i64::try_from(len).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_target_truncate(len) })
+    }
+}
+
+impl crate::persistent_overlay::OverlayStorage for HostOverlayCompactionStorage {
+    fn len(&mut self) -> Result<u64, Errno> {
+        let length = unsafe { host_overlay_compaction_len() };
+        u64::try_from(length).map_err(|_| Errno::EIO)
+    }
+
+    fn read_exact_at(&mut self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let len = u32::try_from(dst.len()).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_compaction_read(offset, dst.as_mut_ptr(), len) })
+    }
+
+    fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
+        let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+        let len = u32::try_from(src.len()).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_compaction_write(offset, src.as_ptr(), len) })
+    }
+
+    fn flush(&mut self) -> Result<(), Errno> {
+        i32_to_result(unsafe { host_overlay_compaction_flush() })
+    }
+
+    fn truncate(&mut self, len: u64) -> Result<(), Errno> {
+        let len = i64::try_from(len).map_err(|_| Errno::EOVERFLOW)?;
+        i32_to_result(unsafe { host_overlay_compaction_truncate(len) })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_enable_fixed_persistence(
+    image_len_lo: u32,
+    image_len_hi: u32,
+) -> i32 {
+    enable_rootfs_persistence(image_len_lo, image_len_hi, None, false)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_enable_fixed_persistence_indexed(
+    image_len_lo: u32,
+    image_len_hi: u32,
+    checkpoint_end_lo: u32,
+    checkpoint_end_hi: u32,
+) -> i32 {
+    let checkpoint_end = (u64::from(checkpoint_end_hi) << 32) | u64::from(checkpoint_end_lo);
+    enable_rootfs_persistence(image_len_lo, image_len_hi, Some(checkpoint_end), false)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_enable_resizable_persistence(
+    image_len_lo: u32,
+    image_len_hi: u32,
+) -> i32 {
+    enable_rootfs_persistence(image_len_lo, image_len_hi, None, true)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_enable_resizable_persistence_indexed(
+    image_len_lo: u32,
+    image_len_hi: u32,
+    checkpoint_end_lo: u32,
+    checkpoint_end_hi: u32,
+) -> i32 {
+    let checkpoint_end = (u64::from(checkpoint_end_hi) << 32) | u64::from(checkpoint_end_lo);
+    enable_rootfs_persistence(image_len_lo, image_len_hi, Some(checkpoint_end), true)
+}
+
+fn enable_rootfs_persistence(
+    image_len_lo: u32,
+    image_len_hi: u32,
+    checkpoint_end: Option<u64>,
+    resizable: bool,
+) -> i32 {
+    let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
+    if crate::rootfs::image_length() != Some(image_len) {
+        return -(Errno::EINVAL as i32);
+    }
+    let mut digest = Sha256::new();
+    let mut host = WasmHostIO;
+    let mut bytes = [0u8; 64 * 1024];
+    let mut offset = 0u64;
+    while offset < image_len {
+        let length = usize::try_from((image_len - offset).min(bytes.len() as u64))
+            .unwrap_or(bytes.len());
+        let read = match host.image_read(&mut bytes[..length], offset) {
+            Ok(read) if read > 0 && read <= length => read,
+            _ => return -(Errno::EIO as i32),
+        };
+        digest.update(&bytes[..read]);
+        offset += read as u64;
+    }
+    let base_digest: [u8; 32] = digest.finalize().into();
+    let result = match (checkpoint_end, resizable) {
+        (Some(end), true) => crate::rootfs::enable_resizable_persistence_indexed(
+            Box::new(HostOverlayStorage),
+            Box::new(HostOverlayTargetStorage),
+            base_digest,
+            end,
+        ),
+        (None, true) => {
+            crate::rootfs::enable_resizable_persistence(Box::new(HostOverlayStorage), base_digest)
+        }
+        (Some(end), false) => crate::rootfs::enable_fixed_persistence_indexed(
+            Box::new(HostOverlayStorage),
+            Box::new(HostOverlayTargetStorage),
+            base_digest,
+            end,
+        ),
+        (None, false) => {
+            crate::rootfs::enable_fixed_persistence(Box::new(HostOverlayStorage), base_digest)
+        }
+    };
+    match result {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_sync_persistence() -> i32 {
+    match crate::rootfs::sync_persistence() {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+fn sync_rootfs_mappings_and_persistence() -> Result<(), Errno> {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if table.has_file_backings() {
+        let mut io = WasmSharedMappingIo::for_table(table);
+        table
+            .flush_file_backings_matching(&runtime_core::rootfs::is_rootfs_file_handle, &mut io)?;
+    }
+    crate::rootfs::sync_persistence()
+}
+
+fn flush_rootfs_file_mappings(fd: i32) -> Result<(), Errno> {
+    let (_gkl, proc) = unsafe { get_process() };
+    let rootfs_handle = proc
+        .fd_table
+        .get(fd)
+        .ok()
+        .and_then(|entry| proc.ofd_table.get(entry.ofd_ref.0))
+        .filter(|ofd| ofd.file_type == FileType::Regular && !ofd.is_path_only())
+        .map(|ofd| ofd.host_handle)
+        .filter(|handle| runtime_core::rootfs::is_rootfs_file_handle(*handle));
+    if let Some(handle) = rootfs_handle {
+        let table = unsafe { crate::memory::global_shared_mapping_table() };
+        if table.has_file_backings() {
+            let mut io = WasmSharedMappingIo::for_table(table);
+            table.flush_file_backings_matching(
+                &|backing_handle| backing_handle == handle,
+                &mut io,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_checkpoint_prepared_persistence(index_slot: u32) -> i32 {
+    let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match index_slot {
+        0 => Box::new(HostOverlayStorage),
+        1 => Box::new(HostOverlayTargetStorage),
+        2 => Box::new(HostOverlayCompactionStorage),
+        _ => return -(Errno::EINVAL as i32),
+    };
+    match crate::rootfs::checkpoint_prepared_persistence(storage) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_prepare_persistence_compaction(target_slot: u32) -> i32 {
+    let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match target_slot {
+        0 => Box::new(HostOverlayStorage),
+        1 => Box::new(HostOverlayTargetStorage),
+        2 => Box::new(HostOverlayCompactionStorage),
+        _ => return -(Errno::EINVAL as i32),
+    };
+    match crate::rootfs::prepare_persistence_compaction(storage) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_activate_persistence_compaction() -> i32 {
+    match crate::rootfs::activate_persistence_compaction() {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_cancel_persistence_compaction() {
+    crate::rootfs::cancel_persistence_compaction();
+}
+
 /// Enable (nonzero) or disable (zero) in-kernel rootfs authority over `/`. The
 /// host calls this at boot after the kernel has loaded the image
 /// (`kernel_rootfs_load_image`); from then on the host only serves image and
@@ -2178,6 +2457,9 @@ pub extern "C" fn kernel_rootfs_set_foreign_mount_roots(
 /// `rootfs::mkdir_parents`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_mkdir_parents(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
+    if crate::rootfs::fixed_persistence_enabled() {
+        return -(Errno::EROFS as i32);
+    }
     let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
     i32::try_from(crate::rootfs::mkdir_parents(path, mode & 0o7777, 0, 0)).unwrap_or(i32::MAX)
 }
@@ -6789,8 +7071,25 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
 
         // -- Memory/sync stubs --
         257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
-        273 => 0, // SYS_SYNC: no-op (all I/O is synchronous to host)
-        274 => 0, // SYS_SYNCFS: no-op
+        273 => match sync_rootfs_mappings_and_persistence() {
+            Ok(()) => 0,
+            Err(error) => -(error as i32),
+        },
+        274 => {
+            let targets_rootfs = {
+                let (_gkl, proc) = unsafe { get_process() };
+                syscalls::syncfs_targets_rootfs(proc, a1)
+            };
+            let result = match targets_rootfs {
+                Ok(true) => sync_rootfs_mappings_and_persistence(),
+                Ok(false) => Ok(()),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(()) => 0,
+                Err(error) => -(error as i32),
+            }
+        }
         278 => {
             let _address = process_address!(0);
             let _length = process_size!(1);
@@ -12855,9 +13154,10 @@ pub extern "C" fn kernel_ftruncate(fd: i32, length: i64) -> i32 {
 /// Synchronize file state to storage. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fsync(fd: i32) -> i32 {
+    let publication = flush_rootfs_file_mappings(fd);
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_fsync(proc, &mut host, fd) {
+    let result = match publication.and_then(|()| syscalls::sys_fsync(proc, &mut host, fd)) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
@@ -12882,9 +13182,10 @@ pub extern "C" fn kernel_truncate(path_ptr: *const u8, path_len: u32, length: i6
 /// Synchronize file data to storage (alias for fsync). Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fdatasync(fd: i32) -> i32 {
+    let publication = flush_rootfs_file_mappings(fd);
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_fdatasync(proc, &mut host, fd) {
+    let result = match publication.and_then(|()| syscalls::sys_fdatasync(proc, &mut host, fd)) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };

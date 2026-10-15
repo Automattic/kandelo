@@ -906,6 +906,8 @@ export interface KernelHost {
   applyBootDescriptor(desc: BootDescriptor): Promise<void>;
   halt(): Promise<void>;
   reboot(): Promise<void>;
+  supportsPersistentImageCheckpoint?(): boolean;
+  checkpointPersistentImage?(): Promise<void>;
 
   // dmesg ring
   subscribeDmesg(cb: (line: DmesgLine) => void): () => void;
@@ -1289,6 +1291,7 @@ export interface LiveKernelHostOptions {
   presentation?: DemoPresentation;
   /** Live-mode reboot hook supplied by the browser page. */
   applyBootDescriptor?: (desc: BootDescriptor, host: LiveKernelHost) => Promise<void>;
+  checkpointPersistentImage?: (host: LiveKernelHost) => Promise<void>;
   /** Preset list for galleryQuery("presets"). */
   galleryItems?: GalleryItem[];
 }
@@ -1368,6 +1371,7 @@ export class LiveKernelHost implements KernelHost {
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
   private applyBootDescriptorImpl?: NonNullable<LiveKernelHostOptions["applyBootDescriptor"]>;
+  private checkpointPersistentImageImpl?: NonNullable<LiveKernelHostOptions["checkpointPersistentImage"]>;
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
   private demoGuide: DemoGuideConfig | null = null;
@@ -1443,6 +1447,7 @@ export class LiveKernelHost implements KernelHost {
     this.kernel = undefined;
     this.shell = opts.shell;
     this.applyBootDescriptorImpl = opts.applyBootDescriptor;
+    this.checkpointPersistentImageImpl = opts.checkpointPersistentImage;
     this.galleryItems = opts.galleryItems ?? [];
     if (opts.kernel) {
       this.attachKernel(opts.kernel);
@@ -1898,6 +1903,17 @@ export class LiveKernelHost implements KernelHost {
       return;
     }
     await this.applyBootDescriptorImpl(desc, this);
+  }
+
+  supportsPersistentImageCheckpoint(): boolean {
+    return this.checkpointPersistentImageImpl !== undefined;
+  }
+
+  async checkpointPersistentImage(): Promise<void> {
+    if (!this.checkpointPersistentImageImpl) {
+      throw new Error("persistent image checkpoint is unavailable");
+    }
+    await this.checkpointPersistentImageImpl(this);
   }
 
   async halt(): Promise<void> {
