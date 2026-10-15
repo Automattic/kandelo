@@ -73,16 +73,19 @@ semantics. Node and browser must expose the same guest-visible behavior.
   after growth, truncate/re-extend, or a block tombstone; unmodified dense
   base files and in-memory regular files retain dense export mapping. A Rust
   round trip covers dense-base growth and truncate/re-extend after indexed
-  compaction.
+  compaction. Composing indexed dense-base files scans their checkpoint
+  tombstones once per file rather than searching the index for every base
+  block; end-to-end snapshot throughput remains unmeasured.
   Indirect-block memory scales with allocated blocks. KIFS v1 addresses at most
   10 + 1,024 + 1,024² blocks per file. VFSI v2 uses a 64-bit body length
   above the v1 32-bit limit; smaller bodies keep their v1 header. The
   ABI 51 kernel also boots a synthetic >4 GiB sparse v2 container through Node
   positioned reads, including a trailer beyond the 32-bit offset boundary,
   while reading less than 16 MiB. A Rust round trip now builds a virtual
-  >4 GiB dense KIFS body, exports it through the v2 container cursor, mounts
-  that output with positioned reads, and verifies the file tail without a
-  4 GiB resident buffer. Node boots a small v2 container; all three
+  >4 GiB dense KIFS body, grows its file under an indexed journal after
+  compaction, exports it through the v2 container cursor, mounts that output
+  with positioned reads, and verifies the file tail without a 4 GiB resident
+  buffer. Node boots a small v2 container; all three
   browser engines boot one, commit a guest write, and reopen its journal. A
   physically staged >4 GiB v2 body has not yet been streamed or booted on
   Node or browser. An 8 GiB sparse file still exceeds the KIFS per-file limit;

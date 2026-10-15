@@ -1503,6 +1503,31 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         let mut blocks = self.allocated_file_blocks(inode, size)?;
         let base_limit = base_size.min(size).div_ceil(FILE_BLOCK_BYTES as u64);
         let zero_from = self.visible_zero_from(inode)?;
+        let invalid_checkpoint_from = self.state.invalid_checkpoint_from.get(&inode).copied();
+        let mut checkpoint_tombstones = Vec::new();
+        if let Some(checkpoint) = self.checkpoint.as_mut() {
+            let mut low = 0;
+            let mut high = checkpoint.count();
+            while low < high {
+                let middle = low + (high - low) / 2;
+                let entry = checkpoint.entry_at(middle)?.ok_or(Errno::EIO)?;
+                if entry.inode < inode {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            for index in low..checkpoint.count() {
+                let entry = checkpoint.entry_at(index)?.ok_or(Errno::EIO)?;
+                if entry.inode != inode || entry.block >= base_limit {
+                    break;
+                }
+                if entry.is_tombstone() {
+                    checkpoint_tombstones
+                        .push(u32::try_from(entry.block).map_err(|_| Errno::EFBIG)?);
+                }
+            }
+        }
         for &block in base_blocks {
             if u64::from(block) >= base_limit {
                 continue;
@@ -1510,7 +1535,13 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             if zero_from.is_some_and(|from| u64::from(block) >= from) {
                 continue;
             }
-            if self.block_location(inode, u64::from(block))?.is_none() {
+            if self.state.blocks.contains_key(&(inode, u64::from(block))) {
+                continue;
+            }
+            if invalid_checkpoint_from.is_some_and(|from| u64::from(block) >= from) {
+                continue;
+            }
+            if checkpoint_tombstones.binary_search(&block).is_err() {
                 blocks.push(block);
             }
         }
@@ -3378,6 +3409,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reopened.dense_base_needs_sparse_export(7, 8192, 8192), Ok(true));
+        assert_eq!(reopened.composed_file_blocks(7, 8192, 8192, &[0, 1]), Ok(vec![0]));
         assert_eq!(
             reopened.validate_fixed_image_blocks(|_| Some(8192)),
             Err(Errno::EIO)
@@ -3416,6 +3448,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(recovered.dense_base_needs_sparse_export(7, 8192, 8192), Ok(true));
+        assert_eq!(recovered.composed_file_blocks(7, 8192, 8192, &[0, 1]), Ok(vec![0]));
         assert_eq!(
             recovered.read_file_at(7, 8192, 0, &mut byte, |_, _| {
                 panic!("indexed block must satisfy read")
@@ -3430,6 +3463,16 @@ mod tests {
             Ok(1)
         );
         assert_eq!(byte, [0]);
+        recovered
+            .commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 1 },
+                value: vec![b'd'; FILE_BLOCK_BYTES],
+            }])
+            .unwrap();
+        assert_eq!(
+            recovered.composed_file_blocks(7, 8192, 8192, &[0, 1]),
+            Ok(vec![0, 1])
+        );
     }
 
     #[test]
