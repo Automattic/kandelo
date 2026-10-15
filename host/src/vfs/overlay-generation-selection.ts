@@ -365,33 +365,40 @@ export async function enableBestOverlayGeneration(
     }
     const verifiedCandidates = [...candidates];
     const staleCandidates: Candidate[] = [];
+    const supersededCandidates = new Set<Candidate>();
     for (const candidate of [...verifiedCandidates].sort((left, right) => left.generation - right.generation)) {
       if (candidate.source === undefined) continue;
       if (candidate.source.slot === candidate.slot) {
         staleCandidates.push(candidate);
+        supersededCandidates.add(candidate);
         continue;
       }
       if (candidate.source.slot === "legacy") {
         const source = await files.open("legacy", "journal", false);
+        let sourceLength = 0;
         try {
-          if (source === null || source.len() === 0) {
+          sourceLength = source?.len() ?? 0;
+          if (sourceLength === 0) {
             if (candidate.source.journalDigest !== undefined) continue;
-          } else if (source.len() === candidate.source.journalLength) {
+          } else if (sourceLength === candidate.source.journalLength && source !== null) {
             if (candidate.source.journalDigest === undefined) continue;
-            const actual = digestOverlayStoragePrefix(source, source.len());
+            const actual = digestOverlayStoragePrefix(source, sourceLength);
             if (candidate.source.journalDigest.every((byte, index) => byte === actual[index])) continue;
           }
         } finally {
           source?.close();
         }
+        if (sourceLength !== 0) supersededCandidates.add(candidate);
       } else {
         const source = verifiedCandidates.find((other) => other.slot === candidate.source?.slot
           && other.generation === candidate.generation - 1);
-        if (source !== undefined && staleCandidates.includes(source)) {
+        if (source !== undefined && supersededCandidates.has(source)) {
           staleCandidates.push(candidate);
+          supersededCandidates.add(candidate);
           continue;
         }
         if (source === undefined || source.journal.len() === candidate.source.journalLength) continue;
+        supersededCandidates.add(candidate);
       }
       staleCandidates.push(candidate);
     }
