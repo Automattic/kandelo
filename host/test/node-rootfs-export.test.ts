@@ -144,9 +144,19 @@ describe("NodeKernelHost rootfs export contract", () => {
   it.skipIf(!haveKernel || !largeImageFixture)("exports and reboots a physical >4 GiB dense VFSI body", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-large-node-export-"));
     const snapshotPath = join(directory, "snapshot.vfs");
+    const journalPath = join(directory, "large.journal");
     const kernel = asArrayBuffer(new Uint8Array(readFileSync(kernelPath!)));
-    const boot = async (imagePath: string, integrity?: Awaited<ReturnType<NodeKernelHost["exportRootfsImageToFile"]>>) => {
-      const host = new NodeKernelHost({ rootfsImageFile: imagePath, rootfsImageIntegrity: integrity });
+    const boot = async (
+      imagePath: string,
+      integrity?: Awaited<ReturnType<NodeKernelHost["exportRootfsImageToFile"]>>,
+      journal?: { path: string; requireExisting: boolean },
+    ) => {
+      const host = new NodeKernelHost({
+        rootfsImageFile: imagePath,
+        rootfsImageIntegrity: integrity,
+        experimentalResizablePersistencePath: journal?.path,
+        requireExistingRootfsPersistence: journal?.requireExisting,
+      });
       try {
         await host.init(kernel);
         return host;
@@ -157,25 +167,33 @@ describe("NodeKernelHost rootfs export contract", () => {
     };
     try {
       const rssBefore = process.memoryUsage.rss();
-      const first = await boot(largeImageFixture!);
+      const first = await boot(largeImageFixture!, undefined, { path: journalPath, requireExisting: false });
       let integrity: Awaited<ReturnType<NodeKernelHost["exportRootfsImageToFile"]>>;
       try {
         expect((await first.statVfsPath("/large"))?.size).toBe(2 ** 32 - 16 * 1024 * 1024);
-        integrity = await first.exportRootfsImageToFile(snapshotPath);
+        const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
+        expect(await exit).toBe(0);
+        const changed = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "sync"]);
+        expect(await changed.exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      const recovered = await boot(largeImageFixture!, undefined, { path: journalPath, requireExisting: true });
+      try {
+        expect(new TextDecoder().decode((await recovered.readFileFromVfs("/state"))!)).toBe("XYfore\n");
+        integrity = await recovered.exportRootfsImageToFile(snapshotPath);
         expect(integrity.length).toBeGreaterThan(2 ** 32);
         expect(statSync(snapshotPath).size).toBe(integrity.length);
         expect(process.memoryUsage.rss() - rssBefore).toBeLessThan(1024 * 1024 * 1024);
-        const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
-        expect(await exit).toBe(0);
       } finally {
-        await first.destroy();
+        await recovered.destroy();
       }
       const rebooted = await boot(snapshotPath, integrity);
       try {
         expect((await rebooted.statVfsPath("/large"))?.size).toBe(2 ** 32 - 16 * 1024 * 1024);
         const { exit } = await rebooted.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
         expect(await exit).toBe(0);
-        expect(new TextDecoder().decode((await rebooted.readFileFromVfs("/state"))!)).toBe("before\n");
+        expect(new TextDecoder().decode((await rebooted.readFileFromVfs("/state"))!)).toBe("XYfore\n");
       } finally {
         await rebooted.destroy();
       }

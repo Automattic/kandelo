@@ -94,14 +94,16 @@ semantics. Node and browser must expose the same guest-visible behavior.
   with positioned reads, and verifies the file tail without a 4 GiB resident
   buffer. Node boots a small v2 container; all three
   browser engines boot one, commit a guest write, and reopen its journal. A
-  physical >4 GiB v2 body now exports through Node's staging-file API and
-  reboots from that file with per-chunk integrity. An opt-in Rust fixture
-  builds a dense KIFS body without holding its file bytes in memory; a guest
-  verifies the 2 MiB tail at its 64-bit offset both before and after the
-  snapshot. The opt-in test checks Node RSS growth stays under 1 GiB and
-  rejects a damaged snapshot byte beyond 4 GiB. Chromium, Firefox, and WebKit
-  now stream that physical fixture into OPFS, boot it, commit a guest write
-  through the resizable journal, and strictly reopen the base and journal.
+  physical >4 GiB v2 body now accepts a guest write through Node's resizable
+  journal, strictly reopens that journal, exports through Node's staging-file
+  API, and reboots the composed snapshot with per-chunk integrity. An opt-in
+  Rust fixture builds a dense KIFS body without holding its file bytes in
+  memory; a guest verifies the 2 MiB tail at its 64-bit offset both before
+  and after the snapshot. The opt-in test checks Node RSS growth stays under
+  1 GiB and rejects a damaged snapshot byte beyond 4 GiB. Chromium, Firefox,
+  and WebKit now stream that physical fixture into OPFS, boot it, commit a
+  guest write through the resizable journal, and strictly reopen the base
+  and journal.
   They then export its >4 GiB body to a second OPFS file with staged read-back
   verification and reboot that snapshot with per-chunk integrity. A guest
   verifies the large file's tail, and both the journal reboot and snapshot
