@@ -96,8 +96,11 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   while a shorter prefix passes. This is a Go regexp compiler stack-depth
   issue, not evidence of a PHP or POSIX failure. A general iterative
   compiler fallback in the Kandelo Go fork preserves regexp bytecode and
-  lazy-capture behavior and passes the exact expression in three browsers;
-  validate Caddy on a freshly rebuilt image before claiming browser parity.
+  lazy-capture behavior and passes the exact expression in three browsers.
+  A freshly rebuilt WordPress image then passed both FrankenPHP classic and
+  FrankenPHP+Caddy site-editor soaks and authenticated post edits in Chromium,
+  Firefox, and WebKit (12/12 browser cases). This validates those workflows,
+  not long-uptime or production performance.
   Flattening counted repeats in `Simplify` changes lazy-capture semantics
   and is not an acceptable shortcut.
   Excluding only the top-level templates import does not remove the

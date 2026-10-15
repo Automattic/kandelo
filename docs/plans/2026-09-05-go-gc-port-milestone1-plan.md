@@ -3587,3 +3587,31 @@ checks pass. The exact Goldmark probe now passes Chromium, Firefox, and
 WebKit. Four Go package recipes pin that fork commit; a fresh WordPress
 SourceOnly image build is running. Full Caddy/WebKit editor validation is
 still pending and browser parity is not yet claimed.
+
+**2026-10-15 — Validate rebuilt FrankenPHP+Caddy in WebKit.**
+The first SourceOnly image build failed when concurrent FrankenPHP+Caddy
+instrumentation was killed under disk pressure. An ordinary isolated
+FrankenPHP+Caddy build passed; the SourceOnly image rebuild then passed after
+clearing regenerable caches. Its WordPress image SHA-256 is
+`6fbec811085e46f81b255cc5d86046bcab2f71fc50c1ffebf089fc270b9ea563`.
+The fresh Vite server initially rejected a stale `dash.wasm` file absent
+from its pinned SourceOnly projection; running the normal `xtask bootstrap
+dash` path restored projection ownership. Direct `build-deps resolve dash`
+populated the compiled cache but not the browser projection, so it was not
+enough. No Vite resolver bypass was used.
+
+With a fresh Vite port and this projection, the once-failing WebKit
+FrankenPHP+Caddy site-editor test passed its 30-second soak. The full
+WordPress UI suite then passed 12/12 cases: classic and Caddy site-editor
+soaks plus authenticated post create/read/update/read/delete in Chromium,
+Firefox, and WebKit. This establishes cross-browser parity for the tested
+workflows; clean Node startup is checked separately below, while longer
+uptime and paired performance evidence remain open.
+
+The new Go pin also passed normal resolver builds of standalone Caddy and
+Go hello. A fresh Node FrankenPHP+Caddy demo started all four services,
+including SMTP capture, without `EADDRINUSE`; its homepage and login serve
+HTTP 200 and the unauthenticated admin redirects as expected. An older Node
+demo stayed alive and served HTTP 200 for more than five hours before being
+stopped to free its SMTP port. That is idle-uptime evidence for the prior
+image, not a long-uptime gate for this rebuilt one.
