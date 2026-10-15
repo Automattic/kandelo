@@ -57,9 +57,10 @@ semantics. Node and browser must expose the same guest-visible behavior.
   generation and record whether its journal was initialized; older manifests
   continue using the computer name or the version 3 namespace. A
   production-validated, crash-safe base-and-journal handoff remains open. The
-  writer coalesces deferred content references into
-  extents; the legacy byte-array API still materializes output, and inode-table
-  and indirect-block memory scale with image size. An 8 GiB sparse file
+  writer coalesces deferred content references into extents and keeps
+  unallocated inode-table pages implicit in memory; the legacy byte-array API
+  still materializes output, bitmaps still scale with maximum capacity, and
+  indirect-block memory scales with file size. An 8 GiB sparse file
   exceeds the format's per-file block limit. A 772 MiB snapshot now boots
   under the 768 MiB kernel ceiling on all three browser engines, but this is
   a narrow acceptance case, not a general memory or performance bound.
@@ -144,7 +145,9 @@ unpublished image and journal files under the computer and journal locks.
 Discard checks both manifests first, so a committed publication whose
 acknowledgement was lost remains intact. Chromium, Firefox, and WebKit exercise
 forced candidate rejection with no staged files left, as well as refusal to
-discard the published generation after a lost close acknowledgement. A missing
+discard the published generation after a lost close acknowledgement. Rejection
+checks the exact candidate's image, journal namespace, and temporary snapshot;
+other computers may change the shared OPFS directory concurrently. A missing
 kernel shutdown acknowledgement still
 retains the lease and stage rather than risking deletion of an active writer.
 Before checkpoint publication or page guest launch, the browser compares the
@@ -533,9 +536,13 @@ with kernel quiescence and complete failure recovery, is still needed. The
 image writer coalesces
 adjacent deferred content blocks into extents: a 32 MiB file occupies fewer
 than 20 extent records while reads across direct and indirect boundaries
-return the expected bytes. Inode-table and indirect-block memory still scale
-with capacity, so >RAM snapshot export remains open rather than a production
-guarantee.
+return the expected bytes. Unallocated inode-table pages now emit as zeros
+without residing in kernel memory; an 8 GiB possible-capacity image with 40
+created files keeps two inode-table pages and less than 2 MiB of counted
+image metadata in the writer. Writer operations reject unallocated inode IDs
+instead of indexing absent pages.
+Bitmaps still scale with maximum capacity and indirect-block memory with file
+size, so >RAM snapshot export remains open rather than a production guarantee.
 The constrained-memory positioned-install browser case now exports its
 written 772 MiB-plus image to a separate OPFS snapshot after a clean reboot,
 then reloads the page and boots the snapshot with its chunk integrity
@@ -543,8 +550,9 @@ descriptor but without the source journal. Guest reads verify both the
 ordinary overwrite and the large file's tail write on Chromium, Firefox,
 and WebKit while the kernel ceiling is 768 MiB. The export path does not
 allocate the image-sized output in JavaScript or kernel linear memory;
-the writer's inode table, indirect blocks, rootfs tree, and journal metadata
-still scale with capacity or file count. Peak memory, handoff latency,
+the writer's bitmaps still scale with maximum capacity; indirect blocks,
+rootfs tree, and journal metadata scale with file size or count. Peak memory,
+handoff latency,
 larger-file format limits, and crash-safe snapshot publication remain open.
 Node and browser guest workflows also replace an open created file by rename:
 the displaced descriptor retains its data with link count zero, while the

@@ -893,7 +893,7 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
           }).entries()) entries.push(entry);
           return entries.sort();
         };
-        const beforeRejectedCandidate = await listEntries();
+        const rejectedStages: Array<{ imageFileName?: string; journalName: string }> = [];
         let rejectedCandidate = false;
         try {
           await checkpointPersistentImage({
@@ -905,12 +905,19 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
             closeKernel: (instance) => instance.destroy(),
             lazyUrlMapForImage: () => ({}),
             releaseLease: async () => {},
-            validateCandidate: async () => { throw new Error("injected candidate validation failure"); },
+            validateCandidate: async (_kernel, candidateStage) => {
+              rejectedStages.push(candidateStage);
+              throw new Error("injected candidate validation failure");
+            },
           });
         } catch (error) {
           rejectedCandidate = error instanceof Error && error.message === "injected candidate validation failure";
         }
-        const discardedStage = JSON.stringify(await listEntries()) === JSON.stringify(beforeRejectedCandidate);
+        const rejectedStage = rejectedStages[0];
+        if (rejectedStage?.imageFileName === undefined) throw new Error("candidate stage was not captured");
+        const discardedStage = !(await listEntries()).some((entry) =>
+          entry === rejectedStage.imageFileName || entry.startsWith(`${rejectedStage.journalName}.`) ||
+          entry.startsWith(`${name}.snapshot-`));
         const runGuestEdits = async (modes: string[]) => {
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
           try {
