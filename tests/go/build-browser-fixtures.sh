@@ -66,6 +66,14 @@ build_probe socket-basic socket-basic
 build_probe netpoll-basic netpoll-basic
 build_probe net-basic net-basic
 build_probe http-basic http-basic
+(
+  cd "$repo_root/tests/go/http-basic"
+  GO111MODULE=off GOOS=kandelo GOARCH=wasm CGO_ENABLED=0 \
+    GOCACHE="$output_dir/preempt-gocache" "$go_bin" build \
+    -gcflags='net/http=-d=maymorestack=runtime.mayMoreStackPreempt' \
+    -o "$output_dir/http-preempt.wasm" .
+)
+record_built_program_output "$output_dir/http-preempt.wasm"
 build_probe exec-basic exec-basic
 build_probe os-stdlib os-pwd ./pwd
 wasm32posix-cc "$repo_root/tests/sortix/os-test/basic/spawn/posix_spawn_file_actions_addfchdir.c" \

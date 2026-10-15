@@ -412,6 +412,12 @@ const probes: Probe[] = [
     stdout: ["GO HTTP PASS"],
   },
   {
+    name: "Go HTTP stack growth under forced preemption",
+    file: "http-preempt.wasm",
+    argv: ["go-http-preempt"],
+    stdout: ["GO HTTP PASS"],
+  },
+  {
     name: "Go spawn, wait, and command output through a pipe",
     file: "exec-basic.wasm",
     argv: ["go-exec-basic"],

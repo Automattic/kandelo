@@ -14,4 +14,4 @@ revision = 17
 [[git_inputs]]
 name = "go_toolchain"
 repository = "https://github.com/kandelo-dev/go.git"
-commit = "ee2c1b39515cc4b2215db302d07b3efff491c6a1"
+commit = "60aa39d104e8783f99045edb226cae8bf4303d42"

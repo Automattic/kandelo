@@ -14,7 +14,7 @@ revision = 1
 [[git_inputs]]
 name = "go_toolchain"
 repository = "https://github.com/kandelo-dev/go.git"
-commit = "7f6127f51939f64026f0aa2658fd772100899e17"
+commit = "60aa39d104e8783f99045edb226cae8bf4303d42"
 
 [[git_inputs]]
 name = "xsys"

@@ -3517,3 +3517,27 @@ log during normal operation and retains it when the editor fails.
 Chromium and Firefox passed that normal editor/log-inspection gate for
 both classic and Caddy (4/4). No Go compiler or library fix, package
 workaround, or claimed stability improvement is included here.
+
+**2026-10-15 — Fix Go Wasm large-frame stack checks during preemption.**
+The Kandelo Go fork's Wasm compiler encoded the large-frame stack check as
+`SP <= stackguard0 + (framesize - StackSmall)`. When Go preemption sets
+`stackguard0` to `stackPreempt`, the 32-bit addition wraps to a low address
+and incorrectly skips stack growth. A single compiler fix replaces this
+with an unsigned `SP <= stackguard0 || SP - stackguard0 <= framesize - StackSmall`
+check. It is in `kandelo-dev/go` commit `60aa39d104e8783f99045edb226cae8bf4303d42`;
+the Go, Caddy, and FrankenPHP package recipes now pin it. This is a general
+Go/Wasm compiler correction, not a WordPress or package workaround.
+
+With the old pinned compiler, the `http-basic` probe compiled using Go's
+`-d=maymorestack=runtime.mayMoreStackPreempt` hook fails deterministically
+in Node with the same `net/http.(*chunkWriter).writeHeader` split-stack
+trace as the intermittent Firefox WordPress editor crash. The fixed
+compiler's fresh-cache build completes the same instrumented Node probe.
+The browser fixture now builds and runs that regression: Chromium and
+Firefox pass; WebKit timed out once when all three engines ran together,
+then passed in isolation. The Go fork builds its `js`, `wasip1`, and
+Kandelo standard libraries, with Kandelo also built in cgo mode. These
+gates verify the compiler defect and fix, not the rebuilt WordPress demo.
+Next: rebuild package and image artifacts from the new pin, repeat the
+Firefox editor workflow, and continue diagnosing Caddy's WebKit native
+regexp call-stack overflow.

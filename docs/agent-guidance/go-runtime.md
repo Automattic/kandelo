@@ -165,17 +165,19 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   idle callback stack as an offset from its high bound, not an absolute
   pointer: Go may relocate the stack during the callback, and reentry must
   use the new high bound.
-- FrankenPHP classic's Firefox WordPress editor can intermittently abort
-  with `fatal error: runtime: split stack overflow` in a Go HTTP response
-  goroutine. The captured trace enters `net/http.(*chunkWriter).writeHeader`
-  with a 2,776-byte frame on a 4 KiB goroutine stack, then reaches
-  `net/http.(*Server).doKeepAlives` below the stack's low bound. The
-  function is not `NOSPLIT`; diagnose its generated stack check and live
-  `g.stackguard0` before changing stack sizes or treating concurrent PHP
-  requests as the root cause. The browser VFS inspector can now read the
+- FrankenPHP classic's Firefox WordPress editor exposed a Go compiler
+  split-stack error in `net/http.(*chunkWriter).writeHeader`. The Wasm
+  large-frame check added `framesize-StackSmall` to `g.stackguard0`; when
+  preemption set that guard to `stackPreempt`, 32-bit addition wrapped and
+  incorrectly skipped stack growth. The Go fork now uses an overflow-safe
+  unsigned subtraction check. Keep the `http-preempt` browser fixture:
+  it forces Go preemption in `net/http` and the old compiler deterministically
+  fails the same HTTP frame in Node. A passing fixture does not establish
+  WordPress editor stability; rebuild the demo with the fixed fork and
+  repeat the real browser workflow. The browser VFS inspector can read the
   guest log after init exits. Preserve the **beginning** of that log:
   Go's fatal header precedes a long goroutine dump, so a tail alone hides
-  the failure. Reproduction is intermittent and no Go fix is established.
+  the failure.
 - Clone handoff needs an acknowledgment before reusing its shared words.
   A child must bootstrap its own stack and channel before entering the Go
   scheduler. Thread replicas must not replay active Wasm data segments over
