@@ -10067,12 +10067,40 @@ mod tests {
         assert_eq!(read(handle, file_size as i64 - 1, &mut byte, &mut source), Ok(1));
         assert_eq!(byte[0], ((file_size - 1) % 251) as u8);
         release_handle(handle);
+        let digest = [42; 32];
+        enable_resizable_persistence(
+            Box::new(SharedJournalStorage(Arc::new(Mutex::new(Vec::new())))),
+            digest,
+        )
+        .unwrap();
+        let handle = open(b"/large", O_RDWR, 0, 0, 0).unwrap();
+        truncate_handle(handle, (file_size + 1) as i64, &mut source).unwrap();
+        release_handle(handle);
+        sync_persistence().unwrap();
+        let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        prepare_persistence_compaction(Box::new(target.clone())).unwrap();
+        checkpoint_prepared_persistence(Box::new(index.clone())).unwrap();
+        activate_persistence_compaction().unwrap();
+        let checkpoint_end = target.0.lock().len() as u64;
+        reset();
+        load_image(container_len, &mut source).unwrap();
+        enable_resizable_persistence_indexed(
+            Box::new(target),
+            Box::new(index),
+            digest,
+            checkpoint_end,
+        )
+        .unwrap();
 
         let mut exported_header = [0; 24];
         assert_eq!(export_container_read(0, &mut exported_header, &mut source), Ok(24));
         assert_eq!(u32::from_le_bytes(exported_header[4..8].try_into().unwrap()), 2);
         let exported_body_len = u64::from_le_bytes(exported_header[16..24].try_into().unwrap());
         assert!(exported_body_len > u32::MAX as u64);
+        let export_resident =
+            IMAGE_EXPORT_CACHE.with(|slot| slot.as_ref().unwrap().image.resident_bytes());
+        assert!(export_resident < 128 * 1024 * 1024);
         let mut boundary = [0; 4096];
         assert_eq!(
             export_container_read(1i64 << 32, &mut boundary, &mut source),
@@ -10110,9 +10138,11 @@ mod tests {
         })
         .unwrap();
         let inode = filesystem.resolve(b"/large", true).unwrap();
-        assert_eq!(filesystem.stat_ino(inode).unwrap().size, file_size);
+        assert_eq!(filesystem.stat_ino(inode).unwrap().size, file_size + 1);
         assert_eq!(filesystem.read_at(inode, file_size - 1, &mut byte), Ok(1));
         assert_eq!(byte[0], ((file_size - 1) % 251) as u8);
+        assert_eq!(filesystem.read_at(inode, file_size, &mut byte), Ok(1));
+        assert_eq!(byte[0], 0);
     }
 
     #[test]
