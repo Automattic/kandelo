@@ -538,6 +538,8 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
           if (snapshotIntegrity.length >= 64 * 1024 * 1024) {
             throw new Error("snapshot export materialized the sparse hole");
           }
+          const snapshotVersion = new DataView(await (await snapshotFile.getFile()).slice(20, 24).arrayBuffer()).getUint32(0, true);
+          if (snapshotVersion !== 2) throw new Error("snapshot did not use extended KIFS format");
           let overwriteRejected = false;
           try {
             await reopened.exportRootfsImageToFile(snapshotFile);
@@ -580,6 +582,8 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
           if (repeatedIntegrity.length >= 64 * 1024 * 1024) {
             throw new Error("re-export materialized the base-image sparse hole");
           }
+          const repeatedVersion = new DataView(await (await repeatedFile.getFile()).slice(20, 24).arrayBuffer()).getUint32(0, true);
+          if (repeatedVersion !== 2) throw new Error("re-export lost extended KIFS format");
         } finally {
           await baseImage.destroy();
         }

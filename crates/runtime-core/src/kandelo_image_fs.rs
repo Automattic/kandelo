@@ -315,6 +315,7 @@ pub fn kernel_lazy_section(image: &[u8]) -> Result<Option<&[u8]>, Errno> {
 
 pub(crate) const KANDELO_IMAGE_MAGIC: u32 = 0x5346_494B; // "KIFS" in LE byte order
 pub(crate) const KANDELO_IMAGE_VERSION: u32 = 1;
+pub(crate) const KANDELO_IMAGE_EXTENDED_VERSION: u32 = 2;
 pub(crate) const BLOCK_SIZE: usize = 4096;
 pub(crate) const SB_INODE_TABLE_START: u64 = 36;
 
@@ -336,7 +337,13 @@ pub(crate) const PTRS_PER_BLOCK: u32 = 1024;
 pub(crate) const INO_DIRECT: usize = 48;
 pub(crate) const INO_INDIRECT: usize = 88;
 pub(crate) const INO_DOUBLE_INDIRECT: usize = 92;
+pub(crate) const INO_TRIPLE_INDIRECT: usize = 124;
 pub(crate) const INLINE_SYMLINK_SIZE: u64 = 40;
+pub(crate) const V1_MAX_FILE_BLOCKS: u64 = DIRECT_BLOCKS as u64
+    + PTRS_PER_BLOCK as u64
+    + PTRS_PER_BLOCK as u64 * PTRS_PER_BLOCK as u64;
+pub(crate) const MAX_FILE_BLOCKS: u64 = V1_MAX_FILE_BLOCKS
+    + PTRS_PER_BLOCK as u64 * PTRS_PER_BLOCK as u64 * PTRS_PER_BLOCK as u64;
 
 /// One inode's raw 128 bytes, read in a single positioned fetch. Every field
 /// accessor below indexes this buffer rather than the image, so a `stat` costs
@@ -363,6 +370,7 @@ pub fn file_type(mode: u32) -> u32 {
 
 pub struct KandeloImageFs<S: BlockSource> {
     source: S,
+    version: u32,
     pub(crate) inode_table_start: u32,
     total_inodes: u32,
     deferred_inode: u32,
@@ -376,9 +384,10 @@ pub struct KandeloImageFs<S: BlockSource> {
 /// are read for the whole session: every base regular file's content is served
 /// out of it on demand. Re-running [`KandeloImageFs::mount`] per read would cost three
 /// extra source reads and repeat validation the boot already did; carrying the
-/// validated geometry forward costs eight bytes.
+/// validated geometry forward costs four 32-bit words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KandeloImageGeometry {
+    pub version: u32,
     pub inode_table_start: u32,
     pub total_inodes: u32,
     /// Inode holding the deferred-file section, or 0 when the image declares
@@ -421,7 +430,8 @@ impl<S: BlockSource> KandeloImageFs<S> {
         if word(0)? != KANDELO_IMAGE_MAGIC {
             return Err(Errno::EINVAL);
         }
-        if word(4)? != KANDELO_IMAGE_VERSION {
+        let version = word(4)?;
+        if version != KANDELO_IMAGE_VERSION && version != KANDELO_IMAGE_EXTENDED_VERSION {
             return Err(Errno::EINVAL);
         }
         if word(8)? != BLOCK_SIZE as u32 {
@@ -462,12 +472,13 @@ impl<S: BlockSource> KandeloImageFs<S> {
         // written before this field existed carries here, so an older image
         // reads as having none rather than as corrupt.
         let deferred_inode = word(SB_DEFERRED_INODE)?;
-        Ok(KandeloImageFs { source, inode_table_start, total_inodes, deferred_inode })
+        Ok(KandeloImageFs { source, version, inode_table_start, total_inodes, deferred_inode })
     }
 
     /// The validated superblock geometry of this mount.
     pub fn geometry(&self) -> KandeloImageGeometry {
         KandeloImageGeometry {
+            version: self.version,
             inode_table_start: self.inode_table_start,
             total_inodes: self.total_inodes,
             deferred_inode: self.deferred_inode,
@@ -485,6 +496,7 @@ impl<S: BlockSource> KandeloImageFs<S> {
     pub fn from_geometry(source: S, geometry: KandeloImageGeometry) -> KandeloImageFs<S> {
         KandeloImageFs {
             source,
+            version: geometry.version,
             inode_table_start: geometry.inode_table_start,
             total_inodes: geometry.total_inodes,
             deferred_inode: geometry.deferred_inode,
@@ -607,7 +619,8 @@ impl<S: BlockSource> KandeloImageFs<S> {
 
     /// Resolve a file block number to a physical block number, given the
     /// inode's already-fetched bytes.
-    /// Direct blocks 0..9, single-indirect 10..1033, double-indirect 1034+.
+    /// Direct blocks 0..9, single-indirect 10..1033, then double-indirect and
+    /// (in KIFS v2) triple-indirect ranges.
     /// ptr 0 = sparse hole; returns 0. Otherwise returns the block number.
     fn block_map_in(&self, raw: &RawInode, file_block: u32) -> Result<u32, Errno> {
         if file_block < DIRECT_BLOCKS {
@@ -625,7 +638,17 @@ impl<S: BlockSource> KandeloImageFs<S> {
             let l1 = self.block_ptr_in(dind, fb / PTRS_PER_BLOCK)?;
             return self.block_ptr_in(l1, fb % PTRS_PER_BLOCK);
         }
-        Err(Errno::EINVAL) // beyond MAX_FILE_BLOCKS
+        let fb = fb as u64 - max;
+        if self.version != KANDELO_IMAGE_EXTENDED_VERSION
+            || fb >= MAX_FILE_BLOCKS - V1_MAX_FILE_BLOCKS
+        {
+            return Err(Errno::EINVAL);
+        }
+        let pointers = PTRS_PER_BLOCK as u64;
+        let triple = r32(raw, INO_TRIPLE_INDIRECT).ok_or(Errno::EIO)?;
+        let middle = self.block_ptr_in(triple, (fb / (pointers * pointers)) as u32)?;
+        let leaf = self.block_ptr_in(middle, ((fb / pointers) % pointers) as u32)?;
+        self.block_ptr_in(leaf, (fb % pointers) as u32)
     }
 
     fn pointer_block(&self, block: u32) -> Result<[u8; BLOCK_SIZE], Errno> {
@@ -648,9 +671,11 @@ impl<S: BlockSource> KandeloImageFs<S> {
         let count = r64(&raw, INO_SIZE)
             .ok_or(Errno::EIO)?
             .div_ceil(BLOCK_SIZE as u64);
-        let maximum = u64::from(DIRECT_BLOCKS)
-            + u64::from(PTRS_PER_BLOCK)
-            + u64::from(PTRS_PER_BLOCK) * u64::from(PTRS_PER_BLOCK);
+        let maximum = if self.version == KANDELO_IMAGE_EXTENDED_VERSION {
+            MAX_FILE_BLOCKS
+        } else {
+            V1_MAX_FILE_BLOCKS
+        };
         if count > maximum {
             return Err(Errno::EFBIG);
         }
@@ -677,7 +702,8 @@ impl<S: BlockSource> KandeloImageFs<S> {
             let double_indirect = r32(&raw, INO_DOUBLE_INDIRECT).ok_or(Errno::EIO)?;
             if double_indirect != 0 {
                 let first_level = self.pointer_block(double_indirect)?;
-                let groups = (count - double_start).div_ceil(u64::from(PTRS_PER_BLOCK));
+                let groups = (count.min(V1_MAX_FILE_BLOCKS) - double_start)
+                    .div_ceil(u64::from(PTRS_PER_BLOCK));
                 for group in 0..groups {
                     let pointer = r32(&first_level, group as usize * 4).ok_or(Errno::EIO)?;
                     if pointer == 0 {
@@ -691,6 +717,41 @@ impl<S: BlockSource> KandeloImageFs<S> {
                             blocks.push(
                                 (double_start + group * u64::from(PTRS_PER_BLOCK) + index) as u32,
                             );
+                        }
+                    }
+                }
+            }
+        }
+        if count > V1_MAX_FILE_BLOCKS {
+            let triple_indirect = r32(&raw, INO_TRIPLE_INDIRECT).ok_or(Errno::EIO)?;
+            if triple_indirect != 0 {
+                let first_level = self.pointer_block(triple_indirect)?;
+                let remaining = count - V1_MAX_FILE_BLOCKS;
+                let pointers = PTRS_PER_BLOCK as u64;
+                for top in 0..remaining.div_ceil(pointers * pointers) {
+                    let middle = r32(&first_level, top as usize * 4).ok_or(Errno::EIO)?;
+                    if middle == 0 {
+                        continue;
+                    }
+                    let second_level = self.pointer_block(middle)?;
+                    let middle_remaining =
+                        (remaining - top * pointers * pointers).min(pointers * pointers);
+                    for group in 0..middle_remaining.div_ceil(pointers) {
+                        let leaf = r32(&second_level, group as usize * 4).ok_or(Errno::EIO)?;
+                        if leaf == 0 {
+                            continue;
+                        }
+                        let third_level = self.pointer_block(leaf)?;
+                        let entries = (middle_remaining - group * pointers).min(pointers);
+                        for index in 0..entries {
+                            if r32(&third_level, index as usize * 4).ok_or(Errno::EIO)? != 0 {
+                                blocks.push(
+                                    (V1_MAX_FILE_BLOCKS
+                                        + top * pointers * pointers
+                                        + group * pointers
+                                        + index) as u32,
+                                );
+                            }
                         }
                     }
                 }
@@ -720,7 +781,7 @@ impl<S: BlockSource> KandeloImageFs<S> {
         let mut pos = offset;
         let mut out = 0usize;
         while remaining > 0 {
-            let file_block = (pos / BLOCK_SIZE as u64) as u32;
+            let file_block = u32::try_from(pos / BLOCK_SIZE as u64).map_err(|_| Errno::EFBIG)?;
             let block_off = (pos % BLOCK_SIZE as u64) as usize;
             let chunk = core::cmp::min(BLOCK_SIZE - block_off, remaining);
             let phys = self.block_map_in(&raw, file_block)?;

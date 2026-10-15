@@ -5957,7 +5957,7 @@ fn planned_data_start(max_blocks: u32) -> u32 {
 
 /// Blocks one file's data occupies, including the indirect blocks that address
 /// it. Mirrors the writer's allocation rather than guessing: ten direct blocks,
-/// then a single indirect block per 1024, then the double-indirect spine.
+/// then single-, double-, and triple-indirect pointer trees.
 fn blocks_for_file(size: u64) -> u64 {
     let data = size.div_ceil(4096);
     if data <= 10 {
@@ -5965,10 +5965,17 @@ fn blocks_for_file(size: u64) -> u64 {
     }
     let indirect_data = core::cmp::min(data - 10, 1024);
     let mut total = 10 + indirect_data + 1; // + the single indirect block
-    let remaining = data - 10 - indirect_data;
-    if remaining > 0 {
-        let l1 = remaining.div_ceil(1024);
-        total += remaining + l1 + 1; // + L1 blocks + the double-indirect block
+    let double_data = core::cmp::min(data - 10 - indirect_data, 1024 * 1024);
+    if double_data > 0 {
+        let l1 = double_data.div_ceil(1024);
+        total += double_data + l1 + 1;
+    }
+    let triple_data = data - 10 - indirect_data - double_data;
+    if triple_data > 0 {
+        total += triple_data
+            + triple_data.div_ceil(1024)
+            + triple_data.div_ceil(1024 * 1024)
+            + 1;
     }
     total
 }
@@ -5977,20 +5984,36 @@ fn blocks_for_sparse_file(blocks: &[u32]) -> u64 {
     let mut total = blocks.len() as u64;
     let mut indirect = false;
     let mut double_indirect = false;
-    let mut last_group = None;
+    let mut triple_indirect = false;
+    let mut last_double_group = None;
+    let mut last_triple_top = None;
+    let mut last_triple_leaf = None;
     for &block in blocks {
-        if block >= 10 + 1024 {
+        if block >= 10 + 1024 + 1024 * 1024 {
+            triple_indirect = true;
+            let relative = (block - 10 - 1024 - 1024 * 1024) as u64;
+            let top = relative / (1024 * 1024);
+            let leaf = relative / 1024;
+            if last_triple_top != Some(top) {
+                total += 1;
+                last_triple_top = Some(top);
+            }
+            if last_triple_leaf != Some(leaf) {
+                total += 1;
+                last_triple_leaf = Some(leaf);
+            }
+        } else if block >= 10 + 1024 {
             double_indirect = true;
             let group = (block - 10 - 1024) / 1024;
-            if last_group != Some(group) {
+            if last_double_group != Some(group) {
                 total += 1;
-                last_group = Some(group);
+                last_double_group = Some(group);
             }
         } else if block >= 10 {
             indirect = true;
         }
     }
-    total + u64::from(indirect) + u64::from(double_indirect)
+    total + u64::from(indirect) + u64::from(double_indirect) + u64::from(triple_indirect)
 }
 
 /// Collect a directory's children onto the walk stack in reverse, so popping
@@ -10219,6 +10242,53 @@ mod tests {
     }
 
     #[test]
+    fn sparse_nine_gib_file_exports_and_reopens_across_triple_indirect_branches() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        let handle = open(b"/large", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        let offset = 9 * 1024 * 1024 * 1024i64 + 7;
+        assert_eq!(write(handle, offset, b"TAIL", &mut image_bytes), Ok(4));
+        sync_persistence().unwrap();
+        release_handle(handle);
+
+        let mut head = [0u8; 16];
+        assert_eq!(
+            export_container_read(0, &mut head, &mut image_bytes),
+            Ok(16)
+        );
+        assert!(u32::from_le_bytes(head[12..16].try_into().unwrap()) < 64 * 1024 * 1024);
+        let resident = IMAGE_EXPORT_CACHE.with(|slot| slot.as_ref().unwrap().image.resident_bytes());
+        assert!(
+            resident < 32 * 1024 * 1024,
+            "snapshot metadata used {resident} bytes"
+        );
+        let exported = drain_container(4096, &mut image_bytes);
+        assert!(exported.len() < 64 * 1024 * 1024);
+        assert_eq!(
+            u32::from_le_bytes(exported[20..24].try_into().unwrap()),
+            crate::kandelo_image_fs::KANDELO_IMAGE_EXTENDED_VERSION
+        );
+
+        reset();
+        let mut exported_bytes = image_host(&exported);
+        load_image(exported.len() as u64, &mut exported_bytes).unwrap();
+        let handle = open(b"/large", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(fstat(handle).unwrap().st_size, offset as u64 + 4);
+        let mut bytes = [1u8; 6];
+        assert_eq!(
+            read(handle, offset - 2, &mut bytes, &mut exported_bytes),
+            Ok(6)
+        );
+        assert_eq!(&bytes, b"\0\0TAIL");
+        release_handle(handle);
+    }
+
+    #[test]
     fn indexed_sparse_file_exports_only_its_live_blocks() {
         let _guard = TestGuard::acquire();
         let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
@@ -10230,7 +10300,7 @@ mod tests {
         load_image(image.len() as u64, &mut image_bytes).unwrap();
         enable_resizable_persistence(Box::new(source), base_digest).unwrap();
         let handle = open(b"/indexed-sparse", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
-        let offset = 512 * 1024 * 1024i64 + 7;
+        let offset = 9 * 1024 * 1024 * 1024i64 + 7;
         assert_eq!(write(handle, offset, b"TAIL", &mut image_bytes), Ok(4));
         sync_persistence().unwrap();
         release_handle(handle);
@@ -10250,6 +10320,10 @@ mod tests {
         .unwrap();
         let exported = drain_container(4096, &mut image_bytes);
         assert!(exported.len() < 64 * 1024 * 1024);
+        assert_eq!(
+            u32::from_le_bytes(exported[20..24].try_into().unwrap()),
+            crate::kandelo_image_fs::KANDELO_IMAGE_EXTENDED_VERSION
+        );
         reset();
         let mut exported_bytes = image_host(&exported);
         load_image(exported.len() as u64, &mut exported_bytes).unwrap();

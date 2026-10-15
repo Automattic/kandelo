@@ -46,8 +46,9 @@ use wasm_posix_shared::Errno;
 use crate::kandelo_image_fs::{
     BlockSource, DIRECT_BLOCKS, DIRENT_HEADER, INLINE_SYMLINK_SIZE, INO_ATIME, INO_CTIME,
     INO_DIRECT, INO_DOUBLE_INDIRECT, INO_GENERATION, INO_GID, INO_INDIRECT, INO_LINK_COUNT,
-    INO_MODE, INO_MTIME, INO_SIZE, INO_UID, INODE_SIZE, INODES_PER_BLOCK, PTRS_PER_BLOCK, ROOT_INO,
-    KANDELO_IMAGE_MAGIC, KANDELO_IMAGE_VERSION,
+    INO_MODE, INO_MTIME, INO_SIZE, INO_TRIPLE_INDIRECT, INO_UID, INODE_SIZE, INODES_PER_BLOCK,
+    MAX_FILE_BLOCKS, PTRS_PER_BLOCK, ROOT_INO, V1_MAX_FILE_BLOCKS, KANDELO_IMAGE_MAGIC,
+    KANDELO_IMAGE_VERSION, KANDELO_IMAGE_EXTENDED_VERSION,
 };
 
 const BLOCK_SIZE: usize = 4096;
@@ -118,8 +119,7 @@ const S_ISGID: u32 = 0o2000;
 
 const MAX_NAME: usize = 255;
 
-const MAX_FILE_BLOCKS: u64 =
-    DIRECT_BLOCKS as u64 + PTRS_PER_BLOCK as u64 + PTRS_PER_BLOCK as u64 * PTRS_PER_BLOCK as u64;
+pub(crate) const V1_MAX_FILE_BYTES: u64 = V1_MAX_FILE_BLOCKS * BLOCK_SIZE as u64;
 pub(crate) const MAX_FILE_BYTES: u64 = MAX_FILE_BLOCKS * BLOCK_SIZE as u64;
 
 fn align4(x: usize) -> usize {
@@ -237,6 +237,7 @@ impl KandeloImageConfig {
 }
 
 pub struct KandeloImageWriter {
+    version: u32,
     total_blocks: u32,
     max_blocks: u32,
     total_inodes: u32,
@@ -353,6 +354,7 @@ impl KandeloImageWriter {
         }
 
         let mut writer = KandeloImageWriter {
+            version: KANDELO_IMAGE_VERSION,
             total_blocks,
             max_blocks,
             total_inodes,
@@ -635,7 +637,45 @@ impl KandeloImageWriter {
             return Ok(blk);
         }
 
-        Err(Errno::EINVAL)
+        let file_block = file_block as u64 - PTRS_PER_BLOCK as u64 * PTRS_PER_BLOCK as u64;
+        if file_block >= MAX_FILE_BLOCKS - V1_MAX_FILE_BLOCKS {
+            return Err(Errno::EINVAL);
+        }
+        let pointers = PTRS_PER_BLOCK as u64;
+        let top_index = (file_block / (pointers * pointers)) as usize * 4;
+        let middle_index = ((file_block / pointers) % pointers) as usize * 4;
+        let leaf_index = (file_block % pointers) as usize * 4;
+        let mut triple = r32(&self.inode_table, ino_off + INO_TRIPLE_INDIRECT);
+        if triple == 0 {
+            if !allocate {
+                return Ok(0);
+            }
+            triple = self.block_alloc()?;
+            w32(&mut self.inode_table, ino_off + INO_TRIPLE_INDIRECT, triple);
+        }
+        let mut middle = self.block_r32(triple, top_index);
+        if middle == 0 {
+            if !allocate {
+                return Ok(0);
+            }
+            middle = self.block_alloc()?;
+            w32(self.block_mut(triple)?, top_index, middle);
+        }
+        let mut leaf = self.block_r32(middle, middle_index);
+        if leaf == 0 {
+            if !allocate {
+                return Ok(0);
+            }
+            leaf = self.block_alloc()?;
+            w32(self.block_mut(middle)?, middle_index, leaf);
+        }
+        let pointer = self.block_r32(leaf, leaf_index);
+        if pointer != 0 || !allocate {
+            return Ok(pointer);
+        }
+        let block = self.block_alloc()?;
+        w32(self.block_mut(leaf)?, leaf_index, block);
+        Ok(block)
     }
 
     // ── Directory records ────────────────────────────────────────────
@@ -1400,6 +1440,9 @@ impl KandeloImageWriter {
         if len.div_ceil(BLOCK_SIZE as u64) > MAX_FILE_BLOCKS {
             return Err(Errno::EFBIG);
         }
+        if len > V1_MAX_FILE_BYTES {
+            self.version = KANDELO_IMAGE_EXTENDED_VERSION;
+        }
         match &content {
             Content::SparseDeferred { id, blocks, .. } => {
                 for &file_block in *blocks {
@@ -1479,7 +1522,7 @@ impl KandeloImageWriter {
         let deferred_inode = self.emit_deferred_section()?;
         let mut superblock = vec![0u8; BLOCK_SIZE];
         w32(&mut superblock, SB_MAGIC, KANDELO_IMAGE_MAGIC);
-        w32(&mut superblock, SB_VERSION, KANDELO_IMAGE_VERSION);
+        w32(&mut superblock, SB_VERSION, self.version);
         w32(&mut superblock, SB_BLOCK_SIZE, BLOCK_SIZE as u32);
         w32(&mut superblock, SB_TOTAL_BLOCKS, self.total_blocks);
         w32(&mut superblock, SB_TOTAL_INODES, self.total_inodes);
@@ -2458,6 +2501,93 @@ mod tests {
         assert_eq!(hole, [0; 32]);
         let mut end = [0; 32];
         assert_eq!(filesystem.read_at(ino, len - 17, &mut end), Ok(17));
+    }
+
+    #[test]
+    fn extended_sparse_file_crosses_double_indirect_limit_without_resident_hole() {
+        struct OffsetPattern;
+
+        impl ContentSource for OffsetPattern {
+            fn read_exact_at(&self, _id: u64, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+                for (index, byte) in dst.iter_mut().enumerate() {
+                    *byte = ((offset + index as u64) % 251) as u8;
+                }
+                Ok(())
+            }
+        }
+
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).unwrap();
+        let len = 9 * 1024 * 1024 * 1024u64 + 7;
+        let last_block = (len / BLOCK_SIZE as u64) as u32;
+        let blocks = [
+            0,
+            V1_MAX_FILE_BLOCKS as u32 - 1,
+            V1_MAX_FILE_BLOCKS as u32,
+            last_block,
+        ];
+        writer
+            .create_file(
+                writer.root(),
+                b"extended",
+                0o644,
+                Content::SparseDeferred {
+                    id: 7,
+                    len,
+                    blocks: &blocks,
+                },
+            )
+            .unwrap();
+        let image = writer.finish().unwrap();
+        assert!(image.len() < 256 * 1024);
+        let filesystem = KandeloImageFs::mount(KandeloImageSource {
+            image: &image,
+            content: &OffsetPattern,
+        })
+        .unwrap();
+        assert_eq!(
+            filesystem.geometry().version,
+            KANDELO_IMAGE_EXTENDED_VERSION
+        );
+        let ino = filesystem.resolve(b"/extended", true).unwrap();
+        assert_eq!(filesystem.allocated_file_blocks(ino), Ok(blocks.to_vec()));
+        for block in blocks {
+            let mut byte = [0];
+            let offset = block as u64 * BLOCK_SIZE as u64;
+            assert_eq!(filesystem.read_at(ino, offset, &mut byte), Ok(1));
+            assert_eq!(byte[0], (offset % 251) as u8);
+        }
+        let mut hole = [1u8; 16];
+        assert_eq!(filesystem.read_at(ino, len - BLOCK_SIZE as u64 - 16, &mut hole), Ok(16));
+        assert_eq!(hole, [0; 16]);
+        let mut tail = [0u8; 16];
+        assert_eq!(filesystem.read_at(ino, len - 7, &mut tail), Ok(7));
+    }
+
+    #[test]
+    fn sparse_file_at_the_v1_limit_keeps_the_v1_image_format() {
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).unwrap();
+        let blocks = [V1_MAX_FILE_BLOCKS as u32 - 1];
+        writer
+            .create_file(
+                writer.root(),
+                b"v1-limit",
+                0o644,
+                Content::SparseDeferred {
+                    id: 1,
+                    len: V1_MAX_FILE_BYTES,
+                    blocks: &blocks,
+                },
+            )
+            .unwrap();
+        let image = writer.finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource {
+            image: &image,
+            content: &NoContent,
+        })
+        .unwrap();
+        assert_eq!(filesystem.geometry().version, KANDELO_IMAGE_VERSION);
+        let ino = filesystem.resolve(b"/v1-limit", true).unwrap();
+        assert_eq!(filesystem.allocated_file_blocks(ino), Ok(blocks.to_vec()));
     }
 
     #[test]

@@ -50,7 +50,7 @@ int main(int argc, char **argv) {
     }
     if (argc >= 2 && (strcmp(argv[1], "snapshot-sparse") == 0
         || strcmp(argv[1], "verify-snapshot-sparse") == 0)) {
-        const off_t offset = 512LL * 1024 * 1024 + 7;
+        const off_t offset = 9LL * 1024 * 1024 * 1024 + 7;
         if (strcmp(argv[1], "snapshot-sparse") == 0) {
             int fd = open("/snapshot-sparse", O_CREAT | O_EXCL | O_RDWR, 0640);
             if (fd < 0) return 184;
