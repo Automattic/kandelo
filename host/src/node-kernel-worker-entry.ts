@@ -57,7 +57,7 @@ import { OverlayStorageFile } from "./vfs/overlay-storage";
 import { parseSealedGenerationSlot } from "./vfs/overlay-generation-seal";
 import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
+import { collectConvertedOverlayGenerations, compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
@@ -1366,7 +1366,10 @@ async function handleInit(msg: InitMessage) {
         activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
         cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
       };
-      const active = await compactOverlayGeneration(selected, files, handoff);
+      const recovered = await collectConvertedOverlayGenerations(selected, files, (error) => {
+        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `generation retirement failed: ${error}` });
+      });
+      const active = await compactOverlayGeneration(recovered, files, handoff);
       persistentOverlay = active.journal;
       persistentOverlayIndex = active.index ?? null;
       persistentOverlayLock = lock;

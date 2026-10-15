@@ -7,6 +7,7 @@ import {
   writeOverlayGenerationSeal,
 } from "../src/vfs/overlay-generation-seal";
 import {
+  collectConvertedOverlayGenerations,
   compactOverlayGeneration,
   enableBestOverlayGeneration,
   NoValidOverlayGenerationError,
@@ -534,13 +535,20 @@ describe("overlay generation boot selection", () => {
     for (const [position, slot] of occupiedSlots.entries()) {
       expect(entries[`${slot}.seal`].bytes).toBe(seals[position]);
     }
+    const recovered = await collectConvertedOverlayGenerations(selected, files(entries));
+    for (const slot of occupiedSlots.slice(0, -1)) {
+      for (const suffix of ["journal", "index", "seal"]) {
+        expect(entries[`${slot}.${suffix}`]).toBeUndefined();
+      }
+    }
+    expect(entries[`${occupiedSlots[occupiedSlots.length - 1]}.seal`]).toBeDefined();
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe(targetSlot);
     entries[`${targetSlot}.index`].bytes[0] ^= 1;
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot)
       .toBe(occupiedSlots[occupiedSlots.length - 1]);
     entries[`${targetSlot}.index`].bytes[0] ^= 1;
-    const compacted = await compactOverlayGeneration(selected, files(entries), {
-      prepare: (target) => { target.writeAllAt(0, (selected.journal as MemoryStorage).bytes); },
+    const compacted = await compactOverlayGeneration(recovered, files(entries), {
+      prepare: (target) => { target.writeAllAt(0, (recovered.journal as MemoryStorage).bytes); },
       checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(2)); },
       activate: () => {},
       cancel: () => { throw new Error("unexpected cancellation"); },
@@ -548,6 +556,42 @@ describe("overlay generation boot selection", () => {
     expect(compacted.slot).toBe("g0");
     expect(compacted.generation).toBe(occupiedCount + 2);
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
+  });
+
+  it("keeps a converted target and source bootable when boot retirement fails", async () => {
+    const entries: Record<string, MemoryStorage> = {};
+    const digest = new Uint8Array(32);
+    for (let position = 0; position < 4; position++) {
+      const slot = `g${position}`;
+      entries[`${slot}.journal`] = new MemoryStorage(
+        position === 3 ? new Uint8Array(32 * 1024 * 1024) : Uint8Array.of(position + 1),
+      );
+      entries[`${slot}.index`] = new MemoryStorage(position === 3 ? new Uint8Array(160) : Uint8Array.of(position + 1));
+      entries[`${slot}.seal`] = new MemoryStorage();
+      if (position === 3) new DataView(entries[`${slot}.index`].bytes.buffer).setUint32(4, 1, true);
+      await writeOverlayGenerationSeal(entries[`${slot}.journal`], entries[`${slot}.seal`], position + 1,
+        digest, entries[`${slot}.index`]);
+    }
+    const storageFiles = files(entries);
+    const remove = storageFiles.remove;
+    storageFiles.remove = async (slot, file) => {
+      if (slot === "g0" && file === "journal") throw new Error("injected removal failure");
+      await remove(slot, file);
+    };
+    const selected = await enableBestOverlayGeneration(storageFiles, () => {}, true, (source, target, index) => {
+      target.writeAllAt(0, (source as MemoryStorage).bytes.subarray(0, 72));
+      index.writeAllAt(0, Uint8Array.of(1));
+    });
+    expect(selected.slot).toBe("g4");
+    const failures: string[] = [];
+    await collectConvertedOverlayGenerations(selected, storageFiles, (error) => { failures.push(String(error)); });
+    expect(failures).toEqual(["Error: injected removal failure"]);
+    expect(entries["g0.seal"]!.len()).toBe(0);
+    expect(entries["g0.journal"]).toBeDefined();
+    expect(entries["g3.seal"]!.len()).toBeGreaterThan(0);
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g4");
+    entries["g4.index"]!.bytes[0] ^= 1;
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g3");
   });
 
   it("retires older sealed slots only after activation while keeping its source fallback", async () => {

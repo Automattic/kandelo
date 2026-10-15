@@ -53,7 +53,7 @@ import { BrowserTimeProvider } from "./vfs/time";
 import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
 import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
-import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
+import { collectConvertedOverlayGenerations, compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -1347,7 +1347,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
       cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
     };
-    const active = await compactOverlayGeneration(selected, files, handoff);
+    const recovered = await collectConvertedOverlayGenerations(selected, files, (error) => {
+      post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `generation retirement failed: ${formatError(error)}` });
+    });
+    const active = await compactOverlayGeneration(recovered, files, handoff);
     persistentOverlay = active.journal;
     persistentOverlayIndex = active.index ?? null;
     liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {

@@ -100,6 +100,7 @@ export interface SelectedOverlayGeneration {
   sealedLength: number;
   reusableSlots?: ReadonlyMap<number, SealedGenerationSlot>;
   knownGenerations?: ReadonlyMap<SealedGenerationSlot, number>;
+  convertedFrom?: Pick<SelectedOverlayGeneration, "slot" | "generation">;
 }
 
 function withKnownGenerations(
@@ -145,7 +146,7 @@ async function retireGeneration(files: OverlayGenerationFiles, slot: SealedGener
 
 async function collectObsoleteGenerations(
   active: SelectedOverlayGeneration,
-  source: SelectedOverlayGeneration,
+  source: Pick<SelectedOverlayGeneration, "slot" | "generation">,
   files: OverlayGenerationFiles,
   reportCleanupFailure: (error: unknown) => void,
 ): Promise<SelectedOverlayGeneration> {
@@ -165,6 +166,16 @@ async function collectObsoleteGenerations(
     }
   }
   return { ...active, knownGenerations: known };
+}
+
+export async function collectConvertedOverlayGenerations(
+  selected: SelectedOverlayGeneration,
+  files: OverlayGenerationFiles,
+  reportCleanupFailure: (error: unknown) => void = console.error,
+): Promise<SelectedOverlayGeneration> {
+  if (selected.convertedFrom === undefined || selected.slot === "legacy"
+    || Number(selected.slot.slice(1)) < 4 || selected.convertedFrom.slot === "legacy") return selected;
+  return collectObsoleteGenerations(selected, selected.convertedFrom, files, reportCleanupFailure);
 }
 
 export interface OverlayCompactionHandoff {
@@ -223,7 +234,10 @@ async function convertOversizedGeneration(
       throw error;
     }
     published = true;
-    return { journal: target, index, slot: targetSlot, generation, sealedLength };
+    return {
+      journal: target, index, slot: targetSlot, generation, sealedLength,
+      convertedFrom: { slot: sourceSlot, generation: sourceGeneration },
+    };
   } catch (error) {
     failure = error;
     if (seal !== null && !published) {

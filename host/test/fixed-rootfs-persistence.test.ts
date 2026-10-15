@@ -1214,6 +1214,12 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       }
       expect(readFileSync(`${path}.g3.index`)).toEqual(g3OldIndex);
       expect(readFileSync(`${path}.g4.index`).readUInt32LE(4)).toBe(5);
+      for (const slot of ["g0", "g1", "g2"]) {
+        for (const suffix of ["journal", "index", "seal"]) {
+          expect(existsSync(`${path}.${slot}.${suffix}`)).toBe(false);
+        }
+      }
+      expect(existsSync(`${path}.g3.seal`)).toBe(true);
       expandJournalToCompactionThreshold(`${path}.g4.journal`);
       const compacted = await boot(image, path);
       try {
