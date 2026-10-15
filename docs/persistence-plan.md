@@ -548,7 +548,9 @@ blocks grow with file size. Writer operations reject unallocated inode IDs
 instead of indexing absent pages. The writer and kernel reader reject a body
 whose blocks exceed its serialized bitmap's addressable range, rather than
 emitting or mounting allocations the image cannot record. >RAM snapshot export
-remains open rather than a production guarantee.
+remains open rather than a production guarantee. Kernel mount now also validates
+the contiguous bitmap and inode-table regions and refuses a body truncated
+before its declared last block.
 The constrained-memory positioned-install browser case now exports its
 written 772 MiB-plus image to a separate OPFS snapshot after a clean reboot,
 then reloads the page and boots the snapshot with its chunk integrity
