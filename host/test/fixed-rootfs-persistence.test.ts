@@ -1011,6 +1011,118 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 120_000);
 
+  it.skipIf(guestProgramPath === null)("upgrades an oversized sealed v1 checkpoint before mounting", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-v1-index-upgrade-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      const legacyLength = expandJournalToCompactionThreshold(path);
+      const firstCompacted = await boot(image, path);
+      await firstCompacted.destroy();
+      const indexPath = `${path}.g0.index`;
+      const oldIndex = Buffer.from(readFileSync(indexPath));
+      expect(oldIndex.readUInt32LE(4)).toBe(5);
+      oldIndex.writeUInt32LE(1, 4);
+      createHash("sha256").update(oldIndex.subarray(0, 128)).digest().copy(oldIndex, 128);
+      writeFileSync(indexPath, oldIndex);
+      const backend = new HostFileSystem(directory);
+      const journal = OverlayStorageFile.open(backend, "/machine.journal.g0.journal", false);
+      const index = OverlayStorageFile.open(backend, "/machine.journal.g0.index", false);
+      const seal = OverlayStorageFile.open(backend, "/machine.journal.g0.seal", false);
+      try {
+        await writeOverlayGenerationSeal(journal, seal, 1,
+          new Uint8Array(createHash("sha256").update(image).digest()), index,
+          { slot: "legacy", journalLength: legacyLength });
+      } finally {
+        seal.close();
+        index.close();
+        journal.close();
+      }
+      const oldJournalLength = expandJournalToCompactionThreshold(`${path}.g0.journal`);
+      const upgraded = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await upgraded.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await upgraded.destroy();
+      }
+      expect(readFileSync(`${path}.g0.journal`).byteLength).toBe(oldJournalLength);
+      expect(readFileSync(indexPath)).toEqual(oldIndex);
+      expect(readFileSync(`${path}.g1.index`).readUInt32LE(4)).toBe(5);
+      const reopened = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it.skipIf(guestProgramPath === null)("upgrades an oversized sealed v2 resizable checkpoint with metadata", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-v2-resizable-upgrade-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh", true);
+      const first = await boot(image, path, true);
+      try {
+        for (const mode of ["create-file", "large"] as const) {
+          const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
+          expect(await exit, mode).toBe(0);
+        }
+      } finally {
+        await first.destroy();
+      }
+      const legacyLength = expandLargestJournalTransactionToCompactionThreshold(path);
+      const firstCompacted = await boot(image, path, true);
+      await firstCompacted.destroy();
+      const indexPath = `${path}.g0.index`;
+      const indexBytes = Buffer.from(readFileSync(indexPath));
+      expect(indexBytes.readUInt32LE(4)).toBe(4);
+      const blockEnd = 160 + Number(indexBytes.readBigUInt64LE(80)) * 56;
+      const oldIndex = Buffer.from(indexBytes.subarray(0, blockEnd));
+      oldIndex.writeUInt32LE(2, 4);
+      createHash("sha256").update(oldIndex.subarray(160)).digest().copy(oldIndex, 96);
+      createHash("sha256").update(oldIndex.subarray(0, 128)).digest().copy(oldIndex, 128);
+      writeFileSync(indexPath, oldIndex);
+      const backend = new HostFileSystem(directory);
+      const journal = OverlayStorageFile.open(backend, "/machine.journal.g0.journal", false);
+      const index = OverlayStorageFile.open(backend, "/machine.journal.g0.index", false);
+      const seal = OverlayStorageFile.open(backend, "/machine.journal.g0.seal", false);
+      try {
+        await writeOverlayGenerationSeal(journal, seal, 1,
+          new Uint8Array(createHash("sha256").update(image).digest()), index,
+          { slot: "legacy", journalLength: legacyLength });
+      } finally {
+        seal.close();
+        index.close();
+        journal.close();
+      }
+      const sourceLength = expandLargestJournalTransactionToCompactionThreshold(`${path}.g0.journal`);
+      const upgraded = await boot(image, path, true);
+      try {
+        const tail = await upgraded.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4);
+        expect(new TextDecoder().decode(tail!)).toBe("NEWW");
+        const large = await upgraded.readFileRangeFromVfs("/large", 13, 4096);
+        expect(large?.every((byte, position) => byte === (position & 255))).toBe(true);
+      } finally {
+        await upgraded.destroy();
+      }
+      expect(readFileSync(`${path}.g0.journal`).byteLength).toBe(sourceLength);
+      expect(readFileSync(indexPath)).toEqual(oldIndex);
+      expect(readFileSync(`${path}.g1.index`).readUInt32LE(4)).toBe(4);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it.skipIf(guestProgramPath === null)("falls back from a sealed v5 index with a false block digest", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-index-fallback-"));
     const path = join(directory, "machine.journal");

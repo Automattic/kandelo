@@ -418,8 +418,10 @@ positioned import is isolated in a separate Wasm artifact; the default writer
 remains import-free. On Node and browser boots, a journal with at least 32 MiB
 of unsealed tail is compacted into the alternate slot before processes start.
 The old generation stays intact until the new journal is flushed,
-checkpointed, sealed, and verified. The first recovery of an unindexed journal
-still scans it and holds its changed-block map in memory. An indexed boot scans
+checkpointed, sealed, and verified. First recovery of an unindexed journal
+below the 32 MiB conversion threshold still holds its changed-block map in
+memory. Oversized unindexed journals convert before mount with bounded
+scratch. An indexed boot scans
 the authenticated prefix and checkpoint with bounded I/O buffers, then holds
 only the appended tail's map. After boot, a worker timer checks every two
 seconds and can compact an indexed generation again while processes are
@@ -535,8 +537,8 @@ only mutations appended since that checkpoint. The seal must bind the exact
 base image, table, journal prefix, and replay sequence. Boot may verify and
 open a sealed table without rebuilding its entire map, then replay only the
 bounded unsealed tail. A corrupt table or mismatched seal must reject that
-generation and try the prior valid one. Existing v1 journals need an explicit
-conversion path; no format change may silently reset a machine.
+generation and try the prior valid one. Older journals need an explicit,
+non-destructive conversion path; no format change may silently reset a machine.
 
 A fixed-block checkpoint table now writes sorted block locations without
 materializing an index copy, binds their checksum to the base and exact
@@ -561,15 +563,20 @@ references, sorts them through the target and index files in bounded 384 KiB
 runs, selects the last update per block, and emits a canonical v5 journal and
 checkpoint. The
 source is left untouched and the host seals the target only after conversion
-and readback; an incomplete target is ignored on the next boot. Small legacy
-and v1 journals retain their existing recovery path. Oversized unindexed
+and readback; an incomplete target is ignored on the next boot. Subthreshold
+legacy journals retain their existing recovery path. Oversized unindexed
 resizable journals now use a separate bounded conversion: checksummed 384-byte
 descriptors carry ordered metadata and block mutations through on-disk merge
 sort; duplicate truncate markers in the block stream remove superseded writes
 without a resident block map. The canonical target has a version 4 metadata
 and block checkpoint. The source remains untouched until the target is sealed
-and mounted. Older version 1/2 indexed generations still use their existing
-recovery path.
+and mounted. An oversized sealed version 1/2 generation with no other valid
+sealed slot now converts from its journal into the alternate slot before mount,
+without trusting the old index or changing the source. When two valid slots
+exist, boot preserves the fallback rather than overwriting it. A semantically
+rejected slot may be reused after its rejection. Node and Chromium, Firefox,
+and WebKit reboot fixed v1 and resizable v2 sources through this upgrade;
+interrupted conversion retries from the unchanged source.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.
@@ -583,8 +590,9 @@ searched through one cached page. Indexed boot verifies its order, checksum,
 and exact mutation locations while hashing the journal prefix, but does not
 materialize that prefix's metadata in the overlay map. Rootfs streams the
 table to rebuild its POSIX inode and directory state; subsequent lookups and
-compactions merge the indexed prefix with the bounded unsealed tail. Versions
-1 and 2 remain readable through the older full-map path; version 3 metadata
+compactions merge the indexed prefix with the bounded unsealed tail. Small
+version 1/2 generations and two-valid-slot cases remain readable through the
+older full-map path; version 3 metadata
 tables remain readable without value digests. The resident rootfs
 tree and temporary namespace-graph validation still scale with file count,
 so this is not yet a full namespace-memory bound. The 312-byte fixed metadata
@@ -604,8 +612,9 @@ The extra per-block hash work at boot has not yet been benchmarked.
 New compacted fixed-overwrite generations use version 5 of the checkpoint
 sidecar to mark their block stream as canonical. Boot checks every indexed
 block against the corresponding journal mutation with the same bounded page
-cache and rejects a false location or digest with `EIO`. Existing version 1/2
-fixed indexes stay readable through their older recovery path. Node and all three
+cache and rejects a false location or digest with `EIO`. Oversized single-slot
+version 1/2 fixed indexes convert before mount; smaller or two-valid-slot
+cases retain their older recovery path. Node and all three
 browser engines now exercise a re-sealed, internally checksummed v5 index
 with a false block digest and recover through the prior valid generation.
 
