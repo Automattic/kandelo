@@ -1079,6 +1079,14 @@ test(`browser ${mode} mode rejects a semantically invalid indexed generation and
           }
         };
         const newest = await readState();
+        await writeBytes("g1.seal", await seal(committed, 1, index));
+        let ambiguousRefused = false;
+        try {
+          await readState();
+        } catch (error) {
+          ambiguousRefused = String(error).includes("ambiguous sealed generations");
+        }
+        await writeBytes("g1.seal", await seal(committed, 2, index));
         const OriginalWorker = Worker;
         let redirected = 0;
         globalThis.Worker = class extends OriginalWorker {
@@ -1110,7 +1118,7 @@ test(`browser ${mode} mode rejects a semantically invalid indexed generation and
         } catch (error) {
           refused = isNoValidOverlayGenerationError(error);
         }
-        return { newest, readFailed, redirected, fallback, refused };
+        return { newest, ambiguousRefused, readFailed, redirected, fallback, refused };
       }, {
         moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
         overlaySelectionUrl: new URL(`/@fs/${overlaySelectionPath}`, baseURL).href,
@@ -1119,7 +1127,7 @@ test(`browser ${mode} mode rejects a semantically invalid indexed generation and
         readFaultWorkerUrl: new URL(`/@fs/${readFaultWorkerPath}`, baseURL).href,
         mode,
       });
-      expect(result).toEqual({ newest: "abcdefgh", readFailed: true, redirected: 1, fallback: "abcdefgh", refused: true });
+      expect(result).toEqual({ newest: "abcdefgh", ambiguousRefused: true, readFailed: true, redirected: 1, fallback: "abcdefgh", refused: true });
     } finally {
       await context.close();
     }

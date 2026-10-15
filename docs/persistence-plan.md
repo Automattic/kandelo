@@ -407,6 +407,8 @@ its journal or indexed checkpoint is rejected with `EIO`, boot tries the
 previous valid slot and then the legacy journal. Other kernel refusals and
 host backend failures, including errors mapped to kernel `EIO` imports,
 propagate rather than triggering fallback.
+Two verified slots claiming the same generation are ambiguous; boot refuses
+to select either or fall back to legacy until the conflict is resolved.
 If the nonempty legacy journal is rejected with `EIO`, boot reports a typed
 no-valid-generation condition rather than a generic kernel refusal; a fresh
 empty journal does not use this recovery classification.

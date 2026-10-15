@@ -193,6 +193,28 @@ describe("overlay generation boot selection", () => {
     expect(selected.journal.len()).toBe(3);
   });
 
+  it("refuses two distinct sealed slots with the same generation", async () => {
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": new MemoryStorage(Uint8Array.of(9)),
+      "g0.journal": new MemoryStorage(Uint8Array.of(1)),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(Uint8Array.of(2)),
+      "g1.seal": new MemoryStorage(),
+    };
+    const digest = new Uint8Array(32);
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 4, digest);
+    await writeOverlayGenerationSeal(entries["g1.journal"]!, entries["g1.seal"]!, 4, digest);
+    let enableCalls = 0;
+    await expect(enableBestOverlayGeneration(files(entries), () => { enableCalls++; }))
+      .rejects.toThrow("ambiguous sealed generations");
+    expect(enableCalls).toBe(0);
+    expect(entries["g0.journal"]!.closeCount).toBe(1);
+    expect(entries["g1.journal"]!.closeCount).toBe(1);
+    expect(entries["legacy.journal"]!.closeCount).toBe(0);
+    await writeOverlayGenerationSeal(entries["g1.journal"]!, entries["g1.seal"]!, 5, digest);
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g1");
+  });
+
   it("falls back after a torn seal or rejected kernel journal", async () => {
     const entries: Record<string, MemoryStorage> = {
       "legacy.journal": new MemoryStorage(Uint8Array.of(9)),

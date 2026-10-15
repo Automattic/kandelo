@@ -98,6 +98,9 @@ export async function enableBestOverlayGeneration(
         index?.close();
       }
     }
+    if (candidates.length === 2 && candidates[0].generation === candidates[1].generation) {
+      throw new Error("persistent overlay has ambiguous sealed generations; refusing to select one");
+    }
     candidates.sort((left, right) => right.generation - left.generation);
     for (const candidate of candidates) {
       try {
