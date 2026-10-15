@@ -479,6 +479,14 @@ activation cannot be rolled back. Synchronous storage and hash operations
 run on the dedicated kernel worker during live handoff; guest syscalls wait
 until that turn finishes. The pause has not yet been measured for large
 changed-block sets.
+Browser crash-cut tests now stop live compaction after flushing the target
+journal, checkpoint index, or seal, before activation. Chromium crashes the
+browser process; Firefox and WebKit close the tab and blocked worker. All three
+strictly reboot from the same OPFS profile, recover guest data from the
+greater-than-32 MiB source journal, commit another guest write, and strictly
+reboot with that write. The source journal remains present and larger than
+32 MiB at all three cuts. This does not test OS power loss or the storage
+device's flush guarantees.
 Node and Chromium, Firefox, and WebKit now reboot a real compacted journal
 after appending a later committed transaction to its former source. All four
 recover the newer source data rather than selecting the still-valid but stale
@@ -691,13 +699,13 @@ and Chromium, Firefox, and WebKit reboot with injected orphan files; the three
 browser engines also remove an injected empty legacy file before serving
 guests. Host fault tests keep boot available when the retry itself fails.
 Browser crash-cut tests now stop conversion immediately after flushing the
-checkpoint index or seal, then reboot the same OPFS profile. Chromium crashes
-the browser process; Firefox and WebKit close the tab and its blocked worker.
-All three recover the synced guest bytes from an oversized legacy journal at
-both cuts, with the original journal intact. Each recovered computer then
-commits another guest write and strictly reboots with that new state. These
-tests cover browser-process and tab termination, not OS power loss or
-storage-device flush guarantees.
+target journal, checkpoint index, or seal, then reboot the same OPFS profile.
+Chromium crashes the browser process; Firefox and WebKit close the tab and its
+blocked worker. All three recover the synced guest bytes from an oversized
+legacy journal at all three cuts, with the original journal present at its
+pre-crash length. Each recovered computer commits another guest write and
+strictly reboots with that new state. These tests cover browser-process and
+tab termination, not OS power loss or storage-device flush guarantees.
 Near-quota cleanup and power-loss ordering still need fault tests.
 Numbered spill slots remove the fixed four-slot recovery exception, but these
 remaining cases keep generation storage reclamation open.
