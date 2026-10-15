@@ -648,6 +648,10 @@ later compaction cannot overwrite its active source.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.
+Host fault tests cap the conversion journal, index, and seal separately; after
+each `ENOSPC`, the legacy journal remains selectable, and conversion succeeds
+when the cap is lifted. This does not establish behavior under a shared OPFS
+quota or actual near-capacity browser storage.
 A boot-only conversion into `g3` now retains its source `g2` while retiring
 older `g0` and `g1` generations before guests start. Version-4 legacy seals
 allow the unsealed legacy journal to be retired after a second sealed copy is

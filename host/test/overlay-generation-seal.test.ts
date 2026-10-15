@@ -25,6 +25,7 @@ class MemoryStorage implements PersistentOverlayStorage {
   failNextWrite = false;
   failNextTruncate = false;
   failNextClose = false;
+  maxLength = Number.MAX_SAFE_INTEGER;
   closeCount = 0;
 
   constructor(bytes: Uint8Array = new Uint8Array()) {
@@ -53,6 +54,7 @@ class MemoryStorage implements PersistentOverlayStorage {
     }
     const start = Number(offset);
     const length = Math.max(this.bytes.byteLength, start + source.byteLength);
+    if (length > this.maxLength) throw Object.assign(new Error("injected quota exceeded"), { code: "ENOSPC" });
     const next = new Uint8Array(length);
     next.set(this.bytes);
     next.set(source, start);
@@ -1053,6 +1055,39 @@ describe("overlay generation boot selection", () => {
     });
     expect(recovered.slot).toBe("g0");
     expect(entries["g0.journal"]!.bytes).toEqual(Uint8Array.of(1, 2));
+  });
+
+  it.each(["journal", "index", "seal"] as const)("retries legacy conversion after %s quota exhaustion", async (limitedFile) => {
+    const sourceBytes = new Uint8Array(32 * 1024 * 1024);
+    sourceBytes.set(new Uint8Array(32).fill(7), 8);
+    const legacy = new MemoryStorage(sourceBytes);
+    const sourceDigest = digestOverlayStoragePrefix(legacy, legacy.len());
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": legacy,
+      "g0.journal": new MemoryStorage(),
+      "g0.index": new MemoryStorage(),
+      "g0.seal": new MemoryStorage(),
+    };
+    const limited = entries[`g0.${limitedFile}`]!;
+    limited.maxLength = limitedFile === "seal" ? 128 : 1;
+    const convert = (_source: PersistentOverlayStorage, target: PersistentOverlayStorage, index: PersistentOverlayStorage) => {
+      target.writeAllAt(0, sourceBytes.subarray(0, 72));
+      index.writeAllAt(0, Uint8Array.of(1, 2, 3));
+    };
+    await expect(enableBestOverlayGeneration(files(entries), () => {
+      throw new Error("unexpected target mount");
+    }, true, convert)).rejects.toMatchObject({ code: "ENOSPC" });
+    expect(digestOverlayStoragePrefix(legacy, legacy.len())).toEqual(sourceDigest);
+    expect(entries["g0.seal"]!.len()).toBe(0);
+    expect((await enableBestOverlayGeneration(files(entries), (journal) => {
+      expect(journal).toBe(legacy);
+    }, true)).slot).toBe("legacy");
+    limited.maxLength = Number.MAX_SAFE_INTEGER;
+    const recovered = await enableBestOverlayGeneration(files(entries), (journal) => {
+      expect(journal).toBe(entries["g0.journal"]);
+    }, true, convert);
+    expect(recovered.slot).toBe("g0");
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
   });
 
   it("attempts every legacy conversion close after a failed write", async () => {
