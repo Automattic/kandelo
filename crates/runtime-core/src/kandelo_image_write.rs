@@ -342,6 +342,9 @@ impl KandeloImageWriter {
             }
             total_blocks = minimum_blocks;
         }
+        if u64::from(total_blocks) > u64::from(block_bitmap_blocks) * BLOCK_SIZE as u64 * 8 {
+            return Err(Errno::EINVAL);
+        }
 
         let mut writer = KandeloImageWriter {
             total_blocks,
@@ -2477,6 +2480,25 @@ mod tests {
             .is_err(),
             "a ragged tail is ambiguous and must be refused"
         );
+    }
+
+    #[test]
+    fn mkfs_rejects_a_bitmap_that_cannot_describe_the_initial_image() {
+        let config = |size_bytes, max_size_bytes| KandeloImageConfig {
+            size_bytes,
+            max_size_bytes: Some(max_size_bytes),
+            growable_to_bytes: size_bytes,
+            now_ms: 0,
+        };
+        assert!(matches!(
+            KandeloImageWriter::mkfs(config(64 * 1024, 0)),
+            Err(Errno::EINVAL)
+        ));
+        assert!(matches!(
+            KandeloImageWriter::mkfs(config(128 * 1024 * 1024 + BLOCK_SIZE as u64, 4096)),
+            Err(Errno::EINVAL)
+        ));
+        assert!(KandeloImageWriter::mkfs(config(128 * 1024 * 1024, 4096)).is_ok());
     }
 
     /// Running out of BLOCKS, which is a different exhaustion from running out
