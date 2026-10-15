@@ -1310,6 +1310,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       open: (slot, file, create) => OpfsOverlayStorageFile.openFile(
         persistenceName, slot, file, create,
       ),
+      remove: (slot, file) => OpfsOverlayStorageFile.removeFile(persistenceName, slot, file),
     } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
     const selected = await enableBestOverlayGeneration(
       files,

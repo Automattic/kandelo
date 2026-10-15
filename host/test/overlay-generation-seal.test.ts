@@ -185,6 +185,7 @@ describe("overlay generation boot selection", () => {
         if (create && entries[key] === undefined) entries[key] = new MemoryStorage();
         return entries[key] ?? null;
       },
+      remove: async (slot, file) => { delete entries[`${slot}.${file}`]; },
     };
   }
 
@@ -547,6 +548,77 @@ describe("overlay generation boot selection", () => {
     expect(compacted.slot).toBe("g0");
     expect(compacted.generation).toBe(occupiedCount + 2);
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
+  });
+
+  it("retires older sealed slots only after activation while keeping its source fallback", async () => {
+    const entries: Record<string, MemoryStorage> = {};
+    const digest = new Uint8Array(32);
+    for (let position = 0; position < 5; position++) {
+      const slot = `g${position}`;
+      entries[`${slot}.journal`] = new MemoryStorage(new Uint8Array(72).fill(position + 1));
+      entries[`${slot}.index`] = new MemoryStorage(Uint8Array.of(position + 1));
+      entries[`${slot}.seal`] = new MemoryStorage();
+      await writeOverlayGenerationSeal(
+        entries[`${slot}.journal`], entries[`${slot}.seal`], position + 1, digest,
+        entries[`${slot}.index`], position === 0 ? undefined
+          : { slot: `g${position - 1}` as const, journalLength: entries[`g${position - 1}.journal`].len() },
+      );
+    }
+    const source = await enableBestOverlayGeneration(files(entries), () => {}, true);
+    expect(source.slot).toBe("g4");
+    const target = await compactOverlayGeneration(source, files(entries), {
+      prepare: (storage) => { storage.writeAllAt(0, (source.journal as MemoryStorage).bytes); },
+      checkpoint: (storage) => { storage.writeAllAt(0, Uint8Array.of(6)); },
+      activate: () => {},
+      cancel: () => { throw new Error("unexpected cancellation"); },
+    }, 0);
+    expect(target.slot).toBe("g0");
+    for (const slot of ["g1", "g2", "g3"]) {
+      for (const suffix of ["journal", "index", "seal"]) {
+        expect(entries[`${slot}.${suffix}`]).toBeUndefined();
+      }
+    }
+    expect(entries["g4.seal"]!.len()).toBeGreaterThan(0);
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
+    entries["g0.index"]!.bytes[0] ^= 1;
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g4");
+  });
+
+  it.each(["truncate", "flush", "remove"] as const)("keeps the active generation usable when retirement fails at %s", async (fault) => {
+    const entries: Record<string, MemoryStorage> = {};
+    const digest = new Uint8Array(32);
+    for (let position = 0; position < 4; position++) {
+      const slot = `g${position}`;
+      entries[`${slot}.journal`] = new MemoryStorage(new Uint8Array(72).fill(position + 1));
+      entries[`${slot}.index`] = new MemoryStorage(Uint8Array.of(position + 1));
+      entries[`${slot}.seal`] = new MemoryStorage();
+      await writeOverlayGenerationSeal(entries[`${slot}.journal`], entries[`${slot}.seal`], position + 1,
+        digest, entries[`${slot}.index`]);
+    }
+    const originalSealLength = entries["g1.seal"]!.len();
+    const storageFiles = files(entries);
+    const remove = storageFiles.remove;
+    storageFiles.remove = async (slot, file) => {
+      if (fault === "remove" && slot === "g1" && file === "journal") throw new Error("injected removal failure");
+      await remove(slot, file);
+    };
+    if (fault === "truncate") entries["g1.seal"]!.failNextTruncate = true;
+    if (fault === "flush") entries["g1.seal"]!.failNextFlush = true;
+    const source = await enableBestOverlayGeneration(storageFiles, () => {}, true);
+    const failures: string[] = [];
+    const target = await compactOverlayGeneration(source, storageFiles, {
+      prepare: (storage) => { storage.writeAllAt(0, (source.journal as MemoryStorage).bytes); },
+      checkpoint: (storage) => { storage.writeAllAt(0, Uint8Array.of(4)); },
+      activate: () => {},
+      cancel: () => { throw new Error("unexpected cancellation"); },
+    }, 0, () => true, (error) => { failures.push(String(error)); });
+    expect(target.slot).toBe("g0");
+    expect(failures).toEqual([`Error: injected ${fault === "remove" ? "removal" : fault} failure`]);
+    expect(entries["g1.seal"]!.len()).toBe(fault === "truncate" ? originalSealLength : 0);
+    expect(entries["g1.journal"]).toBeDefined();
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
+    entries["g0.index"]!.bytes[0] ^= 1;
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g3");
   });
 
   it.each([true, false])("tries the source after a converted target is rejected (source valid: %s)", async (sourceValid) => {

@@ -1344,6 +1344,13 @@ async function handleInit(msg: InitMessage) {
           if (!create && !existsSync(join(dirname(path), name))) return null;
           return OverlayStorageFile.open(backend, `/${name}`, create, true);
         },
+        remove: async (slot, file) => {
+          try {
+            unlinkSync(`${path}.${slot}.${file}`);
+          } catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+          }
+        },
       } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
       const selected = await enableBestOverlayGeneration(
         files,
