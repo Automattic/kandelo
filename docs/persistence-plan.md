@@ -735,3 +735,10 @@ fsync) pass in both isolated and persistent modes. Its full 55-case I/O suite
 passes in both modes with three parallel workers. These runs use
 fresh journals per test and do not reboot them; they do not establish restart
 conformance or cover the full Sortix inventory on persistence.
+The 949-case Sortix basic suite also runs on the persistent mount with four
+parallel workers: 941 pass, eight are expected failures, and none fail
+unexpectedly. This broadens live POSIX coverage, but still does not inspect
+each journal after reboot or measure peak memory and compaction latency.
+The persistent stdio, process, and paths suites add 79 passes with no failures
+or skips. Together with basic and I/O, 1,083 Sortix runtime cases ran on fresh
+resizable journals; the remaining suites and restart checks are still open.
