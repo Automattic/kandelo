@@ -120,6 +120,7 @@ const MAX_NAME: usize = 255;
 
 const MAX_FILE_BLOCKS: u64 =
     DIRECT_BLOCKS as u64 + PTRS_PER_BLOCK as u64 + PTRS_PER_BLOCK as u64 * PTRS_PER_BLOCK as u64;
+pub(crate) const MAX_FILE_BYTES: u64 = MAX_FILE_BLOCKS * BLOCK_SIZE as u64;
 
 fn align4(x: usize) -> usize {
     (x + 3) & !3
@@ -1043,6 +1044,9 @@ impl KandeloImageWriter {
         mode: u32,
         content: Content<'_>,
     ) -> Result<u32, Errno> {
+        if content.len() > MAX_FILE_BYTES {
+            return Err(Errno::EFBIG);
+        }
         self.precheck(parent, name)?;
         let ino = self.inode_alloc()?;
         let now = self.now_ms;
@@ -2365,6 +2369,40 @@ mod tests {
             }
             assert!(bytes[content_len..].iter().all(|&byte| byte == 0));
         }
+    }
+
+    #[test]
+    fn oversized_file_does_not_mutate_the_image_writer() {
+        let mut writer = KandeloImageWriter::mkfs(small_config()).expect("mkfs");
+        let free_blocks = writer.free_blocks;
+        let free_inodes = writer.free_inodes;
+        let generation = writer.generation;
+        assert_eq!(
+            writer.create_file(
+                writer.root(),
+                b"too-large",
+                0o644,
+                Content::Deferred {
+                    id: 1,
+                    len: MAX_FILE_BYTES + 1,
+                },
+            ),
+            Err(Errno::EFBIG)
+        );
+        assert_eq!(writer.free_blocks, free_blocks);
+        assert_eq!(writer.free_inodes, free_inodes);
+        assert_eq!(writer.generation, generation);
+        writer
+            .create_file(writer.root(), b"valid", 0o644, Content::Bytes(b"ok"))
+            .expect("create after refusal");
+        let image = writer.finish().expect("finish");
+        let filesystem = KandeloImageFs::mount(KandeloImageSource {
+            image: &image,
+            content: &NoContent,
+        })
+        .expect("mount");
+        assert_eq!(filesystem.resolve(b"/too-large", true), Err(Errno::ENOENT));
+        assert!(filesystem.resolve(b"/valid", true).is_ok());
     }
 
     // ── Geometry and failure modes ───────────────────────────────────
