@@ -540,7 +540,7 @@ test("streamed OPFS installation publishes only a verified complete image", asyn
 });
 
 for (const cut of ["before", "after"] as const) {
-test(`closing a tab ${cut} replacement manifest commit selects the right generation`, async ({ playwright, browserName, baseURL }, testInfo) => {
+test(`abrupt termination ${cut} replacement manifest commit selects the right generation`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   test.skip(imageModulePath === null || kernelPath === null || guestProgramPath === null,
     "kernel, image writer, and guest artifacts are required");
@@ -573,6 +573,8 @@ test(`closing a tab ${cut} replacement manifest commit selects the right generat
       extraHTTPHeaders: projectUse.extraHTTPHeaders,
       ...(projectUse.launchOptions ?? {}),
     });
+    let recoveryContext: typeof context | null = null;
+    let browserCrashed = false;
     try {
       await context.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await context.route(previousImageUrl, (route) => route.fulfill({ body: Buffer.from(previousImage) }));
@@ -672,8 +674,23 @@ test(`closing a tab ${cut} replacement manifest commit selects the right generat
         cut,
       });
       await primaryClosed;
-      await page.close();
-      const reopened = await context.newPage();
+      if (browserName === "chromium") {
+        const session = await context.newCDPSession(page);
+        const closed = context.waitForEvent("close", { timeout: 15_000 });
+        void session.send("Browser.crash").catch(() => {});
+        await closed;
+        browserCrashed = true;
+        recoveryContext = await playwright[browserName].launchPersistentContext(userDataDir, {
+          channel: projectUse.channel,
+          proxy: projectUse.proxy as never,
+          extraHTTPHeaders: projectUse.extraHTTPHeaders,
+          ...(projectUse.launchOptions ?? {}),
+        });
+        await recoveryContext.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      } else {
+        await page.close();
+      }
+      const reopened = await (recoveryContext ?? context).newPage();
       try {
         await reopened.goto(new URL("/trap-signal-test.html", baseURL).href);
         const recovered = await reopened.evaluate(async ({ url, browserKernelUrl, kernelUrl, name, identity }) => {
@@ -711,7 +728,8 @@ test(`closing a tab ${cut} replacement manifest commit selects the right generat
         await reopened.close();
       }
     } finally {
-      await context.close();
+      await recoveryContext?.close();
+      if (!browserCrashed) await context.close();
     }
   } finally {
     rmSync(userDataDir, { recursive: true, force: true });
