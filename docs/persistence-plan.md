@@ -855,10 +855,17 @@ Write and truncate timestamps are staged in memory and committed in batches
 on fsync, graceful shutdown, or compaction. Sync now visits only inodes with
 unsynced persistent content, rather than scanning every resident rootfs inode.
 The dirty-inode set is cleared by a successful timestamp or namespace metadata
-commit and retained after failed writeback; its cost still needs measurement
-on a large file-count image. Session-injected files such as the browser CA
-bundle are not journal-backed and are deliberately excluded from timestamp writeback;
-they are recreated at boot. Namespace transactions now include parent
+commit and retained after failed writeback. It now holds at most 64 distinct
+inodes: before a write or truncate would dirty a 65th, the kernel flushes the
+existing data and timestamp records. A failed flush refuses that new mutation
+and preserves earlier dirty data for live reads. Rust tests cover both write
+and truncate boundary flushes and a failed writeback; a guest creates
+and syncs 65 files, then strictly reboots on Node and Chromium, Firefox, and
+WebKit. The cost of these implicit flushes and the resident namespace tree
+still need measurement on a large file-count image. Session-injected files
+such as the browser CA bundle are not journal-backed and are deliberately
+excluded from timestamp writeback; they are recreated at boot. Namespace
+transactions now include parent
 directory mtime/ctime and affected inode ctime records. Restart tests cover
 create, link, rename, unlink, symlink, mkdir, and rmdir; a guest checks
 directory mtimes after reopening on Node and all three browser engines.

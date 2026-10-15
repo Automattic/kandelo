@@ -808,6 +808,30 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 90_000);
 
+  it.skipIf(guestProgramPath === null)("bounds resizable timestamp writeback across guest-created files", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-timestamp-writeback-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path, true);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "many-timestamps"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      const recovered = await boot(image, path, true, true);
+      try {
+        const { exit } = await recovered.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-many-timestamps"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await recovered.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it.skipIf(guestProgramPath === null)("rejects an authenticated but invalid index and falls back from a torn slot", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-slot-"));
     const path = join(directory, "machine.journal");

@@ -52,6 +52,7 @@ const O_CREAT: u32 = 0o100;
 const O_EXCL: u32 = 0o200;
 const O_TRUNC: u32 = 0o1000;
 const O_DIRECTORY: u32 = 0o200000;
+const MAX_DIRTY_PERSISTENT_TIMESTAMPS: usize = 64;
 
 /// Directory entry type codes as reported through getdents64 `d_type`.
 const DT_FIFO: u32 = 1;
@@ -1481,6 +1482,17 @@ pub fn sync_persistence() -> Result<(), Errno> {
         cursor = next;
     }
     PERSISTENT_ROOTFS.lock().as_mut().ok_or(Errno::EIO)?.journal.sync()
+}
+
+fn reserve_persistent_timestamp_slot(index: u32) -> Result<(), Errno> {
+    let full = ROOTFS.with(|state| {
+        state.dirty_persistent_timestamps.len() >= MAX_DIRTY_PERSISTENT_TIMESTAMPS
+            && !state.dirty_persistent_timestamps.contains(&index)
+    });
+    if full {
+        sync_persistence()?;
+    }
+    Ok(())
 }
 
 pub fn checkpoint_prepared_persistence(
@@ -4065,6 +4077,9 @@ where
         if !resizable && end > base_size {
             return Err(Errno::EFBIG);
         }
+        if resizable && !buf.is_empty() {
+            reserve_persistent_timestamp_slot(idx)?;
+        }
         let (written, visible_size) = {
             let mut active = PERSISTENT_ROOTFS.lock();
             let journal = &mut active.as_mut().ok_or(Errno::EIO)?.journal;
@@ -4181,6 +4196,7 @@ where
                 _ => Err(Errno::EROFS),
             }
         })?;
+        reserve_persistent_timestamp_slot(idx)?;
         PERSISTENT_ROOTFS
             .lock()
             .as_mut()
@@ -10944,6 +10960,115 @@ mod tests {
         assert_eq!(byte, [b'B']);
         release_handle(first);
         release_handle(second);
+    }
+
+    #[test]
+    fn resizable_timestamp_writeback_bounds_dirty_inodes() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage.clone()), base_digest).unwrap();
+        let mut handles = Vec::new();
+        for index in 0..=MAX_DIRTY_PERSISTENT_TIMESTAMPS {
+            let path = alloc::format!("/dirty-{index}");
+            handles.push(open(path.as_bytes(), O_CREAT | O_RDWR, 0o644, 0, 0).unwrap());
+        }
+        for handle in handles.iter().take(MAX_DIRTY_PERSISTENT_TIMESTAMPS) {
+            assert_eq!(write(*handle, 0, b"X", &mut image_bytes), Ok(1));
+        }
+        assert_eq!(
+            ROOTFS.with(|state| state.dirty_persistent_timestamps.len()),
+            MAX_DIRTY_PERSISTENT_TIMESTAMPS
+        );
+        assert_eq!(
+            write(handles[MAX_DIRTY_PERSISTENT_TIMESTAMPS], 0, b"Y", &mut image_bytes),
+            Ok(1)
+        );
+        assert_eq!(ROOTFS.with(|state| state.dirty_persistent_timestamps.len()), 1);
+        sync_persistence().unwrap();
+        for handle in handles.iter().take(MAX_DIRTY_PERSISTENT_TIMESTAMPS) {
+            assert_eq!(truncate_handle(*handle, 2, &mut image_bytes), Ok(()));
+        }
+        assert_eq!(
+            ROOTFS.with(|state| state.dirty_persistent_timestamps.len()),
+            MAX_DIRTY_PERSISTENT_TIMESTAMPS
+        );
+        assert_eq!(
+            truncate_handle(handles[MAX_DIRTY_PERSISTENT_TIMESTAMPS], 2, &mut image_bytes),
+            Ok(())
+        );
+        assert_eq!(ROOTFS.with(|state| state.dirty_persistent_timestamps.len()), 1);
+        sync_persistence().unwrap();
+        for handle in handles {
+            release_handle(handle);
+        }
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        for index in 0..=MAX_DIRTY_PERSISTENT_TIMESTAMPS {
+            let path = alloc::format!("/dirty-{index}");
+            let handle = open(path.as_bytes(), O_RDONLY, 0, 0, 0).unwrap();
+            let mut byte = [0];
+            assert_eq!(lstat(path.as_bytes()).unwrap().st_size, 2);
+            assert_eq!(read(handle, 0, &mut byte, &mut image_bytes), Ok(1));
+            assert_eq!(
+                byte[0],
+                if index == MAX_DIRTY_PERSISTENT_TIMESTAMPS { b'Y' } else { b'X' }
+            );
+            release_handle(handle);
+        }
+    }
+
+    #[test]
+    fn failed_timestamp_slot_writeback_preserves_prior_dirty_data() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let fail_writes = Arc::new(AtomicBool::new(false));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(
+            Box::new(FailingCreateStorage {
+                inner: storage.clone(),
+                fail_writes: fail_writes.clone(),
+            }),
+            base_digest,
+        ).unwrap();
+        let mut handles = Vec::new();
+        for index in 0..=MAX_DIRTY_PERSISTENT_TIMESTAMPS {
+            let path = alloc::format!("/dirty-{index}");
+            handles.push(open(path.as_bytes(), O_CREAT | O_RDWR, 0o644, 0, 0).unwrap());
+        }
+        for handle in handles.iter().take(MAX_DIRTY_PERSISTENT_TIMESTAMPS) {
+            assert_eq!(write(*handle, 0, b"X", &mut image_bytes), Ok(1));
+        }
+        fail_writes.store(true, Ordering::SeqCst);
+        assert_eq!(
+            write(handles[MAX_DIRTY_PERSISTENT_TIMESTAMPS], 0, b"Y", &mut image_bytes),
+            Err(Errno::ENOSPC)
+        );
+        assert_eq!(
+            ROOTFS.with(|state| state.dirty_persistent_timestamps.len()),
+            MAX_DIRTY_PERSISTENT_TIMESTAMPS
+        );
+        let mut byte = [0];
+        assert_eq!(read(handles[0], 0, &mut byte, &mut image_bytes), Ok(1));
+        assert_eq!(byte, [b'X']);
+        assert_eq!(lstat(b"/dirty-64").unwrap().st_size, 0);
+        for handle in handles {
+            release_handle(handle);
+        }
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        assert_eq!(lstat(b"/dirty-0").unwrap().st_size, 0);
+        assert_eq!(lstat(b"/dirty-64").unwrap().st_size, 0);
     }
 
     #[test]
