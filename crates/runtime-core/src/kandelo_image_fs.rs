@@ -845,7 +845,8 @@ impl<S: BlockSource> KandeloImageFs<S> {
     /// data one block at a time (via `read_at` into a block-sized buffer so
     /// records never straddle a block boundary). Skips free slots (`ino==0`)
     /// but still advances by `rec_len`; includes `.`/`..` (callers filter).
-    /// On a corrupt record, stops scanning the rest of that block.
+    /// A malformed record fails the whole listing instead of hiding later
+    /// names.
     pub fn read_dir(&self, dir_ino: u32) -> Result<Vec<KandeloImageDirent>, Errno> {
         let st = self.stat_ino(dir_ino)?;
         if file_type(st.mode) != 0x4000 { return Err(Errno::ENOTDIR); }
@@ -856,16 +857,21 @@ impl<S: BlockSource> KandeloImageFs<S> {
         while block_start < size {
             let this = core::cmp::min(BLOCK_SIZE as u64, size - block_start) as usize;
             let n = self.read_at(dir_ino, block_start, &mut block[..this])?;
-            if n == 0 { break; }
+            if n != this {
+                return Err(Errno::EIO);
+            }
             let mut off = 0usize;
-            while off + DIRENT_HEADER <= n {
+            while off < n {
+                if n - off < DIRENT_HEADER {
+                    return Err(Errno::EIO);
+                }
                 let ino = u32::from_le_bytes([block[off], block[off + 1], block[off + 2], block[off + 3]]);
                 let rec_len = u16::from_le_bytes([block[off + 4], block[off + 5]]) as usize;
                 let name_len = u16::from_le_bytes([block[off + 6], block[off + 7]]) as usize;
                 // isValidDirEntry: rec_len>=8 && %4==0 && off+rec_len<=blockEnd && name_len<=rec_len-8
                 if rec_len < DIRENT_HEADER || rec_len % 4 != 0
                     || off + rec_len > n || name_len > rec_len - DIRENT_HEADER {
-                    break; // corrupt: stop scanning this block
+                    return Err(Errno::EIO);
                 }
                 if ino != 0 {
                     out.push(KandeloImageDirent {
@@ -1418,6 +1424,36 @@ mod tests {
         let file_ino = fs.read_dir(ROOT_INO).unwrap().into_iter()
             .find(|e| e.name == b"hello.txt").unwrap().ino;
         assert!(fs.read_dir(file_ino).is_err());
+    }
+
+    #[test]
+    fn read_dir_rejects_a_malformed_record_after_valid_entries() {
+        let mut image = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        let filesystem = KandeloImageFs::mount(image.as_slice()).unwrap();
+        let physical = filesystem.block_map(ROOT_INO, 0).unwrap() as usize * BLOCK_SIZE;
+        let first_len = u16::from_le_bytes(image[physical + 4..physical + 6].try_into().unwrap())
+            as usize;
+        assert!(
+            first_len + DIRENT_HEADER <= filesystem.stat_ino(ROOT_INO).unwrap().size as usize
+        );
+        image[physical + first_len + 4..physical + first_len + 6]
+            .copy_from_slice(&0u16.to_le_bytes());
+
+        let damaged = KandeloImageFs::mount(image.as_slice()).unwrap();
+        assert!(matches!(damaged.read_dir(ROOT_INO), Err(Errno::EIO)));
+    }
+
+    #[test]
+    fn read_dir_rejects_an_incomplete_terminal_record() {
+        let mut image = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        let filesystem = KandeloImageFs::mount(image.as_slice()).unwrap();
+        let inode_offset = filesystem.inode_offset(ROOT_INO) as usize;
+        let size = filesystem.stat_ino(ROOT_INO).unwrap().size;
+        image[inode_offset + INO_SIZE..inode_offset + INO_SIZE + 8]
+            .copy_from_slice(&(size + 1).to_le_bytes());
+
+        let damaged = KandeloImageFs::mount(image.as_slice()).unwrap();
+        assert!(matches!(damaged.read_dir(ROOT_INO), Err(Errno::EIO)));
     }
 
     #[test]

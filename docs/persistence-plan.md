@@ -84,10 +84,11 @@ semantics. Node and browser must expose the same guest-visible behavior.
   requires the new pointer; the reader mounts both. Nonzero file and indirect
   pointers must remain within the declared KIFS data region, including when
   enumerating sparse blocks; otherwise reads fail with `EIO` rather than
-  exposing metadata or a trailing section as file data. VFSI v2 uses a 64-bit
-  body length above the v1 32-bit limit; smaller bodies keep their v1 header. The
-  ABI 51 kernel also boots a synthetic >4 GiB sparse v2 container through Node
-  positioned reads, including a trailer beyond the 32-bit offset boundary,
+  exposing metadata or a trailing section as file data. Malformed directory
+  records likewise fail with `EIO` rather than hiding later names. VFSI v2 uses
+  a 64-bit body length above the v1 32-bit limit; smaller bodies keep their v1
+  header. The ABI 51 kernel also boots a synthetic >4 GiB sparse v2 container
+  through Node positioned reads, including a trailer beyond the 32-bit offset boundary,
   while reading less than 16 MiB. Node now also boots a physical sparse
   >4 GiB v2 file through a worker-owned, bounded positioned reader. A guest
   write survives strict resizable-journal reboot against that file; Node
