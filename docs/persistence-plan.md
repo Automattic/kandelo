@@ -64,10 +64,13 @@ semantics. Node and browser must expose the same guest-visible behavior.
   file. VFSI v2 now uses a 64-bit body length above the v1 32-bit limit;
   v1 images keep their original header. A sparse 4 GiB file can export a v2
   container header with less than 32 MiB of counted writer metadata in a
-  Rust test. Node boots a small v2 container; all three browser engines boot
-  one, commit a guest write, and reopen its journal. A full >4 GiB v2 body is
-  not yet streamed or booted. An 8 GiB sparse file still exceeds the KIFS
-  per-file limit; snapshot planning rejects it with `EFBIG` before mutating
+  Rust test. The ABI 51 kernel also boots a synthetic >4 GiB sparse v2
+  container through Node positioned reads, including a trailer beyond the
+  32-bit offset boundary, while reading less than 16 MiB. Node boots a small
+  v2 container; all three browser engines boot one, commit a guest write, and
+  reopen its journal. A physically exported >4 GiB v2 body is not yet streamed
+  or booted. An 8 GiB sparse file still exceeds the KIFS per-file limit;
+  snapshot planning rejects it with `EFBIG` before mutating
   an image writer, clears any earlier export plan, and leaves the live journal
   usable. Sparse holes still consume physical body blocks on export. A 772 MiB
   snapshot now boots under the 768 MiB kernel ceiling on all three browser
