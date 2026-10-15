@@ -7,6 +7,7 @@ const CHUNK_BYTES = 1024 * 1024;
 export interface StagedRootfsImageStorage {
   writeAllAt(offset: number, bytes: Uint8Array): void;
   readExactAt(offset: number, bytes: Uint8Array): void;
+  setSize(length: number): void;
   flush(): void;
   getSize(): number;
 }
@@ -26,6 +27,9 @@ export function writeAndVerifyRootfsImage(
   stream: (visit: (offset: number, bytes: Uint8Array) => void) => number,
   storage: StagedRootfsImageStorage,
 ): OpfsImageIntegrity {
+  if (storage.getSize() !== 0) {
+    throw new Error("rootfs export requires an empty staging file");
+  }
   const chunkSha256: string[] = [];
   let chunkHash = sha256.create();
   let chunkUsed = 0;
@@ -34,7 +38,9 @@ export function writeAndVerifyRootfsImage(
     if (offset !== written || bytes.byteLength === 0 || !Number.isSafeInteger(offset + bytes.byteLength)) {
       throw new Error("rootfs export has an invalid chunk boundary");
     }
-    storage.writeAllAt(offset, bytes);
+    if (bytes.some((byte) => byte !== 0)) {
+      storage.writeAllAt(offset, bytes);
+    }
     let consumed = 0;
     while (consumed < bytes.byteLength) {
       const count = Math.min(CHUNK_BYTES - chunkUsed, bytes.byteLength - consumed);
@@ -55,6 +61,7 @@ export function writeAndVerifyRootfsImage(
   if (chunkUsed !== 0) {
     chunkSha256.push(bytesToHex(chunkHash.digest()));
   }
+  storage.setSize(length);
   storage.flush();
   if (storage.getSize() !== length) {
     throw new Error("rootfs export staging file has an invalid length");

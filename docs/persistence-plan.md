@@ -72,10 +72,16 @@ semantics. Node and browser must expose the same guest-visible behavior.
   or booted. An 8 GiB sparse file still exceeds the KIFS per-file limit;
   snapshot planning rejects it with `EFBIG` before mutating
   an image writer, clears any earlier export plan, and leaves the live journal
-  usable. Sparse holes still consume physical body blocks on export. A 772 MiB
-  snapshot now boots under the 768 MiB kernel ceiling on all three browser
-  engines, but this is a narrow acceptance case, not a general memory or
+  usable. Sparse holes still occupy KIFS body block addresses on export. A
+  772 MiB snapshot now boots under the 768 MiB kernel ceiling on all three
+  browser engines, but this is a narrow acceptance case, not a general memory or
   performance bound.
+
+Staged snapshot output now omits write calls for all-zero chunks, extends the
+file to the complete logical length, flushes it, and reads back every chunk,
+including unwritten ranges, before returning per-chunk digests. This reduces
+explicit zero writes but does not change KIFS block allocation or guarantee
+that an OPFS implementation stores those ranges sparsely.
 
 The first >RAM acceptance target is deliberately read-only. It proves that
 boot and image reads no longer require an image-sized allocation before
