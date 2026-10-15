@@ -5558,26 +5558,7 @@ export class CentralizedKernelWorker {
       throw new Error("indexed rootfs persistence requires a valid checkpoint boundary");
     }
     const observed = { failure: null as { cause: unknown } | null };
-    const monitor = (backing: PersistentOverlayStorage): PersistentOverlayStorage => {
-      const call = <Result>(operation: () => Result): Result => {
-        try {
-          return operation();
-        } catch (error) {
-          if (!(error instanceof OverlayStorageUnexpectedEofError)) {
-            observed.failure ??= { cause: error };
-          }
-          throw error;
-        }
-      };
-      return {
-        len: () => call(() => backing.len()),
-        readExactAt: (offset, destination) => call(() => backing.readExactAt(offset, destination)),
-        writeAllAt: (offset, source) => call(() => backing.writeAllAt(offset, source)),
-        flush: () => call(() => backing.flush()),
-        truncate: (length) => call(() => backing.truncate(length)),
-        close: () => backing.close(),
-      };
-    };
+    const monitor = (backing: PersistentOverlayStorage) => this.#monitorPersistentOverlayStorage(backing, observed);
     this.#kernel.setPersistentOverlayStorage(monitor(storage));
     this.#kernel.setPersistentOverlayTargetStorage(index === undefined ? null : monitor(index));
     this.#kernel.setPersistentOverlayCompactionStorage(null);
@@ -5629,6 +5610,65 @@ export class CentralizedKernelWorker {
   #persistentOverlayActiveStorage: PersistentOverlayStorage | null = null;
   #preparedOverlayStorage: PersistentOverlayStorage | null = null;
   #preparedOverlayIndexStorage: PersistentOverlayStorage | null = null;
+
+  #monitorPersistentOverlayStorage(
+    backing: PersistentOverlayStorage,
+    observed: { failure: { cause: unknown } | null },
+  ): PersistentOverlayStorage {
+    const call = <Result>(operation: () => Result): Result => {
+      try {
+        return operation();
+      } catch (error) {
+        if (!(error instanceof OverlayStorageUnexpectedEofError)) {
+          observed.failure ??= { cause: error };
+        }
+        throw error;
+      }
+    };
+    return {
+      len: () => call(() => backing.len()),
+      readExactAt: (offset, destination) => call(() => backing.readExactAt(offset, destination)),
+      writeAllAt: (offset, source) => call(() => backing.writeAllAt(offset, source)),
+      flush: () => call(() => backing.flush()),
+      truncate: (length) => call(() => backing.truncate(length)),
+      close: () => backing.close(),
+    };
+  }
+
+  convertUnindexedFixedRootfsPersistence(
+    source: PersistentOverlayStorage,
+    target: PersistentOverlayStorage,
+    index: PersistentOverlayStorage,
+  ): void {
+    if (this.#persistentOverlayActiveStorage !== null) {
+      throw new Error("legacy rootfs conversion requires an unmounted journal");
+    }
+    const observed = { failure: null as { cause: unknown } | null };
+    let status: number | undefined;
+    try {
+      this.#setPersistentOverlaySlot(0, this.#monitorPersistentOverlayStorage(source, observed));
+      this.#setPersistentOverlaySlot(1, this.#monitorPersistentOverlayStorage(target, observed));
+      this.#setPersistentOverlaySlot(2, this.#monitorPersistentOverlayStorage(index, observed));
+      this.#runImmediateKernelEntry("convert unindexed fixed rootfs persistence", (entry) => {
+        const convert = this.#kernelInstanceForEntry(entry).exports
+          .kernel_rootfs_convert_unindexed_fixed_persistence as (() => number) | undefined;
+        if (typeof convert !== "function") throw new Error("kernel lacks unindexed fixed rootfs persistence conversion export");
+        status = convert();
+        return undefined;
+      });
+      if (observed.failure !== null) {
+        throw new Error(
+          `persistent overlay host storage failed during legacy conversion: ${String(observed.failure.cause)}`,
+          observed.failure,
+        );
+      }
+      if (status !== 0) throw new RejectedOverlayGenerationError("fixed", -(status ?? 5));
+    } finally {
+      this.#setPersistentOverlaySlot(0, null);
+      this.#setPersistentOverlaySlot(1, null);
+      this.#setPersistentOverlaySlot(2, null);
+    }
+  }
 
   #setPersistentOverlaySlot(slot: 0 | 1 | 2, storage: PersistentOverlayStorage | null): void {
     if (slot === 0) this.#kernel.setPersistentOverlayStorage(storage);

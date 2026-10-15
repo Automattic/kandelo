@@ -61,6 +61,7 @@ export async function enableBestOverlayGeneration(
   files: OverlayGenerationFiles,
   enable: (journal: PersistentOverlayStorage, index?: PersistentOverlayStorage, checkpointEnd?: number) => void,
   requireExisting = false,
+  convertLegacy?: (source: PersistentOverlayStorage, target: PersistentOverlayStorage, index: PersistentOverlayStorage) => void,
 ): Promise<SelectedOverlayGeneration> {
   const candidates: Candidate[] = [];
   let foundGenerationFile = false;
@@ -149,6 +150,63 @@ export async function enableBestOverlayGeneration(
       const legacyLength = legacy.len();
       if ((foundGenerationFile || requireExisting) && legacyLength === 0) {
         throw new NoValidOverlayGenerationError();
+      }
+      if (legacyLength >= 32 * 1024 * 1024 && convertLegacy !== undefined) {
+        let target: PersistentOverlayStorage | null = null;
+        let index: PersistentOverlayStorage | null = null;
+        let seal: PersistentOverlayStorage | null = null;
+        let published = false;
+        let failure: unknown;
+        try {
+          target = await files.open("g0", "journal", true);
+          index = await files.open("g0", "index", true);
+          seal = await files.open("g0", "seal", true);
+          if (target === null || index === null || seal === null) {
+            throw new Error("could not open persistent overlay legacy conversion files");
+          }
+          seal.truncate(0);
+          seal.flush();
+          target.truncate(0);
+          target.flush();
+          index.truncate(0);
+          index.flush();
+          convertLegacy(legacy, target, index);
+          const header = new Uint8Array(40);
+          legacy.readExactAt(0, header);
+          const baseDigest = header.slice(8, 40);
+          writeOverlayGenerationSealSync(target, seal, 1, baseDigest, index,
+            { slot: "legacy", journalLength: legacyLength });
+          verifyOverlayGenerationSealSync(target, seal, baseDigest, false, index);
+          const sealedLength = target.len();
+          enable(target, index, sealedLength);
+          legacy.close();
+          published = true;
+          return { journal: target, index, slot: "g0", generation: 1, sealedLength };
+        } catch (error) {
+          failure = error instanceof RejectedOverlayGenerationError && error.errno === ERRNO.EIO
+            ? new NoValidOverlayGenerationError() : error;
+          throw failure;
+        } finally {
+          const cleanupFailures: unknown[] = [];
+          const close = (storage: PersistentOverlayStorage | null) => {
+            try {
+              storage?.close();
+            } catch (error) {
+              cleanupFailures.push(error);
+            }
+          };
+          close(seal);
+          if (!published) {
+            close(index);
+            close(target);
+          }
+          if (cleanupFailures.length > 0) {
+            throw new AggregateError(
+              failure === undefined ? cleanupFailures : [failure, ...cleanupFailures],
+              "persistent overlay legacy conversion cleanup failed",
+            );
+          }
+        }
       }
       try {
         enable(legacy);

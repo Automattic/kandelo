@@ -554,10 +554,19 @@ transaction during replay instead of reading the full prefix once for hashing
 and again for replay; an I/O-count test covers the journal read volume. It
 still scans the entire prefix. Live
 compaction and a write-stop limit bound the active tail;
-fixed-overwrite compaction's target map is no longer resident. The old
-unindexed journal still needs its initial full-map recovery before conversion.
-Small legacy and v1 journals continue to use the full-memory map until they
-cross the boot-time compaction threshold; no conversion silently resets them.
+fixed-overwrite compaction's target map is no longer resident. An oversized
+unindexed fixed-overwrite journal now converts before mount: the kernel
+validates complete source transactions into checksummed 96-byte block
+references, sorts them through the target and index files in bounded 384 KiB
+runs, selects the last update per block, and emits a canonical v5 journal and
+checkpoint. The
+source is left untouched and the host seals the target only after conversion
+and readback; an incomplete target is ignored on the next boot. Small legacy
+and v1 journals retain their existing recovery path. Oversized unindexed
+resizable journals still require a bounded metadata-and-block conversion path.
+Conversion needs quota for the temporary sorted references and target journal;
+an `ENOSPC` failure does not publish the target or discard the source. Peak
+resident memory and conversion latency on a near-capacity image remain unmeasured.
 
 Compacted resizable generations now write a version 4 checkpoint with a
 sorted, checksummed metadata table in the same sidecar as the block table.
@@ -590,8 +599,7 @@ New compacted fixed-overwrite generations use version 5 of the checkpoint
 sidecar to mark their block stream as canonical. Boot checks every indexed
 block against the corresponding journal mutation with the same bounded page
 cache and rejects a false location or digest with `EIO`. Existing version 1/2
-fixed indexes stay readable through their older recovery path; unindexed
-legacy journals still need a bounded conversion path. Node and all three
+fixed indexes stay readable through their older recovery path. Node and all three
 browser engines now exercise a re-sealed, internally checksummed v5 index
 with a false block digest and recover through the prior valid generation.
 

@@ -1317,6 +1317,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
       },
       msg.requireExistingRootfsPersistence,
+      resizable ? undefined : (source, target, index) => kernelWorker.convertUnindexedFixedRootfsPersistence(source, target, index),
     );
     const handoff = {
       prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
