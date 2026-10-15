@@ -566,6 +566,70 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   });
 
+  it.each(["write", "flush"] as const)("does not publish a failed persistent rename through %s fault on the Node channel", async (fault) => {
+    const image = await makeImage("abcdefgh");
+    const worker = createCentralizedKernelWorkerTestDouble({
+      config: { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      io: new NodePlatformIO(),
+    });
+    configureRootfsOverlayFromImage(worker, {
+      imageLength: image.byteLength,
+      imageRead: (offset, destination) => {
+        const bytes = image.subarray(offset, offset + destination.byteLength);
+        destination.set(bytes);
+        return bytes.byteLength;
+      },
+      foreignPrefixes: [],
+      nosuid: false,
+    });
+    const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
+    await worker.init(kernelBytes.buffer.slice(kernelBytes.byteOffset, kernelBytes.byteOffset + kernelBytes.byteLength));
+    const storage = new FaultingMemoryOverlayStorage();
+    worker.enableResizableRootfsPersistence(storage);
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
+    const pid = worker.createProcess(CAPTURED_STDIO);
+    expect(worker.setBrkBase(pid, 0x10000)).toBe(true);
+    const [channel] = worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid,
+      memory,
+      channelOffsets: [0x1e0000],
+      pointerWidth: 4,
+    });
+    const processBytes = new Uint8Array(memory.buffer);
+    processBytes.set(encoder.encode("/state\0"), 1024);
+    processBytes.set(encoder.encode("/renamed\0"), 2048);
+    storage.fault = fault;
+    const view = new DataView(memory.buffer, channel.channelOffset);
+    view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+    view.setUint32(CH_SYSCALL, ABI_SYSCALLS.Rename, true);
+    view.setBigInt64(CH_ARGS, 1024n, true);
+    view.setBigInt64(CH_ARGS + CH_ARG_SIZE, 2048n, true);
+    worker.testAuthority.dispatchScratchBoundarySyscallForTest(channel);
+    expect(view.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(Number(view.getBigInt64(CH_RETURN, true))).toBe(-1);
+    expect(view.getUint32(CH_ERRNO, true)).toBe(ERRNO.ENOSPC);
+    expect(new TextDecoder().decode(worker.rootfsInspectFile("/state"))).toBe("abcdefgh");
+    expect(() => worker.rootfsInspectFile("/renamed")).toThrow();
+
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-rename-fault-"));
+    const path = join(directory, "machine.journal");
+    try {
+      writeFileSync(path, storage.bytes);
+      const reopened = await boot(image, path, true, true);
+      try {
+        const state = await reopened.readFileFromVfs("/state");
+        const renamed = await reopened.readFileFromVfs("/renamed");
+        expect([state, renamed].filter((bytes) => bytes !== null)).toHaveLength(1);
+        expect(new TextDecoder().decode(state ?? renamed!)).toBe("abcdefgh");
+        if (fault === "write") expect(state).not.toBeNull();
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(guestProgramPath === null)("refuses to reset a restored computer whose journal disappeared", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-missing-journal-"));
     const path = join(directory, "machine.journal");

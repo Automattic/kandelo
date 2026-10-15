@@ -489,6 +489,15 @@ a fresh worker boot. The same Node channel now exercises the positioned
 filesystem adapter with a host-backed file: failure before a write, after a
 128-byte short write, and at flush each reports `ENOSPC`; a fresh worker
 recovers only the prior intact data or a complete flushed transaction.
+Resizable namespace fault coverage now injects failed journal writes into
+rename, rename-over-existing, unlink, and hard-link transactions in Rust:
+each leaves the live and reopened names and link counts unchanged. The Node
+kernel channel checks rename write and flush failures, while Chromium,
+Firefox, and WebKit check
+OPFS write, torn-write, and flush failures. A failed rename reports `ENOSPC`
+without publishing the new name in memory. Reboot recovers the old name after
+a failed write; after a failed flush, it may recover either the old or the
+complete new name, never a partial rename.
 
 This does not yet cover every host write and flush failure point, so the
 dirty-cache milestone remains open.
