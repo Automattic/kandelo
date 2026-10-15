@@ -1,6 +1,6 @@
 import {
   closeSync, existsSync, ftruncateSync, mkdtempSync, openSync, readFileSync,
-  rmSync, writeSync,
+  rmSync, statSync, writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -22,6 +22,7 @@ const haveKernel = kernelPath !== null;
 const haveBlockForever = existsSync(blockForeverPath);
 const haveSpawnSmoke = existsSync(spawnSmokePath);
 const haveWasiHello = existsSync(wasiHelloPath);
+const largeImageFixture = process.env.KANDELO_LARGE_VFSI_FIXTURE;
 
 /**
  * The exported container's deferred files, read through the reader that
@@ -140,6 +141,61 @@ async function createExecutableRootfs(
 }
 
 describe("NodeKernelHost rootfs export contract", () => {
+  it.skipIf(!haveKernel || !largeImageFixture)("exports and reboots a physical >4 GiB dense VFSI body", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-large-node-export-"));
+    const snapshotPath = join(directory, "snapshot.vfs");
+    const kernel = asArrayBuffer(new Uint8Array(readFileSync(kernelPath!)));
+    const boot = async (imagePath: string, integrity?: Awaited<ReturnType<NodeKernelHost["exportRootfsImageToFile"]>>) => {
+      const host = new NodeKernelHost({ rootfsImageFile: imagePath, rootfsImageIntegrity: integrity });
+      try {
+        await host.init(kernel);
+        return host;
+      } catch (error) {
+        await host.destroy();
+        throw error;
+      }
+    };
+    try {
+      const rssBefore = process.memoryUsage.rss();
+      const first = await boot(largeImageFixture!);
+      let integrity: Awaited<ReturnType<NodeKernelHost["exportRootfsImageToFile"]>>;
+      try {
+        expect((await first.statVfsPath("/large"))?.size).toBe(2 ** 32 - 16 * 1024 * 1024);
+        integrity = await first.exportRootfsImageToFile(snapshotPath);
+        expect(integrity.length).toBeGreaterThan(2 ** 32);
+        expect(statSync(snapshotPath).size).toBe(integrity.length);
+        expect(process.memoryUsage.rss() - rssBefore).toBeLessThan(1024 * 1024 * 1024);
+        const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      const rebooted = await boot(snapshotPath, integrity);
+      try {
+        expect((await rebooted.statVfsPath("/large"))?.size).toBe(2 ** 32 - 16 * 1024 * 1024);
+        const { exit } = await rebooted.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
+        expect(await exit).toBe(0);
+        expect(new TextDecoder().decode((await rebooted.readFileFromVfs("/state"))!)).toBe("before\n");
+      } finally {
+        await rebooted.destroy();
+      }
+      const changed = openSync(snapshotPath, "r+");
+      try {
+        writeSync(changed, Uint8Array.of(0xff), 0, 1, 2 ** 32 + 1024);
+      } finally {
+        closeSync(changed);
+      }
+      const damaged = new NodeKernelHost({ rootfsImageFile: snapshotPath, rootfsImageIntegrity: integrity });
+      try {
+        await expect(damaged.init(kernel)).rejects.toThrow("rootfs image file is damaged");
+      } finally {
+        await damaged.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 1_200_000);
+
   it.skipIf(!haveKernel)("boots a physical >4 GiB VFSI file and recovers guest writes", async () => {
     const original = await createRootfs();
     const originalBodyLength = new DataView(
