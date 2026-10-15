@@ -7,14 +7,18 @@ import { resolveBinary } from "../../../host/src/binary-resolver";
 const imagePath = process.env.KANDELO_WORDPRESS_FRANKENPHP_VFS;
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const churnRequests = Number(process.env.KANDELO_FRANKENPHP_CHURN_REQUESTS ?? "0");
+const editorBurstRounds = Number(process.env.KANDELO_FRANKENPHP_EDITOR_BURST_ROUNDS ?? "0");
 if (!Number.isSafeInteger(churnRequests) || churnRequests < 0 || churnRequests > 40) {
   throw new Error("KANDELO_FRANKENPHP_CHURN_REQUESTS must be an integer from 0 to 40");
 }
+if (!Number.isSafeInteger(editorBurstRounds) || editorBurstRounds < 0 || editorBurstRounds > 20) {
+  throw new Error("KANDELO_FRANKENPHP_EDITOR_BURST_ROUNDS must be an integer from 0 to 20");
+}
 
 for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
-  test(`WordPress on ${serviceName} serves PHP in the Chromium kernel host`, async ({ page, baseURL, browserName }) => {
+  test(`WordPress on ${serviceName} serves PHP in the browser kernel host`, async ({ page, baseURL, browserName }) => {
     test.setTimeout(240_000);
-    test.skip(browserName !== "chromium", "FrankenPHP WordPress browser gate uses Chromium");
+    test.skip(browserName !== "chromium" && browserName !== "firefox", "FrankenPHP WordPress browser-host gate uses Chromium and Firefox");
     test.skip(!imagePath, "Build the WordPress image and set KANDELO_WORDPRESS_FRANKENPHP_VFS");
     expect(baseURL).toBeTruthy();
 
@@ -33,7 +37,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     }));
     await page.goto(new URL("/trap-signal-test.html", baseURL!).href);
 
-    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, churnRequests, serviceName }) => {
+    const result = await page.evaluate(async ({ imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, serviceName }) => {
       const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
       const [imageResponse, kernelResponse] = await Promise.all([fetch(imageUrl), fetch(kernelUrl)]);
       if (!imageResponse.ok || !kernelResponse.ok) throw new Error("WordPress test artifacts failed to load");
@@ -117,6 +121,31 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
             Cookie: loginCookie ?? "",
           }, body: null,
         }, { timeoutMs: 60_000 });
+        const editorHtml = decoder.decode(editor.body);
+        if (editorBurstRounds > 0) {
+          const restNonce = /var wpApiSettings = \{[^;]*"nonce":"([^"]+)"/.exec(editorHtml)?.[1];
+          const compressionNonce = /var compressionNonce = "([^"]+)"/.exec(editorHtml)?.[1];
+          if (!restNonce || !compressionNonce) throw new Error("Editor request nonces are missing");
+          for (let round = 0; round < editorBurstRounds; round += 1) {
+            const responses = await Promise.all([
+              kernel.fetchInKernel(8080, {
+                method: "GET",
+                url: "/index.php?rest_route=%2Fwp%2Fv2%2Fpages&context=edit&per_page=100&_fields=id%2Clink%2Cmenu_order%2Cparent%2Ctitle%2Ctype&orderby=menu_order&order=asc&_locale=user",
+                headers: { Host: "localhost:8080", Cookie: loginCookie ?? "", "X-WP-Nonce": restNonce },
+                body: null,
+              }, { timeoutMs: 30_000 }),
+              kernel.fetchInKernel(8080, {
+                method: "GET",
+                url: `/wp-admin/admin-ajax.php?action=wp-compression-test&test=no&_ajax_nonce=${compressionNonce}&round=${round}`,
+                headers: { Host: "localhost:8080", Cookie: loginCookie ?? "" },
+                body: null,
+              }, { timeoutMs: 30_000 }),
+            ]);
+            if (responses.some((response) => response.status !== 200)) {
+              throw new Error(`Editor burst ${round} returned ${responses.map((response) => response.status).join(", ")}`);
+            }
+          }
+        }
         for (let index = 0; index < churnRequests; index += 1) {
           const isLogin = index % 2 === 1;
           const response = await kernel.fetchInKernel(8080, {
@@ -141,12 +170,16 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
           editorStatus: editor.status,
           editorBody: decoder.decode(editor.body).slice(0, 500),
           churnCompleted: churnRequests,
+          editorBurstCompleted: editorBurstRounds,
           serviceLog: decoder.decode(serviceLog),
           diagnostics,
           stderr,
         };
       } catch (error) {
-        const log = await kernel.readFileFromVfs(`/var/log/${serviceName}.log`).catch(() => null);
+        const log = await Promise.race([
+          kernel.readFileFromVfs(`/var/log/${serviceName}.log`).catch(() => null),
+          new Promise<null>((resolveLog) => setTimeout(() => resolveLog(null), 5_000)),
+        ]);
         throw new Error(`${String(error)}\nstdout=${stdout.slice(-1000)}\nstderr=${stderr.slice(-1000)}\nlog=${log ? decoder.decode(log).slice(-3000) : "missing"}`);
       } finally {
         if (dinitPid !== 0) await kernel.signalProcess(dinitPid, 15).catch(() => {});
@@ -156,9 +189,9 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
         ]);
         await kernel.destroy();
       }
-    }, { imageUrl, kernelUrl, browserKernelUrl, churnRequests, serviceName });
+    }, { imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, serviceName });
 
-    expect(result.homepageStatus).toBe(200);
+    expect(result.homepageStatus, `${result.homepageBody.slice(-1000)}\n${result.serviceLog.slice(-3000)}\n${result.stderr.slice(-1000)}\n${JSON.stringify(result.diagnostics)}`).toBe(200);
     expect(result.homepageBody).toContain("WordPress on Kandelo");
     expect(result.homepageBody).not.toContain("id=\"setup\"");
     expect(result.loginStatus).toBe(200);
@@ -166,6 +199,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     expect(result.loginPostStatus).toBe(302);
     expect(result.editorStatus, `${result.editorBody}\n${result.serviceLog.slice(-3000)}`).toBe(200);
     expect(result.churnCompleted).toBe(churnRequests);
+    expect(result.editorBurstCompleted).toBe(editorBurstRounds);
     expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? '"num_threads":6' : "num_threads=6");
     expect(result.diagnostics).toEqual([]);
     expect(result.stderr).not.toContain("panic");

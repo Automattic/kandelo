@@ -3447,3 +3447,43 @@ touch the Go standard library, contrary to the preference against a pile
 of survival patches; discuss a small, upstreamable design before changing
 that library. No Go or package-source change was kept. The WebKit demo
 still fails; Node, Chromium, and Firefox results are unaffected.
+
+**2026-10-15 — Longer editor and authenticated-write validation.** The
+ABI-50 SourceOnly WordPress/Caddy profile passed the full browser UI test
+in Chromium and Firefox with 180-second editor soaks (18 repeated editor
+GETs per engine). A new browser test logs in through the demo guide, uses
+WordPress's own REST nonce to publish and update a post, checks both
+versions through frontend HTTP, and deletes the post. It passes for both
+FrankenPHP classic and FrankenPHP+Caddy in Chromium and Firefox (4/4).
+The same create/read/update/read/delete path passed through the Caddy Node
+demo. These checks establish authenticated SQLite-backed writes in those
+hosts; they do not prove every site-editor UI save flow.
+
+The earlier unattended Node Caddy demo then ended after roughly 3 hours
+41 minutes: dinit reported the Caddy process exited with code 2, but dinit
+itself returned 0, so the old demo helper misleadingly reported success.
+Its guest service log was not captured, leaving the cause unknown. The
+shared server-demo helper now treats any unrequested dinit exit as failure
+and can print a selected guest service log before teardown; the Caddy demo
+selects `/var/log/frankenphp-caddy.log`. A focused Vitest case passes for
+both the nonzero exit and log output. A fresh Node Caddy demo is running
+with that diagnostic path, but long-idle stability is not yet established.
+
+The classic profile also failed once in the Firefox browser UI during a
+30-second site-editor soak: its process exited with code 2 amid Gutenberg's
+concurrent REST and compression-test requests, leaving the HTTP bridge with
+no listener. The VFS inspector becomes unavailable after init exits, so the
+guest service log was not captured and the cause remains unknown. A direct
+Firefox kernel-host test with eight rounds of those two concurrent request
+types passed; three subsequent Firefox UI editor reruns also passed. This
+is an intermittent failure, not evidence that the issue is fixed. A
+temporary browser-app log probe was removed after those runs. The Node
+FrankenPHP demo helpers now capture bounded service-log tails on unexpected
+init exit, with a five-second read timeout, so a future long-run failure
+can retain its guest diagnostics without leaving the helper hanging.
+
+The expanded direct browser-host gate passed its eight-round editor burst
+for both profiles in Chromium and for classic in Firefox. Caddy's first
+homepage request returned 504 once in Firefox after the 30-second request
+deadline; two isolated Firefox Caddy reruns passed. No guest crash was
+observed in that case, but the intermittent timeout still needs diagnosis.

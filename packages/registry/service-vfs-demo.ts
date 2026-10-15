@@ -257,10 +257,28 @@ export function trackDinitExit(exitPromise: Promise<number>): () => boolean {
   return () => exited;
 }
 
-export async function finishWhenDinitExits(host: NodeKernelHost, exitPromise: Promise<number>): Promise<never> {
+export async function finishWhenDinitExits(
+  host: NodeKernelHost,
+  exitPromise: Promise<number>,
+  serviceLogPath?: string,
+): Promise<never> {
   const status = await exitPromise;
+  if (serviceLogPath) {
+    try {
+      const serviceLog = await Promise.race([
+        host.readFileFromVfs(serviceLogPath),
+        new Promise<null>((_, reject) => setTimeout(() => reject(new Error("log read timed out after 5s")), 5_000)),
+      ]);
+      if (serviceLog) {
+        const tail = serviceLog.subarray(Math.max(0, serviceLog.byteLength - 16_384));
+        console.error(`${serviceLogPath}:\n${new TextDecoder().decode(tail)}`);
+      }
+    } catch (error) {
+      console.error(`Could not read ${serviceLogPath}: ${String(error)}`);
+    }
+  }
   await host.destroy().catch(() => {});
-  process.exit(status);
+  process.exit(status || 1);
 }
 
 function connectOnce(port: number, timeoutMs: number): Promise<void> {

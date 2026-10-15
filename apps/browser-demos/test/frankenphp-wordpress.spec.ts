@@ -80,20 +80,108 @@ for (const demo of [
     let visibleSyslog = "";
     let processes = "";
     if (editorResult.status !== 200) {
-      await page.getByRole("button", { name: "Internals" }).click();
-      visibleSyslog = (await page.locator(".ksys-line").allTextContents()).slice(-100).join("\n");
-      await page.getByRole("tab", { name: "Procs" }).click();
-      processes = (await page.locator(".ktable").allTextContents()).join("\n");
-      await page.getByRole("tab", { name: "VFS" }).click();
-      for (const segment of ["var", "log"]) {
-        await page.locator(".ktable tr", { has: page.locator("td", { hasText: new RegExp(`^${segment}/$`) }) }).click();
+      try {
+        await page.getByRole("button", { name: "Internals" }).click({ timeout: 5_000 });
+        visibleSyslog = (await page.locator(".ksys-line").allTextContents()).slice(-100).join("\n");
+        await page.getByRole("tab", { name: "Procs" }).click({ timeout: 5_000 });
+        processes = (await page.locator(".ktable").allTextContents()).join("\n");
+        await page.getByRole("tab", { name: "VFS" }).click({ timeout: 5_000 });
+        for (const segment of ["var", "log"]) {
+          await page.locator(".ktable tr", { has: page.locator("td", { hasText: new RegExp(`^${segment}/$`) }) }).click({ timeout: 5_000 });
+        }
+        await page.locator(".ktable tr", { has: page.locator("td", { hasText: demo.serviceLog }) }).click({ timeout: 5_000 });
+        serviceLog = await page.locator(".kinternals-surface pre").last().textContent() ?? "";
+      } catch (error) {
+        serviceLog = `Service-log inspection unavailable: ${String(error)}`;
       }
-      await page.locator(".ktable tr", { has: page.locator("td", { hasText: demo.serviceLog }) }).click();
-      serviceLog = await page.locator(".kinternals-surface pre").last().textContent() ?? "";
     }
+    const dockStatus = (await page.locator(".kdock-status-text").allTextContents()).join("\n");
     expect(editorLoaded, `url=${page.url()}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(-10000)}`).toBe(true);
-    expect(editorResult.status, `url=${page.url()} samples=${samples.join(",")}\n${editorResult.body}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(-10000)}\n${browserDiagnostics.slice(-100).join("\n")}`).toBe(200);
+    expect(editorResult.status, `url=${page.url()} samples=${samples.join(",")} dock=${dockStatus}\n${editorResult.body}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(-10000)}\n${browserDiagnostics.slice(-100).join("\n")}`).toBe(200);
 
+    await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
+  });
+
+  test(`${demo.title} persists authenticated post edits`, async ({ page }) => {
+    test.setTimeout(300_000);
+    test.skip(process.env.KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS !== "1", "Build and project WordPress, then set KANDELO_WORDPRESS_FRANKENPHP_UI_TESTS=1");
+    await gotoMachine(page, demo.profile);
+    const frame = page.frameLocator(`iframe[title="${demo.title}"]`);
+    await expect(frame.locator("body")).toContainText("WordPress on Kandelo", { timeout: 240_000 });
+    if (!(await page.locator("aside.kdemo").count())) {
+      await page.getByRole("button", { name: "Demo guide" }).click();
+    }
+    await page.getByRole("button", { name: /Log in as admin/i }).click();
+    await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first())
+      .toBeVisible({ timeout: 120_000 });
+    await expect.poll(async () => {
+      try {
+        return await frame.locator("body").evaluate(() =>
+          /\/wp-admin\/(?:index\.php)?$/.test(location.pathname) && document.readyState === "complete");
+      } catch {
+        return false;
+      }
+    }, { timeout: 120_000 }).toBe(true);
+
+    const appPrefix = await machineAppPrefix(page, demo.title);
+    const result = await frame.locator("body").evaluate(async (_body, prefix) => {
+      const settings = (window as Window & {
+        wpApiSettings?: { root: string; nonce: string };
+      }).wpApiSettings;
+      if (!settings?.root || !settings.nonce) throw new Error("WordPress REST settings are missing");
+      const headers = { "Content-Type": "application/json", "X-WP-Nonce": settings.nonce };
+      const fetchChecked = async (url: string, init?: RequestInit): Promise<Response> => {
+        try {
+          return await fetch(url, init);
+        } catch (error) {
+          throw new Error(`Fetch ${url} from ${location.href} failed: ${String(error)}`);
+        }
+      };
+      const createUrl = `${settings.root}wp/v2/posts`;
+      const createResponse = await fetchChecked(createUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ title: "Kandelo edit probe", content: "<p>First version</p>", status: "publish" }),
+      });
+      const createBody = await createResponse.text();
+      if (createResponse.status !== 201) throw new Error(`Post create failed: ${createResponse.status} ${createBody.slice(0, 500)}`);
+      const postId = (JSON.parse(createBody) as { id: number }).id;
+      if (!Number.isSafeInteger(postId) || postId < 1) throw new Error(`Invalid post ID: ${postId}`);
+
+      const firstResponse = await fetchChecked(`${prefix}?p=${postId}`, { cache: "no-store" });
+      const firstBody = await firstResponse.text();
+      const updateResponse = await fetchChecked(`${settings.root}wp/v2/posts/${postId}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ content: "<p>Updated version</p>" }),
+      });
+      const updateBody = await updateResponse.text();
+      if (updateResponse.status !== 200) throw new Error(`Post update failed: ${updateResponse.status} ${updateBody.slice(0, 500)}`);
+      const secondResponse = await fetchChecked(`${prefix}?p=${postId}`, { cache: "no-store" });
+      const secondBody = await secondResponse.text();
+      const deleteUrl = new URL(`${settings.root}wp/v2/posts/${postId}`);
+      deleteUrl.searchParams.set("force", "true");
+      const deleteResponse = await fetchChecked(deleteUrl.href, { method: "DELETE", headers });
+      const deleteBody = await deleteResponse.text();
+      return {
+        firstStatus: firstResponse.status,
+        firstContent: firstBody.includes("First version"),
+        updateStatus: updateResponse.status,
+        secondStatus: secondResponse.status,
+        secondContent: secondBody.includes("Updated version"),
+        deleteStatus: deleteResponse.status,
+        deleted: (JSON.parse(deleteBody) as { deleted?: boolean }).deleted,
+      };
+    }, appPrefix);
+    expect(result).toEqual({
+      firstStatus: 200,
+      firstContent: true,
+      updateStatus: 200,
+      secondStatus: 200,
+      secondContent: true,
+      deleteStatus: 200,
+      deleted: true,
+    });
     await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
   });
 }

@@ -41,4 +41,4 @@ await waitForHttp(`http://localhost:${port}/`, 180_000, dinitExited);
 
 console.log(`WordPress on Kandelo FrankenPHP + Caddy: http://localhost:${port}/`);
 console.log(`Admin: http://localhost:${port}/wp-admin/`);
-await finishWhenDinitExits(host, exitPromise);
+await finishWhenDinitExits(host, exitPromise, "/var/log/frankenphp-caddy.log");

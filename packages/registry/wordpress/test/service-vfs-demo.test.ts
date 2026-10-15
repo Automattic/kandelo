@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { waitForHttp } from "../../service-vfs-demo";
+import { finishWhenDinitExits, waitForHttp } from "../../service-vfs-demo";
 
 const servers = new Set<Server>();
 
@@ -39,5 +39,49 @@ describe("service VFS HTTP readiness", () => {
     await waitForHttp(`http://127.0.0.1:${address.port}/`, 5_000);
 
     expect(requests).toBe(3);
+  });
+});
+
+describe("service VFS supervisor exit", () => {
+  it("reports a service log and fails when dinit exits successfully after serving", async () => {
+    const serviceLog = new TextEncoder().encode("frankenphp-caddy panic");
+    const readFileFromVfs = vi.fn().mockResolvedValue(serviceLog);
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const host = { readFileFromVfs, destroy } as unknown as Parameters<typeof finishWhenDinitExits>[0];
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((status) => {
+      throw new Error(`exit ${status}`);
+    });
+
+    try {
+      await expect(finishWhenDinitExits(host, Promise.resolve(0), "/var/log/frankenphp-caddy.log"))
+        .rejects.toThrow("exit 1");
+      expect(readFileFromVfs).toHaveBeenCalledWith("/var/log/frankenphp-caddy.log");
+      expect(logError).toHaveBeenCalledWith("/var/log/frankenphp-caddy.log:\nfrankenphp-caddy panic");
+      expect(destroy).toHaveBeenCalledOnce();
+      expect(exit).toHaveBeenCalledWith(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("still fails when the service log is unavailable", async () => {
+    const readFileFromVfs = vi.fn().mockRejectedValue(new Error("kernel unavailable"));
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const host = { readFileFromVfs, destroy } as unknown as Parameters<typeof finishWhenDinitExits>[0];
+    const logError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((status) => {
+      throw new Error(`exit ${status}`);
+    });
+
+    try {
+      await expect(finishWhenDinitExits(host, Promise.resolve(0), "/var/log/frankenphp-classic.log"))
+        .rejects.toThrow("exit 1");
+      expect(logError).toHaveBeenCalledWith("Could not read /var/log/frankenphp-classic.log: Error: kernel unavailable");
+      expect(destroy).toHaveBeenCalledOnce();
+      expect(exit).toHaveBeenCalledWith(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });
