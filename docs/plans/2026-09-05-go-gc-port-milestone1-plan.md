@@ -3541,3 +3541,35 @@ gates verify the compiler defect and fix, not the rebuilt WordPress demo.
 Next: rebuild package and image artifacts from the new pin, repeat the
 Firefox editor workflow, and continue diagnosing Caddy's WebKit native
 regexp call-stack overflow.
+
+**2026-10-15 — Rebuilt WordPress on the fixed Go toolchain.**
+The normal resolver built Go hello, FrankenPHP classic, standalone Caddy,
+and FrankenPHP+Caddy from the pinned compiler. The SourceOnly
+`./run.sh build wp-vfs` then published a new WordPress 7.0 image with
+SHA-256 `5b83dc5582e79888fbcd8ea9ff89f0d3690e406082c1b6c6f883f50f37138c62`.
+The public-directory copy still has the prior image hash; these checks
+explicitly select the SourceOnly projection, whose Vite asset URL carries
+the new digest. A pre-existing Vite server on port 5401 had captured an
+older SourceOnly snapshot and rejected the new kernel member size; using
+a fresh test port resolved that test-environment mismatch.
+
+On the new image, Chromium and Firefox each passed the classic and Caddy
+site-editor workflow plus authenticated post create/read/update/read/delete
+(8/8 browser cases, 30-second editor soaks). The previously intermittent
+Firefox classic editor passed twelve further independent 30-second soaks
+(12/12). This is strong evidence for the fixed split-stack check, not proof
+that every editor workload or long-running server is stable. The new Node
+FrankenPHP+Caddy demo serves the homepage and login with HTTP 200. It was
+started while an older Node demo occupied SMTP port 1025, so its startup
+log includes an `EADDRINUSE` for that secondary listener; run it alone
+before treating this as a clean full-service startup gate.
+
+WebKit passed the classic site-editor workflow but the Caddy profile
+still failed before readiness with `Maximum call stack size exceeded`
+in the process worker (one pass, one fail). The compiler preemption fix
+does not address Caddy's separate regexp compilation recursion. Before
+claiming cross-browser or production-ready Caddy support, isolate a
+maintainable general fix for that stack boundary, finish long-uptime
+checks, and repeat paired runtime and user-facing performance comparisons
+with the rebuilt image. Cache GC using the previously chosen one-day age
+and ABI-50 floor reclaimed 19.5 GiB before the image rebuild.
