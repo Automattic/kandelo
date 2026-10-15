@@ -142,6 +142,67 @@ class FaultingNodeFileSystem extends HostFileSystem {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
+  it("recovers a resizable journal against a positioned Node image file", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-positioned-persistence-"));
+    const imagePath = join(directory, "base.vfs");
+    const journalPath = join(directory, "machine.journal");
+    try {
+      const baseImage = await makeImage("abcdefgh");
+      writeFileSync(imagePath, baseImage);
+      const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
+      const kernel = kernelBytes.buffer.slice(
+        kernelBytes.byteOffset,
+        kernelBytes.byteOffset + kernelBytes.byteLength,
+      ) as ArrayBuffer;
+      const first = new NodeKernelHost({
+        rootfsImageFile: imagePath,
+        experimentalResizablePersistencePath: journalPath,
+      });
+      try {
+        await first.init(kernel);
+        await first.writeFileToVfs("/state", encoder.encode("position"));
+      } finally {
+        await first.destroy();
+      }
+      const reopened = new NodeKernelHost({
+        rootfsImageFile: imagePath,
+        experimentalResizablePersistencePath: journalPath,
+        requireExistingRootfsPersistence: true,
+      });
+      try {
+        await reopened.init(kernel);
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("position");
+      } finally {
+        await reopened.destroy();
+      }
+      writeFileSync(imagePath, await makeImage("different"));
+      const incompatible = new NodeKernelHost({
+        rootfsImageFile: imagePath,
+        experimentalResizablePersistencePath: journalPath,
+        requireExistingRootfsPersistence: true,
+      });
+      try {
+        await expect(incompatible.init(kernel)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
+      } finally {
+        await incompatible.destroy();
+      }
+      writeFileSync(imagePath, baseImage);
+      const restored = new NodeKernelHost({
+        rootfsImageFile: imagePath,
+        experimentalResizablePersistencePath: journalPath,
+        requireExistingRootfsPersistence: true,
+      });
+      try {
+        await restored.init(kernel);
+        expect(new TextDecoder().decode((await restored.readFileFromVfs("/state"))!)).toBe("position");
+      } finally {
+        await restored.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("boots an extended VFSI container through the Node kernel host", async () => {
     const original = await makeImage("abcdefgh");
     const bodyLength = new DataView(original.buffer, original.byteOffset, original.byteLength).getUint32(12, true);

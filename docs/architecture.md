@@ -2573,6 +2573,13 @@ kernel records sparse block maps for image-backed regular files during boot
 and preserves their holes when exporting, including through journal changes.
 Growing or truncating and re-extending an originally dense image-backed file
 also leaves its new zero range unallocated in a composed snapshot.
+Node can boot a decoded `.vfs` file through `NodeKernelHost.rootfsImageFile`:
+the kernel worker owns a read-only, no-follow file descriptor and a bounded
+64-page positioned-read cache instead of copying the image into an
+`ArrayBuffer`. An optional staged-image integrity descriptor verifies every
+chunk before boot. The byte-array and default compressed-image Node paths
+still materialize their decoded images; external native writers can race a
+file-backed boot unless the caller keeps the source quiescent.
 
 ## Networking
 
