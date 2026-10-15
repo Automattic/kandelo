@@ -51,3 +51,19 @@ test("the inspector lists directories and previews files from the kernel-owned V
   // A path that does not exist is an error, not an empty directory.
   await expect(row(/^definitely-not-here$/)).toHaveCount(0);
 });
+
+test("the inspector retains guest logs after init exits", async ({ page }) => {
+  await page.goto("/test/fixtures/boot-progress-fixture.html");
+  await page.evaluate(async () => {
+    const { mountInspectorWithFailedInit } = await import("/test/fixtures/inspector-vfs-error-fixture.ts");
+    const container = document.createElement("div");
+    container.style.height = "500px";
+    document.body.append(container);
+    mountInspectorWithFailedInit(container);
+  });
+
+  for (const name of ["var/", "log/", "frankenphp-classic.log"]) {
+    await page.locator(".ktable tbody tr", { hasText: name }).click();
+  }
+  await expect(page.getByText("frankenphp-classic panic: diagnostic retained")).toBeVisible();
+});

@@ -50,14 +50,11 @@ for (const demo of [
       expect(frame.locator("iframe").first()).toBeVisible({ timeout: 60_000 }).then(() => true, () => false),
       page.locator('.kdock-status-text[data-status="error"]')
         .waitFor({ state: "attached", timeout: 60_000 })
-        .then(async () => {
-          const syslog = await page.locator(".ksys-line").allTextContents();
-          throw new Error(`WordPress editor failed: ${syslog.slice(-40).join("\n")}`);
-        }),
+        .then(() => false),
     ]);
     let editorResult = { status: 0, body: "" };
     const samples: string[] = [];
-    for (let elapsed = 0; elapsed < soakSeconds; elapsed += 10) {
+    for (let elapsed = 0; editorLoaded && elapsed < soakSeconds; elapsed += 10) {
       await page.waitForTimeout(10_000);
       editorResult = await page.evaluate(async (prefix) => {
         const controller = new AbortController();
@@ -79,25 +76,29 @@ for (const demo of [
     let serviceLog = "";
     let visibleSyslog = "";
     let processes = "";
-    if (editorResult.status !== 200) {
-      try {
-        await page.getByRole("button", { name: "Internals" }).click({ timeout: 5_000 });
-        visibleSyslog = (await page.locator(".ksys-line").allTextContents()).slice(-100).join("\n");
-        await page.getByRole("tab", { name: "Procs" }).click({ timeout: 5_000 });
-        processes = (await page.locator(".ktable").allTextContents()).join("\n");
-        await page.getByRole("tab", { name: "VFS" }).click({ timeout: 5_000 });
-        for (const segment of ["var", "log"]) {
-          await page.locator(".ktable tr", { has: page.locator("td", { hasText: new RegExp(`^${segment}/$`) }) }).click({ timeout: 5_000 });
-        }
-        await page.locator(".ktable tr", { has: page.locator("td", { hasText: demo.serviceLog }) }).click({ timeout: 5_000 });
-        serviceLog = await page.locator(".kinternals-surface pre").last().textContent() ?? "";
-      } catch (error) {
-        serviceLog = `Service-log inspection unavailable: ${String(error)}`;
+    try {
+      await page.getByRole("button", { name: "Internals" }).click({ timeout: 5_000 });
+      const inspector = page.getByRole("dialog", { name: "Internals" });
+      visibleSyslog = (await inspector.locator(".ksys-line").allTextContents()).slice(-100).join("\n");
+      await inspector.getByRole("tab", { name: "Procs" }).click({ timeout: 5_000 });
+      processes = (await inspector.locator(".ktable").allTextContents()).join("\n");
+      await inspector.getByRole("tab", { name: "VFS" }).click({ timeout: 5_000 });
+      for (const segment of ["var", "log"]) {
+        await inspector.locator(".ktable tr", { has: page.locator("td", { hasText: new RegExp(`^${segment}/$`) }) }).click({ timeout: 5_000 });
       }
+      await inspector.locator(".ktable tr", { has: page.locator("td", { hasText: demo.serviceLog }) }).click({ timeout: 5_000 });
+      serviceLog = await inspector.locator(".kinternals-surface pre").last().textContent() ?? "";
+    } catch (error) {
+      serviceLog = `Service-log inspection unavailable: ${String(error)}`;
     }
     const dockStatus = (await page.locator(".kdock-status-text").allTextContents()).join("\n");
-    expect(editorLoaded, `url=${page.url()}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(-10000)}`).toBe(true);
-    expect(editorResult.status, `url=${page.url()} samples=${samples.join(",")} dock=${dockStatus}\n${editorResult.body}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(-10000)}\n${browserDiagnostics.slice(-100).join("\n")}`).toBe(200);
+    if (!editorLoaded || editorResult.status !== 200) {
+      await test.info().attach("guest-service-log", { body: serviceLog, contentType: "text/plain" });
+    }
+    expect(editorLoaded, `url=${page.url()}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(0, 10000)}`).toBe(true);
+    expect(editorResult.status, `url=${page.url()} samples=${samples.join(",")} dock=${dockStatus}\n${editorResult.body}\n${visibleSyslog}\n${processes}\n${serviceLog.slice(0, 10000)}\n${browserDiagnostics.slice(-100).join("\n")}`).toBe(200);
+    expect(serviceLog).not.toMatch(/^Service-log inspection unavailable:/);
+    expect(serviceLog.length).toBeGreaterThan(0);
 
     await expect(page.locator('.kdock-status-text[data-status="error"]')).toHaveCount(0);
   });

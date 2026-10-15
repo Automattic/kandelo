@@ -274,13 +274,11 @@ const VfsTab: React.FC = () => {
   const [path, setPath] = React.useState("/");
   const [selected, setSelected] = React.useState<{ path: string; entry: VfsDirent } | null>(null);
   const [refresh, setRefresh] = React.useState(0);
-  // Internals opens while the machine boots, before a kernel is attached to
-  // read from. Wait for it, and list again once it is running, instead of
-  // showing a "cannot list" error that never clears.
-  const running = useStatus() === "running";
+  const status = useStatus();
+  const readable = status === "running" || status === "error";
   const state = useAsyncOnce<VfsDirent[]>(
-    () => running ? host.readDir(path) : new Promise<VfsDirent[]>(() => {}),
-    [host, path, refresh, running],
+    () => readable ? host.readDir(path) : new Promise<VfsDirent[]>(() => {}),
+    [host, path, refresh, readable],
   );
   const entries = React.useMemo(() => {
     if (state.kind !== "ready") return [];

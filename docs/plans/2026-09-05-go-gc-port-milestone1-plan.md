@@ -3487,3 +3487,33 @@ for both profiles in Chromium and for classic in Firefox. Caddy's first
 homepage request returned 504 once in Firefox after the 30-second request
 deadline; two isolated Firefox Caddy reruns passed. No guest crash was
 observed in that case, but the intermittent timeout still needs diagnosis.
+
+**2026-10-15 — Preserve browser guest-log inspection after init exits.**
+The browser app's VFS inspector had waited forever for `running` status
+after the machine entered `error`, even though the kernel and its guest
+files remained attached. It now reads through `KernelHost` in either
+`running` or `error`, while still waiting during boot. A browser fixture
+mounts the real inspector and host contract around an attached VFS, then
+transitions to error and reads a guest service log. The focused fixture
+passes in Chromium, Firefox, and WebKit. This opens a way to capture the
+next intermittent classic crash's actual guest log; it does not explain
+the prior crash by itself.
+
+With the error-state inspector available, a longer Firefox classic UI
+run reproduced the failure three times in 12 30-second editor attempts
+(nine passed). The guest log identifies `fatal error: runtime: split stack
+overflow`, not a WordPress/PHP exception. One trace has goroutine 228's
+4 KiB stack at `[0x3454000, 0x3455000]`, and `newstack` sees SP
+`0x3453f78`, below the low bound. The stack is in
+`net/http.(*chunkWriter).writeHeader` calling
+`net/http.(*Server).doKeepAlives`. The Go compiler reports a 2,776-byte
+frame for `writeHeader`, without `NOSPLIT`; its entry should have grown
+the stack. Why the check did not protect this call remains to be traced.
+An eight-repeat follow-up, which attached the full 64 KiB VFS preview
+on failure and printed its head, reproduced the same split-stack error
+once (seven passed). An earlier 8/8 pass therefore did not establish
+stability. The browser UI test now checks that it can read the service
+log during normal operation and retains it when the editor fails.
+Chromium and Firefox passed that normal editor/log-inspection gate for
+both classic and Caddy (4/4). No Go compiler or library fix, package
+workaround, or claimed stability improvement is included here.

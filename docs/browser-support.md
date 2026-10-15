@@ -1306,6 +1306,12 @@ The dock may be collapsed or moved horizontally within the browser viewport;
 that placement is UI-only presentation state and does not alter the running
 machine, boot descriptor, VFS image, or share/export data.
 
+The VFS inspector remains available when a running machine enters the error
+state after init exits, provided its kernel is still attached. This lets a
+user read guest service logs after a process failure. It still waits for a
+kernel during boot and does not imply that a halted or detached kernel's
+files remain accessible.
+
 Image-declared demo guides from `/etc/kandelo/demo.json` remain part of the
 machine presentation owned by the demo image. Guide actions may run terminal or
 web actions through `KernelHost`, but they do not replace process supervision,
