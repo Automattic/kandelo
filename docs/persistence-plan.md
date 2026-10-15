@@ -527,7 +527,11 @@ a failed write; after a failed flush, it may recover either the old or the
 complete new name, never a partial rename.
 
 This does not yet cover every host write and flush failure point, so the
-dirty-cache milestone remains open.
+dirty-cache milestone remains open. A full 64-block dirty cache can accept a
+64-block overwrite that replaces 63 cached blocks and adds one new block: it
+evicts the one eligible old block rather than failing because the preferred
+16-block writeback batch is unavailable. A Rust regression checks that the
+write survives sync and recovery.
 
 ## Next format boundary
 

@@ -1241,7 +1241,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             .filter(|(key, _)| !self.dirty_blocks.iter().any(|(cached, _)| cached == key))
             .count();
         if self.dirty_blocks.len() + new_blocks > CACHE_BLOCKS {
-            let count = (self.dirty_blocks.len() + new_blocks - CACHE_BLOCKS).max(CACHE_BLOCKS / 4);
+            let required = self.dirty_blocks.len() + new_blocks - CACHE_BLOCKS;
+            let count = required.max(CACHE_BLOCKS / 4);
             let victims: Vec<_> = self
                 .dirty_blocks
                 .iter()
@@ -1249,7 +1250,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 .take(count)
                 .map(|(key, bytes)| (*key, bytes.clone()))
                 .collect();
-            if victims.len() < count {
+            if victims.len() < required {
                 return Err(Errno::EIO);
             }
             let mut mutations: Vec<_> = victims
@@ -5561,6 +5562,52 @@ mod tests {
                 Ok(1)
             );
             assert_eq!(byte[0], block as u8);
+        }
+    }
+
+    #[test]
+    fn buffered_write_evicts_only_blocks_outside_the_write() {
+        let digest = [39; 32];
+        let size = ((CACHE_BLOCKS + 1) * FILE_BLOCK_BYTES) as u64;
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        for block in 0..CACHE_BLOCKS {
+            journal
+                .write_fixed_file_at_buffered(
+                    7,
+                    size,
+                    (block * FILE_BLOCK_BYTES) as u64,
+                    &[b'a'; FILE_BLOCK_BYTES],
+                    |_, _| panic!("full blocks need no base read"),
+                )
+                .unwrap();
+        }
+        let replacement = vec![b'b'; CACHE_BLOCKS * FILE_BLOCK_BYTES];
+        assert_eq!(
+            journal.write_fixed_file_at_buffered(
+                7,
+                size,
+                FILE_BLOCK_BYTES as u64,
+                &replacement,
+                |_, _| panic!("full blocks need no base read"),
+            ),
+            Ok(replacement.len())
+        );
+        assert_eq!(journal.dirty_blocks.len(), CACHE_BLOCKS);
+        assert!(journal.state.blocks.contains_key(&(7, 0)));
+        journal.sync().unwrap();
+        let mut recovered = OverlayJournal::open(journal.into_storage(), digest).unwrap();
+        for block in 0..=CACHE_BLOCKS {
+            let mut byte = [0];
+            recovered
+                .read_file_at(
+                    7,
+                    size,
+                    (block * FILE_BLOCK_BYTES) as u64,
+                    &mut byte,
+                    |_, _| panic!("block must be journaled"),
+                )
+                .unwrap();
+            assert_eq!(byte[0], if block == 0 { b'a' } else { b'b' });
         }
     }
 
