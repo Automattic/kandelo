@@ -1470,6 +1470,49 @@ test("browser converts an oversized unindexed fixed journal before mounting", as
           await session.detach();
         }
         await page.reload();
+        const partialSession = await context.newCDPSession(page);
+        const partialUsage = await partialSession.send("Storage.getUsageAndQuota", { origin });
+        await partialSession.send("Storage.overrideQuotaForOrigin", { origin, quotaSize: partialUsage.usage + 256 * 1024 });
+        try {
+          const partialQuotaBoot = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+            const { BrowserKernel } = await import(moduleUrl);
+            const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+            const diagnostics: string[] = [];
+            const kernel = new BrowserKernel({ kernelOwnedFs: true, onHostDiagnostic: (diagnostic) => {
+              diagnostics.push(diagnostic.message);
+            } });
+            try {
+              await kernel.initFromOpfsImage({
+                kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+                vfsImageFile: await directory.getFileHandle(`${name}.base`),
+                experimentalFixedPersistenceName: name,
+                persistentComputerName: name,
+              });
+              return {
+                state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+                deferred: diagnostics.find((message) => message.includes("boot compaction deferred")) ?? "",
+                sourceLength: (await (await directory.getFileHandle(`${name}.journal`)).getFile()).size,
+                journalLength: (await (await directory.getFileHandle(`${name}.g0.journal`)).getFile()).size,
+                indexLength: (await (await directory.getFileHandle(`${name}.g0.index`)).getFile()).size,
+                sealLength: (await (await directory.getFileHandle(`${name}.g0.seal`)).getFile()).size,
+              };
+            } finally {
+              await kernel.destroy();
+            }
+          }, { moduleUrl, kernelUrl, name: prepared.name });
+          expect(partialQuotaBoot).toMatchObject({
+            state: "MScdefgh",
+            sourceLength: quotaMounted.sourceLength,
+            journalLength: 0,
+            indexLength: 0,
+            sealLength: 0,
+          });
+          expect(partialQuotaBoot.deferred).toContain("ENOSPC");
+        } finally {
+          await partialSession.send("Storage.overrideQuotaForOrigin", { origin });
+          await partialSession.detach();
+        }
+        await page.reload();
       }
       const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
         const { BrowserKernel } = await import(moduleUrl);
