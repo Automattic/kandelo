@@ -87,7 +87,7 @@ function expandJournalToCompactionThreshold(path: string): number {
   return original.byteLength + repeated.byteLength;
 }
 
-function expandLargestJournalTransactionToCompactionThreshold(path: string): number {
+function expandLargestJournalTransactionToCompactionThreshold(path: string, requireCompaction = false): number {
   const original = readFileSync(path);
   let position = 72;
   let sequence = 0n;
@@ -104,7 +104,8 @@ function expandLargestJournalTransactionToCompactionThreshold(path: string): num
   }
   expect(largestTransaction).not.toBeNull();
   const transaction = largestTransaction!;
-  const count = Math.ceil((32 * 1024 * 1024 - original.byteLength) / transaction.byteLength) + 1;
+  const minimumSize = 32 * 1024 * 1024 + (requireCompaction ? original.byteLength : 0);
+  const count = Math.ceil((minimumSize - original.byteLength) / transaction.byteLength) + 1;
   const repeated = Buffer.allocUnsafe(count * transaction.byteLength);
   for (let index = 0; index < count; index++) {
     const offset = index * transaction.byteLength;
@@ -1066,6 +1067,67 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 120_000);
 
+  it.skipIf(guestProgramPath === null)("upgrades an oversized v1 checkpoint with two valid generation slots", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-v1-three-slot-upgrade-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      expandJournalToCompactionThreshold(path);
+      const firstCompacted = await boot(image, path);
+      await firstCompacted.destroy();
+      const g0Length = expandJournalToCompactionThreshold(`${path}.g0.journal`);
+      const secondCompacted = await boot(image, path);
+      await secondCompacted.destroy();
+      const g0Seal = readFileSync(`${path}.g0.seal`);
+      const g1IndexPath = `${path}.g1.index`;
+      const oldIndex = Buffer.from(readFileSync(g1IndexPath));
+      expect(oldIndex.readUInt32LE(4)).toBe(5);
+      oldIndex.writeUInt32LE(1, 4);
+      createHash("sha256").update(oldIndex.subarray(0, 128)).digest().copy(oldIndex, 128);
+      writeFileSync(g1IndexPath, oldIndex);
+      const backend = new HostFileSystem(directory);
+      const journal = OverlayStorageFile.open(backend, "/machine.journal.g1.journal", false);
+      const index = OverlayStorageFile.open(backend, "/machine.journal.g1.index", false);
+      const seal = OverlayStorageFile.open(backend, "/machine.journal.g1.seal", false);
+      try {
+        await writeOverlayGenerationSeal(journal, seal, 2,
+          new Uint8Array(createHash("sha256").update(image).digest()), index,
+          { slot: "g0", journalLength: g0Length });
+      } finally {
+        seal.close();
+        index.close();
+        journal.close();
+      }
+      const g1Length = expandJournalToCompactionThreshold(`${path}.g1.journal`);
+      const upgraded = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await upgraded.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await upgraded.destroy();
+      }
+      expect(readFileSync(`${path}.g0.seal`)).toEqual(g0Seal);
+      expect(readFileSync(`${path}.g0.journal`).byteLength).toBe(g0Length);
+      expect(readFileSync(`${path}.g1.journal`).byteLength).toBe(g1Length);
+      expect(readFileSync(g1IndexPath)).toEqual(oldIndex);
+      expect(readFileSync(`${path}.g2.index`).readUInt32LE(4)).toBe(5);
+      const reopened = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it.skipIf(guestProgramPath === null)("upgrades an oversized sealed v2 resizable checkpoint with metadata", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-v2-resizable-upgrade-"));
     const path = join(directory, "machine.journal");
@@ -1118,6 +1180,74 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       expect(readFileSync(`${path}.g0.journal`).byteLength).toBe(sourceLength);
       expect(readFileSync(indexPath)).toEqual(oldIndex);
       expect(readFileSync(`${path}.g1.index`).readUInt32LE(4)).toBe(4);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it.skipIf(guestProgramPath === null)("upgrades an oversized v2 metadata checkpoint with two valid generation slots", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-v2-three-slot-upgrade-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh", true);
+      const first = await boot(image, path, true);
+      try {
+        for (const mode of ["create-file", "large"] as const) {
+          const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
+          expect(await exit, mode).toBe(0);
+        }
+      } finally {
+        await first.destroy();
+      }
+      expandLargestJournalTransactionToCompactionThreshold(path);
+      const firstCompacted = await boot(image, path, true);
+      await firstCompacted.destroy();
+      const g0Length = expandLargestJournalTransactionToCompactionThreshold(`${path}.g0.journal`, true);
+      const secondCompacted = await boot(image, path, true);
+      await secondCompacted.destroy();
+      const g0Seal = readFileSync(`${path}.g0.seal`);
+      const g1IndexPath = `${path}.g1.index`;
+      const current = readFileSync(g1IndexPath);
+      expect(current.readUInt32LE(4)).toBe(4);
+      const blockEnd = 160 + Number(current.readBigUInt64LE(80)) * 56;
+      const oldIndex = Buffer.from(current.subarray(0, blockEnd));
+      oldIndex.writeUInt32LE(2, 4);
+      createHash("sha256").update(oldIndex.subarray(160)).digest().copy(oldIndex, 96);
+      createHash("sha256").update(oldIndex.subarray(0, 128)).digest().copy(oldIndex, 128);
+      writeFileSync(g1IndexPath, oldIndex);
+      const backend = new HostFileSystem(directory);
+      const journal = OverlayStorageFile.open(backend, "/machine.journal.g1.journal", false);
+      const index = OverlayStorageFile.open(backend, "/machine.journal.g1.index", false);
+      const seal = OverlayStorageFile.open(backend, "/machine.journal.g1.seal", false);
+      try {
+        await writeOverlayGenerationSeal(journal, seal, 2,
+          new Uint8Array(createHash("sha256").update(image).digest()), index,
+          { slot: "g0", journalLength: g0Length });
+      } finally {
+        seal.close();
+        index.close();
+        journal.close();
+      }
+      const g1Length = expandLargestJournalTransactionToCompactionThreshold(`${path}.g1.journal`);
+      const upgraded = await boot(image, path, true);
+      try {
+        const tail = await upgraded.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4);
+        expect(new TextDecoder().decode(tail!)).toBe("NEWW");
+      } finally {
+        await upgraded.destroy();
+      }
+      expect(readFileSync(`${path}.g0.seal`)).toEqual(g0Seal);
+      expect(readFileSync(`${path}.g0.journal`).byteLength).toBe(g0Length);
+      expect(readFileSync(`${path}.g1.journal`).byteLength).toBe(g1Length);
+      expect(readFileSync(g1IndexPath)).toEqual(oldIndex);
+      expect(readFileSync(`${path}.g2.index`).readUInt32LE(4)).toBe(4);
+      const reopened = await boot(image, path, true);
+      try {
+        const tail = await reopened.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4);
+        expect(new TextDecoder().decode(tail!)).toBe("NEWW");
+      } finally {
+        await reopened.destroy();
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

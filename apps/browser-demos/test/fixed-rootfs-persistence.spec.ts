@@ -1524,13 +1524,13 @@ test("browser converts an oversized unindexed resizable journal before mounting"
   }
 });
 
-for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`browser recovers an oversized sealed ${mode} checkpoint from a valid source`, async ({ playwright, browserName, baseURL }, testInfo) => {
+for (const mode of ["fixed-v1", "fixed-v1-two-slots", "resizable-v2", "resizable-v2-two-slots", "resizable-v3"] as const) test(`browser recovers an oversized sealed ${mode} checkpoint from a valid source`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(180_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.mkdir("/bin", 0o755);
   filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
   filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
-  if (mode !== "fixed-v1") filesystem.writeFile("/large", new Uint8Array(2 * 1024 * 1024 + 4096), 0o644);
+  if (!mode.startsWith("fixed-v1")) filesystem.writeFile("/large", new Uint8Array(2 * 1024 * 1024 + 4096), 0o644);
   const image = await filesystem.saveImage();
   const kernelUrl = new URL("/v1-upgrade-kernel.wasm", baseURL).href;
   const imageUrl = new URL("/v1-upgrade-image.vfs", baseURL).href;
@@ -1567,7 +1567,7 @@ for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`
           const kernel = new BrowserKernel({ kernelOwnedFs: true });
           await kernel.initFromOpfsImage({
             kernelWasm, vfsImageFile: imageFile,
-            ...(mode === "fixed-v1"
+            ...(mode.startsWith("fixed-v1")
               ? { experimentalFixedPersistenceName: name }
               : { experimentalResizablePersistenceName: name }),
             persistentComputerName: name,
@@ -1576,14 +1576,14 @@ for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`
         };
         const first = await boot();
         try {
-          for (const guestMode of (mode === "fixed-v1" ? [""] : ["create-file", "large"])) {
+          for (const guestMode of (mode.startsWith("fixed-v1") ? [""] : ["create-file", "large"])) {
             const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", guestMode]);
             if (await exit !== 0) throw new Error(`guest ${guestMode} failed`);
           }
         } finally {
           await first.destroy();
         }
-        const grow = async (file: FileSystemFileHandle) => {
+        const grow = async (file: FileSystemFileHandle, requireCompaction = false) => {
           const snapshot = await file.getFile();
           let position = 72;
           let sequence = 0n;
@@ -1599,7 +1599,7 @@ for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`
           if (largest.length === 0) throw new Error("missing source transaction");
           const writer = await file.createWritable({ keepExistingData: true });
           try {
-            while (position < 32 * 1024 * 1024) {
+            while (position - (requireCompaction ? snapshot.size : 0) < 32 * 1024 * 1024) {
               const transaction = largest.slice();
               new DataView(transaction.buffer).setBigUint64(8, ++sequence, true);
               transaction.set(new Uint8Array(await crypto.subtle.digest("SHA-256", transaction.slice(0, -36).buffer)), transaction.length - 36);
@@ -1616,14 +1616,20 @@ for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`
         const legacyLength = await grow(await directory.getFileHandle(`${name}.journal`));
         const compacted = await boot();
         await compacted.destroy();
-        const indexFile = await directory.getFileHandle(`${name}.g0.index`);
-        const sealFile = await directory.getFileHandle(`${name}.g0.seal`);
+        if (mode.endsWith("two-slots")) {
+          await grow(await directory.getFileHandle(`${name}.g0.journal`), true);
+          const secondCompacted = await boot();
+          await secondCompacted.destroy();
+        }
+        const sourceSlot = mode.endsWith("two-slots") ? "g1" : "g0";
+        const indexFile = await directory.getFileHandle(`${name}.${sourceSlot}.index`);
+        const sealFile = await directory.getFileHandle(`${name}.${sourceSlot}.seal`);
         const index = new Uint8Array(await (await indexFile.getFile()).arrayBuffer());
         const seal = new Uint8Array(await (await sealFile.getFile()).arrayBuffer());
-        const expectedVersion = mode === "fixed-v1" ? 5 : 4;
+        const expectedVersion = mode.startsWith("fixed-v1") ? 5 : 4;
         if (new DataView(index.buffer).getUint32(4, true) !== expectedVersion) throw new Error("unexpected source index version");
         const blockEnd = 160 + Number(new DataView(index.buffer).getBigUint64(80, true)) * 56;
-        let legacyIndex = mode === "fixed-v1" ? index : index.slice(0, blockEnd);
+        let legacyIndex = mode.startsWith("fixed-v1") ? index : index.slice(0, blockEnd);
         if (mode === "resizable-v3") {
           const metadataCount = (index.length - blockEnd) / 312;
           if (!Number.isInteger(metadataCount) || metadataCount === 0) throw new Error("missing metadata index");
@@ -1634,8 +1640,8 @@ for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`
           }
         }
         const hash = async (bytes: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice().buffer));
-        new DataView(legacyIndex.buffer).setUint32(4, mode === "fixed-v1" ? 1 : mode === "resizable-v2" ? 2 : 3, true);
-        if (mode === "resizable-v2") {
+        new DataView(legacyIndex.buffer).setUint32(4, mode.startsWith("fixed-v1") ? 1 : mode.startsWith("resizable-v2") ? 2 : 3, true);
+        if (mode.startsWith("resizable-v2")) {
           legacyIndex.set(await hash(legacyIndex.subarray(160)), 96);
         } else if (mode === "resizable-v3") {
           const blockDigest = await hash(legacyIndex.subarray(160, blockEnd));
@@ -1649,7 +1655,7 @@ for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`
         const indexWriter = await indexFile.createWritable();
         await indexWriter.write(legacyIndex);
         await indexWriter.close();
-        if (mode !== "fixed-v1") {
+        if (!mode.startsWith("fixed-v1")) {
           new DataView(seal.buffer).setBigUint64(56, BigInt(legacyIndex.length), true);
           seal.set(await hash(seal.subarray(0, 80)), 80);
         }
@@ -1657,7 +1663,7 @@ for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`
         const sealWriter = await sealFile.createWritable();
         await sealWriter.write(seal);
         await sealWriter.close();
-        const sourceLength = await grow(await directory.getFileHandle(`${name}.g0.journal`));
+        const sourceLength = await grow(await directory.getFileHandle(`${name}.${sourceSlot}.journal`));
         return { name, sourceLength: mode === "resizable-v3" ? legacyLength : sourceLength };
       }, { moduleUrl, kernelUrl, imageUrl, mode });
       await page.reload();
@@ -1709,18 +1715,19 @@ for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`
           await kernel.initFromOpfsImage({
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: await directory.getFileHandle(`${name}.base`),
-            ...(mode === "fixed-v1"
+            ...(mode.startsWith("fixed-v1")
               ? { experimentalFixedPersistenceName: name }
               : { experimentalResizablePersistenceName: name }),
             persistentComputerName: name,
           });
           const state = new TextDecoder().decode((await kernel.readFileFromVfs("/state"))!);
-          const created = mode !== "fixed-v1"
+          const created = !mode.startsWith("fixed-v1")
             ? new TextDecoder().decode((await kernel.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4))!)
             : null;
-          const source = await (await directory.getFileHandle(mode === "resizable-v3" ? `${name}.journal` : `${name}.g0.journal`)).getFile();
-          const oldIndex = await (await directory.getFileHandle(`${name}.g0.index`)).getFile();
-          const nextIndex = mode === "resizable-v3" ? oldIndex : await (await directory.getFileHandle(`${name}.g1.index`)).getFile();
+          const source = await (await directory.getFileHandle(mode === "resizable-v3" ? `${name}.journal` : `${name}.${mode.endsWith("two-slots") ? "g1" : "g0"}.journal`)).getFile();
+          const oldIndex = await (await directory.getFileHandle(`${name}.${mode.endsWith("two-slots") ? "g1" : "g0"}.index`)).getFile();
+          const nextSlot = mode.endsWith("two-slots") ? "g2" : mode === "resizable-v3" ? "g0" : "g1";
+          const nextIndex = await (await directory.getFileHandle(`${name}.${nextSlot}.index`)).getFile();
           return {
             state, created,
             sourceLength: source.size,
@@ -1732,11 +1739,11 @@ for (const mode of ["fixed-v1", "resizable-v2", "resizable-v3"] as const) test(`
         }
       }, { moduleUrl, kernelUrl, name: prepared.name, mode });
       expect(recovered).toEqual({
-        state: mode === "fixed-v1" ? "XYcdefgh" : "abcdefgh",
-        created: mode === "fixed-v1" ? null : "NEWW",
+        state: mode.startsWith("fixed-v1") ? "XYcdefgh" : "abcdefgh",
+        created: mode.startsWith("fixed-v1") ? null : "NEWW",
         sourceLength: prepared.sourceLength,
-        sourceVersion: mode === "fixed-v1" ? 1 : mode === "resizable-v2" ? 2 : null,
-        targetVersion: mode === "fixed-v1" ? 5 : 4,
+        sourceVersion: mode.startsWith("fixed-v1") ? 1 : mode.startsWith("resizable-v2") ? 2 : null,
+        targetVersion: mode.startsWith("fixed-v1") ? 5 : 4,
       });
     } finally {
       await context.close();

@@ -445,15 +445,15 @@ Activation checks whether a prepared checkpoint can release its resident
 metadata before replacing the active mount; an activation error leaves the
 source journal and its base-name tombstones available for further writes.
 
-Boot now checks two optional sealed journal slots (`g0` and `g1`) on Node and
-browser hosts, preferring the highest verified generation. A seal authenticates
-the compacted prefix while the active journal may append later transactions;
-the kernel still validates and replays those transactions. If a slot is torn or
-its journal or indexed checkpoint is rejected with `EIO`, boot tries the
-previous valid slot and then the legacy journal. Other kernel refusals and
-host backend failures, including errors mapped to kernel `EIO` imports,
-propagate rather than triggering fallback.
-Two verified slots claiming the same generation are ambiguous; boot refuses
+Boot now checks three optional sealed journal slots (`g0`, `g1`, and `g2`)
+on Node and browser hosts, preferring the highest verified generation. A seal
+authenticates the compacted prefix while the active journal may append later
+transactions; the kernel still validates and replays those transactions. If a
+slot is torn, or its journal or indexed checkpoint is rejected with `EIO`,
+boot tries the previous valid slot and then the legacy journal. Other kernel
+refusals and host backend failures, including errors mapped to kernel `EIO`
+imports, propagate rather than triggering fallback.
+Any two verified slots claiming the same generation are ambiguous; boot refuses
 to select either or fall back to legacy until the conflict is resolved.
 If the nonempty legacy journal is rejected with `EIO`, boot reports a typed
 no-valid-generation condition rather than a generic kernel refusal; a fresh
@@ -470,7 +470,9 @@ source slot and exact journal length: if seal invalidation fails after a
 rejected activation, boot rejects the stale target while that source
 generation remains available. Reusing the old slot after a successful
 handoff does not invalidate the active generation. Earlier v1/v2 seals stay
-readable; they do not carry this source-length guard. After activation,
+readable; they do not carry this source-length guard. The `g2` source code
+extends the existing v3 seal slot enumeration; older hosts that know only
+`g0`/`g1` cannot read a generation sourced from `g2`. After activation,
 a seal or old-handle close failure is reported without skipping attempts
 to close the remaining old handles; the active target is retained because
 activation cannot be rolled back. Synchronous storage and hash operations
@@ -570,13 +572,15 @@ descriptors carry ordered metadata and block mutations through on-disk merge
 sort; duplicate truncate markers in the block stream remove superseded writes
 without a resident block map. The canonical target has a version 4 metadata
 and block checkpoint. The source remains untouched until the target is sealed
-and mounted. An oversized sealed version 1/2 generation with no other valid
-sealed slot now converts from its journal into the alternate slot before mount,
-without trusting the old index or changing the source. When two valid slots
-exist, boot preserves the fallback rather than overwriting it. A semantically
-rejected slot may be reused after its rejection. Node and Chromium, Firefox,
-and WebKit reboot fixed v1 and resizable v2 sources through this upgrade;
-interrupted conversion retries from the unchanged source.
+and mounted. An oversized sealed version 1/2 generation converts from its
+journal into a free sealed slot before mount, without trusting the old index
+or changing the source. A third slot allows conversion while two valid
+generations remain; interrupted conversion keeps both sources available. A
+semantically rejected slot may be reused after its rejection. When all three
+slots are occupied, boot retains the older full-map path rather than overwriting
+an unproven fallback. Node and Chromium, Firefox, and WebKit reboot fixed v1
+and resizable v2 sources through this upgrade; two-valid-slot fixed v1 and
+resizable v2 cases reach `g2` on all four hosts.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.
@@ -591,10 +595,10 @@ and exact mutation locations while hashing the journal prefix, but does not
 materialize that prefix's metadata in the overlay map. Rootfs streams the
 table to rebuild its POSIX inode and directory state; subsequent lookups and
 compactions merge the indexed prefix with the bounded unsealed tail. Small
-version 1/2 generations and two-valid-slot cases remain readable through the
-older full-map path; version 3 metadata
-tables remain readable without value digests. The resident rootfs
-tree and temporary namespace-graph validation still scale with file count,
+version 1/2 generations and fully occupied three-slot cases still use the
+older full-map path; version 3 metadata tables remain readable without value
+digests. The resident rootfs tree and temporary namespace-graph validation
+still scale with file count,
 so this is not yet a full namespace-memory bound. The 312-byte fixed metadata
 record adds sidecar space; its boot and compaction costs need measurement.
 Hot indexed metadata values use a 64-entry bounded cache, so repeated
@@ -616,11 +620,11 @@ The extra per-block hash work at boot has not yet been benchmarked.
 New compacted fixed-overwrite generations use version 5 of the checkpoint
 sidecar to mark their block stream as canonical. Boot checks every indexed
 block against the corresponding journal mutation with the same bounded page
-cache and rejects a false location or digest with `EIO`. Oversized single-slot
-version 1/2 fixed indexes convert before mount; smaller or two-valid-slot
-cases retain their older recovery path. Node and all three
-browser engines now exercise a re-sealed, internally checksummed v5 index
-with a false block digest and recover through the prior valid generation.
+cache and rejects a false location or digest with `EIO`. Oversized version
+1/2 fixed indexes convert before mount when a sealed slot is free; smaller
+or fully occupied three-slot cases retain their older recovery path. Node and
+all three browser engines now exercise a re-sealed, internally checksummed v5
+index with a false block digest and recover through the prior valid generation.
 
 The live handoff now uses that third handle and a dedicated kernel-worker turn.
 The fixed-overwrite checkpoint is streamed, but its worst-case memory and
