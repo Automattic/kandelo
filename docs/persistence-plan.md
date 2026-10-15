@@ -506,7 +506,10 @@ bundle are not journal-backed and are deliberately excluded from timestamp write
 they are recreated at boot. Namespace transactions now include parent
 directory mtime/ctime and affected inode ctime records. Restart tests cover
 create, link, rename, unlink, symlink, mkdir, and rmdir; a guest checks
-directory mtimes after reopening on Node and all three browser engines. The
+directory mtimes after reopening on Node and all three browser engines.
+The rootfs rename path rejects directory self-moves by normalized components
+before journaling, including redundant slashes or a trailing source slash;
+a Rust restart regression checks that rejection leaves the tree intact. The
 live ctime after a persistent hard link now stays at the timestamp committed
 with the directory entry, even if the clock advances during journal flush;
 a Rust regression checks that live and reopened metadata agree. The

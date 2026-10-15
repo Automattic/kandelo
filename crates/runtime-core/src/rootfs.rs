@@ -5025,19 +5025,20 @@ pub fn unlink(path: &[u8]) -> Result<(), Errno> {
 /// compatible type is atomically replaced; type mismatches yield ENOTDIR/EISDIR
 /// and a non-empty destination directory yields ENOTEMPTY.
 pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
-    // A directory cannot be moved into its own subtree.
-    if new.len() > old.len() && new.starts_with(old) && new[old.len()] == b'/' {
-        return Err(Errno::EINVAL);
-    }
     let old_comps = split_components(old);
     let new_comps = split_components(new);
     if old_comps.is_empty() || new_comps.is_empty() {
         return Err(Errno::EBUSY); // cannot rename the root
     }
+    let into_own_subtree = new_comps.len() > old_comps.len()
+        && new_comps.starts_with(&old_comps);
     if resizable_persistence_enabled() {
         let mutations = ROOTFS.with(|state| {
             let (old_parent, old_name, old_target) = state.resolve(&old_comps)?;
             let old_target = old_target.ok_or(Errno::ENOENT)?;
+            if into_own_subtree && state.get(old_target).ok_or(Errno::ENOENT)?.is_dir() {
+                return Err(Errno::EINVAL);
+            }
             let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
             if new_existing == Some(old_target) {
                 return Ok::<_, Errno>(None);
@@ -5096,6 +5097,9 @@ pub fn rename(old: &[u8], new: &[u8]) -> Result<(), Errno> {
     let result = ROOTFS.with(|state| {
         let (old_parent, old_name, old_target) = state.resolve(&old_comps)?;
         let old_target = old_target.ok_or(Errno::ENOENT)?;
+        if into_own_subtree && state.get(old_target).ok_or(Errno::ENOENT)?.is_dir() {
+            return Err(Errno::EINVAL);
+        }
         let old_name = old_name.ok_or(Errno::ENOENT)?.to_vec();
         let (new_parent, new_name, new_existing) = state.resolve(&new_comps)?;
         let new_name = new_name.ok_or(Errno::ENOENT)?.to_vec();
@@ -7912,6 +7916,9 @@ mod tests {
         assert_eq!(lstat(b"/opt/other").unwrap().st_size, 11);
         // Directory-into-own-subtree is EINVAL.
         assert_eq!(rename(b"/opt", b"/opt/sub").unwrap_err(), Errno::EINVAL);
+        assert_eq!(rename(b"/opt/", b"/opt/sub").unwrap_err(), Errno::EINVAL);
+        assert_eq!(rename(b"/opt", b"/opt//sub").unwrap_err(), Errno::EINVAL);
+        assert_eq!(rename(b"/opt/other", b"/opt/other/child"), Err(Errno::ENOTDIR));
     }
 
     /// `rename`'s doc comment promises four POSIX guarantees about the
@@ -10691,6 +10698,31 @@ mod tests {
         assert_eq!(lstat(b"/moved-dir").unwrap().st_nlink, 3);
         assert_eq!(lstat(b"/moved-dir/nested/file").unwrap().st_size, 6);
         assert_eq!(readlink(b"/moved-dir/nested/link", &mut link_target), Ok(4));
+    }
+
+    #[test]
+    fn resizable_persistence_refuses_directory_self_move_before_journaling() {
+        let _guard = TestGuard::acquire();
+        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let base_digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut image_bytes = image_host(&image);
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage.clone()), base_digest).unwrap();
+        mkdir(b"/parent", 0o755, 0, 0).unwrap();
+        let journal_length = storage.0.lock().len();
+
+        assert_eq!(rename(b"/parent/", b"/parent/child"), Err(Errno::EINVAL));
+        assert_eq!(rename(b"/parent", b"/parent//child"), Err(Errno::EINVAL));
+        assert_eq!(storage.0.lock().len(), journal_length);
+        assert!(lstat(b"/parent").is_ok());
+        assert!(matches!(lstat(b"/parent/child"), Err(Errno::ENOENT)));
+
+        reset();
+        load_image(image.len() as u64, &mut image_bytes).unwrap();
+        enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
+        assert!(lstat(b"/parent").is_ok());
+        assert!(matches!(lstat(b"/parent/child"), Err(Errno::ENOENT)));
     }
 
     #[test]
