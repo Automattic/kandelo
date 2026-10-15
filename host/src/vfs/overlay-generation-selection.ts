@@ -256,6 +256,7 @@ async function convertOversizedGeneration(
   sourceGeneration: number,
   enable: (journal: PersistentOverlayStorage, index: PersistentOverlayStorage, checkpointEnd: number) => void,
   convert: (source: PersistentOverlayStorage, target: PersistentOverlayStorage, index: PersistentOverlayStorage) => void,
+  reportCleanupFailure: (error: unknown) => void,
 ): Promise<SelectedOverlayGeneration> {
   if (!Number.isSafeInteger(sourceGeneration + 1)) {
     throw new Error("persistent overlay generation number exhausted");
@@ -309,11 +310,28 @@ async function convertOversizedGeneration(
   } catch (error) {
     failure = error;
     if (seal !== null && !published) {
+      let invalidated = false;
       try {
         seal.truncate(0);
         seal.flush();
+        invalidated = true;
       } catch (cleanupError) {
         failure = new AggregateError([error, cleanupError], "persistent overlay conversion seal cleanup failed");
+      }
+      if (invalidated) {
+        for (const storage of [index, target]) {
+          if (storage === null) continue;
+          try {
+            storage.truncate(0);
+            storage.flush();
+          } catch (cleanupError) {
+            try {
+              reportCleanupFailure(cleanupError);
+            } catch (reportError) {
+              console.error("persistent overlay conversion cleanup report failed", cleanupError, reportError);
+            }
+          }
+        }
       }
     }
     throw failure;
@@ -345,6 +363,7 @@ export async function enableBestOverlayGeneration(
   enable: (journal: PersistentOverlayStorage, index?: PersistentOverlayStorage, checkpointEnd?: number) => void,
   requireExisting = false,
   convertJournal?: (source: PersistentOverlayStorage, target: PersistentOverlayStorage, index: PersistentOverlayStorage) => void,
+  reportCleanupFailure: (error: unknown) => void = console.error,
 ): Promise<SelectedOverlayGeneration> {
   const candidates: Candidate[] = [];
   const reusableSlots = new Map<number, SealedGenerationSlot>();
@@ -453,6 +472,7 @@ export async function enableBestOverlayGeneration(
             try {
               const converted = await convertOversizedGeneration(
                 files, candidate.journal, candidate.slot, targetSlot, candidate.generation, enable, convertJournal,
+                reportCleanupFailure,
               );
               candidates.splice(candidates.indexOf(candidate), 1);
               closeCandidate(candidate);
@@ -492,7 +512,7 @@ export async function enableBestOverlayGeneration(
         knownGenerations.set(targetSlot, 0);
         try {
           converted = await convertOversizedGeneration(
-            files, legacy, "legacy", targetSlot, 0, enable, convertJournal,
+            files, legacy, "legacy", targetSlot, 0, enable, convertJournal, reportCleanupFailure,
           );
         } catch (error) {
           if (error instanceof RejectedConvertedTargetError || isStorageQuotaError(error)) {

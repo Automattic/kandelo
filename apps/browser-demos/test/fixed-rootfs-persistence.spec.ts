@@ -1407,6 +1407,8 @@ test("browser converts an oversized unindexed fixed journal before mounting", as
               30_000,
             )),
           ]);
+          const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "mmap-fsync"]);
+          if (await exit !== 0) throw new Error("guest mmap/fsync write failed after quota-deferred compaction");
           return {
             state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
             redirected,
@@ -1423,7 +1425,8 @@ test("browser converts an oversized unindexed fixed journal before mounting", as
         name: prepared.name,
         quotaWorkerUrl: new URL(`/@fs/${resolve(testDirectory, "fixtures/opfs-overlay-conversion-quota-worker.ts")}`, baseURL).href,
       });
-      expect(quotaMounted).toMatchObject({ state: "XYcdefgh", redirected: 1, sealLength: 0, sourceLength: prepared.sourceLength });
+      expect(quotaMounted).toMatchObject({ state: "MScdefgh", redirected: 1, sealLength: 0 });
+      expect(quotaMounted.sourceLength).toBeGreaterThan(prepared.sourceLength);
       expect(quotaMounted.deferred).toContain("ENOSPC");
       await page.reload();
       const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
@@ -1448,7 +1451,7 @@ test("browser converts an oversized unindexed fixed journal before mounting", as
           await kernel.destroy();
         }
       }, { moduleUrl, kernelUrl, name: prepared.name });
-      expect(recovered).toEqual({ state: "XYcdefgh", largeValid: true, version: 5, sourceLength: prepared.sourceLength });
+      expect(recovered).toEqual({ state: "MScdefgh", largeValid: true, version: 5, sourceLength: quotaMounted.sourceLength });
     } finally {
       await context.close();
     }
