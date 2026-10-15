@@ -312,6 +312,68 @@ describe("overlay generation boot selection", () => {
       .rejects.toBeInstanceOf(NoValidOverlayGenerationError);
   });
 
+  it("seals a bounded legacy conversion before mounting its indexed target", async () => {
+    const sourceBytes = new Uint8Array(32 * 1024 * 1024);
+    sourceBytes.set(new Uint8Array(32).fill(7), 8);
+    const entries = { "legacy.journal": new MemoryStorage(sourceBytes) } as Record<string, MemoryStorage>;
+    const originalBytes = entries["legacy.journal"]!.bytes;
+    const enableCalls: number[] = [];
+    const converted = await enableBestOverlayGeneration(files(entries), (journal, index, checkpointEnd) => {
+      expect(journal).toBe(entries["g0.journal"]);
+      expect(index).toBe(entries["g0.index"]);
+      enableCalls.push(checkpointEnd!);
+    }, true, (source, target, index) => {
+      expect(source).toBe(entries["legacy.journal"]);
+      target.writeAllAt(0, Uint8Array.of(1, 2, 3));
+      index.writeAllAt(0, Uint8Array.of(4, 5, 6));
+    });
+    expect(converted.slot).toBe("g0");
+    expect(converted.generation).toBe(1);
+    expect(enableCalls).toEqual([3]);
+    expect(await verifyOverlayGenerationSeal(
+      entries["g0.journal"]!, entries["g0.seal"]!, sourceBytes.slice(8, 40), false, entries["g0.index"]!,
+    )).toMatchObject({ generation: 1, source: { slot: "legacy", journalLength: sourceBytes.length } });
+    expect(entries["legacy.journal"]!.bytes).toBe(originalBytes);
+    expect(entries["legacy.journal"]!.len()).toBe(sourceBytes.length);
+    expect(entries["legacy.journal"]!.closeCount).toBe(1);
+  });
+
+  it("leaves a large legacy source intact after interrupted conversion and retries", async () => {
+    const sourceBytes = new Uint8Array(32 * 1024 * 1024);
+    const entries = { "legacy.journal": new MemoryStorage(sourceBytes) } as Record<string, MemoryStorage>;
+    const originalBytes = entries["legacy.journal"]!.bytes;
+    await expect(enableBestOverlayGeneration(files(entries), () => {
+      throw new Error("unexpected mount");
+    }, true, (_source, target) => {
+      target.writeAllAt(0, Uint8Array.of(1));
+      throw new Error("conversion interrupted");
+    })).rejects.toThrow("conversion interrupted");
+    expect(entries["legacy.journal"]!.bytes).toBe(originalBytes);
+    expect(entries["legacy.journal"]!.len()).toBe(sourceBytes.length);
+    expect(entries["g0.seal"]!.len()).toBe(0);
+    const recovered = await enableBestOverlayGeneration(files(entries), () => {}, true, (_source, target, index) => {
+      target.writeAllAt(0, Uint8Array.of(1, 2));
+      index.writeAllAt(0, Uint8Array.of(3));
+    });
+    expect(recovered.slot).toBe("g0");
+    expect(entries["g0.journal"]!.bytes).toEqual(Uint8Array.of(1, 2));
+  });
+
+  it("attempts every legacy conversion close after a failed write", async () => {
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": new MemoryStorage(new Uint8Array(32 * 1024 * 1024)),
+    };
+    await expect(enableBestOverlayGeneration(files(entries), () => {}, true, () => {
+      entries["g0.index"]!.failNextClose = true;
+      throw new Error("conversion write failed");
+    })).rejects.toThrow("persistent overlay legacy conversion cleanup failed");
+    expect(entries["legacy.journal"].len()).toBe(32 * 1024 * 1024);
+    expect(entries["legacy.journal"].closeCount).toBe(1);
+    expect(entries["g0.seal"].closeCount).toBe(1);
+    expect(entries["g0.index"].closeCount).toBe(1);
+    expect(entries["g0.journal"].closeCount).toBe(1);
+  });
+
   it("reports a nonempty rejected legacy journal as no valid generation", async () => {
     const entries = { "legacy.journal": new MemoryStorage(Uint8Array.of(1, 2, 3)) };
     await expect(enableBestOverlayGeneration(files(entries), () => {

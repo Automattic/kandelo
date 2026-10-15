@@ -1286,6 +1286,122 @@ test("browser recovers a committed source write instead of a stale sealed target
   }
 });
 
+test("browser converts an oversized unindexed fixed journal before mounting", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.setTimeout(180_000);
+  const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.mkdir("/bin", 0o755);
+  filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+  filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+  filesystem.writeFile("/large", new Uint8Array(2 * 1024 * 1024 + 4096), 0o644);
+  const image = await filesystem.saveImage();
+  const kernelUrl = new URL("/fixed-legacy-kernel.wasm", baseURL).href;
+  const imageUrl = new URL("/fixed-legacy-image.vfs", baseURL).href;
+  const projectUse = testInfo.project.use as {
+    channel?: string;
+    launchOptions?: Record<string, unknown>;
+    proxy?: Record<string, unknown>;
+    extraHTTPHeaders?: Record<string, string>;
+  };
+  const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-fixed-legacy-browser-"));
+  try {
+    const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+      channel: projectUse.channel,
+      proxy: projectUse.proxy as never,
+      extraHTTPHeaders: projectUse.extraHTTPHeaders,
+      ...(projectUse.launchOptions ?? {}),
+    });
+    try {
+      const page = context.pages()[0] ?? (await context.newPage());
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+      await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+      await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const moduleUrl = new URL(`/@fs/${browserKernelPath}`, baseURL).href;
+      const prepared = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const name = `fixed-legacy-${crypto.randomUUID()}`;
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+        const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+        const imageWriter = await imageFile.createWritable();
+        await imageWriter.write(await (await fetch(imageUrl)).arrayBuffer());
+        await imageWriter.close();
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: imageFile,
+            experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
+          });
+          for (const argument of ["persistence-overwrite", "large"]) {
+            const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", argument]);
+            if (await exit !== 0) throw new Error(`guest write ${argument} failed`);
+          }
+        } finally {
+          await kernel.destroy();
+        }
+        const legacyFile = await directory.getFileHandle(`${name}.journal`);
+        const journal = await legacyFile.getFile();
+        let position = 72;
+        let sequence = 0n;
+        let largest = new Uint8Array();
+        while (position < journal.size) {
+          const header = new DataView(await journal.slice(position, position + 24).arrayBuffer());
+          const length = header.getUint32(4, true);
+          if (length < 60 || position + length > journal.size) throw new Error("invalid source transaction");
+          if (length > largest.length) largest = new Uint8Array(await journal.slice(position, position + length).arrayBuffer());
+          position += length;
+          sequence++;
+        }
+        if (largest.length < 4096) throw new Error("large guest write produced no block transaction");
+        const writer = await legacyFile.createWritable({ keepExistingData: true });
+        try {
+          while (position < 32 * 1024 * 1024) {
+            const transaction = largest.slice();
+            new DataView(transaction.buffer).setBigUint64(8, ++sequence, true);
+            const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", transaction.slice(0, -36).buffer));
+            transaction.set(digest, transaction.length - 36);
+            await writer.write({ type: "write", position, data: transaction });
+            position += transaction.length;
+          }
+          await writer.close();
+        } catch (error) {
+          await writer.abort();
+          throw error;
+        }
+        return { name, sourceLength: position };
+      }, { moduleUrl, kernelUrl, imageUrl });
+      await page.reload();
+      const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const imageFile = await directory.getFileHandle(`${name}.base`);
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: imageFile,
+            experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
+          });
+          const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          const large = await kernel.readFileRangeFromVfs("/large", 13, 4096);
+          const index = await (await directory.getFileHandle(`${name}.g0.index`)).getFile();
+          const version = new DataView(await index.slice(4, 8).arrayBuffer()).getUint32(0, true);
+          const sourceLength = (await (await directory.getFileHandle(`${name}.journal`)).getFile()).size;
+          return { state, largeValid: large?.every((byte, position) => byte === (position & 255)), version, sourceLength };
+        } finally {
+          await kernel.destroy();
+        }
+      }, { moduleUrl, kernelUrl, name: prepared.name });
+      expect(recovered).toEqual({ state: "XYcdefgh", largeValid: true, version: 5, sourceLength: prepared.sourceLength });
+    } finally {
+      await context.close();
+    }
+  } finally {
+    rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
 test("browser replays 8192 distinct blocks after live compaction", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(240_000);
   const projectUse = testInfo.project.use as {

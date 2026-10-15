@@ -30,6 +30,9 @@ const FILE_BLOCK_BYTES: usize = 4096;
 const CACHE_BLOCKS: usize = 64;
 const METADATA_CACHE_ENTRIES: usize = 64;
 const ACTIVE_TAIL_LIMIT_BYTES: u64 = 63 * 1024 * 1024;
+const LEGACY_SORT_RECORD_BYTES: u64 = 96;
+const LEGACY_SORT_RUN_RECORDS: usize = 4 * 1024;
+const LEGACY_SORT_IO_RECORDS: usize = 1024;
 
 pub trait OverlayStorage {
     fn len(&mut self) -> Result<u64, Errno>;
@@ -1708,6 +1711,321 @@ impl<S: OverlayStorage> OverlayJournal<S> {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+struct LegacyBlockReference {
+    inode: u64,
+    block: u64,
+    order: u64,
+    offset: u64,
+    digest: [u8; 32],
+}
+
+impl LegacyBlockReference {
+    fn encode(self) -> [u8; LEGACY_SORT_RECORD_BYTES as usize] {
+        let mut bytes = [0; LEGACY_SORT_RECORD_BYTES as usize];
+        bytes[0..8].copy_from_slice(&self.inode.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.block.to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.order.to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.offset.to_le_bytes());
+        bytes[32..64].copy_from_slice(&self.digest);
+        let checksum = Sha256::digest(&bytes[..64]);
+        bytes[64..96].copy_from_slice(&checksum);
+        bytes
+    }
+
+    fn decode(bytes: [u8; LEGACY_SORT_RECORD_BYTES as usize]) -> Result<Self, Errno> {
+        if bytes[64..96] != Sha256::digest(&bytes[..64])[..] {
+            return Err(Errno::EIO);
+        }
+        let mut digest = [0; 32];
+        digest.copy_from_slice(&bytes[32..64]);
+        Ok(Self {
+            inode: u64::from_le_bytes(bytes[0..8].try_into().map_err(|_| Errno::EIO)?),
+            block: u64::from_le_bytes(bytes[8..16].try_into().map_err(|_| Errno::EIO)?),
+            order: u64::from_le_bytes(bytes[16..24].try_into().map_err(|_| Errno::EIO)?),
+            offset: u64::from_le_bytes(bytes[24..32].try_into().map_err(|_| Errno::EIO)?),
+            digest,
+        })
+    }
+}
+
+#[cfg(test)]
+fn legacy_record_at<S: OverlayStorage>(
+    storage: &mut S,
+    position: u64,
+) -> Result<LegacyBlockReference, Errno> {
+    let offset = position
+        .checked_mul(LEGACY_SORT_RECORD_BYTES)
+        .ok_or(Errno::EOVERFLOW)?;
+    let mut bytes = [0; LEGACY_SORT_RECORD_BYTES as usize];
+    storage.read_exact_at(offset, &mut bytes)?;
+    LegacyBlockReference::decode(bytes)
+}
+
+struct LegacyReadCursor {
+    position: u64,
+    end: u64,
+    buffered_from: u64,
+    buffered_count: u64,
+    buffer: Vec<u8>,
+}
+
+impl LegacyReadCursor {
+    fn new() -> Result<Self, Errno> {
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(LEGACY_SORT_IO_RECORDS * LEGACY_SORT_RECORD_BYTES as usize)
+            .map_err(|_| Errno::ENOMEM)?;
+        Ok(Self {
+            position: 0,
+            end: 0,
+            buffered_from: 0,
+            buffered_count: 0,
+            buffer,
+        })
+    }
+
+    fn reset(&mut self, start: u64, end: u64) {
+        self.position = start;
+        self.end = end;
+        self.buffered_count = 0;
+    }
+
+    fn next<S: OverlayStorage>(
+        &mut self,
+        storage: &mut S,
+    ) -> Result<Option<LegacyBlockReference>, Errno> {
+        if self.position == self.end {
+            return Ok(None);
+        }
+        if self.buffered_count == 0 || self.position >= self.buffered_from + self.buffered_count {
+            self.buffered_from = self.position;
+            self.buffered_count = (self.end - self.position).min(LEGACY_SORT_IO_RECORDS as u64);
+            let length = self.buffered_count as usize * LEGACY_SORT_RECORD_BYTES as usize;
+            self.buffer.resize(length, 0);
+            storage.read_exact_at(
+                self.position.checked_mul(LEGACY_SORT_RECORD_BYTES).ok_or(Errno::EOVERFLOW)?,
+                &mut self.buffer,
+            )?;
+        }
+        let start =
+            (self.position - self.buffered_from) as usize * LEGACY_SORT_RECORD_BYTES as usize;
+        let mut bytes = [0; LEGACY_SORT_RECORD_BYTES as usize];
+        bytes.copy_from_slice(&self.buffer[start..start + LEGACY_SORT_RECORD_BYTES as usize]);
+        self.position += 1;
+        LegacyBlockReference::decode(bytes).map(Some)
+    }
+}
+
+fn merge_legacy_runs<S: OverlayStorage, T: OverlayStorage>(
+    source: &mut S,
+    target: &mut T,
+    count: u64,
+    width: u64,
+) -> Result<(), Errno> {
+    target.truncate(0)?;
+    let mut left_cursor = LegacyReadCursor::new()?;
+    let mut right_cursor = LegacyReadCursor::new()?;
+    let mut output = Vec::new();
+    output.try_reserve_exact(LEGACY_SORT_IO_RECORDS * LEGACY_SORT_RECORD_BYTES as usize)
+        .map_err(|_| Errno::ENOMEM)?;
+    let mut output_offset = 0u64;
+    let mut start = 0u64;
+    while start < count {
+        let middle = start.saturating_add(width).min(count);
+        let end = middle.saturating_add(width).min(count);
+        left_cursor.reset(start, middle);
+        right_cursor.reset(middle, end);
+        let mut left = left_cursor.next(source)?;
+        let mut right = right_cursor.next(source)?;
+        for _ in start..end {
+            let take_left = match (left, right) {
+                (Some(left), Some(right)) => left <= right,
+                (Some(_), None) => true,
+                _ => false,
+            };
+            let selected = if take_left {
+                let selected = left.ok_or(Errno::EIO)?;
+                left = left_cursor.next(source)?;
+                selected
+            } else {
+                let selected = right.ok_or(Errno::EIO)?;
+                right = right_cursor.next(source)?;
+                selected
+            };
+            output.extend_from_slice(&selected.encode());
+            if output.len() == LEGACY_SORT_IO_RECORDS * LEGACY_SORT_RECORD_BYTES as usize {
+                target.write_all_at(output_offset, &output)?;
+                output_offset = output_offset.checked_add(output.len() as u64).ok_or(Errno::EOVERFLOW)?;
+                output.clear();
+            }
+        }
+        start = end;
+    }
+    if !output.is_empty() {
+        target.write_all_at(output_offset, &output)?;
+    }
+    target.flush()
+}
+
+fn sort_legacy_block_references<S: OverlayStorage, T: OverlayStorage>(
+    scratch: &mut S,
+    target: &mut T,
+    count: u64,
+) -> Result<(), Errno> {
+    let mut run = Vec::new();
+    run.try_reserve_exact(LEGACY_SORT_RUN_RECORDS).map_err(|_| Errno::ENOMEM)?;
+    let mut reader = LegacyReadCursor::new()?;
+    let mut start = 0u64;
+    while start < count {
+        let length = (count - start).min(LEGACY_SORT_RUN_RECORDS as u64) as usize;
+        run.clear();
+        reader.reset(start, start + length as u64);
+        while let Some(record) = reader.next(scratch)? {
+            run.push(record);
+        }
+        run.sort_unstable();
+        for (index, records) in run.chunks(LEGACY_SORT_IO_RECORDS).enumerate() {
+            let mut bytes = [0; LEGACY_SORT_IO_RECORDS * LEGACY_SORT_RECORD_BYTES as usize];
+            for (position, record) in records.iter().enumerate() {
+                let start = position * LEGACY_SORT_RECORD_BYTES as usize;
+                bytes[start..start + LEGACY_SORT_RECORD_BYTES as usize].copy_from_slice(&record.encode());
+            }
+            scratch.write_all_at(
+                (start + index as u64 * LEGACY_SORT_IO_RECORDS as u64)
+                    .checked_mul(LEGACY_SORT_RECORD_BYTES).ok_or(Errno::EOVERFLOW)?,
+                &bytes[..records.len() * LEGACY_SORT_RECORD_BYTES as usize],
+            )?;
+        }
+        start += length as u64;
+    }
+    scratch.flush()?;
+    let mut width = LEGACY_SORT_RUN_RECORDS as u64;
+    let mut sorted_in_scratch = true;
+    while width < count {
+        if sorted_in_scratch {
+            merge_legacy_runs(scratch, target, count, width)?;
+        } else {
+            merge_legacy_runs(target, scratch, count, width)?;
+        }
+        sorted_in_scratch = !sorted_in_scratch;
+        width = width.saturating_mul(2);
+    }
+    if !sorted_in_scratch {
+        let mut buffer = [0; 64 * 1024];
+        let total_bytes = count.checked_mul(LEGACY_SORT_RECORD_BYTES).ok_or(Errno::EOVERFLOW)?;
+        let mut offset = 0;
+        while offset < total_bytes {
+            let length = (total_bytes - offset).min(buffer.len() as u64) as usize;
+            target.read_exact_at(offset, &mut buffer[..length])?;
+            scratch.write_all_at(offset, &buffer[..length])?;
+            offset += length as u64;
+        }
+        scratch.flush()?;
+    }
+    target.truncate(0)?;
+    target.flush()
+}
+
+fn emit_legacy_block<S: OverlayStorage, T: OverlayStorage>(
+    source: &mut S,
+    target: &mut OverlayJournal<T>,
+    batch: &mut Vec<Mutation>,
+    reference: LegacyBlockReference,
+) -> Result<(), Errno> {
+    let mut value = alloc::vec![0; FILE_BLOCK_BYTES];
+    source.read_exact_at(reference.offset, &mut value)?;
+    if Sha256::digest(&value)[..] != reference.digest {
+        return Err(Errno::EIO);
+    }
+    batch.push(Mutation::Put {
+        key: OverlayKey::FileBlock { inode: reference.inode, block: reference.block },
+        value,
+    });
+    if batch.len() == 128 {
+        target.commit_transaction(batch)?;
+        batch.clear();
+    }
+    Ok(())
+}
+
+pub fn convert_unindexed_fixed_journal<S: OverlayStorage, T: OverlayStorage, I: OverlayStorage>(
+    source: &mut S,
+    mut target: T,
+    mut scratch: I,
+    base_digest: [u8; 32],
+) -> Result<(T, I), Errno> {
+    let source_length = source.len()?;
+    if source_length < HEADER_BYTES as u64 || target.len()? != 0 || scratch.len()? != 0 {
+        return Err(Errno::EINVAL);
+    }
+    read_overlay_header(source, base_digest)?;
+    let mut count = 0u64;
+    let mut record_buffer = Vec::new();
+    record_buffer.try_reserve_exact(LEGACY_SORT_IO_RECORDS * LEGACY_SORT_RECORD_BYTES as usize)
+        .map_err(|_| Errno::ENOMEM)?;
+    let mut record_write_offset = 0u64;
+    let mut record = |mutation: &Mutation, value_offset: Option<u64>| {
+        let Mutation::Put { key: OverlayKey::FileBlock { inode, block }, value } = mutation else {
+            return Err(Errno::EIO);
+        };
+        let reference = LegacyBlockReference {
+            inode: *inode,
+            block: *block,
+            order: count,
+            offset: value_offset.ok_or(Errno::EIO)?,
+            digest: Sha256::digest(value).into(),
+        };
+        record_buffer.extend_from_slice(&reference.encode());
+        if record_buffer.len() == LEGACY_SORT_IO_RECORDS * LEGACY_SORT_RECORD_BYTES as usize {
+            scratch.write_all_at(record_write_offset, &record_buffer)?;
+            record_write_offset = record_write_offset.checked_add(record_buffer.len() as u64).ok_or(Errno::EOVERFLOW)?;
+            record_buffer.clear();
+        }
+        count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok(())
+    };
+    replay_transactions(
+        source,
+        HEADER_BYTES as u64,
+        source_length,
+        1,
+        &mut OverlayState::default(),
+        ReplayFilter::VerifyOnly,
+        true,
+        false,
+        None,
+        Some(&mut record),
+    )?;
+    if !record_buffer.is_empty() {
+        scratch.write_all_at(record_write_offset, &record_buffer)?;
+    }
+    scratch.flush()?;
+    sort_legacy_block_references(&mut scratch, &mut target, count)?;
+    let mut compacted = OverlayJournal::open(target, base_digest)?;
+    compacted.track_committed_state = false;
+    let mut batch = Vec::new();
+    batch.try_reserve_exact(128).map_err(|_| Errno::ENOMEM)?;
+    let mut pending: Option<LegacyBlockReference> = None;
+    let mut reader = LegacyReadCursor::new()?;
+    reader.reset(0, count);
+    while let Some(reference) = reader.next(&mut scratch)? {
+        if let Some(previous) = pending {
+            if (previous.inode, previous.block) != (reference.inode, reference.block) {
+                emit_legacy_block(source, &mut compacted, &mut batch, previous)?;
+            }
+        }
+        pending = Some(reference);
+    }
+    if let Some(reference) = pending {
+        emit_legacy_block(source, &mut compacted, &mut batch, reference)?;
+    }
+    compacted.commit_transaction(&batch)?;
+    scratch.truncate(0)?;
+    scratch.flush()?;
+    let checkpoint = compacted.checkpoint_fixed_blocks_into(scratch)?;
+    Ok((compacted.into_storage(), checkpoint.into_storage()))
+}
+
 struct CompactedBlockEntries<'a, S: OverlayStorage> {
     storage: &'a mut S,
     end: u64,
@@ -2478,6 +2796,134 @@ mod tests {
             journal.checkpoint_fixed_blocks_into(MemoryStorage::default()),
             Err(Errno::EIO)
         ));
+    }
+
+    #[test]
+    fn legacy_block_reference_sort_merges_multiple_bounded_runs() {
+        let count = LEGACY_SORT_RUN_RECORDS as u64 * 2 + 3;
+        let mut scratch = MemoryStorage::default();
+        for position in 0..count {
+            let reference = LegacyBlockReference {
+                inode: 7,
+                block: count - position - 1,
+                order: position,
+                offset: 72,
+                digest: [0; 32],
+            };
+            scratch.write_all_at(position * LEGACY_SORT_RECORD_BYTES, &reference.encode()).unwrap();
+        }
+        let mut target = MemoryStorage::default();
+        sort_legacy_block_references(&mut scratch, &mut target, count).unwrap();
+        assert!(target.bytes.is_empty());
+        for position in 0..count {
+            let reference = legacy_record_at(&mut scratch, position).unwrap();
+            assert_eq!(reference.block, position);
+            assert_eq!(reference.order, count - position - 1);
+        }
+    }
+
+    #[test]
+    fn legacy_block_reference_rejects_a_changed_key_or_order() {
+        let reference = LegacyBlockReference {
+            inode: 7,
+            block: 8,
+            order: 9,
+            offset: 72,
+            digest: [1; 32],
+        };
+        for position in [0, 8, 16, 24, 32, 64] {
+            let mut bytes = reference.encode();
+            bytes[position] ^= 1;
+            assert!(matches!(LegacyBlockReference::decode(bytes), Err(Errno::EIO)));
+        }
+    }
+
+    #[test]
+    fn unindexed_fixed_conversion_streams_latest_blocks_into_v5_checkpoint() {
+        let digest = [54; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        for block in 0..300 {
+            journal.commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block },
+                value: vec![block as u8; FILE_BLOCK_BYTES],
+            }]).unwrap();
+        }
+        journal.commit(&[
+            Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                value: vec![b'x'; FILE_BLOCK_BYTES],
+            },
+            Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                value: vec![b'y'; FILE_BLOCK_BYTES],
+            },
+        ]).unwrap();
+        let mut source = journal.into_storage();
+        source.bytes.extend_from_slice(b"torn");
+        let original = source.bytes.clone();
+        let (target, index) = convert_unindexed_fixed_journal(
+            &mut source,
+            MemoryStorage::default(),
+            MemoryStorage::default(),
+            digest,
+        ).unwrap();
+        assert_eq!(source.bytes, original);
+        assert_eq!(&index.bytes[..4], b"KIDX");
+        assert_eq!(u32::from_le_bytes(index.bytes[4..8].try_into().unwrap()), 5);
+        assert_eq!(u64::from_le_bytes(index.bytes[80..88].try_into().unwrap()), 300);
+        let checkpoint_end = target.bytes.len() as u64;
+        let mut reopened = OverlayJournal::open_with_checkpoint(target, index, digest, checkpoint_end).unwrap();
+        let mut block = [0; FILE_BLOCK_BYTES];
+        assert_eq!(reopened.read_file_at(7, 300 * FILE_BLOCK_BYTES as u64, 0, &mut block, |_, _| panic!("block is journaled")), Ok(FILE_BLOCK_BYTES));
+        assert_eq!(block, [b'y'; FILE_BLOCK_BYTES]);
+        assert_eq!(reopened.read_file_at(7, 300 * FILE_BLOCK_BYTES as u64, 299 * FILE_BLOCK_BYTES as u64, &mut block, |_, _| panic!("block is journaled")), Ok(FILE_BLOCK_BYTES));
+        assert_eq!(block, [(299 % 256) as u8; FILE_BLOCK_BYTES]);
+    }
+
+    #[test]
+    fn unindexed_fixed_conversion_rejects_corruption_without_changing_source() {
+        let digest = [55; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        journal.commit(&[Mutation::Put {
+            key: OverlayKey::FileBlock { inode: 7, block: 0 },
+            value: vec![b'a'; FILE_BLOCK_BYTES],
+        }]).unwrap();
+        let mut source = journal.into_storage();
+        source.bytes[HEADER_BYTES + TRANSACTION_HEADER_BYTES + 20] ^= 1;
+        let original = source.bytes.clone();
+        assert!(matches!(
+            convert_unindexed_fixed_journal(&mut source, MemoryStorage::default(), MemoryStorage::default(), digest),
+            Err(Errno::EIO)
+        ));
+        assert_eq!(source.bytes, original);
+    }
+
+    #[test]
+    fn unindexed_fixed_conversion_failures_never_change_the_source() {
+        let digest = [56; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        journal.commit(&[Mutation::Put {
+            key: OverlayKey::FileBlock { inode: 7, block: 0 },
+            value: vec![b'a'; FILE_BLOCK_BYTES],
+        }]).unwrap();
+        let original = journal.into_storage().bytes;
+        for fault in ["scratch-write", "target-write", "target-flush"] {
+            let mut source = MemoryStorage { bytes: original.clone(), ..MemoryStorage::default() };
+            let target = MemoryStorage {
+                fail_write_after_bytes: (fault == "target-write").then_some(3),
+                fail_flush: fault == "target-flush",
+                ..MemoryStorage::default()
+            };
+            let scratch = MemoryStorage {
+                fail_write_after_bytes: (fault == "scratch-write").then_some(3),
+                ..MemoryStorage::default()
+            };
+            assert!(matches!(
+                convert_unindexed_fixed_journal(&mut source, target, scratch, digest),
+                Err(Errno::EIO)
+            ), "{fault}");
+            assert_eq!(source.bytes, original, "{fault}");
+        }
     }
 
     #[test]
