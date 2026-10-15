@@ -2604,7 +2604,9 @@ H+N      ...    Optional trailing sections, each a 4-byte length and bytes:
 its 32-bit length and uses v2 only above that boundary. The KIFS v1 per-file
 block map is a separate limit; a larger container header does not remove it.
 Snapshot export leaves unwritten blocks of new journal-backed regular files
-unallocated in KIFS, so their logical size need not determine body size.
+unallocated in KIFS, so their logical size need not determine body size. The
+kernel records sparse block maps for image-backed regular files during boot
+and preserves their holes when exporting, including through journal changes.
 
 ## Networking
 

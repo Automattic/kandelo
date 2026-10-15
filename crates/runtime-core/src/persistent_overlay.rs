@@ -1493,6 +1493,32 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         Ok(blocks)
     }
 
+    pub fn composed_file_blocks(
+        &mut self,
+        inode: u64,
+        base_size: u64,
+        size: u64,
+        base_blocks: &[u32],
+    ) -> Result<Vec<u32>, Errno> {
+        let mut blocks = self.allocated_file_blocks(inode, size)?;
+        let base_limit = base_size.min(size).div_ceil(FILE_BLOCK_BYTES as u64);
+        let zero_from = self.visible_zero_from(inode)?;
+        for &block in base_blocks {
+            if u64::from(block) >= base_limit {
+                continue;
+            }
+            if zero_from.is_some_and(|from| u64::from(block) >= from) {
+                continue;
+            }
+            if self.block_location(inode, u64::from(block))?.is_none() {
+                blocks.push(block);
+            }
+        }
+        blocks.sort_unstable();
+        blocks.dedup();
+        Ok(blocks)
+    }
+
     fn block_location(
         &mut self,
         inode: u64,
@@ -2376,6 +2402,10 @@ mod tests {
             |_, _| panic!("full block needs no base read"),
         ).unwrap();
         assert_eq!(reopened.allocated_file_blocks(7, size), Ok(vec![0, 17, 70_000, 100_000]));
+        assert_eq!(
+            reopened.composed_file_blocks(7, size, size, &[0, 5, 20, 100_000]),
+            Ok(vec![0, 17, 20, 70_000, 100_000])
+        );
         reopened.truncate_file_at(7, size, 2 * FILE_BLOCK_BYTES as u64, |_, _| {
             panic!("block-aligned truncation needs no base read")
         }).unwrap();
@@ -2383,6 +2413,10 @@ mod tests {
             panic!("extension needs no base read")
         }).unwrap();
         assert_eq!(reopened.allocated_file_blocks(7, size), Ok(vec![0]));
+        assert_eq!(
+            reopened.composed_file_blocks(7, size, size, &[0, 5, 20, 100_000]),
+            Ok(vec![0])
+        );
     }
 
     #[test]
