@@ -433,7 +433,7 @@ describe("overlay generation boot selection", () => {
     expect(selected.generation).toBe(3);
   });
 
-  it("does not overwrite a fallback when all three generation slots are sealed", async () => {
+  it("converts a full three-slot legacy set without overwriting a fallback", async () => {
     const sourceBytes = new Uint8Array(32 * 1024 * 1024);
     const sourceIndex = new Uint8Array(160);
     new DataView(sourceIndex.buffer).setUint32(4, 1, true);
@@ -455,14 +455,60 @@ describe("overlay generation boot selection", () => {
       journal: entries[`${slot}.journal`].bytes,
       seal: entries[`${slot}.seal`].bytes,
     }));
-    const selected = await enableBestOverlayGeneration(files(entries), () => {}, true, () => {
-      throw new Error("conversion must not overwrite a sealed fallback");
-    });
-    expect(selected.slot).toBe("g2");
-    expect(selected.generation).toBe(3);
+    await expect(enableBestOverlayGeneration(files(entries), () => {}, true, () => {
+      throw new Error("interrupted fourth-slot conversion");
+    })).rejects.toThrow("interrupted fourth-slot conversion");
+    expect(entries["g3.seal"]!.len()).toBe(0);
     for (const [position, slot] of ["g0", "g1", "g2"].entries()) {
       expect(entries[`${slot}.journal`].bytes).toBe(originals[position]!.journal);
       expect(entries[`${slot}.seal`].bytes).toBe(originals[position]!.seal);
+    }
+    const selected = await enableBestOverlayGeneration(files(entries), (journal) => {
+      expect(journal).toBe(entries["g3.journal"]);
+    }, true, (_source, target, checkpoint) => {
+      target.writeAllAt(0, sourceBytes.subarray(0, 72));
+      checkpoint.writeAllAt(0, Uint8Array.of(4));
+    });
+    expect(selected.slot).toBe("g3");
+    expect(selected.generation).toBe(4);
+    expect(await verifyOverlayGenerationSeal(
+      entries["g3.journal"], entries["g3.seal"], digest, false, entries["g3.index"],
+    )).toMatchObject({ generation: 4, source: { slot: "g2", journalLength: sourceBytes.length } });
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g3");
+    const compacted = await compactOverlayGeneration(selected, files(entries), {
+      prepare: (target) => { target.writeAllAt(0, (selected.journal as MemoryStorage).bytes); },
+      checkpoint: (checkpoint) => { checkpoint.writeAllAt(0, Uint8Array.of(4)); },
+      activate: () => {},
+      cancel: () => { throw new Error("unexpected cancellation"); },
+    }, 0);
+    expect(compacted.slot).toBe("g0");
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
+  });
+
+  it("does not overwrite a verified fallback when all four slots are occupied", async () => {
+    const oldIndex = new Uint8Array(160);
+    new DataView(oldIndex.buffer).setUint32(4, 1, true);
+    const entries: Record<string, MemoryStorage> = {};
+    const digest = new Uint8Array(32);
+    for (const [position, slot] of ["g0", "g1", "g2", "g3"].entries()) {
+      entries[`${slot}.journal`] = new MemoryStorage(
+        position === 3 ? new Uint8Array(32 * 1024 * 1024) : Uint8Array.of(position),
+      );
+      entries[`${slot}.seal`] = new MemoryStorage();
+      entries[`${slot}.index`] = new MemoryStorage(position === 3 ? oldIndex : Uint8Array.of(position));
+      await writeOverlayGenerationSeal(
+        entries[`${slot}.journal`], entries[`${slot}.seal`], position + 1, digest,
+        entries[`${slot}.index`], position === 0 ? undefined
+          : { slot: `g${position - 1}` as "g0" | "g1" | "g2", journalLength: entries[`g${position - 1}.journal`].len() },
+      );
+    }
+    const seals = ["g0", "g1", "g2", "g3"].map((slot) => entries[`${slot}.seal`].bytes);
+    const selected = await enableBestOverlayGeneration(files(entries), () => {}, true, () => {
+      throw new Error("conversion must not overwrite a verified fallback");
+    });
+    expect(selected.slot).toBe("g3");
+    for (const [position, slot] of ["g0", "g1", "g2", "g3"].entries()) {
+      expect(entries[`${slot}.seal`].bytes).toBe(seals[position]);
     }
   });
 

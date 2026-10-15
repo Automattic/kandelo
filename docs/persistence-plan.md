@@ -445,7 +445,7 @@ Activation checks whether a prepared checkpoint can release its resident
 metadata before replacing the active mount; an activation error leaves the
 source journal and its base-name tombstones available for further writes.
 
-Boot now checks three optional sealed journal slots (`g0`, `g1`, and `g2`)
+Boot now checks four optional sealed journal slots (`g0` through `g3`)
 on Node and browser hosts, preferring the highest verified generation. A seal
 authenticates the compacted prefix while the active journal may append later
 transactions; the kernel still validates and replays those transactions. If a
@@ -470,9 +470,9 @@ source slot and exact journal length: if seal invalidation fails after a
 rejected activation, boot rejects the stale target while that source
 generation remains available. Reusing the old slot after a successful
 handoff does not invalidate the active generation. Earlier v1/v2 seals stay
-readable; they do not carry this source-length guard. The `g2` source code
-extends the existing v3 seal slot enumeration; older hosts that know only
-`g0`/`g1` cannot read a generation sourced from `g2`. After activation,
+readable; they do not carry this source-length guard. The `g2` and `g3` source
+codes extend the existing v3 seal slot enumeration; older hosts that do not
+know those slots cannot read generations sourced from them. After activation,
 a seal or old-handle close failure is reported without skipping attempts
 to close the remaining old handles; the active target is retained because
 activation cannot be rolled back. Synchronous storage and hash operations
@@ -579,15 +579,25 @@ and block checkpoint. The source remains untouched until the target is sealed
 and mounted. An oversized sealed version 1/2 generation converts from its
 journal into a free sealed slot before mount, without trusting the old index
 or changing the source. A third slot allows conversion while two valid
-generations remain; interrupted conversion keeps both sources available. A
-semantically rejected slot may be reused after its rejection. When all three
-slots are occupied, boot retains the older full-map path rather than overwriting
-an unproven fallback. Node and Chromium, Firefox, and WebKit reboot fixed v1
+generations remain; the fourth `g3` slot allows conversion while all three
+earlier slots remain sealed. Interrupted conversion leaves their journals and
+seals untouched. Normal compaction continues to rotate through `g0`–`g2` and
+uses `g0` after an active `g3` migration. A semantically rejected slot may be
+reused after its rejection. If all four slots are already occupied by verified
+generations, boot retains the older full-map path rather than overwriting an
+unproven fallback. Node and Chromium, Firefox, and WebKit reboot fixed v1
 and resizable v2 sources through this upgrade; two-valid-slot fixed v1 and
-resizable v2 cases reach `g2` on all four hosts.
+resizable v2 cases reach `g2` on all four hosts. Three-valid-slot fixed v1
+and resizable v2 cases now reach `g3` on Node and all three browser engines;
+Node also reboots after compacting that migrated generation back to `g0`.
+Host fault tests leave all three sources intact across an interrupted `g3`
+conversion and refuse to overwrite any fallback if all four slots are valid.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.
+Four sealed journals can remain allocated after migration; generation garbage
+collection and a non-fixed slot scheme remain necessary to remove that quota
+cost and the all-four-occupied bounded-recovery exception.
 
 Compacted resizable generations now write a version 4 checkpoint with a
 sorted, checksummed metadata table in the same sidecar as the block table.
@@ -599,7 +609,7 @@ and exact mutation locations while hashing the journal prefix, but does not
 materialize that prefix's metadata in the overlay map. Rootfs streams the
 table to rebuild its POSIX inode and directory state; subsequent lookups and
 compactions merge the indexed prefix with the bounded unsealed tail. Small
-version 1/2 generations and fully occupied three-slot cases still use the
+version 1/2 generations and fully occupied four-slot cases still use the
 older full-map path; version 3 metadata tables remain readable without value
 digests. The resident rootfs tree and temporary namespace-graph validation
 still scale with file count,
@@ -626,7 +636,7 @@ sidecar to mark their block stream as canonical. Boot checks every indexed
 block against the corresponding journal mutation with the same bounded page
 cache and rejects a false location or digest with `EIO`. Oversized version
 1/2 fixed indexes convert before mount when a sealed slot is free; smaller
-or fully occupied three-slot cases retain their older recovery path. Node and
+or fully occupied four-slot cases retain their older recovery path. Node and
 all three browser engines now exercise a re-sealed, internally checksummed v5
 index with a false block digest and recover through the prior valid generation.
 

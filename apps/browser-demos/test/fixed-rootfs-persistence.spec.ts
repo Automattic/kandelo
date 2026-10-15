@@ -1524,7 +1524,7 @@ test("browser converts an oversized unindexed resizable journal before mounting"
   }
 });
 
-for (const mode of ["fixed-v1", "fixed-v1-two-slots", "resizable-v2", "resizable-v2-two-slots", "resizable-v3"] as const) test(`browser recovers an oversized sealed ${mode} checkpoint from a valid source`, async ({ playwright, browserName, baseURL }, testInfo) => {
+for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "resizable-v2", "resizable-v2-two-slots", "resizable-v2-three-slots", "resizable-v3"] as const) test(`browser recovers an oversized sealed ${mode} checkpoint from a valid source`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(180_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.mkdir("/bin", 0o755);
@@ -1616,12 +1616,17 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "resizable-v2", "resizable
         const legacyLength = await grow(await directory.getFileHandle(`${name}.journal`));
         const compacted = await boot();
         await compacted.destroy();
-        if (mode.endsWith("two-slots")) {
+        if (mode.endsWith("two-slots") || mode.endsWith("three-slots")) {
           await grow(await directory.getFileHandle(`${name}.g0.journal`), true);
           const secondCompacted = await boot();
           await secondCompacted.destroy();
         }
-        const sourceSlot = mode.endsWith("two-slots") ? "g1" : "g0";
+        if (mode.endsWith("three-slots")) {
+          await grow(await directory.getFileHandle(`${name}.g1.journal`), true);
+          const thirdCompacted = await boot();
+          await thirdCompacted.destroy();
+        }
+        const sourceSlot = mode.endsWith("three-slots") ? "g2" : mode.endsWith("two-slots") ? "g1" : "g0";
         const indexFile = await directory.getFileHandle(`${name}.${sourceSlot}.index`);
         const sealFile = await directory.getFileHandle(`${name}.${sourceSlot}.seal`);
         const index = new Uint8Array(await (await indexFile.getFile()).arrayBuffer());
@@ -1724,9 +1729,10 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "resizable-v2", "resizable
           const created = !mode.startsWith("fixed-v1")
             ? new TextDecoder().decode((await kernel.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4))!)
             : null;
-          const source = await (await directory.getFileHandle(mode === "resizable-v3" ? `${name}.journal` : `${name}.${mode.endsWith("two-slots") ? "g1" : "g0"}.journal`)).getFile();
-          const oldIndex = await (await directory.getFileHandle(`${name}.${mode.endsWith("two-slots") ? "g1" : "g0"}.index`)).getFile();
-          const nextSlot = mode.endsWith("two-slots") ? "g2" : mode === "resizable-v3" ? "g0" : "g1";
+          const sourceSlot = mode.endsWith("three-slots") ? "g2" : mode.endsWith("two-slots") ? "g1" : "g0";
+          const source = await (await directory.getFileHandle(mode === "resizable-v3" ? `${name}.journal` : `${name}.${sourceSlot}.journal`)).getFile();
+          const oldIndex = await (await directory.getFileHandle(`${name}.${sourceSlot}.index`)).getFile();
+          const nextSlot = mode.endsWith("three-slots") ? "g3" : mode.endsWith("two-slots") ? "g2" : mode === "resizable-v3" ? "g0" : "g1";
           const nextIndex = await (await directory.getFileHandle(`${name}.${nextSlot}.index`)).getFile();
           return {
             state, created,
