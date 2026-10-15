@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../src/binary-resolver";
-import { CentralizedKernelWorker } from "../src/kernel-worker";
+import {
+  ABI_SYSCALLS, CH_ARGS, CH_ARG_SIZE, CH_ARGS_COUNT, CH_ERRNO, CH_RETURN,
+  CH_STATUS, CH_SYSCALL, CHANNEL_STATUS_COMPLETE, CHANNEL_STATUS_PENDING, ERRNO,
+} from "../src/generated/abi";
+import { CAPTURED_STDIO, CentralizedKernelWorker, createCentralizedKernelWorkerTestDouble } from "../src/kernel-worker";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { NodePlatformIO } from "../src/platform/node";
 import { configureRootfsOverlayFromImage } from "../src/process-lifecycle";
@@ -79,6 +83,43 @@ function expandJournalToCompactionThreshold(path: string): number {
   return original.byteLength + repeated.byteLength;
 }
 
+class FaultingMemoryOverlayStorage implements PersistentOverlayStorage {
+  bytes = new Uint8Array();
+  fault: "write" | "flush" | null = null;
+
+  len(): number { return this.bytes.byteLength; }
+
+  readExactAt(offset: number | bigint, destination: Uint8Array): void {
+    const start = Number(offset);
+    if (start + destination.byteLength > this.bytes.byteLength) throw new Error("short overlay read");
+    destination.set(this.bytes.subarray(start, start + destination.byteLength));
+  }
+
+  writeAllAt(offset: number | bigint, source: Uint8Array): void {
+    if (this.fault === "write") throw Object.assign(new Error("journal quota exceeded"), { code: "ENOSPC" });
+    const start = Number(offset);
+    const end = start + source.byteLength;
+    if (end > this.bytes.byteLength) {
+      const grown = new Uint8Array(end);
+      grown.set(this.bytes);
+      this.bytes = grown;
+    }
+    this.bytes.set(source, start);
+  }
+
+  flush(): void {
+    if (this.fault === "flush") throw Object.assign(new Error("journal quota exceeded"), { code: "ENOSPC" });
+  }
+
+  truncate(length: number | bigint): void {
+    const resized = new Uint8Array(Number(length));
+    resized.set(this.bytes.subarray(0, resized.byteLength));
+    this.bytes = resized;
+  }
+
+  close(): void {}
+}
+
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
   it.skipIf(guestProgramPath === null).each(["mmap-sync", "mmap-syncfs", "mmap-sync-all", "mmap-fsync", "mmap-fdatasync", "sync", "syncfs"] as const)("makes %s durable before host shutdown", async (mode) => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-mmap-persistence-"));
@@ -146,6 +187,91 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     expect((rejection as Error).message).toContain("persistent overlay host storage failed during kernel initialization");
     expect((rejection as Error).message).toContain("injected host journal read failure");
     expect((rejection as Error).cause).toBe(failure);
+  });
+
+  it.each([
+    ["fixed", "write", ABI_SYSCALLS.Fsync],
+    ["fixed", "flush", ABI_SYSCALLS.Fsync],
+    ["fixed", "write", ABI_SYSCALLS.Fdatasync],
+    ["fixed", "flush", ABI_SYSCALLS.Fdatasync],
+    ["resizable", "write", ABI_SYSCALLS.Fsync],
+    ["resizable", "flush", ABI_SYSCALLS.Fsync],
+    ["resizable", "write", ABI_SYSCALLS.Fdatasync],
+    ["resizable", "flush", ABI_SYSCALLS.Fdatasync],
+  ] as const)("keeps mapped %s %s fault visible through sync syscall %s", async (mode, fault, syncSyscall) => {
+    const image = await makeImage("abcdefgh");
+    const worker = createCentralizedKernelWorkerTestDouble({
+      config: { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      io: new NodePlatformIO(),
+    });
+    configureRootfsOverlayFromImage(worker, {
+      imageLength: image.byteLength,
+      imageRead: (offset, destination) => {
+        const bytes = image.subarray(offset, offset + destination.byteLength);
+        destination.set(bytes);
+        return bytes.byteLength;
+      },
+      foreignPrefixes: [],
+      nosuid: false,
+    });
+    const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
+    await worker.init(kernelBytes.buffer.slice(kernelBytes.byteOffset, kernelBytes.byteOffset + kernelBytes.byteLength));
+    const storage = new FaultingMemoryOverlayStorage();
+    if (mode === "fixed") worker.enableFixedRootfsPersistence(storage);
+    else worker.enableResizableRootfsPersistence(storage);
+
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
+    const pid = worker.createProcess(CAPTURED_STDIO);
+    expect(worker.setBrkBase(pid, 0x10000)).toBe(true);
+    expect(worker.setMmapBase(pid, 0x20000)).toBe(true);
+    const [channel] = worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid,
+      memory,
+      channelOffsets: [0x1e0000],
+      pointerWidth: 4,
+    });
+    const issue = (syscall: number, args: readonly number[]) => {
+      const view = new DataView(memory.buffer, channel.channelOffset);
+      view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+      view.setUint32(CH_SYSCALL, syscall, true);
+      for (let index = 0; index < CH_ARGS_COUNT; index++) {
+        view.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, BigInt(args[index] ?? 0), true);
+      }
+      worker.testAuthority.dispatchScratchBoundarySyscallForTest(channel);
+      if (view.getUint32(CH_STATUS, true) !== CHANNEL_STATUS_COMPLETE) {
+        throw new Error(`syscall ${syscall} did not complete`);
+      }
+      return { value: Number(view.getBigInt64(CH_RETURN, true)), errno: view.getUint32(CH_ERRNO, true) };
+    };
+    const processBytes = new Uint8Array(memory.buffer);
+    processBytes.set(encoder.encode("/state\0"), 1024);
+    const opened = issue(ABI_SYSCALLS.Open, [1024, 2, 0]);
+    expect(opened.errno).toBe(0);
+    const mapped = issue(ABI_SYSCALLS.Mmap, [0, 4096, 3, 1, opened.value, 0]);
+    expect(mapped.errno).toBe(0);
+    expect(mapped.value).toBeGreaterThan(0);
+    processBytes.set(encoder.encode("XY"), mapped.value);
+
+    storage.fault = fault;
+    expect(issue(syncSyscall, [opened.value])).toEqual({ value: -1, errno: ERRNO.ENOSPC });
+    expect(issue(ABI_SYSCALLS.Pread, [opened.value, 4096, 2, 0])).toEqual({ value: 2, errno: 0 });
+    expect(new TextDecoder().decode(processBytes.subarray(4096, 4098))).toBe("XY");
+
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-mapped-node-fault-"));
+    const path = join(directory, "machine.journal");
+    try {
+      writeFileSync(path, storage.bytes);
+      const reopened = await boot(image, path, mode === "resizable", true);
+      try {
+        const recovered = new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!);
+        if (fault === "write") expect(recovered).toBe("abcdefgh");
+        else expect(["abcdefgh", "XYcdefgh"]).toContain(recovered);
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(guestProgramPath === null)("refuses to reset a restored computer whose journal disappeared", async () => {
