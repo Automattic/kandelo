@@ -10,6 +10,7 @@ import {
 import {
   collectBootOverlayGenerations,
   compactOverlayGeneration,
+  compactOverlayGenerationForBoot,
   enableBestOverlayGeneration,
   NoValidOverlayGenerationError,
   RejectedOverlayGenerationError,
@@ -1074,9 +1075,10 @@ describe("overlay generation boot selection", () => {
       target.writeAllAt(0, sourceBytes.subarray(0, 72));
       index.writeAllAt(0, Uint8Array.of(1, 2, 3));
     };
-    await expect(enableBestOverlayGeneration(files(entries), () => {
-      throw new Error("unexpected target mount");
-    }, true, convert)).rejects.toMatchObject({ code: "ENOSPC" });
+    const mounted = await enableBestOverlayGeneration(files(entries), (journal) => {
+      expect(journal).toBe(legacy);
+    }, true, convert);
+    expect(mounted.slot).toBe("legacy");
     expect(digestOverlayStoragePrefix(legacy, legacy.len())).toEqual(sourceDigest);
     expect(entries["g0.seal"]!.len()).toBe(0);
     expect((await enableBestOverlayGeneration(files(entries), (journal) => {
@@ -1086,6 +1088,78 @@ describe("overlay generation boot selection", () => {
     const recovered = await enableBestOverlayGeneration(files(entries), (journal) => {
       expect(journal).toBe(entries["g0.journal"]);
     }, true, convert);
+    expect(recovered.slot).toBe("g0");
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
+  });
+
+  it("mounts an indexed source when a quota-limited index blocks conversion", async () => {
+    const sourceBytes = new Uint8Array(32 * 1024 * 1024);
+    sourceBytes.set(new Uint8Array(32).fill(7), 8);
+    const oldIndex = new Uint8Array(160);
+    new DataView(oldIndex.buffer).setUint32(4, 1, true);
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(sourceBytes),
+      "g0.index": new MemoryStorage(oldIndex),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(),
+      "g1.index": new MemoryStorage(),
+      "g1.seal": new MemoryStorage(),
+    };
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1,
+      sourceBytes.slice(8, 40), entries["g0.index"]!);
+    entries["g1.index"]!.maxLength = 1;
+    const convert = (_source: PersistentOverlayStorage, target: PersistentOverlayStorage, index: PersistentOverlayStorage) => {
+      target.writeAllAt(0, sourceBytes.subarray(0, 72));
+      index.writeAllAt(0, Uint8Array.of(1, 2, 3));
+    };
+    const source = await enableBestOverlayGeneration(files(entries), (journal) => {
+      expect(journal).toBe(entries["g0.journal"]);
+    }, true, convert);
+    expect(source.slot).toBe("g0");
+    expect(entries["g1.seal"]!.len()).toBe(0);
+    entries["g1.index"]!.maxLength = Number.MAX_SAFE_INTEGER;
+    const converted = await enableBestOverlayGeneration(files(entries), (journal) => {
+      expect(journal).toBe(entries["g1.journal"]);
+    }, true, convert);
+    expect(converted.slot).toBe("g1");
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g1");
+  });
+
+  it("keeps booting the mounted source when automatic compaction runs out of quota", async () => {
+    const source = new MemoryStorage(new Uint8Array(32 * 1024 * 1024));
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": source,
+      "g0.journal": new MemoryStorage(),
+      "g0.index": new MemoryStorage(),
+      "g0.seal": new MemoryStorage(),
+    };
+    const selected = { journal: source, slot: "legacy", generation: 0, sealedLength: 0 } as const;
+    const handoff = {
+      prepare: (target: PersistentOverlayStorage) => { target.writeAllAt(0, Uint8Array.of(1, 2)); },
+      checkpoint: (index: PersistentOverlayStorage) => { index.writeAllAt(0, Uint8Array.of(3)); },
+      activate: () => {},
+      cancel: () => { throw new Error("unexpected cancellation"); },
+    };
+    entries["g0.journal"]!.maxLength = 1;
+    const deferred: unknown[] = [];
+    expect(await compactOverlayGenerationForBoot(selected, files(entries), handoff, (error) => { deferred.push(error); }))
+      .toBe(selected);
+    expect(deferred).toMatchObject([{ code: "ENOSPC" }]);
+    expect(entries["g0.seal"]!.len()).toBe(0);
+    expect(source.len()).toBe(32 * 1024 * 1024);
+    entries["g0.journal"]!.maxLength = Number.MAX_SAFE_INTEGER;
+    await expect(compactOverlayGenerationForBoot(selected, files(entries), {
+      ...handoff,
+      prepare: () => { throw new Error("backend unavailable"); },
+    }, () => { throw new Error("unexpected deferral"); })).rejects.toThrow("backend unavailable");
+    await expect(compactOverlayGenerationForBoot(selected, files(entries), {
+      ...handoff,
+      activate: () => { throw Object.assign(new Error("activation quota failure"), { code: "ENOSPC" }); },
+      cancel: () => {},
+    }, () => { throw new Error("unexpected deferral"); })).rejects.toMatchObject({ code: "ENOSPC" });
+    const recovered = await compactOverlayGenerationForBoot(selected, files(entries), handoff, () => {
+      throw new Error("unexpected deferral");
+    });
     expect(recovered.slot).toBe("g0");
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
   });
