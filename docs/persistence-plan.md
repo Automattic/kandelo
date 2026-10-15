@@ -592,6 +592,10 @@ and resizable v2 cases now reach `g3` on Node and all three browser engines;
 Node also reboots after compacting that migrated generation back to `g0`.
 Host fault tests leave all three sources intact across an interrupted `g3`
 conversion and refuse to overwrite any fallback if all four slots are valid.
+If the kernel rejects a converted target with `EIO`, the host invalidates its
+seal and tries the unchanged source before an older generation; a failed
+source mount can still fall back normally. Host fault coverage checks that a
+target-only rejection does not silently roll the computer back.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.
