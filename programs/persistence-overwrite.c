@@ -140,6 +140,22 @@ int main(int argc, char **argv) {
         close(fd);
         return 0;
     }
+    if (argc >= 2 && (strcmp(argv[1], "quota-mmap-fsync") == 0
+        || strcmp(argv[1], "quota-mmap-fdatasync") == 0)) {
+        int fd = open("/state", O_RDWR);
+        if (fd < 0) return 179;
+        char *mapped = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if (mapped == MAP_FAILED) return 180;
+        mapped[0] = 'X';
+        mapped[1] = 'Y';
+        int result = strcmp(argv[1], "quota-mmap-fsync") == 0 ? fsync(fd) : fdatasync(fd);
+        if (result != -1 || errno != ENOSPC) return 181;
+        char bytes[2];
+        if (pread(fd, bytes, sizeof(bytes), 0) != (ssize_t)sizeof(bytes)
+            || memcmp(bytes, "XY", sizeof(bytes)) != 0) return 182;
+        if (munmap(mapped, 4096) != 0) return 183;
+        return close(fd) == 0 ? 0 : 184;
+    }
     if (argc >= 2 && strcmp(argv[1], "quota-evict") == 0) {
         int fd = open("/large", O_RDWR);
         if (fd < 0) return 112;
