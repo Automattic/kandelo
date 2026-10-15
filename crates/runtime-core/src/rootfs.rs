@@ -10068,6 +10068,130 @@ mod tests {
     }
 
     #[test]
+    fn exported_large_dense_image_round_trips_through_v2_container() {
+        use crate::kandelo_image_write::{
+            Content, ContentSource, KandeloImageConfig, KandeloImageWriter,
+        };
+
+        struct Pattern;
+
+        impl ContentSource for Pattern {
+            fn read_exact_at(&self, _id: u64, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+                for (index, byte) in dst.iter_mut().enumerate() {
+                    *byte = ((offset + index as u64) % 251) as u8;
+                }
+                Ok(())
+            }
+        }
+
+        let _guard = TestGuard::acquire();
+        let file_size = (1u64 << 32) - 16 * 1024 * 1024;
+        let image_size = (1u64 << 32) + 64 * 1024 * 1024;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig {
+            size_bytes: image_size,
+            max_size_bytes: Some(image_size),
+            growable_to_bytes: image_size,
+            now_ms: wasm_posix_shared::KANDELO_REFERENCE_EPOCH_MILLIS,
+        })
+        .unwrap();
+        writer.declare_deferred_section();
+        writer
+            .create_file(
+                writer.root(),
+                b"large",
+                0o644,
+                Content::Deferred {
+                    id: 1,
+                    len: file_size,
+                },
+            )
+            .unwrap();
+        let body = writer.finish().unwrap();
+        assert!(body.len() > u32::MAX as u64);
+        assert!(body.resident_bytes() < 128 * 1024 * 1024);
+        let sections = crate::vfsi_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: None,
+            metadata_json: None,
+            kernel_lazy: None,
+        };
+        let header = crate::vfsi_container::header_for_body(body.len(), sections.flags()).unwrap();
+        let trailer = crate::vfsi_container::trailer(&sections).unwrap();
+        let container_len = header.len() as u64 + body.len() + trailer.len() as u64;
+        let mut source = |request: ByteReq, out: &mut [u8]| match request {
+            ByteReq::Image { offset } if offset < header.len() as u64 => {
+                let start = offset as usize;
+                let count = out.len().min(header.len() - start);
+                out[..count].copy_from_slice(&header[start..start + count]);
+                Ok(count)
+            }
+            ByteReq::Image { offset } if offset < header.len() as u64 + body.len() => {
+                body.read_at(&Pattern, offset - header.len() as u64, out)
+            }
+            ByteReq::Image { offset } if offset < container_len => {
+                let start = (offset - header.len() as u64 - body.len()) as usize;
+                let count = out.len().min(trailer.len() - start);
+                out[..count].copy_from_slice(&trailer[start..start + count]);
+                Ok(count)
+            }
+            ByteReq::Image { .. } => Ok(0),
+            _ => Err(Errno::ENOSYS),
+        };
+        load_image(container_len, &mut source).unwrap();
+        let handle = open(b"/large", O_RDONLY, 0, 0, 0).unwrap();
+        let mut byte = [0];
+        assert_eq!(read(handle, file_size as i64 - 1, &mut byte, &mut source), Ok(1));
+        assert_eq!(byte[0], ((file_size - 1) % 251) as u8);
+        release_handle(handle);
+
+        let mut exported_header = [0; 24];
+        assert_eq!(export_container_read(0, &mut exported_header, &mut source), Ok(24));
+        assert_eq!(u32::from_le_bytes(exported_header[4..8].try_into().unwrap()), 2);
+        let exported_body_len = u64::from_le_bytes(exported_header[16..24].try_into().unwrap());
+        assert!(exported_body_len > u32::MAX as u64);
+        let mut boundary = [0; 4096];
+        assert_eq!(
+            export_container_read(1i64 << 32, &mut boundary, &mut source),
+            Ok(boundary.len())
+        );
+        let mut exported_trailer = [0; 4];
+        assert_eq!(
+            export_container_read(
+                (24 + exported_body_len) as i64,
+                &mut exported_trailer,
+                &mut source,
+            ),
+            Ok(4)
+        );
+        assert_eq!(exported_trailer, [0; 4]);
+
+        let exported = HostImageSource {
+            byte_source: core::cell::RefCell::new(|request: ByteReq, out: &mut [u8]| {
+                match request {
+                    ByteReq::Image { offset } => {
+                        export_container_read(offset as i64, out, &mut source)
+                    }
+                    _ => Err(Errno::ENOSYS),
+                }
+            }),
+            len: 24 + exported_body_len + 4,
+        };
+        let (body_offset, body_len) =
+            crate::kandelo_image_fs::kandelo_image_span(&exported).unwrap();
+        assert_eq!((body_offset, body_len), (24, exported_body_len));
+        let filesystem = crate::kandelo_image_fs::KandeloImageFs::mount(SubSource {
+            inner: &exported,
+            offset: body_offset,
+            len: body_len,
+        })
+        .unwrap();
+        let inode = filesystem.resolve(b"/large", true).unwrap();
+        assert_eq!(filesystem.stat_ino(inode).unwrap().size, file_size);
+        assert_eq!(filesystem.read_at(inode, file_size - 1, &mut byte), Ok(1));
+        assert_eq!(byte[0], ((file_size - 1) % 251) as u8);
+    }
+
+    #[test]
     fn oversized_persistent_file_refuses_snapshot_without_losing_journal_data() {
         let _guard = TestGuard::acquire();
         let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
