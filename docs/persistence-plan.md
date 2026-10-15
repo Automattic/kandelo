@@ -62,7 +62,7 @@ semantics. Node and browser must expose the same guest-visible behavior.
   byte-array API still materializes output. New journal-backed regular files
   now export only written blocks, including across a checkpoint; a logical
   4 GiB file with one tail byte exports and reopens as a sub-64 MiB KIFS body.
-  Node and all three browser engines guest-create a 512 MiB sparse file,
+  Node and all three browser engines guest-create a 9 GiB sparse file,
   export a sub-64 MiB composed snapshot, reopen its hole and tail without
   the journal, then re-export and reopen it without materializing the hole.
   The same guest workflow truncates and re-extends a dense base file to
@@ -77,8 +77,12 @@ semantics. Node and browser must expose the same guest-visible behavior.
   tombstones once per file rather than searching the index for every base
   block; end-to-end snapshot throughput remains unmeasured.
   Indirect-block memory scales with allocated blocks. KIFS v1 addresses at most
-  10 + 1,024 + 1,024² blocks per file. VFSI v2 uses a 64-bit body length
-  above the v1 32-bit limit; smaller bodies keep their v1 header. The
+  10 + 1,024 + 1,024² blocks per file. KIFS v2 uses the previously unused
+  inode bytes 124–127 for a triple-indirect pointer and supports up to
+  10 + 1,024 + 1,024² + 1,024³ blocks per file (roughly 4 TiB). The writer
+  emits v1 for files within its original limit and v2 only when a larger file
+  requires the new pointer; the reader mounts both. VFSI v2 uses a 64-bit body
+  length above the v1 32-bit limit; smaller bodies keep their v1 header. The
   ABI 51 kernel also boots a synthetic >4 GiB sparse v2 container through Node
   positioned reads, including a trailer beyond the 32-bit offset boundary,
   while reading less than 16 MiB. Node now also boots a physical sparse
@@ -117,10 +121,13 @@ semantics. Node and browser must expose the same guest-visible behavior.
   reboot and snapshot carry the changed state. The browser test does not
   allocate an image-sized
   JavaScript array, but it does not measure browser peak memory or prove OPFS
-  storage sparsity or general snapshot throughput. An 8 GiB sparse file still
-  exceeds the KIFS per-file limit;
-  snapshot planning rejects it with `EFBIG` before mutating an image writer,
-  clears any earlier export plan, and leaves the live journal usable. A 772 MiB
+  storage sparsity or general snapshot throughput. A Rust round trip now exports
+  and reopens a 9 GiB sparse file with a sub-64 MiB KIFS v2 body, including a
+  tail in a second triple-indirect branch, without materializing its hole;
+  another round trip covers the same size after indexed compaction.
+  Files beyond the new KIFS per-file limit still return `EFBIG` before mutating
+  an image writer, clear any earlier export plan, and leave the live journal
+  usable. A 772 MiB
   snapshot boots under the 768 MiB kernel ceiling on all three browser engines,
   but this is a narrow acceptance case, not a general memory or performance
   bound.

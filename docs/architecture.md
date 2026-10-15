@@ -2601,8 +2601,11 @@ H+N      ...    Optional trailing sections, each a 4-byte length and bytes:
 ```
 
 `H` is 16 for v1 and 24 for v2. The writer preserves v1 for bodies that fit
-its 32-bit length and uses v2 only above that boundary. The KIFS v1 per-file
-block map is a separate limit; a larger container header does not remove it.
+its 32-bit length and uses v2 only above that boundary. KIFS has a separate
+superblock version: v1 addresses 10 + 1,024 + 1,024² blocks per file, while
+v2 adds a triple-indirect pointer at inode bytes 124–127 and addresses another
+1,024³ blocks. The writer keeps KIFS v1 unless a file exceeds its limit; a
+VFSI v2 container may contain either KIFS version.
 Snapshot export leaves unwritten blocks of new journal-backed regular files
 unallocated in KIFS, so their logical size need not determine body size. The
 kernel records sparse block maps for image-backed regular files during boot

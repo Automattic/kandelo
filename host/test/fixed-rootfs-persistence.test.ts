@@ -682,6 +682,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         expect(integrity.length).toBeLessThan(64 * 1024 * 1024);
         const snapshot = readFileSync(snapshotPath);
         expect(integrity.length).toBe(snapshot.byteLength);
+        expect(snapshot.readUInt32LE(20)).toBe(2);
         expect(integrity.chunkBytes).toBe(1024 * 1024);
         expect(integrity.chunkSha256).toEqual([createHash("sha256").update(snapshot).digest("hex")]);
         await expect(reopened.exportRootfsImageToFile(snapshotPath)).rejects.toThrow();
@@ -718,6 +719,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         ) as ArrayBuffer);
         const repeated = await baseImage.exportRootfsImageToFile(repeatedSnapshotPath);
         expect(repeated.length).toBeLessThan(64 * 1024 * 1024);
+        expect(readFileSync(repeatedSnapshotPath).readUInt32LE(20)).toBe(2);
       } finally {
         await baseImage.destroy();
       }
