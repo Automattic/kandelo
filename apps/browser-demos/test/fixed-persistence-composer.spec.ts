@@ -250,6 +250,43 @@ test("compressed source larger than the composer VFS budget stages without a dec
   expect(result.magic).toEqual(Array.from(image.subarray(0, 4)));
 });
 
+test("compressed source stages more than 1 GiB without an image-sized buffer", async ({ playwright, browserName, baseURL }, testInfo) => {
+  test.skip(!process.env.KANDELO_LARGE_SOURCE_STAGE, "requires the opt-in large source staging run");
+  test.setTimeout(600_000);
+  const frameBytes = 1024 * 1024;
+  const frameCount = 1025;
+  const frame = zstdCompressSync(Buffer.alloc(frameBytes));
+  const compressed = Buffer.concat(Array.from({ length: frameCount }, () => frame));
+  const imageUrl = new URL("/fixed-composer-over-gib-compressed.vfs.zst", baseURL).href;
+  const result = await withOpfsPage(playwright, browserName, baseURL!, testInfo, async (page) => {
+    await page.route(imageUrl, (route) => route.fulfill({ body: compressed }));
+    return page.evaluate(async ({ sourceStageUrl, imageUrl }) => {
+      const { stageRawVfsSourceImage } = await import(sourceStageUrl);
+      const source = await stageRawVfsSourceImage(await fetch(imageUrl), () => {});
+      try {
+        const file = await source.file.getFile();
+        return {
+          length: source.integrity.length,
+          fileLength: file.size,
+          chunks: source.integrity.chunkSha256.length,
+          lastByte: new Uint8Array(await file.slice(-1).arrayBuffer())[0],
+        };
+      } finally {
+        await source.remove();
+      }
+    }, {
+      sourceStageUrl: new URL(`/@fs/${sourceStagePath}`, baseURL).href,
+      imageUrl,
+    });
+  });
+  expect(result).toEqual({
+    length: frameBytes * frameCount,
+    fileLength: frameBytes * frameCount,
+    chunks: frameCount,
+    lastByte: 0,
+  });
+});
+
 test("compressed source accepts concatenated frames and skips bounded padding", async ({ playwright, browserName, baseURL }, testInfo) => {
   const image = await imageWithState("concatenated");
   const middle = Math.floor(image.byteLength / 2);

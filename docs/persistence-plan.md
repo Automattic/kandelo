@@ -107,14 +107,15 @@ semantics. Node and browser must expose the same guest-visible behavior.
   The opt-in browser case now uses the same bounded source stager as the
   persistent page instead of writing the fixture through a test-only stream.
   That stager has a 64 GiB decoded-image cap, separate from the legacy
-  in-memory image limit and the browser's OPFS quota. The production-stager
-  variant still needs a successful >4 GiB acceptance run: its first local
-  Chromium attempt reached snapshot export but exhausted host disk space.
-  The earlier manual-stage acceptance run exported the >4 GiB body to a
-  second OPFS file with staged read-back verification and rebooted that
-  snapshot with per-chunk integrity. A guest verified the large file's tail,
-  and both the journal reboot and snapshot carried the changed state. The
-  browser test does not allocate an image-sized
+  in-memory image limit and the browser's OPFS quota. An opt-in 1,025 MiB
+  concatenated-zstd source stages and is removed on Chromium, Firefox, and
+  WebKit, proving the old 1 GiB in-memory limit no longer governs that path.
+  With sufficient free disk, the physical >4 GiB production-stager case now
+  passes on all three engines: it exports the body to a second OPFS file with
+  staged read-back verification and reboots that snapshot with per-chunk
+  integrity. A guest verifies the large file's tail, and both the journal
+  reboot and snapshot carry the changed state. The browser test does not
+  allocate an image-sized
   JavaScript array, but it does not measure browser peak memory or prove OPFS
   storage sparsity or general snapshot throughput. An 8 GiB sparse file still
   exceeds the KIFS per-file limit;
@@ -131,8 +132,10 @@ explicit zero writes but does not guarantee that an OPFS implementation stores
 those ranges sparsely.
 
 The opt-in large-export tests need substantial temporary disk space; allow at
-least 12 GiB for the fixture, OPFS source, staged snapshot, and browser
-profile. From the repository root, generate the fixture and run the exact
+least 20 GiB free before generating the fixture for the OPFS source, staged
+snapshot, and browser profile. A local run starting with roughly 13 GiB free
+failed at snapshot export with `QuotaExceededError`; a run with roughly 21 GiB
+free passed. From the repository root, generate the fixture and run the exact
 acceptance cases with the ABI-matched guest program. Set the Playwright port to
 an unused value so another workspace's Vite server cannot serve stale files:
 
@@ -142,6 +145,7 @@ scripts/dev-shell.sh cargo run -p runtime-core --example large_vfsi_fixture --ta
 scripts/dev-shell.sh sh -c "cd host && KANDELO_LARGE_VFSI_FIXTURE='$PWD/.context/large-dense-fixture.vfs' npx vitest run test/node-rootfs-export.test.ts -t 'exports and reboots a physical >4 GiB dense VFSI body'"
 scripts/dev-shell.sh sh -c "cd apps/browser-demos && KANDELO_PLAYWRIGHT_PORT=57133 KANDELO_LARGE_VFSI_FIXTURE='$PWD/.context/large-dense-fixture.vfs' npx playwright test test/fixed-rootfs-persistence.spec.ts -g 'browser exports and reboots a physical >4 GiB OPFS image' --project=chromium --project=firefox --project=webkit --workers=1"
 rm .context/large-dense-fixture.vfs
+scripts/dev-shell.sh sh -c "cd apps/browser-demos && KANDELO_PLAYWRIGHT_PORT=57133 KANDELO_LARGE_SOURCE_STAGE=1 npx playwright test test/fixed-persistence-composer.spec.ts -g 'compressed source stages more than 1 GiB' --project=chromium --project=firefox --project=webkit --workers=1"
 ```
 
 The first >RAM acceptance target is deliberately read-only. It proves that
