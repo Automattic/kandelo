@@ -595,7 +595,14 @@ conversion and refuse to overwrite any fallback if all four slots are valid.
 If the kernel rejects a converted target with `EIO`, the host invalidates its
 seal and tries the unchanged source before an older generation; a failed
 source mount can still fall back normally. Host fault coverage checks that a
-target-only rejection does not silently roll the computer back.
+target-only rejection does not silently roll the computer back. Recovery also
+remembers verified but stale or semantically rejected higher-generation slots:
+the next conversion or live compaction reuses their slot for the same sequence
+number instead of sealing a duplicate generation elsewhere. Host tests cover
+both rejection and a source journal that grew after its target was sealed,
+including several consecutive live compactions and a failed legacy conversion.
+Reusing a slot also clears any older reuse hint for that physical slot, so a
+later compaction cannot overwrite its active source.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.
