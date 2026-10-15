@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
 import { expect, test, type Page } from "@playwright/test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import { tryResolveBinary } from "../../../host/src/binary-resolver";
 
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../../..");
 const imageModulePath = [
@@ -14,13 +15,15 @@ const imageModulePath = [
 const fixturePath = resolve(repoRoot, "local-binaries/test-fixtures/wasm32/persistence-boot-counter.wasm");
 const programPath = existsSync(fixturePath) ? fixturePath : null;
 const fullBrowserProductsReady = [
-  "local-binaries",
-  "binaries",
-  "host/wasm",
-].some((root) => [
   "programs/wasm32/bash.wasm",
   "programs/wasm32/shell.vfs.zst",
-].every((path) => existsSync(resolve(repoRoot, root, path))));
+].every((path) => {
+  try {
+    return tryResolveBinary(path) !== null;
+  } catch {
+    return false;
+  }
+});
 
 test.skip(imageModulePath === null || programPath === null, "image writer and boot-counter fixture are required");
 test.skip(!fullBrowserProductsReady, "complete browser package artifacts are required");
