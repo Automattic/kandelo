@@ -804,7 +804,9 @@ limits, malloc, signal, and UDP suites add 282 passes, 13 expected failures,
 and two skips across 297 cases, with no unexpected failures or timeouts. In
 total, 1,380 Sortix runtime cases ran under strict post-test reboot before the
 larger content budget. The 55-case I/O suite also passes with 1 MiB streaming
-hashes and bounded large-file samples under the new budgets. The comparison
-still omits changes outside the fixture, unsampled regions of large files,
-and test-specific expected state;
+hashes and bounded large-file samples under the new budgets. At two parallel
+workers, the 949-case basic suite also passes under those budgets: 941 passes,
+eight expected failures, and no unexpected failures or timeouts. The
+comparison still omits changes outside the fixture, unsampled regions of large
+files, and test-specific expected state;
 those remain separate conformance work.
