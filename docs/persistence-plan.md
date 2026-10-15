@@ -94,8 +94,14 @@ semantics. Node and browser must expose the same guest-visible behavior.
   with positioned reads, and verifies the file tail without a 4 GiB resident
   buffer. Node boots a small v2 container; all three
   browser engines boot one, commit a guest write, and reopen its journal. A
-  physically exported >4 GiB v2 body has not yet been staged and booted on
-  Node or browser. An 8 GiB sparse file still exceeds the KIFS per-file limit;
+  physical >4 GiB v2 body now exports through Node's staging-file API and
+  reboots from that file with per-chunk integrity. An opt-in Rust fixture
+  builds a dense KIFS body without holding its file bytes in memory; a guest
+  verifies the 2 MiB tail at its 64-bit offset both before and after the
+  snapshot. The opt-in test checks Node RSS growth stays under 1 GiB and
+  rejects a damaged snapshot byte beyond 4 GiB. The same physical export
+  has not yet been staged and booted on browser/OPFS. An 8 GiB sparse file
+  still exceeds the KIFS per-file limit;
   snapshot planning rejects it with `EFBIG` before mutating an image writer,
   clears any earlier export plan, and leaves the live journal usable. A 772 MiB
   snapshot boots under the 768 MiB kernel ceiling on all three browser engines,
@@ -107,6 +113,17 @@ file to the complete logical length, flushes it, and reads back every chunk,
 including unwritten ranges, before returning per-chunk digests. This reduces
 explicit zero writes but does not guarantee that an OPFS implementation stores
 those ranges sparsely.
+
+The opt-in Node large-export test needs roughly 8 GiB of temporary disk space.
+From the repository root, generate its fixture and run the exact acceptance
+case with the ABI-matched guest program:
+
+```sh
+host_target=$(scripts/dev-shell.sh rustc -vV | awk '/^host:/ {print $2}')
+scripts/dev-shell.sh cargo run -p runtime-core --example large_vfsi_fixture --target "$host_target" -- "$PWD/.context/large-dense-fixture.vfs" local-binaries/test-fixtures/wasm32/persistence-overwrite.wasm
+scripts/dev-shell.sh sh -c "cd host && KANDELO_LARGE_VFSI_FIXTURE='$PWD/.context/large-dense-fixture.vfs' npx vitest run test/node-rootfs-export.test.ts -t 'exports and reboots a physical >4 GiB dense VFSI body'"
+rm .context/large-dense-fixture.vfs
+```
 
 The first >RAM acceptance target is deliberately read-only. It proves that
 boot and image reads no longer require an image-sized allocation before
