@@ -2,6 +2,7 @@ import type { PcmTransportSnapshot } from "./audio/pcm-transport";
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
+import { assertVfsFileRange } from "./vfs/file-range";
 import type { VfsChangeEvent } from "./vfs/types";
 import { isStagedRootfsImageIntegrity } from "./vfs/staged-rootfs-image";
 import type { OwnedJobRead } from "./owned-jobs";
@@ -1668,6 +1669,23 @@ export class BrowserKernel {
       path,
     });
     return (result as Uint8Array | null) ?? null;
+  }
+
+  async readFileRangeFromVfs(path: string, offset: number, length: number): Promise<Uint8Array | null> {
+    assertVfsFileRange(offset, length);
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_file_range",
+      requestId,
+      path,
+      offset,
+      length,
+    });
+    if (result === null) return null;
+    if (!(result instanceof Uint8Array) || result.byteLength > length) {
+      throw new Error("kernel worker returned invalid VFS file range");
+    }
+    return result;
   }
 
   /**

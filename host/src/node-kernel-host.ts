@@ -1,6 +1,7 @@
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
+import { assertVfsFileRange } from "./vfs/file-range";
 import type { VfsChangeEvent } from "./vfs/types";
 import { isStagedRootfsImageIntegrity } from "./vfs/staged-rootfs-image";
 import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
@@ -1097,6 +1098,24 @@ export class NodeKernelHost {
     if (result === null) return null;
     if (!(result instanceof Uint8Array)) {
       throw new Error("kernel worker returned invalid VFS file bytes");
+    }
+    return result;
+  }
+
+  async readFileRangeFromVfs(path: string, offset: number, length: number): Promise<Uint8Array | null> {
+    assertVfsFileRange(offset, length);
+    if (!this.initialized) throw new Error("VFS read requires an initialized kernel");
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_file_range",
+      requestId,
+      path,
+      offset,
+      length,
+    });
+    if (result === null) return null;
+    if (!(result instanceof Uint8Array) || result.byteLength > length) {
+      throw new Error("kernel worker returned invalid VFS file range");
     }
     return result;
   }

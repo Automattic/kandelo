@@ -6,8 +6,8 @@ import type { VfsDirEntrySnapshot, VfsPathStat } from "../host/src/vfs/vfs";
 
 const FIXTURE_ROOT = "/run/kandelo-run";
 const MAX_ENTRIES = 10_000;
-const MAX_FILE_BYTES = 256 * 1024;
-const MAX_TOTAL_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_TOTAL_FILE_BYTES = 32 * 1024 * 1024;
+const READ_CHUNK_BYTES = 1024 * 1024;
 const TYPE_MASK = 0o170000;
 const DIRECTORY = 0o040000;
 const REGULAR_FILE = 0o100000;
@@ -15,7 +15,7 @@ const REGULAR_FILE = 0o100000;
 interface FixtureInspectionHost {
     statVfsPath(path: string): Promise<VfsPathStat | null>;
     readDirFromVfs(path: string): Promise<VfsDirEntrySnapshot[] | null>;
-    readFileFromVfs(path: string): Promise<Uint8Array | null>;
+    readFileRangeFromVfs(path: string, offset: number, length: number): Promise<Uint8Array | null>;
 }
 
 interface FixtureEntry extends VfsPathStat {
@@ -53,14 +53,20 @@ export async function inspectPersistentFixture(host: FixtureInspectionHost): Pro
             };
             if ((child.mode & TYPE_MASK) === DIRECTORY) {
                 directories.push(path);
-            } else if ((child.mode & TYPE_MASK) === REGULAR_FILE
-                && child.size <= MAX_FILE_BYTES && child.size <= remainingFileBytes) {
-                const bytes = await host.readFileFromVfs(path);
-                if (bytes === null || bytes.byteLength !== child.size) {
-                    throw new Error(`persistent fixture file changed during inspection: ${path}`);
+            } else if ((child.mode & TYPE_MASK) === REGULAR_FILE && child.size <= remainingFileBytes) {
+                const digest = createHash("sha256");
+                let offset = 0;
+                while (offset < child.size) {
+                    const length = Math.min(READ_CHUNK_BYTES, child.size - offset);
+                    const bytes = await host.readFileRangeFromVfs(path, offset, length);
+                    if (bytes === null || bytes.byteLength !== length) {
+                        throw new Error(`persistent fixture file changed during inspection: ${path}`);
+                    }
+                    digest.update(bytes);
+                    offset += length;
                 }
-                entry.sha256 = createHash("sha256").update(bytes).digest("hex");
-                remainingFileBytes -= bytes.byteLength;
+                entry.sha256 = digest.digest("hex");
+                remainingFileBytes -= child.size;
             }
             result.push(entry);
         }

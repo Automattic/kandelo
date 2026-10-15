@@ -16,21 +16,34 @@ function fixture() {
   ];
   const work: VfsDirEntrySnapshot[] = [
     { name: "state", mode: 0o100640, size: 4, uid: 3, gid: 4 },
-    { name: "large", mode: 0o100600, size: 300_000, uid: 0, gid: 0 },
+    { name: "large", mode: 0o100600, size: 2 * 1024 * 1024 + 7, uid: 0, gid: 0 },
   ];
   let state = new TextEncoder().encode("data");
+  let largeTail = 0;
+  let largestRead = 0;
   const host = {
     async statVfsPath(path: string) { return path === root ? directory : null; },
     async readDirFromVfs(path: string) {
       return path === root ? children : path === `${root}/work` ? work : null;
     },
-    async readFileFromVfs(path: string) {
-      if (path === `${root}/work/large`) throw new Error("large file must not be read");
-      if (path === `${root}/work/state`) return state;
+    async readFileRangeFromVfs(path: string, offset: number, length: number) {
+      largestRead = Math.max(largestRead, length);
+      if (path === `${root}/work/large`) {
+        if (work[1].size > 32 * 1024 * 1024) throw new Error("file exceeds inspection budget");
+        const bytes = new Uint8Array(length);
+        if (offset + length === work[1].size) bytes[bytes.length - 1] = largeTail;
+        return bytes;
+      }
+      if (path === `${root}/work/state`) return state.subarray(offset, offset + length);
       return path === `${root}/new-file` ? new Uint8Array() : null;
     },
   };
-  return { host, children, work, setState: (bytes: string) => { state = new TextEncoder().encode(bytes); } };
+  return {
+    host, children, work,
+    getLargestRead: () => largestRead,
+    setState: (bytes: string) => { state = new TextEncoder().encode(bytes); },
+    setLargeTail: (value: number) => { largeTail = value; },
+  };
 }
 
 describe("persistent runner fixture inspection", () => {
@@ -39,6 +52,7 @@ describe("persistent runner fixture inspection", () => {
     const before = await inspectPersistentFixture(first.host);
     const second = fixture();
     assertPersistentFixtureUnchanged(before, await inspectPersistentFixture(second.host));
+    expect(first.getLargestRead()).toBe(1024 * 1024);
     second.setState("edit");
     const afterState = await inspectPersistentFixture(second.host);
     expect(() => assertPersistentFixtureUnchanged(before, afterState)).toThrow(/state/);
@@ -50,6 +64,11 @@ describe("persistent runner fixture inspection", () => {
     machine.setState("edit");
     const changedState = await inspectPersistentFixture(machine.host);
     expect(() => assertPersistentFixtureUnchanged(before, changedState)).toThrow(/state/);
+    machine.setState("data");
+    machine.setLargeTail(1);
+    const changedLargeFile = await inspectPersistentFixture(machine.host);
+    expect(() => assertPersistentFixtureUnchanged(before, changedLargeFile)).toThrow(/large/);
+    machine.setLargeTail(0);
     machine.work[0].mode = 0o100600;
     const changedMetadata = await inspectPersistentFixture(machine.host);
     expect(() => assertPersistentFixtureUnchanged(before, changedMetadata)).toThrow(/state/);
@@ -69,5 +88,15 @@ describe("persistent runner fixture inspection", () => {
     machine.children.pop();
     machine.work[0].size = 5;
     await expect(inspectPersistentFixture(machine.host)).rejects.toThrow(/changed during inspection/);
+  });
+
+  it("keeps oversized files in metadata comparison without reading them", async () => {
+    const machine = fixture();
+    machine.work[1].size = 32 * 1024 * 1024 + 1;
+    const entries = await inspectPersistentFixture(machine.host);
+    expect(entries.find((entry) => entry.path === `${root}/work/large`)).toMatchObject({
+      size: 32 * 1024 * 1024 + 1,
+    });
+    expect(entries.find((entry) => entry.path === `${root}/work/large`)).not.toHaveProperty("sha256");
   });
 });
