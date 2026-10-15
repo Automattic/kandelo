@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -931,6 +931,41 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       const secondSlot = await boot(image, path);
       await secondSlot.destroy();
       expect(readFileSync(`${path}.g1.journal`).byteLength).toBeLessThan(firstSlotLength / 2);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it.skipIf(guestProgramPath === null)("recovers a committed source write instead of a stale sealed target", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-stale-overlay-slot-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path);
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      const transaction = Buffer.from(readFileSync(path).subarray(72));
+      const valueOffset = transaction.indexOf("XYcdefgh");
+      expect(valueOffset).toBeGreaterThan(0);
+      const sourceLength = expandJournalToCompactionThreshold(path);
+      const compacted = await boot(image, path);
+      await compacted.destroy();
+      expect(readFileSync(`${path}.g0.seal`).readUInt32LE(4)).toBe(3);
+      const newer = Buffer.from(transaction);
+      newer.writeBigUInt64LE(BigInt((sourceLength - 72) / transaction.length + 1), 8);
+      newer.write("ZZcdefgh", valueOffset, "ascii");
+      createHash("sha256").update(newer.subarray(0, newer.length - 36)).digest().copy(newer, newer.length - 36);
+      appendFileSync(path, newer);
+      const recovered = await boot(image, path, false, true);
+      try {
+        expect(new TextDecoder().decode((await recovered.readFileFromVfs("/state"))!)).toBe("ZZcdefgh");
+      } finally {
+        await recovered.destroy();
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

@@ -475,6 +475,10 @@ activation cannot be rolled back. Synchronous storage and hash operations
 run on the dedicated kernel worker during live handoff; guest syscalls wait
 until that turn finishes. The pause has not yet been measured for large
 changed-block sets.
+Node and Chromium, Firefox, and WebKit now reboot a real compacted journal
+after appending a later committed transaction to its former source. All four
+recover the newer source data rather than selecting the still-valid but stale
+sealed target, exercising generation selection and kernel replay together.
 OPFS quota exhaustion while opening the journal directory, generation file,
 or sync access handle retains `ENOSPC`; only a missing file at the file-lookup
 step counts as an absent generation. A file that disappears while its access
