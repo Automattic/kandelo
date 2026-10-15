@@ -11,9 +11,9 @@ const HEADER_BYTES = HEADER_DATA_BYTES + 32;
 const INDEXED_HEADER_DATA_BYTES = 64;
 const SOURCE_BOUND_HEADER_DATA_BYTES = 80;
 const DIGEST_BYTES = 32;
-const SOURCE_SLOTS = ["legacy", "g0", "g1"] as const;
+const SOURCE_SLOTS = ["legacy", "g0", "g1", "g2"] as const;
 
-export type OverlaySealSourceSlot = "legacy" | "g0" | "g1";
+export type OverlaySealSourceSlot = "legacy" | "g0" | "g1" | "g2";
 
 export interface OverlaySealSource {
   slot: OverlaySealSourceSlot;

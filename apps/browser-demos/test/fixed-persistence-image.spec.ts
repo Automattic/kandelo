@@ -948,6 +948,9 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
             releaseLease: async () => {},
             validateCandidate: async (_kernel, candidateStage) => {
               rejectedStages.push(candidateStage);
+              for (const suffix of ["journal", "index", "seal"]) {
+                await directory.getFileHandle(`${candidateStage.journalName}.g2.${suffix}`, { create: true });
+              }
               throw new Error("injected candidate validation failure");
             },
           });

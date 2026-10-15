@@ -143,7 +143,7 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
 
   static async openFile(
     name: string,
-    slot: "legacy" | "g0" | "g1",
+    slot: "legacy" | "g0" | "g1" | "g2",
     suffix: "journal" | "seal" | "index",
     create: boolean,
   ): Promise<OpfsOverlayStorageFile | null> {
