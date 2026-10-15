@@ -384,6 +384,7 @@ pub(crate) const SB_TOTAL_INODES: u64 = 16;
 pub const KANDELO_IMAGE_SUPER_MAGIC: u32 = 0x5346_494B;
 
 pub(crate) const SB_TOTAL_BLOCKS: u64 = 12;
+const SB_BLOCK_BITMAP_BLOCKS: u64 = 48;
 pub(crate) const SB_FREE_BLOCKS: u64 = 20;
 pub(crate) const SB_FREE_INODES: u64 = 24;
 pub(crate) const SB_MAX_SIZE_BLOCKS: u64 = 68;
@@ -402,6 +403,14 @@ impl<S: BlockSource> KandeloImageFs<S> {
             return Err(Errno::EINVAL);
         }
         if source_u32(&source, 8).map_err(container_errno)? != BLOCK_SIZE as u32 {
+            return Err(Errno::EINVAL);
+        }
+        let total_blocks = source_u32(&source, SB_TOTAL_BLOCKS).map_err(container_errno)?;
+        let block_bitmap_blocks =
+            source_u32(&source, SB_BLOCK_BITMAP_BLOCKS).map_err(container_errno)?;
+        if total_blocks == 0
+            || u64::from(total_blocks) > u64::from(block_bitmap_blocks) * BLOCK_SIZE as u64 * 8
+        {
             return Err(Errno::EINVAL);
         }
         let inode_table_start =
@@ -971,6 +980,15 @@ mod tests {
     fn mount_rejects_wrong_block_size() {
         let mut bad = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
         bad[8] = 0; bad[9] = 0; bad[10] = 0; bad[11] = 0; // BLOCK_SIZE=0
+        assert!(KandeloImageFs::mount(bad.as_slice()).is_err());
+    }
+
+    #[test]
+    fn mount_rejects_bitmap_that_cannot_describe_the_image() {
+        let mut bad = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        bad[SB_BLOCK_BITMAP_BLOCKS as usize..SB_BLOCK_BITMAP_BLOCKS as usize + 4].fill(0);
+        assert!(KandeloImageFs::mount(bad.as_slice()).is_err());
+        bad[SB_TOTAL_BLOCKS as usize..SB_TOTAL_BLOCKS as usize + 4].fill(0);
         assert!(KandeloImageFs::mount(bad.as_slice()).is_err());
     }
 
