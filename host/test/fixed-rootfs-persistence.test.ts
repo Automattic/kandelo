@@ -1150,7 +1150,6 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       const g1Length = expandJournalToCompactionThreshold(`${path}.g1.journal`);
       const thirdCompacted = await boot(image, path);
       await thirdCompacted.destroy();
-      const fallbackSeals = ["g0", "g1"].map((slot) => readFileSync(`${path}.${slot}.seal`));
       const indexPath = `${path}.g2.index`;
       const oldIndex = Buffer.from(readFileSync(indexPath));
       expect(oldIndex.readUInt32LE(4)).toBe(5);
@@ -1171,6 +1170,11 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         journal.close();
       }
       const g2Length = expandJournalToCompactionThreshold(`${path}.g2.journal`);
+      for (const slot of ["g0", "g1"]) {
+        for (const suffix of ["journal", "index", "seal"]) {
+          copyFileSync(`${path}.${slot}.${suffix}`, `${path}.backup-${slot}.${suffix}`);
+        }
+      }
       const upgraded = await boot(image, path);
       try {
         expect(new TextDecoder().decode((await upgraded.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
@@ -1180,14 +1184,22 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       expect(readFileSync(`${path}.g2.journal`).byteLength).toBe(g2Length);
       expect(readFileSync(indexPath)).toEqual(oldIndex);
       expect(readFileSync(`${path}.g3.index`).readUInt32LE(4)).toBe(5);
-      for (const [position, slot] of ["g0", "g1"].entries()) {
-        expect(readFileSync(`${path}.${slot}.seal`)).toEqual(fallbackSeals[position]);
+      for (const slot of ["g0", "g1"]) {
+        for (const suffix of ["journal", "index", "seal"]) {
+          expect(existsSync(`${path}.${slot}.${suffix}`)).toBe(false);
+        }
       }
+      expect(existsSync(`${path}.g2.seal`)).toBe(true);
       const reopened = await boot(image, path);
       try {
         expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
       } finally {
         await reopened.destroy();
+      }
+      for (const slot of ["g0", "g1"]) {
+        for (const suffix of ["journal", "index", "seal"]) {
+          copyFileSync(`${path}.backup-${slot}.${suffix}`, `${path}.${slot}.${suffix}`);
+        }
       }
       const g3IndexPath = `${path}.g3.index`;
       const g3OldIndex = Buffer.from(readFileSync(g3IndexPath));

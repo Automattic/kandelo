@@ -574,9 +574,19 @@ describe("overlay generation boot selection", () => {
     expect(await verifyOverlayGenerationSeal(
       entries["g3.journal"], entries["g3.seal"], digest, false, entries["g3.index"],
     )).toMatchObject({ generation: 4, source: { slot: "g2", journalLength: sourceBytes.length } });
+    const recovered = await collectConvertedOverlayGenerations(selected, files(entries));
+    for (const slot of ["g0", "g1"]) {
+      for (const suffix of ["journal", "index", "seal"]) {
+        expect(entries[`${slot}.${suffix}`]).toBeUndefined();
+      }
+    }
+    expect(entries["g2.seal"]!.len()).toBeGreaterThan(0);
     expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g3");
-    const compacted = await compactOverlayGeneration(selected, files(entries), {
-      prepare: (target) => { target.writeAllAt(0, (selected.journal as MemoryStorage).bytes); },
+    entries["g3.index"]!.bytes[0] ^= 1;
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g2");
+    entries["g3.index"]!.bytes[0] ^= 1;
+    const compacted = await compactOverlayGeneration(recovered, files(entries), {
+      prepare: (target) => { target.writeAllAt(0, (recovered.journal as MemoryStorage).bytes); },
       checkpoint: (checkpoint) => { checkpoint.writeAllAt(0, Uint8Array.of(4)); },
       activate: () => {},
       cancel: () => { throw new Error("unexpected cancellation"); },
@@ -644,17 +654,17 @@ describe("overlay generation boot selection", () => {
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
   });
 
-  it("keeps a converted target and source bootable when boot retirement fails", async () => {
+  it.each([3, 4])("keeps a g%i converted target and source bootable when boot retirement fails", async (occupiedCount) => {
     const entries: Record<string, MemoryStorage> = {};
     const digest = new Uint8Array(32);
-    for (let position = 0; position < 4; position++) {
+    for (let position = 0; position < occupiedCount; position++) {
       const slot = `g${position}`;
       entries[`${slot}.journal`] = new MemoryStorage(
-        position === 3 ? new Uint8Array(32 * 1024 * 1024) : Uint8Array.of(position + 1),
+        position === occupiedCount - 1 ? new Uint8Array(32 * 1024 * 1024) : Uint8Array.of(position + 1),
       );
-      entries[`${slot}.index`] = new MemoryStorage(position === 3 ? new Uint8Array(160) : Uint8Array.of(position + 1));
+      entries[`${slot}.index`] = new MemoryStorage(position === occupiedCount - 1 ? new Uint8Array(160) : Uint8Array.of(position + 1));
       entries[`${slot}.seal`] = new MemoryStorage();
-      if (position === 3) new DataView(entries[`${slot}.index`].bytes.buffer).setUint32(4, 1, true);
+      if (position === occupiedCount - 1) new DataView(entries[`${slot}.index`].bytes.buffer).setUint32(4, 1, true);
       await writeOverlayGenerationSeal(entries[`${slot}.journal`], entries[`${slot}.seal`], position + 1,
         digest, entries[`${slot}.index`]);
     }
@@ -668,16 +678,18 @@ describe("overlay generation boot selection", () => {
       target.writeAllAt(0, (source as MemoryStorage).bytes.subarray(0, 72));
       index.writeAllAt(0, Uint8Array.of(1));
     });
-    expect(selected.slot).toBe("g4");
+    const targetSlot = `g${occupiedCount}`;
+    const sourceSlot = `g${occupiedCount - 1}`;
+    expect(selected.slot).toBe(targetSlot);
     const failures: string[] = [];
     await collectConvertedOverlayGenerations(selected, storageFiles, (error) => { failures.push(String(error)); });
     expect(failures).toEqual(["Error: injected removal failure"]);
     expect(entries["g0.seal"]!.len()).toBe(0);
     expect(entries["g0.journal"]).toBeDefined();
-    expect(entries["g3.seal"]!.len()).toBeGreaterThan(0);
-    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g4");
-    entries["g4.index"]!.bytes[0] ^= 1;
-    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g3");
+    expect(entries[`${sourceSlot}.seal`]!.len()).toBeGreaterThan(0);
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe(targetSlot);
+    entries[`${targetSlot}.index`]!.bytes[0] ^= 1;
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe(sourceSlot);
   });
 
   it("retires older sealed slots only after activation while keeping its source fallback", async () => {
