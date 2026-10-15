@@ -2349,19 +2349,23 @@ only when building a deployable directory-scoped distribution.
 
 The standalone [`apps/spacefast-cors-proxy`](../apps/spacefast-cors-proxy/README.md)
 implements the Playground proxy protocol for Spacefast Functions,
-including the range alias used by this browser app. It owns DNS validation
-and pins TCP/TLS connections to validated public addresses rather than fetching
-the target hostname through the platform gateway. Its local tests include real
-TCP/TLS fixtures. Live testing on 2026-10-15 found that Spacefast rejects its
-pinned connections even to public numeric destinations, so proxy networking
-is blocked on that deployment while the app can boot and run shell commands.
-The proxy fails closed without a hostname-fetch fallback. Cloudflare
-socket destination restrictions can prevent access to hosts reached by the
-existing PHP proxy. Its entry uses the Space's database for a shared request
-budget; basic counter queries succeeded live, though the 600-request ceiling
-was not stress-tested. The app's build
-command can select this proxy explicitly, and its packager can colocate the
-app and `/cors-proxy` in one Space. See that app's README for the commands.
+including the range alias used by this browser app. Its production entry uses
+ordinary Spacefast Fetch as an explicitly approved workaround: live testing
+on 2026-10-15 found that Spacefast rejects the original pinned TCP transport.
+URL validation still rejects private IP literals, local host names, credentials
+and self-targets, and redirects return through that validation. DNS resolution
+and connection-time private-network protection belong to Spacefast in this
+mode. Kandelo cannot prevent DNS rebinding; the platform's protection has not
+been verified. The optional pinned transport remains available in the core
+and covered by local TCP/TLS fixture tests. The entry uses the Space's database
+for a shared request budget; basic counter queries succeeded live, though the
+600-request ceiling was not stress-tested. The app's build command can select
+this proxy explicitly, and its packager can colocate the app and `/cors-proxy`
+in one Space. A live Chromium check on 2026-10-15 verified a guest `curl`
+request through the same-origin proxy with HTTP 200 and exit status 0. The live
+serving path requires the range alias, omits HEAD Content-Length, and did not
+preserve the worker's CORS origin grant in private-Space probes. See that app's
+README for commands and the precise scope of validation.
 The packager applies isolation headers to document URLs and worker scripts,
 including clean document aliases. It leaves large binary downloads on
 Spacefast's static serving path: custom isolation headers on files above

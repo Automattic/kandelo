@@ -33,23 +33,59 @@ test("default limits equal Playground's constants", () => {
 });
 
 test("standalone Spacefast handler uses env and the runtime fetch", async t => {
-  const calls: unknown[] = [];
+  const calls: { url: string; init: RequestInit }[] = [];
   const errors: unknown[] = [];
+  let fail = false;
   t.mock.method(console, "error", (...args: unknown[]) => { errors.push(args); });
-  t.mock.method(globalThis, "fetch", async (...args: unknown[]) => {
-    calls.push(args); return Response.json({ Status: 0, Answer: [{ type: 1, data: "8.8.8.8" }] });
+  t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+    if (fail) throw new Error("private runtime detail");
+    calls.push({ url, init }); return new Response("platform body");
   });
   const disabled = await handler.fetch(request(), {});
   assert.equal(disabled.status, 503);
   for (const value of ["1", "true"]) {
     const result = await handler.fetch(request(), { CORS_PROXY_DISABLE_RATE_LIMIT: value });
-    assert.equal(result.status, 502);
-    assert.equal(await result.text(), "Bad Gateway");
+    assert.equal(result.status, 200);
+    assert.equal(await result.text(), "platform body");
   }
-  assert.equal(calls.length, 4);
-  assert.equal(errors.length, 2);
+  assert.equal(calls.length, 2);
+  for (const { url, init } of calls) {
+    // A single hostname fetch, not an independent DNS lookup or socket path.
+    assert.equal(url, TARGET);
+    assert.equal(init.redirect, "manual");
+    assert.equal(init.cache, "no-store");
+    assert.equal(new Headers(init.headers).get("accept-encoding"), "identity");
+  }
+  fail = true;
+  const failed = await handler.fetch(request(), { CORS_PROXY_DISABLE_RATE_LIMIT: "1" });
+  assert.equal(failed.status, 502);
+  assert.equal(await failed.text(), "Bad Gateway");
+  assert.equal(errors.length, 1);
   const defaultOptions = await createCorsProxy()(request());
   assert.equal(defaultOptions.status, 503);
+});
+
+test("platform transport retains URL checks, redirect mediation and decoded response metadata", async t => {
+  const calls: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: string) => {
+    calls.push(url);
+    return url.endsWith("/compressed")
+      ? new Response("decoded", { headers: { "Content-Encoding": "gzip", "Content-Length": "27" } })
+      : new Response(null, { status: 302, headers: { Location: "/next" } });
+  });
+  const env = { CORS_PROXY_DISABLE_RATE_LIMIT: "1" };
+  for (const target of ["http://127.0.0.1/", "http://[::1]/", "http://localhost/", PROXY, "ftp://public.example/"]) {
+    assert.equal((await handler.fetch(request(target), env)).status, 400);
+  }
+  assert.deepEqual(calls, []);
+  const redirect = await handler.fetch(request(TARGET), env);
+  assert.equal(redirect.status, 302);
+  assert.equal(redirect.headers.get("location"), `${PROXY}/?url=${encodeURIComponent("https://public.example/next")}`);
+  assert.deepEqual(calls, [TARGET]);
+  const compressed = await handler.fetch(request("https://public.example/compressed"), env);
+  assert.equal(await compressed.text(), "decoded");
+  assert.equal(compressed.headers.get("content-encoding"), null);
+  assert.equal(compressed.headers.get("content-length"), null);
 });
 
 test("upstream failures can be diagnosed without exposing their details to clients", async () => {

@@ -24,11 +24,14 @@ implementation of its public protocol, not a copy of the PHP source.
 - Range and `X-Cors-Proxy-Range`, including suffix ranges. Conflicting values
   return 400. Range values are opaque. The original upstream status,
   Content-Range, Accept-Ranges and ETag survive.
-- HEAD reports the entity size without a response body or response-size cap.
+- The core preserves HEAD entity size without a body or response-size cap;
+  Spacefast currently omits that Content-Length in live responses (see below).
   HEAD and range requests ask for identity encoding; unexpected encoded HEAD
   or 206 responses fail with 502 rather than describe the wrong byte offsets.
-- Full compressed responses preserve their encoded bytes and metadata,
-  including gzip, deflate and Brotli, without decoding or recompression.
+- The Spacefast entry uses runtime Fetch, which may decode full compressed
+  responses. It drops the old Content-Encoding and Content-Length when decoding
+  occurred; response limits count the bytes exposed by Fetch. The optional
+  pinned transport preserves opaque compressed bytes instead.
 - Redirects are returned with their status and their Location rewritten back
   through the same proxy URL form. Relative URLs, queries and custom ports
   are retained. Redirects to forbidden targets return 502. No automatic
@@ -38,7 +41,7 @@ implementation of its public protocol, not a copy of the PHP source.
   target URL. Responses carry `X-Playground-Cors-Proxy: true`.
 - Errors preserve the proxy's own CORS headers and discard target headers.
   Upstream disconnects and malformed bodies error the stream without adding
-  error text to target bytes. Client cancellation closes the owning socket.
+  error text to target bytes. Client cancellation aborts the owning fetch.
 
 The request and response limits match Playground: bodies must be smaller
 than 1 MiB and 100 MiB respectively. Unlike Playground's declared-length-only
@@ -47,62 +50,61 @@ length response fails mid-stream. An oversized streamed upload closes its
 connection; bytes already sent may have reached the target. No entire body
 is buffered to determine its size.
 
-## Destination security belongs to this proxy
+## Destination security and the Spacefast workaround
 
-`src/network-policy.ts` rejects URL credentials, non-HTTP(S) URLs, self-targets,
-private/local hosts and forbidden IPv4/IPv6 literals. Legacy numeric IPv4
-spellings are normalized before checking. IPv6 accepts only global unicast
-and excludes special-use ranges within it.
+The production entry `handler.ts` uses Spacefast's ordinary hostname `fetch()`.
+This is an explicit, user-approved workaround for its blocked pinned TCP egress.
+Spacefast owns DNS resolution, the actual connection address, TLS, and its
+outbound network policy. Kandelo does **not** pin the checked address, resolve
+DNS independently, or claim DNS-rebinding protection in this mode. A public
+hostname can resolve to a private address; whether that connection is denied
+is Spacefast's responsibility. No such platform guarantee has been verified.
 
-`src/pinned-fetch.ts` resolves both A and AAAA through a fixed public-IP
-HTTPS resolver (`https://1.1.1.1/dns-query`). It bounds and validates the DNS
-responses and rejects the request if **any** returned address is forbidden.
-An empty, inconsistent, malformed or failed lookup fails closed. No DNS
-result is cached between requests.
+`src/network-policy.ts` still rejects URL credentials, non-HTTP(S) URLs,
+self-targets, private/local host names and forbidden IPv4/IPv6 literals.
+Legacy numeric IPv4 spellings are normalized before checking. IPv6 accepts
+only global unicast and excludes special-use ranges within it. These are URL
+checks, not checks of the platform's resolved destination address.
 
-The transport passes only a validated numeric address to
-`cloudflare:sockets.connect()`. For HTTPS it starts TLS before sending any
-HTTP bytes and uses `expectedServerHostname` to verify the original host's
-certificate and send its Server Name Indication. The HTTP Host header retains
-that original authority. It never calls hostname `fetch()` for a target.
-Changing DNS after validation therefore cannot change the connection's IP.
-Each redirected request repeats the same checks.
+Fetch uses `redirect: "manual"`. Each Location is validated and rewritten
+through the same proxy, so browser-followed redirects repeat URL validation
+and rate limiting. Destination access remains subject to Spacefast's platform
+restrictions. The proxy supports HTTP requests, not WebSockets or CONNECT.
+Upstream failures are logged server-side; clients receive a generic 502
+(the previously tested Spacefast error-serving path exposed it as HTTP 500).
 
-The code parses bounded HTTP/1.0 and HTTP/1.1 framing: Content-Length,
-chunked bodies/extensions/trailers, close-delimited bodies and interim
-responses. Invalid framing and protocol upgrades fail closed. It does not
-attempt HTTP/2, WebSockets or HTTP CONNECT; neither does the PHP reference.
+### Observed platform boundaries
 
-The resolver's authenticated DNS answers and the socket runtime's documented
-numeric-address/TLS semantics are the trust roots. Protection does not rely on
-Spacefast's generic fetch gateway filtering the target hostname.
+Live v5 requests on 2026-10-15 succeeded for HTTPS GET, HEAD, POST with opt-in
+Authorization, gzip/deflate bodies, the range alias (206 with correct bytes),
+and rewritten redirects. HEAD returned 200 with no body, but the serving path
+omitted its Content-Length, so clients cannot rely on HEAD for entity size.
+Plain HTTP to example.com succeeded; httpbingo.org's
+HTTP endpoint returned a platform/upstream 520 while its HTTPS endpoint worked.
 
-### Live deployment boundary
+Send `X-Cors-Proxy-Range`: a live standard Range header did not reach the
+upstream, which returned the full entity (200). Kandelo's existing proxy profile
+already sends this alias. The private Space's serving path also omitted
+Access-Control-Allow-Origin from same-origin probe responses, and rejected a
+request carrying an untrusted Origin before it reached the worker. Kandelo uses
+the proxy on the same origin; cross-origin deployment compatibility is not
+claimed from these probes. Local tests still check the core CORS behavior.
 
-Spacefast's published npm runtime contract identifies Functions as Cloudflare
-Dynamic Workers. Its compiler preserves `cloudflare:*` imports. Cloudflare's
-[socket API](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)
-supports IP connections and the runtime's TLS options include
-`expectedServerHostname`.
+### Optional pinned transport
 
-Spacefast's own outbound gateway must admit socket connections for this worker
-to operate. Live testing on 2026-10-15 found that the claimed Space's worker
-rejects connections to public numeric destinations, including HTTP requests to
-`66.241.125.232` (httpbingo.org) and `93.184.215.14`. These literal-address
-requests bypass DNS, isolating the failure to socket egress. The runtime reports
-`proxy request failed, cannot connect to the specified address`. The deployed
-app boots with cross-origin isolation and runs shell commands, but its CORS
-proxy cannot forward public requests on this deployment. This requires a
-supported pinned-egress facility from Spacefast; it is not a functioning live
-replacement for the Playground proxy yet.
-Cloudflare also blocks socket connections to Cloudflare IP ranges and certain
-other destinations; these restrictions can prevent access to hosts the
-Playground PHP proxy reaches. Unsupported sockets, rejected connections,
-DNS failures and TLS failures produce 502; there is no weaker hostname-fetch
-fallback. Protocol compatibility is implemented, but unrestricted live
-destination compatibility is not claimed. Upstream failures are logged on the
-server without including their details in client responses. The worker returns
-502; the tested Spacefast serving path exposed these failures as HTTP 500.
+The reusable `createCorsProxy()` core retains its original pinned transport
+when no `fetch` option is supplied. `src/pinned-fetch.ts` resolves A and AAAA
+through `https://1.1.1.1/dns-query`, rejects any forbidden answer, and passes a
+validated numeric address to `cloudflare:sockets.connect()`. HTTPS uses the
+original hostname for SNI and certificate verification. DNS changes cannot
+change that connection's IP. DNS/HTTP framing is bounded and failures close
+the socket. No hostname-fetch fallback is attempted by that transport.
+
+On 2026-10-15, live Spacefast tests rejected connections even to public numeric
+HTTP destinations (`66.241.125.232` and `93.184.215.14`). That is why the
+production entry explicitly selects platform Fetch instead. The pinned code
+remains tested for a future runtime that admits those connections; it is not
+the security boundary of the deployed workaround.
 
 ## Configuration
 
@@ -144,8 +146,8 @@ Publish a generated bundle and `sf.jsonc`, not this source directory's tests,
 fixture keys or local output. A root worker claims the whole site; deploy it
 as its own proxy Space. The combined build below instead uses a file-router
 entry, so only `/cors-proxy` and its descendants wake the worker. Static
-files keep their normal serving path. See the live deployment boundary above:
-the tested Spacefast worker cannot forward pinned outbound connections.
+files keep their normal serving path. The production entry uses the platform-
+Fetch workaround described above.
 
 ### Combined Kandelo site
 
@@ -202,5 +204,14 @@ Mock transports cover protocol edge cases independently.
 
 These are local code/transport tests. Separate live integration checks confirm
 boot, service-worker isolation, shell execution, preflight, private/self-target
-rejection and basic database-counter operation. Public HTTP/HTTPS proxying is
-blocked by the socket-egress boundary above; live forwarding parity is unproven.
+rejection and basic database-counter operation. The production transport must
+also be checked live: local tests do not prove Spacefast destination reachability
+or its outbound private-network policy.
+
+On 2026-10-15, the live v5 Chromium smoke check booted the Kandelo build with
+cross-origin isolation and a same-origin service worker. Guest `uname -s`
+reported `wasm-posix`; guest `curl -fsS` through `/cors-proxy` received HTTP 200
+and exited 0. Desktop and 390px mobile captures showed no page errors or mobile
+horizontal overflow. These checks did not cover Firefox or WebKit. The platform
+header/target limitations listed above remain; no live DNS-rebinding guarantee
+is claimed.
