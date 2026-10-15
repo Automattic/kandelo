@@ -258,6 +258,11 @@ to publish their stores before flushing the journal, including sole-writer
 mappings. The mapping pass selects rootfs backings, leaving tmpfs and memfd
 backings outside the rootfs durability barrier. Node and three-engine browser
 tests recover mapped writes from the journal captured before clean shutdown.
+
+Rootfs `fsync(fd)` and `fdatasync(fd)` now publish that file's pending
+`MAP_SHARED` stores before flushing the journal, including a sole writer;
+other files' mappings are not selected. Node and three-engine browser guest
+tests reopen journal bytes captured before clean shutdown.
 The positioned-install browser test also runs a guest overwrite and a 2 MiB
 write near the end of a large file, then reopens the saved image after a page
 reload and verifies both writes through guest reads. Its 68 MiB and 772 MiB

@@ -2327,6 +2327,29 @@ fn sync_rootfs_mappings_and_persistence() -> Result<(), Errno> {
     crate::rootfs::sync_persistence()
 }
 
+fn flush_rootfs_file_mappings(fd: i32) -> Result<(), Errno> {
+    let (_gkl, proc) = unsafe { get_process() };
+    let rootfs_handle = proc
+        .fd_table
+        .get(fd)
+        .ok()
+        .and_then(|entry| proc.ofd_table.get(entry.ofd_ref.0))
+        .filter(|ofd| ofd.file_type == FileType::Regular && !ofd.is_path_only())
+        .map(|ofd| ofd.host_handle)
+        .filter(|handle| runtime_core::rootfs::is_rootfs_file_handle(*handle));
+    if let Some(handle) = rootfs_handle {
+        let table = unsafe { crate::memory::global_shared_mapping_table() };
+        if table.has_file_backings() {
+            let mut io = WasmSharedMappingIo::for_table(table);
+            table.flush_file_backings_matching(
+                &|backing_handle| backing_handle == handle,
+                &mut io,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_checkpoint_prepared_persistence(index_slot: u32) -> i32 {
     let storage: Box<dyn crate::persistent_overlay::OverlayStorage + Send> = match index_slot {
@@ -13207,9 +13230,10 @@ pub extern "C" fn kernel_ftruncate(fd: i32, length: i64) -> i32 {
 /// Synchronize file state to storage. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fsync(fd: i32) -> i32 {
+    let publication = flush_rootfs_file_mappings(fd);
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_fsync(proc, &mut host, fd) {
+    let result = match publication.and_then(|()| syscalls::sys_fsync(proc, &mut host, fd)) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
@@ -13234,9 +13258,10 @@ pub extern "C" fn kernel_truncate(path_ptr: *const u8, path_len: u32, length: i6
 /// Synchronize file data to storage (alias for fsync). Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fdatasync(fd: i32) -> i32 {
+    let publication = flush_rootfs_file_mappings(fd);
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_fdatasync(proc, &mut host, fd) {
+    let result = match publication.and_then(|()| syscalls::sys_fdatasync(proc, &mut host, fd)) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };

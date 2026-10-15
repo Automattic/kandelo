@@ -1697,6 +1697,11 @@ guest-visible behavior differs from ABI 52.
 Both calls publish kernel-owned rootfs `MAP_SHARED` mappings before flushing
 the journal, including stores held by a sole observer.
 
+`fsync(fd)` and `fdatasync(fd)` likewise publish pending `MAP_SHARED` stores
+for the named persistent rootfs file before flushing its journal; they do not
+publish unrelated files' mappings. This semantic correction is also batched
+into ABI 53.
+
 ### ABI 52 heap safepoints in the syscall wait
 
 ABI 52 gives every process a new required host import so a process blocked
