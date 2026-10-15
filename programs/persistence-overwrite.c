@@ -15,6 +15,28 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && (strcmp(argv[1], "snapshot-dense-reextend") == 0
+        || strcmp(argv[1], "verify-snapshot-dense-reextend") == 0)) {
+        const off_t offset = 512LL * 1024 * 1024 + 7;
+        if (strcmp(argv[1], "snapshot-dense-reextend") == 0) {
+            int fd = open("/snapshot-dense-base", O_RDWR);
+            if (fd < 0) return 192;
+            if (ftruncate(fd, 0) != 0) return 193;
+            if (ftruncate(fd, offset + 4) != 0) return 194;
+            if (pwrite(fd, "TAIL", 4, offset) != 4) return 195;
+            if (fsync(fd) != 0) return 196;
+            return close(fd) == 0 ? 0 : 197;
+        }
+        int fd = open("/snapshot-dense-base", O_RDONLY);
+        if (fd < 0) return 198;
+        struct stat metadata;
+        if (fstat(fd, &metadata) != 0 || metadata.st_size != offset + 4) return 199;
+        char bytes[6];
+        if (pread(fd, bytes, sizeof(bytes), offset - 2) != (ssize_t)sizeof(bytes)
+            || memcmp(bytes, "\0\0TAIL", sizeof(bytes)) != 0) return 200;
+        if (pread(fd, bytes, 1, 0) != 1 || bytes[0] != 0) return 201;
+        return close(fd) == 0 ? 0 : 202;
+    }
     if (argc >= 2 && (strcmp(argv[1], "snapshot-sparse") == 0
         || strcmp(argv[1], "verify-snapshot-sparse") == 0)) {
         const off_t offset = 512LL * 1024 * 1024 + 7;
