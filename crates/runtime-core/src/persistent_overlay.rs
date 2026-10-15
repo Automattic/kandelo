@@ -289,15 +289,50 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 index_digest,
                 checkpoint_end,
             )?;
+            let verify_blocks = checkpoint.has_metadata_value_digests();
             let mut metadata_position = 0u64;
-            let mut verify_metadata = |mut record: MetadataCheckpointEntry| {
-                let expected = checkpoint
-                    .metadata_entry_at(metadata_position)?
-                    .ok_or(Errno::EIO)?;
-                if !checkpoint.has_metadata_value_digests() {
-                    record.value_digest = None;
+            let mut block_position = 0u64;
+            let mut verify_record = |mutation: &Mutation, value_offset: Option<u64>| {
+                if let OverlayKey::FileBlock { inode, block } = mutation_key(mutation) {
+                    if verify_blocks {
+                        let (offset, digest) = match mutation {
+                            Mutation::Put { value, .. } => (
+                                value_offset.ok_or(Errno::EIO)?,
+                                Sha256::digest(value).into(),
+                            ),
+                            Mutation::Delete { .. } => (0, [0; 32]),
+                        };
+                        let record = BlockCheckpointEntry {
+                            inode: *inode,
+                            block: *block,
+                            offset,
+                            digest,
+                        };
+                        if checkpoint.entry_at(block_position)? != Some(record) {
+                            return Err(Errno::EIO);
+                        }
+                        block_position = block_position.checked_add(1).ok_or(Errno::EIO)?;
+                    }
+                    return Ok(());
                 }
-                if expected != record {
+                let value = match mutation {
+                    Mutation::Put { value, .. } => Some((
+                        value_offset.ok_or(Errno::EIO)?,
+                        u32::try_from(value.len()).map_err(|_| Errno::EIO)?,
+                    )),
+                    Mutation::Delete { .. } => None,
+                };
+                let record = MetadataCheckpointEntry {
+                    key: mutation_key(mutation).clone(),
+                    value,
+                    value_digest: match mutation {
+                        Mutation::Put { value, .. } if verify_blocks => {
+                            Some(Sha256::digest(value).into())
+                        }
+                        _ => None,
+                    },
+                };
+                if checkpoint.metadata_entry_at(metadata_position)? != Some(record) {
                     return Err(Errno::EIO);
                 }
                 metadata_position = metadata_position.checked_add(1).ok_or(Errno::EIO)?;
@@ -313,11 +348,12 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 false,
                 false,
                 Some(&mut digest),
-                Some(&mut verify_metadata),
+                Some(&mut verify_record),
             )?;
             if replayed_end != checkpoint_end
                 || next_sequence != checkpoint.next_sequence()
                 || metadata_position != checkpoint.metadata_count()
+                || (verify_blocks && block_position != checkpoint.count())
                 || digest.finalize()[..] != index_digest
             {
                 return Err(Errno::EIO);
@@ -2009,7 +2045,7 @@ fn replay_transactions<S: OverlayStorage>(
     allow_torn_tail: bool,
     has_checkpoint: bool,
     mut prefix_digest: Option<&mut Sha256>,
-    mut metadata_check: Option<&mut dyn FnMut(MetadataCheckpointEntry) -> Result<(), Errno>>,
+    mut record_check: Option<&mut dyn FnMut(&Mutation, Option<u64>) -> Result<(), Errno>>,
 ) -> Result<(u64, u64), Errno> {
     while end < size {
         let remaining = size - end;
@@ -2066,35 +2102,22 @@ fn replay_transactions<S: OverlayStorage>(
             if matches!(filter, ReplayFilter::RejectMetadata) && !is_block {
                 return Err(Errno::EIO);
             }
-            if !matches!(filter, ReplayFilter::All) && is_block {
+            if !matches!(filter, ReplayFilter::All) && is_block && record_check.is_none() {
                 continue;
             }
-            let value_offset =
-                relative_offset
-                    .map(|offset| {
-                        end.checked_add(TRANSACTION_HEADER_BYTES as u64)
-                            .and_then(|start| start.checked_add(offset))
-                            .ok_or(Errno::EIO)
-                    })
-                    .transpose()?;
-            if let Some(check) = metadata_check.as_mut() {
-                let value = match &mutation {
-                    Mutation::Put { value, .. } => Some((
-                        value_offset.ok_or(Errno::EIO)?,
-                        u32::try_from(value.len()).map_err(|_| Errno::EIO)?,
-                    )),
-                    Mutation::Delete { .. } => None,
-                };
-                check(MetadataCheckpointEntry {
-                    key: mutation_key(&mutation).clone(),
-                    value,
-                    value_digest: match &mutation {
-                        Mutation::Put { value, .. } => Some(Sha256::digest(value).into()),
-                        Mutation::Delete { .. } => None,
-                    },
-                })?;
+            let value_offset = relative_offset
+                .map(|offset| {
+                    end.checked_add(TRANSACTION_HEADER_BYTES as u64)
+                        .and_then(|start| start.checked_add(offset))
+                        .ok_or(Errno::EIO)
+                })
+                .transpose()?;
+            if let Some(check) = record_check.as_mut() {
+                check(&mutation, value_offset)?;
             }
-            if matches!(filter, ReplayFilter::VerifyOnly) {
+            if matches!(filter, ReplayFilter::VerifyOnly)
+                || (!matches!(filter, ReplayFilter::All) && is_block)
+            {
                 continue;
             }
             state.apply(mutation, value_offset, has_checkpoint);
@@ -2866,6 +2889,71 @@ mod tests {
             end,
         );
         assert!(index.is_ok());
+        assert!(matches!(
+            OverlayJournal::open_with_checkpoint_metadata(
+                compacted.into_storage(),
+                storage,
+                base_digest,
+                end,
+            ),
+            Err(Errno::EIO)
+        ));
+    }
+
+    #[test]
+    fn indexed_boot_rejects_a_self_consistent_but_false_block_location() {
+        let base_digest = [57; 32];
+        let mut source = OverlayJournal::open(MemoryStorage::default(), base_digest).unwrap();
+        source
+            .commit(&[
+                Mutation::Put {
+                    key: inode_key(),
+                    value: b"metadata".to_vec(),
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                    value: vec![b'a'; FILE_BLOCK_BYTES],
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 1 },
+                    value: vec![b'b'; FILE_BLOCK_BYTES],
+                },
+            ])
+            .unwrap();
+        let mut compacted = source
+            .compact_metadata_into(MemoryStorage::default())
+            .unwrap();
+        let end = compacted.end;
+        let checkpoint = compacted
+            .checkpoint_blocks_with_metadata_into(MemoryStorage::default())
+            .unwrap();
+        let mut index_bytes = checkpoint.into_storage().bytes;
+        let second_location = index_bytes[160 + 56 + 16..160 + 2 * 56].to_vec();
+        index_bytes[160 + 16..160 + 56].copy_from_slice(&second_location);
+        let block_digest = Sha256::digest(&index_bytes[160..160 + 2 * 56]);
+        let metadata_digest = Sha256::digest(&index_bytes[160 + 2 * 56..]);
+        let mut combined = Sha256::new();
+        combined.update(block_digest);
+        combined.update(metadata_digest);
+        index_bytes[96..128].copy_from_slice(&combined.finalize());
+        let header_digest = Sha256::digest(&index_bytes[..128]);
+        index_bytes[128..160].copy_from_slice(&header_digest);
+        let storage = MemoryStorage {
+            bytes: index_bytes,
+            ..MemoryStorage::default()
+        };
+        assert!(
+            BlockCheckpoint::open(
+                MemoryStorage {
+                    bytes: storage.bytes.clone(),
+                    ..MemoryStorage::default()
+                },
+                base_digest,
+                Sha256::digest(&compacted.storage.bytes[..end as usize]).into(),
+                end,
+            )
+            .is_ok()
+        );
         assert!(matches!(
             OverlayJournal::open_with_checkpoint_metadata(
                 compacted.into_storage(),
