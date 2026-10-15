@@ -155,6 +155,23 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
     return [...slots];
   }
 
+  static async removeFile(
+    name: string,
+    slot: `g${number}`,
+    suffix: "journal" | "seal" | "index",
+  ): Promise<void> {
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name) || parseSealedGenerationSlot(slot) === null) {
+      throw storageError("EIO");
+    }
+    const root = await navigator.storage.getDirectory();
+    const directory = await root.getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+    try {
+      await directory.removeEntry(`${name}.${slot}.${suffix}`);
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+    }
+  }
+
   static async open(name: string): Promise<OpfsOverlayStorageFile> {
     const storage = await OpfsOverlayStorageFile.openFile(name, "legacy", "journal", true);
     if (storage === null) throw storageError("EIO");

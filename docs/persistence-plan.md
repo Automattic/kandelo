@@ -598,6 +598,17 @@ conversion into `g4` or `g5`. A Node guest migration and Chromium, Firefox,
 and WebKit OPFS guest migrations now convert a four-slot fixed v1 source into
 `g4`, then reboot it; Node also compacts that `g4` generation back to `g0`.
 Staged browser replacement cleanup discovers and removes numbered spill files.
+After a live compaction with a discovered spill slot, the host retains the
+newly active generation and its semantically mounted source fallback, then
+invalidates older seals with a flush before removing their checkpoints and
+journals. A failed retirement is reported but does not roll back activation;
+the invalid seal prevents a partially removed generation from booting. Node
+and all three browser engines compact a `g4` generation back to `g0`, remove
+older `g1`–`g3` files, and reopen the guest state. Node and host fault tests
+also damage the new target and recover from the retained `g4` source. Host
+fault tests stop retirement at seal truncate, seal flush, and journal removal;
+the active target and retained source remain available. The
+ordinary three-slot compaction ring remains bounded without retirement.
 If the kernel rejects a converted target with `EIO`, the host invalidates its
 seal and tries the unchanged source before an older generation; a failed
 source mount can still fall back normally. Host fault coverage checks that a
@@ -612,10 +623,12 @@ later compaction cannot overwrite its active source.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.
-Sealed fallback journals can remain allocated after migration. Generation
-garbage collection is still needed to bound their quota and directory-entry
-cost; numbered spill slots remove the fixed four-slot recovery exception but
-do not themselves reclaim old generations.
+A boot-only conversion retains its older sealed generations until a later
+live compaction. The legacy unsealed journal is not yet collected, and a
+retirement failure may leave invalid orphan files until another spill-slot
+compaction; near-quota cleanup and power-loss ordering still need fault tests.
+Numbered spill slots remove the fixed four-slot recovery exception, but these
+remaining cases keep generation storage reclamation open.
 
 Compacted resizable generations now write a version 4 checkpoint with a
 sorted, checksummed metadata table in the same sidecar as the block table.

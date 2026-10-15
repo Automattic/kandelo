@@ -41,6 +41,7 @@ export interface OverlayGenerationFiles {
     file: OverlayGenerationFile,
     create: boolean,
   ): Promise<PersistentOverlayStorage | null>;
+  remove(slot: SealedGenerationSlot, file: OverlayGenerationFile): Promise<void>;
 }
 
 interface Candidate {
@@ -54,9 +55,9 @@ interface Candidate {
 
 type SealedGenerationSlot = `g${number}`;
 
-async function generationSlots(files: OverlayGenerationFiles): Promise<SealedGenerationSlot[]> {
+function generationSlots(discovered: readonly string[]): SealedGenerationSlot[] {
   const slots = new Set<SealedGenerationSlot>(INITIAL_GENERATION_SLOTS);
-  for (const name of await files.listSlots()) {
+  for (const name of discovered) {
     const slot = parseSealedGenerationSlot(name);
     if (slot === null) throw new Error("persistent overlay generation slot is invalid");
     slots.add(slot);
@@ -98,6 +99,16 @@ export interface SelectedOverlayGeneration {
   generation: number;
   sealedLength: number;
   reusableSlots?: ReadonlyMap<number, SealedGenerationSlot>;
+  knownGenerations?: ReadonlyMap<SealedGenerationSlot, number>;
+}
+
+function withKnownGenerations(
+  selected: SelectedOverlayGeneration,
+  knownGenerations: ReadonlyMap<SealedGenerationSlot, number>,
+): SelectedOverlayGeneration {
+  const known = new Map(knownGenerations);
+  if (selected.slot !== "legacy") known.set(selected.slot, selected.generation);
+  return { ...selected, knownGenerations: known };
 }
 
 function withReusableSlots(
@@ -107,6 +118,53 @@ function withReusableSlots(
   const remaining = new Map([...reusableSlots].filter(([generation, slot]) =>
     generation > selected.generation && slot !== selected.slot));
   return remaining.size === 0 ? selected : { ...selected, reusableSlots: remaining };
+}
+
+async function retireGeneration(files: OverlayGenerationFiles, slot: SealedGenerationSlot): Promise<void> {
+  const seal = await files.open(slot, "seal", false);
+  if (seal !== null) {
+    let failure: unknown;
+    try {
+      seal.truncate(0);
+      seal.flush();
+    } catch (error) {
+      failure = error;
+    }
+    try {
+      seal.close();
+    } catch (error) {
+      failure = failure === undefined ? error
+        : new AggregateError([failure, error], "persistent overlay generation retirement failed");
+    }
+    if (failure !== undefined) throw failure;
+  }
+  await files.remove(slot, "index");
+  await files.remove(slot, "journal");
+  await files.remove(slot, "seal");
+}
+
+async function collectObsoleteGenerations(
+  active: SelectedOverlayGeneration,
+  source: SelectedOverlayGeneration,
+  files: OverlayGenerationFiles,
+  reportCleanupFailure: (error: unknown) => void,
+): Promise<SelectedOverlayGeneration> {
+  const known = new Map(active.knownGenerations);
+  if (![...known.keys()].some((slot) => Number(slot.slice(1)) >= 3)) return active;
+  for (const [slot, generation] of known) {
+    if (generation >= source.generation || slot === source.slot || slot === active.slot) continue;
+    try {
+      await retireGeneration(files, slot);
+      known.delete(slot);
+    } catch (error) {
+      try {
+        reportCleanupFailure(error);
+      } catch (reportError) {
+        console.error("persistent overlay retirement cleanup report failed", error, reportError);
+      }
+    }
+  }
+  return { ...active, knownGenerations: known };
 }
 
 export interface OverlayCompactionHandoff {
@@ -208,9 +266,14 @@ export async function enableBestOverlayGeneration(
 ): Promise<SelectedOverlayGeneration> {
   const candidates: Candidate[] = [];
   const reusableSlots = new Map<number, SealedGenerationSlot>();
+  const knownGenerations = new Map<SealedGenerationSlot, number>();
+  const select = (selected: SelectedOverlayGeneration): SelectedOverlayGeneration =>
+    withKnownGenerations(withReusableSlots(selected, reusableSlots), knownGenerations);
   let foundGenerationFile = false;
   try {
-    const slots = await generationSlots(files);
+    const discovered = await files.listSlots();
+    const slots = generationSlots(discovered);
+    for (const name of discovered) knownGenerations.set(name as SealedGenerationSlot, 0);
     for (const slot of slots) {
       const journal = await files.open(slot, "journal", false);
       let seal: PersistentOverlayStorage | null = null;
@@ -235,6 +298,7 @@ export async function enableBestOverlayGeneration(
         const retainedIndex = verified.indexLength === undefined ? undefined : index ?? undefined;
         if (retainedIndex !== undefined) index = null;
         candidates.push({ journal, index: retainedIndex, generation: verified.generation, sealedLength: verified.journalLength, slot, source: verified.source });
+        knownGenerations.set(slot, verified.generation);
       } catch (error) {
         journal.close();
         if (!(error instanceof Error) || error.message !== "persistent overlay generation seal is invalid") {
@@ -286,24 +350,25 @@ export async function enableBestOverlayGeneration(
           const version = new DataView(header.buffer).getUint32(4, true);
           if (version === 1 || version === 2) {
             const targetSlot = conversionTarget(slots, candidates, reusableSlots.get(candidate.generation + 1));
+            knownGenerations.set(targetSlot, 0);
             try {
               const converted = await convertOversizedGeneration(
                 files, candidate.journal, candidate.slot, targetSlot, candidate.generation, enable, convertJournal,
               );
               candidates.splice(candidates.indexOf(candidate), 1);
               closeCandidate(candidate);
-              return withReusableSlots(converted, reusableSlots);
+              return select(converted);
             } catch (error) {
               if (!(error instanceof RejectedConvertedTargetError)) throw error;
               enable(candidate.journal, candidate.index, candidate.sealedLength);
               candidates.splice(candidates.indexOf(candidate), 1);
-              return withReusableSlots(candidate, reusableSlots);
+              return select(candidate);
             }
           }
         }
         enable(candidate.journal, candidate.index, candidate.sealedLength);
         candidates.splice(candidates.indexOf(candidate), 1);
-        return withReusableSlots(candidate, reusableSlots);
+        return select(candidate);
       } catch (error) {
         if (!(error instanceof RejectedOverlayGenerationError) || error.errno !== ERRNO.EIO) {
           throw error;
@@ -324,9 +389,11 @@ export async function enableBestOverlayGeneration(
       }
       if (legacyLength >= 32 * 1024 * 1024 && convertJournal !== undefined) {
         let converted: SelectedOverlayGeneration;
+        const targetSlot = reusableSlots.get(1) ?? "g0";
+        knownGenerations.set(targetSlot, 0);
         try {
           converted = await convertOversizedGeneration(
-            files, legacy, "legacy", reusableSlots.get(1) ?? "g0", 0, enable, convertJournal,
+            files, legacy, "legacy", targetSlot, 0, enable, convertJournal,
           );
         } catch (error) {
           if (error instanceof RejectedConvertedTargetError) {
@@ -338,9 +405,7 @@ export async function enableBestOverlayGeneration(
               }
               throw sourceError;
             }
-            return withReusableSlots(
-              { journal: legacy, slot: "legacy", generation: 0, sealedLength: 0 }, reusableSlots,
-            );
+            return select({ journal: legacy, slot: "legacy", generation: 0, sealedLength: 0 });
           }
           if (error instanceof RejectedOverlayGenerationError && error.errno === ERRNO.EIO) {
             throw new NoValidOverlayGenerationError();
@@ -348,7 +413,7 @@ export async function enableBestOverlayGeneration(
           throw error;
         }
         legacy.close();
-        return withReusableSlots(converted, reusableSlots);
+        return select(converted);
       }
       try {
         enable(legacy);
@@ -358,7 +423,7 @@ export async function enableBestOverlayGeneration(
         }
         throw error;
       }
-      return withReusableSlots({ journal: legacy, slot: "legacy", generation: 0, sealedLength: 0 }, reusableSlots);
+      return select({ journal: legacy, slot: "legacy", generation: 0, sealedLength: 0 });
     } catch (error) {
       legacy.close();
       throw error;
@@ -441,13 +506,20 @@ export async function compactOverlayGeneration(
     seal = null;
     closeActivatedStorage(selected.journal);
     closeActivatedStorage(selected.index);
-    return withReusableSlots({ journal: target, index, slot, generation, sealedLength }, selected.reusableSlots ?? new Map());
+    const active = withKnownGenerations(
+      withReusableSlots({ journal: target, index, slot, generation, sealedLength }, selected.reusableSlots ?? new Map()),
+      selected.knownGenerations ?? new Map(),
+    );
+    return await collectObsoleteGenerations(active, selected, files, reportCleanupFailure);
   } catch (error) {
     if (activated && index !== null) {
       reportCleanupFailure(error);
-      return withReusableSlots(
-        { journal: target, index, slot, generation: selected.generation + 1, sealedLength },
-        selected.reusableSlots ?? new Map(),
+      return withKnownGenerations(
+        withReusableSlots(
+          { journal: target, index, slot, generation: selected.generation + 1, sealedLength },
+          selected.reusableSlots ?? new Map(),
+        ),
+        selected.knownGenerations ?? new Map(),
       );
     }
     let failure: unknown = error;

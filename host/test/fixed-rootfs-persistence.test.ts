@@ -1222,6 +1222,21 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         await compacted.destroy();
       }
       expect(readFileSync(`${path}.g0.index`).readUInt32LE(4)).toBe(5);
+      for (const slot of ["g1", "g2", "g3"]) {
+        for (const suffix of ["journal", "index", "seal"]) {
+          expect(existsSync(`${path}.${slot}.${suffix}`)).toBe(false);
+        }
+      }
+      expect(existsSync(`${path}.g4.seal`)).toBe(true);
+      const damagedIndex = Buffer.from(readFileSync(`${path}.g0.index`));
+      damagedIndex[160] ^= 1;
+      writeFileSync(`${path}.g0.index`, damagedIndex);
+      const fallback = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await fallback.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await fallback.destroy();
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

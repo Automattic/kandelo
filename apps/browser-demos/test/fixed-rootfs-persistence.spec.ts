@@ -1770,50 +1770,84 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
           const sealWriter = await sealFile.createWritable();
           await sealWriter.write(seal);
           await sealWriter.close();
-          const journal = await journalFile.getFile();
-          let position = 72;
-          let sequence = 0n;
-          let transaction = new Uint8Array();
-          while (position < journal.size) {
-            const header = new DataView(await journal.slice(position, position + 24).arrayBuffer());
-            const length = header.getUint32(4, true);
-            if (length < 60 || position + length > journal.size) throw new Error("invalid source transaction");
-            if (length > transaction.length) transaction = new Uint8Array(await journal.slice(position, position + length).arrayBuffer());
-            position += length;
-            sequence++;
-          }
-          if (transaction.length === 0) throw new Error("missing source transaction");
-          const journalWriter = await journalFile.createWritable({ keepExistingData: true });
-          try {
-            while (position < 32 * 1024 * 1024) {
-              const next = transaction.slice();
-              new DataView(next.buffer).setBigUint64(8, ++sequence, true);
-              next.set(await hash(next.subarray(0, -36)), next.length - 36);
-              await journalWriter.write({ type: "write", position, data: next });
-              position += next.length;
+          const grow = async (file: FileSystemFileHandle, beyondCurrent = false) => {
+            const journal = await file.getFile();
+            let position = 72;
+            let sequence = 0n;
+            let transaction = new Uint8Array();
+            while (position < journal.size) {
+              const header = new DataView(await journal.slice(position, position + 24).arrayBuffer());
+              const length = header.getUint32(4, true);
+              if (length < 60 || position + length > journal.size) throw new Error("invalid source transaction");
+              if (length > transaction.length) transaction = new Uint8Array(await journal.slice(position, position + length).arrayBuffer());
+              position += length;
+              sequence++;
             }
-            await journalWriter.close();
-          } catch (error) {
-            await journalWriter.abort();
-            throw error;
-          }
-          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+            if (transaction.length === 0) throw new Error("missing source transaction");
+            const writer = await file.createWritable({ keepExistingData: true });
+            try {
+              while (position < 32 * 1024 * 1024 + (beyondCurrent ? journal.size : 0)) {
+                const next = transaction.slice();
+                new DataView(next.buffer).setBigUint64(8, ++sequence, true);
+                next.set(await hash(next.subarray(0, -36)), next.length - 36);
+                await writer.write({ type: "write", position, data: next });
+                position += next.length;
+              }
+              await writer.close();
+            } catch (error) {
+              await writer.abort();
+              throw error;
+            }
+          };
+          await grow(journalFile);
+          const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+          const imageFile = await directory.getFileHandle(`${name}.base`);
+          const boot = async () => {
+            const kernel = new BrowserKernel({ kernelOwnedFs: true });
+            try {
+              await kernel.initFromOpfsImage({
+                kernelWasm,
+                vfsImageFile: imageFile,
+                experimentalFixedPersistenceName: name,
+                persistentComputerName: name,
+              });
+              return kernel;
+            } catch (error) {
+              await kernel.destroy();
+              throw error;
+            }
+          };
+          const migrated = await boot();
+          let migratedState: string;
           try {
-            await kernel.initFromOpfsImage({
-              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
-              vfsImageFile: await directory.getFileHandle(`${name}.base`),
-              experimentalFixedPersistenceName: name,
-              persistentComputerName: name,
-            });
-            return {
-              state: new TextDecoder().decode((await kernel.readFileFromVfs("/state"))!),
-              targetVersion: new DataView(await (await (await directory.getFileHandle(`${name}.g4.index`)).getFile()).slice(4, 8).arrayBuffer()).getUint32(0, true),
-            };
+            migratedState = new TextDecoder().decode((await migrated.readFileFromVfs("/state"))!);
           } finally {
-            await kernel.destroy();
+            await migrated.destroy();
           }
+          const targetVersion = new DataView(await (await (await directory.getFileHandle(`${name}.g4.index`)).getFile()).slice(4, 8).arrayBuffer()).getUint32(0, true);
+          await grow(await directory.getFileHandle(`${name}.g4.journal`), true);
+          const compacted = await boot();
+          let compactedState: string;
+          try {
+            compactedState = new TextDecoder().decode((await compacted.readFileFromVfs("/state"))!);
+          } finally {
+            await compacted.destroy();
+          }
+          const names = new Set<string>();
+          for await (const filename of directory.keys()) names.add(filename);
+          return {
+            state: migratedState,
+            targetVersion,
+            compactedState,
+            retired: ["g1", "g2", "g3"].every((slot) => ["journal", "index", "seal"]
+              .every((suffix) => !names.has(`${name}.${slot}.${suffix}`))),
+            sourceRetained: names.has(`${name}.g4.seal`),
+          };
         }, { moduleUrl, kernelUrl, name: prepared.name });
-        expect(migrated).toEqual({ state: "XYcdefgh", targetVersion: 5 });
+        expect(migrated).toEqual({
+          state: "XYcdefgh", targetVersion: 5, compactedState: "XYcdefgh",
+          retired: true, sourceRetained: true,
+        });
         await page.reload();
         const rebooted = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
           const { BrowserKernel } = await import(moduleUrl);
