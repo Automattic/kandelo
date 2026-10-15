@@ -806,23 +806,45 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         const ready = await loadFixedPersistenceImageHandle(name, identity);
         if (ready === null) throw new Error("previous generation disappeared");
         let stagedState = "";
-        const { previous: checkpointSource, staged } = await checkpointPersistentImage({
-          name,
-          identity,
-          journalName: ready.journalName,
-          kernelWasm,
-          createKernel: () => new BrowserKernel({ kernelOwnedFs: true }),
-          closeKernel: (kernel) => kernel.destroy(),
-          lazyUrlMapForImage: (assets) => {
-            if (assets) throw new Error("fixture unexpectedly has lazy assets");
-            return {};
-          },
-          releaseLease: async () => {},
-          validateCandidate: async (kernel) => {
-            stagedState = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
-          },
-        });
-        return { name, identity, previousJournal: checkpointSource.journalName, stagedJournal: staged.journalName, stagedState };
+        const filePrototype = Object.getPrototypeOf(ready.file) as FileSystemFileHandle;
+        const originalCreateWritable = filePrototype.createWritable;
+        let lostCloseAcknowledgement = false;
+        filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
+          const writer = await originalCreateWritable.call(this, options);
+          if (this.name !== `${name}.base.json`) return writer;
+          return {
+            write: (...args: Parameters<typeof writer.write>) => writer.write(...args),
+            close: async () => {
+              await writer.close();
+              lostCloseAcknowledgement = true;
+              throw new Error("injected lost checkpoint manifest close acknowledgement");
+            },
+            abort: () => writer.abort(),
+          } as FileSystemWritableFileStream;
+        };
+        const { previous: checkpointSource, staged } = await (async () => {
+          try {
+            return await checkpointPersistentImage({
+              name,
+              identity,
+              journalName: ready.journalName,
+              kernelWasm,
+              createKernel: () => new BrowserKernel({ kernelOwnedFs: true }),
+              closeKernel: (kernel) => kernel.destroy(),
+              lazyUrlMapForImage: (assets) => {
+                if (assets) throw new Error("fixture unexpectedly has lazy assets");
+                return {};
+              },
+              releaseLease: async () => {},
+              validateCandidate: async (kernel) => {
+                stagedState = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+              },
+            });
+          } finally {
+            filePrototype.createWritable = originalCreateWritable;
+          }
+        })();
+        return { name, identity, previousJournal: checkpointSource.journalName, stagedJournal: staged.journalName, stagedState, lostCloseAcknowledgement };
       }, {
         moduleUrl: new URL(`/@fs/${modulePath}`, baseURL).href,
         checkpointUrl: new URL(`/@fs/${checkpointModulePath}`, baseURL).href,
@@ -833,6 +855,7 @@ test("a guest-written snapshot replaces a computer after staged boot", async ({ 
         terminalSession,
       });
       expect(staged.stagedState).toBe("XYcdefgh");
+      expect(staged.lostCloseAcknowledgement).toBe(true);
       expect(staged.stagedJournal).not.toBe(staged.previousJournal);
       await page.reload();
       const reopened = await page.evaluate(async ({ moduleUrl, browserKernelUrl, kernelUrl, name, identity }) => {
