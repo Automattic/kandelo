@@ -1043,9 +1043,14 @@ export async function discardFixedPersistenceStagedReplacement(
           `${staged.journalName}.journal`,
           `${staged.journalName}.index`,
           `${staged.journalName}.seal`,
-          ...(["g0", "g1", "g2", "g3"] as const).flatMap((slot) => ["journal", "index", "seal"]
-            .map((suffix) => `${staged.journalName}.${slot}.${suffix}`)),
         ];
+        const prefix = `${staged.journalName}.`;
+        for await (const filename of parent.keys()) {
+          if (filename.startsWith(prefix)
+            && /^g[0-9]+\.(?:journal|index|seal)$/.test(filename.slice(prefix.length))) {
+            files.push(filename);
+          }
+        }
         for (const file of files) {
           await parent.removeEntry(file).catch((error) => {
             if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;

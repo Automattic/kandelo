@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { HostFileOffset } from "../src/types";
 import type { PersistentOverlayStorage } from "../src/vfs/overlay-storage";
 import {
+  parseSealedGenerationSlot,
   verifyOverlayGenerationSeal,
   writeOverlayGenerationSeal,
 } from "../src/vfs/overlay-generation-seal";
@@ -82,6 +83,14 @@ class MemoryStorage implements PersistentOverlayStorage {
 }
 
 describe("overlay generation seal", () => {
+  it("accepts canonical numbered slots and rejects aliases or unsafe numbers", () => {
+    expect(parseSealedGenerationSlot("g4")).toBe("g4");
+    expect(parseSealedGenerationSlot("g5")).toBe("g5");
+    for (const name of ["g04", "g-1", "g1.0", "g9007199254740991"]) {
+      expect(parseSealedGenerationSlot(name)).toBeNull();
+    }
+  });
+
   it("verifies a large journal with bounded reads and rejects corruption", async () => {
     const journal = new MemoryStorage(Uint8Array.from(
       { length: 2 * 1024 * 1024 + 3 },
@@ -168,6 +177,9 @@ describe("overlay generation seal", () => {
 describe("overlay generation boot selection", () => {
   function files(entries: Record<string, MemoryStorage>): OverlayGenerationFiles {
     return {
+      listSlots: async () => [...new Set(Object.keys(entries)
+        .map((name) => /^(g[0-9]+)\.(?:journal|index|seal)$/.exec(name)?.[1])
+        .filter((slot): slot is string => slot !== undefined))],
       open: async (slot, file, create) => {
         const key = `${slot}.${file}`;
         if (create && entries[key] === undefined) entries[key] = new MemoryStorage();
@@ -485,31 +497,56 @@ describe("overlay generation boot selection", () => {
     expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
   });
 
-  it("does not overwrite a verified fallback when all four slots are occupied", async () => {
+  it.each([4, 5])("converts beyond %i occupied slots without overwriting a verified fallback", async (occupiedCount) => {
     const oldIndex = new Uint8Array(160);
     new DataView(oldIndex.buffer).setUint32(4, 1, true);
     const entries: Record<string, MemoryStorage> = {};
     const digest = new Uint8Array(32);
-    for (const [position, slot] of ["g0", "g1", "g2", "g3"].entries()) {
+    const occupiedSlots = Array.from({ length: occupiedCount }, (_, position) => `g${position}` as const);
+    const targetSlot = `g${occupiedCount}` as const;
+    for (const [position, slot] of occupiedSlots.entries()) {
       entries[`${slot}.journal`] = new MemoryStorage(
-        position === 3 ? new Uint8Array(32 * 1024 * 1024) : Uint8Array.of(position),
+        position === occupiedCount - 1 ? new Uint8Array(32 * 1024 * 1024) : Uint8Array.of(position),
       );
       entries[`${slot}.seal`] = new MemoryStorage();
-      entries[`${slot}.index`] = new MemoryStorage(position === 3 ? oldIndex : Uint8Array.of(position));
+      entries[`${slot}.index`] = new MemoryStorage(position === occupiedCount - 1 ? oldIndex : Uint8Array.of(position));
       await writeOverlayGenerationSeal(
         entries[`${slot}.journal`], entries[`${slot}.seal`], position + 1, digest,
         entries[`${slot}.index`], position === 0 ? undefined
-          : { slot: `g${position - 1}` as "g0" | "g1" | "g2", journalLength: entries[`g${position - 1}.journal`].len() },
+          : { slot: `g${position - 1}` as const, journalLength: entries[`g${position - 1}.journal`].len() },
       );
     }
-    const seals = ["g0", "g1", "g2", "g3"].map((slot) => entries[`${slot}.seal`].bytes);
-    const selected = await enableBestOverlayGeneration(files(entries), () => {}, true, () => {
-      throw new Error("conversion must not overwrite a verified fallback");
-    });
-    expect(selected.slot).toBe("g3");
-    for (const [position, slot] of ["g0", "g1", "g2", "g3"].entries()) {
+    const seals = occupiedSlots.map((slot) => entries[`${slot}.seal`].bytes);
+    await expect(enableBestOverlayGeneration(files(entries), () => {}, true, () => {
+      throw new Error("conversion interrupted");
+    })).rejects.toThrow("conversion interrupted");
+    expect(entries[`${targetSlot}.seal`]!.len()).toBe(0);
+    for (const [position, slot] of occupiedSlots.entries()) {
       expect(entries[`${slot}.seal`].bytes).toBe(seals[position]);
     }
+    const selected = await enableBestOverlayGeneration(files(entries), () => {}, true, (source, target, index) => {
+      target.writeAllAt(0, (source as MemoryStorage).bytes.subarray(0, 72));
+      index.writeAllAt(0, Uint8Array.of(1));
+    });
+    expect(selected.slot).toBe(targetSlot);
+    expect(selected.generation).toBe(occupiedCount + 1);
+    for (const [position, slot] of occupiedSlots.entries()) {
+      expect(entries[`${slot}.seal`].bytes).toBe(seals[position]);
+    }
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe(targetSlot);
+    entries[`${targetSlot}.index`].bytes[0] ^= 1;
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot)
+      .toBe(occupiedSlots[occupiedSlots.length - 1]);
+    entries[`${targetSlot}.index`].bytes[0] ^= 1;
+    const compacted = await compactOverlayGeneration(selected, files(entries), {
+      prepare: (target) => { target.writeAllAt(0, (selected.journal as MemoryStorage).bytes); },
+      checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(2)); },
+      activate: () => {},
+      cancel: () => { throw new Error("unexpected cancellation"); },
+    }, 0);
+    expect(compacted.slot).toBe("g0");
+    expect(compacted.generation).toBe(occupiedCount + 2);
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
   });
 
   it.each([true, false])("tries the source after a converted target is rejected (source valid: %s)", async (sourceValid) => {

@@ -1306,6 +1306,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     if (!rootImage.has()) throw new Error("rootfs persistence requires a rootfs image");
     const resizable = msg.experimentalResizablePersistenceName !== undefined;
     const files = {
+      listSlots: () => OpfsOverlayStorageFile.listSlots(persistenceName),
       open: (slot, file, create) => OpfsOverlayStorageFile.openFile(
         persistenceName, slot, file, create,
       ),

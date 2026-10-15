@@ -11,9 +11,19 @@ const HEADER_BYTES = HEADER_DATA_BYTES + 32;
 const INDEXED_HEADER_DATA_BYTES = 64;
 const SOURCE_BOUND_HEADER_DATA_BYTES = 80;
 const DIGEST_BYTES = 32;
-const SOURCE_SLOTS = ["legacy", "g0", "g1", "g2", "g3"] as const;
+export type OverlaySealSourceSlot = "legacy" | `g${number}`;
 
-export type OverlaySealSourceSlot = (typeof SOURCE_SLOTS)[number];
+export function parseSealedGenerationSlot(value: string): `g${number}` | null {
+  if (!/^g(?:0|[1-9][0-9]*)$/.test(value)) return null;
+  const number = Number(value.slice(1));
+  return Number.isSafeInteger(number + 1) ? value as `g${number}` : null;
+}
+
+function sourceSlotNumber(slot: OverlaySealSourceSlot): number | null {
+  if (slot === "legacy") return 0;
+  const parsed = parseSealedGenerationSlot(slot);
+  return parsed === null ? null : Number(parsed.slice(1)) + 1;
+}
 
 export interface OverlaySealSource {
   slot: OverlaySealSourceSlot;
@@ -63,7 +73,7 @@ function header(
   if (!validLength(generation) || !validLength(journalLength) || baseDigest.byteLength !== DIGEST_BYTES
     || (indexLength !== undefined && !validLength(indexLength))
     || (source !== undefined && (indexLength === undefined || !validLength(source.journalLength)
-      || !SOURCE_SLOTS.includes(source.slot)
+      || sourceSlotNumber(source.slot) === null
       || (source.slot === "legacy") !== (generation === 1)))) {
     throw sealError();
   }
@@ -81,7 +91,7 @@ function header(
   if (indexLength !== undefined) view.setBigUint64(56, BigInt(indexLength), true);
   if (source !== undefined) {
     view.setBigUint64(64, BigInt(source.journalLength), true);
-    view.setBigUint64(72, BigInt(SOURCE_SLOTS.indexOf(source.slot)), true);
+    view.setBigUint64(72, BigInt(sourceSlotNumber(source.slot)!), true);
   }
   bytes.set(digest(bytes.subarray(0, headerDataBytes)), headerDataBytes);
   return bytes;
@@ -168,8 +178,9 @@ export function verifyOverlayGenerationSealSync(
   const journalLength = Number(view.getBigUint64(16, true));
   const baseDigest = bytes.slice(24, HEADER_DATA_BYTES);
   const indexLength = indexed ? Number(view.getBigUint64(56, true)) : undefined;
-  const sourceSlotNumber = version === SOURCE_BOUND_VERSION ? Number(view.getBigUint64(72, true)) : undefined;
-  const sourceSlot = sourceSlotNumber === undefined ? undefined : SOURCE_SLOTS[sourceSlotNumber];
+  const encodedSourceSlot = version === SOURCE_BOUND_VERSION ? Number(view.getBigUint64(72, true)) : undefined;
+  const sourceSlot = encodedSourceSlot === undefined || !Number.isSafeInteger(encodedSourceSlot)
+    ? undefined : encodedSourceSlot === 0 ? "legacy" : parseSealedGenerationSlot(`g${encodedSourceSlot - 1}`) ?? undefined;
   const sourceLength = version === SOURCE_BOUND_VERSION ? Number(view.getBigUint64(64, true)) : undefined;
   const invalidIndex = indexed && (
     indexLength === undefined || !validLength(indexLength) || index === null || index === undefined

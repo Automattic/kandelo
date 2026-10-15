@@ -27,6 +27,7 @@ import {
   openSync,
   readSync,
   readFileSync,
+  readdirSync,
   rmSync,
   unlinkSync,
   writeSync,
@@ -53,6 +54,7 @@ import type {
 } from "./kernel-worker";
 import { NodePlatformIO } from "./platform/node";
 import { OverlayStorageFile } from "./vfs/overlay-storage";
+import { parseSealedGenerationSlot } from "./vfs/overlay-generation-seal";
 import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { compactOverlayGeneration, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
@@ -1322,6 +1324,21 @@ async function handleInit(msg: InitMessage) {
       lock.exec("BEGIN EXCLUSIVE");
       const backend = new HostFileSystem(dirname(path));
       const files = {
+        listSlots: async () => {
+          const prefix = `${basename(path)}.`;
+          const slots = new Set<string>();
+          for (const name of readdirSync(dirname(path))) {
+            if (!name.startsWith(prefix)) continue;
+            const match = /^(g[0-9]+)\.(?:journal|index|seal)$/.exec(name.slice(prefix.length));
+            if (match !== null) {
+              if (parseSealedGenerationSlot(match[1]!) === null) {
+                throw new Error("persistent overlay generation slot is invalid");
+              }
+              slots.add(match[1]!);
+            }
+          }
+          return [...slots];
+        },
         open: async (slot, file, create) => {
           const name = slot === "legacy" ? basename(path) : `${basename(path)}.${slot}.${file}`;
           if (!create && !existsSync(join(dirname(path), name))) return null;

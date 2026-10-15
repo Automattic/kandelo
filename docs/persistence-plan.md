@@ -580,18 +580,24 @@ and mounted. An oversized sealed version 1/2 generation converts from its
 journal into a free sealed slot before mount, without trusting the old index
 or changing the source. A third slot allows conversion while two valid
 generations remain; the fourth `g3` slot allows conversion while all three
-earlier slots remain sealed. Interrupted conversion leaves their journals and
-seals untouched. Normal compaction continues to rotate through `g0`–`g2` and
-uses `g0` after an active `g3` migration. A semantically rejected slot may be
-reused after its rejection. If all four slots are already occupied by verified
-generations, boot retains the older full-map path rather than overwriting an
-unproven fallback. Node and Chromium, Firefox, and WebKit reboot fixed v1
+earlier slots remain sealed. When every discovered slot is occupied by a
+verified generation, conversion allocates the next numbered `gN` slot rather
+than overwriting an unproven fallback or mounting the old full-map checkpoint.
+Node and OPFS workers discover numbered generation files on boot, and the
+source-bound seal encodes their slot number without changing existing seals.
+Interrupted conversion leaves earlier journals and seals untouched. Normal
+compaction continues to rotate through `g0`–`g2` and uses `g0` after an active
+spill-slot migration. A semantically rejected slot may be reused after its
+rejection. Node and Chromium, Firefox, and WebKit reboot fixed v1
 and resizable v2 sources through this upgrade; two-valid-slot fixed v1 and
 resizable v2 cases reach `g2` on all four hosts. Three-valid-slot fixed v1
 and resizable v2 cases now reach `g3` on Node and all three browser engines;
 Node also reboots after compacting that migrated generation back to `g0`.
-Host fault tests leave all three sources intact across an interrupted `g3`
-conversion and refuse to overwrite any fallback if all four slots are valid.
+Host fault tests leave all earlier sources intact across an interrupted
+conversion into `g4` or `g5`. A Node guest migration and Chromium, Firefox,
+and WebKit OPFS guest migrations now convert a four-slot fixed v1 source into
+`g4`, then reboot it; Node also compacts that `g4` generation back to `g0`.
+Staged browser replacement cleanup discovers and removes numbered spill files.
 If the kernel rejects a converted target with `EIO`, the host invalidates its
 seal and tries the unchanged source before an older generation; a failed
 source mount can still fall back normally. Host fault coverage checks that a
@@ -606,9 +612,10 @@ later compaction cannot overwrite its active source.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.
-Four sealed journals can remain allocated after migration; generation garbage
-collection and a non-fixed slot scheme remain necessary to remove that quota
-cost and the all-four-occupied bounded-recovery exception.
+Sealed fallback journals can remain allocated after migration. Generation
+garbage collection is still needed to bound their quota and directory-entry
+cost; numbered spill slots remove the fixed four-slot recovery exception but
+do not themselves reclaim old generations.
 
 Compacted resizable generations now write a version 4 checkpoint with a
 sorted, checksummed metadata table in the same sidecar as the block table.
