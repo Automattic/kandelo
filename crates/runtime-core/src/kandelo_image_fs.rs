@@ -384,7 +384,12 @@ pub(crate) const SB_TOTAL_INODES: u64 = 16;
 pub const KANDELO_IMAGE_SUPER_MAGIC: u32 = 0x5346_494B;
 
 pub(crate) const SB_TOTAL_BLOCKS: u64 = 12;
+const SB_INODE_BITMAP_START: u64 = 28;
+const SB_BLOCK_BITMAP_START: u64 = 32;
 const SB_BLOCK_BITMAP_BLOCKS: u64 = 48;
+const SB_INODE_BITMAP_BLOCKS: u64 = 44;
+const SB_INODE_TABLE_BLOCKS: u64 = 52;
+const SB_DATA_START: u64 = 40;
 pub(crate) const SB_FREE_BLOCKS: u64 = 20;
 pub(crate) const SB_FREE_INODES: u64 = 24;
 pub(crate) const SB_MAX_SIZE_BLOCKS: u64 = 68;
@@ -396,26 +401,27 @@ const SB_DEFERRED_INODE: u64 = 76;
 
 impl<S: BlockSource> KandeloImageFs<S> {
     pub fn mount(source: S) -> Result<KandeloImageFs<S>, Errno> {
-        if source_u32(&source, 0).map_err(container_errno)? != KANDELO_IMAGE_MAGIC {
+        let mut superblock = [0u8; BLOCK_SIZE];
+        source.read_exact_at(0, &mut superblock).map_err(container_errno)?;
+        let word = |offset: u64| r32(&superblock, offset as usize).ok_or(Errno::EINVAL);
+        if word(0)? != KANDELO_IMAGE_MAGIC {
             return Err(Errno::EINVAL);
         }
-        if source_u32(&source, 4).map_err(container_errno)? != KANDELO_IMAGE_VERSION {
+        if word(4)? != KANDELO_IMAGE_VERSION {
             return Err(Errno::EINVAL);
         }
-        if source_u32(&source, 8).map_err(container_errno)? != BLOCK_SIZE as u32 {
+        if word(8)? != BLOCK_SIZE as u32 {
             return Err(Errno::EINVAL);
         }
-        let total_blocks = source_u32(&source, SB_TOTAL_BLOCKS).map_err(container_errno)?;
-        let block_bitmap_blocks =
-            source_u32(&source, SB_BLOCK_BITMAP_BLOCKS).map_err(container_errno)?;
-        if total_blocks == 0
-            || u64::from(total_blocks) > u64::from(block_bitmap_blocks) * BLOCK_SIZE as u64 * 8
-        {
-            return Err(Errno::EINVAL);
-        }
-        let inode_table_start =
-            source_u32(&source, SB_INODE_TABLE_START).map_err(container_errno)?;
-        let total_inodes = source_u32(&source, SB_TOTAL_INODES).map_err(container_errno)?;
+        let total_blocks = word(SB_TOTAL_BLOCKS)?;
+        let total_inodes = word(SB_TOTAL_INODES)?;
+        let inode_bitmap_start = word(SB_INODE_BITMAP_START)?;
+        let inode_bitmap_blocks = word(SB_INODE_BITMAP_BLOCKS)?;
+        let block_bitmap_start = word(SB_BLOCK_BITMAP_START)?;
+        let block_bitmap_blocks = word(SB_BLOCK_BITMAP_BLOCKS)?;
+        let inode_table_start = word(SB_INODE_TABLE_START)?;
+        let inode_table_blocks = word(SB_INODE_TABLE_BLOCKS)?;
+        let data_start = word(SB_DATA_START)?;
         // The inode table spans `total_inodes.div_ceil(32)` blocks starting at
         // `inode_table_start`; require the whole region to fit in the source
         // so every accepted `ino < total_inodes` yields an in-bounds
@@ -424,11 +430,24 @@ impl<S: BlockSource> KandeloImageFs<S> {
         let table_end = (inode_table_start as u64 + table_blocks)
             .checked_mul(BLOCK_SIZE as u64)
             .ok_or(Errno::EINVAL)?;
-        if table_end > source.len() { return Err(Errno::EINVAL); }
+        if total_inodes <= ROOT_INO
+            || inode_bitmap_start == 0
+            || inode_bitmap_start.checked_add(inode_bitmap_blocks) != Some(block_bitmap_start)
+            || block_bitmap_start.checked_add(block_bitmap_blocks) != Some(inode_table_start)
+            || inode_table_start.checked_add(inode_table_blocks) != Some(data_start)
+            || data_start >= total_blocks
+            || u64::from(inode_bitmap_blocks) * BLOCK_SIZE as u64 * 8 < u64::from(total_inodes)
+            || u64::from(block_bitmap_blocks) * BLOCK_SIZE as u64 * 8 < u64::from(total_blocks)
+            || u64::from(inode_table_blocks) < table_blocks
+            || u64::from(total_blocks) * BLOCK_SIZE as u64 > source.len()
+            || table_end > source.len()
+        {
+            return Err(Errno::EINVAL);
+        }
         // Read unvalidated: 0 means "no section", which is what every image
         // written before this field existed carries here, so an older image
         // reads as having none rather than as corrupt.
-        let deferred_inode = source_u32(&source, SB_DEFERRED_INODE).map_err(container_errno)?;
+        let deferred_inode = word(SB_DEFERRED_INODE)?;
         Ok(KandeloImageFs { source, inode_table_start, total_inodes, deferred_inode })
     }
 
@@ -990,6 +1009,22 @@ mod tests {
         assert!(KandeloImageFs::mount(bad.as_slice()).is_err());
         bad[SB_TOTAL_BLOCKS as usize..SB_TOTAL_BLOCKS as usize + 4].fill(0);
         assert!(KandeloImageFs::mount(bad.as_slice()).is_err());
+    }
+
+    #[test]
+    fn mount_rejects_overlapping_or_truncated_metadata_regions() {
+        let original = unwrap_vfsi(TINY_VFS).unwrap();
+        let mut overlapping = original.to_vec();
+        overlapping[32..36].copy_from_slice(&1u32.to_le_bytes());
+        assert!(matches!(KandeloImageFs::mount(overlapping.as_slice()), Err(Errno::EINVAL)));
+
+        let mut missing_inode_bitmap = original.to_vec();
+        missing_inode_bitmap[44..48].fill(0);
+        assert!(matches!(KandeloImageFs::mount(missing_inode_bitmap.as_slice()), Err(Errno::EINVAL)));
+
+        let mut truncated = original.to_vec();
+        truncated.pop();
+        assert!(matches!(KandeloImageFs::mount(truncated.as_slice()), Err(Errno::EINVAL)));
     }
 
     #[test]
