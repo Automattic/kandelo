@@ -154,6 +154,7 @@ pub enum BaseSource {
 
 struct Inode {
     kind: InodeKind,
+    base_blocks: Option<Vec<u32>>,
     /// The opaque deferred description the loaded image carried for this file,
     /// or empty when it carried none.
     ///
@@ -227,6 +228,7 @@ impl Inode {
         let (sec, nsec) = now();
         Inode {
             kind,
+            base_blocks: None,
             deferred_payload: Vec::new(),
             deferred_uri: Vec::new(),
             deferred_digest: crate::sdef::DIGEST_NONE,
@@ -3343,6 +3345,17 @@ where
                             insert_image_file(
                                 &abs, stat.size, stat.mode, stat.uid, stat.gid, ino,
                             )?;
+                            let blocks = filesystem.allocated_file_blocks(entry.ino)?;
+                            if blocks.len() as u64 != stat.size.div_ceil(4096) {
+                                let components = split_components(&abs);
+                                ROOTFS.with(|state| {
+                                    let root = state.mount_root();
+                                    let index = state.walk(root, &components)?;
+                                    state.get_mut(index).ok_or(Errno::EIO)?.base_blocks =
+                                        Some(blocks);
+                                    Ok::<_, Errno>(())
+                                })?;
+                            }
                         }
                     }
                     set_base_times_from_ms(&abs, stat.mtime_ms);
@@ -6055,11 +6068,12 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
 
     // Pass one: size the image, under a single borrow so the tree cannot be
     // observed in two states.
-    let (inode_count, mut data_blocks, oversized_file, sparse_candidates) = ROOTFS.with(|state| {
+    let (inode_count, mut data_blocks, oversized_file, sparse_candidates, base_sparse_candidates) = ROOTFS.with(|state| {
         let mut inode_count = 0u64;
         let mut data_blocks = 0u64;
         let mut oversized_file = false;
         let mut sparse_candidates = Vec::new();
+        let mut base_sparse_candidates = Vec::new();
         let mut count_file = |size: u64| {
             if size > crate::kandelo_image_write::MAX_FILE_BYTES {
                 oversized_file = true;
@@ -6090,11 +6104,29 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 }
                 InodeKind::BaseRegular { size, source, .. } => {
                     if matches!(source, BaseSource::Image) {
-                        data_blocks += count_file(if persistent {
+                        let journal_backed = persistent
+                            && inode.deferred_digest == crate::sdef::DIGEST_NONE
+                            && inode.mode & 0o6000 == 0;
+                        let export_size = if journal_backed {
                             inode.persistent_size.unwrap_or(*size)
                         } else {
                             *size
-                        });
+                        };
+                        if let Some(blocks) = &inode.base_blocks {
+                            if export_size > crate::kandelo_image_write::MAX_FILE_BYTES {
+                                let _ = count_file(export_size);
+                            } else {
+                                base_sparse_candidates.push((
+                                    inode.ino,
+                                    *size,
+                                    export_size,
+                                    blocks.clone(),
+                                    journal_backed,
+                                ));
+                            }
+                        } else {
+                            data_blocks += count_file(export_size);
+                        }
                     }
                     // A `Host`-sourced base file stays a lazy stub: no blocks.
                 }
@@ -6115,7 +6147,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 InodeKind::Special(_) | InodeKind::LazyMember { .. } => {}
             }
         }
-        (inode_count, data_blocks, oversized_file, sparse_candidates)
+        (inode_count, data_blocks, oversized_file, sparse_candidates, base_sparse_candidates)
     });
     if oversized_file {
         return Err(Errno::EFBIG);
@@ -6131,6 +6163,22 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 .ok_or(Errno::EFBIG)?;
             sparse_blocks.insert(inode, blocks);
         }
+    }
+    for (inode, base_size, size, mut blocks, journal_backed) in base_sparse_candidates {
+        if journal_backed {
+            blocks = PERSISTENT_ROOTFS
+                .lock()
+                .as_mut()
+                .ok_or(Errno::EIO)?
+                .journal
+                .composed_file_blocks(inode, base_size, size, &blocks)?;
+        } else {
+            blocks.retain(|block| u64::from(*block) * 4096 < size);
+        }
+        data_blocks = data_blocks
+            .checked_add(blocks_for_sparse_file(&blocks))
+            .ok_or(Errno::EFBIG)?;
+        sparse_blocks.insert(inode, blocks);
     }
 
     // Inodes drive `total_inodes = max_blocks / 4`, so a tree of many tiny
@@ -6385,11 +6433,15 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
             ExportNode::ImageFile(image_inode, size) => {
                 let id = contents.len() as u64;
                 contents.push(ImageContent::Image(image_inode));
+                let content = match sparse_blocks.get(&u64::from(image_inode)) {
+                    Some(blocks) => Content::SparseDeferred { id, len: size, blocks },
+                    None => Content::Deferred { id, len: size },
+                };
                 writer.create_file(
                     item.parent_out,
                     &item.name,
                     mode,
-                    Content::Deferred { id, len: size },
+                    content,
                 )?
             }
             ExportNode::OverlayFile(overlay_idx, size) => {
@@ -6406,7 +6458,7 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
                 let id = contents.len() as u64;
                 contents.push(ImageContent::Persistent { inode, image_inode, base_size });
                 let content = match sparse_blocks.get(&inode) {
-                    Some(blocks) if image_inode.is_none() => Content::SparseDeferred {
+                    Some(blocks) => Content::SparseDeferred {
                         id,
                         len: size,
                         blocks,
@@ -9788,6 +9840,90 @@ mod tests {
         assert_eq!(read(fresh, 8189, &mut fresh_bytes, &mut exported_bytes), Ok(7));
         assert_eq!(&fresh_bytes, b"\0\0\0TAIL");
         release_handle(fresh);
+    }
+
+    #[test]
+    fn sparse_base_file_survives_journal_mutations_and_snapshot() {
+        use crate::kandelo_image_write::{
+            Content, ContentSource, KandeloImageConfig, KandeloImageWriter,
+        };
+
+        struct BaseContent;
+
+        impl ContentSource for BaseContent {
+            fn read_exact_at(&self, _id: u64, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+                dst.fill(if offset == 0 { b'A' } else { b'T' });
+                Ok(())
+            }
+        }
+
+        let _guard = TestGuard::acquire();
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).unwrap();
+        writer.declare_deferred_section();
+        let size = 512 * 1024 * 1024u64 + 1;
+        let middle = 400 * 1024 * 1024u64;
+        let blocks = [0, (middle / 4096) as u32, (size / 4096) as u32];
+        writer
+            .create_file(
+                writer.root(),
+                b"base-sparse",
+                0o644,
+                Content::SparseDeferred {
+                    id: 1,
+                    len: size,
+                    blocks: &blocks,
+                },
+            )
+            .unwrap();
+        let body = writer.finish().unwrap().to_vec(&BaseContent).unwrap();
+        let image = crate::vfsi_container::wrap(
+            &body,
+            &crate::vfsi_container::ContainerSections {
+                lazy_json: b"",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: None,
+            },
+        )
+        .unwrap();
+        let digest: [u8; 32] = Sha256::digest(&image).into();
+        let storage = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+        let mut source = image_host(&image);
+        load_image(image.len() as u64, &mut source).unwrap();
+        let unmodified = drain_container(4096, &mut source);
+        assert!(unmodified.len() < 64 * 1024 * 1024);
+        let body = crate::kandelo_image_fs::unwrap_vfsi(&unmodified).unwrap();
+        let filesystem = crate::kandelo_image_fs::KandeloImageFs::mount(body).unwrap();
+        let inode = filesystem.resolve(b"/base-sparse", true).unwrap();
+        assert_eq!(filesystem.allocated_file_blocks(inode), Ok(blocks.to_vec()));
+        enable_resizable_persistence(Box::new(storage), digest).unwrap();
+        let handle = open(b"/base-sparse", O_RDWR, 0, 0, 0).unwrap();
+        let offset = 20 * 4096 + 3;
+        assert_eq!(write(handle, offset, b"X", &mut source), Ok(1));
+        truncate_handle(handle, 256 * 1024 * 1024, &mut source).unwrap();
+        truncate_handle(handle, size as i64, &mut source).unwrap();
+        assert_eq!(write(handle, (size - 1) as i64, b"Z", &mut source), Ok(1));
+        sync_persistence().unwrap();
+        release_handle(handle);
+
+        let exported = drain_container(4096, &mut source);
+        assert!(exported.len() < 64 * 1024 * 1024);
+        reset();
+        let mut snapshot_source = image_host(&exported);
+        load_image(exported.len() as u64, &mut snapshot_source).unwrap();
+        let handle = open(b"/base-sparse", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(fstat(handle).unwrap().st_size, size);
+        for (position, expected) in [
+            (0, b'A'),
+            (offset as i64, b'X'),
+            (middle as i64, 0),
+            ((size - 1) as i64, b'Z'),
+        ] {
+            let mut byte = [0];
+            assert_eq!(read(handle, position, &mut byte, &mut snapshot_source), Ok(1));
+            assert_eq!(byte[0], expected);
+        }
+        release_handle(handle);
     }
 
     #[test]

@@ -4,11 +4,11 @@
 //! Consumes DECOMPRESSED bytes (zstd is a host-side transport codec).
 //!
 //! The reader is a positioned cursor over a [`BlockSource`], not a resident
-//! buffer. A `/` image is 16-256 MiB, but a full tree build reads only its
-//! superblock, the inode-table blocks it actually touches, directory data
-//! blocks, and indirect blocks: under 9.5 MiB even for the largest image in
-//! the repo. Holding the whole image resident in kernel memory would duplicate
-//! a decompressed copy the host already owns.
+//! buffer. A `/` image can be larger than runtime memory, but a tree build
+//! reads its superblock, inode and directory metadata, and regular-file
+//! pointer blocks to retain sparse maps; it does not read file contents.
+//! Holding the whole image resident in kernel memory would duplicate a
+//! decompressed copy the host already owns.
 //!
 //! `impl BlockSource for [u8]` keeps a plain slice a first-class source, so a
 //! resident image costs a small `memcpy` per field read rather than a fetch.
@@ -628,6 +628,77 @@ impl<S: BlockSource> KandeloImageFs<S> {
         Err(Errno::EINVAL) // beyond MAX_FILE_BLOCKS
     }
 
+    fn pointer_block(&self, block: u32) -> Result<[u8; BLOCK_SIZE], Errno> {
+        let mut pointers = [0; BLOCK_SIZE];
+        self.source
+            .read_exact_at(u64::from(block) * BLOCK_SIZE as u64, &mut pointers)?;
+        Ok(pointers)
+    }
+
+    /// Return the logical block numbers backed by data in a regular file.
+    /// Missing indirect branches cost no reads or output memory.
+    pub fn allocated_file_blocks(&self, ino: u32) -> Result<Vec<u32>, Errno> {
+        let raw = self.read_inode(ino)?;
+        if r32(&raw, INO_LINK_COUNT).ok_or(Errno::EIO)? == 0 {
+            return Err(Errno::ENOENT);
+        }
+        if r32(&raw, INO_MODE).ok_or(Errno::EIO)? & 0xf000 != 0x8000 {
+            return Err(Errno::EINVAL);
+        }
+        let count = r64(&raw, INO_SIZE)
+            .ok_or(Errno::EIO)?
+            .div_ceil(BLOCK_SIZE as u64);
+        let maximum = u64::from(DIRECT_BLOCKS)
+            + u64::from(PTRS_PER_BLOCK)
+            + u64::from(PTRS_PER_BLOCK) * u64::from(PTRS_PER_BLOCK);
+        if count > maximum {
+            return Err(Errno::EFBIG);
+        }
+        let mut blocks = Vec::new();
+        for index in 0..count.min(u64::from(DIRECT_BLOCKS)) {
+            if r32(&raw, INO_DIRECT + index as usize * 4).ok_or(Errno::EIO)? != 0 {
+                blocks.push(index as u32);
+            }
+        }
+        if count > u64::from(DIRECT_BLOCKS) {
+            let indirect = r32(&raw, INO_INDIRECT).ok_or(Errno::EIO)?;
+            if indirect != 0 {
+                let pointers = self.pointer_block(indirect)?;
+                let entries = (count - u64::from(DIRECT_BLOCKS)).min(u64::from(PTRS_PER_BLOCK));
+                for index in 0..entries {
+                    if r32(&pointers, index as usize * 4).ok_or(Errno::EIO)? != 0 {
+                        blocks.push(DIRECT_BLOCKS + index as u32);
+                    }
+                }
+            }
+        }
+        let double_start = u64::from(DIRECT_BLOCKS) + u64::from(PTRS_PER_BLOCK);
+        if count > double_start {
+            let double_indirect = r32(&raw, INO_DOUBLE_INDIRECT).ok_or(Errno::EIO)?;
+            if double_indirect != 0 {
+                let first_level = self.pointer_block(double_indirect)?;
+                let groups = (count - double_start).div_ceil(u64::from(PTRS_PER_BLOCK));
+                for group in 0..groups {
+                    let pointer = r32(&first_level, group as usize * 4).ok_or(Errno::EIO)?;
+                    if pointer == 0 {
+                        continue;
+                    }
+                    let second_level = self.pointer_block(pointer)?;
+                    let entries = (count - double_start - group * u64::from(PTRS_PER_BLOCK))
+                        .min(u64::from(PTRS_PER_BLOCK));
+                    for index in 0..entries {
+                        if r32(&second_level, index as usize * 4).ok_or(Errno::EIO)? != 0 {
+                            blocks.push(
+                                (double_start + group * u64::from(PTRS_PER_BLOCK) + index) as u32,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(blocks)
+    }
+
     /// `block_map_in` for a caller that has only the inode number. Every
     /// production path already holds the inode bytes (that is the point of the
     /// cursor), so this exists for tests that name an inode directly.
@@ -1067,6 +1138,60 @@ mod tests {
         assert_eq!(fs.block_map(ROOT_INO, 5).unwrap(), 0, "unallocated direct block is a hole");
         // A file block beyond the double-indirect range is EINVAL, not a hole.
         assert!(fs.block_map(ROOT_INO, 2_000_000).is_err(), "beyond max file blocks -> EINVAL");
+    }
+
+    #[test]
+    fn allocated_file_blocks_skip_sparse_indirect_branches() {
+        use crate::kandelo_image_write::{
+            Content, ContentSource, KandeloImageConfig, KandeloImageSource, KandeloImageWriter,
+        };
+
+        struct TailContent;
+
+        impl ContentSource for TailContent {
+            fn read_exact_at(&self, _id: u64, _offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+                dst.fill(b'x');
+                Ok(())
+            }
+        }
+
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).unwrap();
+        let blocks = [0, 10, 1034, 105_000];
+        writer
+            .create_file(
+                writer.root(),
+                b"sparse",
+                0o644,
+                Content::SparseDeferred {
+                    id: 1,
+                    len: 512 * 1024 * 1024 + 1,
+                    blocks: &blocks,
+                },
+            )
+            .unwrap();
+        let image = writer.finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource {
+            image: &image,
+            content: &TailContent,
+        })
+        .unwrap();
+        let inode = filesystem.resolve(b"/sparse", true).unwrap();
+        assert_eq!(filesystem.allocated_file_blocks(inode), Ok(blocks.to_vec()));
+        assert_eq!(filesystem.allocated_file_blocks(ROOT_INO), Err(Errno::EINVAL));
+        let mut hole = [1; 8];
+        assert_eq!(filesystem.read_at(inode, 100 * BLOCK_SIZE as u64, &mut hole), Ok(8));
+        assert_eq!(hole, [0; 8]);
+    }
+
+    #[test]
+    fn allocated_file_blocks_reject_out_of_bounds_indirect_pointer() {
+        let mut image = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        let filesystem = KandeloImageFs::mount(image.as_slice()).unwrap();
+        let inode = filesystem.resolve(b"/big.txt", true).unwrap();
+        let pointer_offset = filesystem.inode_offset(inode) as usize + INO_INDIRECT;
+        image[pointer_offset..pointer_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let damaged = KandeloImageFs::mount(image.as_slice()).unwrap();
+        assert_eq!(damaged.allocated_file_blocks(inode), Err(Errno::EIO));
     }
 
     #[test]

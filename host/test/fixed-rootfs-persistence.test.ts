@@ -51,7 +51,7 @@ async function boot(image: Uint8Array, path: string, resizable = false, requireE
       : { experimentalFixedPersistencePath: path }),
     requireExistingRootfsPersistence: requireExisting,
   });
-  const kernelBytes = new Uint8Array(readFileSync(existsSync(directKernelPath) ? directKernelPath : kernelPath!));
+  const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
   try {
     await host.init(kernelBytes.buffer.slice(
       kernelBytes.byteOffset,
@@ -355,6 +355,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-export-"));
     const path = join(directory, "machine.journal");
     const snapshotPath = join(directory, "snapshot.vfs");
+    const repeatedSnapshotPath = join(directory, "snapshot-again.vfs");
     try {
       const image = await makeImage("abcdefgh");
       const first = await boot(image, path, true);
@@ -401,6 +402,30 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         expect(await sparse.exit).toBe(0);
       } finally {
         await withoutJournal.destroy();
+      }
+      const baseImage = new NodeKernelHost({ rootfsImage: new Uint8Array(readFileSync(snapshotPath)) });
+      try {
+        const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
+        await baseImage.init(kernelBytes.buffer.slice(
+          kernelBytes.byteOffset,
+          kernelBytes.byteOffset + kernelBytes.byteLength,
+        ) as ArrayBuffer);
+        const repeated = await baseImage.exportRootfsImageToFile(repeatedSnapshotPath);
+        expect(repeated.length).toBeLessThan(64 * 1024 * 1024);
+      } finally {
+        await baseImage.destroy();
+      }
+      const repeated = new NodeKernelHost({ rootfsImage: new Uint8Array(readFileSync(repeatedSnapshotPath)) });
+      try {
+        const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
+        await repeated.init(kernelBytes.buffer.slice(
+          kernelBytes.byteOffset,
+          kernelBytes.byteOffset + kernelBytes.byteLength,
+        ) as ArrayBuffer);
+        const sparse = await repeated.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-snapshot-sparse"]);
+        expect(await sparse.exit).toBe(0);
+      } finally {
+        await repeated.destroy();
       }
     } finally {
       rmSync(directory, { recursive: true, force: true });

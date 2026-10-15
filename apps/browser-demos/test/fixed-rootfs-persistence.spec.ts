@@ -332,7 +332,7 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
     });
     try {
       const page = context.pages()[0] ?? (await context.newPage());
-      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(existsSync(directKernelPath) ? directKernelPath : kernelPath!) }));
+      await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
       const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
@@ -405,6 +405,26 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
           sparseExit = await sparse.exit;
         } finally {
           await restored.destroy();
+        }
+        const baseImage = new BrowserKernel({ kernelOwnedFs: true });
+        const repeatedFile = await directory.getFileHandle(`${name}.snapshot-again`, { create: true });
+        let repeatedIntegrity: OpfsImageIntegrity;
+        try {
+          await baseImage.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile, integrity: snapshotIntegrity });
+          repeatedIntegrity = await baseImage.exportRootfsImageToFile(repeatedFile);
+          if (repeatedIntegrity.length >= 64 * 1024 * 1024) {
+            throw new Error("re-export materialized the base-image sparse hole");
+          }
+        } finally {
+          await baseImage.destroy();
+        }
+        const repeated = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await repeated.initFromOpfsImage({ kernelWasm, vfsImageFile: repeatedFile, integrity: repeatedIntegrity });
+          const sparse = await repeated.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-snapshot-sparse"]);
+          if (await sparse.exit !== 0) throw new Error("re-exported sparse file did not reopen");
+        } finally {
+          await repeated.destroy();
         }
         const corrupter = await snapshotFile.createWritable({ keepExistingData: true });
         await corrupter.write({ type: "write", position: 0, data: Uint8Array.of(0) });

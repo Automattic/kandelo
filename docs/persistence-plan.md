@@ -63,19 +63,23 @@ semantics. Node and browser must expose the same guest-visible behavior.
   now export only written blocks, including across a checkpoint; a logical
   4 GiB file with one tail byte exports and reopens as a sub-64 MiB KIFS body.
   Node and all three browser engines guest-create a 512 MiB sparse file,
-  export a sub-64 MiB composed snapshot, and reopen its hole and tail without
-  the journal. Base-image files and in-memory regular files still use dense
-  export mapping. Indirect-block memory scales with allocated blocks. KIFS v1
-  addresses at most 10 + 1,024 + 1,024² blocks per file. VFSI v2 uses a 64-bit body
-  length above the v1 32-bit limit; smaller bodies keep their v1 header. The
+  export a sub-64 MiB composed snapshot, reopen its hole and tail without
+  the journal, then re-export and reopen it without materializing the hole.
+  The kernel also retains sparse block maps from image-backed regular files
+  at boot; their holes survive snapshots, including journal
+  writes and truncate/re-extend. Originally dense base-image files and
+  in-memory regular files still use dense export mapping. Indirect-block
+  memory scales with allocated blocks. KIFS v1 addresses at most
+  10 + 1,024 + 1,024² blocks per file. VFSI v2 uses a 64-bit body length
+  above the v1 32-bit limit; smaller bodies keep their v1 header. The
   ABI 51 kernel also boots a synthetic >4 GiB sparse v2 container through Node
   positioned reads, including a trailer beyond the 32-bit offset boundary,
   while reading less than 16 MiB. Node boots a small v2 container; all three
   browser engines boot one, commit a guest write, and reopen its journal. A
   physically exported >4 GiB v2 body is not yet streamed or booted. An 8 GiB
-  sparse file still exceeds the KIFS per-file limit;
-  snapshot planning rejects it with `EFBIG` before mutating an image writer,
-  clears any earlier export plan, and leaves the live journal usable. A 772 MiB
+  sparse file still exceeds the KIFS per-file limit; snapshot planning rejects
+  it with `EFBIG` before mutating an image writer, clears any earlier export
+  plan, and leaves the live journal usable. A 772 MiB
   snapshot boots under the 768 MiB kernel ceiling on all three browser engines,
   but this is a narrow acceptance case, not a general memory or performance
   bound.
