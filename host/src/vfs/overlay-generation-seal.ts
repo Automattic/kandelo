@@ -5,11 +5,13 @@ const MAGIC = [0x4b, 0x4f, 0x47, 0x53];
 const VERSION = 1;
 const INDEXED_VERSION = 2;
 const SOURCE_BOUND_VERSION = 3;
+const SOURCE_DIGEST_VERSION = 4;
 const CHUNK_BYTES = 1024 * 1024;
 const HEADER_DATA_BYTES = 56;
 const HEADER_BYTES = HEADER_DATA_BYTES + 32;
 const INDEXED_HEADER_DATA_BYTES = 64;
 const SOURCE_BOUND_HEADER_DATA_BYTES = 80;
+const SOURCE_DIGEST_HEADER_DATA_BYTES = 112;
 const DIGEST_BYTES = 32;
 export type OverlaySealSourceSlot = "legacy" | `g${number}`;
 
@@ -28,6 +30,7 @@ function sourceSlotNumber(slot: OverlaySealSourceSlot): number | null {
 export interface OverlaySealSource {
   slot: OverlaySealSourceSlot;
   journalLength: number;
+  journalDigest?: Uint8Array;
 }
 
 export interface OverlayGenerationSeal {
@@ -59,6 +62,17 @@ function digest(bytes: Uint8Array): Uint8Array {
   return sha256(bytes);
 }
 
+export function digestOverlayStoragePrefix(storage: PersistentOverlayStorage, length: number): Uint8Array {
+  if (!validLength(length)) throw sealError();
+  const hash = sha256.create();
+  for (let offset = 0; offset < length; offset += CHUNK_BYTES) {
+    const chunk = new Uint8Array(Math.min(CHUNK_BYTES, length - offset));
+    storage.readExactAt(offset, chunk);
+    hash.update(chunk);
+  }
+  return hash.digest();
+}
+
 function chunkCount(length: number): number {
   return Math.ceil(length / CHUNK_BYTES);
 }
@@ -74,17 +88,20 @@ function header(
     || (indexLength !== undefined && !validLength(indexLength))
     || (source !== undefined && (indexLength === undefined || !validLength(source.journalLength)
       || sourceSlotNumber(source.slot) === null
+      || (source.journalDigest !== undefined
+        && (source.slot !== "legacy" || source.journalDigest.byteLength !== DIGEST_BYTES))
       || (source.slot === "legacy") !== (generation === 1)))) {
     throw sealError();
   }
   const indexed = indexLength !== undefined;
   const headerDataBytes = source !== undefined
-    ? SOURCE_BOUND_HEADER_DATA_BYTES
+    ? source.journalDigest === undefined ? SOURCE_BOUND_HEADER_DATA_BYTES : SOURCE_DIGEST_HEADER_DATA_BYTES
     : indexed ? INDEXED_HEADER_DATA_BYTES : HEADER_DATA_BYTES;
   const bytes = new Uint8Array(headerDataBytes + DIGEST_BYTES);
   bytes.set(MAGIC);
   const view = new DataView(bytes.buffer);
-  view.setUint32(4, source !== undefined ? SOURCE_BOUND_VERSION : indexed ? INDEXED_VERSION : VERSION, true);
+  view.setUint32(4, source?.journalDigest !== undefined ? SOURCE_DIGEST_VERSION
+    : source !== undefined ? SOURCE_BOUND_VERSION : indexed ? INDEXED_VERSION : VERSION, true);
   view.setBigUint64(8, BigInt(generation), true);
   view.setBigUint64(16, BigInt(journalLength), true);
   bytes.set(baseDigest, 24);
@@ -92,6 +109,7 @@ function header(
   if (source !== undefined) {
     view.setBigUint64(64, BigInt(source.journalLength), true);
     view.setBigUint64(72, BigInt(sourceSlotNumber(source.slot)!), true);
+    if (source.journalDigest !== undefined) bytes.set(source.journalDigest, SOURCE_BOUND_HEADER_DATA_BYTES);
   }
   bytes.set(digest(bytes.subarray(0, headerDataBytes)), headerDataBytes);
   return bytes;
@@ -165,10 +183,12 @@ export function verifyOverlayGenerationSealSync(
   const prefix = new Uint8Array(8);
   seal.readExactAt(0, prefix);
   const version = new DataView(prefix.buffer).getUint32(4, true);
-  if (version !== VERSION && version !== INDEXED_VERSION && version !== SOURCE_BOUND_VERSION) throw sealError();
+  if (version !== VERSION && version !== INDEXED_VERSION
+    && version !== SOURCE_BOUND_VERSION && version !== SOURCE_DIGEST_VERSION) throw sealError();
   const indexed = version !== VERSION;
-  const headerDataBytes = version === SOURCE_BOUND_VERSION
-    ? SOURCE_BOUND_HEADER_DATA_BYTES
+  const sourceBound = version === SOURCE_BOUND_VERSION || version === SOURCE_DIGEST_VERSION;
+  const headerDataBytes = sourceBound
+    ? version === SOURCE_DIGEST_VERSION ? SOURCE_DIGEST_HEADER_DATA_BYTES : SOURCE_BOUND_HEADER_DATA_BYTES
     : indexed ? INDEXED_HEADER_DATA_BYTES : HEADER_DATA_BYTES;
   const bytes = new Uint8Array(headerDataBytes + DIGEST_BYTES);
   if (seal.len() < bytes.byteLength) throw sealError();
@@ -178,10 +198,12 @@ export function verifyOverlayGenerationSealSync(
   const journalLength = Number(view.getBigUint64(16, true));
   const baseDigest = bytes.slice(24, HEADER_DATA_BYTES);
   const indexLength = indexed ? Number(view.getBigUint64(56, true)) : undefined;
-  const encodedSourceSlot = version === SOURCE_BOUND_VERSION ? Number(view.getBigUint64(72, true)) : undefined;
+  const encodedSourceSlot = sourceBound ? Number(view.getBigUint64(72, true)) : undefined;
   const sourceSlot = encodedSourceSlot === undefined || !Number.isSafeInteger(encodedSourceSlot)
     ? undefined : encodedSourceSlot === 0 ? "legacy" : parseSealedGenerationSlot(`g${encodedSourceSlot - 1}`) ?? undefined;
-  const sourceLength = version === SOURCE_BOUND_VERSION ? Number(view.getBigUint64(64, true)) : undefined;
+  const sourceLength = sourceBound ? Number(view.getBigUint64(64, true)) : undefined;
+  const sourceDigest = version === SOURCE_DIGEST_VERSION
+    ? bytes.slice(SOURCE_BOUND_HEADER_DATA_BYTES, SOURCE_DIGEST_HEADER_DATA_BYTES) : undefined;
   const invalidIndex = indexed && (
     indexLength === undefined || !validLength(indexLength) || index === null || index === undefined
     || index.len() !== indexLength
@@ -191,8 +213,9 @@ export function verifyOverlayGenerationSealSync(
     !validLength(generation) ||
     !validLength(journalLength) ||
     invalidIndex ||
-    (version === SOURCE_BOUND_VERSION && (sourceSlot === undefined || sourceLength === undefined
+    (sourceBound && (sourceSlot === undefined || sourceLength === undefined
       || !validLength(sourceLength) || (sourceSlot === "legacy") !== (generation === 1))) ||
+    (version === SOURCE_DIGEST_VERSION && sourceSlot !== "legacy") ||
     (allowAppendedTail ? journal.len() < journalLength : journal.len() !== journalLength) ||
     (expectedBaseDigest !== undefined && !sameBytes(baseDigest, expectedBaseDigest)) ||
     !sameBytes(bytes.subarray(headerDataBytes), digest(bytes.subarray(0, headerDataBytes)))
@@ -221,7 +244,8 @@ export function verifyOverlayGenerationSealSync(
     }
   }
   if (sourceSlot !== undefined && sourceLength !== undefined && indexLength !== undefined) {
-    return { generation, journalLength, baseDigest, indexLength, source: { slot: sourceSlot, journalLength: sourceLength } };
+    return { generation, journalLength, baseDigest, indexLength,
+      source: { slot: sourceSlot, journalLength: sourceLength, ...(sourceDigest === undefined ? {} : { journalDigest: sourceDigest }) } };
   }
   return indexLength === undefined
     ? { generation, journalLength, baseDigest }

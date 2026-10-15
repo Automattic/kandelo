@@ -1,5 +1,5 @@
 import { ERRNO } from "../generated/abi";
-import { parseSealedGenerationSlot, verifyOverlayGenerationSeal, verifyOverlayGenerationSealSync, writeOverlayGenerationSealSync, type OverlaySealSource } from "./overlay-generation-seal";
+import { digestOverlayStoragePrefix, parseSealedGenerationSlot, verifyOverlayGenerationSeal, verifyOverlayGenerationSealSync, writeOverlayGenerationSealSync, type OverlaySealSource } from "./overlay-generation-seal";
 import type { PersistentOverlayStorage } from "./overlay-storage";
 
 export class RejectedOverlayGenerationError extends Error {
@@ -41,7 +41,7 @@ export interface OverlayGenerationFiles {
     file: OverlayGenerationFile,
     create: boolean,
   ): Promise<PersistentOverlayStorage | null>;
-  remove(slot: SealedGenerationSlot, file: OverlayGenerationFile): Promise<void>;
+  remove(slot: OverlayGenerationSlot, file: OverlayGenerationFile): Promise<void>;
 }
 
 interface Candidate {
@@ -101,6 +101,7 @@ export interface SelectedOverlayGeneration {
   reusableSlots?: ReadonlyMap<number, SealedGenerationSlot>;
   knownGenerations?: ReadonlyMap<SealedGenerationSlot, number>;
   convertedFrom?: Pick<SelectedOverlayGeneration, "slot" | "generation">;
+  source?: OverlaySealSource;
 }
 
 function withKnownGenerations(
@@ -142,6 +143,37 @@ async function retireGeneration(files: OverlayGenerationFiles, slot: SealedGener
   await files.remove(slot, "index");
   await files.remove(slot, "journal");
   await files.remove(slot, "seal");
+}
+
+async function retireLegacySource(
+  active: SelectedOverlayGeneration,
+  source: SelectedOverlayGeneration,
+  files: OverlayGenerationFiles,
+  reportCleanupFailure: (error: unknown) => void,
+): Promise<void> {
+  if (active.generation !== 2 || source.generation !== 1 || source.source?.slot !== "legacy"
+    || source.source.journalDigest === undefined) return;
+  try {
+    const legacy = await files.open("legacy", "journal", false);
+    if (legacy === null) return;
+    try {
+      if (legacy.len() === 0) return;
+      if (legacy.len() !== source.source.journalLength) return;
+      const digest = digestOverlayStoragePrefix(legacy, legacy.len());
+      if (!source.source.journalDigest.every((byte, index) => byte === digest[index])) return;
+      legacy.truncate(0);
+      legacy.flush();
+    } finally {
+      legacy.close();
+    }
+    await files.remove("legacy", "journal");
+  } catch (error) {
+    try {
+      reportCleanupFailure(error);
+    } catch (reportError) {
+      console.error("persistent overlay legacy retirement cleanup report failed", error, reportError);
+    }
+  }
 }
 
 async function collectObsoleteGenerations(
@@ -221,8 +253,12 @@ async function convertOversizedGeneration(
     source.readExactAt(0, header);
     const baseDigest = header.slice(8, 40);
     const generation = sourceGeneration + 1;
+    const provenance: OverlaySealSource = {
+      slot: sourceSlot, journalLength: sourceLength,
+      ...(sourceSlot === "legacy" ? { journalDigest: digestOverlayStoragePrefix(source, sourceLength) } : {}),
+    };
     writeOverlayGenerationSealSync(target, seal, generation, baseDigest, index,
-      { slot: sourceSlot, journalLength: sourceLength });
+      provenance);
     verifyOverlayGenerationSealSync(target, seal, baseDigest, false, index);
     const sealedLength = target.len();
     try {
@@ -237,6 +273,7 @@ async function convertOversizedGeneration(
     return {
       journal: target, index, slot: targetSlot, generation, sealedLength,
       convertedFrom: { slot: sourceSlot, generation: sourceGeneration },
+      source: provenance,
     };
   } catch (error) {
     failure = error;
@@ -328,7 +365,7 @@ export async function enableBestOverlayGeneration(
     }
     const verifiedCandidates = [...candidates];
     const staleCandidates: Candidate[] = [];
-    for (const candidate of verifiedCandidates) {
+    for (const candidate of [...verifiedCandidates].sort((left, right) => left.generation - right.generation)) {
       if (candidate.source === undefined) continue;
       if (candidate.source.slot === candidate.slot) {
         staleCandidates.push(candidate);
@@ -337,13 +374,23 @@ export async function enableBestOverlayGeneration(
       if (candidate.source.slot === "legacy") {
         const source = await files.open("legacy", "journal", false);
         try {
-          if (source !== null && source.len() === candidate.source.journalLength) continue;
+          if (source === null || source.len() === 0) {
+            if (candidate.source.journalDigest !== undefined) continue;
+          } else if (source.len() === candidate.source.journalLength) {
+            if (candidate.source.journalDigest === undefined) continue;
+            const actual = digestOverlayStoragePrefix(source, source.len());
+            if (candidate.source.journalDigest.every((byte, index) => byte === actual[index])) continue;
+          }
         } finally {
           source?.close();
         }
       } else {
         const source = verifiedCandidates.find((other) => other.slot === candidate.source?.slot
           && other.generation === candidate.generation - 1);
+        if (source !== undefined && staleCandidates.includes(source)) {
+          staleCandidates.push(candidate);
+          continue;
+        }
         if (source === undefined || source.journal.len() === candidate.source.journalLength) continue;
       }
       staleCandidates.push(candidate);
@@ -473,6 +520,7 @@ export async function compactOverlayGeneration(
   let activated = false;
   let targetTouched = false;
   let sealedLength = 0;
+  let sourceProvenance: OverlaySealSource | undefined;
   const closeActivatedStorage = (storage: PersistentOverlayStorage | null | undefined): void => {
     if (storage === null || storage === undefined) return;
     try {
@@ -509,8 +557,13 @@ export async function compactOverlayGeneration(
     handoff.checkpoint(index);
     const baseDigest = header.slice(8, 40);
     const generation = selected.generation + 1;
+    sourceProvenance = {
+      slot: selected.slot, journalLength: sourceLength,
+      ...(selected.slot === "legacy"
+        ? { journalDigest: digestOverlayStoragePrefix(selected.journal, sourceLength) } : {}),
+    };
     writeOverlayGenerationSealSync(target, seal, generation, baseDigest, index,
-      { slot: selected.slot, journalLength: sourceLength });
+      sourceProvenance);
     verifyOverlayGenerationSealSync(target, seal, baseDigest, false, index);
     sealedLength = target.len();
     handoff.activate();
@@ -521,16 +574,18 @@ export async function compactOverlayGeneration(
     closeActivatedStorage(selected.journal);
     closeActivatedStorage(selected.index);
     const active = withKnownGenerations(
-      withReusableSlots({ journal: target, index, slot, generation, sealedLength }, selected.reusableSlots ?? new Map()),
+      withReusableSlots({ journal: target, index, slot, generation, sealedLength, source: sourceProvenance }, selected.reusableSlots ?? new Map()),
       selected.knownGenerations ?? new Map(),
     );
-    return await collectObsoleteGenerations(active, selected, files, reportCleanupFailure);
+    const collected = await collectObsoleteGenerations(active, selected, files, reportCleanupFailure);
+    await retireLegacySource(collected, selected, files, reportCleanupFailure);
+    return collected;
   } catch (error) {
     if (activated && index !== null) {
       reportCleanupFailure(error);
       return withKnownGenerations(
         withReusableSlots(
-          { journal: target, index, slot, generation: selected.generation + 1, sealedLength },
+          { journal: target, index, slot, generation: selected.generation + 1, sealedLength, source: sourceProvenance },
           selected.reusableSlots ?? new Map(),
         ),
         selected.knownGenerations ?? new Map(),

@@ -947,7 +947,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       expect(readFileSync(path).byteLength).toBe(sourceLength);
       expect(existsSync(`${path}.g0.seal`)).toBe(true);
       expect(existsSync(`${path}.g0.index`)).toBe(true);
-      expect(readFileSync(`${path}.g0.seal`).readUInt32LE(4)).toBe(3);
+      expect(readFileSync(`${path}.g0.seal`).readUInt32LE(4)).toBe(4);
       expect(readFileSync(`${path}.g0.index`).readUInt32LE(4)).toBe(5);
       expect(readFileSync(`${path}.g0.journal`).byteLength).toBeLessThan(sourceLength / 2);
       const firstSlotLength = expandJournalToCompactionThreshold(`${path}.g0.journal`);
@@ -958,6 +958,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         await reopened.destroy();
       }
       expect(readFileSync(`${path}.g0.journal`).byteLength).toBe(firstSlotLength);
+      expect(existsSync(path)).toBe(false);
       expect(existsSync(`${path}.g1.seal`)).toBe(true);
       expect(existsSync(`${path}.g1.index`)).toBe(true);
       expect(readFileSync(`${path}.g1.seal`).readUInt32LE(4)).toBe(3);
@@ -1522,7 +1523,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       const sourceLength = expandJournalToCompactionThreshold(path);
       const compacted = await boot(image, path);
       await compacted.destroy();
-      expect(readFileSync(`${path}.g0.seal`).readUInt32LE(4)).toBe(3);
+      expect(readFileSync(`${path}.g0.seal`).readUInt32LE(4)).toBe(4);
       const newer = Buffer.from(transaction);
       newer.writeBigUInt64LE(BigInt((sourceLength - 72) / transaction.length + 1), 8);
       newer.write("ZZcdefgh", valueOffset, "ascii");
@@ -1732,7 +1733,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
             timeout: 30_000,
             interval: 100,
           });
-          expect(readFileSync(`${path}.${slot}.seal`).readUInt32LE(4)).toBe(3);
+          expect(readFileSync(`${path}.${slot}.seal`).readUInt32LE(4)).toBe(slot === "g0" ? 4 : 3);
           expect(existsSync(`${path}.${slot}.index`)).toBe(true);
         }
       } finally {

@@ -601,6 +601,18 @@ Staged browser replacement cleanup discovers and removes numbered spill files.
 After a successful boot conversion into `g4` or a later slot, the host has
 mounted the new target and validated its source. It keeps those two copies,
 flush-invalidates older seals, and removes their files before guests start.
+Generation-one seals made from a legacy journal now include its SHA-256
+digest (seal version 4), read in bounded chunks. Boot rejects that generation
+if a still-present legacy journal changes even without changing length; old
+version-3 seals remain readable and keep their length-only source check. A
+stale source also invalidates its sealed descendants, preventing boot from
+selecting an image derived from that source. After a version-4 generation has
+been compacted into a second sealed generation,
+the host verifies the legacy source again, truncates and flushes it, then
+removes it. The two sealed generations remain available for recovery even if
+retirement is interrupted. Chromium, Firefox, and WebKit verify retirement
+and fallback to the first sealed generation after damaging the second seal.
+Old version-3 sources are not retired automatically.
 Node and all three browser engines verify that a four-slot fixed v1 migration
 removes `g0`–`g2` at boot while retaining `g3` and the new `g4` generation.
 An injected boot-retirement removal failure leaves both copies selectable;

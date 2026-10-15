@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { HostFileOffset } from "../src/types";
 import type { PersistentOverlayStorage } from "../src/vfs/overlay-storage";
 import {
+  digestOverlayStoragePrefix,
   parseSealedGenerationSlot,
   verifyOverlayGenerationSeal,
   writeOverlayGenerationSeal,
@@ -350,6 +351,89 @@ describe("overlay generation boot selection", () => {
     expect(entries["legacy.journal"]!.bytes).toBe(originalBytes);
     expect(entries["legacy.journal"]!.len()).toBe(sourceBytes.length);
     expect(entries["legacy.journal"]!.closeCount).toBe(1);
+    expect(entries["legacy.journal"]!.maxRead).toBeLessThanOrEqual(1024 * 1024);
+    expect(new DataView(entries["g0.seal"]!.bytes.buffer).getUint32(4, true)).toBe(4);
+  });
+
+  it("rejects a digest-bound target after a same-length legacy mutation", async () => {
+    const legacy = new MemoryStorage(Uint8Array.of(1, 2, 3));
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": legacy,
+      "g0.journal": new MemoryStorage(Uint8Array.of(4, 5)),
+      "g0.index": new MemoryStorage(Uint8Array.of(6)),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(Uint8Array.of(7, 8)),
+      "g1.index": new MemoryStorage(Uint8Array.of(9)),
+      "g1.seal": new MemoryStorage(),
+    };
+    const baseDigest = new Uint8Array(32);
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, baseDigest,
+      entries["g0.index"]!, { slot: "legacy", journalLength: legacy.len(),
+        journalDigest: digestOverlayStoragePrefix(legacy, legacy.len()) });
+    await writeOverlayGenerationSeal(entries["g1.journal"]!, entries["g1.seal"]!, 2, baseDigest,
+      entries["g1.index"]!, { slot: "g0", journalLength: entries["g0.journal"]!.len() });
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g1");
+    legacy.bytes[1] ^= 1;
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("legacy");
+    delete entries["legacy.journal"];
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g1");
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, baseDigest,
+      entries["g0.index"]!, { slot: "legacy", journalLength: legacy.len() });
+    await expect(enableBestOverlayGeneration(files(entries), () => {}, true))
+      .rejects.toBeInstanceOf(NoValidOverlayGenerationError);
+  });
+
+  it("retires a matching legacy journal only after its second sealed copy activates", async () => {
+    const legacy = new MemoryStorage(Uint8Array.of(1, 2, 3));
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": legacy,
+      "g0.journal": new MemoryStorage(new Uint8Array(72)),
+      "g0.index": new MemoryStorage(Uint8Array.of(6)),
+      "g0.seal": new MemoryStorage(),
+    };
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, new Uint8Array(32),
+      entries["g0.index"]!, { slot: "legacy", journalLength: legacy.len(),
+        journalDigest: digestOverlayStoragePrefix(legacy, legacy.len()) });
+    const selected = await enableBestOverlayGeneration(files(entries), () => {}, true);
+    const active = await compactOverlayGeneration(selected, files(entries), {
+      prepare: (target) => { target.writeAllAt(0, (selected.journal as MemoryStorage).bytes); },
+      checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(7)); },
+      activate: () => { expect(entries["legacy.journal"]).toBe(legacy); },
+      cancel: () => { throw new Error("unexpected cancellation"); },
+    }, 0);
+    expect(active.slot).toBe("g1");
+    expect(entries["legacy.journal"]).toBeUndefined();
+    entries["g1.seal"]!.truncate(0);
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
+  });
+
+  it.each(["truncate", "flush"] as const)("keeps sealed generations bootable after legacy %s failure", async (failure) => {
+    const legacy = new MemoryStorage(Uint8Array.of(1, 2, 3));
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": legacy,
+      "g0.journal": new MemoryStorage(new Uint8Array(72)),
+      "g0.index": new MemoryStorage(Uint8Array.of(6)),
+      "g0.seal": new MemoryStorage(),
+    };
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, new Uint8Array(32),
+      entries["g0.index"]!, { slot: "legacy", journalLength: legacy.len(),
+        journalDigest: digestOverlayStoragePrefix(legacy, legacy.len()) });
+    const selected = await enableBestOverlayGeneration(files(entries), () => {}, true);
+    if (failure === "truncate") legacy.failNextTruncate = true;
+    else legacy.failNextFlush = true;
+    const failures: unknown[] = [];
+    const active = await compactOverlayGeneration(selected, files(entries), {
+      prepare: (target) => { target.writeAllAt(0, (selected.journal as MemoryStorage).bytes); },
+      checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(7)); },
+      activate: () => {},
+      cancel: () => { throw new Error("unexpected cancellation"); },
+    }, 0, () => true, (error) => { failures.push(error); });
+    expect(active.slot).toBe("g1");
+    expect(failures).toHaveLength(1);
+    expect(entries["legacy.journal"]).toBe(legacy);
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g1");
+    entries["g1.seal"]!.truncate(0);
+    expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
   });
 
   it("upgrades one oversized sealed v1 generation without mounting its legacy index", async () => {
@@ -986,7 +1070,7 @@ describe("overlay generation boot selection", () => {
     }
     expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
     expect(await verifyOverlayGenerationSeal(
-      entries["g0.journal"], entries["g0.seal"], source.bytes.slice(8, 40), false, entries["g0.index"],
+      entries["g0.journal"], entries["g0.seal"], new Uint8Array(32).fill(7), false, entries["g0.index"],
     )).toMatchObject({ generation: 4, source: { slot: "g2", journalLength: 72 } });
   });
 

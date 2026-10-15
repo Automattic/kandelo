@@ -1346,7 +1346,7 @@ async function handleInit(msg: InitMessage) {
         },
         remove: async (slot, file) => {
           try {
-            unlinkSync(`${path}.${slot}.${file}`);
+            unlinkSync(slot === "legacy" ? path : `${path}.${slot}.${file}`);
           } catch (error) {
             if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
           }
