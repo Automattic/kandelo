@@ -606,3 +606,8 @@ Journal transactions must continue publishing related directory
 entries, inode metadata, file size, and blocks together; recovery must rebuild
 the same link counts and zero-filled truncate/extend behavior as the live
 kernel.
+With the ABI 51 canonical rootfs rebuilt, the Open POSIX Test Suite's full
+available interface set reports 174 passes, three expected failures, and two
+unsupported cases; the focused Sortix directory-`fsync` case passes. These
+conformance runners do not mount the experimental persistent overlay, so
+their results do not establish persistent namespace or restart semantics.
