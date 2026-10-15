@@ -91,8 +91,9 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   A temporary `--keep-names` FrankenPHP+Caddy build reproduces the same
   recursive frame in WebKit. Caddy's file server imports templates and
   Goldmark even when template handling is not configured; Goldmark's
-  linkify URL regex contains `{1,256}`, which Go's `regexp/syntax.Simplify`
-  expands to an AST depth of 512. This is a plausible trigger for the
+  linkify URL regex contains `{1,256}`; a representative prefix of that
+  pattern reaches AST depth 512 after Go's `regexp/syntax.Simplify`.
+  This is a plausible trigger for the
   browser's call-stack limit, not evidence of a PHP or POSIX failure.
   Excluding only the top-level templates import does not remove the
   transitive file-server dependency. Preserve the real `php_server` path

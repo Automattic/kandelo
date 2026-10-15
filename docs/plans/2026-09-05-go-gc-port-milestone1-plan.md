@@ -3437,8 +3437,9 @@ failed the focused WebKit PHP/static fixture before readiness with repeated
 `regexp_syntax.__compiler_.compile` frames, not an anonymous function.
 The shipped build was restored after diagnosis. Caddy's file server imports
 templates and Goldmark transitively; Goldmark's linkify URL regex includes
-`{1,256}`. A native Go `regexp/syntax` probe measured the simplified AST
-depth as 512 for that pattern (511 even for `a{1,256}`). This strongly
+`{1,256}`. A native Go `regexp/syntax` probe measured simplified AST
+depth 512 for a representative prefix of that pattern (511 even for
+`a{1,256}`). This strongly
 connects a deep recursive regex compile to WebKit's Wasm call-stack limit,
 but does not yet prove which exact initialization-time pattern first
 overflows there. A general stack-safe regex compilation strategy would
