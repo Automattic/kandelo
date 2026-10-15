@@ -1659,10 +1659,12 @@ for (const cut of ["index", "seal"] as const) {
             vfsImageFile: await directory.getFileHandle(`${name}.base`),
             experimentalFixedPersistenceName: name,
             persistentComputerName: name,
+            requireExistingRootfsPersistence: true,
           });
           const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
           const large = await kernel.readFileRangeFromVfs("/large", 13, 4096);
-          return { sealLength: seal.size, sourceLength: source.size, state, largeValid: large?.every((byte, position) => byte === (position & 255)) };
+          const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "mmap-fsync"]);
+          return { sealLength: seal.size, sourceLength: source.size, state, largeValid: large?.every((byte, position) => byte === (position & 255)), writeExit: await exit };
         } finally {
           await kernel.destroy();
         }
@@ -1671,6 +1673,26 @@ for (const cut of ["index", "seal"] as const) {
       expect(recovered.sealLength > 96).toBe(cut === "seal");
       expect(recovered.state).toBe("XYcdefgh");
       expect(recovered.largeValid).toBe(true);
+      expect(recovered.writeExit).toBe(0);
+      await page.reload();
+      const rewritten = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: await directory.getFileHandle(`${name}.base`),
+            experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
+            requireExistingRootfsPersistence: true,
+          });
+          return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+        } finally {
+          await kernel.destroy();
+        }
+      }, { moduleUrl, kernelUrl, name: prepared.name });
+      expect(rewritten).toBe("MScdefgh");
     } finally {
       await activeContext.close().catch(() => {});
       rmSync(userDataDir, { recursive: true, force: true });
