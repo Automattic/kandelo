@@ -1830,7 +1830,11 @@ for (const [persistenceMode, cut] of [
               : { experimentalResizablePersistenceName: name }),
             persistentComputerName: name,
           });
-          for (const mode of ["persistence-overwrite", ...Array(17).fill("large")]) {
+          for (const mode of [
+            "persistence-overwrite",
+            ...(persistenceMode === "resizable" ? ["create-tree"] : []),
+            ...Array(17).fill("large"),
+          ]) {
             const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", mode]);
             if (await exit !== 0) throw new Error(`guest ${mode} write failed before live compaction`);
           }
@@ -1874,8 +1878,13 @@ for (const [persistenceMode, cut] of [
           });
           const state = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
           const large = await kernel.readFileRangeFromVfs("/large", 13, 4096);
+          let treeExit: number | null = null;
+          if (persistenceMode === "resizable") {
+            const tree = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-tree"]);
+            treeExit = await tree.exit;
+          }
           const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "mmap-fsync"]);
-          return { sealLength: seal.size, sourceLength: source.size, state, largeValid: large?.every((byte, position) => byte === (position & 255)), writeExit: await exit };
+          return { sealLength: seal.size, sourceLength: source.size, state, largeValid: large?.every((byte, position) => byte === (position & 255)), treeExit, writeExit: await exit };
         } finally {
           await kernel.destroy();
         }
@@ -1884,6 +1893,7 @@ for (const [persistenceMode, cut] of [
       expect(recovered.sourceLength).toBeGreaterThan(32 * 1024 * 1024);
       expect(recovered.state).toBe("XYcdefgh");
       expect(recovered.largeValid).toBe(true);
+      expect(recovered.treeExit).toBe(persistenceMode === "resizable" ? 0 : null);
       expect(recovered.writeExit).toBe(0);
       await page.reload();
       const rewritten = await page.evaluate(async ({ moduleUrl, kernelUrl, name, persistenceMode }) => {
@@ -1900,12 +1910,17 @@ for (const [persistenceMode, cut] of [
             persistentComputerName: name,
             requireExistingRootfsPersistence: true,
           });
-          return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          let treeExit: number | null = null;
+          if (persistenceMode === "resizable") {
+            const tree = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-tree-moved"]);
+            treeExit = await tree.exit;
+          }
+          return { state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")), treeExit };
         } finally {
           await kernel.destroy();
         }
       }, { moduleUrl, kernelUrl, name, persistenceMode });
-      expect(rewritten).toBe("MScdefgh");
+      expect(rewritten).toEqual({ state: "MScdefgh", treeExit: persistenceMode === "resizable" ? 0 : null });
     } finally {
       await activeContext.close().catch(() => {});
       rmSync(userDataDir, { recursive: true, force: true });

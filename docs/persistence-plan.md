@@ -485,9 +485,11 @@ Chromium crashes the browser process; Firefox and WebKit close the tab and
 blocked worker. All three strictly reboot from the same OPFS profile, recover
 guest data from the greater-than-32 MiB source journal, commit another guest
 write, and strictly reboot with that write in both modes. The source journal
-remains present and larger than 32 MiB at all three cuts. These cases write
-existing base files; they do not exercise namespace transactions at the cut,
-OS power loss, or the storage device's flush guarantees.
+remains present and larger than 32 MiB at all three cuts. The resizable cases
+also create a nested directory, regular file, and symlink before compaction;
+after recovery the guest verifies and renames the tree, then strictly reboots
+and verifies it again. These tests do not cover OS power loss or the storage
+device's flush guarantees.
 Node and Chromium, Firefox, and WebKit now reboot a real compacted journal
 after appending a later committed transaction to its former source. All four
 recover the newer source data rather than selecting the still-valid but stale
