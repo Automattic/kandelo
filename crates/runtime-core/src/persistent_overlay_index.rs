@@ -414,7 +414,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         self.storage.flush()?;
         self.metadata_count = count;
         self.metadata_version = version;
-        self.canonical_block_stream = version == HASHED_METADATA_VERSION;
+        self.canonical_block_stream = version == METADATA_VERSION || version == HASHED_METADATA_VERSION;
         Ok(())
     }
 
@@ -531,7 +531,8 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
             cached_page_index: None,
             metadata_count,
             metadata_version: if has_metadata { version } else { 0 },
-            canonical_block_stream: version == HASHED_METADATA_VERSION
+            canonical_block_stream: version == METADATA_VERSION
+                || version == HASHED_METADATA_VERSION
                 || version == CANONICAL_BLOCK_VERSION,
             metadata_page: [0; METADATA_PAGE_BYTES],
             metadata_page_index: None,

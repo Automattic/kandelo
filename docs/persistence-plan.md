@@ -602,12 +602,15 @@ file-size and zero-fence reads do not reissue positioned journal reads.
 The version 4 table binds exact value locations and SHA-256 value digests at
 boot, then checks each indexed value on its next storage read. A value already
 in the 64-entry cache is not reread until eviction or reboot. Legacy version 3
-tables have no on-demand value authentication.
-Indexed version 4 boot now also checks every compacted block record against
+tables have no on-demand metadata value authentication, but their compacted
+block stream is now checked against the journal prefix at boot. A forged block
+location or digest is rejected even when the old table is internally
+rechecksummed and resealed. Indexed version 4 boot also checks every compacted
+block record against
 the corresponding sorted checkpoint entry while replaying the journal prefix.
 It rejects a self-consistent but false block location or digest with `EIO`
 instead of exposing another block's bytes. The check uses the checkpoint's
-bounded page cache; older index versions retain their previous validation.
+bounded page cache; versions 1/2 retain their previous validation.
 The extra per-block hash work at boot has not yet been benchmarked.
 New compacted fixed-overwrite generations use version 5 of the checkpoint
 sidecar to mark their block stream as canonical. Boot checks every indexed
