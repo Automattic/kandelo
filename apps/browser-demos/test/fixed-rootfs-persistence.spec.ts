@@ -1769,6 +1769,39 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
         sourceVersion: mode.startsWith("fixed-v1") ? 1 : mode.startsWith("resizable-v2") ? 2 : null,
         targetVersion: mode.startsWith("fixed-v1") ? 5 : 4,
       });
+      if (mode === "fixed-v1-three-slots") {
+        await page.reload();
+        const retried = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+          for (const suffix of ["journal", "index", "seal"]) {
+            const file = await directory.getFileHandle(`${name}.g0.${suffix}`, { create: true });
+            const writer = await file.createWritable();
+            if (suffix !== "seal") await writer.write(Uint8Array.of(1));
+            await writer.close();
+          }
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: await directory.getFileHandle(`${name}.base`),
+              experimentalFixedPersistenceName: name,
+              persistentComputerName: name,
+            });
+            const state = new TextDecoder().decode((await kernel.readFileFromVfs("/state"))!);
+            const names = new Set<string>();
+            for await (const filename of directory.keys()) names.add(filename);
+            return {
+              state,
+              orphanRemoved: ["journal", "index", "seal"].every((suffix) => !names.has(`${name}.g0.${suffix}`)),
+              sourceRetained: names.has(`${name}.g2.seal`),
+            };
+          } finally {
+            await kernel.destroy();
+          }
+        }, { moduleUrl, kernelUrl, name: prepared.name });
+        expect(retried).toEqual({ state: "XYcdefgh", orphanRemoved: true, sourceRetained: true });
+      }
       if (mode === "fixed-v1-four-slots") {
         const migrated = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
           const { BrowserKernel } = await import(moduleUrl);
@@ -1993,6 +2026,8 @@ test("browser retires a legacy OPFS journal after two sealed generations", async
       const fallback = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const legacy = await directory.getFileHandle(`${name}.journal`, { create: true });
+        await (await legacy.createWritable()).close();
         const seal = await directory.getFileHandle(`${name}.g1.seal`);
         const writer = await seal.createWritable();
         await writer.write(Uint8Array.of(0));
@@ -2005,12 +2040,19 @@ test("browser retires a legacy OPFS journal after two sealed generations", async
             experimentalFixedPersistenceName: name,
             persistentComputerName: name,
           });
-          return (await kernel.statVfsPath("/large"))?.size;
+          let legacyRetired = false;
+          try {
+            await directory.getFileHandle(`${name}.journal`);
+          } catch (error) {
+            if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+            legacyRetired = true;
+          }
+          return { size: (await kernel.statVfsPath("/large"))?.size, legacyRetired };
         } finally {
           await kernel.destroy();
         }
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, name: result.name });
-      expect(fallback).toBe(32 * 1024 * 1024);
+      expect(fallback).toEqual({ size: 32 * 1024 * 1024, legacyRetired: true });
     } finally {
       await context.close();
     }

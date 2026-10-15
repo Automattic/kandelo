@@ -200,14 +200,41 @@ async function collectObsoleteGenerations(
   return { ...active, knownGenerations: known };
 }
 
-export async function collectConvertedOverlayGenerations(
+export async function collectBootOverlayGenerations(
   selected: SelectedOverlayGeneration,
   files: OverlayGenerationFiles,
   reportCleanupFailure: (error: unknown) => void = console.error,
 ): Promise<SelectedOverlayGeneration> {
-  if (selected.convertedFrom === undefined || selected.slot === "legacy"
-    || selected.convertedFrom.slot === "legacy") return selected;
-  return collectObsoleteGenerations(selected, selected.convertedFrom, files, reportCleanupFailure);
+  if (selected.slot === "legacy") return selected;
+  const verifiedSource = selected.source;
+  let source: Pick<SelectedOverlayGeneration, "slot" | "generation"> | undefined;
+  if (selected.convertedFrom !== undefined && selected.convertedFrom.slot !== "legacy") {
+    source = selected.convertedFrom;
+  } else if (verifiedSource !== undefined && verifiedSource.slot !== "legacy"
+    && selected.knownGenerations?.get(verifiedSource.slot) === selected.generation - 1) {
+    source = { slot: verifiedSource.slot, generation: selected.generation - 1 };
+  }
+  const active = source === undefined ? selected
+    : await collectObsoleteGenerations(selected, source, files, reportCleanupFailure);
+  try {
+    const legacy = await files.open("legacy", "journal", false);
+    if (legacy !== null) {
+      let empty = false;
+      try {
+        empty = legacy.len() === 0;
+      } finally {
+        legacy.close();
+      }
+      if (empty) await files.remove("legacy", "journal");
+    }
+  } catch (error) {
+    try {
+      reportCleanupFailure(error);
+    } catch (reportError) {
+      console.error("persistent overlay legacy cleanup report failed", error, reportError);
+    }
+  }
+  return active;
 }
 
 export interface OverlayCompactionHandoff {
