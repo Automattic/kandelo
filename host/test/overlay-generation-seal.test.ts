@@ -8,7 +8,7 @@ import {
   writeOverlayGenerationSeal,
 } from "../src/vfs/overlay-generation-seal";
 import {
-  collectConvertedOverlayGenerations,
+  collectBootOverlayGenerations,
   compactOverlayGeneration,
   enableBestOverlayGeneration,
   NoValidOverlayGenerationError,
@@ -409,6 +409,45 @@ describe("overlay generation boot selection", () => {
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
   });
 
+  it("retries removal of an empty legacy journal on sealed boot without deleting a nonempty source", async () => {
+    const legacy = new MemoryStorage(Uint8Array.of(1, 2, 3));
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": legacy,
+      "g0.journal": new MemoryStorage(new Uint8Array(72)),
+      "g0.index": new MemoryStorage(Uint8Array.of(6)),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(new Uint8Array(72)),
+      "g1.index": new MemoryStorage(Uint8Array.of(7)),
+      "g1.seal": new MemoryStorage(),
+    };
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, new Uint8Array(32),
+      entries["g0.index"]!, { slot: "legacy", journalLength: legacy.len(),
+        journalDigest: digestOverlayStoragePrefix(legacy, legacy.len()) });
+    await writeOverlayGenerationSeal(entries["g1.journal"]!, entries["g1.seal"]!, 2, new Uint8Array(32),
+      entries["g1.index"]!, { slot: "g0", journalLength: entries["g0.journal"]!.len() });
+    const storageFiles = files(entries);
+    const selected = await enableBestOverlayGeneration(storageFiles, () => {}, true);
+    await collectBootOverlayGenerations(selected, storageFiles);
+    expect(entries["legacy.journal"]).toBe(legacy);
+    legacy.truncate(0);
+    const reopened = await enableBestOverlayGeneration(storageFiles, () => {}, true);
+    expect(reopened.slot).toBe("g1");
+    const remove = storageFiles.remove;
+    storageFiles.remove = async (slot, file) => {
+      if (slot === "legacy") throw new Error("injected legacy removal failure");
+      await remove(slot, file);
+    };
+    const failures: string[] = [];
+    await collectBootOverlayGenerations(reopened, storageFiles, (error) => { failures.push(String(error)); });
+    expect(failures).toEqual(["Error: injected legacy removal failure"]);
+    expect(entries["legacy.journal"]).toBe(legacy);
+    storageFiles.remove = remove;
+    await collectBootOverlayGenerations(reopened, storageFiles);
+    expect(entries["legacy.journal"]).toBeUndefined();
+    entries["g1.seal"]!.truncate(0);
+    expect((await enableBestOverlayGeneration(storageFiles, () => {}, true)).slot).toBe("g0");
+  });
+
   it.each(["truncate", "flush"] as const)("keeps sealed generations bootable after legacy %s failure", async (failure) => {
     const legacy = new MemoryStorage(Uint8Array.of(1, 2, 3));
     const entries: Record<string, MemoryStorage> = {
@@ -574,7 +613,7 @@ describe("overlay generation boot selection", () => {
     expect(await verifyOverlayGenerationSeal(
       entries["g3.journal"], entries["g3.seal"], digest, false, entries["g3.index"],
     )).toMatchObject({ generation: 4, source: { slot: "g2", journalLength: sourceBytes.length } });
-    const recovered = await collectConvertedOverlayGenerations(selected, files(entries));
+    const recovered = await collectBootOverlayGenerations(selected, files(entries));
     for (const slot of ["g0", "g1"]) {
       for (const suffix of ["journal", "index", "seal"]) {
         expect(entries[`${slot}.${suffix}`]).toBeUndefined();
@@ -631,7 +670,7 @@ describe("overlay generation boot selection", () => {
     for (const [position, slot] of occupiedSlots.entries()) {
       expect(entries[`${slot}.seal`].bytes).toBe(seals[position]);
     }
-    const recovered = await collectConvertedOverlayGenerations(selected, files(entries));
+    const recovered = await collectBootOverlayGenerations(selected, files(entries));
     for (const slot of occupiedSlots.slice(0, -1)) {
       for (const suffix of ["journal", "index", "seal"]) {
         expect(entries[`${slot}.${suffix}`]).toBeUndefined();
@@ -682,7 +721,7 @@ describe("overlay generation boot selection", () => {
     const sourceSlot = `g${occupiedCount - 1}`;
     expect(selected.slot).toBe(targetSlot);
     const failures: string[] = [];
-    await collectConvertedOverlayGenerations(selected, storageFiles, (error) => { failures.push(String(error)); });
+    await collectBootOverlayGenerations(selected, storageFiles, (error) => { failures.push(String(error)); });
     expect(failures).toEqual(["Error: injected removal failure"]);
     expect(entries["g0.seal"]!.len()).toBe(0);
     expect(entries["g0.journal"]).toBeDefined();
@@ -690,6 +729,17 @@ describe("overlay generation boot selection", () => {
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe(targetSlot);
     entries[`${targetSlot}.index`]!.bytes[0] ^= 1;
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe(sourceSlot);
+    entries[`${targetSlot}.index`]!.bytes[0] ^= 1;
+    storageFiles.remove = remove;
+    const reopened = await enableBestOverlayGeneration(storageFiles, () => {}, true);
+    await collectBootOverlayGenerations(reopened, storageFiles);
+    for (let position = 0; position < occupiedCount - 1; position++) {
+      for (const suffix of ["journal", "index", "seal"]) {
+        expect(entries[`g${position}.${suffix}`]).toBeUndefined();
+      }
+    }
+    expect(entries[`${sourceSlot}.seal`]!.len()).toBeGreaterThan(0);
+    expect((await enableBestOverlayGeneration(storageFiles, () => {}, true)).slot).toBe(targetSlot);
   });
 
   it("retires older sealed slots only after activation while keeping its source fallback", async () => {

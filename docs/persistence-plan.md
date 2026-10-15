@@ -651,9 +651,16 @@ resident memory and conversion latency on a near-capacity image remain unmeasure
 A boot-only conversion into `g3` now retains its source `g2` while retiring
 older `g0` and `g1` generations before guests start. Version-4 legacy seals
 allow the unsealed legacy journal to be retired after a second sealed copy is
-active; version-3 legacy sources remain untouched. A retirement failure may
-leave invalid orphan files until another spill-slot
-compaction; near-quota cleanup and power-loss ordering still need fault tests.
+active; version-3 legacy sources remain untouched. After an interrupted
+retirement, a later verified sealed boot retries removal of older orphaned
+generation files while retaining the active generation and its source. It also
+removes an empty legacy journal left by a failed unlink; a nonempty legacy
+journal is not deleted without another semantically validated handoff. Node
+and Chromium, Firefox, and WebKit reboot with injected orphan files; the three
+browser engines also remove an injected empty legacy file before serving
+guests. Host fault tests keep boot available when the retry itself fails.
+Near-quota cleanup and power-loss
+ordering still need fault tests.
 Numbered spill slots remove the fixed four-slot recovery exception, but these
 remaining cases keep generation storage reclamation open.
 

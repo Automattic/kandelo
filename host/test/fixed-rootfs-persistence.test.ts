@@ -1190,11 +1190,17 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         }
       }
       expect(existsSync(`${path}.g2.seal`)).toBe(true);
+      writeFileSync(`${path}.g0.journal`, Uint8Array.of(1));
+      writeFileSync(`${path}.g0.index`, Uint8Array.of(2));
+      writeFileSync(`${path}.g0.seal`, new Uint8Array());
       const reopened = await boot(image, path);
       try {
         expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
       } finally {
         await reopened.destroy();
+      }
+      for (const suffix of ["journal", "index", "seal"]) {
+        expect(existsSync(`${path}.g0.${suffix}`)).toBe(false);
       }
       for (const slot of ["g0", "g1"]) {
         for (const suffix of ["journal", "index", "seal"]) {
