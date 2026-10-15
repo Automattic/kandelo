@@ -7,6 +7,7 @@ const VERSION: u32 = 1;
 const TOMBSTONE_VERSION: u32 = 2;
 const METADATA_VERSION: u32 = 3;
 const HASHED_METADATA_VERSION: u32 = 4;
+const CANONICAL_BLOCK_VERSION: u32 = 5;
 const HEADER_BYTES: usize = 160;
 const RECORD_BYTES: usize = 56;
 const RECORDS_PER_PAGE: usize = 73;
@@ -193,16 +194,19 @@ pub struct BlockCheckpoint<S: OverlayStorage> {
     cached_page_index: Option<u64>,
     metadata_count: u64,
     metadata_version: u32,
+    canonical_block_stream: bool,
     metadata_page: [u8; METADATA_PAGE_BYTES],
     metadata_page_index: Option<u64>,
 }
 
 impl<S: OverlayStorage> BlockCheckpoint<S> {
-    pub fn metadata_journal_digest(storage: &mut S) -> Result<Option<[u8; 32]>, Errno> {
+    pub fn indexed_journal_digest(storage: &mut S) -> Result<Option<[u8; 32]>, Errno> {
         let mut header = [0; HEADER_BYTES];
         storage.read_exact_at(0, &mut header)?;
         let version = u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?);
-        if version != METADATA_VERSION && version != HASHED_METADATA_VERSION {
+        if version != METADATA_VERSION && version != HASHED_METADATA_VERSION
+            && version != CANONICAL_BLOCK_VERSION
+        {
             return Ok(None);
         }
         if &header[..4] != MAGIC || header[128..] != Sha256::digest(&header[..128])[..] {
@@ -232,12 +236,39 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
     }
 
     pub fn create_checked(
+        storage: S,
+        base_digest: [u8; 32],
+        journal_digest: [u8; 32],
+        journal_end: u64,
+        next_sequence: u64,
+        entries: impl IntoIterator<Item = Result<BlockCheckpointEntry, Errno>>,
+    ) -> Result<Self, Errno> {
+        Self::create_checked_internal(
+            storage, base_digest, journal_digest, journal_end, next_sequence, entries, false,
+        )
+    }
+
+    pub(crate) fn create_compacted_checked(
+        storage: S,
+        base_digest: [u8; 32],
+        journal_digest: [u8; 32],
+        journal_end: u64,
+        next_sequence: u64,
+        entries: impl IntoIterator<Item = Result<BlockCheckpointEntry, Errno>>,
+    ) -> Result<Self, Errno> {
+        Self::create_checked_internal(
+            storage, base_digest, journal_digest, journal_end, next_sequence, entries, true,
+        )
+    }
+
+    fn create_checked_internal(
         mut storage: S,
         base_digest: [u8; 32],
         journal_digest: [u8; 32],
         journal_end: u64,
         next_sequence: u64,
         entries: impl IntoIterator<Item = Result<BlockCheckpointEntry, Errno>>,
+        canonical_block_stream: bool,
     ) -> Result<Self, Errno> {
         if storage.len()? != 0 {
             return Err(Errno::EEXIST);
@@ -279,7 +310,9 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         storage.flush()?;
         let mut header = [0; HEADER_BYTES];
         header[..4].copy_from_slice(MAGIC);
-        let version = if has_tombstone {
+        let version = if canonical_block_stream {
+            CANONICAL_BLOCK_VERSION
+        } else if has_tombstone {
             TOMBSTONE_VERSION
         } else {
             VERSION
@@ -304,6 +337,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
             cached_page_index: None,
             metadata_count: 0,
             metadata_version: 0,
+            canonical_block_stream,
             metadata_page: [0; METADATA_PAGE_BYTES],
             metadata_page_index: None,
         })
@@ -380,6 +414,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         self.storage.flush()?;
         self.metadata_count = count;
         self.metadata_version = version;
+        self.canonical_block_stream = version == HASHED_METADATA_VERSION;
         Ok(())
     }
 
@@ -399,7 +434,8 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
             || (version != VERSION
                 && version != TOMBSTONE_VERSION
                 && version != METADATA_VERSION
-                && version != HASHED_METADATA_VERSION)
+                && version != HASHED_METADATA_VERSION
+                && version != CANONICAL_BLOCK_VERSION)
             || header[8..40] != base_digest
             || header[40..72] != journal_digest
             || u64::from_le_bytes(header[72..80].try_into().map_err(|_| Errno::EIO)?) != journal_end
@@ -495,6 +531,8 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
             cached_page_index: None,
             metadata_count,
             metadata_version: if has_metadata { version } else { 0 },
+            canonical_block_stream: version == HASHED_METADATA_VERSION
+                || version == CANONICAL_BLOCK_VERSION,
             metadata_page: [0; METADATA_PAGE_BYTES],
             metadata_page_index: None,
         })
@@ -510,6 +548,10 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
 
     pub fn has_metadata_value_digests(&self) -> bool {
         self.metadata_version == HASHED_METADATA_VERSION
+    }
+
+    pub fn has_canonical_block_stream(&self) -> bool {
+        self.canonical_block_stream
     }
 
     pub fn metadata_entry_at(
