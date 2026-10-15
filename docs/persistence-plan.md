@@ -709,7 +709,12 @@ legacy journal at all three cuts, with the original journal present at its
 pre-crash length. Each recovered computer commits another guest write and
 strictly reboots with that new state. These tests cover browser-process and
 tab termination, not OS power loss or storage-device flush guarantees.
-Near-quota cleanup and power-loss ordering still need fault tests.
+An in-memory host fault test now shares one quota across five sealed
+generations. A compaction that needs more space fails with `ENOSPC` while the
+active and source generations stay selectable; boot cleanup reclaims three
+obsolete generations, and retry compacts and reopens under the same quota.
+This does not model OPFS quota accounting or an OS power loss. Near-quota
+browser cleanup and storage-device flush ordering still need fault tests.
 Numbered spill slots remove the fixed four-slot recovery exception, but these
 remaining cases keep generation storage reclamation open.
 

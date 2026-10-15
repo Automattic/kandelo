@@ -816,6 +816,62 @@ describe("overlay generation boot selection", () => {
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g3");
   });
 
+  it("reclaims obsolete generations before retrying compaction under a shared quota", async () => {
+    const entries: Record<string, MemoryStorage> = {};
+    let quota = Number.POSITIVE_INFINITY;
+    class QuotaStorage extends MemoryStorage {
+      override writeAllAt(offset: HostFileOffset, source: Uint8Array): void {
+        const nextLength = Math.max(this.len(), Number(offset) + source.byteLength);
+        const total = Object.values(entries).reduce((sum, storage) => sum + storage.len(), 0);
+        if (total - this.len() + nextLength > quota) {
+          throw Object.assign(new Error("shared quota exhausted"), { code: "ENOSPC" });
+        }
+        super.writeAllAt(offset, source);
+      }
+    }
+    const digest = new Uint8Array(32);
+    for (let position = 0; position < 5; position++) {
+      const slot = `g${position}`;
+      entries[`${slot}.journal`] = new QuotaStorage(new Uint8Array(position === 1 || position === 2 ? 8192 : 72));
+      entries[`${slot}.index`] = new QuotaStorage(Uint8Array.of(position + 1));
+      entries[`${slot}.seal`] = new QuotaStorage();
+      await writeOverlayGenerationSeal(
+        entries[`${slot}.journal`], entries[`${slot}.seal`], position + 1, digest,
+        entries[`${slot}.index`], position === 0 ? undefined
+          : { slot: `g${position - 1}` as const, journalLength: entries[`g${position - 1}.journal`].len() },
+      );
+    }
+    const storageFiles = files(entries);
+    const open = storageFiles.open;
+    storageFiles.open = async (slot, file, create) => {
+      const key = `${slot}.${file}`;
+      if (create && entries[key] === undefined) entries[key] = new QuotaStorage();
+      return open(slot, file, false);
+    };
+    const selected = await enableBestOverlayGeneration(storageFiles, () => {}, true);
+    expect(selected.slot).toBe("g4");
+    quota = Object.values(entries).reduce((sum, storage) => sum + storage.len(), 0) + 20 * 1024;
+    const handoff = {
+      prepare: (target: PersistentOverlayStorage) => { target.writeAllAt(0, new Uint8Array(32 * 1024)); },
+      checkpoint: (index: PersistentOverlayStorage) => { index.writeAllAt(0, Uint8Array.of(6)); },
+      activate: () => {},
+      cancel: () => {},
+    };
+    await expect(compactOverlayGeneration(selected, storageFiles, handoff, 0))
+      .rejects.toMatchObject({ code: "ENOSPC" });
+    expect((await enableBestOverlayGeneration(storageFiles, () => {}, true)).slot).toBe("g4");
+    const collected = await collectBootOverlayGenerations(selected, storageFiles);
+    for (const slot of ["g0", "g1", "g2"]) {
+      expect(entries[`${slot}.journal`]).toBeUndefined();
+      expect(entries[`${slot}.seal`]).toBeUndefined();
+    }
+    const compacted = await compactOverlayGeneration(collected, storageFiles, handoff, 0);
+    expect(compacted.slot).toBe("g0");
+    expect((await enableBestOverlayGeneration(storageFiles, () => {}, true)).slot).toBe("g0");
+    entries["g0.index"]!.bytes[0] ^= 1;
+    expect((await enableBestOverlayGeneration(storageFiles, () => {}, true)).slot).toBe("g4");
+  });
+
   it.each([true, false])("tries the source after a converted target is rejected (source valid: %s)", async (sourceValid) => {
     const sourceBytes = new Uint8Array(32 * 1024 * 1024);
     sourceBytes.set(new Uint8Array(32).fill(7), 8);
