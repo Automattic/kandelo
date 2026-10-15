@@ -6033,7 +6033,7 @@ fn apply_export_metadata(
     match ROOTFS.with(|state| state.export_timestamp_ms) {
         Some(fixed) => writer.set_times(out_ino, fixed, fixed, fixed),
         None => writer.set_times(out_ino, atime, mtime, ctime),
-    }
+    }?;
     Ok(())
 }
 

@@ -33,7 +33,7 @@ export interface PersistentImageCheckpointOptions {
   releaseLease: () => Promise<void>;
   assertCurrent?: () => void;
   onProgress?: (label: string) => void;
-  validateCandidate?: (kernel: BrowserKernel) => Promise<void>;
+  validateCandidate?: (kernel: BrowserKernel, staged: FixedPersistenceImageHandle) => Promise<void>;
 }
 
 export async function assertPersistentImageBootMetadata(
@@ -145,7 +145,7 @@ export async function checkpointPersistentImage(
         persistenceComputerLease,
       });
       await assertPersistentImageBootMetadata(candidate, previous.composition);
-      await validateCandidate?.(candidate);
+      await validateCandidate?.(candidate, staged);
     } finally {
       await closeKernel(candidate);
       candidateQuiescent = true;
