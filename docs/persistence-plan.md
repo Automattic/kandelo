@@ -364,8 +364,10 @@ Guest `MAP_SHARED` stores followed by `fsync` or `fdatasync` also report
 `ENOSPC` when the OPFS journal write or flush fails. The live file remains
 readable from the dirty cache, and restart accepts only an intact old or new
 transaction. Fixed and resizable mounts pass these fault injections on
-Chromium, Firefox, and WebKit; Node host fault injection for mapped sync
-remains untested.
+Chromium, Firefox, and WebKit. Node's real kernel channel with injected
+in-memory host storage also checks both sync calls and both failures against
+a fresh worker boot; the Node filesystem adapter's own quota behavior is
+not exercised by that injection.
 
 This does not yet cover every host write and flush failure point, so the
 dirty-cache milestone remains open.
