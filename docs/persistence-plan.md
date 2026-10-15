@@ -778,8 +778,9 @@ destroys the first kernel, and boots the exact same composed image and journal
 with strict existing-journal recovery. It compares the fixture's paths, types,
 sizes, ownership, permissions, symlink targets, and SHA-256 of regular files
 within a 32 MiB total content-read budget, streamed in at most 1 MiB per call.
-Files beyond that budget retain metadata comparison; the inspection refuses
-more than 10,000 entries. Eleven
+Files beyond that budget receive bounded 4 KiB head, middle, and tail samples,
+up to a separate 8 MiB total sample budget, then metadata-only comparison.
+The inspection refuses more than 10,000 entries. Eleven
 selected filesystem cases and all 55 I/O cases pass strict post-test reboot
 with this state comparison. A comparison or reboot failure forces runner exit
 125 and a host diagnostic marker, which the persistent-reboot runner records
@@ -794,6 +795,7 @@ limits, malloc, signal, and UDP suites add 282 passes, 13 expected failures,
 and two skips across 297 cases, with no unexpected failures or timeouts. In
 total, 1,380 Sortix runtime cases ran under strict post-test reboot before the
 larger content budget. The 55-case I/O suite also passes with 1 MiB streaming
-hashes under that budget. The comparison still omits changes outside the
-fixture, complete content of files beyond the budget, and test-specific
-expected state; those remain separate conformance work.
+hashes and bounded large-file samples under the new budgets. The comparison
+still omits changes outside the fixture, unsampled regions of large files,
+and test-specific expected state;
+those remain separate conformance work.
