@@ -371,6 +371,8 @@ pub fn file_type(mode: u32) -> u32 {
 pub struct KandeloImageFs<S: BlockSource> {
     source: S,
     version: u32,
+    total_blocks: u32,
+    data_start: u32,
     pub(crate) inode_table_start: u32,
     total_inodes: u32,
     deferred_inode: u32,
@@ -384,10 +386,12 @@ pub struct KandeloImageFs<S: BlockSource> {
 /// are read for the whole session: every base regular file's content is served
 /// out of it on demand. Re-running [`KandeloImageFs::mount`] per read would cost three
 /// extra source reads and repeat validation the boot already did; carrying the
-/// validated geometry forward costs four 32-bit words.
+/// validated geometry forward costs six 32-bit words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KandeloImageGeometry {
     pub version: u32,
+    pub total_blocks: u32,
+    pub data_start: u32,
     pub inode_table_start: u32,
     pub total_inodes: u32,
     /// Inode holding the deferred-file section, or 0 when the image declares
@@ -472,13 +476,23 @@ impl<S: BlockSource> KandeloImageFs<S> {
         // written before this field existed carries here, so an older image
         // reads as having none rather than as corrupt.
         let deferred_inode = word(SB_DEFERRED_INODE)?;
-        Ok(KandeloImageFs { source, version, inode_table_start, total_inodes, deferred_inode })
+        Ok(KandeloImageFs {
+            source,
+            version,
+            total_blocks,
+            data_start,
+            inode_table_start,
+            total_inodes,
+            deferred_inode,
+        })
     }
 
     /// The validated superblock geometry of this mount.
     pub fn geometry(&self) -> KandeloImageGeometry {
         KandeloImageGeometry {
             version: self.version,
+            total_blocks: self.total_blocks,
+            data_start: self.data_start,
             inode_table_start: self.inode_table_start,
             total_inodes: self.total_inodes,
             deferred_inode: self.deferred_inode,
@@ -497,6 +511,8 @@ impl<S: BlockSource> KandeloImageFs<S> {
         KandeloImageFs {
             source,
             version: geometry.version,
+            total_blocks: geometry.total_blocks,
+            data_start: geometry.data_start,
             inode_table_start: geometry.inode_table_start,
             total_inodes: geometry.total_inodes,
             deferred_inode: geometry.deferred_inode,
@@ -603,6 +619,13 @@ impl<S: BlockSource> KandeloImageFs<S> {
         })
     }
 
+    fn validate_block_ptr(&self, block: u32) -> Result<u32, Errno> {
+        if block != 0 && (block < self.data_start || block >= self.total_blocks) {
+            return Err(Errno::EIO);
+        }
+        Ok(block)
+    }
+
     /// Read a block pointer at `index` (a 4-byte slot) within block `block`.
     /// A zero `block` means the parent indirect block is missing, i.e. a
     /// sparse hole; self-guards by returning `Ok(0)` rather than relying on
@@ -611,10 +634,11 @@ impl<S: BlockSource> KandeloImageFs<S> {
         if block == 0 {
             return Ok(0); // missing indirect block => sparse hole
         }
+        self.validate_block_ptr(block)?;
         // Computed in u64 so a huge (corrupt) `block` cannot wrap a 32-bit
         // offset and alias a small in-bounds one.
         let off = block as u64 * BLOCK_SIZE as u64 + index as u64 * 4;
-        source_u32(&self.source, off)
+        self.validate_block_ptr(source_u32(&self.source, off)?)
     }
 
     /// Resolve a file block number to a physical block number, given the
@@ -624,7 +648,9 @@ impl<S: BlockSource> KandeloImageFs<S> {
     /// ptr 0 = sparse hole; returns 0. Otherwise returns the block number.
     fn block_map_in(&self, raw: &RawInode, file_block: u32) -> Result<u32, Errno> {
         if file_block < DIRECT_BLOCKS {
-            return r32(raw, INO_DIRECT + file_block as usize * 4).ok_or(Errno::EIO);
+            return self.validate_block_ptr(
+                r32(raw, INO_DIRECT + file_block as usize * 4).ok_or(Errno::EIO)?,
+            );
         }
         let fb = file_block - DIRECT_BLOCKS;
         if fb < PTRS_PER_BLOCK {
@@ -652,6 +678,10 @@ impl<S: BlockSource> KandeloImageFs<S> {
     }
 
     fn pointer_block(&self, block: u32) -> Result<[u8; BLOCK_SIZE], Errno> {
+        self.validate_block_ptr(block)?;
+        if block == 0 {
+            return Err(Errno::EIO);
+        }
         let mut pointers = [0; BLOCK_SIZE];
         self.source
             .read_exact_at(u64::from(block) * BLOCK_SIZE as u64, &mut pointers)?;
@@ -681,7 +711,9 @@ impl<S: BlockSource> KandeloImageFs<S> {
         }
         let mut blocks = Vec::new();
         for index in 0..count.min(u64::from(DIRECT_BLOCKS)) {
-            if r32(&raw, INO_DIRECT + index as usize * 4).ok_or(Errno::EIO)? != 0 {
+            if self.validate_block_ptr(
+                r32(&raw, INO_DIRECT + index as usize * 4).ok_or(Errno::EIO)?,
+            )? != 0 {
                 blocks.push(index as u32);
             }
         }
@@ -691,7 +723,9 @@ impl<S: BlockSource> KandeloImageFs<S> {
                 let pointers = self.pointer_block(indirect)?;
                 let entries = (count - u64::from(DIRECT_BLOCKS)).min(u64::from(PTRS_PER_BLOCK));
                 for index in 0..entries {
-                    if r32(&pointers, index as usize * 4).ok_or(Errno::EIO)? != 0 {
+                    if self.validate_block_ptr(
+                        r32(&pointers, index as usize * 4).ok_or(Errno::EIO)?,
+                    )? != 0 {
                         blocks.push(DIRECT_BLOCKS + index as u32);
                     }
                 }
@@ -705,7 +739,9 @@ impl<S: BlockSource> KandeloImageFs<S> {
                 let groups = (count.min(V1_MAX_FILE_BLOCKS) - double_start)
                     .div_ceil(u64::from(PTRS_PER_BLOCK));
                 for group in 0..groups {
-                    let pointer = r32(&first_level, group as usize * 4).ok_or(Errno::EIO)?;
+                    let pointer = self.validate_block_ptr(
+                        r32(&first_level, group as usize * 4).ok_or(Errno::EIO)?,
+                    )?;
                     if pointer == 0 {
                         continue;
                     }
@@ -713,7 +749,9 @@ impl<S: BlockSource> KandeloImageFs<S> {
                     let entries = (count - double_start - group * u64::from(PTRS_PER_BLOCK))
                         .min(u64::from(PTRS_PER_BLOCK));
                     for index in 0..entries {
-                        if r32(&second_level, index as usize * 4).ok_or(Errno::EIO)? != 0 {
+                        if self.validate_block_ptr(
+                            r32(&second_level, index as usize * 4).ok_or(Errno::EIO)?,
+                        )? != 0 {
                             blocks.push(
                                 (double_start + group * u64::from(PTRS_PER_BLOCK) + index) as u32,
                             );
@@ -729,7 +767,9 @@ impl<S: BlockSource> KandeloImageFs<S> {
                 let remaining = count - V1_MAX_FILE_BLOCKS;
                 let pointers = PTRS_PER_BLOCK as u64;
                 for top in 0..remaining.div_ceil(pointers * pointers) {
-                    let middle = r32(&first_level, top as usize * 4).ok_or(Errno::EIO)?;
+                    let middle = self.validate_block_ptr(
+                        r32(&first_level, top as usize * 4).ok_or(Errno::EIO)?,
+                    )?;
                     if middle == 0 {
                         continue;
                     }
@@ -737,14 +777,18 @@ impl<S: BlockSource> KandeloImageFs<S> {
                     let middle_remaining =
                         (remaining - top * pointers * pointers).min(pointers * pointers);
                     for group in 0..middle_remaining.div_ceil(pointers) {
-                        let leaf = r32(&second_level, group as usize * 4).ok_or(Errno::EIO)?;
+                        let leaf = self.validate_block_ptr(
+                            r32(&second_level, group as usize * 4).ok_or(Errno::EIO)?,
+                        )?;
                         if leaf == 0 {
                             continue;
                         }
                         let third_level = self.pointer_block(leaf)?;
                         let entries = (middle_remaining - group * pointers).min(pointers);
                         for index in 0..entries {
-                            if r32(&third_level, index as usize * 4).ok_or(Errno::EIO)? != 0 {
+                            if self.validate_block_ptr(
+                                r32(&third_level, index as usize * 4).ok_or(Errno::EIO)?,
+                            )? != 0 {
                                 blocks.push(
                                     (V1_MAX_FILE_BLOCKS
                                         + top * pointers * pointers
@@ -1252,6 +1296,78 @@ mod tests {
         let pointer_offset = filesystem.inode_offset(inode) as usize + INO_INDIRECT;
         image[pointer_offset..pointer_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         let damaged = KandeloImageFs::mount(image.as_slice()).unwrap();
+        assert_eq!(damaged.allocated_file_blocks(inode), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn direct_pointer_into_metadata_is_not_read_as_file_content() {
+        let mut image = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        let filesystem = KandeloImageFs::mount(image.as_slice()).unwrap();
+        let inode = filesystem.resolve(b"/big.txt", true).unwrap();
+        let pointer_offset = filesystem.inode_offset(inode) as usize + INO_DIRECT;
+        image[pointer_offset..pointer_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+
+        let damaged = KandeloImageFs::mount(image.as_slice()).unwrap();
+        let mut byte = [0];
+        assert_eq!(damaged.read_at(inode, 0, &mut byte), Err(Errno::EIO));
+        assert_eq!(damaged.allocated_file_blocks(inode), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn direct_pointer_past_declared_blocks_cannot_read_a_trailer() {
+        let mut image = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        let filesystem = KandeloImageFs::mount(image.as_slice()).unwrap();
+        let inode = filesystem.resolve(b"/big.txt", true).unwrap();
+        let pointer_offset = filesystem.inode_offset(inode) as usize + INO_DIRECT;
+        let total_blocks = filesystem.geometry().total_blocks;
+        image[pointer_offset..pointer_offset + 4].copy_from_slice(&total_blocks.to_le_bytes());
+        image.extend_from_slice(&[b'x'; BLOCK_SIZE]);
+
+        let damaged = KandeloImageFs::mount(image.as_slice()).unwrap();
+        let mut byte = [0];
+        assert_eq!(damaged.read_at(inode, 0, &mut byte), Err(Errno::EIO));
+        assert_eq!(damaged.allocated_file_blocks(inode), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn extended_pointer_into_metadata_is_not_read_as_file_content() {
+        use crate::kandelo_image_write::{
+            Content, ContentSource, KandeloImageConfig, KandeloImageWriter,
+        };
+
+        struct Zeros;
+
+        impl ContentSource for Zeros {
+            fn read_exact_at(&self, _id: u64, _offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+                dst.fill(0);
+                Ok(())
+            }
+        }
+
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).unwrap();
+        let offset = 9 * 1024 * 1024 * 1024u64;
+        let blocks = [(offset / BLOCK_SIZE as u64) as u32];
+        writer
+            .create_file(
+                writer.root(),
+                b"extended",
+                0o644,
+                Content::SparseDeferred {
+                    id: 1,
+                    len: offset + 1,
+                    blocks: &blocks,
+                },
+            )
+            .unwrap();
+        let mut image = writer.finish().unwrap().to_vec(&Zeros).unwrap();
+        let filesystem = KandeloImageFs::mount(image.as_slice()).unwrap();
+        let inode = filesystem.resolve(b"/extended", true).unwrap();
+        let pointer_offset = filesystem.inode_offset(inode) as usize + INO_TRIPLE_INDIRECT;
+        image[pointer_offset..pointer_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+
+        let damaged = KandeloImageFs::mount(image.as_slice()).unwrap();
+        let mut byte = [0];
+        assert_eq!(damaged.read_at(inode, offset, &mut byte), Err(Errno::EIO));
         assert_eq!(damaged.allocated_file_blocks(inode), Err(Errno::EIO));
     }
 
