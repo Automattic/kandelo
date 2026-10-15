@@ -1226,6 +1226,7 @@ async function handleInit(msg: InitMessage) {
       nosuid: rootImage.nosuid(),
       lazyFetcher: rootfsLazyFetcher,
       lazyUrlBase: msg.rootfsLazyUrlBase,
+      lazyUrlMap: msg.rootfsLazyUrlMap,
     });
   }
 

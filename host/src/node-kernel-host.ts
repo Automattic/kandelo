@@ -183,6 +183,9 @@ export interface NodeKernelHostOptions {
    * This is the Node peer of BrowserKernel's lazyUrlBase contract.
    */
   rootfsLazyUrlBase?: string;
+  /** Map image-owned lazy URL tokens before applying rootfsLazyUrlBase.
+   * This is the Node peer of BrowserKernel's lazyUrlMap contract. */
+  rootfsLazyUrlMap?: Readonly<Record<string, string>>;
   /**
    * Exhaustive exact URL-to-byte transport for lazy entries in rootfsImage.
    * Intended for offline and pre-publication acceptance: when set, unbound
@@ -286,6 +289,9 @@ export class NodeKernelHost {
     }
     if (this.options.rootfsLazyUrlBase !== undefined && rootfsImage === null) {
       throw new Error("rootfsLazyUrlBase requires rootfsImage");
+    }
+    if (this.options.rootfsLazyUrlMap !== undefined && rootfsImage === null) {
+      throw new Error("rootfsLazyUrlMap requires rootfsImage");
     }
     if (this.options.rootfsMountSpec !== undefined && rootfsImage === null) {
       throw new Error("rootfsMountSpec requires rootfsImage");
@@ -458,6 +464,9 @@ export class NodeKernelHost {
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
+          rootfsLazyUrlMap: this.options.rootfsLazyUrlMap === undefined
+            ? undefined
+            : { ...this.options.rootfsLazyUrlMap },
           rootfsLazyAssets,
           rootfsLazyAssetSources,
           extraMounts: this.options.extraMounts,
