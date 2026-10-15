@@ -859,7 +859,8 @@ commit and retained after failed writeback. It now holds at most 64 distinct
 inodes: before a write or truncate would dirty a 65th, the kernel flushes the
 existing data and timestamp records. A failed flush refuses that new mutation
 and preserves earlier dirty data for live reads. Rust tests cover both write
-and truncate boundary flushes and a failed writeback; a guest creates
+and truncate boundary flushes and a failed writeback, including `O_TRUNC`
+refusing to discard the last clean file; a guest creates
 and syncs 65 files, then strictly reboots on Node and Chromium, Firefox, and
 WebKit. The cost of these implicit flushes and the resident namespace tree
 still need measurement on a large file-count image. Session-injected files

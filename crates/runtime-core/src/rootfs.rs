@@ -11044,6 +11044,11 @@ mod tests {
             let path = alloc::format!("/dirty-{index}");
             handles.push(open(path.as_bytes(), O_CREAT | O_RDWR, 0o644, 0, 0).unwrap());
         }
+        assert_eq!(
+            write(handles[MAX_DIRTY_PERSISTENT_TIMESTAMPS], 0, b"Y", &mut image_bytes),
+            Ok(1)
+        );
+        sync_persistence().unwrap();
         for handle in handles.iter().take(MAX_DIRTY_PERSISTENT_TIMESTAMPS) {
             assert_eq!(write(*handle, 0, b"X", &mut image_bytes), Ok(1));
         }
@@ -11059,7 +11064,13 @@ mod tests {
         let mut byte = [0];
         assert_eq!(read(handles[0], 0, &mut byte, &mut image_bytes), Ok(1));
         assert_eq!(byte, [b'X']);
-        assert_eq!(lstat(b"/dirty-64").unwrap().st_size, 0);
+        assert_eq!(open(b"/dirty-64", O_TRUNC | O_RDWR, 0, 0, 0), Err(Errno::ENOSPC));
+        assert_eq!(lstat(b"/dirty-64").unwrap().st_size, 1);
+        assert_eq!(
+            read(handles[MAX_DIRTY_PERSISTENT_TIMESTAMPS], 0, &mut byte, &mut image_bytes),
+            Ok(1)
+        );
+        assert_eq!(byte, [b'Y']);
         for handle in handles {
             release_handle(handle);
         }
@@ -11068,7 +11079,7 @@ mod tests {
         load_image(image.len() as u64, &mut image_bytes).unwrap();
         enable_resizable_persistence(Box::new(storage), base_digest).unwrap();
         assert_eq!(lstat(b"/dirty-0").unwrap().st_size, 0);
-        assert_eq!(lstat(b"/dirty-64").unwrap().st_size, 0);
+        assert_eq!(lstat(b"/dirty-64").unwrap().st_size, 1);
     }
 
     #[test]
