@@ -161,6 +161,34 @@ test("compressed source decodes into a bounded OPFS staging file", async ({ play
   expect(result).toEqual({ length: image.byteLength, magic: Array.from(image.subarray(0, 4)) });
 });
 
+test("source staging rejects an advertised body beyond its OPFS bound", async ({ playwright, browserName, baseURL }, testInfo) => {
+  const result = await withOpfsPage(playwright, browserName, baseURL!, testInfo, async (page) => {
+    return page.evaluate(async (sourceStageUrl) => {
+      const { MAX_STAGED_VFS_IMAGE_BYTES, stageRawVfsSourceImage } = await import(sourceStageUrl);
+      const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle(
+        "kandelo-persistent-overlay", { create: true },
+      );
+      const before: string[] = [];
+      for await (const name of directory.keys()) before.push(name);
+      const response = new Response(new ReadableStream<Uint8Array>({
+        pull(controller) { controller.enqueue(new Uint8Array([1, 2, 3, 4])); controller.close(); },
+      }), { headers: { "content-length": String(MAX_STAGED_VFS_IMAGE_BYTES + 1) } });
+      let error = "";
+      try {
+        await stageRawVfsSourceImage(response, () => {}, directory);
+      } catch (caught) {
+        error = String(caught);
+      }
+      const staged: string[] = [];
+      for await (const name of directory.keys()) staged.push(name);
+      return { error, before: before.sort(), staged: staged.sort(), bound: MAX_STAGED_VFS_IMAGE_BYTES };
+    }, new URL(`/@fs/${sourceStagePath}`, baseURL).href);
+  });
+  expect(result.bound).toBe(64 * 1024 * 1024 * 1024);
+  expect(result.error).toContain("VFS source exceeds its staged byte bound");
+  expect(result.staged).toEqual(result.before);
+});
+
 test("compressed source rejects oversized windows without publishing a stage", async ({ playwright, browserName, baseURL }, testInfo) => {
   const frame = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0xff, 0x01, 0x00, 0x00]);
   const imageUrl = new URL("/fixed-composer-bad-window.vfs.zst", baseURL).href;

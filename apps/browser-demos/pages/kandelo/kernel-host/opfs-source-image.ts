@@ -1,10 +1,10 @@
 import { Decompress } from "fzstd";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { VFS_IMAGE_MAX_DECOMPRESSED_BYTES } from "../../../../../host/src/vfs/vfs-image-transport";
 import type { OpfsImageIntegrity } from "../../../../../host/src/vfs/opfs-image-reader";
 import { identityEncodedContentLength } from "../../../../../web-libs/kandelo-session/src/sized-download";
 
 const CHUNK_BYTES = 1024 * 1024;
+export const MAX_STAGED_VFS_IMAGE_BYTES = 64 * 1024 * 1024 * 1024;
 const MAX_ZSTD_WINDOW_BYTES = 16 * 1024 * 1024;
 const MAX_ZSTD_BLOCK_BYTES = 128 * 1024;
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
@@ -161,7 +161,7 @@ async function decodeZstdToSource(
     if (windowSize !== undefined && windowSize > BigInt(MAX_ZSTD_WINDOW_BYTES)) {
       throw new Error("zstd VFS image exceeds its streaming window bound");
     }
-    if (contentSize !== undefined && contentSize > BigInt(VFS_IMAGE_MAX_DECOMPRESSED_BYTES - declaredTotal)) {
+    if (contentSize !== undefined && contentSize > BigInt(MAX_STAGED_VFS_IMAGE_BYTES - declaredTotal)) {
       throw new Error("zstd VFS image exceeds its decompressed byte bound");
     }
     const frameHeader = new Uint8Array(5 + windowDescriptorBytes.byteLength + dictionaryBytes.byteLength + contentSizeBytes.byteLength);
@@ -182,7 +182,7 @@ async function decodeZstdToSource(
         throw new Error("zstd VFS image contains an invalid block header");
       }
       frameBound += blockType === 2 ? MAX_ZSTD_BLOCK_BYTES : blockSize;
-      if (contentSize === undefined && frameBound > VFS_IMAGE_MAX_DECOMPRESSED_BYTES - declaredTotal) {
+      if (contentSize === undefined && frameBound > MAX_STAGED_VFS_IMAGE_BYTES - declaredTotal) {
         throw new Error("zstd VFS image exceeds its decompressed byte bound");
       }
       const payload = await take(blockType === 1 ? 1 : blockSize, "block payload");
@@ -222,6 +222,7 @@ export async function stageRawVfsSourceImage(
 ): Promise<StagedSourceImage> {
   if (sourceIdentity !== undefined && (
     !Number.isSafeInteger(sourceIdentity.bytes) || sourceIdentity.bytes < 1 ||
+    sourceIdentity.bytes > MAX_STAGED_VFS_IMAGE_BYTES ||
     !/^[0-9a-f]{64}$/.test(sourceIdentity.sha256)
   )) {
     throw new Error("VFS source identity is invalid");
@@ -235,6 +236,9 @@ export async function stageRawVfsSourceImage(
     const next = await reader.read();
     if (!next.done) {
       sourceLength += next.value.byteLength;
+      if (sourceLength > MAX_STAGED_VFS_IMAGE_BYTES) {
+        throw new Error("VFS source exceeds its staged byte bound");
+      }
       if (sourceIdentity !== undefined && sourceLength > sourceIdentity.bytes) {
         throw new Error("VFS source exceeds its authenticated byte length");
       }
@@ -245,6 +249,9 @@ export async function stageRawVfsSourceImage(
   const prefix: Uint8Array[] = [];
   let prefixLength = 0;
   try {
+    if (totalBytes !== undefined && totalBytes > MAX_STAGED_VFS_IMAGE_BYTES) {
+      throw new Error("VFS source exceeds its staged byte bound");
+    }
     if (sourceIdentity !== undefined && totalBytes !== undefined && totalBytes !== sourceIdentity.bytes) {
       throw new Error("VFS source content-length differs from its authenticated byte length");
     }
@@ -300,7 +307,7 @@ export async function stageRawVfsSourceImage(
           fill += count;
           offset += count;
           length += count;
-          if (length > VFS_IMAGE_MAX_DECOMPRESSED_BYTES) {
+          if (length > MAX_STAGED_VFS_IMAGE_BYTES) {
             throw new Error("VFS image exceeds its decompressed byte bound");
           }
           if (fill === CHUNK_BYTES) {

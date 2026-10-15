@@ -104,10 +104,17 @@ semantics. Node and browser must expose the same guest-visible behavior.
   and WebKit now stream that physical fixture into OPFS, boot it, commit a
   guest write through the resizable journal, and strictly reopen the base
   and journal.
-  They then export its >4 GiB body to a second OPFS file with staged read-back
-  verification and reboot that snapshot with per-chunk integrity. A guest
-  verifies the large file's tail, and both the journal reboot and snapshot
-  carry the changed state. The browser test does not allocate an image-sized
+  The opt-in browser case now uses the same bounded source stager as the
+  persistent page instead of writing the fixture through a test-only stream.
+  That stager has a 64 GiB decoded-image cap, separate from the legacy
+  in-memory image limit and the browser's OPFS quota. The production-stager
+  variant still needs a successful >4 GiB acceptance run: its first local
+  Chromium attempt reached snapshot export but exhausted host disk space.
+  The earlier manual-stage acceptance run exported the >4 GiB body to a
+  second OPFS file with staged read-back verification and rebooted that
+  snapshot with per-chunk integrity. A guest verified the large file's tail,
+  and both the journal reboot and snapshot carried the changed state. The
+  browser test does not allocate an image-sized
   JavaScript array, but it does not measure browser peak memory or prove OPFS
   storage sparsity or general snapshot throughput. An 8 GiB sparse file still
   exceeds the KIFS per-file limit;
