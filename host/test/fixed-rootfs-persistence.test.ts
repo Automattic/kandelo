@@ -686,6 +686,15 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         try {
           const { exit } = await host.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
           expect(await exit).toBe(0);
+          if (mode === "resize" || mode === "verify-resize" || mode === "verify-zero") {
+            const tail = 8 * 1024 * 1024 * 1024 + 7;
+            expect(await host.readFileRangeFromVfs("/state", tail - 2, 6)).toEqual(
+              mode === "resize" ? Uint8Array.of(0, 0, 71, 82, 79, 87) : new Uint8Array(6),
+            );
+            expect(await host.readFileRangeFromVfs("/state", tail + 4, 16)).toEqual(new Uint8Array(0));
+            expect(await host.readFileRangeFromVfs("/missing", 0, 1)).toBeNull();
+            await expect(host.readFileRangeFromVfs("/state", 0, 1024 * 1024 + 1)).rejects.toThrow(RangeError);
+          }
         } finally {
           await host.destroy();
         }
@@ -932,6 +941,9 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
           expected[index + 13] = ((index / 4096) ^ index) & 0xff;
         }
         expect(actual).toEqual(expected);
+        expect(await reopened.readFileRangeFromVfs("/large", 100_000, 1024 * 1024)).toEqual(
+          expected.subarray(100_000, 100_000 + 1024 * 1024),
+        );
       } finally {
         await reopened.destroy();
       }

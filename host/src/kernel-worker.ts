@@ -30,6 +30,7 @@ import { ERRNO } from "./generated/abi";
 import { RejectedOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import { decodeInspectionDirectory, decodeInspectionStat, decodeInspectionResourceLimits } from "./vfs/rootfs-inspection";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
+import { assertVfsFileRange } from "./vfs/file-range";
 
 
 import { LongTimeouts, MAX_ENGINE_TIMER_DELAY_MS } from "./long-timeout";
@@ -5892,7 +5893,17 @@ export class CentralizedKernelWorker {
     return this.#rootfsReadFileExport(path, "kernel_rootfs_inspect_read_file");
   }
 
-  #rootfsReadFileExport(path: string, name: "kernel_rootfs_read_file" | "kernel_rootfs_inspect_read_file"): Uint8Array {
+  rootfsInspectFileRange(path: string, offset: number, length: number): Uint8Array {
+    assertVfsFileRange(offset, length);
+    return this.#rootfsReadFileExport(path, "kernel_rootfs_inspect_read_file", offset, length);
+  }
+
+  #rootfsReadFileExport(
+    path: string,
+    name: "kernel_rootfs_read_file" | "kernel_rootfs_inspect_read_file",
+    initialOffset = 0,
+    maxBytes = Number.POSITIVE_INFINITY,
+  ): Uint8Array {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     const encodedPath = new TextEncoder().encode(path);
     const pathLen = encodedPath.byteLength;
@@ -5914,14 +5925,18 @@ export class CentralizedKernelWorker {
           return undefined;
         }
         const region = this.#requireMainScratchRegion();
-        const chunkCap = region.capacity - pathLen;
-        if (chunkCap <= 0) {
+        const bufferCap = region.capacity - pathLen;
+        if (bufferCap <= 0) {
           failErrno = ENAMETOOLONG;
           return undefined;
         }
         const chunks: Uint8Array[] = [];
-        let fileOffset = 0;
+        let fileOffset = initialOffset;
+        let total = 0;
         for (;;) {
+          const remaining = maxBytes - total;
+          if (remaining <= 0) break;
+          const chunkCap = Math.min(bufferCap, remaining);
           const res: { errno: number; bytes: Uint8Array | null } =
             region.withLease((lease) => {
               lease.copyFrom(encodedPath, 0, 0, pathLen);
@@ -5954,13 +5969,12 @@ export class CentralizedKernelWorker {
           if (res.bytes === null) break;
           chunks.push(res.bytes);
           fileOffset += res.bytes.byteLength;
+          total += res.bytes.byteLength;
           // rootfs read returns min(request, bytes-remaining); a short read is
           // therefore EOF, so a further crossing is unnecessary.
           if (res.bytes.byteLength < chunkCap) break;
         }
         if (failErrno === 0) {
-          let total = 0;
-          for (const c of chunks) total += c.byteLength;
           const merged = new Uint8Array(total);
           let at = 0;
           for (const c of chunks) {

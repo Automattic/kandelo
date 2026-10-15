@@ -517,6 +517,15 @@ export function readNamespaceFileWithRetry(
   return readKernelFileWithRetry(kernel, path, () => kernel.rootfsInspectFile(path));
 }
 
+export function readNamespaceFileRangeWithRetry(
+  kernel: CentralizedKernelWorker,
+  path: string,
+  offset: number,
+  length: number,
+): Promise<Uint8Array | null> {
+  return readKernelFileWithRetry(kernel, path, () => kernel.rootfsInspectFileRange(path, offset, length));
+}
+
 async function readKernelFileWithRetry(
   kernel: CentralizedKernelWorker,
   path: string,

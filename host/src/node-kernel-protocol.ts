@@ -39,6 +39,7 @@ export type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  ReadVfsFileRangeMessage,
   ProcEventMessage,
   AttachRemotePeerMessage,
   RemoteNetworkSnapshotMessage,
@@ -83,6 +84,7 @@ import type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  ReadVfsFileRangeMessage,
   ProcEventMessage,
   AttachRemotePeerMessage,
   RemoteNetworkSnapshotMessage,
@@ -361,6 +363,7 @@ export type MainToKernelMessage =
   | ClipboardOfferMessage
   | ClipboardGuestWaitMessage
   | ReadVfsFileMessage
+  | ReadVfsFileRangeMessage
   | ReadVfsDirMessage
   | StatVfsPathMessage
   | WriteVfsFileMessage

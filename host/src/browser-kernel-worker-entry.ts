@@ -156,6 +156,7 @@ import {
   isRootfsMissingFileError,
   readRootfsFileWithRetry,
   readNamespaceFileWithRetry,
+  readNamespaceFileRangeWithRetry,
   retireSupersededExecGeneration,
   signalFromExitStatus,
   type ProcessGenerationOwnership,
@@ -3747,6 +3748,24 @@ async function handleReadVfsFile(
   }
 }
 
+async function handleReadVfsFileRange(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_file_range" }>,
+) {
+  if (!rootImage.has()) { respond(msg.requestId, null); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("read or materialize a rootfs file range");
+    const data = await readNamespaceFileRangeWithRetry(kernelWorker, msg.path, msg.offset, msg.length);
+    if (data === null) respond(msg.requestId, null);
+    else respondTransferredBytes(msg.requestId, data);
+  } catch (error) {
+    if (isRootfsMissingFileError(error)) respond(msg.requestId, null);
+    else respondError(msg.requestId, formatError(error));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
 // Directory listing and stat are answered here for the same reason file reads
 // are: the worker owns the VFS, so the main thread asks instead of reaching in.
 async function handleReadVfsDir(
@@ -4626,6 +4645,7 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "terminate_process": void handleTerminateProcess(msg); break;
     case "read_vfs_file": void handleReadVfsFile(msg); break;
+    case "read_vfs_file_range": void handleReadVfsFileRange(msg); break;
     case "read_vfs_dir": void handleReadVfsDir(msg); break;
     case "stat_vfs_path": void handleStatVfsPath(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;

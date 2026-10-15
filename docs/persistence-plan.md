@@ -162,6 +162,12 @@ boot still owns the session immediately before closing the manifest under one
 exclusive lock. Once close begins, publication cannot be revoked. The next
 installation reclaims abandoned generation files. Reopening uses positioned OPFS
 reads and a bounded clean cache; fixed overwrites use a bounded dirty cache.
+Node and browser hosts now expose `readFileRangeFromVfs(path, offset, length)`
+with a 1 MiB per-call ceiling through the existing positioned kernel inspection
+export. A host can inspect a journaled 8 GiB sparse file's hole and tail after
+strict reboots without asking for its entire contents; Node and Chromium,
+Firefox, and WebKit exercise that workflow. The legacy whole-file read API
+still materializes its result and is not suitable for >RAM files.
 The first-install manifest close is the publication boundary. If its close
 acknowledgement is lost, the installer reads back the exact committed manifest
 and retains the verified image; it never deletes image bytes while a manifest
@@ -771,8 +777,9 @@ runner inspects the image-owned fixture tree, checks for shutdown sync failure,
 destroys the first kernel, and boots the exact same composed image and journal
 with strict existing-journal recovery. It compares the fixture's paths, types,
 sizes, ownership, permissions, symlink targets, and SHA-256 of regular files
-up to 256 KiB and a 4 MiB total content-read budget. Larger files retain
-metadata comparison; the inspection refuses more than 10,000 entries. Eleven
+within a 32 MiB total content-read budget, streamed in at most 1 MiB per call.
+Files beyond that budget retain metadata comparison; the inspection refuses
+more than 10,000 entries. Eleven
 selected filesystem cases and all 55 I/O cases pass strict post-test reboot
 with this state comparison. A comparison or reboot failure forces runner exit
 125 and a host diagnostic marker, which the persistent-reboot runner records
@@ -785,7 +792,8 @@ sequentially. The runner now exits nonzero for any unexpected timeout. This
 checks journal replay and fixture namespace reconstruction. The remaining
 limits, malloc, signal, and UDP suites add 282 passes, 13 expected failures,
 and two skips across 297 cases, with no unexpected failures or timeouts. In
-total, 1,380 Sortix runtime cases have run under strict post-test reboot, but
-the comparison still omits changes outside the fixture, complete content of
-larger files, and test-specific expected state; those remain separate
-conformance work.
+total, 1,380 Sortix runtime cases ran under strict post-test reboot before the
+larger content budget. The 55-case I/O suite also passes with 1 MiB streaming
+hashes under that budget. The comparison still omits changes outside the
+fixture, complete content of files beyond the budget, and test-specific
+expected state; those remain separate conformance work.

@@ -667,6 +667,19 @@ test("browser reopens sparse image and created files after namespace changes", a
             });
             const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", mode]);
             statuses.push(await exit);
+            if (mode === "resize" || mode === "verify-resize" || mode === "verify-zero") {
+              const tail = 8 * 1024 * 1024 * 1024 + 7;
+              const bytes = await kernel.readFileRangeFromVfs("/state", tail - 2, 6);
+              const expected = mode === "resize" ? [0, 0, 71, 82, 79, 87] : [0, 0, 0, 0, 0, 0];
+              if (JSON.stringify(Array.from(bytes ?? [])) !== JSON.stringify(expected)) {
+                throw new Error(`bounded VFS tail read mismatch after ${mode}`);
+              }
+              const beyondEnd = await kernel.readFileRangeFromVfs("/state", tail + 4, 16);
+              if (beyondEnd?.byteLength !== 0) throw new Error("bounded VFS EOF read was not empty");
+              if (await kernel.readFileRangeFromVfs("/missing", 0, 1) !== null) {
+                throw new Error("bounded VFS missing-file read was not null");
+              }
+            }
           } finally {
             await kernel.destroy();
           }
@@ -755,6 +768,10 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
             && cacheProbe[0] === 0
             && cacheProbe[64 * 1024 + 1] === (64 * 1024 + 1) % 251
             && cacheProbe[cacheProbe.byteLength - 1] === (cacheProbe.byteLength - 1) % 251;
+          const range = await first.readFileRangeFromVfs("/cache-probe", 64 * 1024 - 3, 1024 * 1024);
+          cacheProbeMatches &&= range !== null && range.byteLength === 1024 * 1024
+            && range[0] === (64 * 1024 - 3) % 251
+            && range[range.byteLength - 1] === (64 * 1024 - 3 + range.byteLength - 1) % 251;
           const competing = new BrowserKernel({ kernelOwnedFs: true });
           try {
             await competing.initFromOpfsImage({ kernelWasm: kernelBytes, vfsImageFile: imageFile, experimentalFixedPersistenceName: name, persistentComputerName: `${name}-different` });

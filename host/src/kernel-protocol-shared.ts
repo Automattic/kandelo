@@ -290,6 +290,15 @@ export interface WriteVfsFileMessage {
   mode: number;
 }
 
+/** Read a bounded positioned range from a regular file in the live VFS. */
+export interface ReadVfsFileRangeMessage {
+  type: "read_vfs_file_range";
+  requestId: number;
+  path: string;
+  offset: number;
+  length: number;
+}
+
 /**
  * Posted whenever the kernel forks, execs, or spawns. The main thread
  * uses this to refresh Inspector-style views without polling. `kind ===
