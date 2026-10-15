@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -71,69 +71,111 @@ test("browser exports and reboots a physical >4 GiB OPFS image", async ({ playwr
       const page = context.pages()[0] ?? await context.newPage();
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, fixtureUrl }) => {
-        const { BrowserKernel } = await import(moduleUrl);
-        const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
-        const directory = await (await navigator.storage.getDirectory())
-          .getDirectoryHandle("kandelo-persistent-overlay", { create: true });
-        const imageFile = await directory.getFileHandle("large.base", { create: true });
-        const fetched = await fetch(fixtureUrl);
-        if (!fetched.ok || fetched.body === null) throw new Error("large fixture stream unavailable");
-        const reader = fetched.body.getReader();
-        const writer = await imageFile.createWritable();
-        let installedBytes = 0;
-        try {
-          for (;;) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            await writer.write(value);
-            installedBytes += value.byteLength;
+      const name = `large-vfsi-${randomUUID()}`;
+      let result: {
+        installedBytes: number;
+        snapshotBytes: number;
+        storedBytes: number;
+        recoveredState: string;
+        state: string;
+        verifyExit: number;
+      };
+      try {
+        result = await page.evaluate(async ({ moduleUrl, kernelUrl, fixtureUrl, name }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+          const directory = await (await navigator.storage.getDirectory())
+            .getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+          const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+          const fetched = await fetch(fixtureUrl);
+          if (!fetched.ok || fetched.body === null) throw new Error("large fixture stream unavailable");
+          const reader = fetched.body.getReader();
+          const writer = await imageFile.createWritable();
+          let installedBytes = 0;
+          try {
+            for (;;) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              await writer.write(value);
+              installedBytes += value.byteLength;
+            }
+            await writer.close();
+          } catch (error) {
+            await writer.abort();
+            throw error;
           }
-          await writer.close();
-        } catch (error) {
-          await writer.abort();
-          throw error;
-        }
-        if (installedBytes !== Number(fetched.headers.get("content-length"))) {
-          throw new Error("large fixture stream was truncated");
-        }
-        const first = new BrowserKernel({ kernelOwnedFs: true });
-        const snapshotFile = await directory.getFileHandle("large.snapshot", { create: true });
-        let integrity: OpfsImageIntegrity;
-        try {
-          await first.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile });
-          const stat = await first.statVfsPath("/large");
-          if (stat?.size !== 2 ** 32 - 16 * 1024 * 1024) {
-            throw new Error("large base file has the wrong size");
+          if (installedBytes !== Number(fetched.headers.get("content-length"))) {
+            throw new Error("large fixture stream was truncated");
           }
-          integrity = await first.exportRootfsImageToFile(snapshotFile);
-        } finally {
-          await first.destroy();
-        }
-        const rebooted = new BrowserKernel({ kernelOwnedFs: true });
-        try {
-          await rebooted.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile, integrity });
-          const stat = await rebooted.statVfsPath("/large");
-          if (stat?.size !== 2 ** 32 - 16 * 1024 * 1024) {
-            throw new Error("large snapshot file has the wrong size");
+          const first = new BrowserKernel({ kernelOwnedFs: true });
+          const snapshotFile = await directory.getFileHandle(`${name}.snapshot`, { create: true });
+          let integrity: OpfsImageIntegrity;
+          try {
+            await first.initFromOpfsImage({
+              kernelWasm,
+              vfsImageFile: imageFile,
+              experimentalResizablePersistenceName: name,
+              persistentComputerName: name,
+            });
+            const stat = await first.statVfsPath("/large");
+            if (stat?.size !== 2 ** 32 - 16 * 1024 * 1024) {
+              throw new Error("large base file has the wrong size");
+            }
+            const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "sync"]);
+            if (await exit !== 0) throw new Error("large image guest sync failed");
+          } finally {
+            await first.destroy();
           }
-          const { exit } = await rebooted.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
-          return {
-            installedBytes,
-            snapshotBytes: integrity.length,
-            storedBytes: (await snapshotFile.getFile()).size,
-            state: new TextDecoder().decode((await rebooted.readFileFromVfs("/state"))!),
-            verifyExit: await exit,
-          };
-        } finally {
-          await rebooted.destroy();
-        }
-      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, fixtureUrl });
+          const recovered = new BrowserKernel({ kernelOwnedFs: true });
+          let recoveredState: string;
+          try {
+            await recovered.initFromOpfsImage({
+              kernelWasm,
+              vfsImageFile: imageFile,
+              experimentalResizablePersistenceName: name,
+              persistentComputerName: name,
+              requireExistingRootfsPersistence: true,
+            });
+            recoveredState = new TextDecoder().decode((await recovered.readFileFromVfs("/state"))!);
+            integrity = await recovered.exportRootfsImageToFile(snapshotFile);
+          } finally {
+            await recovered.destroy();
+          }
+          const rebooted = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await rebooted.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile, integrity });
+            const stat = await rebooted.statVfsPath("/large");
+            if (stat?.size !== 2 ** 32 - 16 * 1024 * 1024) {
+              throw new Error("large snapshot file has the wrong size");
+            }
+            const { exit } = await rebooted.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-large-tail"]);
+            return {
+              installedBytes,
+              snapshotBytes: integrity.length,
+              storedBytes: (await snapshotFile.getFile()).size,
+              recoveredState,
+              state: new TextDecoder().decode((await rebooted.readFileFromVfs("/state"))!),
+              verifyExit: await exit,
+            };
+          } finally {
+            await rebooted.destroy();
+          }
+        }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, fixtureUrl, name });
+      } finally {
+        await page.evaluate(async (name) => {
+          const directory = await (await navigator.storage.getDirectory())
+            .getDirectoryHandle("kandelo-persistent-overlay");
+          for await (const entryName of directory.keys()) {
+            if (entryName.startsWith(`${name}.`)) await directory.removeEntry(entryName);
+          }
+        }, name);
+      }
       expect(result).toEqual({
         installedBytes: fixtureLength,
         snapshotBytes: expect.any(Number),
         storedBytes: expect.any(Number),
-        state: "before\n",
+        recoveredState: "XYfore\n",
+        state: "XYfore\n",
         verifyExit: 0,
       });
       expect(result.snapshotBytes).toBeGreaterThan(2 ** 32);
