@@ -100,10 +100,12 @@ semantics. Node and browser must expose the same guest-visible behavior.
   verifies the 2 MiB tail at its 64-bit offset both before and after the
   snapshot. The opt-in test checks Node RSS growth stays under 1 GiB and
   rejects a damaged snapshot byte beyond 4 GiB. Chromium, Firefox, and WebKit
-  now stream that physical fixture into OPFS, boot it, export its >4 GiB body
-  to a second OPFS file with staged read-back verification, and reboot that
-  snapshot with per-chunk integrity. A guest verifies the large file's tail
-  after the reboot. The browser test does not allocate an image-sized
+  now stream that physical fixture into OPFS, boot it, commit a guest write
+  through the resizable journal, and strictly reopen the base and journal.
+  They then export its >4 GiB body to a second OPFS file with staged read-back
+  verification and reboot that snapshot with per-chunk integrity. A guest
+  verifies the large file's tail, and both the journal reboot and snapshot
+  carry the changed state. The browser test does not allocate an image-sized
   JavaScript array, but it does not measure browser peak memory or prove OPFS
   storage sparsity or general snapshot throughput. An 8 GiB sparse file still
   exceeds the KIFS per-file limit;
