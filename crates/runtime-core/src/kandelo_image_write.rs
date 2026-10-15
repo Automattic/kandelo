@@ -28,8 +28,8 @@
 //! So the writer never materializes file CONTENT: a data block that carries
 //! file bytes is recorded as a reference into a [`ContentSource`]
 //! (`id` + offset + length) and resolved only when [`KandeloImage::read_at`]
-//! reaches it. What IS materialized is metadata — superblock, the two bitmaps,
-//! allocated inode-table pages, directory data, indirect blocks — which for
+//! reaches it. What IS materialized is metadata — superblock, occupied bitmap
+//! and inode-table pages, directory data, indirect blocks — which for
 //! the largest image in the repo is a few MiB, the same order as the budget
 //! the reader already spends walking one.
 //!
@@ -313,7 +313,6 @@ impl KandeloImageWriter {
             Some(max) => u32::try_from(max / BLOCK_SIZE as u64).map_err(|_| Errno::EINVAL)?,
             None => total_blocks.checked_mul(4).ok_or(Errno::EINVAL)?,
         };
-
         let mut total_inodes = max_blocks / 4;
         if total_inodes < 32 {
             total_inodes = 32;
@@ -362,8 +361,8 @@ impl KandeloImageWriter {
             inode_alloc_hint: 2,
             growable_to_blocks: growable_to_blocks.max(total_blocks),
             now_ms: config.now_ms,
-            inode_bitmap: vec![0u8; inode_bitmap_blocks as usize * BLOCK_SIZE],
-            block_bitmap: vec![0u8; block_bitmap_blocks as usize * BLOCK_SIZE],
+            inode_bitmap: vec![0u8; BLOCK_SIZE],
+            block_bitmap: vec![0u8; BLOCK_SIZE],
             inode_table: vec![0u8; BLOCK_SIZE],
             blocks: BTreeMap::new(),
             content_extents: BTreeMap::new(),
@@ -1547,11 +1546,19 @@ impl KandeloImage {
         }
         if n >= self.inode_bitmap_start && n < self.block_bitmap_start {
             let off = (n - self.inode_bitmap_start) as usize * BLOCK_SIZE;
-            return BlockView::Bytes(&self.inode_bitmap[off..off + BLOCK_SIZE]);
+            return if off < self.inode_bitmap.len() {
+                BlockView::Bytes(&self.inode_bitmap[off..off + BLOCK_SIZE])
+            } else {
+                BlockView::Zeros
+            };
         }
         if n >= self.block_bitmap_start && n < self.inode_table_start {
             let off = (n - self.block_bitmap_start) as usize * BLOCK_SIZE;
-            return BlockView::Bytes(&self.block_bitmap[off..off + BLOCK_SIZE]);
+            return if off < self.block_bitmap.len() {
+                BlockView::Bytes(&self.block_bitmap[off..off + BLOCK_SIZE])
+            } else {
+                BlockView::Zeros
+            };
         }
         if n >= self.inode_table_start && n < self.data_start {
             let off = (n - self.inode_table_start) as usize * BLOCK_SIZE;
@@ -1654,14 +1661,20 @@ impl<S: ContentSource + ?Sized> BlockSource for KandeloImageSource<'_, S> {
     }
 }
 
-fn set_bit(bitmap: &mut [u8], index: u32) {
+fn set_bit(bitmap: &mut Vec<u8>, index: u32) {
     // The vendor sets bit `index & 31` of the little-endian 32-bit word at
     // `index >> 5`, which is the same byte and bit this computes.
-    bitmap[(index >> 3) as usize] |= 1 << (index & 7);
+    let byte = (index >> 3) as usize;
+    if byte >= bitmap.len() {
+        bitmap.resize((byte / BLOCK_SIZE + 1) * BLOCK_SIZE, 0);
+    }
+    bitmap[byte] |= 1 << (index & 7);
 }
 
 fn get_bit(bitmap: &[u8], index: u32) -> bool {
-    bitmap[(index >> 3) as usize] & (1 << (index & 7)) != 0
+    bitmap
+        .get((index >> 3) as usize)
+        .is_some_and(|byte| *byte & (1 << (index & 7)) != 0)
 }
 
 #[cfg(test)]
@@ -2374,6 +2387,8 @@ mod tests {
                 )
                 .expect("create");
         }
+        assert_eq!(writer.inode_bitmap.len(), BLOCK_SIZE);
+        assert_eq!(writer.block_bitmap.len(), BLOCK_SIZE);
         assert_eq!(writer.inode_table.len(), 2 * BLOCK_SIZE);
         let missing = writer.total_inodes - 1;
         assert_eq!(writer.mkdir(missing, b"child", 0o755), Err(Errno::ENOENT));
@@ -2381,25 +2396,69 @@ mod tests {
         assert_eq!(writer.set_owner(missing, 1, 1), Err(Errno::ENOENT));
         assert_eq!(writer.set_mode(missing, 0o644), Err(Errno::ENOENT));
         assert_eq!(writer.set_times(missing, 1, 1, 1), Err(Errno::ENOENT));
-        let late_table_block = writer.inode_table_start + writer.inode_table_blocks - 1;
+        let unused_blocks = [
+            writer.block_bitmap_start - 1,
+            writer.inode_table_start - 1,
+            writer.inode_table_start + writer.inode_table_blocks - 1,
+        ];
         let image = writer.finish().expect("finish");
-        assert!(image.resident_bytes() < 2 * 1024 * 1024);
+        assert!(image.resident_bytes() < 128 * 1024);
         let mut bytes = [1u8; BLOCK_SIZE];
-        assert_eq!(
-            image.read_at(
-                &NoContent,
-                late_table_block as u64 * BLOCK_SIZE as u64,
-                &mut bytes
-            ),
-            Ok(BLOCK_SIZE),
-        );
-        assert!(bytes.iter().all(|byte| *byte == 0));
+        for block in unused_blocks {
+            bytes.fill(1);
+            assert_eq!(
+                image.read_at(&NoContent, block as u64 * BLOCK_SIZE as u64, &mut bytes),
+                Ok(BLOCK_SIZE),
+            );
+            assert!(bytes.iter().all(|byte| *byte == 0));
+        }
         let filesystem = KandeloImageFs::mount(KandeloImageSource {
             image: &image,
             content: &NoContent,
         })
         .expect("mount");
         assert!(filesystem.resolve(b"/file-39", true).is_ok());
+    }
+
+    #[test]
+    fn bitmap_grows_when_deferred_content_crosses_a_bitmap_page() {
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(256 * 1024 * 1024))
+            .expect("mkfs");
+        writer
+            .create_file(
+                writer.root(),
+                b"large",
+                0o644,
+                Content::Deferred {
+                    id: 7,
+                    len: 132 * 1024 * 1024,
+                },
+            )
+            .expect("create");
+        assert_eq!(writer.block_bitmap.len(), 2 * BLOCK_SIZE);
+        assert!(get_bit(&writer.block_bitmap, 32_768));
+        let second_bitmap_block = writer.block_bitmap_start + 1;
+        let image = writer.finish().expect("finish");
+        let mut bytes = [0u8; BLOCK_SIZE];
+        assert_eq!(
+            image.read_at(
+                &NoContent,
+                second_bitmap_block as u64 * BLOCK_SIZE as u64,
+                &mut bytes,
+            ),
+            Ok(BLOCK_SIZE),
+        );
+        assert_ne!(bytes[0] & 1, 0);
+        let filesystem = KandeloImageFs::mount(KandeloImageSource {
+            image: &image,
+            content: &NoContent,
+        })
+        .expect("mount");
+        let inode = filesystem.resolve(b"/large", true).expect("resolve");
+        assert_eq!(
+            filesystem.stat_ino(inode).expect("stat").size,
+            132 * 1024 * 1024,
+        );
     }
 
     #[test]
