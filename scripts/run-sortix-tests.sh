@@ -842,6 +842,10 @@ exit: $rc"
         fi
         return
     fi
+    if $PERSISTENT_REBOOT_MODE && [ $rc -eq 125 ] && grep -q '^persistent runner verification failed:' "$host_diagnostic_file"; then
+        { echo "FAIL"; echo "persistent runner verification failed (exit 125)"; tail -n 30 "$host_diagnostic_file"; } > "$result_dir/${test_name//\//__}.result"
+        return
+    fi
 
     # Check output against expect files
     if [ ${#expect_dirs[@]} -gt 0 ]; then
@@ -1369,6 +1373,6 @@ if [ ${#EMPTY_SUITES[@]} -gt 0 ]; then
     echo "Error: suites with no tests: ${EMPTY_SUITES[*]}" >&2
     exit 1
 fi
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi

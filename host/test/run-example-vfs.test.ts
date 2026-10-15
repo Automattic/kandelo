@@ -167,6 +167,7 @@ describe("run-example isolated filesystem", () => {
         KANDELO_RUNNER_FIXTURE_ROOT: "/host/fixture-root",
         KANDELO_RUNNER_FIXTURE_CWD: "suite",
         KANDELO_RUNNER_GUEST_PROGRAM: "suite/test",
+        KANDELO_RUNNER_VERIFY_REOPEN: "1",
       },
       "/guest/cwd",
       true,
