@@ -66,6 +66,7 @@ build_probe socket-basic socket-basic
 build_probe netpoll-basic netpoll-basic
 build_probe net-basic net-basic
 build_probe http-basic http-basic
+build_probe regexp-stack regexp-stack
 (
   cd "$repo_root/tests/go/http-basic"
   GO111MODULE=off GOOS=kandelo GOARCH=wasm CGO_ENABLED=0 \

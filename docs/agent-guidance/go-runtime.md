@@ -82,19 +82,24 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   semantics or use the bbolt smoke test as proof of durability.
 - The source-built Caddy v2.10.2 package pins six direct forks and
   serves static HTTP from the VFS on Node, Chromium, and Firefox.
-  WebKit currently fails before listener readiness with a native Wasm
-  call-stack overflow in `regexp_syntax.__compiler_.compile`. Do not
-  silently skip that engine or patch the regexp library to make Caddy
-  appear portable. Diagnose the WebKit call-stack boundary separately
-  before claiming browser parity. This standalone Caddy binary does
+  The earlier WebKit build failed before listener readiness with a native
+  Wasm call-stack overflow in `regexp_syntax.__compiler_.compile`. Do not
+  silently skip that engine or patch Caddy's dependency to make it appear
+  portable. This standalone Caddy binary does
   not include FrankenPHP or PHP execution.
   A temporary `--keep-names` FrankenPHP+Caddy build reproduces the same
   recursive frame in WebKit. Caddy's file server imports templates and
   Goldmark even when template handling is not configured; Goldmark's
   linkify URL regex contains `{1,256}`; a representative prefix of that
   pattern reaches AST depth 512 after Go's `regexp/syntax.Simplify`.
-  This is a plausible trigger for the
-  browser's call-stack limit, not evidence of a PHP or POSIX failure.
+  An exact Goldmark linkify expression reproduces the failure in WebKit,
+  while a shorter prefix passes. This is a Go regexp compiler stack-depth
+  issue, not evidence of a PHP or POSIX failure. A general iterative
+  compiler fallback in the Kandelo Go fork preserves regexp bytecode and
+  lazy-capture behavior and passes the exact expression in three browsers;
+  validate Caddy on a freshly rebuilt image before claiming browser parity.
+  Flattening counted repeats in `Simplify` changes lazy-capture semantics
+  and is not an acceptable shortcut.
   Excluding only the top-level templates import does not remove the
   transitive file-server dependency. Preserve the real `php_server` path
   when evaluating a general stack-safe fix.

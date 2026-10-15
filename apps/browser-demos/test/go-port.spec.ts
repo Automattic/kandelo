@@ -418,6 +418,12 @@ const probes: Probe[] = [
     stdout: ["GO HTTP PASS"],
   },
   {
+    name: "Go regexp bounded repetition compiles within browser call stacks",
+    file: "regexp-stack.wasm",
+    argv: ["go-regexp-stack"],
+    stdout: ["GO REGEXP PASS"],
+  },
+  {
     name: "Go spawn, wait, and command output through a pipe",
     file: "exec-basic.wasm",
     argv: ["go-exec-basic"],

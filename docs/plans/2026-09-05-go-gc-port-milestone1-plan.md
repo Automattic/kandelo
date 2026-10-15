@@ -3573,3 +3573,17 @@ maintainable general fix for that stack boundary, finish long-uptime
 checks, and repeat paired runtime and user-facing performance comparisons
 with the rebuilt image. Cache GC using the previously chosen one-day age
 and ABI-50 floor reclaimed 19.5 GiB before the image rebuild.
+
+**2026-10-15 — Isolate WebKit Caddy regexp compilation overflow.**
+An exact Goldmark linkify expression fails a small Go browser probe on
+WebKit with the same `regexp_syntax.__compiler_.compile` stack overflow as
+FrankenPHP+Caddy; Chromium passes. A shorter expression does not reproduce
+it. Flattening counted repeats in `regexp/syntax.Simplify` was rejected
+because it changes lazy-capture semantics. Instead, the Kandelo Go fork
+uses an iterative compiler fallback for deeply nested syntax trees in
+commit `4c644a03afc645936fa9322b840dc73bd53cdc87`. Native regexp tests,
+cross-target standard library builds, and bytecode/submatch differential
+checks pass. The exact Goldmark probe now passes Chromium, Firefox, and
+WebKit. Four Go package recipes pin that fork commit; a fresh WordPress
+SourceOnly image build is running. Full Caddy/WebKit editor validation is
+still pending and browser parity is not yet claimed.
