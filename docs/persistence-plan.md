@@ -592,15 +592,19 @@ rejection. Node and Chromium, Firefox, and WebKit reboot fixed v1
 and resizable v2 sources through this upgrade; two-valid-slot fixed v1 and
 resizable v2 cases reach `g2` on all four hosts. Three-valid-slot fixed v1
 and resizable v2 cases now reach `g3` on Node and all three browser engines;
-Node also reboots after compacting that migrated generation back to `g0`.
+Node reboots the migrated generation, and host tests compact it back to `g0`.
 Host fault tests leave all earlier sources intact across an interrupted
 conversion into `g4` or `g5`. A Node guest migration and Chromium, Firefox,
-and WebKit OPFS guest migrations now convert a four-slot fixed v1 source into
-`g4`, then reboot it; Node also compacts that `g4` generation back to `g0`.
+and WebKit OPFS guest migrations use explicitly restored older sealed slots
+to convert a four-slot fixed v1 source into `g4`, then reboot it; Node also
+compacts that `g4` generation back to `g0`.
 Staged browser replacement cleanup discovers and removes numbered spill files.
-After a successful boot conversion into `g4` or a later slot, the host has
+After a successful boot conversion into `g3` or a later slot, the host has
 mounted the new target and validated its source. It keeps those two copies,
 flush-invalidates older seals, and removes their files before guests start.
+Node and all three browser engines verify that a `g3` conversion retires `g0`
+and `g1` while retaining `g2`; a host fault test preserves the new target and
+source after interrupted retirement.
 Generation-one seals made from a legacy journal now include its SHA-256
 digest (seal version 4), read in bounded chunks. Boot rejects that generation
 if a still-present legacy journal changes even without changing length; old
@@ -644,11 +648,11 @@ later compaction cannot overwrite its active source.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.
-A boot-only conversion into `g3` still retains older sealed generations until
-a later live compaction. The legacy unsealed journal is not yet collected:
-existing source-bound seals record only its length, not a content digest, so
-deleting it automatically needs a stronger provenance check. A
-retirement failure may leave invalid orphan files until another spill-slot
+A boot-only conversion into `g3` now retains its source `g2` while retiring
+older `g0` and `g1` generations before guests start. Version-4 legacy seals
+allow the unsealed legacy journal to be retired after a second sealed copy is
+active; version-3 legacy sources remain untouched. A retirement failure may
+leave invalid orphan files until another spill-slot
 compaction; near-quota cleanup and power-loss ordering still need fault tests.
 Numbered spill slots remove the fixed four-slot recovery exception, but these
 remaining cases keep generation storage reclamation open.

@@ -206,7 +206,7 @@ export async function collectConvertedOverlayGenerations(
   reportCleanupFailure: (error: unknown) => void = console.error,
 ): Promise<SelectedOverlayGeneration> {
   if (selected.convertedFrom === undefined || selected.slot === "legacy"
-    || Number(selected.slot.slice(1)) < 4 || selected.convertedFrom.slot === "legacy") return selected;
+    || selected.convertedFrom.slot === "legacy") return selected;
   return collectObsoleteGenerations(selected, selected.convertedFrom, files, reportCleanupFailure);
 }
 

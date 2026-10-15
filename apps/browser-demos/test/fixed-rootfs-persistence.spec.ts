@@ -1670,6 +1670,15 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
         await sealWriter.write(seal);
         await sealWriter.close();
         const sourceLength = await grow(await directory.getFileHandle(`${name}.${sourceSlot}.journal`));
+        if (mode === "fixed-v1-four-slots") {
+          for (const slot of ["g0", "g1"]) {
+            for (const suffix of ["journal", "index", "seal"]) {
+              const original = await (await directory.getFileHandle(`${name}.${slot}.${suffix}`)).getFile();
+              const backup = await directory.getFileHandle(`${name}.backup-${slot}.${suffix}`, { create: true });
+              await original.stream().pipeTo(await backup.createWritable());
+            }
+          }
+        }
         return { name, sourceLength: mode === "resizable-v3" ? legacyLength : sourceLength };
       }, { moduleUrl, kernelUrl, imageUrl, mode });
       await page.reload();
@@ -1735,8 +1744,15 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
           const oldIndex = await (await directory.getFileHandle(`${name}.${sourceSlot}.index`)).getFile();
           const nextSlot = mode.endsWith("three-slots") || mode.endsWith("four-slots") ? "g3" : mode.endsWith("two-slots") ? "g2" : mode === "resizable-v3" ? "g0" : "g1";
           const nextIndex = await (await directory.getFileHandle(`${name}.${nextSlot}.index`)).getFile();
+          let olderRetired: boolean | null = null;
+          if (nextSlot === "g3") {
+            const names = new Set<string>();
+            for await (const filename of directory.keys()) names.add(filename);
+            olderRetired = ["g0", "g1"].every((slot) => ["journal", "index", "seal"]
+              .every((suffix) => !names.has(`${name}.${slot}.${suffix}`)));
+          }
           return {
-            state, created,
+            state, created, olderRetired,
             sourceLength: source.size,
             sourceVersion: mode === "resizable-v3" ? null : new DataView(await oldIndex.slice(4, 8).arrayBuffer()).getUint32(0, true),
             targetVersion: new DataView(await nextIndex.slice(4, 8).arrayBuffer()).getUint32(0, true),
@@ -1748,6 +1764,7 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
       expect(recovered).toEqual({
         state: mode.startsWith("fixed-v1") ? "XYcdefgh" : "abcdefgh",
         created: mode.startsWith("fixed-v1") ? null : "NEWW",
+        olderRetired: mode.endsWith("three-slots") || mode.endsWith("four-slots") ? true : null,
         sourceLength: prepared.sourceLength,
         sourceVersion: mode.startsWith("fixed-v1") ? 1 : mode.startsWith("resizable-v2") ? 2 : null,
         targetVersion: mode.startsWith("fixed-v1") ? 5 : 4,
@@ -1756,6 +1773,13 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
         const migrated = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
           const { BrowserKernel } = await import(moduleUrl);
           const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+          for (const slot of ["g0", "g1"]) {
+            for (const suffix of ["journal", "index", "seal"]) {
+              const backup = await (await directory.getFileHandle(`${name}.backup-${slot}.${suffix}`)).getFile();
+              const restored = await directory.getFileHandle(`${name}.${slot}.${suffix}`, { create: true });
+              await backup.stream().pipeTo(await restored.createWritable());
+            }
+          }
           const indexFile = await directory.getFileHandle(`${name}.g3.index`);
           const sealFile = await directory.getFileHandle(`${name}.g3.seal`);
           const journalFile = await directory.getFileHandle(`${name}.g3.journal`);
@@ -2068,9 +2092,9 @@ test("browser replays 8192 distinct blocks after live compaction", async ({ play
           let indexed = false;
           while (Date.now() < deadline) {
             try {
-              const seal = await (await directory.getFileHandle(`${name}.g0.seal`)).getFile();
+              const seal = await (await directory.getFileHandle(`${name}.g2.seal`)).getFile();
               const sealGeneration = new DataView(await seal.slice(0, 16).arrayBuffer()).getBigUint64(8, true);
-              const index = await (await directory.getFileHandle(`${name}.g0.index`)).getFile();
+              const index = await (await directory.getFileHandle(`${name}.g2.index`)).getFile();
               const blockCount = new DataView(await index.slice(0, 88).arrayBuffer()).getBigUint64(80, true);
               indexed = sealGeneration >= 3n && blockCount === 8192n;
             } catch {
@@ -2107,8 +2131,8 @@ test("browser replays 8192 distinct blocks after live compaction", async ({ play
       expect(result).toEqual({ size: largeWriteBytes, verified: true });
       const forged = await page.evaluate(async ({ name }) => {
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
-        const indexFile = await directory.getFileHandle(`${name}.g0.index`);
-        const sealFile = await directory.getFileHandle(`${name}.g0.seal`);
+        const indexFile = await directory.getFileHandle(`${name}.g2.index`);
+        const sealFile = await directory.getFileHandle(`${name}.g2.seal`);
         const index = new Uint8Array(await (await indexFile.getFile()).arrayBuffer());
         const seal = new Uint8Array(await (await sealFile.getFile()).arrayBuffer());
         const hash = async (bytes: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice().buffer));
@@ -2139,7 +2163,7 @@ test("browser replays 8192 distinct blocks after live compaction", async ({ play
             persistentComputerName: name,
           });
           const verification = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-many"]);
-          const indexFile = await directory.getFileHandle(`${name}.g0.index`);
+          const indexFile = await directory.getFileHandle(`${name}.g2.index`);
           const index = new Uint8Array(await (await indexFile.getFile()).arrayBuffer());
           const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", index.slice().buffer));
           return { verified: await verification.exit === 0, indexRepaired: digest.some((byte, position) => byte !== forged[position]) };
