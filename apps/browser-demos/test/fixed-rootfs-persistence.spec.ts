@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
 import type { OpfsImageIntegrity } from "../../../host/src/vfs/opfs-image-reader";
@@ -29,6 +29,23 @@ const largeImageFixture = process.env.KANDELO_LARGE_VFSI_FIXTURE;
 
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
+
+async function withChromiumOriginQuota<T>(context: BrowserContext, page: Page, headroom: number, action: () => Promise<T>): Promise<T> {
+  const session = await context.newCDPSession(page);
+  const origin = new URL(page.url()).origin;
+  const usage = await session.send("Storage.getUsageAndQuota", { origin });
+  const quotaSize = usage.usage + headroom;
+  await session.send("Storage.overrideQuotaForOrigin", { origin, quotaSize });
+  try {
+    const limited = await session.send("Storage.getUsageAndQuota", { origin });
+    expect(limited.overrideActive).toBe(true);
+    expect(limited.quota).toBe(quotaSize);
+    return await action();
+  } finally {
+    await session.send("Storage.overrideQuotaForOrigin", { origin });
+    await session.detach();
+  }
+}
 
 test("browser exports and reboots a physical >4 GiB OPFS image", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.skip(!largeImageFixture, "requires the opt-in physical large-image fixture");
@@ -2328,7 +2345,7 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
         }, { moduleUrl, kernelUrl, name: prepared.name });
         await page.reload();
       }
-      const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name, mode }) => {
+      const recover = () => page.evaluate(async ({ moduleUrl, kernelUrl, name, mode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const kernel = new BrowserKernel({ kernelOwnedFs: true });
@@ -2367,6 +2384,9 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
           await kernel.destroy();
         }
       }, { moduleUrl, kernelUrl, name: prepared.name, mode });
+      const recovered = browserName === "chromium" && mode === "fixed-v1-four-slots"
+        ? await withChromiumOriginQuota(context, page, 4 * 1024 * 1024, recover)
+        : await recover();
       expect(recovered).toEqual({
         state: mode.startsWith("fixed-v1") ? "XYcdefgh" : "abcdefgh",
         created: mode.startsWith("fixed-v1") ? null : "NEWW",

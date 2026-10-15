@@ -713,8 +713,15 @@ An in-memory host fault test now shares one quota across five sealed
 generations. A compaction that needs more space fails with `ENOSPC` while the
 active and source generations stay selectable; boot cleanup reclaims three
 obsolete generations, and retry compacts and reopens under the same quota.
-This does not model OPFS quota accounting or an OS power loss. Near-quota
-browser cleanup and storage-device flush ordering still need fault tests.
+A Chromium persistent-context test now applies the browser's origin quota
+override with only 4 MiB of headroom during an oversized four-slot fixed
+checkpoint conversion. The kernel mounts the new indexed generation, retires
+the two older slots, keeps its source fallback, and later compacts and reboots
+after the override is removed. Firefox and WebKit pass the same workflow
+without an enforced quota. The in-memory budget does not model OPFS quota
+accounting, and this browser case does not force retirement failure. Near-quota
+retry under unchanged browser quota, Firefox/WebKit quota enforcement, and
+storage-device flush ordering remain untested.
 Numbered spill slots remove the fixed four-slot recovery exception, but these
 remaining cases keep generation storage reclamation open.
 
