@@ -23,7 +23,7 @@ import {
     type ResolvedBuiltinPrograms,
 } from "./run-example-builtins";
 import { isWithinRealDirectory } from "./run-example-paths";
-import { prepareRunExampleRootfs } from "./run-example-rootfs";
+import { preparePersistentRunExampleRootfs, prepareRunExampleRootfs } from "./run-example-rootfs";
 import {
     buildRunExampleGuestEnvironment,
     resolveRunExampleFilesystem,
@@ -512,12 +512,21 @@ async function main() {
             ? prepareRunExampleRootfs(new Uint8Array(
                 readFileSync(resolveRootfsArtifact().selectedPath),
             ))
-            : {};
+            : undefined;
+        const persistentImage = runnerFilesystem.persistentFixtureRoot === undefined
+            ? undefined
+            : await preparePersistentRunExampleRootfs(
+                rootfs!.rootfsImage,
+                runnerFilesystem.persistentFixtureRoot,
+            );
         host = new NodeKernelHost({
             maxWorkers: 4,
             // Exec authority stays in the image; local bytes only supply
             // its declared lazy transport.
-            rootfsImage: runnerFilesystem.rootfsImage,
+            rootfsImage: persistentImage ?? runnerFilesystem.rootfsImage,
+            experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,
+            rootfsLazyUrlBase: persistentImage === undefined ? undefined : rootfs?.rootfsLazyUrlBase,
+            rootfsLazyAssets: persistentImage === undefined ? undefined : rootfs?.rootfsLazyAssets,
             ...(runnerFilesystem.rootfsMountSpec === undefined
                 ? {}
                 : { rootfsMountSpec: runnerFilesystem.rootfsMountSpec }),
@@ -562,6 +571,9 @@ async function main() {
                     runnerFilesystem.isolated,
                     process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin",
                     uid !== undefined && uid !== 0 ? "/home/maker" : "/root",
+                    runnerFilesystem.persistentFixtureRoot === undefined
+                        ? "/tmp"
+                        : runnerFilesystem.guestCwd,
                 ),
                 ...gitEnv,
             ],
