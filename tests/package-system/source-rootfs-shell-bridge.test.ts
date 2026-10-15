@@ -623,6 +623,12 @@ describe("canonical source-rootfs shell", () => {
     expect(fs.stat("/bin/jq").ino).toBe(
       fs.stat("/usr/bin/jq").ino,
     );
+    expect(composed.files.find((file) => file.path === "/usr/bin/php")).toMatchObject({
+      uri: "kandelo-lazy:programs/php/php.wasm",
+    });
+    expect(fs.stat("/usr/bin/php").mode & 0o777).toBe(0o755);
+    expect(fs.readlink("/bin/php")).toBe("/usr/bin/php");
+    expect(fs.stat("/bin/php").ino).toBe(fs.stat("/usr/bin/php").ino);
     // FFmpeg's three programs are lazy files provided by the ffmpeg package.
     for (const id of ["ffmpeg", "ffprobe", "ffplay"]) {
       const spec = SHELL_LAZY_BINARY_SPECS.find((candidate) => candidate.id === id);
