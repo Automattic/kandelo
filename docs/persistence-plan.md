@@ -563,7 +563,13 @@ checkpoint. The
 source is left untouched and the host seals the target only after conversion
 and readback; an incomplete target is ignored on the next boot. Small legacy
 and v1 journals retain their existing recovery path. Oversized unindexed
-resizable journals still require a bounded metadata-and-block conversion path.
+resizable journals now use a separate bounded conversion: checksummed 384-byte
+descriptors carry ordered metadata and block mutations through on-disk merge
+sort; duplicate truncate markers in the block stream remove superseded writes
+without a resident block map. The canonical target has a version 4 metadata
+and block checkpoint. The source remains untouched until the target is sealed
+and mounted. Older version 1/2 indexed generations still use their existing
+recovery path.
 Conversion needs quota for the temporary sorted references and target journal;
 an `ENOSPC` failure does not publish the target or discard the source. Peak
 resident memory and conversion latency on a near-capacity image remain unmeasured.

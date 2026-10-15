@@ -87,6 +87,38 @@ function expandJournalToCompactionThreshold(path: string): number {
   return original.byteLength + repeated.byteLength;
 }
 
+function expandLargestJournalTransactionToCompactionThreshold(path: string): number {
+  const original = readFileSync(path);
+  let position = 72;
+  let sequence = 0n;
+  let largestTransaction: Buffer | null = null;
+  while (position < original.byteLength) {
+    const length = original.readUInt32LE(position + 4);
+    expect(length).toBeGreaterThanOrEqual(60);
+    expect(position + length).toBeLessThanOrEqual(original.byteLength);
+    if (largestTransaction === null || length > largestTransaction.byteLength) {
+      largestTransaction = Buffer.from(original.subarray(position, position + length));
+    }
+    position += length;
+    sequence++;
+  }
+  expect(largestTransaction).not.toBeNull();
+  const transaction = largestTransaction!;
+  const count = Math.ceil((32 * 1024 * 1024 - original.byteLength) / transaction.byteLength) + 1;
+  const repeated = Buffer.allocUnsafe(count * transaction.byteLength);
+  for (let index = 0; index < count; index++) {
+    const offset = index * transaction.byteLength;
+    transaction.copy(repeated, offset);
+    repeated.writeBigUInt64LE(++sequence, offset + 8);
+    createHash("sha256")
+      .update(repeated.subarray(offset, offset + transaction.byteLength - 36))
+      .digest()
+      .copy(repeated, offset + transaction.byteLength - 36);
+  }
+  writeFileSync(path, Buffer.concat([original, repeated]));
+  return original.byteLength + repeated.byteLength;
+}
+
 class FaultingMemoryOverlayStorage implements PersistentOverlayStorage {
   bytes = new Uint8Array();
   fault: "write" | "flush" | null = null;
@@ -937,6 +969,47 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       rmSync(directory, { recursive: true, force: true });
     }
   }, 90_000);
+
+  it.skipIf(guestProgramPath === null)("converts an oversized resizable journal before replaying namespace and truncation", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-legacy-convert-"));
+    const path = join(directory, "machine.journal");
+    try {
+      const image = await makeImage("abcdefgh", true);
+      const first = await boot(image, path, true);
+      try {
+        for (const mode of ["create-file", "verify-created", "verify-created-shrunk", "set-metadata", "resize", "verify-resize", "large"] as const) {
+          const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
+          expect(await exit, mode).toBe(0);
+        }
+      } finally {
+        await first.destroy();
+      }
+      const sourceLength = expandLargestJournalTransactionToCompactionThreshold(path);
+      const reopened = await boot(image, path, true);
+      try {
+        for (const mode of ["verify-created-link", "verify-metadata", "verify-zero"] as const) {
+          const { exit } = await reopened.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
+          expect(await exit).toBe(0);
+        }
+        const large = await reopened.readFileRangeFromVfs("/large", 13, 4096);
+        expect(large?.every((byte, position) => byte === (position & 255))).toBe(true);
+      } finally {
+        await reopened.destroy();
+      }
+      expect(readFileSync(path).byteLength).toBe(sourceLength);
+      expect(readFileSync(`${path}.g0.index`).readUInt32LE(4)).toBe(4);
+      expect(readFileSync(`${path}.g0.journal`).byteLength).toBeLessThan(sourceLength / 2);
+      const again = await boot(image, path, true);
+      try {
+        const { exit } = await again.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-created-link"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await again.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it.skipIf(guestProgramPath === null)("falls back from a sealed v5 index with a false block digest", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-index-fallback-"));

@@ -5633,10 +5633,11 @@ export class CentralizedKernelWorker {
     };
   }
 
-  convertUnindexedFixedRootfsPersistence(
+  convertUnindexedRootfsPersistence(
     source: PersistentOverlayStorage,
     target: PersistentOverlayStorage,
     index: PersistentOverlayStorage,
+    resizable: boolean,
   ): void {
     if (this.#persistentOverlayActiveStorage !== null) {
       throw new Error("legacy rootfs conversion requires an unmounted journal");
@@ -5647,10 +5648,12 @@ export class CentralizedKernelWorker {
       this.#setPersistentOverlaySlot(0, this.#monitorPersistentOverlayStorage(source, observed));
       this.#setPersistentOverlaySlot(1, this.#monitorPersistentOverlayStorage(target, observed));
       this.#setPersistentOverlaySlot(2, this.#monitorPersistentOverlayStorage(index, observed));
-      this.#runImmediateKernelEntry("convert unindexed fixed rootfs persistence", (entry) => {
+      this.#runImmediateKernelEntry("convert unindexed rootfs persistence", (entry) => {
         const convert = this.#kernelInstanceForEntry(entry).exports
-          .kernel_rootfs_convert_unindexed_fixed_persistence as (() => number) | undefined;
-        if (typeof convert !== "function") throw new Error("kernel lacks unindexed fixed rootfs persistence conversion export");
+          [resizable
+            ? "kernel_rootfs_convert_unindexed_resizable_persistence"
+            : "kernel_rootfs_convert_unindexed_fixed_persistence"] as (() => number) | undefined;
+        if (typeof convert !== "function") throw new Error("kernel lacks unindexed rootfs persistence conversion export");
         status = convert();
         return undefined;
       });
@@ -5660,7 +5663,7 @@ export class CentralizedKernelWorker {
           observed.failure,
         );
       }
-      if (status !== 0) throw new RejectedOverlayGenerationError("fixed", -(status ?? 5));
+      if (status !== 0) throw new RejectedOverlayGenerationError(resizable ? "resizable" : "fixed", -(status ?? 5));
     } finally {
       this.#setPersistentOverlaySlot(0, null);
       this.#setPersistentOverlaySlot(1, null);
