@@ -357,6 +357,26 @@ describe("overlay generation boot selection", () => {
     expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
   });
 
+  it("binds a successful target after preparation flushes the source", async () => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    await compactOverlayGeneration(
+      { journal: source, slot: "legacy", generation: 0, sealedLength: 0 },
+      files(entries),
+      {
+        prepare: (target) => {
+          source.writeAllAt(source.len(), Uint8Array.of(42));
+          target.writeAllAt(0, source.bytes);
+        },
+        checkpoint: (index) => { index.writeAllAt(0, Uint8Array.of(1, 2, 3)); },
+        activate: () => {},
+        cancel: () => { throw new Error("unexpected cancellation"); },
+      },
+      0,
+    );
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
+  });
+
   it("closes every old handle after activation even when one close fails", async () => {
     const source = new MemoryStorage(new Uint8Array(72).fill(7));
     const sourceIndex = new MemoryStorage(Uint8Array.of(4));
@@ -419,6 +439,65 @@ describe("overlay generation boot selection", () => {
     expect(canceled).toBe(true);
     expect(entries["g0.seal"]!.len()).toBe(0);
     expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
+  });
+
+  it("rejects a stale target after activation and seal invalidation both fail", async () => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    await expect(compactOverlayGeneration(
+      { journal: source, slot: "legacy", generation: 0, sealedLength: 0 },
+      files(entries),
+      {
+        prepare: (target) => { target.writeAllAt(0, source.bytes); },
+        checkpoint: (index) => {
+          index.writeAllAt(0, Uint8Array.of(1, 2, 3));
+          source.writeAllAt(source.len(), Uint8Array.of(42));
+        },
+        activate: () => {
+          entries["g0.seal"]!.failNextTruncate = true;
+          throw new Error("injected activation failure");
+        },
+        cancel: () => {},
+      },
+      0,
+    )).rejects.toThrow("persistent overlay compaction cleanup failed");
+    expect(entries["g0.seal"]!.len()).toBeGreaterThan(0);
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("legacy");
+  });
+
+  it("keeps a sealed generation bootable while its former source slot is reused", async () => {
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(Uint8Array.of(1, 2, 3)),
+      "g0.seal": new MemoryStorage(),
+      "g0.index": new MemoryStorage(Uint8Array.of(4)),
+      "g1.journal": new MemoryStorage(Uint8Array.of(5, 6, 7)),
+      "g1.seal": new MemoryStorage(),
+      "g1.index": new MemoryStorage(Uint8Array.of(8)),
+    };
+    const digest = new Uint8Array(32);
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, digest, entries["g0.index"]!);
+    await writeOverlayGenerationSeal(entries["g1.journal"]!, entries["g1.seal"]!, 2, digest,
+      entries["g1.index"]!, { slot: "g0", journalLength: entries["g0.journal"]!.len() });
+    entries["g0.journal"]!.truncate(0);
+    entries["g0.seal"]!.truncate(0);
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g1");
+  });
+
+  it("rejects a stale second generation when its sealed source has an appended tail", async () => {
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(Uint8Array.of(1, 2, 3)),
+      "g0.seal": new MemoryStorage(),
+      "g0.index": new MemoryStorage(Uint8Array.of(4)),
+      "g1.journal": new MemoryStorage(Uint8Array.of(5, 6, 7)),
+      "g1.seal": new MemoryStorage(),
+      "g1.index": new MemoryStorage(Uint8Array.of(8)),
+    };
+    const digest = new Uint8Array(32);
+    await writeOverlayGenerationSeal(entries["g0.journal"]!, entries["g0.seal"]!, 1, digest, entries["g0.index"]!);
+    await writeOverlayGenerationSeal(entries["g1.journal"]!, entries["g1.seal"]!, 2, digest,
+      entries["g1.index"]!, { slot: "g0", journalLength: entries["g0.journal"]!.len() });
+    entries["g0.journal"]!.writeAllAt(3, Uint8Array.of(9));
+    expect((await enableBestOverlayGeneration(files(entries), () => {})).slot).toBe("g0");
   });
 
   it("cancels preparation and invalidates a seal after its flush fails", async () => {

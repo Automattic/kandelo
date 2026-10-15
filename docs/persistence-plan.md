@@ -463,10 +463,15 @@ slot plus empty-legacy case. Compaction prepares a
 compacted journal without switching the kernel's active handle, writes and
 verifies the target seal, and only then activates it. Failure cancels the
 prepared target and invalidates its seal. The kernel refuses activation if
-the source changed during preparation. After activation, a seal or old-handle
-close failure is reported without skipping attempts to close the remaining
-old handles; the active target is retained because activation cannot be
-rolled back. Synchronous storage and hash operations
+the source changed during preparation. New v3 seals also record the
+source slot and exact journal length: if seal invalidation fails after a
+rejected activation, boot rejects the stale target while that source
+generation remains available. Reusing the old slot after a successful
+handoff does not invalidate the active generation. Earlier v1/v2 seals stay
+readable; they do not carry this source-length guard. After activation,
+a seal or old-handle close failure is reported without skipping attempts
+to close the remaining old handles; the active target is retained because
+activation cannot be rolled back. Synchronous storage and hash operations
 run on the dedicated kernel worker during live handoff; guest syscalls wait
 until that turn finishes. The pause has not yet been measured for large
 changed-block sets.
