@@ -1,5 +1,5 @@
 import { ERRNO } from "../generated/abi";
-import { verifyOverlayGenerationSeal, verifyOverlayGenerationSealSync, writeOverlayGenerationSealSync } from "./overlay-generation-seal";
+import { verifyOverlayGenerationSeal, verifyOverlayGenerationSealSync, writeOverlayGenerationSealSync, type OverlaySealSource } from "./overlay-generation-seal";
 import type { PersistentOverlayStorage } from "./overlay-storage";
 
 export class RejectedOverlayGenerationError extends Error {
@@ -39,6 +39,7 @@ interface Candidate {
   generation: number;
   sealedLength: number;
   slot: OverlayGenerationSlot;
+  source?: OverlaySealSource;
 }
 
 export interface SelectedOverlayGeneration {
@@ -87,7 +88,7 @@ export async function enableBestOverlayGeneration(
         const verified = await verifyOverlayGenerationSeal(journal, seal, undefined, true, index);
         const retainedIndex = verified.indexLength === undefined ? undefined : index ?? undefined;
         if (retainedIndex !== undefined) index = null;
-        candidates.push({ journal, index: retainedIndex, generation: verified.generation, sealedLength: verified.journalLength, slot });
+        candidates.push({ journal, index: retainedIndex, generation: verified.generation, sealedLength: verified.journalLength, slot, source: verified.source });
       } catch (error) {
         journal.close();
         if (!(error instanceof Error) || error.message !== "persistent overlay generation seal is invalid") {
@@ -100,6 +101,33 @@ export async function enableBestOverlayGeneration(
     }
     if (candidates.length === 2 && candidates[0].generation === candidates[1].generation) {
       throw new Error("persistent overlay has ambiguous sealed generations; refusing to select one");
+    }
+    const verifiedCandidates = [...candidates];
+    const staleCandidates: Candidate[] = [];
+    for (const candidate of verifiedCandidates) {
+      if (candidate.source === undefined) continue;
+      if (candidate.source.slot === candidate.slot) {
+        staleCandidates.push(candidate);
+        continue;
+      }
+      if (candidate.source.slot === "legacy") {
+        const source = await files.open("legacy", "journal", false);
+        try {
+          if (source !== null && source.len() === candidate.source.journalLength) continue;
+        } finally {
+          source?.close();
+        }
+      } else {
+        const source = verifiedCandidates.find((other) => other.slot === candidate.source?.slot
+          && other.generation === candidate.generation - 1);
+        if (source === undefined || source.journal.len() === candidate.source.journalLength) continue;
+      }
+      staleCandidates.push(candidate);
+    }
+    for (const candidate of staleCandidates) {
+      candidates.splice(candidates.indexOf(candidate), 1);
+      candidate.journal.close();
+      candidate.index?.close();
     }
     candidates.sort((left, right) => right.generation - left.generation);
     for (const candidate of candidates) {
@@ -196,10 +224,12 @@ export async function compactOverlayGeneration(
     index.flush();
     handoff.prepare(target);
     prepared = true;
+    const sourceLength = selected.journal.len();
     handoff.checkpoint(index);
     const baseDigest = header.slice(8, 40);
     const generation = selected.generation + 1;
-    writeOverlayGenerationSealSync(target, seal, generation, baseDigest, index);
+    writeOverlayGenerationSealSync(target, seal, generation, baseDigest, index,
+      { slot: selected.slot, journalLength: sourceLength });
     verifyOverlayGenerationSealSync(target, seal, baseDigest, false, index);
     sealedLength = target.len();
     handoff.activate();
