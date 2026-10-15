@@ -249,6 +249,13 @@ worker restart and Chromium, Firefox, and WebKit page reloads.
 `msync(MS_SYNC)` now flushes the rootfs journal after publishing `MAP_SHARED`
 bytes, rather than waiting for a later `fsync` or clean shutdown; Node and
 browser restart tests check the committed journal before shutdown.
+`sync()` and rootfs `syncfs(fd)` now flush pending journal blocks and metadata;
+`syncfs` reports storage failures and rejects host-mounted filesystems without
+a mount-wide sync adapter. Guest tests reopen journal bytes captured before
+clean shutdown on Node and all three browser engines.
+`sync` and `syncfs` do not yet force an otherwise unobserved sole-writer
+`MAP_SHARED` mapping to publish its stores; `msync(MS_SYNC)` is the verified
+barrier for that case.
 The positioned-install browser test also runs a guest overwrite and a 2 MiB
 write near the end of a large file, then reopens the saved image after a page
 reload and verifies both writes through guest reads. Its 68 MiB and 772 MiB

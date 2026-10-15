@@ -26,7 +26,8 @@ const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-over
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
 
-test("browser MAP_SHARED msync commits the OPFS journal before shutdown", async ({ playwright, browserName, baseURL }, testInfo) => {
+for (const mode of ["mmap-sync", "sync", "syncfs"] as const) {
+test(`browser ${mode} commits the OPFS journal before shutdown`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.mkdir("/bin", 0o755);
@@ -54,11 +55,11 @@ test("browser MAP_SHARED msync commits the OPFS journal before shutdown", async 
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
+      const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, mode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
-        const name = `mmap-sync-${crypto.randomUUID()}`;
+        const name = `${mode}-${crypto.randomUUID()}`;
         const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
         const writer = await imageFile.createWritable();
         await writer.write(await (await fetch(imageUrl)).arrayBuffer());
@@ -72,8 +73,8 @@ test("browser MAP_SHARED msync commits the OPFS journal before shutdown", async 
         const journalFile = await directory.getFileHandle(`${name}.journal`);
         let committedJournal: ArrayBuffer;
         try {
-          const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "mmap-sync"]);
-          if (await exit !== 0) throw new Error("guest msync failed");
+          const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", mode]);
+          if (await exit !== 0) throw new Error(`guest ${mode} failed`);
           committedJournal = await (await journalFile.getFile()).arrayBuffer();
         } finally {
           await first.destroy();
@@ -87,9 +88,9 @@ test("browser MAP_SHARED msync commits the OPFS journal before shutdown", async 
         } finally {
           await reopened.destroy();
         }
-      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
+      }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl, mode });
       expect(result.journalSize).toBeGreaterThan(72);
-      expect(result.state).toBe("MScdefgh");
+      expect(result.state).toBe(mode === "mmap-sync" ? "MScdefgh" : "XYcdefgh");
     } finally {
       await context.close();
     }
@@ -97,6 +98,7 @@ test("browser MAP_SHARED msync commits the OPFS journal before shutdown", async 
     rmSync(userDataDir, { recursive: true, force: true });
   }
 });
+}
 
 test("browser retains a persistent journal lease after an unacknowledged destroy until tab close", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);

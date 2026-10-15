@@ -7037,8 +7037,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
 
         // -- Memory/sync stubs --
         257 => 0, // SYS_MEMBARRIER: no-op (single-threaded per process in Wasm)
-        273 => 0, // SYS_SYNC: no-op (all I/O is synchronous to host)
-        274 => 0, // SYS_SYNCFS: no-op
+        273 => match crate::rootfs::sync_persistence() {
+            Ok(()) => 0,
+            Err(error) => -(error as i32),
+        },
+        274 => {
+            let (_gkl, proc) = unsafe { get_process() };
+            match syscalls::sys_syncfs(proc, a1) {
+                Ok(()) => 0,
+                Err(error) => -(error as i32),
+            }
+        }
         278 => {
             let _address = process_address!(0);
             let _length = process_size!(1);

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <stddef.h>
@@ -14,6 +15,17 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && (strcmp(argv[1], "sync") == 0 || strcmp(argv[1], "syncfs") == 0)) {
+        int fd = open("/state", O_RDWR);
+        if (fd < 0) return 172;
+        if (pwrite(fd, "XY", 2, 0) != 2) return 173;
+        if (strcmp(argv[1], "syncfs") == 0) {
+            if (syncfs(fd) != 0) return 174;
+        } else {
+            sync();
+        }
+        return close(fd) == 0 ? 0 : 175;
+    }
     if (argc >= 2 && strcmp(argv[1], "mmap-sync") == 0) {
         int fd = open("/state", O_RDWR);
         if (fd < 0) return 167;

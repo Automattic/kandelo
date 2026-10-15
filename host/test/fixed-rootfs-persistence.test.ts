@@ -80,7 +80,7 @@ function expandJournalToCompactionThreshold(path: string): number {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
-  it.skipIf(guestProgramPath === null)("makes MAP_SHARED msync durable before host shutdown", async () => {
+  it.skipIf(guestProgramPath === null).each(["mmap-sync", "sync", "syncfs"] as const)("makes %s durable before host shutdown", async (mode) => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-mmap-persistence-"));
     const path = join(directory, "machine.journal");
     const committedPath = join(directory, "committed.journal");
@@ -88,7 +88,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     try {
       const first = await boot(image, path);
       try {
-        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "mmap-sync"]);
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", mode]);
         expect(await exit).toBe(0);
         expect(readFileSync(path).byteLength).toBeGreaterThan(72);
         copyFileSync(path, committedPath);
@@ -97,7 +97,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       }
       const reopened = await boot(image, committedPath, false, true);
       try {
-        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("MScdefgh");
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe(mode === "mmap-sync" ? "MScdefgh" : "XYcdefgh");
       } finally {
         await reopened.destroy();
       }
