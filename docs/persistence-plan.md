@@ -81,8 +81,11 @@ semantics. Node and browser must expose the same guest-visible behavior.
   inode bytes 124–127 for a triple-indirect pointer and supports up to
   10 + 1,024 + 1,024² + 1,024³ blocks per file (roughly 4 TiB). The writer
   emits v1 for files within its original limit and v2 only when a larger file
-  requires the new pointer; the reader mounts both. VFSI v2 uses a 64-bit body
-  length above the v1 32-bit limit; smaller bodies keep their v1 header. The
+  requires the new pointer; the reader mounts both. Nonzero file and indirect
+  pointers must remain within the declared KIFS data region, including when
+  enumerating sparse blocks; otherwise reads fail with `EIO` rather than
+  exposing metadata or a trailing section as file data. VFSI v2 uses a 64-bit
+  body length above the v1 32-bit limit; smaller bodies keep their v1 header. The
   ABI 51 kernel also boots a synthetic >4 GiB sparse v2 container through Node
   positioned reads, including a trailer beyond the 32-bit offset boundary,
   while reading less than 16 MiB. Node now also boots a physical sparse

@@ -2606,6 +2606,10 @@ superblock version: v1 addresses 10 + 1,024 + 1,024² blocks per file, while
 v2 adds a triple-indirect pointer at inode bytes 124–127 and addresses another
 1,024³ blocks. The writer keeps KIFS v1 unless a file exceeds its limit; a
 VFSI v2 container may contain either KIFS version.
+On dereference, the kernel rejects nonzero data and indirect pointers outside
+the superblock's declared data-block range, so a damaged pointer cannot alias
+filesystem metadata or a trailing section. This is a bounds check, not a
+replacement for the staged image's whole-file integrity verification.
 Snapshot export leaves unwritten blocks of new journal-backed regular files
 unallocated in KIFS, so their logical size need not determine body size. The
 kernel records sparse block maps for image-backed regular files during boot
