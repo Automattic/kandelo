@@ -3430,3 +3430,19 @@ and Goldmark, so that experiment did not actually remove Goldmark. The
 module-selection edit was reverted and the rev1 package artifact restored.
 WebKit's root cause and a maintainable solution remain open; no Caddy,
 FrankenPHP, Go compiler, or Go standard-library source patch was kept.
+
+**2026-10-15 — WebKit call-stack cause narrowed.** A temporary normal
+resolver build of FrankenPHP+Caddy with fork-instrumenter `--keep-names`
+failed the focused WebKit PHP/static fixture before readiness with repeated
+`regexp_syntax.__compiler_.compile` frames, not an anonymous function.
+The shipped build was restored after diagnosis. Caddy's file server imports
+templates and Goldmark transitively; Goldmark's linkify URL regex includes
+`{1,256}`. A native Go `regexp/syntax` probe measured the simplified AST
+depth as 512 for that pattern (511 even for `a{1,256}`). This strongly
+connects a deep recursive regex compile to WebKit's Wasm call-stack limit,
+but does not yet prove which exact initialization-time pattern first
+overflows there. A general stack-safe regex compilation strategy would
+touch the Go standard library, contrary to the preference against a pile
+of survival patches; discuss a small, upstreamable design before changing
+that library. No Go or package-source change was kept. The WebKit demo
+still fails; Node, Chromium, and Firefox results are unaffected.

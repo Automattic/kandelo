@@ -88,6 +88,15 @@ adding package-only `netgo` or `osusergo` flags to FrankenPHP.
   appear portable. Diagnose the WebKit call-stack boundary separately
   before claiming browser parity. This standalone Caddy binary does
   not include FrankenPHP or PHP execution.
+  A temporary `--keep-names` FrankenPHP+Caddy build reproduces the same
+  recursive frame in WebKit. Caddy's file server imports templates and
+  Goldmark even when template handling is not configured; Goldmark's
+  linkify URL regex contains `{1,256}`, which Go's `regexp/syntax.Simplify`
+  expands to an AST depth of 512. This is a plausible trigger for the
+  browser's call-stack limit, not evidence of a PHP or POSIX failure.
+  Excluding only the top-level templates import does not remove the
+  transitive file-server dependency. Preserve the real `php_server` path
+  when evaluating a general stack-safe fix.
 - The linker imports shared linear memory and declares a bounded pthread
   slot arena below the Go heap. The default is 32 slots; the per-program
   `-ldflags='-kandelothreadslots=N'` accepts 1–1024. Each slot reserves
