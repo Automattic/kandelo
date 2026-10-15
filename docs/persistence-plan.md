@@ -744,9 +744,21 @@ or skips. Together with basic and I/O, 1,083 Sortix runtime cases ran on fresh
 resizable journals; the remaining suites and test-specific restart assertions
 are still open.
 Sortix now has an opt-in `--persistent-reboot` mode. After the guest exits, the
-runner checks for shutdown sync failure, destroys the first kernel, and boots
-the exact same composed image and journal with strict existing-journal
-recovery. Eleven selected filesystem cases and all 55 I/O cases pass that
-post-test reboot. This checks journal replay and namespace reconstruction,
-but does not assert test-specific state after reboot or simulate an abrupt
-crash; those remain separate conformance work.
+runner inspects the image-owned fixture tree, checks for shutdown sync failure,
+destroys the first kernel, and boots the exact same composed image and journal
+with strict existing-journal recovery. It compares the fixture's paths, types,
+sizes, ownership, permissions, symlink targets, and SHA-256 of regular files
+up to 256 KiB and a 4 MiB total content-read budget. Larger files retain
+metadata comparison; the inspection refuses more than 10,000 entries. Eleven
+selected filesystem cases and all 55 I/O cases pass strict post-test reboot
+with this state comparison. A comparison or reboot failure forces runner exit
+125 and a host diagnostic marker, which the persistent-reboot runner records
+as an unexpected failure even when the guest's output matched an expectation.
+The 79-case stdio, process, and paths suites also pass with the comparison.
+The 949-case basic suite at 14 parallel workers produced 938 passes, eight
+expected failures, and three
+timeouts; the three timed-out cases each pass when rerun sequentially. The
+runner now exits nonzero for any unexpected timeout. This
+checks journal replay and fixture namespace reconstruction, but not changes
+outside the fixture, complete content of larger files, test-specific expected
+state, or abrupt crashes; those remain separate conformance work.

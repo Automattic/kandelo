@@ -18,6 +18,7 @@ import { resolve, dirname, isAbsolute } from "path";
 import { NodeKernelHost, resolveRootfsArtifact } from "../host/src/node-kernel-host";
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import { writeAllSync } from "./run-example-output";
+import { assertPersistentFixtureUnchanged, inspectPersistentFixture } from "./run-example-persistence-verification";
 import {
     resolveRunExampleBuiltinPrograms,
     type ResolvedBuiltinPrograms,
@@ -606,27 +607,34 @@ async function main() {
             status = outcome;
         }
         if (runnerFilesystem.verifyPersistenceReopen && outcome !== timedOut) {
-            if (persistentImage === undefined || runnerFilesystem.experimentalResizablePersistencePath === undefined) {
-                throw new Error("persistent runner reboot requires a composed image and journal");
-            }
-            await host.destroy();
-            const shutdownFailure = host.getPersistenceShutdownFailure();
-            host = undefined;
-            if (shutdownFailure !== null) {
-                throw new Error(`persistent runner shutdown sync failed: ${shutdownFailure}`);
-            }
-            const reopened = new NodeKernelHost({
-                maxWorkers: 4,
-                rootfsImage: persistentImage,
-                rootfsLazyUrlBase: rootfs?.rootfsLazyUrlBase,
-                rootfsLazyAssets: rootfs?.rootfsLazyAssets,
-                experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,
-                requireExistingRootfsPersistence: true,
-            });
             try {
-                await reopened.init();
-            } finally {
-                await reopened.destroy();
+                if (persistentImage === undefined || runnerFilesystem.experimentalResizablePersistencePath === undefined) {
+                    throw new Error("persistent runner reboot requires a composed image and journal");
+                }
+                const fixtureBeforeReboot = await inspectPersistentFixture(host);
+                await host.destroy();
+                const shutdownFailure = host.getPersistenceShutdownFailure();
+                host = undefined;
+                if (shutdownFailure !== null) {
+                    throw new Error(`persistent runner shutdown sync failed: ${shutdownFailure}`);
+                }
+                const reopened = new NodeKernelHost({
+                    maxWorkers: 4,
+                    rootfsImage: persistentImage,
+                    rootfsLazyUrlBase: rootfs?.rootfsLazyUrlBase,
+                    rootfsLazyAssets: rootfs?.rootfsLazyAssets,
+                    experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,
+                    requireExistingRootfsPersistence: true,
+                });
+                try {
+                    await reopened.init();
+                    assertPersistentFixtureUnchanged(fixtureBeforeReboot, await inspectPersistentFixture(reopened));
+                } finally {
+                    await reopened.destroy();
+                }
+            } catch (error) {
+                console.error("persistent runner verification failed:", error);
+                status = 125;
             }
         }
     } finally {
