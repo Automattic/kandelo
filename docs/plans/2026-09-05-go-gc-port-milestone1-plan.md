@@ -3378,3 +3378,29 @@ profile remain unvalidated. Next: secure enough build space for the ABI-50
 shell closure, complete the WordPress image, then run Node and browser editor
 soaks. Separately, diagnose the WebKit Caddy startup stack overflow without
 patching Go's compiler or standard library.
+
+**2026-10-14 — ABI-50 WordPress/FrankenPHP+Caddy image and browser validation.**
+The normal resolver published the WordPress 7.0 rev27 ABI-50 image after the
+disk-space gate was cleared. The full `./run.sh build wp-vfs` SourceOnly build
+also completed (133 nodes); `dash` was bootstrapped into that projection as
+the remaining required browser binary. A real Node-host demo served the
+homepage (HTTP 200), login redirect (HTTP 302), and authenticated
+`/wp-admin/site-editor.php` (HTTP 200). The direct Chromium browser-host test
+passed. The Kandelo browser-app UI test passed in Chromium and Firefox with
+the SourceOnly projection explicitly selected: both loaded the preinstalled
+site, used the demo-guide admin login, opened Appearance → Editor, and
+returned HTTP 200 for repeated editor requests during a 30-second soak.
+The live Vite-hosted Kandelo demo also rendered the WordPress homepage with
+the `wordpress-frankenphp-caddy` profile. These checks exercise Caddy's
+`php_server` and FrankenPHP's embedded PHP, not nginx or PHP-FPM. No Go
+compiler or standard-library source patch was added.
+
+WebKit is still **not working** for this profile: the same UI test failed
+before HTTP readiness with `Maximum call stack size exceeded` in the
+FrankenPHP/Caddy process worker. The current image does not establish its
+root cause. Next: isolate that WebKit call-stack failure (including whether
+unused Caddy standard modules contribute), make a maintainable target or
+module-selection fix rather than a compiler/library survival patch, and
+repeat the full editor test in WebKit. After cross-browser functionality,
+run longer uptime/concurrency and fair PHP-FPM-versus-FrankenPHP tests before
+calling the demo production-ready or making a performance claim.
