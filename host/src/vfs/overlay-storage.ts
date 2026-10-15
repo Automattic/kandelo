@@ -2,6 +2,7 @@ import { hostFilePositionToSafeNumber } from "../file-offset";
 import { OPEN_FLAGS } from "../generated/abi";
 import type { HostFileOffset } from "../types";
 import type { FileSystemBackend } from "./types";
+import { parseSealedGenerationSlot } from "./overlay-generation-seal";
 
 type OverlayStorageBackend = Pick<
   FileSystemBackend,
@@ -135,6 +136,25 @@ export class OverlayStorageFile implements PersistentOverlayStorage {
 export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
   private constructor(private handle: FileSystemSyncAccessHandle | null) {}
 
+  static async listSlots(name: string): Promise<string[]> {
+    if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name)) throw storageError("EIO");
+    const root = await navigator.storage.getDirectory();
+    const directory = await root.getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+    const prefix = `${name}.`;
+    const slots = new Set<string>();
+    for await (const filename of directory.keys()) {
+      if (!filename.startsWith(prefix)) continue;
+      const match = /^(g[0-9]+)\.(?:journal|index|seal)$/.exec(filename.slice(prefix.length));
+      if (match !== null) {
+        if (parseSealedGenerationSlot(match[1]!) === null) {
+          throw new Error("persistent overlay generation slot is invalid");
+        }
+        slots.add(match[1]!);
+      }
+    }
+    return [...slots];
+  }
+
   static async open(name: string): Promise<OpfsOverlayStorageFile> {
     const storage = await OpfsOverlayStorageFile.openFile(name, "legacy", "journal", true);
     if (storage === null) throw storageError("EIO");
@@ -143,11 +163,12 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
 
   static async openFile(
     name: string,
-    slot: "legacy" | "g0" | "g1" | "g2" | "g3",
+    slot: "legacy" | `g${number}`,
     suffix: "journal" | "seal" | "index",
     create: boolean,
   ): Promise<OpfsOverlayStorageFile | null> {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name)) throw storageError("EIO");
+    if (slot !== "legacy" && parseSealedGenerationSlot(slot) === null) throw storageError("EIO");
     let stage = "root";
     try {
       const root = await navigator.storage.getDirectory();

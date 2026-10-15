@@ -1188,7 +1188,33 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       } finally {
         await reopened.destroy();
       }
+      const g3IndexPath = `${path}.g3.index`;
+      const g3OldIndex = Buffer.from(readFileSync(g3IndexPath));
+      g3OldIndex.writeUInt32LE(1, 4);
+      createHash("sha256").update(g3OldIndex.subarray(0, 128)).digest().copy(g3OldIndex, 128);
+      writeFileSync(g3IndexPath, g3OldIndex);
+      const g3Journal = OverlayStorageFile.open(backend, "/machine.journal.g3.journal", false);
+      const g3Index = OverlayStorageFile.open(backend, "/machine.journal.g3.index", false);
+      const g3Seal = OverlayStorageFile.open(backend, "/machine.journal.g3.seal", false);
+      try {
+        await writeOverlayGenerationSeal(g3Journal, g3Seal, 4,
+          new Uint8Array(createHash("sha256").update(image).digest()), g3Index,
+          { slot: "g2", journalLength: g2Length });
+      } finally {
+        g3Seal.close();
+        g3Index.close();
+        g3Journal.close();
+      }
       expandJournalToCompactionThreshold(`${path}.g3.journal`);
+      const migrated = await boot(image, path);
+      try {
+        expect(new TextDecoder().decode((await migrated.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await migrated.destroy();
+      }
+      expect(readFileSync(`${path}.g3.index`)).toEqual(g3OldIndex);
+      expect(readFileSync(`${path}.g4.index`).readUInt32LE(4)).toBe(5);
+      expandJournalToCompactionThreshold(`${path}.g4.journal`);
       const compacted = await boot(image, path);
       try {
         expect(new TextDecoder().decode((await compacted.readFileFromVfs("/state"))!)).toBe("XYcdefgh");

@@ -1524,7 +1524,7 @@ test("browser converts an oversized unindexed resizable journal before mounting"
   }
 });
 
-for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "resizable-v2", "resizable-v2-two-slots", "resizable-v2-three-slots", "resizable-v3"] as const) test(`browser recovers an oversized sealed ${mode} checkpoint from a valid source`, async ({ playwright, browserName, baseURL }, testInfo) => {
+for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "fixed-v1-four-slots", "resizable-v2", "resizable-v2-two-slots", "resizable-v2-three-slots", "resizable-v3"] as const) test(`browser recovers an oversized sealed ${mode} checkpoint from a valid source`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(180_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
   filesystem.mkdir("/bin", 0o755);
@@ -1616,17 +1616,17 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "r
         const legacyLength = await grow(await directory.getFileHandle(`${name}.journal`));
         const compacted = await boot();
         await compacted.destroy();
-        if (mode.endsWith("two-slots") || mode.endsWith("three-slots")) {
+        if (mode.endsWith("two-slots") || mode.endsWith("three-slots") || mode.endsWith("four-slots")) {
           await grow(await directory.getFileHandle(`${name}.g0.journal`), true);
           const secondCompacted = await boot();
           await secondCompacted.destroy();
         }
-        if (mode.endsWith("three-slots")) {
+        if (mode.endsWith("three-slots") || mode.endsWith("four-slots")) {
           await grow(await directory.getFileHandle(`${name}.g1.journal`), true);
           const thirdCompacted = await boot();
           await thirdCompacted.destroy();
         }
-        const sourceSlot = mode.endsWith("three-slots") ? "g2" : mode.endsWith("two-slots") ? "g1" : "g0";
+        const sourceSlot = mode.endsWith("three-slots") || mode.endsWith("four-slots") ? "g2" : mode.endsWith("two-slots") ? "g1" : "g0";
         const indexFile = await directory.getFileHandle(`${name}.${sourceSlot}.index`);
         const sealFile = await directory.getFileHandle(`${name}.${sourceSlot}.seal`);
         const index = new Uint8Array(await (await indexFile.getFile()).arrayBuffer());
@@ -1729,10 +1729,10 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "r
           const created = !mode.startsWith("fixed-v1")
             ? new TextDecoder().decode((await kernel.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4))!)
             : null;
-          const sourceSlot = mode.endsWith("three-slots") ? "g2" : mode.endsWith("two-slots") ? "g1" : "g0";
+          const sourceSlot = mode.endsWith("three-slots") || mode.endsWith("four-slots") ? "g2" : mode.endsWith("two-slots") ? "g1" : "g0";
           const source = await (await directory.getFileHandle(mode === "resizable-v3" ? `${name}.journal` : `${name}.${sourceSlot}.journal`)).getFile();
           const oldIndex = await (await directory.getFileHandle(`${name}.${sourceSlot}.index`)).getFile();
-          const nextSlot = mode.endsWith("three-slots") ? "g3" : mode.endsWith("two-slots") ? "g2" : mode === "resizable-v3" ? "g0" : "g1";
+          const nextSlot = mode.endsWith("three-slots") || mode.endsWith("four-slots") ? "g3" : mode.endsWith("two-slots") ? "g2" : mode === "resizable-v3" ? "g0" : "g1";
           const nextIndex = await (await directory.getFileHandle(`${name}.${nextSlot}.index`)).getFile();
           return {
             state, created,
@@ -1751,6 +1751,88 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "r
         sourceVersion: mode.startsWith("fixed-v1") ? 1 : mode.startsWith("resizable-v2") ? 2 : null,
         targetVersion: mode.startsWith("fixed-v1") ? 5 : 4,
       });
+      if (mode === "fixed-v1-four-slots") {
+        const migrated = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+          const indexFile = await directory.getFileHandle(`${name}.g3.index`);
+          const sealFile = await directory.getFileHandle(`${name}.g3.seal`);
+          const journalFile = await directory.getFileHandle(`${name}.g3.journal`);
+          const hash = async (bytes: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice().buffer));
+          const index = new Uint8Array(await (await indexFile.getFile()).arrayBuffer());
+          const seal = new Uint8Array(await (await sealFile.getFile()).arrayBuffer());
+          new DataView(index.buffer).setUint32(4, 1, true);
+          index.set(await hash(index.subarray(0, 128)), 128);
+          const indexWriter = await indexFile.createWritable();
+          await indexWriter.write(index);
+          await indexWriter.close();
+          seal.set(await hash(index), seal.length - 32);
+          const sealWriter = await sealFile.createWritable();
+          await sealWriter.write(seal);
+          await sealWriter.close();
+          const journal = await journalFile.getFile();
+          let position = 72;
+          let sequence = 0n;
+          let transaction = new Uint8Array();
+          while (position < journal.size) {
+            const header = new DataView(await journal.slice(position, position + 24).arrayBuffer());
+            const length = header.getUint32(4, true);
+            if (length < 60 || position + length > journal.size) throw new Error("invalid source transaction");
+            if (length > transaction.length) transaction = new Uint8Array(await journal.slice(position, position + length).arrayBuffer());
+            position += length;
+            sequence++;
+          }
+          if (transaction.length === 0) throw new Error("missing source transaction");
+          const journalWriter = await journalFile.createWritable({ keepExistingData: true });
+          try {
+            while (position < 32 * 1024 * 1024) {
+              const next = transaction.slice();
+              new DataView(next.buffer).setBigUint64(8, ++sequence, true);
+              next.set(await hash(next.subarray(0, -36)), next.length - 36);
+              await journalWriter.write({ type: "write", position, data: next });
+              position += next.length;
+            }
+            await journalWriter.close();
+          } catch (error) {
+            await journalWriter.abort();
+            throw error;
+          }
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: await directory.getFileHandle(`${name}.base`),
+              experimentalFixedPersistenceName: name,
+              persistentComputerName: name,
+            });
+            return {
+              state: new TextDecoder().decode((await kernel.readFileFromVfs("/state"))!),
+              targetVersion: new DataView(await (await (await directory.getFileHandle(`${name}.g4.index`)).getFile()).slice(4, 8).arrayBuffer()).getUint32(0, true),
+            };
+          } finally {
+            await kernel.destroy();
+          }
+        }, { moduleUrl, kernelUrl, name: prepared.name });
+        expect(migrated).toEqual({ state: "XYcdefgh", targetVersion: 5 });
+        await page.reload();
+        const rebooted = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: await directory.getFileHandle(`${name}.base`),
+              experimentalFixedPersistenceName: name,
+              persistentComputerName: name,
+            });
+            return new TextDecoder().decode((await kernel.readFileFromVfs("/state"))!);
+          } finally {
+            await kernel.destroy();
+          }
+        }, { moduleUrl, kernelUrl, name: prepared.name });
+        expect(rebooted).toBe("XYcdefgh");
+      }
     } finally {
       await context.close();
     }

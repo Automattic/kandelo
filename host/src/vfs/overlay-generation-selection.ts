@@ -1,5 +1,5 @@
 import { ERRNO } from "../generated/abi";
-import { verifyOverlayGenerationSeal, verifyOverlayGenerationSealSync, writeOverlayGenerationSealSync, type OverlaySealSource } from "./overlay-generation-seal";
+import { parseSealedGenerationSlot, verifyOverlayGenerationSeal, verifyOverlayGenerationSealSync, writeOverlayGenerationSealSync, type OverlaySealSource } from "./overlay-generation-seal";
 import type { PersistentOverlayStorage } from "./overlay-storage";
 
 export class RejectedOverlayGenerationError extends Error {
@@ -29,12 +29,13 @@ export function isNoValidOverlayGenerationError(error: unknown): error is NoVali
 }
 
 const COMPACTION_SLOTS = ["g0", "g1", "g2"] as const;
-const GENERATION_SLOTS = [...COMPACTION_SLOTS, "g3"] as const;
+const INITIAL_GENERATION_SLOTS = [...COMPACTION_SLOTS, "g3"] as const;
 
-export type OverlayGenerationSlot = "legacy" | (typeof GENERATION_SLOTS)[number];
+export type OverlayGenerationSlot = "legacy" | `g${number}`;
 export type OverlayGenerationFile = "journal" | "seal" | "index";
 
 export interface OverlayGenerationFiles {
+  listSlots(): Promise<string[]>;
   open(
     slot: OverlayGenerationSlot,
     file: OverlayGenerationFile,
@@ -47,11 +48,34 @@ interface Candidate {
   index?: PersistentOverlayStorage;
   generation: number;
   sealedLength: number;
-  slot: (typeof GENERATION_SLOTS)[number];
+  slot: SealedGenerationSlot;
   source?: OverlaySealSource;
 }
 
-type SealedGenerationSlot = (typeof GENERATION_SLOTS)[number];
+type SealedGenerationSlot = `g${number}`;
+
+async function generationSlots(files: OverlayGenerationFiles): Promise<SealedGenerationSlot[]> {
+  const slots = new Set<SealedGenerationSlot>(INITIAL_GENERATION_SLOTS);
+  for (const name of await files.listSlots()) {
+    const slot = parseSealedGenerationSlot(name);
+    if (slot === null) throw new Error("persistent overlay generation slot is invalid");
+    slots.add(slot);
+  }
+  return [...slots].sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)));
+}
+
+function conversionTarget(
+  slots: readonly SealedGenerationSlot[],
+  candidates: readonly Candidate[],
+  reusable: SealedGenerationSlot | undefined,
+): SealedGenerationSlot {
+  if (reusable !== undefined) return reusable;
+  const vacant = slots.find((slot) => !candidates.some((candidate) => candidate.slot === slot));
+  if (vacant !== undefined) return vacant;
+  const next = Number(slots[slots.length - 1]!.slice(1)) + 1;
+  if (!Number.isSafeInteger(next + 1)) throw new Error("persistent overlay generation slots exhausted");
+  return `g${next}`;
+}
 
 function closeCandidate(candidate: Candidate): void {
   const failures: unknown[] = [];
@@ -96,7 +120,7 @@ async function convertOversizedGeneration(
   files: OverlayGenerationFiles,
   source: PersistentOverlayStorage,
   sourceSlot: OverlayGenerationSlot,
-  targetSlot: (typeof GENERATION_SLOTS)[number],
+  targetSlot: SealedGenerationSlot,
   sourceGeneration: number,
   enable: (journal: PersistentOverlayStorage, index: PersistentOverlayStorage, checkpointEnd: number) => void,
   convert: (source: PersistentOverlayStorage, target: PersistentOverlayStorage, index: PersistentOverlayStorage) => void,
@@ -186,7 +210,8 @@ export async function enableBestOverlayGeneration(
   const reusableSlots = new Map<number, SealedGenerationSlot>();
   let foundGenerationFile = false;
   try {
-    for (const slot of GENERATION_SLOTS) {
+    const slots = await generationSlots(files);
+    for (const slot of slots) {
       const journal = await files.open(slot, "journal", false);
       let seal: PersistentOverlayStorage | null = null;
       let index: PersistentOverlayStorage | null = null;
@@ -254,15 +279,13 @@ export async function enableBestOverlayGeneration(
     candidates.sort((left, right) => right.generation - left.generation);
     for (const candidate of [...candidates]) {
       try {
-        if (candidates.length < GENERATION_SLOTS.length && candidate.index !== undefined
+        if (candidate.index !== undefined
           && candidate.journal.len() >= 32 * 1024 * 1024 && convertJournal !== undefined) {
           const header = new Uint8Array(8);
           candidate.index.readExactAt(0, header);
           const version = new DataView(header.buffer).getUint32(4, true);
           if (version === 1 || version === 2) {
-            const targetSlot = reusableSlots.get(candidate.generation + 1)
-              ?? GENERATION_SLOTS.find((slot) => !candidates.some((other) => other.slot === slot));
-            if (targetSlot === undefined) throw new Error("persistent overlay conversion has no safe target slot");
+            const targetSlot = conversionTarget(slots, candidates, reusableSlots.get(candidate.generation + 1));
             try {
               const converted = await convertOversizedGeneration(
                 files, candidate.journal, candidate.slot, targetSlot, candidate.generation, enable, convertJournal,
@@ -360,9 +383,9 @@ export async function compactOverlayGeneration(
   if (!Number.isSafeInteger(selected.generation + 1)) {
     throw new Error("persistent overlay generation number exhausted");
   }
+  const ringIndex = COMPACTION_SLOTS.findIndex((candidate) => candidate === selected.slot);
   const slot = selected.reusableSlots?.get(selected.generation + 1)
-    ?? (selected.slot === "legacy" || selected.slot === "g3" ? "g0"
-      : COMPACTION_SLOTS[(COMPACTION_SLOTS.indexOf(selected.slot) + 1) % COMPACTION_SLOTS.length]);
+    ?? (ringIndex < 0 ? "g0" : COMPACTION_SLOTS[(ringIndex + 1) % COMPACTION_SLOTS.length]);
   const target = await files.open(slot, "journal", true);
   if (target === null) throw new Error("could not create persistent overlay target journal");
   let seal: PersistentOverlayStorage | null = null;
