@@ -741,4 +741,12 @@ unexpectedly. This broadens live POSIX coverage, but still does not inspect
 each journal after reboot or measure peak memory and compaction latency.
 The persistent stdio, process, and paths suites add 79 passes with no failures
 or skips. Together with basic and I/O, 1,083 Sortix runtime cases ran on fresh
-resizable journals; the remaining suites and restart checks are still open.
+resizable journals; the remaining suites and test-specific restart assertions
+are still open.
+Sortix now has an opt-in `--persistent-reboot` mode. After the guest exits, the
+runner checks for shutdown sync failure, destroys the first kernel, and boots
+the exact same composed image and journal with strict existing-journal
+recovery. Eleven selected filesystem cases and all 55 I/O cases pass that
+post-test reboot. This checks journal replay and namespace reconstruction,
+but does not assert test-specific state after reboot or simulate an abrupt
+crash; those remain separate conformance work.

@@ -21,6 +21,7 @@ set -euo pipefail
 #   scripts/run-sortix-tests.sh --all                 # run all suites
 #   scripts/run-sortix-tests.sh --report              # run all + write report
 #   scripts/run-sortix-tests.sh --persistent basic stdio/rename  # resizable journaled rootfs
+#   scripts/run-sortix-tests.sh --persistent-reboot basic stdio/rename  # strict post-test reboot
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # WHY: the SDK driver finds its sysroot and glue dir by walking up from the
@@ -745,9 +746,13 @@ _run_runtime_test_worker() {
     set +e
     local runner_mode="isolated"
     local journal_path=""
+    local verify_reopen=""
     if $PERSISTENT_MODE; then
         runner_mode="persistent"
         journal_path="${SORTIX_FIXTURE_ROOT:?}/rootfs.journal"
+    fi
+    if $PERSISTENT_REBOOT_MODE; then
+        verify_reopen=1
     fi
     (cd "$REPO_ROOT" && \
         KERNEL_CWD= \
@@ -757,6 +762,7 @@ _run_runtime_test_worker() {
         KANDELO_RUNNER_GUEST_PROGRAM="$suite/$test_name" \
         KANDELO_RUNNER_VFS="$runner_mode" \
         KANDELO_RUNNER_PERSISTENCE_PATH="$journal_path" \
+        KANDELO_RUNNER_VERIFY_REOPEN="$verify_reopen" \
         KANDELO_RUNNER_BUILTINS=explicit \
         WASM_POSIX_XTASK_BIN="$PROGRAM_INDEX_CHECKER" \
         TIMEOUT="$((this_timeout * 1000))" \
@@ -1180,6 +1186,7 @@ run_suite() {
 REPORT_MODE=false
 ALL_MODE=false
 PERSISTENT_MODE=false
+PERSISTENT_REBOOT_MODE=false
 SUITES=()
 SPECIFIC_TESTS=()
 
@@ -1191,6 +1198,7 @@ while [ $# -gt 0 ]; do
         --report) REPORT_MODE=true; ALL_MODE=true; shift ;;
         --all)    ALL_MODE=true; shift ;;
         --persistent) PERSISTENT_MODE=true; shift ;;
+        --persistent-reboot) PERSISTENT_MODE=true; PERSISTENT_REBOOT_MODE=true; shift ;;
         --sequential) PARALLEL=1; shift ;;
         --parallel)
             if [ $# -ge 2 ] && [[ "$2" =~ ^[0-9]+$ ]]; then
@@ -1218,7 +1226,7 @@ if [ ${#SUITES[@]} -eq 0 ]; then
         SUITES=("${DEFAULT_SUITES[@]}")
     fi
 fi
-export PERSISTENT_MODE
+export PERSISTENT_MODE PERSISTENT_REBOOT_MODE
 
 # Verify prerequisites
 if [ ! -f "$SYSROOT/lib/libc.a" ]; then
@@ -1303,7 +1311,9 @@ done
 # ── Report mode ─────────────────────────────────────────────
 
 if $REPORT_MODE; then
-    if $PERSISTENT_MODE; then
+    if $PERSISTENT_REBOOT_MODE; then
+        REPORT="$REPO_ROOT/docs/sortix-persistent-reboot-test-report.md"
+    elif $PERSISTENT_MODE; then
         REPORT="$REPO_ROOT/docs/sortix-persistent-test-report.md"
     else
         REPORT="$REPO_ROOT/docs/sortix-test-report.md"
