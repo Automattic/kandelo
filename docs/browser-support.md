@@ -250,7 +250,11 @@ pipe pair.
   and other site data. A newly composed base image is streamed into OPFS in
   acknowledged 1 MiB chunks and published only by the current boot. Direct
   VFS URLs and scoped Pages products stage source bytes incrementally in OPFS;
-  zstd decoding uses at most a 16 MiB window. The image writer reads that
+  staging is capped at 64 GiB, independently of the roughly 1 GiB limit on
+  legacy in-memory image decoding and of the browser's available OPFS quota.
+  This is a transport safety bound, not a promise that the browser can store
+  or boot every image below it.
+  Zstd decoding uses at most a 16 MiB window. The image writer reads that
   source through positioned calls rather than an image-sized staging buffer.
   A restored image is read from OPFS in positioned pages with a
   bounded 4 MiB cache; boot verifies its 1 MiB chunk digests without a
