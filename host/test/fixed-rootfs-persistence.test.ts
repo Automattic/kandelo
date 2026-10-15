@@ -120,6 +120,26 @@ class FaultingMemoryOverlayStorage implements PersistentOverlayStorage {
   close(): void {}
 }
 
+class FaultingNodeFileSystem extends HostFileSystem {
+  fault: "write" | "short-write" | "flush" | null = null;
+  partialWrites = 0;
+
+  override write(...args: Parameters<HostFileSystem["write"]>): number {
+    if (this.fault === "write") throw Object.assign(new Error("journal quota exceeded"), { code: "ENOSPC" });
+    if (this.fault === "short-write") {
+      if (this.partialWrites > 0) throw Object.assign(new Error("journal quota exceeded"), { code: "ENOSPC" });
+      this.partialWrites++;
+      return super.write(args[0], args[1], args[2], Math.min(128, args[3]));
+    }
+    return super.write(...args);
+  }
+
+  override fsync(handle: number): void {
+    if (this.fault === "flush") throw Object.assign(new Error("journal quota exceeded"), { code: "ENOSPC" });
+    super.fsync(handle);
+  }
+}
+
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
   it.skipIf(guestProgramPath === null).each(["mmap-sync", "mmap-syncfs", "mmap-sync-all", "mmap-fsync", "mmap-fdatasync", "sync", "syncfs"] as const)("makes %s durable before host shutdown", async (mode) => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-mmap-persistence-"));
@@ -189,7 +209,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     expect((rejection as Error).cause).toBe(failure);
   });
 
-  it.each([
+  it.each(([
     ["fixed", "write", ABI_SYSCALLS.Fsync],
     ["fixed", "flush", ABI_SYSCALLS.Fsync],
     ["fixed", "write", ABI_SYSCALLS.Fdatasync],
@@ -198,7 +218,10 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     ["resizable", "flush", ABI_SYSCALLS.Fsync],
     ["resizable", "write", ABI_SYSCALLS.Fdatasync],
     ["resizable", "flush", ABI_SYSCALLS.Fdatasync],
-  ] as const)("keeps mapped %s %s fault visible through sync syscall %s", async (mode, fault, syncSyscall) => {
+  ] as const).flatMap(([mode, fault, syncSyscall]) =>
+    (fault === "write" ? ["memory", "node-file", "node-short-write"] : ["memory", "node-file"])
+      .map((storageKind) => [mode, fault, syncSyscall, storageKind] as const),
+  ))("keeps mapped %s %s fault visible through sync syscall %s on %s storage", async (mode, fault, syncSyscall, storageKind) => {
     const image = await makeImage("abcdefgh");
     const worker = createCentralizedKernelWorkerTestDouble({
       config: { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
@@ -216,7 +239,11 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     });
     const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
     await worker.init(kernelBytes.buffer.slice(kernelBytes.byteOffset, kernelBytes.byteOffset + kernelBytes.byteLength));
-    const storage = new FaultingMemoryOverlayStorage();
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-mapped-node-fault-"));
+    const sourcePath = join(directory, "source.journal");
+    const backend = new FaultingNodeFileSystem(directory);
+    const memoryStorage = storageKind === "memory" ? new FaultingMemoryOverlayStorage() : null;
+    const storage = memoryStorage ?? OverlayStorageFile.open(backend, "/source.journal");
     if (mode === "fixed") worker.enableFixedRootfsPersistence(storage);
     else worker.enableResizableRootfsPersistence(storage);
 
@@ -252,15 +279,19 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     expect(mapped.value).toBeGreaterThan(0);
     processBytes.set(encoder.encode("XY"), mapped.value);
 
-    storage.fault = fault;
+    if (memoryStorage !== null) memoryStorage.fault = fault;
+    else backend.fault = storageKind === "node-short-write" ? "short-write" : fault;
     expect(issue(syncSyscall, [opened.value])).toEqual({ value: -1, errno: ERRNO.ENOSPC });
     expect(issue(ABI_SYSCALLS.Pread, [opened.value, 4096, 2, 0])).toEqual({ value: 2, errno: 0 });
     expect(new TextDecoder().decode(processBytes.subarray(4096, 4098))).toBe("XY");
 
-    const directory = mkdtempSync(join(tmpdir(), "kandelo-mapped-node-fault-"));
     const path = join(directory, "machine.journal");
     try {
-      writeFileSync(path, storage.bytes);
+      if (storageKind === "node-short-write") {
+        expect(backend.partialWrites).toBe(1);
+        expect(readFileSync(sourcePath).byteLength).toBe(72 + 128);
+      }
+      writeFileSync(path, memoryStorage === null ? readFileSync(sourcePath) : memoryStorage.bytes);
       const reopened = await boot(image, path, mode === "resizable", true);
       try {
         const recovered = new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!);

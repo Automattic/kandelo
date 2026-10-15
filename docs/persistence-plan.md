@@ -370,8 +370,10 @@ readable from the dirty cache, and restart accepts only an intact old or new
 transaction. Fixed and resizable mounts pass these fault injections on
 Chromium, Firefox, and WebKit. Node's real kernel channel with injected
 in-memory host storage also checks both sync calls and both failures against
-a fresh worker boot; the Node filesystem adapter's own quota behavior is
-not exercised by that injection.
+a fresh worker boot. The same Node channel now exercises the positioned
+filesystem adapter with a host-backed file: failure before a write, after a
+128-byte short write, and at flush each reports `ENOSPC`; a fresh worker
+recovers only the prior intact data or a complete flushed transaction.
 
 This does not yet cover every host write and flush failure point, so the
 dirty-cache milestone remains open.
