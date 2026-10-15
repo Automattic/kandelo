@@ -33,6 +33,7 @@ const ACTIVE_TAIL_LIMIT_BYTES: u64 = 63 * 1024 * 1024;
 const LEGACY_SORT_RECORD_BYTES: u64 = 96;
 const LEGACY_SORT_RUN_RECORDS: usize = 4 * 1024;
 const LEGACY_SORT_IO_RECORDS: usize = 1024;
+const LEGACY_MUTATION_RECORD_BYTES: usize = 384;
 
 pub trait OverlayStorage {
     fn len(&mut self) -> Result<u64, Errno>;
@@ -195,6 +196,7 @@ pub struct OverlayJournal<S: OverlayStorage> {
     metadata_cache: Vec<(OverlayKey, Option<Option<Vec<u8>>>)>,
     tail_limit_bytes: Option<u64>,
     track_committed_state: bool,
+    retain_compacted_metadata: bool,
     metadata_prefix_resident: bool,
 }
 
@@ -460,6 +462,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             metadata_cache: Vec::new(),
             tail_limit_bytes: None,
             track_committed_state: true,
+            retain_compacted_metadata: true,
             metadata_prefix_resident: false,
         })
     }
@@ -1101,7 +1104,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 self.state
                     .apply(mutation, value_offset, self.checkpoint.is_some());
             }
-        } else {
+        } else if self.retain_compacted_metadata {
             for mutation in mutations {
                 if !matches!(mutation_key(mutation), OverlayKey::FileBlock { .. }) {
                     self.state.apply(mutation.clone(), None, false);
@@ -2003,6 +2006,7 @@ pub fn convert_unindexed_fixed_journal<S: OverlayStorage, T: OverlayStorage, I: 
     sort_legacy_block_references(&mut scratch, &mut target, count)?;
     let mut compacted = OverlayJournal::open(target, base_digest)?;
     compacted.track_committed_state = false;
+    compacted.retain_compacted_metadata = false;
     let mut batch = Vec::new();
     batch.try_reserve_exact(128).map_err(|_| Errno::ENOMEM)?;
     let mut pending: Option<LegacyBlockReference> = None;
@@ -2023,6 +2027,477 @@ pub fn convert_unindexed_fixed_journal<S: OverlayStorage, T: OverlayStorage, I: 
     scratch.truncate(0)?;
     scratch.flush()?;
     let checkpoint = compacted.checkpoint_fixed_blocks_into(scratch)?;
+    Ok((compacted.into_storage(), checkpoint.into_storage()))
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+struct LegacyMutationReference {
+    kind: u8,
+    inode: u64,
+    block: u64,
+    marker: u8,
+    name: [u8; 255],
+    name_length: u8,
+    order: u64,
+    offset: u64,
+    value_length: u32,
+    digest: [u8; 32],
+    deleted: bool,
+}
+
+impl LegacyMutationReference {
+    fn encode(self) -> [u8; LEGACY_MUTATION_RECORD_BYTES] {
+        let mut bytes = [0; LEGACY_MUTATION_RECORD_BYTES];
+        bytes[0] = self.kind;
+        bytes[1] = self.marker;
+        bytes[2] = self.name_length;
+        bytes[3] = u8::from(self.deleted);
+        bytes[4..12].copy_from_slice(&self.inode.to_le_bytes());
+        bytes[12..20].copy_from_slice(&self.block.to_le_bytes());
+        bytes[20..28].copy_from_slice(&self.order.to_le_bytes());
+        bytes[28..36].copy_from_slice(&self.offset.to_le_bytes());
+        bytes[36..40].copy_from_slice(&self.value_length.to_le_bytes());
+        bytes[40..72].copy_from_slice(&self.digest);
+        bytes[72..327].copy_from_slice(&self.name);
+        let checksum = Sha256::digest(&bytes[..352]);
+        bytes[352..].copy_from_slice(&checksum);
+        bytes
+    }
+
+    fn decode(bytes: [u8; LEGACY_MUTATION_RECORD_BYTES]) -> Result<Self, Errno> {
+        if bytes[352..] != Sha256::digest(&bytes[..352])[..]
+            || bytes[327..352].iter().any(|byte| *byte != 0)
+            || bytes[0] > 4
+            || bytes[1] > 1
+            || bytes[3] > 1
+        {
+            return Err(Errno::EIO);
+        }
+        let name_length = bytes[2];
+        let mut name = [0; 255];
+        name.copy_from_slice(&bytes[72..327]);
+        if name[name_length as usize..].iter().any(|byte| *byte != 0)
+            || (bytes[0] == 4) != (name_length != 0)
+            || (bytes[0] == 3 && bytes[1] == 0 && bytes[3] != 0)
+            || (bytes[0] != 3 && bytes[1] != 0)
+        {
+            return Err(Errno::EIO);
+        }
+        let mut digest = [0; 32];
+        digest.copy_from_slice(&bytes[40..72]);
+        Ok(Self {
+            kind: bytes[0],
+            inode: u64::from_le_bytes(bytes[4..12].try_into().map_err(|_| Errno::EIO)?),
+            block: u64::from_le_bytes(bytes[12..20].try_into().map_err(|_| Errno::EIO)?),
+            marker: bytes[1],
+            name,
+            name_length,
+            order: u64::from_le_bytes(bytes[20..28].try_into().map_err(|_| Errno::EIO)?),
+            offset: u64::from_le_bytes(bytes[28..36].try_into().map_err(|_| Errno::EIO)?),
+            value_length: u32::from_le_bytes(bytes[36..40].try_into().map_err(|_| Errno::EIO)?),
+            digest,
+            deleted: bytes[3] != 0,
+        })
+    }
+
+    fn key(self) -> Result<OverlayKey, Errno> {
+        let key = match self.kind {
+            0 => OverlayKey::Inode(self.inode),
+            1 => OverlayKey::FileSize(self.inode),
+            2 => OverlayKey::FileZeroFrom(self.inode),
+            3 if self.marker == 1 => OverlayKey::FileBlock { inode: self.inode, block: self.block },
+            4 => OverlayKey::Dirent { parent: self.inode, name: self.name[..self.name_length as usize].to_vec() },
+            _ => return Err(Errno::EIO),
+        };
+        validate_key(&key).map_err(|_| Errno::EIO)?;
+        Ok(key)
+    }
+
+    fn same_key(self, other: Self) -> bool {
+        self.kind == other.kind
+            && self.inode == other.inode
+            && self.block == other.block
+            && self.marker == other.marker
+            && self.name == other.name
+            && self.name_length == other.name_length
+    }
+}
+
+struct LegacyMutationCursor {
+    position: u64,
+    end: u64,
+    buffered_from: u64,
+    buffered_count: u64,
+    buffer: Vec<u8>,
+}
+
+impl LegacyMutationCursor {
+    fn new() -> Result<Self, Errno> {
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(LEGACY_SORT_IO_RECORDS * LEGACY_MUTATION_RECORD_BYTES)
+            .map_err(|_| Errno::ENOMEM)?;
+        Ok(Self { position: 0, end: 0, buffered_from: 0, buffered_count: 0, buffer })
+    }
+
+    fn reset(&mut self, start: u64, end: u64) {
+        self.position = start;
+        self.end = end;
+        self.buffered_count = 0;
+    }
+
+    fn next<S: OverlayStorage>(&mut self, storage: &mut S) -> Result<Option<LegacyMutationReference>, Errno> {
+        if self.position == self.end {
+            return Ok(None);
+        }
+        if self.buffered_count == 0 || self.position >= self.buffered_from + self.buffered_count {
+            self.buffered_from = self.position;
+            self.buffered_count = (self.end - self.position).min(LEGACY_SORT_IO_RECORDS as u64);
+            self.buffer.resize(self.buffered_count as usize * LEGACY_MUTATION_RECORD_BYTES, 0);
+            storage.read_exact_at(
+                self.position.checked_mul(LEGACY_MUTATION_RECORD_BYTES as u64).ok_or(Errno::EOVERFLOW)?,
+                &mut self.buffer,
+            )?;
+        }
+        let start = (self.position - self.buffered_from) as usize * LEGACY_MUTATION_RECORD_BYTES;
+        let mut bytes = [0; LEGACY_MUTATION_RECORD_BYTES];
+        bytes.copy_from_slice(&self.buffer[start..start + LEGACY_MUTATION_RECORD_BYTES]);
+        self.position += 1;
+        LegacyMutationReference::decode(bytes).map(Some)
+    }
+}
+
+fn merge_legacy_mutation_runs<S: OverlayStorage, T: OverlayStorage>(
+    source: &mut S,
+    target: &mut T,
+    count: u64,
+    width: u64,
+) -> Result<(), Errno> {
+    target.truncate(0)?;
+    let mut left_cursor = LegacyMutationCursor::new()?;
+    let mut right_cursor = LegacyMutationCursor::new()?;
+    let mut output = Vec::new();
+    output.try_reserve_exact(LEGACY_SORT_IO_RECORDS * LEGACY_MUTATION_RECORD_BYTES)
+        .map_err(|_| Errno::ENOMEM)?;
+    let mut output_offset = 0u64;
+    let mut start = 0u64;
+    while start < count {
+        let middle = start.saturating_add(width).min(count);
+        let end = middle.saturating_add(width).min(count);
+        left_cursor.reset(start, middle);
+        right_cursor.reset(middle, end);
+        let mut left = left_cursor.next(source)?;
+        let mut right = right_cursor.next(source)?;
+        for _ in start..end {
+            let take_left = match (left, right) {
+                (Some(left), Some(right)) => left <= right,
+                (Some(_), None) => true,
+                _ => false,
+            };
+            let selected = if take_left {
+                let selected = left.ok_or(Errno::EIO)?;
+                left = left_cursor.next(source)?;
+                selected
+            } else {
+                let selected = right.ok_or(Errno::EIO)?;
+                right = right_cursor.next(source)?;
+                selected
+            };
+            output.extend_from_slice(&selected.encode());
+            if output.len() == LEGACY_SORT_IO_RECORDS * LEGACY_MUTATION_RECORD_BYTES {
+                target.write_all_at(output_offset, &output)?;
+                output_offset = output_offset.checked_add(output.len() as u64).ok_or(Errno::EOVERFLOW)?;
+                output.clear();
+            }
+        }
+        start = end;
+    }
+    if !output.is_empty() {
+        target.write_all_at(output_offset, &output)?;
+    }
+    target.flush()
+}
+
+fn sort_legacy_mutations<S: OverlayStorage, T: OverlayStorage>(
+    scratch: &mut S,
+    target: &mut T,
+    count: u64,
+) -> Result<(), Errno> {
+    let mut run = Vec::new();
+    run.try_reserve_exact(LEGACY_SORT_RUN_RECORDS).map_err(|_| Errno::ENOMEM)?;
+    let mut reader = LegacyMutationCursor::new()?;
+    let mut start = 0u64;
+    while start < count {
+        let length = (count - start).min(LEGACY_SORT_RUN_RECORDS as u64) as usize;
+        run.clear();
+        reader.reset(start, start + length as u64);
+        while let Some(record) = reader.next(scratch)? {
+            run.push(record);
+        }
+        run.sort_unstable();
+        for (index, records) in run.chunks(LEGACY_SORT_IO_RECORDS).enumerate() {
+            let mut bytes = [0; LEGACY_SORT_IO_RECORDS * LEGACY_MUTATION_RECORD_BYTES];
+            for (position, record) in records.iter().enumerate() {
+                let start = position * LEGACY_MUTATION_RECORD_BYTES;
+                bytes[start..start + LEGACY_MUTATION_RECORD_BYTES].copy_from_slice(&record.encode());
+            }
+            scratch.write_all_at(
+                (start + index as u64 * LEGACY_SORT_IO_RECORDS as u64)
+                    .checked_mul(LEGACY_MUTATION_RECORD_BYTES as u64).ok_or(Errno::EOVERFLOW)?,
+                &bytes[..records.len() * LEGACY_MUTATION_RECORD_BYTES],
+            )?;
+        }
+        start += length as u64;
+    }
+    scratch.flush()?;
+    let mut width = LEGACY_SORT_RUN_RECORDS as u64;
+    let mut sorted_in_scratch = true;
+    while width < count {
+        if sorted_in_scratch {
+            merge_legacy_mutation_runs(scratch, target, count, width)?;
+        } else {
+            merge_legacy_mutation_runs(target, scratch, count, width)?;
+        }
+        sorted_in_scratch = !sorted_in_scratch;
+        width = width.saturating_mul(2);
+    }
+    if !sorted_in_scratch {
+        let mut buffer = [0; 64 * 1024];
+        let total_bytes = count.checked_mul(LEGACY_MUTATION_RECORD_BYTES as u64).ok_or(Errno::EOVERFLOW)?;
+        let mut offset = 0;
+        while offset < total_bytes {
+            let length = (total_bytes - offset).min(buffer.len() as u64) as usize;
+            target.read_exact_at(offset, &mut buffer[..length])?;
+            scratch.write_all_at(offset, &buffer[..length])?;
+            offset += length as u64;
+        }
+        scratch.flush()?;
+    }
+    target.truncate(0)?;
+    target.flush()
+}
+
+fn read_legacy_mutation_value<S: OverlayStorage>(
+    source: &mut S,
+    reference: LegacyMutationReference,
+) -> Result<Option<Vec<u8>>, Errno> {
+    if reference.deleted {
+        if reference.offset != 0 || reference.value_length != 0 || reference.digest != [0; 32] {
+            return Err(Errno::EIO);
+        }
+        return Ok(None);
+    }
+    let length = reference.value_length as usize;
+    if length > FILE_BLOCK_BYTES || reference.offset < HEADER_BYTES as u64 {
+        return Err(Errno::EIO);
+    }
+    let mut value = Vec::new();
+    value.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
+    value.resize(length, 0);
+    source.read_exact_at(reference.offset, &mut value)?;
+    if Sha256::digest(&value)[..] != reference.digest {
+        return Err(Errno::EIO);
+    }
+    Ok(Some(value))
+}
+
+fn emit_legacy_mutation<S: OverlayStorage, T: OverlayStorage>(
+    source: &mut S,
+    target: &mut OverlayJournal<T>,
+    batch: &mut Vec<Mutation>,
+    reference: LegacyMutationReference,
+) -> Result<(), Errno> {
+    let key = reference.key()?;
+    let mutation = match read_legacy_mutation_value(source, reference)? {
+        Some(value) => Mutation::Put { key, value },
+        None => Mutation::Delete { key },
+    };
+    validate_mutation(&mutation).map_err(|_| Errno::EIO)?;
+    batch.push(mutation);
+    if batch.len() == 128 {
+        target.commit_transaction(batch)?;
+        batch.clear();
+    }
+    Ok(())
+}
+
+fn emit_legacy_zero<T: OverlayStorage>(
+    target: &mut OverlayJournal<T>,
+    batch: &mut Vec<Mutation>,
+    zero: (u64, u64),
+) -> Result<(), Errno> {
+    batch.push(Mutation::Put {
+        key: OverlayKey::FileZeroFrom(zero.0),
+        value: zero.1.to_le_bytes().to_vec(),
+    });
+    if batch.len() == 128 {
+        target.commit_transaction(batch)?;
+        batch.clear();
+    }
+    Ok(())
+}
+
+fn emit_legacy_pending<S: OverlayStorage, T: OverlayStorage>(
+    source: &mut S,
+    target: &mut OverlayJournal<T>,
+    batch: &mut Vec<Mutation>,
+    pending: &mut Option<LegacyMutationReference>,
+    latest_zero_order: Option<u64>,
+) -> Result<(), Errno> {
+    if let Some(reference) = pending.take() {
+        if reference.kind != 3 || latest_zero_order.is_none_or(|order| reference.order > order) {
+            emit_legacy_mutation(source, target, batch, reference)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn convert_unindexed_resizable_journal<S: OverlayStorage, T: OverlayStorage, I: OverlayStorage>(
+    source: &mut S,
+    mut target: T,
+    mut scratch: I,
+    base_digest: [u8; 32],
+) -> Result<(T, I), Errno> {
+    let source_length = source.len()?;
+    if source_length < HEADER_BYTES as u64 || target.len()? != 0 || scratch.len()? != 0 {
+        return Err(Errno::EINVAL);
+    }
+    read_overlay_header(source, base_digest)?;
+    let mut count = 0u64;
+    let mut order = 0u64;
+    let mut record_buffer = Vec::new();
+    record_buffer.try_reserve_exact(LEGACY_SORT_IO_RECORDS * LEGACY_MUTATION_RECORD_BYTES)
+        .map_err(|_| Errno::ENOMEM)?;
+    let mut record_write_offset = 0u64;
+    let mut push_reference = |reference: LegacyMutationReference| -> Result<(), Errno> {
+        record_buffer.extend_from_slice(&reference.encode());
+        if record_buffer.len() == LEGACY_SORT_IO_RECORDS * LEGACY_MUTATION_RECORD_BYTES {
+            scratch.write_all_at(record_write_offset, &record_buffer)?;
+            record_write_offset = record_write_offset.checked_add(record_buffer.len() as u64).ok_or(Errno::EOVERFLOW)?;
+            record_buffer.clear();
+        }
+        count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok(())
+    };
+    let mut record = |mutation: &Mutation, value_offset: Option<u64>| -> Result<(), Errno> {
+        let key = mutation_key(mutation);
+        let (kind, inode, block, name) = match key {
+            OverlayKey::Inode(inode) => (0, *inode, 0, &[][..]),
+            OverlayKey::FileSize(inode) => (1, *inode, 0, &[][..]),
+            OverlayKey::FileZeroFrom(inode) => (2, *inode, 0, &[][..]),
+            OverlayKey::FileBlock { inode, block } => (3, *inode, *block, &[][..]),
+            OverlayKey::Dirent { parent, name } => (4, *parent, 0, name.as_slice()),
+        };
+        let (offset, value_length, digest, deleted) = match mutation {
+            Mutation::Put { value, .. } => (
+                value_offset.ok_or(Errno::EIO)?,
+                u32::try_from(value.len()).map_err(|_| Errno::EIO)?,
+                Sha256::digest(value).into(),
+                false,
+            ),
+            Mutation::Delete { .. } => (0, 0, [0; 32], true),
+        };
+        let mut name_bytes = [0; 255];
+        name_bytes[..name.len()].copy_from_slice(name);
+        let reference = LegacyMutationReference {
+            kind, inode, block, marker: u8::from(kind == 3), name: name_bytes,
+            name_length: name.len() as u8, order, offset, value_length, digest, deleted,
+        };
+        push_reference(reference)?;
+        if let Mutation::Put { value, .. } = mutation {
+            if kind == 2 {
+                let from = u64::from_le_bytes(value.as_slice().try_into().map_err(|_| Errno::EIO)?);
+                push_reference(LegacyMutationReference {
+                    kind: 3, block: from, marker: 0, ..reference
+                })?;
+            }
+        }
+        order = order.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok(())
+    };
+    replay_transactions(
+        source,
+        HEADER_BYTES as u64,
+        source_length,
+        1,
+        &mut OverlayState::default(),
+        ReplayFilter::VerifyOnly,
+        true,
+        false,
+        None,
+        Some(&mut record),
+    )?;
+    if !record_buffer.is_empty() {
+        scratch.write_all_at(record_write_offset, &record_buffer)?;
+    }
+    scratch.flush()?;
+    sort_legacy_mutations(&mut scratch, &mut target, count)?;
+    let mut compacted = OverlayJournal::open(target, base_digest)?;
+    compacted.track_committed_state = false;
+    compacted.retain_compacted_metadata = false;
+    let mut batch = Vec::new();
+    batch.try_reserve_exact(128).map_err(|_| Errno::ENOMEM)?;
+    let mut reader = LegacyMutationCursor::new()?;
+    reader.reset(0, count);
+    let mut previous_kind = None;
+    let mut pending = None;
+    let mut zero_min: Option<(u64, u64)> = None;
+    let mut block_inode = None;
+    let mut latest_zero_order = None;
+    while let Some(reference) = reader.next(&mut scratch)? {
+        if previous_kind != Some(reference.kind) {
+            if let Some(zero) = zero_min.take() {
+                emit_legacy_zero(&mut compacted, &mut batch, zero)?;
+            }
+            emit_legacy_pending(source, &mut compacted, &mut batch, &mut pending, latest_zero_order)?;
+            previous_kind = Some(reference.kind);
+            block_inode = None;
+            latest_zero_order = None;
+        }
+        match reference.kind {
+            0 | 1 | 4 => {
+                if pending.is_some_and(|previous: LegacyMutationReference| !previous.same_key(reference)) {
+                    emit_legacy_pending(source, &mut compacted, &mut batch, &mut pending, None)?;
+                }
+                pending = Some(reference);
+            }
+            2 => {
+                if let Some((inode, minimum)) = zero_min {
+                    if inode != reference.inode {
+                        emit_legacy_zero(&mut compacted, &mut batch, (inode, minimum))?;
+                        zero_min = None;
+                    }
+                }
+                let value = read_legacy_mutation_value(source, reference)?.ok_or(Errno::EIO)?;
+                let from = u64::from_le_bytes(value.as_slice().try_into().map_err(|_| Errno::EIO)?);
+                zero_min = Some((reference.inode, zero_min.map_or(from, |(_, minimum)| minimum.min(from))));
+            }
+            3 => {
+                if block_inode != Some(reference.inode) {
+                    emit_legacy_pending(source, &mut compacted, &mut batch, &mut pending, latest_zero_order)?;
+                    block_inode = Some(reference.inode);
+                    latest_zero_order = None;
+                }
+                if reference.marker == 0 {
+                    emit_legacy_pending(source, &mut compacted, &mut batch, &mut pending, latest_zero_order)?;
+                    latest_zero_order = Some(latest_zero_order.map_or(reference.order, |order: u64| order.max(reference.order)));
+                } else {
+                    if pending.is_some_and(|previous: LegacyMutationReference| !previous.same_key(reference)) {
+                        emit_legacy_pending(source, &mut compacted, &mut batch, &mut pending, latest_zero_order)?;
+                    }
+                    pending = Some(reference);
+                }
+            }
+            _ => return Err(Errno::EIO),
+        }
+    }
+    if let Some(zero) = zero_min {
+        emit_legacy_zero(&mut compacted, &mut batch, zero)?;
+    }
+    emit_legacy_pending(source, &mut compacted, &mut batch, &mut pending, latest_zero_order)?;
+    compacted.commit_transaction(&batch)?;
+    scratch.truncate(0)?;
+    scratch.flush()?;
+    let checkpoint = compacted.checkpoint_blocks_with_metadata_into(scratch)?;
     Ok((compacted.into_storage(), checkpoint.into_storage()))
 }
 
@@ -2924,6 +3399,224 @@ mod tests {
             ), "{fault}");
             assert_eq!(source.bytes, original, "{fault}");
         }
+    }
+
+    #[test]
+    fn legacy_mutation_reference_sort_merges_multiple_bounded_runs() {
+        let count = LEGACY_SORT_RUN_RECORDS as u64 * 2 + 3;
+        let mut scratch = MemoryStorage::default();
+        for position in 0..count {
+            let reference = LegacyMutationReference {
+                kind: 3,
+                inode: 7,
+                block: count - position - 1,
+                marker: 1,
+                name: [0; 255],
+                name_length: 0,
+                order: position,
+                offset: 72,
+                value_length: FILE_BLOCK_BYTES as u32,
+                digest: [1; 32],
+                deleted: false,
+            };
+            scratch.write_all_at(position * LEGACY_MUTATION_RECORD_BYTES as u64, &reference.encode()).unwrap();
+        }
+        let mut target = MemoryStorage::default();
+        sort_legacy_mutations(&mut scratch, &mut target, count).unwrap();
+        assert!(target.bytes.is_empty());
+        let mut reader = LegacyMutationCursor::new().unwrap();
+        reader.reset(0, count);
+        for position in 0..count {
+            let reference = reader.next(&mut scratch).unwrap().unwrap();
+            assert_eq!(reference.block, position);
+            assert_eq!(reference.order, count - position - 1);
+        }
+        assert!(reader.next(&mut scratch).unwrap().is_none());
+    }
+
+    #[test]
+    fn legacy_mutation_reference_rejects_damaged_key_and_value_location() {
+        let reference = LegacyMutationReference {
+            kind: 4,
+            inode: 7,
+            block: 0,
+            marker: 0,
+            name: {
+                let mut name = [0; 255];
+                name[..3].copy_from_slice(b"foo");
+                name
+            },
+            name_length: 3,
+            order: 9,
+            offset: 72,
+            value_length: 8,
+            digest: [1; 32],
+            deleted: false,
+        };
+        for position in [0, 2, 4, 20, 28, 36, 40, 72, 352] {
+            let mut bytes = reference.encode();
+            bytes[position] ^= 1;
+            assert!(matches!(LegacyMutationReference::decode(bytes), Err(Errno::EIO)));
+        }
+    }
+
+    #[test]
+    fn unindexed_resizable_conversion_preserves_metadata_truncation_and_later_blocks() {
+        let digest = [57; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        journal.commit(&[
+            Mutation::Put { key: OverlayKey::Inode(7), value: b"first".to_vec() },
+            Mutation::Put { key: OverlayKey::FileSize(7), value: (4 * FILE_BLOCK_BYTES as u64).to_le_bytes().to_vec() },
+            Mutation::Put { key: OverlayKey::Dirent { parent: 1, name: b"old".to_vec() }, value: 7u64.to_le_bytes().to_vec() },
+        ]).unwrap();
+        for block in 0..4 {
+            journal.commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block },
+                value: vec![b'a' + block as u8; FILE_BLOCK_BYTES],
+            }]).unwrap();
+        }
+        journal.commit(&[
+            Mutation::Put { key: OverlayKey::FileZeroFrom(7), value: 1u64.to_le_bytes().to_vec() },
+            Mutation::Delete { key: OverlayKey::Dirent { parent: 1, name: b"old".to_vec() } },
+            Mutation::Put { key: OverlayKey::Dirent { parent: 1, name: b"new".to_vec() }, value: 7u64.to_le_bytes().to_vec() },
+        ]).unwrap();
+        journal.commit(&[Mutation::Put {
+            key: OverlayKey::FileBlock { inode: 7, block: 1 }, value: vec![b'y'; FILE_BLOCK_BYTES],
+        }]).unwrap();
+        journal.commit(&[Mutation::Put {
+            key: OverlayKey::FileZeroFrom(7), value: 2u64.to_le_bytes().to_vec(),
+        }]).unwrap();
+        journal.commit(&[
+            Mutation::Put { key: OverlayKey::FileBlock { inode: 7, block: 2 }, value: vec![b'z'; FILE_BLOCK_BYTES] },
+            Mutation::Put { key: OverlayKey::Inode(7), value: b"final".to_vec() },
+        ]).unwrap();
+        let mut source = journal.into_storage();
+        source.bytes.extend_from_slice(b"torn");
+        let original = source.bytes.clone();
+        let (target, index) = convert_unindexed_resizable_journal(
+            &mut source, MemoryStorage::default(), MemoryStorage::default(), digest,
+        ).unwrap();
+        assert_eq!(source.bytes, original);
+        assert_eq!(&index.bytes[..4], b"KIDX");
+        assert_eq!(u32::from_le_bytes(index.bytes[4..8].try_into().unwrap()), 4);
+        let end = target.bytes.len() as u64;
+        let mut reopened = OverlayJournal::open_with_checkpoint_metadata(target, index, digest, end).unwrap();
+        assert_eq!(reopened.metadata_value(&OverlayKey::Inode(7)).unwrap(), Some(Some(b"final".to_vec())));
+        assert_eq!(reopened.metadata_value(&OverlayKey::Dirent { parent: 1, name: b"old".to_vec() }).unwrap(), Some(None));
+        assert_eq!(reopened.metadata_value(&OverlayKey::Dirent { parent: 1, name: b"new".to_vec() }).unwrap(), Some(Some(7u64.to_le_bytes().to_vec())));
+        assert_eq!(reopened.metadata_value(&OverlayKey::FileZeroFrom(7)).unwrap(), Some(Some(1u64.to_le_bytes().to_vec())));
+        let mut bytes = [0; FILE_BLOCK_BYTES];
+        for (block, expected) in [(0, b'a'), (1, b'y'), (2, b'z'), (3, 0)] {
+            bytes.fill(0);
+            assert_eq!(reopened.read_file_at(
+                7, 4 * FILE_BLOCK_BYTES as u64, block * FILE_BLOCK_BYTES as u64,
+                &mut bytes, |_, _| panic!("unexpected base read"),
+            ), Ok(FILE_BLOCK_BYTES));
+            assert_eq!(bytes, [expected; FILE_BLOCK_BYTES]);
+        }
+    }
+
+    #[test]
+    fn unindexed_resizable_conversion_failure_preserves_source() {
+        let digest = [58; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        journal.commit(&[Mutation::Put {
+            key: OverlayKey::Dirent { parent: 1, name: b"entry".to_vec() },
+            value: 7u64.to_le_bytes().to_vec(),
+        }]).unwrap();
+        let original = journal.into_storage().bytes;
+        for fault in ["scratch-write", "target-write", "target-flush"] {
+            let mut source = MemoryStorage { bytes: original.clone(), ..MemoryStorage::default() };
+            let target = MemoryStorage {
+                fail_write_after_bytes: (fault == "target-write").then_some(3),
+                fail_flush: fault == "target-flush",
+                ..MemoryStorage::default()
+            };
+            let scratch = MemoryStorage {
+                fail_write_after_bytes: (fault == "scratch-write").then_some(3),
+                ..MemoryStorage::default()
+            };
+            assert!(matches!(
+                convert_unindexed_resizable_journal(&mut source, target, scratch, digest),
+                Err(Errno::EIO)
+            ), "{fault}");
+            assert_eq!(source.bytes, original, "{fault}");
+        }
+    }
+
+    #[test]
+    fn unindexed_resizable_conversion_rejects_corrupt_source_without_rewriting_it() {
+        let digest = [60; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        journal.commit(&[Mutation::Put {
+            key: OverlayKey::Dirent { parent: 1, name: b"entry".to_vec() },
+            value: 7u64.to_le_bytes().to_vec(),
+        }]).unwrap();
+        let mut source = journal.into_storage();
+        source.bytes[HEADER_BYTES + TRANSACTION_HEADER_BYTES + 20] ^= 1;
+        let original = source.bytes.clone();
+        assert!(matches!(
+            convert_unindexed_resizable_journal(
+                &mut source, MemoryStorage::default(), MemoryStorage::default(), digest,
+            ),
+            Err(Errno::EIO)
+        ));
+        assert_eq!(source.bytes, original);
+    }
+
+    #[test]
+    fn unindexed_resizable_conversion_matches_full_replay_across_ordered_truncations() {
+        let digest = [59; 32];
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        let mut random = 0x9e3779b97f4a7c15u64;
+        for order in 0..500u64 {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let block = (random >> 32) % 16;
+            let mutation = match order % 11 {
+                0 => Mutation::Put {
+                    key: OverlayKey::FileZeroFrom(7),
+                    value: block.to_le_bytes().to_vec(),
+                },
+                1 => Mutation::Delete { key: OverlayKey::FileBlock { inode: 7, block } },
+                2 => Mutation::Put {
+                    key: OverlayKey::Dirent { parent: 1, name: alloc::format!("item-{}", block).into_bytes() },
+                    value: 7u64.to_le_bytes().to_vec(),
+                },
+                3 => Mutation::Delete {
+                    key: OverlayKey::Dirent { parent: 1, name: alloc::format!("item-{}", block).into_bytes() },
+                },
+                _ => Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block },
+                    value: vec![order as u8; FILE_BLOCK_BYTES],
+                },
+            };
+            journal.commit(&[mutation]).unwrap();
+        }
+        let mut source = journal.into_storage();
+        let mut original = OverlayJournal::open(MemoryStorage { bytes: source.bytes.clone(), ..MemoryStorage::default() }, digest).unwrap();
+        let (target, index) = convert_unindexed_resizable_journal(
+            &mut source, MemoryStorage::default(), MemoryStorage::default(), digest,
+        ).unwrap();
+        let end = target.bytes.len() as u64;
+        let mut converted = OverlayJournal::open_with_checkpoint_metadata(target, index, digest, end).unwrap();
+        let mut expected = [0; FILE_BLOCK_BYTES];
+        let mut actual = [0; FILE_BLOCK_BYTES];
+        for block in 0..16u64 {
+            let offset = block * FILE_BLOCK_BYTES as u64;
+            let read_base = |_: u64, destination: &mut [u8]| {
+                destination.fill(b'b');
+                Ok(destination.len())
+            };
+            assert_eq!(original.read_file_at(7, 16 * FILE_BLOCK_BYTES as u64, offset, &mut expected, read_base), Ok(FILE_BLOCK_BYTES));
+            assert_eq!(converted.read_file_at(7, 16 * FILE_BLOCK_BYTES as u64, offset, &mut actual, read_base), Ok(FILE_BLOCK_BYTES));
+            assert_eq!(actual, expected, "block {block}");
+            let key = OverlayKey::Dirent { parent: 1, name: alloc::format!("item-{block}").into_bytes() };
+            assert_eq!(converted.metadata_value(&key).unwrap(), original.metadata_value(&key).unwrap(), "dirent {block}");
+        }
+        assert_eq!(
+            converted.metadata_value(&OverlayKey::FileZeroFrom(7)).unwrap(),
+            original.metadata_value(&OverlayKey::FileZeroFrom(7)).unwrap(),
+        );
     }
 
     #[test]

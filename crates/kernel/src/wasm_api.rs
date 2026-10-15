@@ -2259,6 +2259,26 @@ pub extern "C" fn kernel_rootfs_convert_unindexed_fixed_persistence() -> i32 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_convert_unindexed_resizable_persistence() -> i32 {
+    let mut source = HostOverlayStorage;
+    let mut header = [0; 72];
+    if let Err(error) = crate::persistent_overlay::OverlayStorage::read_exact_at(&mut source, 0, &mut header) {
+        return -(error as i32);
+    }
+    let mut base_digest = [0; 32];
+    base_digest.copy_from_slice(&header[8..40]);
+    match runtime_core::persistent_overlay::convert_unindexed_resizable_journal(
+        &mut source,
+        HostOverlayTargetStorage,
+        HostOverlayCompactionStorage,
+        base_digest,
+    ) {
+        Ok(_) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_enable_resizable_persistence(
     image_len_lo: u32,
     image_len_hi: u32,
