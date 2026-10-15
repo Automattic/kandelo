@@ -200,19 +200,20 @@ acknowledgement, the writer reads back the exact manifest and continues;
 publication succeeds without a false error. Retrying publication verifies
 both the committed image and preserved prior image and journals, then succeeds
 without rewriting either manifest. A damaged backup refuses that retry. A
-persistent-browser-context test closes the publishing
-tab immediately before or after the primary manifest close, then opens a new
-tab: Chromium, Firefox, and WebKit select the prior or staged generation,
-respectively, while retaining the prior image after commit. Both generations
-boot through the real browser kernel; before-commit recovery replays a guest
-write from the prior journal, and after-commit recovery reads the staged base.
+persistent-browser-context test stops the publisher immediately before or
+after the primary manifest close, then reopens the same profile: Chromium
+crashes and relaunches its browser process; Firefox and WebKit close the tab.
+All three engines select the prior or staged generation, respectively, while
+retaining the prior image after commit. Both generations boot through the real
+browser kernel; before-commit recovery replays a guest write from the prior
+journal, and after-commit recovery reads the staged base.
 An end-to-end browser test also exports a guest-written kernel image to an
 OPFS staging file, stages it under a fresh journal, boots it, publishes the
 replacement, and reopens it after reload. Snapshot export requires a fresh
 quiescent kernel after the guest-writing kernel has been destroyed; waiting
 for a process exit alone does not make that kernel quiescent.
-That tab-close test does not prove page-driven replacement, browser-process
-crash, or power-loss durability at that cut.
+This does not prove page-driven replacement, browser-process crash during
+publication on Firefox or WebKit, or power-loss durability at that cut.
 The page checkpoint action uses the held per-computer lease until both the
 source and staged kernels have closed their journals, then releases it before
 the manifest-locked publish and boots the selected manifest. Superseded work
@@ -294,11 +295,12 @@ may be active. An old directory-form `.lock` fails closed and requires explicit
 operator removal after verifying the old owner has stopped; there is no safe
 automatic way to distinguish its stale and live forms. Browser Web Locks and
 OPFS sync access handles remain the browser-side ownership mechanism.
-Chromium, Firefox, and WebKit each reload a page without destroying its
-kernel after synced and unsynced guest writes in both fixed and resizable
-modes. All 12 strict reboots recover exactly the durable state.
-Browser-process crash and power-loss
-recovery still need separate validation.
+Chromium, Firefox, and WebKit each recover after termination without destroying
+the kernel, with synced and unsynced guest writes in both fixed and resizable
+modes. All 12 strict reboots recover exactly the durable state. The Chromium
+cases crash the browser process and relaunch the same OPFS profile; Firefox and
+WebKit reload the page. Browser-process crash recovery on those engines and
+power-loss recovery remain unverified.
 Chromium, Firefox, and WebKit exercise a worker that drops destroy requests:
 the old tab refuses same-journal boots after the timeout, and a new tab can
 reopen the journal after the old tab closes.

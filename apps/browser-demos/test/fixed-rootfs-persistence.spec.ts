@@ -1390,6 +1390,8 @@ test(`browser ${persistenceMode} termination recovers ${writeMode} writes`, asyn
       extraHTTPHeaders: projectUse.extraHTTPHeaders,
       ...(projectUse.launchOptions ?? {}),
     });
+    let recoveryContext: typeof context | null = null;
+    let browserCrashed = false;
     try {
       const page = context.pages()[0] ?? await context.newPage();
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
@@ -1420,8 +1422,26 @@ test(`browser ${persistenceMode} termination recovers ${writeMode} writes`, asyn
         return { name, visible: new TextDecoder().decode(await kernel.readFileFromVfs("/state")) };
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl, persistenceMode, writeMode });
       expect(before.visible).toBe("XYcdefgh");
-      await page.reload();
-      const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name, persistenceMode }) => {
+      let recoveryPage = page;
+      if (browserName === "chromium") {
+        const session = await context.newCDPSession(page);
+        const closed = context.waitForEvent("close", { timeout: 15_000 });
+        void session.send("Browser.crash").catch(() => {});
+        await closed;
+        browserCrashed = true;
+        recoveryContext = await playwright[browserName].launchPersistentContext(userDataDir, {
+          channel: projectUse.channel,
+          proxy: projectUse.proxy as never,
+          extraHTTPHeaders: projectUse.extraHTTPHeaders,
+          ...(projectUse.launchOptions ?? {}),
+        });
+        recoveryPage = recoveryContext.pages()[0] ?? await recoveryContext.newPage();
+        await recoveryPage.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+        await recoveryPage.goto(new URL("/trap-signal-test.html", baseURL).href);
+      } else {
+        await page.reload();
+      }
+      const recovered = await recoveryPage.evaluate(async ({ moduleUrl, kernelUrl, name, persistenceMode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
@@ -1444,7 +1464,8 @@ test(`browser ${persistenceMode} termination recovers ${writeMode} writes`, asyn
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, name: before.name, persistenceMode });
       expect(recovered).toBe(writeMode === "synced" ? "XYcdefgh" : "abcdefgh");
     } finally {
-      await context.close();
+      await recoveryContext?.close();
+      if (!browserCrashed) await context.close();
     }
   } finally {
     rmSync(userDataDir, { recursive: true, force: true });
