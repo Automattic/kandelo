@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -28,6 +29,8 @@ const imageModulePath = [publishedImageModulePath, directImageModulePath].find((
 }) ?? null;
 const guestProgramPath = tryResolveBinary("test-fixtures/wasm32/persistence-overwrite.wasm");
 const guestProgramName = "/bin/persistence-overwrite";
+const crashWriterPath = join(import.meta.dirname, "fixtures/persistent-rootfs-crash-writer.ts");
+const tsxLoaderPath = join(import.meta.dirname, "../node_modules/tsx/dist/loader.mjs");
 const encoder = new TextEncoder();
 
 const largeWriteBytes = 2 * 1024 * 1024;
@@ -251,6 +254,122 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(guestProgramPath === null).each(
+    (["fixed", "resizable"] as const).flatMap((persistenceMode) =>
+      (["synced", "unsynced"] as const).map((writeMode) => [persistenceMode, writeMode] as const)),
+  )("recovers %s %s guest state after SIGKILL without shutdown", async (persistenceMode, writeMode) => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-rootfs-crash-"));
+    const imagePath = join(directory, "base.vfs");
+    const journalPath = join(directory, "machine.journal");
+    const image = await makeImage("abcdefgh");
+    writeFileSync(imagePath, image);
+    const child = spawn(process.execPath, [
+      "--import", tsxLoaderPath, crashWriterPath,
+      imagePath, journalPath, kernelPath!, writeMode, persistenceMode,
+    ], {
+      cwd: join(import.meta.dirname, "../.."),
+      stdio: ["ignore", "ignore", "pipe", "ipc"],
+    });
+    let diagnostics = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => { diagnostics += chunk; });
+    const exited = new Promise<[number | null, NodeJS.Signals | null]>((resolve, reject) => {
+      child.once("exit", (code, signal) => resolve([code, signal]));
+      child.once("error", reject);
+    });
+    void exited.catch(() => {});
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`crash writer did not finish guest: ${diagnostics}`)), 60_000);
+        child.once("message", (message) => {
+          clearTimeout(timer);
+          if (message === "guest-exited") resolve();
+          else reject(new Error(`unexpected crash writer message: ${String(message)}`));
+        });
+        child.once("exit", (code, signal) => {
+          clearTimeout(timer);
+          reject(new Error(`crash writer exited before guest completion (${code}, ${signal}): ${diagnostics}`));
+        });
+        child.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+      });
+      expect(child.kill("SIGKILL")).toBe(true);
+      const [code, signal] = await exited;
+      expect([code, signal]).toEqual([null, "SIGKILL"]);
+      const reopened = await boot(image, journalPath, persistenceMode === "resizable", true);
+      try {
+        const state = new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!);
+        expect(state).toBe(writeMode === "synced" ? "XYcdefgh" : "abcdefgh");
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+      await exited.catch(() => {});
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  it("refuses an unowned legacy directory lock until explicitly migrated", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-legacy-overlay-lock-"));
+    const path = join(directory, "machine.journal");
+    const lockPath = `${path}.lock`;
+    try {
+      const image = await makeImage("abcdefgh");
+      mkdirSync(lockPath);
+      await expect(boot(image, path, true)).rejects.toThrow(/legacy or invalid lock/);
+      expect(lstatSync(lockPath).isDirectory()).toBe(true);
+      rmdirSync(lockPath);
+      const first = await boot(image, path, true);
+      await first.destroy();
+      expect(lstatSync(lockPath).isFile()).toBe(true);
+      const reopened = await boot(image, path, true, true);
+      await reopened.destroy();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(guestProgramPath === null)("refuses a concurrent writer in another Node process", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-overlay-cross-process-lock-"));
+    const imagePath = join(directory, "base.vfs");
+    const journalPath = join(directory, "machine.journal");
+    const image = await makeImage("abcdefgh");
+    writeFileSync(imagePath, image);
+    try {
+      const first = await boot(image, journalPath, true);
+      try {
+        const contender = spawnSync(process.execPath, [
+          "--import", tsxLoaderPath, crashWriterPath,
+          imagePath, journalPath, kernelPath!, "synced", "resizable",
+        ], {
+          cwd: join(import.meta.dirname, "../.."),
+          encoding: "utf8",
+          timeout: 30_000,
+        });
+        expect(contender.error).toBeUndefined();
+        expect(contender.status, contender.stderr).toBe(1);
+        expect(contender.stderr).toContain("database is locked");
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      const reopened = await boot(image, journalPath, true, true);
+      try {
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 90_000);
 
   it.each(["fixed", "resizable"] as const)("preserves %s host storage failures instead of reporting a corrupt generation", async (mode) => {
     const image = await makeImage("abcdefgh");
