@@ -15,6 +15,26 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && (strcmp(argv[1], "many-timestamps") == 0
+        || strcmp(argv[1], "verify-many-timestamps") == 0)) {
+        int verify = strcmp(argv[1], "verify-many-timestamps") == 0;
+        for (int index = 0; index < 65; index++) {
+            char path[32];
+            if (snprintf(path, sizeof(path), "/timestamp-%02d", index) < 0) return 208;
+            int fd = open(path, verify ? O_RDONLY : O_CREAT | O_EXCL | O_RDWR, 0644);
+            if (fd < 0) return 209;
+            char expected = (char)('A' + index % 26);
+            if (verify) {
+                char actual;
+                if (read(fd, &actual, 1) != 1 || actual != expected) return 210;
+            } else {
+                if (write(fd, &expected, 1) != 1) return 211;
+                if (index == 64 && fsync(fd) != 0) return 212;
+            }
+            if (close(fd) != 0) return 213;
+        }
+        return 0;
+    }
     if (argc >= 2 && strcmp(argv[1], "quota-rename") == 0) {
         if (rename("/state", "/quota-renamed") != -1 || errno != ENOSPC) return 203;
         struct stat metadata;
