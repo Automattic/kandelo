@@ -1396,6 +1396,49 @@ test("browser replays 8192 distinct blocks after live compaction", async ({ play
         }
       }, { moduleUrl, kernelUrl, name, largeWriteBytes });
       expect(result).toEqual({ size: largeWriteBytes, verified: true });
+      const forged = await page.evaluate(async ({ name }) => {
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const indexFile = await directory.getFileHandle(`${name}.g0.index`);
+        const sealFile = await directory.getFileHandle(`${name}.g0.seal`);
+        const index = new Uint8Array(await (await indexFile.getFile()).arrayBuffer());
+        const seal = new Uint8Array(await (await sealFile.getFile()).arrayBuffer());
+        const hash = async (bytes: Uint8Array) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.slice().buffer));
+        if (new DataView(index.buffer).getUint32(4, true) !== 5) throw new Error("expected v5 index");
+        index[160 + 24] ^= 1;
+        index.set(await hash(index.subarray(160)), 96);
+        index.set(await hash(index.subarray(0, 128)), 128);
+        const indexWriter = await indexFile.createWritable();
+        await indexWriter.write(index);
+        await indexWriter.close();
+        seal.set(await hash(index), seal.length - 32);
+        const sealWriter = await sealFile.createWritable();
+        await sealWriter.write(seal);
+        await sealWriter.close();
+        return Array.from(await hash(index));
+      }, { name });
+      await page.reload();
+      const recovery = await page.evaluate(async ({ moduleUrl, kernelUrl, name, forged }) => {
+        const { BrowserKernel } = await import(moduleUrl);
+        const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+        const imageFile = await directory.getFileHandle(`${name}.base`);
+        const kernel = new BrowserKernel({ kernelOwnedFs: true });
+        try {
+          await kernel.initFromOpfsImage({
+            kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+            vfsImageFile: imageFile,
+            experimentalFixedPersistenceName: name,
+            persistentComputerName: name,
+          });
+          const verification = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "verify-many"]);
+          const indexFile = await directory.getFileHandle(`${name}.g0.index`);
+          const index = new Uint8Array(await (await indexFile.getFile()).arrayBuffer());
+          const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", index.slice().buffer));
+          return { verified: await verification.exit === 0, indexRepaired: digest.some((byte, position) => byte !== forged[position]) };
+        } finally {
+          await kernel.destroy();
+        }
+      }, { moduleUrl, kernelUrl, name, forged });
+      expect(recovery).toEqual({ verified: true, indexRepaired: true });
     } finally {
       await context.close();
     }
