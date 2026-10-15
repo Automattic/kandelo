@@ -3404,3 +3404,29 @@ module-selection fix rather than a compiler/library survival patch, and
 repeat the full editor test in WebKit. After cross-browser functionality,
 run longer uptime/concurrency and fair PHP-FPM-versus-FrankenPHP tests before
 calling the demo production-ready or making a performance claim.
+
+**2026-10-14 — Caddy stack comparison and WebKit diagnosis.**
+`benchmarks/wordpress-stack.ts` now accepts `--alternative=caddy` and
+compares the preinstalled nginx/PHP-FPM and FrankenPHP+Caddy profiles from
+the same SHA-256-verified ABI-50 SourceOnly image in Node and Chromium.
+Four rounds alternated profile order; each host/profile collected 48
+full-body dynamic homepage timings and 64 requests in four-client phases.
+The raw report is `.context/wordpress-caddy-benchmark-abi50.json` (image
+SHA-256 `dc19a32b3372fa0f0163ef21eb14328aab33ef4374191afc344af4197bb6e1af`).
+Node nginx/FPM versus Caddy median request latency was 421 versus 689 ms,
+median startup 11.2 versus 21.3 seconds, and median throughput 4.27 versus
+3.83 requests/s. Chromium latency was 395 versus 596 ms, startup 21.1
+versus 24.7 seconds, and throughput 5.12 versus 5.14 requests/s. This
+one-machine workload shows no Caddy performance advantage. It is a
+user-facing stack comparison, **not** an isolated PHP-runtime comparison:
+FPM uses prewarmed OPcache, the ZTS embed does not, and the Caddy profile
+has a larger Wasm memory ceiling.
+
+A separate package experiment imported Caddy standard modules without its
+unused templates module, but the WebKit PHP/static fixture still crashed
+before readiness with the same Wasm call-stack overflow. FrankenPHP's
+`php_server` imports Caddy's file server, which itself imports templates
+and Goldmark, so that experiment did not actually remove Goldmark. The
+module-selection edit was reverted and the rev1 package artifact restored.
+WebKit's root cause and a maintainable solution remain open; no Caddy,
+FrankenPHP, Go compiler, or Go standard-library source patch was kept.

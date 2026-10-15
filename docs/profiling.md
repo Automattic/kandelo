@@ -344,7 +344,8 @@ Build requirements: `wasm32posix-cc` SDK. The PHP build script automatically bui
 #### wordpress-stack
 
 `benchmarks/wordpress-stack.ts` compares the preinstalled WordPress nginx/PHP-FPM
-and FrankenPHP classic services from the **same** resolver-selected
+and FrankenPHP classic services, or FrankenPHP+Caddy with
+`--alternative=caddy`, from the **same** resolver-selected
 `wordpress.vfs.zst`. Unlike the `wordpress` suite above, it measures complete
 dynamic homepage responses through the actual dinit service stacks, once on
 the Node host and once through the Chromium browser demo. It verifies that
@@ -365,19 +366,22 @@ serve `apps/browser-demos` with its source-only Vite configuration on port
 5401. Then run the comparison from the repository root:
 
 ```bash
-WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
-WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1" \
-scripts/dev-shell.sh bash -c 'node --import tsx benchmarks/wordpress-stack.ts --host=both --rounds=4 --warmups=3 --samples=12 --clients=4 --concurrent-samples=4'
+scripts/dev-shell.sh bash -c 'export WASM_POSIX_RESOLUTION_POLICY=source-only-v1 WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"; node --import tsx benchmarks/wordpress-stack.ts --host=both --rounds=4 --warmups=3 --samples=12 --clients=4 --concurrent-samples=4 --alternative=caddy'
 ```
 
 The default report is `.context/wordpress-stack-benchmark.json`; use
-`--output=...`, `--host=node|browser|both`, `--browser-base-url=...`, or
+`--output=...`, `--host=node|browser|both`, `--alternative=classic|caddy`, `--browser-base-url=...`, or
 `--port=...`, `--clients=...`, or `--concurrent-samples=...` to change it.
 This is a paired, single-machine latency, cold-boot, and bounded
 multi-client throughput comparison, not a statistically powered superiority
 test. Node and Chromium medians describe different
 request paths and must not be pooled. The existing full benchmark suite is
 still required for broad platform performance claims.
+The Caddy comparison is user-facing stack behavior, not an isolated PHP
+runtime comparison: the nginx/PHP-FPM image uses prewarmed OPcache, while
+the current FrankenPHP ZTS embed has no equivalent OPcache. The Caddy
+profile also requires a 1 GiB Wasm memory ceiling, versus 256 MiB for the
+nginx/PHP-FPM profile.
 
 #### mariadb
 

@@ -21,8 +21,7 @@ const image = {
   publicFile: "wordpress.vfs.zst",
   buildHint: "cargo xtask bootstrap wordpress",
 };
-const profiles = ["wordpress-sqlite", "wordpress-frankenphp"] as const;
-type Profile = typeof profiles[number];
+type Profile = "wordpress-sqlite" | "wordpress-frankenphp" | "wordpress-frankenphp-caddy";
 type Host = "node" | "browser";
 
 interface Options {
@@ -35,6 +34,7 @@ interface Options {
   port: number;
   browserBaseUrl: string;
   output: string;
+  profiles: readonly Profile[];
 }
 
 interface RoundResult {
@@ -65,7 +65,7 @@ function parseOptions(): Options {
   if (host !== "node" && host !== "browser" && host !== "both") {
     throw new Error("--host must be node, browser, or both");
   }
-  const known = new Set(["host", "rounds", "warmups", "samples", "clients", "concurrent-samples", "port", "browser-base-url", "output"]);
+  const known = new Set(["host", "rounds", "warmups", "samples", "clients", "concurrent-samples", "port", "browser-base-url", "output", "alternative"]);
   for (const name of values.keys()) {
     if (!known.has(name)) throw new Error(`Unknown option --${name}`);
   }
@@ -73,6 +73,10 @@ function parseOptions(): Options {
   const rounds = integer("rounds", 2, 1);
   if (port + (rounds - 1) * 4 + 3 > 65535) {
     throw new Error("--port and --rounds exceed the available TCP port range");
+  }
+  const alternative = values.get("alternative") ?? "classic";
+  if (alternative !== "classic" && alternative !== "caddy") {
+    throw new Error("--alternative must be classic or caddy");
   }
   return {
     host,
@@ -84,10 +88,11 @@ function parseOptions(): Options {
     port,
     browserBaseUrl: values.get("browser-base-url") ?? "http://127.0.0.1:5401",
     output: resolve(values.get("output") ?? ".context/wordpress-stack-benchmark.json"),
+    profiles: ["wordpress-sqlite", alternative === "caddy" ? "wordpress-frankenphp-caddy" : "wordpress-frankenphp"],
   };
 }
 
-function orderForRound(round: number): readonly Profile[] {
+function orderForRound(round: number, profiles: readonly Profile[]): readonly Profile[] {
   return round % 2 === 0 ? profiles : [...profiles].reverse();
 }
 
@@ -112,7 +117,8 @@ async function fetchWordPress(url: string): Promise<void> {
 }
 
 async function measureNode(profile: Profile, round: number, options: Options, imagePath: string): Promise<RoundResult> {
-  const target = profile === "wordpress-sqlite" ? "nginx" : "frankenphp-classic";
+  const target = profile === "wordpress-sqlite" ? "nginx" :
+    profile === "wordpress-frankenphp-caddy" ? "frankenphp-caddy" : "frankenphp-classic";
   const port = options.port + round * 4 + (profile === "wordpress-sqlite" ? 0 : 2);
   const smtpPort = port + 1;
   const start = performance.now();
@@ -122,7 +128,7 @@ async function measureNode(profile: Profile, round: number, options: Options, im
     imagePath,
     target,
     maxWorkers: 12,
-    maxPages: 4096,
+    maxPages: profile === "wordpress-frankenphp-caddy" ? 16384 : 4096,
     configure: (fs) => {
       configureWordPressRuntime(fs, { port });
       const smtpScript = "/usr/local/bin/start-msmtpd";
@@ -142,6 +148,7 @@ async function measureNode(profile: Profile, round: number, options: Options, im
     env: [
       "HOME=/root", "TERM=xterm-256color", "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
       "WP_APP_PATH=/", "WP_PROTO=http", "FRANKENPHP_NUM_THREADS=6", `FRANKENPHP_LISTEN=:${port}`,
+      `FRANKENPHP_PORT=${port}`,
     ],
     onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
   });
@@ -186,7 +193,7 @@ async function measureNode(profile: Profile, round: number, options: Options, im
   }
 }
 
-async function browserImageDigest(page: Page): Promise<string> {
+async function browserImageDigest(page: Page, profiles: readonly Profile[]): Promise<string> {
   const imageUrls = await Promise.all(profiles.map(async (profile) => {
     const url = new URL(await machineUrl(page, profile), "http://kandelo.invalid");
     return url.searchParams.get("vfs");
@@ -208,7 +215,8 @@ async function measureBrowser(
 ): Promise<RoundResult> {
   const start = performance.now();
   await page.goto(await machineUrl(page, profile));
-  const title = profile === "wordpress-sqlite" ? "WordPress SQLite" : "WordPress on FrankenPHP";
+  const title = profile === "wordpress-sqlite" ? "WordPress SQLite" :
+    profile === "wordpress-frankenphp-caddy" ? "WordPress on FrankenPHP + Caddy" : "WordPress on FrankenPHP";
   const body = page.frameLocator(`iframe[title="${title}"]`).locator("body");
   await body.getByText("WordPress on Kandelo", { exact: false }).first().waitFor({ timeout: 180_000 });
   const startupMs = performance.now() - start;
@@ -271,7 +279,7 @@ async function main(): Promise<void> {
 
   if (options.host === "node" || options.host === "both") {
     for (let round = 0; round < options.rounds; round++) {
-      for (const profile of orderForRound(round)) {
+      for (const profile of orderForRound(round, options.profiles)) {
         const result = await measureNode(profile, round, options, imagePath);
         results.push(result);
         console.log(`node round ${round + 1} ${profile}: ${percentile(result.latenciesMs, 0.5).toFixed(1)} ms median`);
@@ -286,7 +294,7 @@ async function main(): Promise<void> {
       const probe = await context.newPage();
       try {
         await probe.goto(new URL("/trap-signal-test.html", options.browserBaseUrl).href);
-        const browserDigest = await browserImageDigest(probe);
+        const browserDigest = await browserImageDigest(probe, options.profiles);
         if (browserDigest !== imageDigest) {
           throw new Error(`Node/browser VFS image mismatch: ${imageDigest} != ${browserDigest}`);
         }
@@ -294,7 +302,7 @@ async function main(): Promise<void> {
         await probe.close();
       }
       for (let round = 0; round < options.rounds; round++) {
-        for (const profile of orderForRound(round)) {
+        for (const profile of orderForRound(round, options.profiles)) {
           const page = await context.newPage();
           try {
             const result = await measureBrowser(page, profile, round, options);
@@ -311,7 +319,7 @@ async function main(): Promise<void> {
   }
 
   const summary = Object.fromEntries(
-    (["node", "browser"] as const).flatMap((host) => profiles.flatMap((profile) => {
+    (["node", "browser"] as const).flatMap((host) => options.profiles.flatMap((profile) => {
       const runs = results.filter((result) => result.host === host && result.profile === profile);
       if (runs.length === 0) return [];
       const samples = runs.flatMap((result) => result.latenciesMs);
