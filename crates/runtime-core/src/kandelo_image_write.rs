@@ -152,13 +152,18 @@ pub enum Content<'a> {
     Bytes(&'a [u8]),
     /// Bytes the writer records a reference to and reads only at emission.
     Deferred { id: u64, len: u64 },
+    SparseDeferred {
+        id: u64,
+        len: u64,
+        blocks: &'a [u32],
+    },
 }
 
 impl Content<'_> {
     fn len(&self) -> u64 {
         match self {
             Content::Bytes(b) => b.len() as u64,
-            Content::Deferred { len, .. } => *len,
+            Content::Deferred { len, .. } | Content::SparseDeferred { len, .. } => *len,
         }
     }
 }
@@ -1047,6 +1052,17 @@ impl KandeloImageWriter {
         if content.len() > MAX_FILE_BYTES {
             return Err(Errno::EFBIG);
         }
+        if let Content::SparseDeferred { len, blocks, .. } = &content {
+            let mut previous = None;
+            for &block in *blocks {
+                if u64::from(block) >= len.div_ceil(BLOCK_SIZE as u64)
+                    || previous.is_some_and(|previous| previous >= block)
+                {
+                    return Err(Errno::EINVAL);
+                }
+                previous = Some(block);
+            }
+        }
         self.precheck(parent, name)?;
         let ino = self.inode_alloc()?;
         let now = self.now_ms;
@@ -1384,46 +1400,35 @@ impl KandeloImageWriter {
         if len.div_ceil(BLOCK_SIZE as u64) > MAX_FILE_BLOCKS {
             return Err(Errno::EFBIG);
         }
-        let mut pos = 0u64;
-        while pos < len {
-            let file_block = (pos / BLOCK_SIZE as u64) as u32;
-            let chunk = core::cmp::min(BLOCK_SIZE as u64, len - pos) as usize;
-            let phys = self.inode_block_map(ino, file_block, true)?;
-            match &content {
-                Content::Bytes(bytes) => {
-                    let start = pos as usize;
-                    let block = self.block_mut(phys)?;
-                    block[..chunk].copy_from_slice(&bytes[start..start + chunk]);
-                }
-                Content::Deferred { id, .. } => {
-                    let extend = self
-                        .content_extents
-                        .last_key_value()
-                        .and_then(|(&start, extent)| {
-                            (start.checked_add(extent.blocks) == Some(phys)
-                                && extent.id == *id
-                                && extent.offset + extent.blocks as u64 * BLOCK_SIZE as u64 == pos
-                                && extent.last_len == BLOCK_SIZE as u32)
-                                .then_some(start)
-                        });
-                    if let Some(start) = extend {
-                        let extent = self.content_extents.get_mut(&start).ok_or(Errno::EIO)?;
-                        extent.blocks += 1;
-                        extent.last_len = chunk as u32;
-                    } else {
-                        self.content_extents.insert(
-                            phys,
-                            ContentExtent {
-                                blocks: 1,
-                                id: *id,
-                                offset: pos,
-                                last_len: chunk as u32,
-                            },
-                        );
-                    }
+        match &content {
+            Content::SparseDeferred { id, blocks, .. } => {
+                for &file_block in *blocks {
+                    let pos = u64::from(file_block) * BLOCK_SIZE as u64;
+                    let chunk = core::cmp::min(BLOCK_SIZE as u64, len - pos) as usize;
+                    let phys = self.inode_block_map(ino, file_block, true)?;
+                    self.defer_content_block(phys, *id, pos, chunk)?;
                 }
             }
-            pos += chunk as u64;
+            _ => {
+                let mut pos = 0u64;
+                while pos < len {
+                    let file_block = (pos / BLOCK_SIZE as u64) as u32;
+                    let chunk = core::cmp::min(BLOCK_SIZE as u64, len - pos) as usize;
+                    let phys = self.inode_block_map(ino, file_block, true)?;
+                    match &content {
+                        Content::Bytes(bytes) => {
+                            let block = self.block_mut(phys)?;
+                            block[..chunk]
+                                .copy_from_slice(&bytes[pos as usize..pos as usize + chunk]);
+                        }
+                        Content::Deferred { id, .. } => {
+                            self.defer_content_block(phys, *id, pos, chunk)?;
+                        }
+                        Content::SparseDeferred { .. } => unreachable!(),
+                    }
+                    pos += chunk as u64;
+                }
+            }
         }
         self.ino_w64(ino, INO_SIZE, len);
         let now = self.now_ms;
@@ -1431,6 +1436,38 @@ impl KandeloImageWriter {
         self.ino_w64(ino, INO_CTIME, now);
         let seq = self.ino_r32(ino, INO_DATA_SEQUENCE).wrapping_add(1);
         self.ino_w32(ino, INO_DATA_SEQUENCE, seq);
+        Ok(())
+    }
+
+    fn defer_content_block(
+        &mut self,
+        phys: u32,
+        id: u64,
+        pos: u64,
+        chunk: usize,
+    ) -> Result<(), Errno> {
+        let extend = self.content_extents.last_key_value().and_then(|(&start, extent)| {
+            (start.checked_add(extent.blocks) == Some(phys)
+                && extent.id == id
+                && extent.offset + extent.blocks as u64 * BLOCK_SIZE as u64 == pos
+                && extent.last_len == BLOCK_SIZE as u32)
+                .then_some(start)
+        });
+        if let Some(start) = extend {
+            let extent = self.content_extents.get_mut(&start).ok_or(Errno::EIO)?;
+            extent.blocks += 1;
+            extent.last_len = chunk as u32;
+        } else {
+            self.content_extents.insert(
+                phys,
+                ContentExtent {
+                    blocks: 1,
+                    id,
+                    offset: pos,
+                    last_len: chunk as u32,
+                },
+            );
+        }
         Ok(())
     }
 
@@ -2368,6 +2405,84 @@ mod tests {
                 assert_eq!(byte, (offset % 251) as u8, "file block {block}");
             }
             assert!(bytes[content_len..].iter().all(|&byte| byte == 0));
+        }
+    }
+
+    #[test]
+    fn sparse_deferred_file_keeps_unwritten_blocks_unallocated() {
+        struct OffsetPattern;
+
+        impl ContentSource for OffsetPattern {
+            fn read_exact_at(&self, _id: u64, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+                for (index, byte) in dst.iter_mut().enumerate() {
+                    *byte = ((offset + index as u64) % 251) as u8;
+                }
+                Ok(())
+            }
+        }
+
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(128 * 1024)).unwrap();
+        let len = 2 * 1024 * 1024 * 1024u64 + 17;
+        let last_block = (len / BLOCK_SIZE as u64) as u32;
+        let blocks = [0, 1034, last_block];
+        writer
+            .create_file(
+                writer.root(),
+                b"sparse",
+                0o644,
+                Content::SparseDeferred {
+                    id: 7,
+                    len,
+                    blocks: &blocks,
+                },
+            )
+            .unwrap();
+        let image = writer.finish().unwrap();
+        assert!(image.len() < 256 * 1024);
+        let filesystem = KandeloImageFs::mount(KandeloImageSource {
+            image: &image,
+            content: &OffsetPattern,
+        })
+        .unwrap();
+        let ino = filesystem.resolve(b"/sparse", true).unwrap();
+        for block in blocks {
+            let mut byte = [0];
+            assert_eq!(
+                filesystem.read_at(ino, block as u64 * BLOCK_SIZE as u64, &mut byte),
+                Ok(1)
+            );
+            assert_eq!(byte[0], (block as u64 * BLOCK_SIZE as u64 % 251) as u8);
+        }
+        let mut hole = [1u8; 32];
+        assert_eq!(filesystem.read_at(ino, 1024 * 1024 * 1024, &mut hole), Ok(32));
+        assert_eq!(hole, [0; 32]);
+        let mut end = [0; 32];
+        assert_eq!(filesystem.read_at(ino, len - 17, &mut end), Ok(17));
+    }
+
+    #[test]
+    fn invalid_sparse_block_map_does_not_mutate_the_writer() {
+        let mut writer = KandeloImageWriter::mkfs(small_config()).unwrap();
+        let free_blocks = writer.free_blocks;
+        let free_inodes = writer.free_inodes;
+        let generation = writer.generation;
+        for blocks in [&[1, 1][..], &[2, 1], &[3, 4]] {
+            assert_eq!(
+                writer.create_file(
+                    writer.root(),
+                    b"invalid",
+                    0o644,
+                    Content::SparseDeferred {
+                        id: 1,
+                        len: 4 * BLOCK_SIZE as u64,
+                        blocks,
+                    }
+                ),
+                Err(Errno::EINVAL)
+            );
+            assert_eq!(writer.free_blocks, free_blocks);
+            assert_eq!(writer.free_inodes, free_inodes);
+            assert_eq!(writer.generation, generation);
         }
     }
 

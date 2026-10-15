@@ -51,7 +51,7 @@ async function boot(image: Uint8Array, path: string, resizable = false, requireE
       : { experimentalFixedPersistencePath: path }),
     requireExistingRootfsPersistence: requireExisting,
   });
-  const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
+  const kernelBytes = new Uint8Array(readFileSync(existsSync(directKernelPath) ? directKernelPath : kernelPath!));
   try {
     await host.init(kernelBytes.buffer.slice(
       kernelBytes.byteOffset,
@@ -365,6 +365,8 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         expect(await exit).toBe(0);
         const socket = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "create-socket"]);
         expect(await socket.exit).toBe(0);
+        const sparse = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "snapshot-sparse"]);
+        expect(await sparse.exit).toBe(0);
       } finally {
         await first.destroy();
       }
@@ -372,6 +374,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       try {
         expect(new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!)).toBe("SNAP");
         const integrity = await reopened.exportRootfsImageToFile(snapshotPath);
+        expect(integrity.length).toBeLessThan(64 * 1024 * 1024);
         const snapshot = readFileSync(snapshotPath);
         expect(integrity.length).toBe(snapshot.byteLength);
         expect(integrity.chunkBytes).toBe(1024 * 1024);
@@ -394,6 +397,8 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         expect(await exit).toBe(0);
         const socket = await withoutJournal.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-socket"]);
         expect(await socket.exit).toBe(0);
+        const sparse = await withoutJournal.spawnFromVfs(guestProgramName, ["persistence-overwrite", "verify-snapshot-sparse"]);
+        expect(await sparse.exit).toBe(0);
       } finally {
         await withoutJournal.destroy();
       }

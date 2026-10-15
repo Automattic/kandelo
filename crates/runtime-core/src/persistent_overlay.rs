@@ -1439,6 +1439,60 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         Ok(done)
     }
 
+    pub fn allocated_file_blocks(&mut self, inode: u64, size: u64) -> Result<Vec<u32>, Errno> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        if inode == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let limit = size.div_ceil(FILE_BLOCK_BYTES as u64);
+        let mut blocks = Vec::new();
+        for (&(_, block), location) in self.state.blocks.range((inode, 0)..=(inode, u64::MAX)) {
+            if block < limit && location.is_some() {
+                blocks.push(u32::try_from(block).map_err(|_| Errno::EFBIG)?);
+            }
+        }
+        if let Some(checkpoint) = self.checkpoint.as_mut() {
+            let mut low = 0;
+            let mut high = checkpoint.count();
+            while low < high {
+                let middle = low + (high - low) / 2;
+                let entry = checkpoint.entry_at(middle)?.ok_or(Errno::EIO)?;
+                if entry.inode < inode {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            for index in low..checkpoint.count() {
+                let entry = checkpoint.entry_at(index)?.ok_or(Errno::EIO)?;
+                if entry.inode != inode {
+                    break;
+                }
+                if entry.block < limit
+                    && !entry.is_tombstone()
+                    && !self.state.blocks.contains_key(&(inode, entry.block))
+                    && self
+                        .state
+                        .invalid_checkpoint_from
+                        .get(&inode)
+                        .is_none_or(|from| entry.block < *from)
+                {
+                    blocks.push(u32::try_from(entry.block).map_err(|_| Errno::EFBIG)?);
+                }
+            }
+        }
+        for &((owner, block), _) in &self.dirty_blocks {
+            if owner == inode && block < limit {
+                blocks.push(u32::try_from(block).map_err(|_| Errno::EFBIG)?);
+            }
+        }
+        blocks.sort_unstable();
+        blocks.dedup();
+        Ok(blocks)
+    }
+
     fn block_location(
         &mut self,
         inode: u64,
@@ -2284,6 +2338,51 @@ mod tests {
             journal.checkpoint_fixed_blocks_into(MemoryStorage::default()),
             Err(Errno::EIO)
         ));
+    }
+
+    #[test]
+    fn allocated_file_blocks_merge_checkpoint_tail_and_dirty_cache() {
+        let digest = [49; 32];
+        let size = 100_001 * FILE_BLOCK_BYTES as u64;
+        let mut journal = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        for (inode, block) in [(7, 0), (7, 5), (7, 100_000), (8, 9)] {
+            journal.commit(&[Mutation::Put {
+                key: OverlayKey::FileBlock { inode, block },
+                value: vec![block as u8; FILE_BLOCK_BYTES],
+            }]).unwrap();
+        }
+        assert_eq!(journal.allocated_file_blocks(7, size), Ok(vec![0, 5, 100_000]));
+        let checkpoint = journal.checkpoint_fixed_blocks_into(MemoryStorage::default()).unwrap();
+        let journal_end = journal.end;
+        let mut reopened = OverlayJournal::open_with_checkpoint(
+            journal.into_storage(),
+            checkpoint.into_storage(),
+            digest,
+            journal_end,
+        ).unwrap();
+        assert_eq!(reopened.allocated_file_blocks(7, size), Ok(vec![0, 5, 100_000]));
+        reopened.commit(&[
+            Mutation::Delete { key: OverlayKey::FileBlock { inode: 7, block: 5 } },
+            Mutation::Put {
+                key: OverlayKey::FileBlock { inode: 7, block: 70_000 },
+                value: vec![4; FILE_BLOCK_BYTES],
+            },
+        ]).unwrap();
+        reopened.write_fixed_file_at_buffered(
+            7,
+            size,
+            17 * FILE_BLOCK_BYTES as u64,
+            &[3; FILE_BLOCK_BYTES],
+            |_, _| panic!("full block needs no base read"),
+        ).unwrap();
+        assert_eq!(reopened.allocated_file_blocks(7, size), Ok(vec![0, 17, 70_000, 100_000]));
+        reopened.truncate_file_at(7, size, 2 * FILE_BLOCK_BYTES as u64, |_, _| {
+            panic!("block-aligned truncation needs no base read")
+        }).unwrap();
+        reopened.truncate_file_at(7, size, size, |_, _| {
+            panic!("extension needs no base read")
+        }).unwrap();
+        assert_eq!(reopened.allocated_file_blocks(7, size), Ok(vec![0]));
     }
 
     #[test]

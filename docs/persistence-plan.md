@@ -59,29 +59,32 @@ semantics. Node and browser must expose the same guest-visible behavior.
   production-validated, crash-safe base-and-journal handoff remains open. The
   writer coalesces deferred content references into extents and keeps
   unallocated bitmap and inode-table pages implicit in memory; the legacy
-  byte-array API still materializes output, and indirect-block memory scales
-  with file size. KIFS v1 addresses at most 10 + 1,024 + 1,024² blocks per
-  file. VFSI v2 now uses a 64-bit body length above the v1 32-bit limit;
-  v1 images keep their original header. A sparse 4 GiB file can export a v2
-  container header with less than 32 MiB of counted writer metadata in a
-  Rust test. The ABI 51 kernel also boots a synthetic >4 GiB sparse v2
-  container through Node positioned reads, including a trailer beyond the
-  32-bit offset boundary, while reading less than 16 MiB. Node boots a small
-  v2 container; all three browser engines boot one, commit a guest write, and
-  reopen its journal. A physically exported >4 GiB v2 body is not yet streamed
-  or booted. An 8 GiB sparse file still exceeds the KIFS per-file limit;
-  snapshot planning rejects it with `EFBIG` before mutating
-  an image writer, clears any earlier export plan, and leaves the live journal
-  usable. Sparse holes still occupy KIFS body block addresses on export. A
-  772 MiB snapshot now boots under the 768 MiB kernel ceiling on all three
-  browser engines, but this is a narrow acceptance case, not a general memory or
-  performance bound.
+  byte-array API still materializes output. New journal-backed regular files
+  now export only written blocks, including across a checkpoint; a logical
+  4 GiB file with one tail byte exports and reopens as a sub-64 MiB KIFS body.
+  Node and all three browser engines guest-create a 512 MiB sparse file,
+  export a sub-64 MiB composed snapshot, and reopen its hole and tail without
+  the journal. Base-image files and in-memory regular files still use dense
+  export mapping. Indirect-block memory scales with allocated blocks. KIFS v1
+  addresses at most 10 + 1,024 + 1,024² blocks per file. VFSI v2 uses a 64-bit body
+  length above the v1 32-bit limit; smaller bodies keep their v1 header. The
+  ABI 51 kernel also boots a synthetic >4 GiB sparse v2 container through Node
+  positioned reads, including a trailer beyond the 32-bit offset boundary,
+  while reading less than 16 MiB. Node boots a small v2 container; all three
+  browser engines boot one, commit a guest write, and reopen its journal. A
+  physically exported >4 GiB v2 body is not yet streamed or booted. An 8 GiB
+  sparse file still exceeds the KIFS per-file limit;
+  snapshot planning rejects it with `EFBIG` before mutating an image writer,
+  clears any earlier export plan, and leaves the live journal usable. A 772 MiB
+  snapshot boots under the 768 MiB kernel ceiling on all three browser engines,
+  but this is a narrow acceptance case, not a general memory or performance
+  bound.
 
 Staged snapshot output now omits write calls for all-zero chunks, extends the
 file to the complete logical length, flushes it, and reads back every chunk,
 including unwritten ranges, before returning per-chunk digests. This reduces
-explicit zero writes but does not change KIFS block allocation or guarantee
-that an OPFS implementation stores those ranges sparsely.
+explicit zero writes but does not guarantee that an OPFS implementation stores
+those ranges sparsely.
 
 The first >RAM acceptance target is deliberately read-only. It proves that
 boot and image reads no longer require an image-sized allocation before
