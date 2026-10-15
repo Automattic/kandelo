@@ -479,14 +479,15 @@ activation cannot be rolled back. Synchronous storage and hash operations
 run on the dedicated kernel worker during live handoff; guest syscalls wait
 until that turn finishes. The pause has not yet been measured for large
 changed-block sets.
-Browser crash-cut tests now stop live compaction after flushing the target
-journal, checkpoint index, or seal, before activation. Chromium crashes the
-browser process; Firefox and WebKit close the tab and blocked worker. All three
-strictly reboot from the same OPFS profile, recover guest data from the
-greater-than-32 MiB source journal, commit another guest write, and strictly
-reboot with that write. The source journal remains present and larger than
-32 MiB at all three cuts. This does not test OS power loss or the storage
-device's flush guarantees.
+Browser crash-cut tests now stop fixed and resizable live compaction after
+flushing the target journal, checkpoint index, or seal, before activation.
+Chromium crashes the browser process; Firefox and WebKit close the tab and
+blocked worker. All three strictly reboot from the same OPFS profile, recover
+guest data from the greater-than-32 MiB source journal, commit another guest
+write, and strictly reboot with that write in both modes. The source journal
+remains present and larger than 32 MiB at all three cuts. These cases write
+existing base files; they do not exercise namespace transactions at the cut,
+OS power loss, or the storage device's flush guarantees.
 Node and Chromium, Firefox, and WebKit now reboot a real compacted journal
 after appending a later committed transaction to its former source. All four
 recover the newer source data rather than selecting the still-valid but stale

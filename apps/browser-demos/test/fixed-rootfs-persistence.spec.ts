@@ -1743,8 +1743,11 @@ for (const cut of ["journal", "index", "seal"] as const) {
   });
 }
 
-for (const cut of ["journal", "index", "seal"] as const) {
-  test(`browser recovers live compaction after ${cut} flush crash cut`, async ({ playwright, browserName, baseURL }, testInfo) => {
+for (const [persistenceMode, cut] of [
+  ["fixed", "journal"], ["fixed", "index"], ["fixed", "seal"],
+  ["resizable", "journal"], ["resizable", "index"], ["resizable", "seal"],
+] as const) {
+  test(`browser recovers ${persistenceMode} live compaction after ${cut} flush crash cut`, async ({ playwright, browserName, baseURL }, testInfo) => {
     test.setTimeout(180_000);
     const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
     filesystem.mkdir("/bin", 0o755);
@@ -1762,7 +1765,7 @@ for (const cut of ["journal", "index", "seal"] as const) {
       proxy?: Record<string, unknown>;
       extraHTTPHeaders?: Record<string, string>;
     };
-    const userDataDir = mkdtempSync(join(tmpdir(), `kandelo-live-crash-cut-${cut}-`));
+    const userDataDir = mkdtempSync(join(tmpdir(), `kandelo-${persistenceMode}-live-crash-cut-${cut}-`));
     const context = await playwright[browserName].launchPersistentContext(userDataDir, {
       channel: projectUse.channel,
       proxy: projectUse.proxy as never,
@@ -1785,7 +1788,7 @@ for (const cut of ["journal", "index", "seal"] as const) {
         return name;
       }, { imageUrl });
       await page.reload();
-      const reached = await page.evaluate(async ({ moduleUrl, kernelUrl, name, crashWorkerUrl, cut }) => {
+      const reached = await page.evaluate(async ({ moduleUrl, kernelUrl, name, crashWorkerUrl, cut, persistenceMode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const OriginalWorker = Worker;
@@ -1822,7 +1825,9 @@ for (const cut of ["journal", "index", "seal"] as const) {
           await kernel.initFromOpfsImage({
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: await directory.getFileHandle(`${name}.base`),
-            experimentalFixedPersistenceName: name,
+            ...(persistenceMode === "fixed"
+              ? { experimentalFixedPersistenceName: name }
+              : { experimentalResizablePersistenceName: name }),
             persistentComputerName: name,
           });
           for (const mode of ["persistence-overwrite", ...Array(17).fill("large")]) {
@@ -1831,7 +1836,7 @@ for (const cut of ["journal", "index", "seal"] as const) {
           }
         })().catch((error) => { (window as unknown as { crashCutError: string }).crashCutError = String(error); });
         return { cut: await cutReached, redirected };
-      }, { moduleUrl, kernelUrl, name, crashWorkerUrl, cut });
+      }, { moduleUrl, kernelUrl, name, crashWorkerUrl, cut, persistenceMode });
       expect(reached).toEqual({ cut, redirected: 1 });
       if (browserName === "chromium") {
         const session = await context.newCDPSession(page);
@@ -1851,7 +1856,7 @@ for (const cut of ["journal", "index", "seal"] as const) {
       }
       await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-      const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+      const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name, persistenceMode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const seal = await (await directory.getFileHandle(`${name}.g0.seal`)).getFile();
@@ -1861,7 +1866,9 @@ for (const cut of ["journal", "index", "seal"] as const) {
           await kernel.initFromOpfsImage({
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: await directory.getFileHandle(`${name}.base`),
-            experimentalFixedPersistenceName: name,
+            ...(persistenceMode === "fixed"
+              ? { experimentalFixedPersistenceName: name }
+              : { experimentalResizablePersistenceName: name }),
             persistentComputerName: name,
             requireExistingRootfsPersistence: true,
           });
@@ -1872,14 +1879,14 @@ for (const cut of ["journal", "index", "seal"] as const) {
         } finally {
           await kernel.destroy();
         }
-      }, { moduleUrl, kernelUrl, name });
+      }, { moduleUrl, kernelUrl, name, persistenceMode });
       expect(recovered.sealLength > 96).toBe(cut === "seal");
       expect(recovered.sourceLength).toBeGreaterThan(32 * 1024 * 1024);
       expect(recovered.state).toBe("XYcdefgh");
       expect(recovered.largeValid).toBe(true);
       expect(recovered.writeExit).toBe(0);
       await page.reload();
-      const rewritten = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+      const rewritten = await page.evaluate(async ({ moduleUrl, kernelUrl, name, persistenceMode }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const kernel = new BrowserKernel({ kernelOwnedFs: true });
@@ -1887,7 +1894,9 @@ for (const cut of ["journal", "index", "seal"] as const) {
           await kernel.initFromOpfsImage({
             kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
             vfsImageFile: await directory.getFileHandle(`${name}.base`),
-            experimentalFixedPersistenceName: name,
+            ...(persistenceMode === "fixed"
+              ? { experimentalFixedPersistenceName: name }
+              : { experimentalResizablePersistenceName: name }),
             persistentComputerName: name,
             requireExistingRootfsPersistence: true,
           });
@@ -1895,7 +1904,7 @@ for (const cut of ["journal", "index", "seal"] as const) {
         } finally {
           await kernel.destroy();
         }
-      }, { moduleUrl, kernelUrl, name });
+      }, { moduleUrl, kernelUrl, name, persistenceMode });
       expect(rewritten).toBe("MScdefgh");
     } finally {
       await activeContext.close().catch(() => {});
