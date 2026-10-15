@@ -661,6 +661,12 @@ new state after space returns. A failed conversion now flushes seal invalidation
 before truncating its partial target journal and index to reclaim quota. A
 reclamation failure is reported but does not hide a valid source; failed seal
 invalidation still prevents fallback because target safety is uncertain.
+Failed pre-activation compaction uses the same order: flush seal invalidation,
+cancel any prepared kernel handoff, then truncate and flush the partial target
+journal and checkpoint. A reclamation failure is reported without replacing the
+original quota error; failed seal invalidation or handoff cancellation prevents
+target reclamation. Host fault tests cover each write/flush cut and a failed
+reclamation step.
 This does not establish behavior under actual near-capacity browser storage.
 Peak resident memory and conversion latency on a near-capacity image remain
 unmeasured.

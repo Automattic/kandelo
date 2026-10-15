@@ -652,6 +652,8 @@ export async function compactOverlayGeneration(
     let failure: unknown = error;
     const openedSeal = seal;
     const openedIndex = index;
+    let sealInvalidated = false;
+    let preparationCanceled = !prepared;
     const cleanup = (operation: () => void): void => {
       try {
         operation();
@@ -663,9 +665,28 @@ export async function compactOverlayGeneration(
       cleanup(() => {
         openedSeal.truncate(0);
         openedSeal.flush();
+        sealInvalidated = true;
       });
     }
-    if (prepared) cleanup(() => handoff.cancel());
+    if (prepared) cleanup(() => {
+      handoff.cancel();
+      preparationCanceled = true;
+    });
+    if (sealInvalidated && preparationCanceled) {
+      for (const storage of [openedIndex, target]) {
+        if (storage === null) continue;
+        try {
+          storage.truncate(0);
+          storage.flush();
+        } catch (cleanupError) {
+          try {
+            reportCleanupFailure(cleanupError);
+          } catch (reportError) {
+            console.error("persistent overlay compaction cleanup report failed", cleanupError, reportError);
+          }
+        }
+      }
+    }
     if (openedSeal !== null) cleanup(() => openedSeal.close());
     if (openedIndex !== null) cleanup(() => openedIndex.close());
     cleanup(() => target.close());

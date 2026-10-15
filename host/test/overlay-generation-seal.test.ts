@@ -1492,6 +1492,41 @@ describe("overlay generation boot selection", () => {
     )).rejects.toThrow("injected");
     expect(source.bytes).toEqual(new Uint8Array(72).fill(7));
     expect(entries["g0.seal"]!.len()).toBe(0);
+    expect(entries["g0.journal"]!.len()).toBe(0);
+    expect(entries["g0.index"]!.len()).toBe(0);
     expect(canceled).toBe(file === "g0.seal" || (file === "g0.index" && fault === "failNextWrite"));
+  });
+
+  it("reports failed compaction target reclamation without replacing the source error", async () => {
+    const source = new MemoryStorage(new Uint8Array(72).fill(7));
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": source,
+      "g0.journal": new MemoryStorage(),
+      "g0.index": new MemoryStorage(),
+      "g0.seal": new MemoryStorage(),
+    };
+    const failures: string[] = [];
+    await expect(compactOverlayGeneration(
+      { journal: source, slot: "legacy", generation: 0, sealedLength: 0 },
+      files(entries),
+      {
+        prepare: (target) => { target.writeAllAt(0, source.bytes); },
+        checkpoint: (index) => {
+          index.writeAllAt(0, Uint8Array.of(1, 2, 3));
+          entries["g0.journal"]!.failNextTruncate = true;
+          throw Object.assign(new Error("checkpoint quota exceeded"), { code: "ENOSPC" });
+        },
+        activate: () => { throw new Error("unexpected activation"); },
+        cancel: () => {},
+      },
+      0,
+      () => true,
+      (error) => { failures.push(String(error)); },
+    )).rejects.toMatchObject({ code: "ENOSPC" });
+    expect(failures).toEqual(["Error: injected truncate failure"]);
+    expect(entries["g0.seal"]!.len()).toBe(0);
+    expect(entries["g0.index"]!.len()).toBe(0);
+    expect(entries["g0.journal"]!.len()).toBe(source.len());
+    expect(source.len()).toBe(72);
   });
 });
