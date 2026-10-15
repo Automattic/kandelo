@@ -1103,6 +1103,9 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         const manifestFailures: boolean[] = [];
         for (const fileName of [`${name}.previous.base.json`, `${name}.base.json`]) {
           for (const operation of ["write", "close"] as const) {
+            await overlayDirectory.removeEntry(`${name}.previous.base.json`).catch((error) => {
+              if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+            });
             let injected = false;
             filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
               const writer = await originalCreateWritable.call(this, options);
@@ -1153,25 +1156,23 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           interruptedPublications.push(interrupted && afterInterruption !== null &&
             await afterInterruption.file.isSameEntry(previous.file));
         }
-        let postCloseInjected = false;
+        const lostCloseAcknowledgements: string[] = [];
         filePrototype.createWritable = async function (this: FileSystemFileHandle, options) {
           const writer = await originalCreateWritable.call(this, options);
-          if (this.name !== `${name}.base.json`) return writer;
+          const fileName = this.name;
+          if (fileName !== `${name}.base.json` && fileName !== `${name}.previous.base.json`) return writer;
           return {
             write: (...args: Parameters<typeof writer.write>) => writer.write(...args),
             close: async () => {
               await writer.close();
-              postCloseInjected = true;
+              lostCloseAcknowledgements.push(fileName);
               throw new Error("injected lost manifest close acknowledgement");
             },
             abort: () => writer.abort(),
           } as FileSystemWritableFileStream;
         };
-        let postCloseRejected = false;
         try {
           await publishFixedPersistenceReplacement(name, identity, previous, staged);
-        } catch (error) {
-          postCloseRejected = String(error).includes("injected lost manifest close acknowledgement");
         } finally {
           filePrototype.createWritable = originalCreateWritable;
         }
@@ -1212,8 +1213,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
           journalWriterRejected,
           manifestFailures,
           interruptedPublications,
-          postCloseInjected,
-          postCloseRejected,
+          lostCloseAcknowledgements,
           publishedStagePreserved,
           retryManifestWrites,
           damagedBackupRejected,
@@ -1236,8 +1236,7 @@ test("composer stages a persistent image in OPFS without returning its bytes", a
         journalWriterRejected: [true, true],
         manifestFailures: [true, true, true, true],
         interruptedPublications: [true, true, true, true, true, true],
-        postCloseInjected: true,
-        postCloseRejected: true,
+        lostCloseAcknowledgements: [`${result.pendingName}.previous.base.json`, `${result.pendingName}.base.json`],
         publishedStagePreserved: true,
         retryManifestWrites: 0,
         damagedBackupRejected: true,

@@ -893,12 +893,18 @@ async function writeManifest(
 ): Promise<void> {
   const file = await parent.getFileHandle(fileName, { create: true });
   const writer = await file.createWritable();
+  const contents = JSON.stringify(manifest);
+  let closeAttempted = false;
   try {
-    await writer.write(JSON.stringify(manifest));
+    await writer.write(contents);
     assertCurrent?.();
+    closeAttempted = true;
     await writer.close();
   } catch (error) {
     await writer.abort().catch(() => {});
+    if (closeAttempted && await file.getFile().then((saved) => saved.text()).catch(() => null) === contents) {
+      return;
+    }
     throw error;
   }
 }
