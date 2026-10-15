@@ -1342,7 +1342,9 @@ test("browser replays 8192 distinct blocks after live compaction", async ({ play
             while (Date.now() < deadline) {
               try {
                 const file = await (await directory.getFileHandle(`${name}.${slot}.seal`)).getFile();
-                sealed = file.size > 96;
+                const index = await (await directory.getFileHandle(`${name}.${slot}.index`)).getFile();
+                const indexVersion = new DataView(await index.slice(0, 8).arrayBuffer()).getUint32(4, true);
+                sealed = file.size > 96 && indexVersion === 5;
               } catch {
                 sealed = false;
               }

@@ -277,11 +277,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         digest.update(header);
         let mut state = OverlayState::default();
         if let Some(index_digest) =
-            BlockCheckpoint::metadata_journal_digest(&mut checkpoint_storage)?
+            BlockCheckpoint::indexed_journal_digest(&mut checkpoint_storage)?
         {
-            if !replay_metadata {
-                return Err(Errno::EIO);
-            }
             let checkpoint_storage: Box<dyn OverlayStorage + Send> = Box::new(checkpoint_storage);
             let mut checkpoint = BlockCheckpoint::open(
                 checkpoint_storage,
@@ -289,7 +286,11 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 index_digest,
                 checkpoint_end,
             )?;
-            let verify_blocks = checkpoint.has_metadata_value_digests();
+            let verify_metadata = checkpoint.has_metadata_index();
+            if verify_metadata != replay_metadata {
+                return Err(Errno::EIO);
+            }
+            let verify_blocks = checkpoint.has_canonical_block_stream();
             let mut metadata_position = 0u64;
             let mut block_position = 0u64;
             let mut verify_record = |mutation: &Mutation, value_offset: Option<u64>| {
@@ -314,6 +315,9 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                         block_position = block_position.checked_add(1).ok_or(Errno::EIO)?;
                     }
                     return Ok(());
+                }
+                if !verify_metadata {
+                    return Err(Errno::EIO);
                 }
                 let value = match mutation {
                     Mutation::Put { value, .. } => Some((
@@ -769,7 +773,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
                 records,
             )
         } else {
-            BlockCheckpoint::create_checked(
+            BlockCheckpoint::create_compacted_checked(
                 target,
                 self.base_digest,
                 journal_digest,
@@ -2956,6 +2960,60 @@ mod tests {
         );
         assert!(matches!(
             OverlayJournal::open_with_checkpoint_metadata(
+                compacted.into_storage(),
+                storage,
+                base_digest,
+                end,
+            ),
+            Err(Errno::EIO)
+        ));
+    }
+
+    #[test]
+    fn compacted_fixed_index_rejects_a_self_consistent_but_false_block_location() {
+        let base_digest = [58; 32];
+        let mut source = OverlayJournal::open(MemoryStorage::default(), base_digest).unwrap();
+        source
+            .commit(&[
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 0 },
+                    value: vec![b'a'; FILE_BLOCK_BYTES],
+                },
+                Mutation::Put {
+                    key: OverlayKey::FileBlock { inode: 7, block: 1 },
+                    value: vec![b'b'; FILE_BLOCK_BYTES],
+                },
+            ])
+            .unwrap();
+        let mut compacted = source.compact_fixed_into(MemoryStorage::default()).unwrap();
+        let end = compacted.end;
+        let checkpoint = compacted
+            .checkpoint_fixed_blocks_into(MemoryStorage::default())
+            .unwrap();
+        let mut index_bytes = checkpoint.into_storage().bytes;
+        assert_eq!(u32::from_le_bytes(index_bytes[4..8].try_into().unwrap()), 5);
+        let second_location = index_bytes[160 + 56 + 16..160 + 2 * 56].to_vec();
+        index_bytes[160 + 16..160 + 56].copy_from_slice(&second_location);
+        let block_digest = Sha256::digest(&index_bytes[160..]);
+        index_bytes[96..128].copy_from_slice(&block_digest);
+        let header_digest = Sha256::digest(&index_bytes[..128]);
+        index_bytes[128..160].copy_from_slice(&header_digest);
+        let storage = MemoryStorage {
+            bytes: index_bytes,
+            ..MemoryStorage::default()
+        };
+        assert!(BlockCheckpoint::open(
+            MemoryStorage {
+                bytes: storage.bytes.clone(),
+                ..MemoryStorage::default()
+            },
+            base_digest,
+            Sha256::digest(&compacted.storage.bytes[..end as usize]).into(),
+            end,
+        )
+        .is_ok());
+        assert!(matches!(
+            OverlayJournal::open_with_checkpoint(
                 compacted.into_storage(),
                 storage,
                 base_digest,

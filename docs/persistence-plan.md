@@ -542,7 +542,7 @@ A fixed-block checkpoint table now writes sorted block locations without
 materializing an index copy, binds their checksum to the base and exact
 journal prefix, verifies all records on open, and uses one cached page for
 binary-search lookups. The kernel builds it after boot-time compaction by
-flushing and verifying each indexed block. A v2 generation seal binds the
+flushing and verifying each indexed block. An indexed generation seal binds the
 sidecar by length and bounded chunk digests; Node and browser selection reject
 a byte-damaged candidate, while the kernel rejects a syntactically sealed but
 semantically invalid checkpoint. Indexed open verifies the journal prefix,
@@ -586,6 +586,12 @@ It rejects a self-consistent but false block location or digest with `EIO`
 instead of exposing another block's bytes. The check uses the checkpoint's
 bounded page cache; older index versions retain their previous validation.
 The extra per-block hash work at boot has not yet been benchmarked.
+New compacted fixed-overwrite generations use version 5 of the checkpoint
+sidecar to mark their block stream as canonical. Boot checks every indexed
+block against the corresponding journal mutation with the same bounded page
+cache and rejects a false location or digest with `EIO`. Existing version 1/2
+fixed indexes stay readable through their older recovery path; unindexed
+legacy journals still need a bounded conversion path.
 
 The live handoff now uses that third handle and a dedicated kernel-worker turn.
 The fixed-overwrite checkpoint is streamed, but its worst-case memory and

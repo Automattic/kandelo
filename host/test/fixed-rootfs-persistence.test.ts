@@ -915,6 +915,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       expect(existsSync(`${path}.g0.seal`)).toBe(true);
       expect(existsSync(`${path}.g0.index`)).toBe(true);
       expect(readFileSync(`${path}.g0.seal`).readUInt32LE(4)).toBe(3);
+      expect(readFileSync(`${path}.g0.index`).readUInt32LE(4)).toBe(5);
       expect(readFileSync(`${path}.g0.journal`).byteLength).toBeLessThan(sourceLength / 2);
       const firstSlotLength = expandJournalToCompactionThreshold(`${path}.g0.journal`);
       const reopened = await boot(image, path);
@@ -927,6 +928,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       expect(existsSync(`${path}.g1.seal`)).toBe(true);
       expect(existsSync(`${path}.g1.index`)).toBe(true);
       expect(readFileSync(`${path}.g1.seal`).readUInt32LE(4)).toBe(3);
+      expect(readFileSync(`${path}.g1.index`).readUInt32LE(4)).toBe(5);
       expect(readFileSync(`${path}.g1.journal`).byteLength).toBeLessThan(firstSlotLength / 2);
       const secondSlot = await boot(image, path);
       await secondSlot.destroy();
