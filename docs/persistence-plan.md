@@ -223,7 +223,9 @@ an unverified generation. The shared checkpoint handoff passes a browser
 guest-write and reload test on Chromium, Firefox, and WebKit, but the full
 page transition test is authored and currently skipped without the shell
 package artifacts, so page-driven replacement is implemented but not yet
-validated end to end here.
+validated end to end here. The shared checkpoint test also drops the primary
+manifest close acknowledgement after a real commit; all three engines return
+success from the checkpoint and reopen the published guest-written snapshot.
 If staged-candidate validation or publication fails after acknowledged kernel
 shutdown, the checkpoint releases its computer lease and discards its
 unpublished image and journal files under the computer and journal locks.
