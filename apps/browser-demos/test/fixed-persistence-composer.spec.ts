@@ -23,14 +23,16 @@ const pagesLoaderPath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kern
 const persistenceModulePath = resolve(repoRoot, "apps/browser-demos/pages/kandelo/kernel-host/fixed-persistence-image.ts");
 const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
 const fullBrowserProductsReady = [
-  "local-binaries",
-  "binaries",
-  "host/wasm",
-].some((root) => [
   "programs/wasm32/bash.wasm",
   "programs/wasm32/shell.vfs.zst",
-].every((path) => existsSync(resolve(repoRoot, root, path))));
-const kernelPath = [
+].every((path) => {
+  try {
+    return tryResolveBinary(path) !== null;
+  } catch {
+    return false;
+  }
+});
+const kernelPath = tryResolveBinary("kernel.wasm") ?? [
   resolve(repoRoot, "target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"),
   resolve(repoRoot, "local-binaries/kernel.wasm"),
 ].find(existsSync) ?? null;
