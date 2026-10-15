@@ -42,6 +42,20 @@ interface Candidate {
   source?: OverlaySealSource;
 }
 
+function closeCandidate(candidate: Candidate): void {
+  const failures: unknown[] = [];
+  for (const storage of [candidate.index, candidate.journal]) {
+    try {
+      storage?.close();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "persistent overlay generation cleanup failed");
+  }
+}
+
 export interface SelectedOverlayGeneration {
   journal: PersistentOverlayStorage;
   index?: PersistentOverlayStorage;
@@ -57,11 +71,80 @@ export interface OverlayCompactionHandoff {
   cancel(): void;
 }
 
+async function convertOversizedGeneration(
+  files: OverlayGenerationFiles,
+  source: PersistentOverlayStorage,
+  sourceSlot: OverlayGenerationSlot,
+  sourceGeneration: number,
+  enable: (journal: PersistentOverlayStorage, index: PersistentOverlayStorage, checkpointEnd: number) => void,
+  convert: (source: PersistentOverlayStorage, target: PersistentOverlayStorage, index: PersistentOverlayStorage) => void,
+): Promise<SelectedOverlayGeneration> {
+  if (!Number.isSafeInteger(sourceGeneration + 1)) {
+    throw new Error("persistent overlay generation number exhausted");
+  }
+  const slot = sourceSlot === "g0" ? "g1" : "g0";
+  const sourceLength = source.len();
+  let target: PersistentOverlayStorage | null = null;
+  let index: PersistentOverlayStorage | null = null;
+  let seal: PersistentOverlayStorage | null = null;
+  let published = false;
+  let failure: unknown;
+  try {
+    target = await files.open(slot, "journal", true);
+    index = await files.open(slot, "index", true);
+    seal = await files.open(slot, "seal", true);
+    if (target === null || index === null || seal === null) {
+      throw new Error("could not open persistent overlay conversion files");
+    }
+    seal.truncate(0);
+    seal.flush();
+    target.truncate(0);
+    target.flush();
+    index.truncate(0);
+    index.flush();
+    convert(source, target, index);
+    const header = new Uint8Array(40);
+    source.readExactAt(0, header);
+    const baseDigest = header.slice(8, 40);
+    const generation = sourceGeneration + 1;
+    writeOverlayGenerationSealSync(target, seal, generation, baseDigest, index,
+      { slot: sourceSlot, journalLength: sourceLength });
+    verifyOverlayGenerationSealSync(target, seal, baseDigest, false, index);
+    const sealedLength = target.len();
+    enable(target, index, sealedLength);
+    published = true;
+    return { journal: target, index, slot, generation, sealedLength };
+  } catch (error) {
+    failure = error;
+    throw failure;
+  } finally {
+    const cleanupFailures: unknown[] = [];
+    const close = (storage: PersistentOverlayStorage | null) => {
+      try {
+        storage?.close();
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+    };
+    close(seal);
+    if (!published) {
+      close(index);
+      close(target);
+    }
+    if (cleanupFailures.length > 0) {
+      throw new AggregateError(
+        failure === undefined ? cleanupFailures : [failure, ...cleanupFailures],
+        "persistent overlay legacy conversion cleanup failed",
+      );
+    }
+  }
+}
+
 export async function enableBestOverlayGeneration(
   files: OverlayGenerationFiles,
   enable: (journal: PersistentOverlayStorage, index?: PersistentOverlayStorage, checkpointEnd?: number) => void,
   requireExisting = false,
-  convertLegacy?: (source: PersistentOverlayStorage, target: PersistentOverlayStorage, index: PersistentOverlayStorage) => void,
+  convertJournal?: (source: PersistentOverlayStorage, target: PersistentOverlayStorage, index: PersistentOverlayStorage) => void,
 ): Promise<SelectedOverlayGeneration> {
   const candidates: Candidate[] = [];
   let foundGenerationFile = false;
@@ -131,8 +214,22 @@ export async function enableBestOverlayGeneration(
       candidate.index?.close();
     }
     candidates.sort((left, right) => right.generation - left.generation);
-    for (const candidate of candidates) {
+    for (const candidate of [...candidates]) {
       try {
+        if (candidates.length === 1 && candidate.index !== undefined
+          && candidate.journal.len() >= 32 * 1024 * 1024 && convertJournal !== undefined) {
+          const header = new Uint8Array(8);
+          candidate.index.readExactAt(0, header);
+          const version = new DataView(header.buffer).getUint32(4, true);
+          if (version === 1 || version === 2) {
+            const converted = await convertOversizedGeneration(
+              files, candidate.journal, candidate.slot, candidate.generation, enable, convertJournal,
+            );
+            candidates.splice(candidates.indexOf(candidate), 1);
+            closeCandidate(candidate);
+            return converted;
+          }
+        }
         enable(candidate.journal, candidate.index, candidate.sealedLength);
         candidates.splice(candidates.indexOf(candidate), 1);
         return candidate;
@@ -140,6 +237,8 @@ export async function enableBestOverlayGeneration(
         if (!(error instanceof RejectedOverlayGenerationError) || error.errno !== ERRNO.EIO) {
           throw error;
         }
+        candidates.splice(candidates.indexOf(candidate), 1);
+        closeCandidate(candidate);
       }
     }
     const legacy = await files.open("legacy", "journal", !foundGenerationFile && !requireExisting);
@@ -151,62 +250,20 @@ export async function enableBestOverlayGeneration(
       if ((foundGenerationFile || requireExisting) && legacyLength === 0) {
         throw new NoValidOverlayGenerationError();
       }
-      if (legacyLength >= 32 * 1024 * 1024 && convertLegacy !== undefined) {
-        let target: PersistentOverlayStorage | null = null;
-        let index: PersistentOverlayStorage | null = null;
-        let seal: PersistentOverlayStorage | null = null;
-        let published = false;
-        let failure: unknown;
+      if (legacyLength >= 32 * 1024 * 1024 && convertJournal !== undefined) {
+        let converted: SelectedOverlayGeneration;
         try {
-          target = await files.open("g0", "journal", true);
-          index = await files.open("g0", "index", true);
-          seal = await files.open("g0", "seal", true);
-          if (target === null || index === null || seal === null) {
-            throw new Error("could not open persistent overlay legacy conversion files");
-          }
-          seal.truncate(0);
-          seal.flush();
-          target.truncate(0);
-          target.flush();
-          index.truncate(0);
-          index.flush();
-          convertLegacy(legacy, target, index);
-          const header = new Uint8Array(40);
-          legacy.readExactAt(0, header);
-          const baseDigest = header.slice(8, 40);
-          writeOverlayGenerationSealSync(target, seal, 1, baseDigest, index,
-            { slot: "legacy", journalLength: legacyLength });
-          verifyOverlayGenerationSealSync(target, seal, baseDigest, false, index);
-          const sealedLength = target.len();
-          enable(target, index, sealedLength);
-          legacy.close();
-          published = true;
-          return { journal: target, index, slot: "g0", generation: 1, sealedLength };
+          converted = await convertOversizedGeneration(
+            files, legacy, "legacy", 0, enable, convertJournal,
+          );
         } catch (error) {
-          failure = error instanceof RejectedOverlayGenerationError && error.errno === ERRNO.EIO
-            ? new NoValidOverlayGenerationError() : error;
-          throw failure;
-        } finally {
-          const cleanupFailures: unknown[] = [];
-          const close = (storage: PersistentOverlayStorage | null) => {
-            try {
-              storage?.close();
-            } catch (error) {
-              cleanupFailures.push(error);
-            }
-          };
-          close(seal);
-          if (!published) {
-            close(index);
-            close(target);
+          if (error instanceof RejectedOverlayGenerationError && error.errno === ERRNO.EIO) {
+            throw new NoValidOverlayGenerationError();
           }
-          if (cleanupFailures.length > 0) {
-            throw new AggregateError(
-              failure === undefined ? cleanupFailures : [failure, ...cleanupFailures],
-              "persistent overlay legacy conversion cleanup failed",
-            );
-          }
+          throw error;
         }
+        legacy.close();
+        return converted;
       }
       try {
         enable(legacy);

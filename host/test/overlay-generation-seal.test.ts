@@ -338,6 +338,141 @@ describe("overlay generation boot selection", () => {
     expect(entries["legacy.journal"]!.closeCount).toBe(1);
   });
 
+  it("upgrades one oversized sealed v1 generation without mounting its legacy index", async () => {
+    const sourceBytes = new Uint8Array(32 * 1024 * 1024);
+    sourceBytes.set(new Uint8Array(32).fill(7), 8);
+    const sourceIndex = new Uint8Array(160);
+    new DataView(sourceIndex.buffer).setUint32(4, 1, true);
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(sourceBytes),
+      "g0.index": new MemoryStorage(sourceIndex),
+      "g0.seal": new MemoryStorage(),
+    };
+    const original = entries["g0.journal"].bytes;
+    const digest = sourceBytes.slice(8, 40);
+    await writeOverlayGenerationSeal(entries["g0.journal"], entries["g0.seal"], 3, digest, entries["g0.index"]);
+    const converted = await enableBestOverlayGeneration(files(entries), (journal, index, checkpointEnd) => {
+      expect(journal).toBe(entries["g1.journal"]);
+      expect(index).toBe(entries["g1.index"]);
+      expect(checkpointEnd).toBe(3);
+    }, true, (source, target, index) => {
+      expect(source).toBe(entries["g0.journal"]);
+      target.writeAllAt(0, Uint8Array.of(1, 2, 3));
+      index.writeAllAt(0, Uint8Array.of(4, 5, 6));
+    });
+    expect(converted.slot).toBe("g1");
+    expect(converted.generation).toBe(4);
+    expect(entries["g0.journal"].bytes).toBe(original);
+    expect(entries["g0.index"].closeCount).toBe(1);
+    expect(entries["g0.journal"].closeCount).toBe(1);
+    expect(await verifyOverlayGenerationSeal(
+      entries["g1.journal"], entries["g1.seal"], digest, false, entries["g1.index"],
+    )).toMatchObject({ generation: 4, source: { slot: "g0", journalLength: sourceBytes.length } });
+  });
+
+  it("does not overwrite another valid slot while upgrading an old index", async () => {
+    const index = new Uint8Array(160);
+    new DataView(index.buffer).setUint32(4, 1, true);
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(Uint8Array.of(1)),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(new Uint8Array(32 * 1024 * 1024)),
+      "g1.index": new MemoryStorage(index),
+      "g1.seal": new MemoryStorage(),
+    };
+    const digest = new Uint8Array(32);
+    await writeOverlayGenerationSeal(entries["g0.journal"], entries["g0.seal"], 1, digest);
+    await writeOverlayGenerationSeal(entries["g1.journal"], entries["g1.seal"], 2, digest, entries["g1.index"]);
+    const original = entries["g0.journal"].bytes;
+    const selected = await enableBestOverlayGeneration(files(entries), () => {}, true, () => {
+      throw new Error("conversion must not overwrite a valid fallback");
+    });
+    expect(selected.slot).toBe("g1");
+    expect(entries["g0.journal"].bytes).toBe(original);
+  });
+
+  it("replaces a semantically rejected slot after validating the older v1 source", async () => {
+    const source = new Uint8Array(32 * 1024 * 1024);
+    source.set(new Uint8Array(32).fill(7), 8);
+    const oldIndex = new Uint8Array(160);
+    new DataView(oldIndex.buffer).setUint32(4, 1, true);
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(source),
+      "g0.index": new MemoryStorage(oldIndex),
+      "g0.seal": new MemoryStorage(),
+      "g1.journal": new MemoryStorage(Uint8Array.of(8, 9)),
+      "g1.seal": new MemoryStorage(),
+    };
+    const digest = source.slice(8, 40);
+    await writeOverlayGenerationSeal(entries["g0.journal"], entries["g0.seal"], 1, digest, entries["g0.index"]);
+    await writeOverlayGenerationSeal(entries["g1.journal"], entries["g1.seal"], 2, digest);
+    const original = entries["g0.journal"].bytes;
+    const selected = await enableBestOverlayGeneration(files(entries), (journal) => {
+      if (journal === entries["g1.journal"] && journal.len() === 2) {
+        throw new RejectedOverlayGenerationError("fixed", 5);
+      }
+    }, true, (_source, target, index) => {
+      target.writeAllAt(0, Uint8Array.of(1, 2, 3));
+      index.writeAllAt(0, Uint8Array.of(4, 5, 6));
+    });
+    expect(selected.slot).toBe("g1");
+    expect(selected.generation).toBe(2);
+    expect(entries["g0.journal"].bytes).toBe(original);
+    expect(entries["g1.journal"].bytes).toEqual(Uint8Array.of(1, 2, 3));
+    expect(entries["g1.journal"].closeCount).toBe(1);
+  });
+
+  it("retries an interrupted sealed v1 upgrade from its unchanged source", async () => {
+    const source = new Uint8Array(32 * 1024 * 1024);
+    source.set(new Uint8Array(32).fill(7), 8);
+    const oldIndex = new Uint8Array(160);
+    new DataView(oldIndex.buffer).setUint32(4, 1, true);
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(source),
+      "g0.index": new MemoryStorage(oldIndex),
+      "g0.seal": new MemoryStorage(),
+    };
+    const digest = source.slice(8, 40);
+    await writeOverlayGenerationSeal(entries["g0.journal"], entries["g0.seal"], 1, digest, entries["g0.index"]);
+    const originalJournal = entries["g0.journal"].bytes;
+    const originalIndex = entries["g0.index"].bytes;
+    await expect(enableBestOverlayGeneration(files(entries), () => {}, true, (_source, target) => {
+      target.writeAllAt(0, Uint8Array.of(1));
+      throw new Error("conversion interrupted");
+    })).rejects.toThrow("conversion interrupted");
+    expect(entries["g0.journal"].bytes).toBe(originalJournal);
+    expect(entries["g0.index"].bytes).toBe(originalIndex);
+    expect(entries["g1.seal"].len()).toBe(0);
+    const selected = await enableBestOverlayGeneration(files(entries), () => {}, true, (_source, target, index) => {
+      target.writeAllAt(0, Uint8Array.of(1, 2));
+      index.writeAllAt(0, Uint8Array.of(3));
+    });
+    expect(selected.slot).toBe("g1");
+    expect(selected.generation).toBe(2);
+  });
+
+  it("closes both old handles after a sealed upgrade even if one close fails", async () => {
+    const source = new Uint8Array(32 * 1024 * 1024);
+    source.set(new Uint8Array(32).fill(7), 8);
+    const oldIndex = new Uint8Array(160);
+    new DataView(oldIndex.buffer).setUint32(4, 1, true);
+    const entries: Record<string, MemoryStorage> = {
+      "g0.journal": new MemoryStorage(source),
+      "g0.index": new MemoryStorage(oldIndex),
+      "g0.seal": new MemoryStorage(),
+    };
+    await writeOverlayGenerationSeal(entries["g0.journal"], entries["g0.seal"], 1,
+      source.slice(8, 40), entries["g0.index"]);
+    entries["g0.index"].failNextClose = true;
+    await expect(enableBestOverlayGeneration(files(entries), () => {}, true, (_source, target, index) => {
+      target.writeAllAt(0, Uint8Array.of(1));
+      index.writeAllAt(0, Uint8Array.of(2));
+    })).rejects.toThrow("persistent overlay generation cleanup failed");
+    expect(entries["g0.index"].closeCount).toBe(1);
+    expect(entries["g0.journal"].closeCount).toBe(1);
+    expect(entries["g1.seal"].len()).toBeGreaterThan(0);
+  });
+
   it("leaves a large legacy source intact after interrupted conversion and retries", async () => {
     const sourceBytes = new Uint8Array(32 * 1024 * 1024);
     const entries = { "legacy.journal": new MemoryStorage(sourceBytes) } as Record<string, MemoryStorage>;
