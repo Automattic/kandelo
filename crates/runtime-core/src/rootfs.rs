@@ -6129,6 +6129,9 @@ pub fn build_export_image() -> Result<ExportPlan, Errno> {
         u32::try_from(u64::from(data_start) + data_blocks + 64).map_err(|_| Errno::EIO)?,
     );
     let total_blocks = core::cmp::max(total_blocks, 16);
+    if u64::from(total_blocks) * 4096 > u32::MAX as u64 {
+        return Err(Errno::EFBIG);
+    }
 
     let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig {
         size_bytes: u64::from(total_blocks) * 4096,
@@ -6444,6 +6447,7 @@ where
     let offset = offset as u64;
     IMAGE_EXPORT_CACHE.with(|slot| {
         if offset == 0 {
+            *slot = None;
             *slot = Some(build_export_image()?);
         }
         let Some(plan) = slot.as_ref() else {
@@ -6804,6 +6808,7 @@ where
     // body length has to happen first, and that is the call that does it.
     let body_len = IMAGE_EXPORT_CACHE.with(|slot| -> Result<u64, Errno> {
         if offset == 0 || slot.is_none() {
+            *slot = None;
             *slot = Some(build_export_image()?);
         }
         Ok(slot.as_ref().map(|plan| plan.len()).unwrap_or(0))
@@ -9736,9 +9741,24 @@ mod tests {
         load_image(image.len() as u64, &mut image_bytes).unwrap();
         enable_resizable_persistence(Box::new(storage.clone()), base_digest).unwrap();
         let handle = open(b"/large", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        let mut export_chunk = [0; 4096];
+        assert!(export_container_read(0, &mut export_chunk, &mut image_bytes).unwrap() > 0);
+        let container_offset = u32::MAX as i64 - 1;
+        assert_eq!(write(handle, container_offset, b"x", &mut image_bytes), Ok(1));
+        assert_eq!(
+            export_container_read(0, &mut export_chunk, &mut image_bytes),
+            Err(Errno::EFBIG)
+        );
+        assert!(IMAGE_EXPORT_CACHE.with(|slot| slot.is_none()));
+        truncate_handle(handle, 0, &mut image_bytes).unwrap();
+        assert!(export_image_read(0, &mut export_chunk, &mut image_bytes).unwrap() > 0);
         let offset = crate::kandelo_image_write::MAX_FILE_BYTES as i64;
         assert_eq!(write(handle, offset, b"x", &mut image_bytes), Ok(1));
-        assert!(matches!(build_export_image(), Err(Errno::EFBIG)));
+        assert_eq!(
+            export_image_read(0, &mut export_chunk, &mut image_bytes),
+            Err(Errno::EFBIG)
+        );
+        assert!(IMAGE_EXPORT_CACHE.with(|slot| slot.is_none()));
         sync_persistence().unwrap();
         release_handle(handle);
 
