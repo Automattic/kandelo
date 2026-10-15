@@ -727,3 +727,11 @@ the two other cases reject invalid file descriptors. The available Open POSIX
 inventory is mostly non-filesystem interfaces, and this run does not reboot
 any test's journal. It therefore does not establish persistent namespace or
 restart conformance.
+The Sortix runner now also accepts `--persistent`: each runtime test stages
+its private fixture inside the canonical rootfs, uses an isolated resizable
+journal, and points `TMPDIR` at the image-owned test directory. Eleven selected
+filesystem cases (rename, renameat, truncate, link, unlink, mkdir, open, and
+fsync) pass in both isolated and persistent modes. Its full 55-case I/O suite
+passes in both modes with three parallel workers. These runs use
+fresh journals per test and do not reboot them; they do not establish restart
+conformance or cover the full Sortix inventory on persistence.
