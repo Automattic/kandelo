@@ -667,7 +667,13 @@ journal and checkpoint. A reclamation failure is reported without replacing the
 original quota error; failed seal invalidation or handoff cancellation prevents
 target reclamation. Host fault tests cover each write/flush cut and a failed
 reclamation step.
-This does not establish behavior under actual near-capacity browser storage.
+Chromium also uses its quota-manager override to cap the origin at current
+usage plus 1 KiB, without replacing OPFS methods. Conversion and boot
+compaction defer; a guest `pwrite` remains readable while `fsync` reports
+`ENOSPC`. After the override is removed, reboot recovers the preceding synced
+bytes and converts the intact source. This browser-enforced quota path passes
+three consecutive runs. Native disk exhaustion and Firefox/WebKit quota
+enforcement remain untested.
 Peak resident memory and conversion latency on a near-capacity image remain
 unmeasured.
 A boot-only conversion into `g3` now retains its source `g2` while retiring

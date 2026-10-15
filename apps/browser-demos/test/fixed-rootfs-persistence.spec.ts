@@ -1429,6 +1429,48 @@ test("browser converts an oversized unindexed fixed journal before mounting", as
       expect(quotaMounted.sourceLength).toBeGreaterThan(prepared.sourceLength);
       expect(quotaMounted.deferred).toContain("ENOSPC");
       await page.reload();
+      if (browserName === "chromium") {
+        const session = await context.newCDPSession(page);
+        const origin = new URL(baseURL).origin;
+        const usage = await session.send("Storage.getUsageAndQuota", { origin });
+        const quotaSize = usage.usage + 1024;
+        await session.send("Storage.overrideQuotaForOrigin", { origin, quotaSize });
+        try {
+          const limited = await session.send("Storage.getUsageAndQuota", { origin });
+          expect(limited.overrideActive).toBe(true);
+          expect(limited.quota).toBe(quotaSize);
+          const actualQuotaBoot = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
+            const { BrowserKernel } = await import(moduleUrl);
+            const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+            const diagnostics: string[] = [];
+            const kernel = new BrowserKernel({ kernelOwnedFs: true, onHostDiagnostic: (diagnostic) => {
+              diagnostics.push(diagnostic.message);
+            } });
+            try {
+              await kernel.initFromOpfsImage({
+                kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+                vfsImageFile: await directory.getFileHandle(`${name}.base`),
+                experimentalFixedPersistenceName: name,
+                persistentComputerName: name,
+              });
+              const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "quota-write"]);
+              if (await exit !== 0) throw new Error("guest quota-write did not observe ENOSPC");
+              return {
+                state: new TextDecoder().decode(await kernel.readFileFromVfs("/state")),
+                deferred: diagnostics.find((message) => message.includes("boot compaction deferred")) ?? "",
+              };
+            } finally {
+              await kernel.destroy();
+            }
+          }, { moduleUrl, kernelUrl, name: prepared.name });
+          expect(actualQuotaBoot.state).toBe("XYcdefgh");
+          expect(actualQuotaBoot.deferred).toContain("ENOSPC");
+        } finally {
+          await session.send("Storage.overrideQuotaForOrigin", { origin });
+          await session.detach();
+        }
+        await page.reload();
+      }
       const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
