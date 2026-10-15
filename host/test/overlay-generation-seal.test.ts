@@ -1081,6 +1081,8 @@ describe("overlay generation boot selection", () => {
     expect(mounted.slot).toBe("legacy");
     expect(digestOverlayStoragePrefix(legacy, legacy.len())).toEqual(sourceDigest);
     expect(entries["g0.seal"]!.len()).toBe(0);
+    expect(entries["g0.journal"]!.len()).toBe(0);
+    expect(entries["g0.index"]!.len()).toBe(0);
     expect((await enableBestOverlayGeneration(files(entries), (journal) => {
       expect(journal).toBe(legacy);
     }, true)).slot).toBe("legacy");
@@ -1090,6 +1092,30 @@ describe("overlay generation boot selection", () => {
     }, true, convert);
     expect(recovered.slot).toBe("g0");
     expect((await enableBestOverlayGeneration(files(entries), () => {}, true)).slot).toBe("g0");
+  });
+
+  it("reports failed conversion target reclamation without hiding a valid legacy source", async () => {
+    const legacy = new MemoryStorage(new Uint8Array(32 * 1024 * 1024));
+    const entries: Record<string, MemoryStorage> = {
+      "legacy.journal": legacy,
+      "g0.journal": new MemoryStorage(),
+      "g0.index": new MemoryStorage(),
+      "g0.seal": new MemoryStorage(),
+    };
+    entries["g0.index"]!.maxLength = 1;
+    const cleanupFailures: string[] = [];
+    const mounted = await enableBestOverlayGeneration(files(entries), (journal) => {
+      expect(journal).toBe(legacy);
+    }, true, (_source, target, index) => {
+      target.writeAllAt(0, Uint8Array.of(1, 2));
+      entries["g0.journal"]!.failNextTruncate = true;
+      index.writeAllAt(0, Uint8Array.of(3, 4));
+    }, (error) => { cleanupFailures.push(String(error)); });
+    expect(mounted.slot).toBe("legacy");
+    expect(cleanupFailures).toEqual(["Error: injected truncate failure"]);
+    expect(entries["g0.seal"]!.len()).toBe(0);
+    expect(entries["g0.index"]!.len()).toBe(0);
+    expect(entries["g0.journal"]!.len()).toBe(2);
   });
 
   it("mounts an indexed source when a quota-limited index blocks conversion", async () => {

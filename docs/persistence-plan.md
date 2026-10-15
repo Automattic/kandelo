@@ -656,7 +656,11 @@ cover an indexed source; after each `ENOSPC`, the source remains selectable,
 and conversion succeeds when the cap is lifted. Chromium, Firefox, and WebKit
 inject a shared 128 KiB growth budget across target OPFS generation files.
 All three boot the guest-written legacy journal, observe deferred compaction,
-and convert it after space returns.
+durably write through `mmap`/`fsync` while it is deferred, and convert that
+new state after space returns. A failed conversion now flushes seal invalidation
+before truncating its partial target journal and index to reclaim quota. A
+reclamation failure is reported but does not hide a valid source; failed seal
+invalidation still prevents fallback because target safety is uncertain.
 This does not establish behavior under actual near-capacity browser storage.
 Peak resident memory and conversion latency on a near-capacity image remain
 unmeasured.

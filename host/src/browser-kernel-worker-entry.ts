@@ -1320,6 +1320,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       },
       msg.requireExistingRootfsPersistence,
       (source, target, index) => kernelWorker.convertUnindexedRootfsPersistence(source, target, index, resizable),
+      (error) => {
+        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `conversion cleanup failed: ${formatError(error)}` });
+      },
     );
     const handoff = {
       prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
