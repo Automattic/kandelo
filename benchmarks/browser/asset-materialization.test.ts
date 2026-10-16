@@ -57,3 +57,20 @@ test("sealed read-only images can be refreshed repeatedly without changing sourc
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("the public copy of a sealed image stays writable for the image builder", () => {
+  // The benchmark copies sealed (read-only) package bytes into
+  // apps/browser-demos/public/, where `./run.sh build mariadb-vfs` writes the
+  // same file. A read-only public copy made that rebuild fail with EACCES.
+  const root = mkdtempSync(join(tmpdir(), "kandelo-benchmark-public-mode-"));
+  try {
+    const source = join(root, "verified-image");
+    writeFileSync(source, "sealed bytes");
+    chmodSync(source, 0o444);
+    const selected = materializePublicAsset("programs/app.vfs.zst", "app.vfs.zst", root, () => source);
+    assert.equal(statSync(selected.selectedPath!).mode & 0o777, 0o644);
+    writeFileSync(selected.selectedPath!, "rebuilt by the image builder");
+    assert.equal(readFileSync(selected.selectedPath!, "utf8"), "rebuilt by the image builder");
+    assert.equal(statSync(source).mode & 0o777, 0o444);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
