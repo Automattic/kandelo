@@ -38,4 +38,3 @@ export function validateTarget(value: string, proxy: URL): URL {
   if (isPrivateHost(host)) throw new Error("Private IPs and local hosts are forbidden");
   return url;
 }
-
