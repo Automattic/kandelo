@@ -3645,3 +3645,14 @@ a Caddy advantage. It is not a fair isolated PHP-runtime comparison because
 FPM has prewarmed OPcache while the ZTS embed does not. An accelerated
 FrankenPHP configuration or a safe visitor-facing cache comparison remains
 necessary before making a stronger performance conclusion.
+
+A separate five-minute, two-client uncached-homepage soak against the same
+long-running Node FrankenPHP+Caddy demo returned 664/664 valid HTTP 200
+responses, with the slowest request at 1,122 ms; the service still answered
+afterward. Its host Node process reached about 2 GiB RSS by the end. That
+is a resource-use observation, not proof of a leak or a bounded steady
+state. The diagnostic Node server and older stale demo servers were stopped
+to return memory to the user's machine; the latest Vite browser demo remains
+live. Production readiness still needs a measured memory plateau, restart
+and recovery checks, and an accelerated or cache-enabled configuration
+whose personalized-request bypass and invalidation are verified.
