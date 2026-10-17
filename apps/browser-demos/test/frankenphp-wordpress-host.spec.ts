@@ -17,8 +17,8 @@ if (!Number.isSafeInteger(editorBurstRounds) || editorBurstRounds < 0 || editorB
 
 for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
   test(`WordPress on ${serviceName} serves PHP in the browser kernel host`, async ({ page, baseURL, browserName }) => {
-    test.setTimeout(240_000);
-    test.skip(browserName !== "chromium" && browserName !== "firefox", "FrankenPHP WordPress browser-host gate uses Chromium and Firefox");
+    test.setTimeout(serviceName === "frankenphp-caddy" ? 300_000 : 240_000);
+    test.skip(serviceName === "frankenphp-classic" && browserName === "webkit", "Classic browser-host gate uses Chromium and Firefox");
     test.skip(!imagePath, "Build the WordPress image and set KANDELO_WORDPRESS_FRANKENPHP_VFS");
     expect(baseURL).toBeTruthy();
 
@@ -159,6 +159,28 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
             throw new Error(`WordPress PHP request ${index} returned ${response.status}`);
           }
         }
+        let restarted = false;
+        if (serviceName === "frankenphp-caddy") {
+          const listener = await kernel.pickListenerTarget(8080);
+          if (!listener) throw new Error("FrankenPHP listener missing before restart test");
+          if (!(await kernel.signalProcess(listener.pid, 9))) {
+            throw new Error("Could not kill FrankenPHP process for restart test");
+          }
+          for (let attempt = 0; attempt < 300; attempt += 1) {
+            const replacement = await kernel.pickListenerTarget(8080);
+            if (replacement && replacement.pid !== listener.pid) {
+              try {
+                const recovered = await kernel.fetchInKernel(8080, {
+                  method: "GET", url: "/", headers: { Host: "localhost:8080" }, body: null,
+                }, { timeoutMs: 30_000 });
+                restarted = recovered.status === 200 && decoder.decode(recovered.body).includes("WordPress on Kandelo");
+                if (restarted) break;
+              } catch {}
+            }
+            await new Promise((resolveDelay) => setTimeout(resolveDelay, 200));
+          }
+          if (!restarted) throw new Error("FrankenPHP did not recover after SIGKILL");
+        }
         const serviceLog = await kernel.readFileFromVfs(`/var/log/${serviceName}.log`);
         if (!serviceLog) throw new Error("FrankenPHP service log missing");
         return {
@@ -171,6 +193,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
           editorBody: decoder.decode(editor.body).slice(0, 500),
           churnCompleted: churnRequests,
           editorBurstCompleted: editorBurstRounds,
+          restarted,
           serviceLog: decoder.decode(serviceLog),
           diagnostics,
           stderr,
@@ -200,6 +223,7 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
     expect(result.editorStatus, `${result.editorBody}\n${result.serviceLog.slice(-3000)}`).toBe(200);
     expect(result.churnCompleted).toBe(churnRequests);
     expect(result.editorBurstCompleted).toBe(editorBurstRounds);
+    if (serviceName === "frankenphp-caddy") expect(result.restarted).toBe(true);
     expect(result.serviceLog).toContain(serviceName === "frankenphp-caddy" ? '"num_threads":6' : "num_threads=6");
     expect(result.diagnostics).toEqual([]);
     expect(result.stderr).not.toContain("panic");

@@ -3653,6 +3653,38 @@ afterward. Its host Node process reached about 2 GiB RSS by the end. That
 is a resource-use observation, not proof of a leak or a bounded steady
 state. The diagnostic Node server and older stale demo servers were stopped
 to return memory to the user's machine; the latest Vite browser demo remains
-live. Production readiness still needs a measured memory plateau, restart
-and recovery checks, and an accelerated or cache-enabled configuration
+live. Production readiness still needs a measured memory plateau, repeated
+restart/recovery checks, and an accelerated or cache-enabled configuration
 whose personalized-request bypass and invalidation are verified.
+
+**2026-10-17 — Supervise FrankenPHP+Caddy crash recovery.**
+The WordPress image now sets dinit's `restart = true` with a one-second delay
+for FrankenPHP+Caddy, instead of leaving the HTTP service stopped after an
+unexpected exit. The normal SourceOnly WordPress image rebuilt successfully
+as recipe revision 28 (SHA-256
+`b698ca89edbf300a899a090c02919b871f90d4c28e1ad94c8b369e04f7a7f45a`).
+A browser-host regression sends SIGKILL to the live Caddy guest process,
+waits for a different listener PID, and confirms WordPress serves HTTP 200
+afterward. Chromium, Firefox, and WebKit each passed. The equivalent Node
+guest test also recovered, from PID 103 to PID 117, and served the homepage.
+The rebuilt image also passed the Chromium user-facing Caddy demo's login,
+site-editor, and 20-second editor soak. A fresh SourceOnly Vite process on
+port 5415 serves the new image by its content-addressed URL; the older
+port-5414 preview remains unchanged. These checks prove one crash/restart
+cycle on the rebuilt image, not a multi-day reliability or memory-plateau
+guarantee.
+
+The upstream Caddy Sidekick WordPress page-cache module was evaluated as a
+separate user-facing acceleration path, but was not shipped. The
+upstream commit inspected (`ee528d8bbf3cf4852e335da153dfbd264002c690`)
+defaults its purge token to `dead-beef`, its auto-installed purge plugin
+disables TLS certificate verification for purge requests, and the plugin's
+post-save handler does not invalidate the homepage. Those are unsuitable
+defaults for a production-ready WordPress comparison without additional
+integration and security work. A pinned module-inclusion build reached the
+fork-instrumentation stage but was stopped after the instrumenter exceeded
+6 GiB resident memory and reported host free memory fell near 40%; the
+experimental package edits were reverted. This is not evidence that the
+module fails to compile, only that this particular approach is presently
+unproven and resource-intensive. Prefer a reviewed cache/invalidation
+contract or general OPcache support over shipping the module blindly.
