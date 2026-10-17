@@ -3755,6 +3755,23 @@ was terminated by the resource guard when system unused memory fell to
 1,922 MiB; it produced no usable off-heap report. Do not repeat full guests
 under this headroom.
 
+With headroom restored, a guarded rerun of standalone Caddy static HTTP
+passed again and peaked at 2,824 MiB Node RSS. Stage samples were 92 MiB
+before image creation, 695 MiB after the small VFS image was saved, 1,096
+MiB after kernel initialization, 1,464 MiB just after Caddy spawn, and
+2,824 MiB at HTTP readiness. The live Caddy process reported about 68 MiB
+guest linear memory. The module cache reported two compiles, one for the
+program and one patched thread module, covering 164 MB of Wasm input; V8's
+exit-time NativeModule off-heap reports totaled roughly 180 MB. `vmmap`
+reported a 2.6 GiB physical footprint: about 1.2 GiB resident in Malloc
+Large, 526 MiB resident in Malloc Large (empty), and 658 MiB resident in
+app-specific tag-16 regions. Those region totals must not be added to the
+guest or V8 module counters as though they were separate allocations. This
+strengthens the conclusion that neither guest linear memory nor compiled-
+module bytes alone
+explain host RSS. It does not identify which active Caddy/Go allocations
+remain necessary, prove a leak, or establish a production memory bound.
+
 A controlled rerun with a 512 MiB guest memory ceiling is prepared but not
 run: other active Conductor processes left only 3–8 GiB unused physical
 memory, below the observed Caddy guest footprint. Do not turn the diagnostic
@@ -3801,6 +3818,10 @@ policy rejections remain errors rather than silently falling back.
 The focused Node host suite passed 6/6, covering package priority, absence
 fallback, policy rejection, and caller-buffer ownership. A direct default-
 rootfs probe then read both `/usr/bin/bash` and `/bin/bash` successfully
-(1,884,697 bytes each) through lazy fetch. The full image-build-determinism
-suite has not yet been rerun after this selection change; system memory
-headroom was under 1.5 GiB with another workspace's browser workers live.
+(1,884,697 bytes each) through lazy fetch. After the other workspace's
+WebKit worker exited and headroom returned, the full Node image-build-
+determinism suite passed 4/4 and the Node host-mounts suite passed 16/16
+against the new default selection. These establish the tested Node default
+rootfs, lazy Bash, deterministic clock/entropy, and mount paths; they do
+not measure the FrankenPHP+Caddy guest's steady-state memory or browser
+performance.
