@@ -98,6 +98,40 @@ describe("NodeKernelHost refuses an image the kernel rejects", () => {
     },
     30_000,
   );
+
+  it.skipIf(!haveKernel)(
+    "transfers an explicitly owned image without retaining caller bytes",
+    async () => {
+      const fs = KandeloImageFs.create();
+      fs.mkdir("/etc", 0o755);
+      fs.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);
+      const ownedImage = asArrayBuffer(await fs.saveImage());
+      const host = new NodeKernelHost({
+        rootfsImage: ownedImage,
+        takeRootfsImageOwnership: true,
+      });
+      try {
+        await host.init(asArrayBuffer(new Uint8Array(readFileSync(kernelPath!))));
+        expect(ownedImage.byteLength).toBe(0);
+        expect(await host.readFileFromVfs("/etc/hostname")).toEqual(
+          new TextEncoder().encode("kandelo\n"),
+        );
+      } finally {
+        await host.destroy();
+      }
+    },
+    30_000,
+  );
+
+  it.skipIf(!haveKernel)("rejects a byte view as an ownership-taking image", async () => {
+    const host = new NodeKernelHost({
+      rootfsImage: new Uint8Array([1, 2, 3]),
+      takeRootfsImageOwnership: true,
+    });
+    await expect(host.init()).rejects.toThrow(
+      "owned rootfs image must be one whole ordinary ArrayBuffer",
+    );
+  });
 });
 
 describe("Node rootfs artifact selection", () => {

@@ -57,11 +57,17 @@ export async function bootDinitServiceVfs(options: BootDinitServiceOptions): Pro
   await options.configure?.(fs);
 
   const rootfsImage = await fs.saveImage();
+  if (!(rootfsImage.buffer instanceof ArrayBuffer) ||
+      rootfsImage.byteOffset !== 0 ||
+      rootfsImage.byteLength !== rootfsImage.buffer.byteLength) {
+    throw new Error("service VFS image must occupy one whole ArrayBuffer");
+  }
 
   const host = new NodeKernelHost({
     maxWorkers: options.maxWorkers ?? 12,
     maxPages: options.maxPages,
-    rootfsImage,
+    rootfsImage: rootfsImage.buffer,
+    takeRootfsImageOwnership: true,
     onStdout: (_pid, data) => process.stdout.write(data),
     onStderr: (_pid, data) => process.stderr.write(data),
     onHostDiagnostic: options.onHostDiagnostic,

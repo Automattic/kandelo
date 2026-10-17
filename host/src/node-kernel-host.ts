@@ -172,6 +172,7 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  takeRootfsImageOwnership?: boolean;
   /** Exact image/scratch mount contract. Requires `rootfsImage`. */
   rootfsMountSpec?: readonly MountSpec[];
   /**
@@ -260,14 +261,15 @@ export class NodeKernelHost {
   private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
 
   constructor(options?: NodeKernelHostOptions) {
-    this.options = options ?? {};
+    this.options = { ...options };
   }
 
   /** Initialize the kernel by spawning a dedicated worker_thread */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
     if (this.kernelFatalError !== null) throw this.kernelFatalError;
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
-    const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
+    const takeRootfsImageOwnership = this.options.takeRootfsImageOwnership === true;
+    const rootfsImage = resolveRootfsImage(this.options.rootfsImage, takeRootfsImageOwnership);
     if (this.options.rootfsLazyAssets !== undefined && rootfsImage === null) {
       throw new Error("rootfsLazyAssets requires rootfsImage");
     }
@@ -467,6 +469,7 @@ export class NodeKernelHost {
           ...new Set(Object.values(execProgramBytes ?? {})),
         ];
         this.worker.postMessage(initMsg, transfer);
+        if (takeRootfsImageOwnership) this.options.rootfsImage = undefined;
       });
     } catch (error) {
       // WHY: a worker that rejected initialization owns no usable kernel and
@@ -1507,7 +1510,11 @@ function snapshotExecProgramBytes(
  */
 function resolveRootfsImage(
   override: "default" | ArrayBuffer | Uint8Array | undefined,
+  takeOwnership = false,
 ): ArrayBuffer | null {
+  if (takeOwnership && !(override instanceof ArrayBuffer)) {
+    throw new Error("owned rootfs image must be one whole ordinary ArrayBuffer");
+  }
   if (override === undefined) return null;
   // Shipped images are zstd-compressed (`rootfs.vfs.zst`, `*.vfs.zst`), and
   // the kernel's image reader takes decoded bytes: zstd is a host-side
@@ -1519,6 +1526,11 @@ function resolveRootfsImage(
       ? override
       : new Uint8Array(override);
   const decoded = maybeDecompressImage(bytes);
+  if (takeOwnership && decoded === bytes) return override as ArrayBuffer;
+  if (
+    takeOwnership && decoded.buffer instanceof ArrayBuffer &&
+    decoded.byteOffset === 0 && decoded.byteLength === decoded.buffer.byteLength
+  ) return decoded.buffer;
   // Copy into a fresh ArrayBuffer — the source might live in a
   // SharedArrayBuffer, which the worker init protocol doesn't accept.
   const out = new ArrayBuffer(decoded.byteLength);

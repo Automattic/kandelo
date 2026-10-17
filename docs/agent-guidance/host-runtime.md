@@ -46,15 +46,18 @@ incomplete until both hosts have the same platform-observable behavior or the
 difference is explicitly justified by a real platform boundary. Do not land
 Node-first or browser-later host changes.
 
-The Node rootfs-image option preserves caller-owned `ArrayBuffer` and
-`Uint8Array` bytes across initialization. It snapshots the image into a
+The default Node rootfs-image option preserves caller-owned `ArrayBuffer`
+and `Uint8Array` bytes across initialization. It snapshots the image into a
 private ordinary `ArrayBuffer` and transfers that private buffer to the
 kernel worker, rather than structured-cloning it a second time. Never put
-the caller's original buffer on the transfer list. The browser's
-`initFromImage` likewise preserves caller ownership; its separate
-`initFromOwnedImage` entry point explicitly takes and transfers ownership.
-This handoff removes one transport copy, but does not by itself establish a
-lower steady-state RSS or solve a large guest's native Wasm-code footprint.
+the caller's original buffer on the transfer list without an explicit
+ownership choice. For one-shot callers with a whole ordinary `ArrayBuffer`,
+`takeRootfsImageOwnership: true` transfers the raw image directly and may
+detach it; that host cannot reinitialize from the surrendered bytes. The
+browser's `initFromImage` likewise preserves caller ownership, while its
+separate `initFromOwnedImage` entry point explicitly takes ownership. This
+handoff avoids copies but does not by itself establish a lower steady-state
+RSS or solve a large guest's native Wasm-code footprint.
 
 For `rootfsImage: "default"`, resolve the package-owned
 `programs/rootfs.vfs.zst` before the legacy `rootfs.vfs.zst` in

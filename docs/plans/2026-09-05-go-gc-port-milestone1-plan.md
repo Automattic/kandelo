@@ -3825,3 +3825,21 @@ against the new default selection. These establish the tested Node default
 rootfs, lazy Bash, deterministic clock/entropy, and mount paths; they do
 not measure the FrankenPHP+Caddy guest's steady-state memory or browser
 performance.
+
+**2026-10-17 — Let one-shot Node service demos surrender their image.**
+The existing Node handoff preserved caller bytes by copying the raw rootfs
+before transfer, but `bootDinitServiceVfs` owns the image freshly exported
+by the image writer and never reuses it. Node now has an explicit
+`takeRootfsImageOwnership` option for a whole `ArrayBuffer`; the helper uses
+it to transfer its raw image without that private copy. Ordinary callers
+retain copy-preserving behavior. The focused Node host suite passed 8/8,
+including detachment, a real VFS read, and rejection of an ownership-taking
+byte view. Host declaration build/typecheck passed. A direct standalone
+TypeScript check of the service helper reached an unrelated pre-existing
+`host/src/webgl/query.ts` TS2352 error; it did not report a helper error.
+The prepared-product service VFS suite then passed 4/4 with a tiny Dinit
+image that the real helper imports, edits, re-exports, transfers, and boots.
+It reads the edited file through the running host's VFS. The combined
+service/Node host run passed 12/12, and host typecheck passed again.
+No before/after WordPress RSS or browser benchmark was run for this change,
+so its application-level memory benefit is not yet measured.
