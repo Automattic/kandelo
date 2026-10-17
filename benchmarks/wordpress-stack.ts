@@ -301,20 +301,22 @@ async function main(): Promise<void> {
       } finally {
         await probe.close();
       }
-      for (let round = 0; round < options.rounds; round++) {
-        for (const profile of orderForRound(round, options.profiles)) {
-          const page = await context.newPage();
-          try {
-            const result = await measureBrowser(page, profile, round, options);
-            results.push(result);
-            console.log(`browser round ${round + 1} ${profile}: ${percentile(result.latenciesMs, 0.5).toFixed(1)} ms median`);
-          } finally {
-            await page.close();
-          }
-        }
-      }
     } finally {
       await browser.close();
+    }
+    for (let round = 0; round < options.rounds; round++) {
+      for (const profile of orderForRound(round, options.profiles)) {
+        const browser = await chromium.launch();
+        try {
+          const context = await browser.newContext({ baseURL: options.browserBaseUrl });
+          const page = await context.newPage();
+          const result = await measureBrowser(page, profile, round, options);
+          results.push(result);
+          console.log(`browser round ${round + 1} ${profile}: ${percentile(result.latenciesMs, 0.5).toFixed(1)} ms median`);
+        } finally {
+          await browser.close();
+        }
+      }
     }
   }
 

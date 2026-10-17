@@ -3615,3 +3615,33 @@ HTTP 200 and the unauthenticated admin redirects as expected. An older Node
 demo stayed alive and served HTTP 200 for more than five hours before being
 stopped to free its SMTP port. That is idle-uptime evidence for the prior
 image, not a long-uptime gate for this rebuilt one.
+
+**2026-10-17 — Recheck uptime and paired stack performance without retaining browser guests.**
+The rebuilt-image Node FrankenPHP+Caddy demo remained running for nearly
+60 hours and still returned HTTP 200 for the homepage and login. This is
+long idle-uptime evidence, not a sustained-traffic or restart/recovery test.
+An attempted four-round Node+Chromium comparison was stopped during its
+third browser round after a Chromium renderer reached roughly 10 GiB RSS;
+its incomplete results were discarded. The benchmark had reused a single
+Chromium browser/context across profiles and rounds, and closing pages had
+not reclaimed the accumulated guest memory. The harness now launches and
+closes a fresh browser for each browser profile/round. A two-round minimal
+smoke passed with no Chromium process left behind; a full four-round browser
+run then passed, with the renderer around 1 GiB RSS at a mid-run check and
+no renderer remaining afterward.
+
+The full current-image benchmark used SHA-256
+`6fbec811085e46f81b255cc5d86046bcab2f71fc50c1ffebf089fc270b9ea563`,
+four alternating-order rounds, 48 dynamic homepage samples per host/profile,
+and 16 requests per four-client throughput phase. Raw reports are
+`.context/wordpress-caddy-node-benchmark-regexp.json` and
+`.context/wordpress-caddy-browser-benchmark-regexp.json`. Node nginx/FPM
+versus FrankenPHP+Caddy request medians were 457 versus 756 ms, startup
+medians 11.9 versus 23.4 seconds, and throughput medians 4.12 versus
+3.68 requests/s. Chromium request medians were 420 versus 684 ms, startup
+medians 21.6 versus 26.8 seconds, and throughput medians 5.00 versus
+5.05 requests/s. This user-facing uncached stack comparison does not show
+a Caddy advantage. It is not a fair isolated PHP-runtime comparison because
+FPM has prewarmed OPcache while the ZTS embed does not. An accelerated
+FrankenPHP configuration or a safe visitor-facing cache comparison remains
+necessary before making a stronger performance conclusion.
