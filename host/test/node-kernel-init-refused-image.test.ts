@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { tryResolveBinary } from "../src/binary-resolver";
-import { NodeKernelHost } from "../src/node-kernel-host";
+import { BinaryNotFoundError, tryResolveBinary } from "../src/binary-resolver";
+import { NodeKernelHost, resolveRootfsArtifact } from "../src/node-kernel-host";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 /**
@@ -98,4 +98,42 @@ describe("NodeKernelHost refuses an image the kernel rejects", () => {
     },
     30_000,
   );
+});
+
+describe("Node rootfs artifact selection", () => {
+  it("prefers the resolver-managed package image", () => {
+    const requests: string[] = [];
+    const selected = resolveRootfsArtifact((request) => {
+      requests.push(request);
+      return `/artifacts/${request}`;
+    });
+    expect(selected).toEqual({
+      resolverRequest: "programs/rootfs.vfs.zst",
+      selectedPath: "/artifacts/programs/rootfs.vfs.zst",
+    });
+    expect(requests).toEqual(["programs/rootfs.vfs.zst"]);
+  });
+
+  it("uses the legacy rootfs only when the package image is absent", () => {
+    const requests: string[] = [];
+    const selected = resolveRootfsArtifact((request) => {
+      requests.push(request);
+      if (request === "programs/rootfs.vfs.zst") throw new BinaryNotFoundError("not found");
+      return "/artifacts/rootfs.vfs.zst";
+    });
+    expect(selected).toEqual({
+      resolverRequest: "rootfs.vfs.zst",
+      selectedPath: "/artifacts/rootfs.vfs.zst",
+    });
+    expect(requests).toEqual(["programs/rootfs.vfs.zst", "rootfs.vfs.zst"]);
+  });
+
+  it("does not bypass a rejected package image with the legacy rootfs", () => {
+    const requests: string[] = [];
+    expect(() => resolveRootfsArtifact((request) => {
+      requests.push(request);
+      throw new Error("package artifact rejected");
+    })).toThrow("package artifact rejected");
+    expect(requests).toEqual(["programs/rootfs.vfs.zst"]);
+  });
 });

@@ -13,7 +13,7 @@ import type { ResolvedRootfsArtifact } from "../../src/node-kernel-host";
  */
 export function tryResolveRootfsArtifact(): ResolvedRootfsArtifact | null {
   for (
-    const resolverRequest of ["rootfs.vfs.zst", "programs/rootfs.vfs.zst"] as const
+    const resolverRequest of ["programs/rootfs.vfs.zst", "rootfs.vfs.zst"] as const
   ) {
     const selectedPath = tryResolveBinary(resolverRequest);
     if (selectedPath !== null) return { resolverRequest, selectedPath };

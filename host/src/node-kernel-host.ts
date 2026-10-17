@@ -25,7 +25,7 @@ import {
   Worker as NodeThreadWorker,
   type Transferable,
 } from "node:worker_threads";
-import { resolveBinary } from "./binary-resolver";
+import { BinaryNotFoundError, resolveBinary } from "./binary-resolver";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
 import type {
   HostDiagnostic,
@@ -158,8 +158,8 @@ export interface NodeKernelHostOptions {
   /**
    * Opt in to mount-based VFS for this kernel boot.
    *
-   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs.zst`, falling back
-   *     to the resolver-managed `programs/rootfs.vfs.zst` artifact, and apply
+   *   - `"default"` — load the resolver-managed `programs/rootfs.vfs.zst`
+   *     artifact, falling back to `<repoRoot>/host/wasm/rootfs.vfs.zst`, and apply
    *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The kernel parses the
    *     image and serves `/` and the scratch mounts (`/tmp` etc.) itself;
    *     the worker's `VirtualPlatformIO` holds only host-backed mounts
@@ -1536,22 +1536,24 @@ export function resolveRootfsArtifact(
 ): ResolvedRootfsArtifact {
   try {
     return {
-      resolverRequest: "rootfs.vfs.zst",
-      selectedPath: resolver("rootfs.vfs.zst"),
+      resolverRequest: "programs/rootfs.vfs.zst",
+      selectedPath: resolver("programs/rootfs.vfs.zst"),
     };
-  } catch (rootfsError) {
+  } catch (programsError) {
+    if (!(programsError instanceof BinaryNotFoundError)) throw programsError;
     try {
       return {
-        resolverRequest: "programs/rootfs.vfs.zst",
-        selectedPath: resolver("programs/rootfs.vfs.zst"),
+        resolverRequest: "rootfs.vfs.zst",
+        selectedPath: resolver("rootfs.vfs.zst"),
       };
-    } catch (programsError) {
+    } catch (rootfsError) {
+      if (!(rootfsError instanceof BinaryNotFoundError)) throw rootfsError;
       const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
       const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);
       throw new Error(
         `rootfsImage:"default" requested but no rootfs image was available.\n` +
-          `Tried rootfs.vfs.zst:\n${rootfsMessage}\n` +
           `Tried programs/rootfs.vfs.zst:\n${programsMessage}\n` +
+          `Tried rootfs.vfs.zst:\n${rootfsMessage}\n` +
           `Run scripts/build-rootfs.sh, fetch/build the rootfs package, or pass explicit bytes.`,
       );
     }

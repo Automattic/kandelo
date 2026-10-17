@@ -3787,3 +3787,20 @@ sized transport copy by inspection, but no before/after physical-memory or
 application benchmark was run, and the multi-GiB live Go/Caddy footprint
 remains open. The browser host code was unchanged; its existing copy-preserving
 and ownership-taking tests were not rerun in this diagnostic step.
+
+**2026-10-17 — Prefer the current package rootfs over a stale legacy image.**
+The default Node rootfs test's `rootfs read failed` was not caused by the
+private-buffer transfer. The selected `host/wasm/rootfs.vfs.zst` recorded
+SHA-256 `1a28c52f…` for its deferred `/usr/bin/bash`, while the current
+SourceOnly Bash has the same 1,884,697-byte length but SHA-256
+`15ca1c67…`. The lazy fetch completed, then the kernel rejected the digest;
+the current SourceOnly `programs/rootfs.vfs.zst` records `15ca1c67…`.
+Default Node boot now prefers that resolver-managed package image and uses
+the legacy image only when the package output is genuinely absent. Package
+policy rejections remain errors rather than silently falling back.
+The focused Node host suite passed 6/6, covering package priority, absence
+fallback, policy rejection, and caller-buffer ownership. A direct default-
+rootfs probe then read both `/usr/bin/bash` and `/bin/bash` successfully
+(1,884,697 bytes each) through lazy fetch. The full image-build-determinism
+suite has not yet been rerun after this selection change; system memory
+headroom was under 1.5 GiB with another workspace's browser workers live.

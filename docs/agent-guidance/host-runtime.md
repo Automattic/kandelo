@@ -56,6 +56,14 @@ the caller's original buffer on the transfer list. The browser's
 This handoff removes one transport copy, but does not by itself establish a
 lower steady-state RSS or solve a large guest's native Wasm-code footprint.
 
+For `rootfsImage: "default"`, resolve the package-owned
+`programs/rootfs.vfs.zst` before the legacy `rootfs.vfs.zst` in
+`host/wasm`. Only a genuine missing package artifact permits that fallback;
+a rejected or incomplete package must stay visible as an error. The image's
+deferred-file digests are tied to the binary generation it was built with:
+a stale legacy image can name the same lazy URL and byte length as the
+current SourceOnly binary but fail its SHA-256 check at first read.
+
 Before and after host work, ask: "What does this look like on the other host?"
 
 Keep a command's job ID until its owner confirms release or absence. A caller
