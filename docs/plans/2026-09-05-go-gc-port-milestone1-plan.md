@@ -3717,6 +3717,9 @@ to 1,106 MiB, and saving the configured 461 MB rootfs image raised RSS to
 reading and compiling the 177 MiB binary; instantiating that compiled module
 without executing its entry point raised it only to 469 MiB. These are
 process-level observations, not an additive memory breakdown of the live demo.
+Repeating that non-executing instantiation with the imported shared memory's
+maximum reduced from 16,384 to 8,192 pages produced the same 469 MiB RSS;
+that does not establish how a running guest behaves under the lower ceiling.
 
 The full Caddy guest in Node reached 3,193 MiB after dinit spawned and
 12,794 MiB after homepage readiness. Its module cache reported four compiles
