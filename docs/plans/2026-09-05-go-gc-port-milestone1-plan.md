@@ -3768,3 +3768,22 @@ The Go-runtime-specific guidance now distinguishes Wasm input-byte cache
 stats, guest linear memory, and native host footprint, and documents bounded
 Node/browser profiling. No runtime behavior or package build changed in this
 diagnostic step.
+
+**2026-10-17 — Transfer Node's private rootfs image copy.** The Node host
+previously copied a caller's image into a private `ArrayBuffer`, then
+structured-cloned that buffer into its kernel worker. It now transfers the
+private buffer instead; an `ArrayBuffer` caller is also copied first so the
+caller remains undetached. The browser already distinguishes copy-preserving
+`initFromImage` from explicit ownership-taking `initFromOwnedImage`.
+The focused Node host test passed 3/3 cases, including byte-view and
+ArrayBuffer ownership checks plus a real VFS read. The existing Node rootfs
+export/reboot suite also passed 9/9 cases (with its known legacy ABI-stamp
+warnings), and `host`'s declaration build/typecheck passed. The default-
+rootfs image-build-determinism suite failed 3/4 with `rootfs read failed`;
+reverting only the Node handoff change and rerunning produced the same 3/4
+failures, so that suite is not evidence of a new transport regression.
+The handoff change was then restored. This removes one image-
+sized transport copy by inspection, but no before/after physical-memory or
+application benchmark was run, and the multi-GiB live Go/Caddy footprint
+remains open. The browser host code was unchanged; its existing copy-preserving
+and ownership-taking tests were not rerun in this diagnostic step.

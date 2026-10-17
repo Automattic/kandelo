@@ -72,4 +72,30 @@ describe("NodeKernelHost refuses an image the kernel rejects", () => {
     },
     30_000,
   );
+
+  it.skipIf(!haveKernel)(
+    "preserves caller-owned image bytes after worker initialization",
+    async () => {
+      const fs = KandeloImageFs.create();
+      fs.mkdir("/etc", 0o755);
+      fs.writeFile("/etc/hostname", new TextEncoder().encode("kandelo\n"), 0o644);
+      const image = await fs.saveImage();
+      const kernel = asArrayBuffer(new Uint8Array(readFileSync(kernelPath!)));
+
+      for (const source of [image, asArrayBuffer(image)]) {
+        const expected = new Uint8Array(source).slice();
+        const host = new NodeKernelHost({ rootfsImage: source });
+        try {
+          await host.init(kernel);
+          expect(new Uint8Array(source)).toEqual(expected);
+          expect(await host.readFileFromVfs("/etc/hostname")).toEqual(
+            new TextEncoder().encode("kandelo\n"),
+          );
+        } finally {
+          await host.destroy();
+        }
+      }
+    },
+    30_000,
+  );
 });

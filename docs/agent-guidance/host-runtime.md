@@ -46,6 +46,16 @@ incomplete until both hosts have the same platform-observable behavior or the
 difference is explicitly justified by a real platform boundary. Do not land
 Node-first or browser-later host changes.
 
+The Node rootfs-image option preserves caller-owned `ArrayBuffer` and
+`Uint8Array` bytes across initialization. It snapshots the image into a
+private ordinary `ArrayBuffer` and transfers that private buffer to the
+kernel worker, rather than structured-cloning it a second time. Never put
+the caller's original buffer on the transfer list. The browser's
+`initFromImage` likewise preserves caller ownership; its separate
+`initFromOwnedImage` entry point explicitly takes and transfers ownership.
+This handoff removes one transport copy, but does not by itself establish a
+lower steady-state RSS or solve a large guest's native Wasm-code footprint.
+
 Before and after host work, ask: "What does this look like on the other host?"
 
 Keep a command's job ID until its owner confirms release or absence. A caller

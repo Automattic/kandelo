@@ -460,6 +460,7 @@ export class NodeKernelHost {
           enableTcpNetwork: this.options.enableTcpNetwork,
         };
         const transfer = [
+          ...(rootfsImage === null ? [] : [rootfsImage]),
           ...(rootfsLazyAssets ?? []).map(
             (asset) => asset.bytes.buffer as ArrayBuffer,
           ),
@@ -1518,7 +1519,6 @@ function resolveRootfsImage(
       ? override
       : new Uint8Array(override);
   const decoded = maybeDecompressImage(bytes);
-  if (decoded === bytes && override instanceof ArrayBuffer) return override;
   // Copy into a fresh ArrayBuffer — the source might live in a
   // SharedArrayBuffer, which the worker init protocol doesn't accept.
   const out = new ArrayBuffer(decoded.byteLength);
