@@ -554,6 +554,30 @@ expected output, empty stderr, and no host diagnostics before building a
 PHP embed library or FrankenPHP. Re-run `js` and `wasip1` builds after
 compiler, linker, or runtime changes.
 
+## Profiling large Go/Wasm services
+
+Keep binary size, compiled-module bookkeeping, live guest linear memory,
+and host physical memory separate. The module cache's `compiledBytes` is a
+sum of Wasm input byte lengths, not V8 native-code allocation; a process
+snapshot's `memoryBytes` is guest linear memory, not the whole Node or
+browser process. Neither number bounds host RSS. Compare fresh processes
+at image read/load/save, service spawn, listener readiness, sustained
+requests, and restart. A compile or instantiation probe that never calls
+the program entry point cannot establish the cost of executing Go code or
+starting its C pthreads. Do not subtract samples from different binaries
+or VFS images and call the difference PHP or Caddy overhead.
+
+For Node diagnostics, record process RSS and, on macOS, physical footprint;
+V8's `--print-wasm-offheap-memory-size` is useful for an exit-time compiled
+module sample, not a running-service memory plateau. Guard large runs against
+actual unused system memory and stop when headroom is low. On the WordPress
+probe, `memory_pressure -Q` looked healthy while `top` showed only a few
+GiB unused, so it was not a sufficient safety guard. Measure the browser
+renderer independently before claiming browser parity, and do not call a
+short stable sample a leak fix or production memory bound. The current
+FrankenPHP/Caddy measurements and caveats are in the implementation progress
+log.
+
 ## Evidence and handoff
 
 The reproducible probe commands and scope are in `tests/go/README.md`.

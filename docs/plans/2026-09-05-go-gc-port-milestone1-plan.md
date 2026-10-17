@@ -3763,3 +3763,8 @@ gate on both hosts. Next isolate live thread/instance counts and native Wasm
 code memory with bounded instrumentation when system headroom permits; then
 measure a memory plateau and revisit acceleration. The prior 2 GiB sample
 remains unsuitable as a production memory bound.
+
+The Go-runtime-specific guidance now distinguishes Wasm input-byte cache
+stats, guest linear memory, and native host footprint, and documents bounded
+Node/browser profiling. No runtime behavior or package build changed in this
+diagnostic step.
