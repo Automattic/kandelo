@@ -3733,6 +3733,27 @@ roughly 12.8 GiB RSS. The large increment occurs while executing the much
 larger Go/Caddy module and its workers; Wasm native-code generation or
 per-worker state remains a hypothesis, not a proven allocation attribution.
 The Caddy Wasm has about 182,000 functions and 109 MiB of code-section input.
+FrankenPHP classic has about 76,500 functions and 39 MiB of code-section
+input. Both have 100,000 data segments because upstream Go's Wasm linker
+deliberately caps its zero-skipping data segmentation there; the identical
+count alone does not identify a Caddy-specific defect. With Node's
+`--print-wasm-offheap-memory-size`, the compiled but nonexecuting Caddy
+module reported about 188 MiB of V8 NativeModule off-heap memory at exit.
+That measurement further rules out one idle compiled module as the sole
+explanation for the live process's multi-GiB native footprint; it does not
+measure native code or instance state after execution begins.
+
+A separate standalone Caddy v2.10.2 static-file probe, with no PHP or
+WordPress image, served HTTP 200 from the VFS with empty diagnostics. A
+guarded sample saw 2,729 MiB peak Node RSS before that short process exited.
+Its binary has about 61,000 functions and 53 MiB of code-section input.
+This shows that a plain Go/Caddy server can itself consume multi-GiB host
+memory on this Node/macOS setup, but the binary and image differ from the
+FrankenPHP+Caddy run, so subtracting their RSS totals would not isolate
+PHP's contribution. A second probe requesting V8's exit-time off-heap report
+was terminated by the resource guard when system unused memory fell to
+1,922 MiB; it produced no usable off-heap report. Do not repeat full guests
+under this headroom.
 
 A controlled rerun with a 512 MiB guest memory ceiling is prepared but not
 run: other active Conductor processes left only 3–8 GiB unused physical
