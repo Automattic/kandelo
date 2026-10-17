@@ -23,7 +23,7 @@ test("site packager preserves the built app and emits a compiled file-router han
   const { stdout } = await execute(process.execPath, [builder, root]);
   const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
   assert.deepEqual((await readdir(output)).sort(), ["_headers", "functions", "index.html", "service-worker.js", "sf.jsonc", "vfs-groups"]);
-  assert.deepEqual(await readdir(join(output, "functions")), ["cors-proxy"]);
+  assert.deepEqual((await readdir(join(output, "functions"))).sort(), ["cors-proxy", "signalling.mjs"]);
   assert.deepEqual(await readdir(join(output, "functions", "cors-proxy")), ["[...rest].mjs"]);
   assert.equal(await readFile(join(output, "index.html"), "utf8"), "<h1>Kandelo</h1>");
   assert.equal(await readFile(join(output, "vfs-groups", "manifest.json"), "utf8"), "{}");
@@ -36,6 +36,9 @@ test("site packager preserves the built app and emits a compiled file-router han
   assert.ok(worker.includes('import("cloudflare:sockets")'));
   assert.ok(!/node:|BEGIN PRIVATE KEY/.test(worker));
   const { default: route } = await import(pathToFileURL(workerPath).href);
+  const { default: signalling } = await import(pathToFileURL(join(output, "functions", "signalling.mjs")).href);
+  assert.equal((await signalling(new Request("https://site.example/__kandelo_signalling", { method: "OPTIONS" }), { env: {} })).status, 204);
+  assert.equal((await signalling(new Request("https://site.example/__kandelo_signalling?session=foo"), { env: {} })).status, 503);
   const preflight = await route(new Request("https://site.example/cors-proxy", { method: "OPTIONS" }), { env: {} });
   assert.equal(preflight.status, 204);
   const unconfigured = await route(new Request("https://site.example/cors-proxy"), { env: {} });

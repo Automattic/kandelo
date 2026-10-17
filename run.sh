@@ -14,7 +14,7 @@
 #                                 cache (dry run unless --apply)
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh prepare-browser      Build local SourceOnly browser assets
-#   ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL]
+#   ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]
 #                                 Build the deployable static browser app
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
@@ -2776,6 +2776,7 @@ cmd_build_browser() {
     local base="/"
     local out="$REPO_ROOT/apps/browser-demos/dist"
     local cors_proxy=""
+    local signalling_url=""
     while [ $# -gt 0 ]; do
         case "$1" in
             --base) [ $# -ge 2 ] || { err "--base requires a value"; exit 2; }
@@ -2788,8 +2789,12 @@ cmd_build_browser() {
                           cors_proxy="$2"; shift 2 ;;
             --cors-proxy=*) cors_proxy="${1#--cors-proxy=}"; shift
                            [ -n "$cors_proxy" ] || { err "--cors-proxy requires a URL"; exit 2; } ;;
+            --signalling-url) [ $# -ge 2 ] && [ -n "$2" ] || { err "--signalling-url requires a URL"; exit 2; }
+                              signalling_url="$2"; shift 2 ;;
+            --signalling-url=*) signalling_url="${1#--signalling-url=}"; shift
+                               [ -n "$signalling_url" ] || { err "--signalling-url requires a URL"; exit 2; } ;;
             *)
-                err "Usage: $0 build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL]"
+                err "Usage: $0 build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]"
                 exit 2
                 ;;
         esac
@@ -2810,7 +2815,7 @@ cmd_build_browser() {
     # under the output directory.
     step "Building production browser app for $base"
     # dev-shell.sh does not forward arbitrary caller environment, so the
-    # inner script takes the repo root, base, output and proxy as arguments.
+    # inner script takes the repo root, base, output and endpoints as arguments.
     bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
         set -euo pipefail
         cd "$1"
@@ -2825,9 +2830,9 @@ cmd_build_browser() {
         echo "==> Building the authenticated VFS asset group..."
         node node_modules/tsx/dist/cli.mjs scripts/build-local-vfs-asset-group.ts \
             "$KANDELO_PAGES_VFS_ASSET_GROUP_DIR" "$KANDELO_PAGES_PRODUCT_MAP"
-        VITE_BASE="$2" VITE_CORS_PROXY_URL="$4" npm --prefix apps/browser-demos run build -- \
+        VITE_BASE="$2" VITE_CORS_PROXY_URL="$4" VITE_KANDELO_SIGNALLING_URL="$5" npm --prefix apps/browser-demos run build -- \
             --outDir "$3" --emptyOutDir
-    ' build-browser "$REPO_ROOT" "$base" "$out" "$cors_proxy"
+    ' build-browser "$REPO_ROOT" "$base" "$out" "$cors_proxy" "$signalling_url"
 
     # Fail loudly on an incomplete site rather than letting it be uploaded.
     local missing=0 required
@@ -3105,7 +3110,7 @@ cmd_list() {
     echo "${BOLD}Browser:${RESET}"
     echo "  ./run.sh prepare-browser             Build local SourceOnly browser assets"
     echo "  ./run.sh browser                     Build locally and start the Vite dev server"
-    echo "  ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL]"
+    echo "  ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]"
     echo "                                       Build the deployable app (default: / into apps/browser-demos/dist)"
     echo ""
     echo "${BOLD}Test suites:${RESET}"

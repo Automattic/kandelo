@@ -46,6 +46,11 @@ await build({
   bundle: true, format: "esm", platform: "browser", target: "es2022",
   external: ["cloudflare:*"],
 });
+await build({
+  entryPoints: [join(app, "../signalling/spacefast/handler.ts")],
+  outfile: join(output, "functions", "signalling.mjs"),
+  bundle: true, format: "esm", platform: "browser", target: "es2022",
+});
 await writeFile(join(output, "sf.jsonc"), JSON.stringify({
   $schema: "https://spacefast.com/schemas/sf.json",
   runtime: { kind: "functions", compatibilityDate: "2026-07-01" },

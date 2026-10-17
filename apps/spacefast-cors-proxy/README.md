@@ -145,17 +145,21 @@ shell. Its existing range alias profile works with this implementation.
 Publish a generated bundle and `sf.jsonc`, not this source directory's tests,
 fixture keys or local output. A root worker claims the whole site; deploy it
 as its own proxy Space. The combined build below instead uses a file-router
-entry, so only `/cors-proxy` and its descendants wake the worker. Static
+entry, so only `/cors-proxy` and its descendants, plus the exact `/signalling`
+endpoint, wake the worker. Static
 files keep their normal serving path. The production entry uses the platform-
 Fetch workaround described above.
 
 ### Combined Kandelo site
 
+The package also includes [Spacefast signalling](../signalling/spacefast/README.md)
+for named sessions and rooms, backed by atomic MySQL updates.
+
 Build the app with the same-origin proxy, then package the generated output:
 
 ```sh
 ./run.sh build-browser --base / --out .context/kandelo-spacefast-static \
-  --cors-proxy '/cors-proxy?url='
+  --cors-proxy '/cors-proxy?url=' --signalling-url /signalling
 scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
   .context/kandelo-spacefast-static
 ```
@@ -163,7 +167,7 @@ scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
 The second command prints a unique `.context/spacefast-kandelo-build-*`
 directory. It contains the static app, a bundled
 `functions/cors-proxy/[...rest].mjs`,
-`sf.jsonc` and the COOP/COEP/CORP response headers for documents and worker
+`functions/signalling.mjs`, `sf.jsonc` and the COOP/COEP/CORP response headers for documents and worker
 scripts, including clean document URLs. Binary downloads have no custom
 isolation headers: Spacefast cannot serve files above 100 MiB through its
 PHP header-serving lane. Shared memory isolation remains on pages and workers.

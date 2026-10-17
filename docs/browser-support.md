@@ -2385,7 +2385,7 @@ served at `/a/`, and output built with `VITE_BASE=/candidate-b/` must be served
 at `/candidate-b/`. A completed build is not freely relocatable, and
 `base: "./"` is not a supported substitute for choosing its public path.
 
-`./run.sh build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL]` performs every step
+`./run.sh build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]` performs every step
 below for one prefix (default `/`, output `apps/browser-demos/dist`) and
 fails if the output lacks `index.html`, `service-worker.js`, or the VFS
 group, or contains the private product map.
@@ -2607,6 +2607,17 @@ at `<base>__kandelo_signalling`, run by PHP from `apps/signalling/tools.nix`
 piplet with `VITE_KANDELO_SIGNALLING_URL`; serve it same-origin or with CORS.
 Without either, the panel says sessions are unavailable rather than offering
 a button that cannot work.
+
+The Spacefast combined build includes a TypeScript implementation at
+`/signalling`. Pass `--signalling-url /signalling` to `build-browser` to set
+`VITE_KANDELO_SIGNALLING_URL` inside the clean build shell. Both computers
+must be admitted by the Space's access settings. The endpoint uses MySQL
+conditional updates for atomic matching across workers, preserving the PHP
+session/room protocol and limits. It shares neither state nor request budget
+with `/cors-proxy`. See [Spacefast signalling](../apps/signalling/spacefast/README.md)
+for storage, tests and hosting boundaries. Guest traffic still uses the peer
+link; hosting signalling on Spacefast supplies no TURN relay.
+
 
 UDP uses an unordered channel with zero retransmissions; directory control is
 ordered and reliable. The payload cap is the lesser of 65,507 bytes and the
