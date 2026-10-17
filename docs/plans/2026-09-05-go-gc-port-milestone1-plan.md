@@ -3688,3 +3688,23 @@ experimental package edits were reverted. This is not evidence that the
 module fails to compile, only that this particular approach is presently
 unproven and resource-intensive. Prefer a reviewed cache/invalidation
 contract or general OPcache support over shipping the module blindly.
+
+**2026-10-17 — Recheck Node memory under controlled WordPress traffic.**
+A fresh Node FrankenPHP+Caddy guest with six PHP threads reached 12.5 GiB
+host RSS after startup and settled near 11.7 GiB during three minutes of
+two-client homepage traffic (358/358 valid HTTP 200 responses). `vmmap`
+reported an 11.7 GiB physical footprint, with roughly 6.5 GiB resident
+in large malloc regions and 3.3 GiB in app-specific tag-16 regions. The
+V8 heap was only about 20 MiB; the bulk is native/external memory. A
+longer run was stopped when `top` showed only about 4 GiB system memory
+unused. A one-minute diagnostic with the same image but two PHP threads
+still reached about 9.6 GiB RSS (97/97 valid responses). These samples do
+not establish a leak or a plateau; the earlier roughly 2 GiB observation
+was not reproduced under this direct process-RSS measurement and must not
+be used as a memory bound. `memory_pressure -Q` reported roughly 89% free
+even while `top` showed little unused physical memory, so it is not a
+sufficient guard for this workload. Before calling this production-ready,
+isolate native memory among the large Go/Caddy Wasm module, Wasm worker
+instances, and image preparation, then reduce and measure its steady-state
+footprint on both Node and browser. Do not hide it by only lowering PHP
+thread count: two threads still leave a multi-GiB footprint.
