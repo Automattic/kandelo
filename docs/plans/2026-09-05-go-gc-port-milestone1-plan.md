@@ -3708,3 +3708,34 @@ isolate native memory among the large Go/Caddy Wasm module, Wasm worker
 instances, and image preparation, then reduce and measure its steady-state
 footprint on both Node and browser. Do not hide it by only lowering PHP
 thread count: two threads still leave a multi-GiB footprint.
+
+**2026-10-17 — Isolate the high Node footprint without another full soak.**
+In fresh single-purpose Node processes, reading the compressed WordPress image
+raised RSS from 93 to 168 MiB, loading it through the image module raised RSS
+to 1,106 MiB, and saving the configured 461 MB rootfs image raised RSS to
+1,570 MiB. A separate Caddy Wasm probe raised RSS from 64 to 444 MiB after
+reading and compiling the 177 MiB binary; instantiating that compiled module
+without executing its entry point raised it only to 469 MiB. These are
+process-level observations, not an additive memory breakdown of the live demo.
+
+The full Caddy guest in Node reached 3,193 MiB after dinit spawned and
+12,794 MiB after homepage readiness. Its module cache reported four compiles
+covering 188 MB of input bytes, no separate thread compiles, and a live guest
+linear-memory allocation of about 200 MiB for the Caddy process. The same
+WordPress image running FrankenPHP classic reached 3,204 MiB after dinit and
+7,325 MiB at homepage readiness; its classic Wasm binary is 69 MiB rather
+than Caddy's 177 MiB. Thus image preparation, a single Wasm compile, and the
+guest's live linear memory do not independently explain the Caddy run's
+roughly 12.8 GiB RSS. The large increment occurs while executing the much
+larger Go/Caddy module and its workers; Wasm native-code generation or
+per-worker state remains a hypothesis, not a proven allocation attribution.
+The Caddy Wasm has about 182,000 functions and 109 MiB of code-section input.
+
+A controlled rerun with a 512 MiB guest memory ceiling is prepared but not
+run: other active Conductor processes left only 3–8 GiB unused physical
+memory, below the observed Caddy guest footprint. Do not turn the diagnostic
+ceiling into a production limit without a successful site-editor and restart
+gate on both hosts. Next isolate live thread/instance counts and native Wasm
+code memory with bounded instrumentation when system headroom permits; then
+measure a memory plateau and revisit acceleration. The prior 2 GiB sample
+remains unsuitable as a production memory bound.
