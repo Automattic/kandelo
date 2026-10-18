@@ -339,25 +339,30 @@ test("times out a wrong controller with the expected script and scope diagnostic
   });
 });
 
-test("accepts only an explicit bridge-ready reply", async () => {
+test("returns the SW-minted name and app prefix", async () => {
   const fixture = readyFixture();
   fixture.controller!.postMessageHandler = (message, transfer) => {
     assert.deepEqual(message, {
       type: "init-bridge",
-      appPrefix: "/a/app/",
       sessionId: "01234567-89ab-4cde-8fab-0123456789ab",
     });
-    (transfer[1] as MessagePort).postMessage({ type: "bridge-ready" });
+    (transfer[1] as MessagePort).postMessage({
+      type: "bridge-ready",
+      name: "happy-teal-otter",
+      appPrefix: "/a/app/happy-teal-otter/",
+    });
     (transfer[0] as MessagePort).close();
   };
 
   await withBrowserGlobals(fixture.pageUrl, fixture.container, async (clock) => {
-    assert.ok(await initServiceWorkerBridge(
+    const created = await initServiceWorkerBridge(
       "/a/service-worker.js",
       "/a/",
-      "/a/app/",
       "01234567-89ab-4cde-8fab-0123456789ab",
-    ));
+    );
+    assert.ok(created);
+    assert.equal(created!.name, "happy-teal-otter");
+    assert.equal(created!.appPrefix, "/a/app/happy-teal-otter/");
     assert.equal(clock.count(), 0);
   });
 });
@@ -384,7 +389,6 @@ test("rejects a typed bridge initialization failure", async () => {
       initServiceWorkerBridge(
         "/a/service-worker.js",
         "/a/",
-        "/a/app/",
         "01234567-89ab-4cde-8fab-0123456789ab",
       ),
       /bridge-init-failed/,
@@ -406,7 +410,6 @@ test("rejects an unexpected bridge initialization reply", async () => {
       initServiceWorkerBridge(
         "/a/service-worker.js",
         "/a/",
-        "/a/app/",
         "01234567-89ab-4cde-8fab-0123456789ab",
       ),
       /unexpected bridge initialization reply/i,
@@ -432,7 +435,6 @@ test("does not abandon an in-flight bridge transition", async () => {
     const bridge = initServiceWorkerBridge(
       "/a/service-worker.js",
       "/a/",
-      "/a/app/",
       "01234567-89ab-4cde-8fab-0123456789ab",
     ).then(
       () => {
@@ -446,7 +448,11 @@ test("does not abandon an in-flight bridge transition", async () => {
     clock.fire();
     await flushPromises();
     assert.equal(outcome, "pending");
-    (transferredPorts[1] as MessagePort).postMessage({ type: "bridge-ready" });
+    (transferredPorts[1] as MessagePort).postMessage({
+      type: "bridge-ready",
+      name: "happy-teal-otter",
+      appPrefix: "/a/app/happy-teal-otter/",
+    });
     await bridge;
     (transferredPorts[0] as MessagePort).close();
     assert.equal(outcome, "resolved");
@@ -466,7 +472,6 @@ test("cleans up when posting bridge initialization throws", async () => {
       initServiceWorkerBridge(
         "/a/service-worker.js",
         "/a/",
-        "/a/app/",
         "01234567-89ab-4cde-8fab-0123456789ab",
       ),
       /post failed/,

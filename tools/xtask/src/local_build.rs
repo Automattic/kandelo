@@ -11,8 +11,11 @@ use crate::build_deps::{
     materialize_planned_source_only_cache_roots, plan_canonical_source_only_cache_roots,
     read_source_only_cache_receipt, resolve_local_build_package_node_with_cache_policy,
     resolved_dependency_graph_from_manifests, source_only_cache_receipt_path,
-    source_only_skip_receipt_if_clean, source_only_program_package_index_for_nodes,
-    with_source_only_program_projection_lock,
+    source_only_skip_receipt_if_clean, source_only_skip_receipt_if_clean_with_use,
+    source_only_program_package_index_for_nodes, with_source_only_program_projection_lock,
+};
+use crate::local_build_timing::{
+    DurationRecorder, EventLog, NodeDurationRecordV1, RunRecordV1, TimingHistory,
 };
 use crate::local_build_executor::{
     NodeCompletionV1, SchedulerEventV1, ValidatedChildResultV1, execute_graph_with_events,
@@ -244,6 +247,7 @@ pub(crate) enum LifecycleTokenV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum LocalBuildCommandV1 {
     Plan { set: PathBuf },
+    PlanStatus(LocalBuildPlanStatusArgsV1),
     Run(LocalBuildRunArgsV1),
     RunNode(LocalBuildRunNodeArgsV1),
 }
@@ -257,6 +261,22 @@ struct LocalBuildRunArgsV1 {
     jobs: usize,
     rebuild: bool,
     verify_cache: bool,
+}
+
+/// `plan --status`: the same selection inputs as `run`, read without writing.
+/// They mirror `run`'s so the dry run answers for exactly the build the agent
+/// is about to start; a plan over a different cache root, output root, or
+/// product set would report a different cached/will-run split. There is no
+/// `--rebuild` or `--verify-cache`: both turn off `run`'s up-front cache
+/// check, so there is nothing for the dry run to predict.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LocalBuildPlanStatusArgsV1 {
+    set: PathBuf,
+    source_cache_root: PathBuf,
+    output_root: PathBuf,
+    products: Vec<String>,
+    jobs: usize,
+    json: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -353,8 +373,26 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     )?;
     match command {
         LocalBuildCommandV1::Plan { set } => run_plan(set),
-        LocalBuildCommandV1::Run(args) => run_aggregate(args),
-        LocalBuildCommandV1::RunNode(args) => run_node(args),
+        LocalBuildCommandV1::PlanStatus(args) => run_plan_status(args),
+        LocalBuildCommandV1::Run(args) => {
+            // Resolve the installed SDK before any graph cache identities.
+            for arch in [
+                crate::pkg_manifest::TargetArch::Wasm32,
+                crate::pkg_manifest::TargetArch::Wasm64,
+            ] {
+                ensure_package_sysroot(&crate::repo_root(), arch)?;
+            }
+            run_aggregate(args)
+        }
+        LocalBuildCommandV1::RunNode(args) => {
+            for arch in [
+                crate::pkg_manifest::TargetArch::Wasm32,
+                crate::pkg_manifest::TargetArch::Wasm64,
+            ] {
+                ensure_package_sysroot(&crate::repo_root(), arch)?;
+            }
+            run_node(args)
+        }
     }
 }
 
@@ -372,7 +410,7 @@ pub(crate) struct BootstrapStep {
 /// resolution models, so nothing rebuilds it as a side effect of building a
 /// package node; `sdk` itself only checks that `sysroot`'s toolchain wrappers
 /// resolve, so it must run after `sysroot`); `rootfs` must follow `engine`
-/// (`build-rootfs.sh` assembles the canonical `host/wasm/rootfs.vfs` image
+/// (`build-rootfs.sh` assembles the canonical `host/wasm/rootfs.vfs.zst` image
 /// from packages the engine step just built) and precede `host-dist` (the
 /// TypeScript host build should see a fresh rootfs image, even though it
 /// does not currently read it at build time); `host-dist` must follow
@@ -464,6 +502,11 @@ fn run_repo_script_with_env(
     let script = repo.join(rel);
     let mut command = Command::new("bash");
     command.arg(&script).args(args).current_dir(repo);
+    if rel == "scripts/build-musl.sh" {
+        // Build-deps paths and local-build results are machine-readable stdout.
+        // SDK prerequisite diagnostics must not contaminate that channel.
+        command.stdout(std::process::Stdio::from(std::io::stderr()));
+    }
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -594,23 +637,28 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-/// Ensure the musl sysroot for `arch` exists, mirroring the old
-/// `need_sysroot`/`need_sysroot64`: build it from scratch when the sysroot's
-/// `libc.a` is missing, otherwise just re-sync overlay headers (cheap: a few
-/// `cp`s) so newly added `libc/musl-overlay/include/` files reach an
-/// existing sysroot without forcing a full musl rebuild.
+/// Refresh musl from its complete input identity, not libc.a existence.
+/// The builder owns locking, completeness, staging and the cheap current path.
 fn bootstrap_sysroot_step(repo: &Path, sysroot_dir: &str, arch: &str) -> Result<(), String> {
-    let sysroot_path = repo.join(sysroot_dir);
-    let libc_a = sysroot_path.join("lib/libc.a");
-    if libc_a.is_file() {
-        let sysroot_arg = sysroot_path.to_string_lossy().into_owned();
-        run_repo_script(repo, "scripts/install-overlay-headers.sh", &[&sysroot_arg])?;
-    } else if arch == "wasm32posix" {
-        run_repo_script(repo, "scripts/build-musl.sh", &[])?;
-    } else {
-        run_repo_script(repo, "scripts/build-musl.sh", &["--arch", arch])?;
-    }
-    verify_sysroot_abi_headers(repo, &sysroot_path, arch)
+    run_repo_script(repo, "scripts/build-musl.sh", &["--ensure", "--arch", arch])?;
+    verify_sysroot_abi_headers(repo, &repo.join(sysroot_dir), arch)
+}
+
+pub(crate) fn ensure_package_sysroot(
+    repo: &Path,
+    arch: crate::pkg_manifest::TargetArch,
+) -> Result<(), String> {
+    let target = match arch {
+        crate::pkg_manifest::TargetArch::Wasm32 => "wasm32posix",
+        crate::pkg_manifest::TargetArch::Wasm64 => "wasm64posix",
+    };
+    // Core-only avoids recursively resolving graphics packages just to build a
+    // package. Full bootstrap refreshes those independently stamped libraries.
+    run_repo_script(
+        repo,
+        "scripts/build-musl.sh",
+        &["--ensure", "--core-only", "--arch", target],
+    )
 }
 
 /// Fail loud if a sysroot is missing — or holds stale copies of — the generated
@@ -710,15 +758,23 @@ fn run_bootstrap_step(
         "fork-instrument-tool" => {
             run_repo_script(repo, "scripts/build-fork-instrument-tool.sh", &[])
         }
-        "engine" => run_aggregate(LocalBuildRunArgsV1 {
-            set: repo.join("packages/sets/local-supported.toml"),
-            source_cache_root: default_source_cache_root()?,
-            output_root: repo.join("local-binaries/source-only-v1"),
-            products,
-            jobs,
-            rebuild,
-            verify_cache,
-        }),
+        "engine" => {
+            for arch in [
+                crate::pkg_manifest::TargetArch::Wasm32,
+                crate::pkg_manifest::TargetArch::Wasm64,
+            ] {
+                ensure_package_sysroot(repo, arch)?;
+            }
+            run_aggregate(LocalBuildRunArgsV1 {
+                set: repo.join("packages/sets/local-supported.toml"),
+                source_cache_root: default_source_cache_root()?,
+                output_root: repo.join("local-binaries/source-only-v1"),
+                products,
+                jobs,
+                rebuild,
+                verify_cache,
+            })
+        }
         // `--rebuild` (`bootstrap --rebuild` / `./run.sh rebuild`) must force
         // these two scripts' own input-hash skip check, so a forced rebuild
         // is never masked by a matching stamp from a previous run.
@@ -892,7 +948,14 @@ pub(crate) fn run_verify_fresh(args: Vec<String>) -> Result<(), String> {
 /// depends on it). A stale input there is a cache-key mismatch that already
 /// forces a rebuild through the normal engine path, not a silent-staleness
 /// hazard this freshness check needs to duplicate.
+///
+/// The co-resident side modules (`CORESIDENT_SIDE_MODULES`) are the exception:
+/// they are built by their own `build-wasm.sh`, not by a cache-keyed package
+/// node, so nothing else would notice them going stale. They are checked
+/// first, by `verify_fresh_coresident_side_modules`, and independently of
+/// whether a kernel has been built yet.
 pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
+    verify_fresh_coresident_side_modules(repo)?;
     let kernel_path = repo
         .join("local-binaries")
         .join("source-only-v1")
@@ -960,6 +1023,247 @@ pub(crate) fn verify_fresh_report(repo: &Path) -> Result<(), String> {
     // sources -- so run that check too, gated to keep the local no-op path
     // fast.
     snapshot_drift_check(repo, false)?;
+    Ok(())
+}
+
+/// Freshness gate for the co-resident side modules, in both places a host
+/// loads them from.
+///
+/// 1. **The ambient `local-binaries/` copy.** Node image builders read
+///    `local-binaries/kandelo_image_module32.wasm` from disk directly, so a
+///    stale copy there means images are written by yesterday's writer. Each
+///    present artifact's `.build-key` stamp must equal the module's current
+///    build key (`cargo_closure::side_module_build_key`). An absent artifact
+///    is not staleness -- nothing can be stale before `./run.sh setup` has
+///    built it -- matching the kernel check's semantics.
+/// 2. **The projected copy in `local-binaries/source-only-v1/`.** The browser's
+///    pinned-projection resolver serves each projected member and validates the
+///    fetched bytes against the size and sha the projection manifest declares.
+///    See `coresident_side_module_manifest_freshness`.
+fn verify_fresh_coresident_side_modules(repo: &Path) -> Result<(), String> {
+    for module in CORESIDENT_SIDE_MODULES {
+        verify_fresh_staged_side_module_artifacts(repo, module, || {
+            current_side_module_closure_key(repo, module)
+        })?;
+    }
+    let output_root = repo.join("local-binaries").join("source-only-v1");
+    coresident_side_module_manifest_freshness(&output_root, |module| {
+        current_side_module_closure_key(repo, module)
+    })
+}
+
+/// Check one module's artifacts in `local-binaries/` against its current
+/// build key, which `current_closure` supplies. Computed only when some
+/// artifact is present, so an unbuilt tree pays no `cargo metadata` run.
+fn verify_fresh_staged_side_module_artifacts(
+    repo: &Path,
+    module: &CoresidentSideModule,
+    current_closure: impl FnOnce() -> Result<String, String>,
+) -> Result<(), String> {
+    let present: Vec<&str> = module
+        .artifacts
+        .iter()
+        .map(|(name, _, _)| *name)
+        .filter(|name| repo.join("local-binaries").join(name).is_file())
+        .collect();
+    if present.is_empty() {
+        return Ok(());
+    }
+    let current = current_closure()?;
+    for name in present {
+        let key_path = repo
+            .join("local-binaries")
+            .join(format!("{name}.build-key"));
+        let stamped = match fs::read_to_string(&key_path) {
+            Ok(stamped) => stamped,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "local-binaries/{name} carries no build-key stamp ({} is missing); \
+                     rebuild with `./run.sh setup` (or `bash {}`) so freshness can be \
+                     verified.",
+                    key_path.display(),
+                    module.script
+                ));
+            }
+            Err(error) => return Err(format!("read {}: {error}", key_path.display())),
+        };
+        if stamped.trim() != current {
+            return Err(format!(
+                "local-binaries/{name} is stale: it was built for key {}, but the \
+                 current source tree ({}, plus {}) resolves to {current}. Rebuild \
+                 with `./run.sh setup` (or `bash {}`).",
+                stamped.trim(),
+                module.closure_description,
+                module.script,
+                module.script
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Check the projection manifest under `output_root` against each co-resident
+/// module's CURRENT build key, which `current_closure` supplies.
+///
+/// One function for both callers: `verify-fresh`, which reports the failure,
+/// and the local-build no-op fast path, which must re-finalize on it. Two
+/// copies of this rule would let the fast path judge the tier current while
+/// `verify-fresh` judged the same tier stale.
+///
+/// A missing manifest, or one that carries no node for a module, is not a
+/// staleness error: nothing has been projected yet.
+fn coresident_side_module_manifest_freshness(
+    output_root: &Path,
+    current_closure: impl Fn(&CoresidentSideModule) -> Result<String, String>,
+) -> Result<(), String> {
+    let manifest_path = output_root
+        .join(".kandelo")
+        .join("source-only-program-projection-v1.json");
+    let bytes = match fs::read(&manifest_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("read {}: {error}", manifest_path.display())),
+    };
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse {}: {error}", manifest_path.display()))?;
+
+    for module in CORESIDENT_SIDE_MODULES {
+        // The caller recomputes this module's current key (needs `cargo
+        // metadata` on the repo) and the pure validator compares every
+        // projected node against it, so the validator itself is unit-testable
+        // without a Cargo workspace.
+        let current_closure = current_closure(module)?;
+        check_projected_side_module_freshness(
+            module.node_name,
+            module.closure_description,
+            &manifest,
+            &current_closure,
+            output_root,
+            &manifest_path,
+        )?;
+    }
+    Ok(())
+}
+
+/// Pure validator for the projected copy: given the parsed projection
+/// `manifest`, the `current_closure` key recomputed from source, and the
+/// `output_root` the members are staged under, fail loud on either staleness
+/// dimension:
+///
+///  1. **Stale vs source.** Each projected node records the build key it was
+///     built for as its `cacheKeySha256`. Any drift from the current key means
+///     the projected module was built from older sources or an older recipe.
+///  2. **Stale mirror.** The bytes staged at the projection root must match
+///     the size and sha the manifest declares, because that is exactly what the
+///     resolver validates the fetched member against; a mismatch fails the
+///     boot even though the module itself is current.
+///
+/// No I/O beyond reading the already-staged member files, so it can be
+/// unit-tested with a synthetic manifest and a known key.
+fn check_projected_side_module_freshness(
+    node_name: &str,
+    closure_description: &str,
+    manifest: &serde_json::Value,
+    current_closure: &str,
+    output_root: &Path,
+    manifest_path: &Path,
+) -> Result<(), String> {
+    let nodes = manifest
+        .get("nodes")
+        .and_then(|nodes| nodes.as_array())
+        .ok_or_else(|| format!("{}: manifest has no nodes array", manifest_path.display()))?;
+
+    let module_nodes: Vec<&serde_json::Value> = nodes
+        .iter()
+        .filter(|node| {
+            node.get("node")
+                .and_then(|id| id.get("name"))
+                .and_then(|name| name.as_str())
+                == Some(node_name)
+        })
+        .collect();
+
+    for node in module_nodes {
+        let arch = node
+            .get("node")
+            .and_then(|id| id.get("targetArch"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("<unknown-arch>");
+        let recorded_key = node
+            .get("cacheKeySha256")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "{}: projected {node_name} node ({arch}) has no cacheKeySha256",
+                    manifest_path.display()
+                )
+            })?;
+        if recorded_key != current_closure {
+            return Err(format!(
+                "{} is stale: the projected side module {node_name} ({arch}) was built for \
+                 key {recorded_key}, but the current source tree ({closure_description}) \
+                 resolves to {current_closure}. Rebuild and re-project with \
+                 `./run.sh setup` (or a `cargo xtask local-build run` that finalizes the \
+                 SourceOnly projection).",
+                manifest_path.display()
+            ));
+        }
+
+        let members = node
+            .get("members")
+            .and_then(|value| value.as_array())
+            .ok_or_else(|| {
+                format!(
+                    "{}: projected {node_name} node ({arch}) has no members array",
+                    manifest_path.display()
+                )
+            })?;
+        for member in members {
+            let mirror_path = member
+                .get("mirrorPath")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "{}: projected {node_name} member has no mirrorPath",
+                        manifest_path.display()
+                    )
+                })?;
+            let recorded_size = member
+                .get("size")
+                .and_then(|value| value.as_u64())
+                .ok_or_else(|| {
+                    format!(
+                        "{}: projected {node_name} member {mirror_path} has no size",
+                        manifest_path.display()
+                    )
+                })?;
+            let recorded_sha = member
+                .get("sha256")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    format!(
+                        "{}: projected {node_name} member {mirror_path} has no sha256",
+                        manifest_path.display()
+                    )
+                })?;
+            let staged = output_root.join(mirror_path);
+            let staged_bytes = fs::read(&staged)
+                .map_err(|error| format!("read projected {}: {error}", staged.display()))?;
+            let actual_size = staged_bytes.len() as u64;
+            let actual_sha = sha256_bytes(&staged_bytes);
+            if actual_size != recorded_size || actual_sha.as_str() != recorded_sha {
+                return Err(format!(
+                    "{} is stale: the projection manifest declares side module {node_name} \
+                     member {mirror_path} as size {recorded_size} sha {recorded_sha}, but the \
+                     staged file is size {actual_size} sha {actual_sha}. The pinned-projection \
+                     resolver validates each served member against the manifest, so this \
+                     mismatch fails the boot. Re-project with `./run.sh setup` (or a \
+                     `cargo xtask local-build run` that finalizes the SourceOnly projection).",
+                    manifest_path.display()
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1224,9 +1528,23 @@ fn clean_package_node_outputs(
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        if let Some(cache_key_sha) = file_name.strip_prefix(prefix.as_str()) {
-            matches.push((entry.path(), cache_key_sha.to_string()));
-        }
+        let Some(rest) = file_name.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        // Libraries and programs name their ABI before the key
+        // (`abi<N>-<key>`, see `canonical_path`); generations named before
+        // that segment existed have the key alone.
+        let cache_key_sha = match rest.split_once('-') {
+            Some((abi, key))
+                if abi.len() > 3
+                    && abi.starts_with("abi")
+                    && abi[3..].bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                key
+            }
+            _ => rest,
+        };
+        matches.push((entry.path(), cache_key_sha.to_string()));
     }
     matches.sort();
     for (canonical, cache_key_sha) in matches {
@@ -1492,6 +1810,291 @@ fn run_plan(set: PathBuf) -> Result<(), String> {
         .map_err(|error| format!("write local-build plan: {error}"))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum PlanNodeStatusV1 {
+    Cached,
+    WillRun,
+    /// `Source`-kind packages are never skipped up front: their child checks
+    /// the fetched source itself, so the dry run cannot say whether it will
+    /// find work.
+    WillRunSourceCheck,
+}
+
+impl PlanNodeStatusV1 {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Cached => "cached",
+            Self::WillRun => "will run",
+            Self::WillRunSourceCheck => "will run (source check)",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PlanStatusNodeV1 {
+    node: String,
+    status: PlanNodeStatusV1,
+    /// Per node rather than only a total, so a reader can see which node
+    /// dominates the estimate (usually one toolchain) instead of guessing.
+    median_seconds: Option<f64>,
+}
+
+/// The `plan --status --json` document. It is versioned (`schema`) because
+/// scripts consume it to choose between a foreground build and a background
+/// one, and the estimate's parts are reported, not just the total, so a
+/// reader can tell a history-backed estimate from one built on fallbacks.
+#[derive(Debug, Serialize)]
+struct PlanStatusV1 {
+    schema: u32,
+    jobs: usize,
+    source_cache_root: PathBuf,
+    nodes: Vec<PlanStatusNodeV1>,
+    cached: usize,
+    will_run: usize,
+    source_checks: usize,
+    #[serde(flatten)]
+    estimate: crate::local_build_timing::BuildEstimateV1,
+    fallback_seconds: f64,
+}
+
+/// `plan --status`: report which nodes a `run` with the same selection would
+/// serve from cache and which it would run, with an estimated duration.
+///
+/// WHY: a build that is all cache hits takes seconds and one that rebuilds a
+/// toolchain takes most of an hour, and nothing else tells an agent which
+/// before it starts. That answer decides how to run the build: a short one
+/// fits in one foreground call, a 10+ minute one belongs under
+/// `scripts/agent-job`. A wrong guess is expensive: a headless session or
+/// subagent that ends its turn on a long foreground call, or that hits the
+/// tool timeout, loses the build's result and has to run it again.
+///
+/// It must be a pure dry run, because it is asked *before* deciding to build
+/// and may be asked repeatedly. It performs the same skip check as `run` but
+/// writes nothing -- no cache directories, no last-used stamps (which would
+/// skew `cache-gc`), no generated indexes -- and takes no cache lock: a held
+/// build lock makes a concurrent `cache-gc` skip its collection. Without the
+/// lock, a concurrent `cache-gc` can make the answer momentarily stale but
+/// never wrong about the tree it read.
+fn run_plan_status(args: LocalBuildPlanStatusArgsV1) -> Result<(), String> {
+    let started = std::time::Instant::now();
+    let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
+    let set = resolve_repo_file(&repo, &args.set, "supported set")?;
+    let set = fs::canonicalize(&set)
+        .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;
+    let registry = fixed_registry(&repo);
+    let graph = load_and_plan(&repo, &set, &registry)?;
+    let selected = select_graph_dependencies(&graph, &args.products)?;
+    let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
+    // Not materialized: materializing would create cache directories, which a
+    // dry run must not do. A missing cache simply makes every node "will run".
+    let cache_roots = SourceOnlyCacheRoots {
+        base: planned_cache.base.clone(),
+        compiled: planned_cache.compiled.clone(),
+    };
+    let output_root = canonicalize_with_missing_tail(&args.output_root)?;
+    let skip = compute_skip_receipts(
+        &registry,
+        &graph,
+        &selected,
+        &cache_roots,
+        &output_root,
+        false,
+    );
+    let history = TimingHistory::load(&cache_roots.base);
+
+    let mut will_run = BTreeSet::new();
+    let mut nodes = Vec::new();
+    // Dependency order, so the listing reads the way the build proceeds. The
+    // plan's levels hold only buildable nodes; selected `Source`-kind
+    // packages still run a child, so list them after the levels.
+    let mut ordered = graph
+        .plan
+        .levels
+        .iter()
+        .flatten()
+        .filter(|node| selected.contains_key(*node))
+        .collect::<Vec<_>>();
+    let leveled = ordered.iter().copied().collect::<BTreeSet<_>>();
+    ordered.extend(selected.keys().filter(|node| !leveled.contains(node)));
+    for node in ordered {
+        let status = if skip.contains_key(node) {
+            PlanNodeStatusV1::Cached
+        } else {
+            will_run.insert(node.clone());
+            match node {
+                PlanNodeV1::Package { name, .. }
+                    if registry
+                        .load(name)
+                        .is_ok_and(|manifest| manifest.kind == ManifestKind::Source) =>
+                {
+                    PlanNodeStatusV1::WillRunSourceCheck
+                }
+                _ => PlanNodeStatusV1::WillRun,
+            }
+        };
+        let label = node_label(node);
+        nodes.push(PlanStatusNodeV1 {
+            median_seconds: history.node_medians.get(&label).copied(),
+            node: label,
+            status,
+        });
+    }
+    let estimate = crate::local_build_timing::estimate(
+        &selected,
+        &will_run,
+        &history,
+        args.jobs,
+        node_label,
+    );
+    let status = PlanStatusV1 {
+        schema: 1,
+        jobs: args.jobs,
+        source_cache_root: cache_roots.base.clone(),
+        cached: nodes
+            .iter()
+            .filter(|node| node.status == PlanNodeStatusV1::Cached)
+            .count(),
+        will_run: will_run.len(),
+        source_checks: nodes
+            .iter()
+            .filter(|node| node.status == PlanNodeStatusV1::WillRunSourceCheck)
+            .count(),
+        nodes,
+        estimate,
+        fallback_seconds: history.fallback_seconds(),
+    };
+    let mut stdout = std::io::stdout().lock();
+    let text = if args.json {
+        let mut bytes = serde_json::to_vec_pretty(&status)
+            .map_err(|error| format!("serialize local-build plan status: {error}"))?;
+        bytes.push(b'\n');
+        bytes
+    } else {
+        render_plan_status(&status, started.elapsed().as_secs_f64()).into_bytes()
+    };
+    stdout
+        .write_all(&text)
+        .map_err(|error| format!("write local-build plan status: {error}"))
+}
+
+/// Human-readable `plan --status`. It prints the estimate's formula with each
+/// term filled in, and how many nodes were priced by fallback, because a bare
+/// total cannot be judged: an estimate dominated by one toolchain or by
+/// no-history guesses deserves less trust than one built from recorded
+/// medians. The plan's own time is printed because the skip check hashes the
+/// whole graph and is itself not free.
+fn render_plan_status(status: &PlanStatusV1, plan_seconds: f64) -> String {
+    use crate::local_build_timing::human_seconds;
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for node in &status.nodes {
+        let duration = match (node.status, node.median_seconds) {
+            (PlanNodeStatusV1::Cached, _) => String::new(),
+            (_, Some(seconds)) => format!("~{}", human_seconds(seconds)),
+            (_, None) => "no history".to_string(),
+        };
+        let _ = writeln!(
+            out,
+            "{:<24} {:>11}  {}",
+            node.status.label(),
+            duration,
+            node.node
+        );
+    }
+    let estimate = &status.estimate;
+    let _ = writeln!(
+        out,
+        "\n{} nodes: {} cached, {} will run ({} source checks)",
+        status.nodes.len(),
+        status.cached,
+        status.will_run,
+        status.source_checks,
+    );
+    if estimate.unknown_nodes > 0 {
+        let _ = writeln!(
+            out,
+            "{} will-run nodes have no recorded duration; each is counted as {}",
+            estimate.unknown_nodes,
+            human_seconds(status.fallback_seconds),
+        );
+    }
+    let _ = writeln!(
+        out,
+        "estimate: ~{} = max(critical path {}, work / {} jobs {}) + recorded overhead {}",
+        human_seconds(estimate.estimate_seconds),
+        human_seconds(estimate.critical_path_seconds),
+        status.jobs,
+        human_seconds(estimate.parallel_seconds),
+        human_seconds(estimate.overhead_seconds),
+    );
+    let _ = writeln!(
+        out,
+        "timing history: {} (plan took {:.1}s)",
+        crate::local_build_timing::timings_dir(&status.source_cache_root).display(),
+        plan_seconds,
+    );
+    out
+}
+
+/// Record how long a node's child ran, from its Running event to its terminal
+/// event, into `node-durations.jsonl`.
+///
+/// WHY: these records are the only source of the per-node medians that
+/// `plan --status` and the run's own prediction price will-run nodes with;
+/// without them every estimate is a flat fallback guess. Nodes the up-front
+/// cache check skipped never start a child, so there is no build time to
+/// record, and recording ~0 would teach the estimator that building the node
+/// is free. Blocked nodes never ran, so they are not recorded either. The
+/// cache key, when the child returned a receipt, ties a duration to the
+/// exact inputs it built.
+fn record_node_duration(
+    event: &SchedulerEventV1,
+    label: &str,
+    running_since: &mut BTreeMap<PlanNodeV1, std::time::Instant>,
+    skipped: &BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>>,
+    receipts: &Mutex<BTreeMap<PlanNodeV1, PackageNodeReceiptV1>>,
+    recorder: &mut DurationRecorder,
+) {
+    let (node, outcome) = match event {
+        SchedulerEventV1::Ready { .. } => return,
+        SchedulerEventV1::Running { node } => {
+            if !skipped.contains_key(node) {
+                running_since.insert(node.clone(), std::time::Instant::now());
+            }
+            return;
+        }
+        SchedulerEventV1::Terminal { result } => match result {
+            NodeRunResultV1::Succeeded { node, disposition } => (
+                node,
+                match disposition {
+                    SuccessDispositionV1::Published => "published",
+                    SuccessDispositionV1::RebuiltEquivalent => "reused",
+                    // The child itself found the cache entry current.
+                    SuccessDispositionV1::Cached => "cached",
+                },
+            ),
+            NodeRunResultV1::Failed { node, .. } => (node, "failed"),
+            NodeRunResultV1::Blocked { .. } => return,
+        },
+    };
+    let Some(started) = running_since.remove(node) else {
+        return;
+    };
+    let cache_key = receipts.lock().ok().and_then(|receipts| {
+        receipts
+            .get(node)
+            .map(|receipt| receipt.cache_key_sha256.clone())
+    });
+    recorder.record(&NodeDurationRecordV1 {
+        node: label.to_string(),
+        cache_key,
+        seconds: started.elapsed().as_secs_f64(),
+        outcome: outcome.to_string(),
+        at: crate::local_build_timing::unix_now(),
+    });
+}
+
 fn fixed_registry(repo: &Path) -> Registry {
     Registry {
         roots: vec![repo.join("packages/registry")],
@@ -1587,6 +2190,15 @@ fn source_only_program_projection_is_current(
         if field(entry, "/node/kind").as_deref() != Some("package") {
             return false;
         }
+        // Co-resident side-module nodes carry no package receipt, so they can
+        // never appear in `expected`; their currency is judged separately by
+        // `coresident_side_module_projection_is_current`.
+        if field(entry, "/node/name")
+            .as_deref()
+            .is_some_and(is_coresident_side_module_node)
+        {
+            continue;
+        }
         let (Some(name), Some(arch), Some(key), Some(receipt)) = (
             field(entry, "/node/name"),
             field(entry, "/node/targetArch"),
@@ -1662,6 +2274,12 @@ fn recorded_projection_package_nodes(output_root: &Path) -> BTreeSet<PlanNodeV1>
         .filter(|entry| entry.pointer("/node/kind").and_then(|v| v.as_str()) == Some("package"))
         .filter_map(|entry| {
             let name = entry.pointer("/node/name")?.as_str()?;
+            // Co-resident side modules are not registry packages; every
+            // finalization re-derives them, so there is nothing to carry
+            // forward, and treating one as a package would report it dropped.
+            if is_coresident_side_module_node(name) {
+                return None;
+            }
             let arch = entry.pointer("/node/targetArch")?.as_str()?;
             Some(PlanNodeV1::package(name, arch))
         })
@@ -1793,6 +2411,11 @@ fn carry_forward_published_nodes(
 /// The value stored per skippable node: `Some(receipt)` for a compiled package
 /// (which the projection finalizer needs a receipt for), `None` for a product
 /// (which only validates its mapped package and carries no receipt).
+///
+/// `record_use` is true for `run` and false for `plan --status`: one function
+/// serves both so the dry run's cached/will-run answer cannot drift from the
+/// check a real run makes, while the dry run still leaves `cache-gc`'s
+/// last-used stamps untouched.
 #[cfg(unix)]
 fn compute_skip_receipts(
     registry: &Registry,
@@ -1800,6 +2423,7 @@ fn compute_skip_receipts(
     selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     cache_roots: &SourceOnlyCacheRoots,
     output_root: &Path,
+    record_use: bool,
 ) -> BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>> {
     // Each check hashes the node's projected members, so spread the nodes over
     // worker threads. Every worker keeps its own cache-key memo; recomputing a
@@ -1828,6 +2452,7 @@ fn compute_skip_receipts(
                             cache_roots,
                             output_root,
                             &mut memo,
+                            record_use,
                         ) {
                             skip.push(((*node).clone(), entry));
                         }
@@ -1858,6 +2483,7 @@ fn skip_entry_for_node(
     cache_roots: &SourceOnlyCacheRoots,
     output_root: &Path,
     memo: &mut BTreeMap<String, [u8; 32]>,
+    record_use: bool,
 ) -> Option<Option<PackageNodeReceiptV1>> {
     match node {
         PlanNodeV1::Package { name, target_arch } => {
@@ -1866,7 +2492,7 @@ fn skip_entry_for_node(
             if manifest.kind == ManifestKind::Source || !manifest.target_arches.contains(&arch) {
                 return None;
             }
-            source_only_skip_receipt_if_clean(
+            source_only_skip_receipt_if_clean_with_use(
                 &manifest,
                 registry,
                 arch,
@@ -1874,6 +2500,7 @@ fn skip_entry_for_node(
                 cache_roots,
                 output_root,
                 memo,
+                record_use,
             )
             .map(Some)
         }
@@ -1887,7 +2514,7 @@ fn skip_entry_for_node(
             if manifest.kind != ManifestKind::Program || !manifest.target_arches.contains(&arch) {
                 return None;
             }
-            source_only_skip_receipt_if_clean(
+            source_only_skip_receipt_if_clean_with_use(
                 &manifest,
                 registry,
                 arch,
@@ -1895,6 +2522,7 @@ fn skip_entry_for_node(
                 cache_roots,
                 output_root,
                 memo,
+                record_use,
             )
             .map(|_| None)
         }
@@ -1908,11 +2536,16 @@ fn compute_skip_receipts(
     _selected: &BTreeMap<PlanNodeV1, BTreeSet<PlanNodeV1>>,
     _cache_roots: &SourceOnlyCacheRoots,
     _output_root: &Path,
+    _record_use: bool,
 ) -> BTreeMap<PlanNodeV1, Option<PackageNodeReceiptV1>> {
     BTreeMap::new()
 }
 
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
+    // Started before dependency install and index generation, so the run's
+    // recorded `actual_seconds` includes the fixed overhead a waiting agent
+    // really sits through, not just the scheduler's share.
+    let run_started = std::time::Instant::now();
     let repo = canonical_real_directory(&crate::repo_root(), "local-build repository root")?;
     // Sealed package builds run tools from the root node_modules but never
     // install them; provision the locked tree here, before any node runs.
@@ -1929,6 +2562,10 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         load_and_plan(&repo, &set, &registry)
     })?;
     let selected = select_graph_dependencies(&graph, &args.products)?;
+    // The first event carries the node total, so a reader such as
+    // `scripts/agent-job status` can report "N of M done" from the file alone.
+    let mut events = EventLog::from_env();
+    events.plan(selected.len());
 
     let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
     let output_intended = canonicalize_with_missing_tail(&args.output_root)?;
@@ -1948,6 +2585,14 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     })?;
     let output_root = exact_canonical_directory(&output_intended, "local-build output root")?;
     validate_run_roots(&repo, &set, &cache_roots.base, &output_root)?;
+
+    // Build/refresh the co-resident side modules before any package node runs:
+    // image-building recipes load the VFS image writer from `local-binaries/`
+    // during their own build. Each build-wasm.sh owns its build and its
+    // closure-derived freshness stamp; this only invokes them.
+    report_phase("Building side modules", || {
+        ensure_coresident_side_modules_built(&repo)
+    })?;
 
     let run_directory = create_run_directory(&output_root)?;
     let mut result_paths = BTreeMap::new();
@@ -1994,10 +2639,48 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         BTreeMap::new()
     } else {
         report_phase("Checking cached packages", || {
-            compute_skip_receipts(&registry, &graph, &selected, &cache_roots, &output_root)
+            compute_skip_receipts(
+                &registry,
+                &graph,
+                &selected,
+                &cache_roots,
+                &output_root,
+                true,
+            )
         })
     };
+    // Marks the end of the up-front cache check, which hashes the whole graph
+    // before any scheduler event appears, and says right away how much of the
+    // graph needs no work: a reader learns early whether this is a seconds-
+    // long cached run or a real rebuild.
+    events.cached_check(skip_receipts.len());
+    // Predicted before any node runs, from the same history `plan --status`
+    // reads, and recorded with the actual duration at the end. Without the
+    // pair in `runs.jsonl`, nobody could tell whether the estimate agents
+    // decide on is accurate or how far off it runs.
+    let predicted = {
+        let will_run = selected
+            .keys()
+            .filter(|node| !skip_receipts.contains_key(*node))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        crate::local_build_timing::estimate(
+            &selected,
+            &will_run,
+            &TimingHistory::load(&cache_roots.base),
+            args.jobs,
+            node_label,
+        )
+    };
     let skip_receipts = Arc::new(skip_receipts);
+    let mut durations = DurationRecorder::new(&cache_roots.base);
+    let mut running_since = BTreeMap::<PlanNodeV1, std::time::Instant>::new();
+    let duration_receipts = Arc::clone(&retained_receipts);
+    let duration_skips = Arc::clone(&skip_receipts);
+    // Timed separately from `run_started`: the difference is the run's fixed
+    // overhead, which the estimator adds back because even a fully cached
+    // run spends it.
+    let graph_started = std::time::Instant::now();
     let results = execute_graph_with_events(
         &selected,
         args.jobs,
@@ -2114,8 +2797,25 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
                 Ok(())
             }
         },
-        |event| render_scheduler_event(event, color, &mut aggregate_failed),
+        |event| {
+            // The event file and duration history hang off the same callback
+            // that renders the terminal output, so they can never disagree
+            // with what the build log shows. Rendering consumes the event, so
+            // it goes last.
+            let label = node_label(crate::local_build_timing::scheduler_event_kind(&event).1);
+            events.scheduler_event(&event, &label);
+            record_node_duration(
+                &event,
+                &label,
+                &mut running_since,
+                &duration_skips,
+                &duration_receipts,
+                &mut durations,
+            );
+            render_scheduler_event(event, color, &mut aggregate_failed)
+        },
     )?;
+    let graph_seconds = graph_started.elapsed().as_secs_f64();
 
     let retained_receipts = retained_receipts
         .lock()
@@ -2214,7 +2914,11 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
                     &output_root,
                     &graph.authority_sha256,
                     &publication.receipts,
-                );
+                )
+                // A side-module rebuild changes no package node, so the checks
+                // above cannot see it; the projected copy and its manifest
+                // entry must also be current, or the finalizer re-stages.
+                && coresident_side_module_projection_is_current(&output_root, &repo);
             if projection_up_to_date {
                 None
             } else {
@@ -2297,6 +3001,38 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     }
     #[cfg(not(unix))]
     let _ = published_generations;
+    let count = |wanted: &[SuccessDispositionV1]| {
+        results
+            .iter()
+            .filter(|result| {
+                matches!(result, NodeRunResultV1::Succeeded { disposition, .. }
+                    if wanted.contains(disposition))
+            })
+            .count()
+    };
+    // One `runs.jsonl` line per completed run: predicted vs actual measures
+    // the estimate, and actual minus graph time feeds the overhead term. A
+    // failure to record only warns: timing history is advisory and must
+    // never turn a successful build into a failed one.
+    let run_record = RunRecordV1 {
+        predicted_seconds: Some(predicted.estimate_seconds),
+        actual_seconds: run_started.elapsed().as_secs_f64(),
+        graph_seconds: Some(graph_seconds),
+        nodes: results.len(),
+        built: count(&[
+            SuccessDispositionV1::Published,
+            SuccessDispositionV1::RebuiltEquivalent,
+        ]),
+        cached: count(&[SuccessDispositionV1::Cached]),
+        jobs: args.jobs,
+        at: crate::local_build_timing::unix_now(),
+    };
+    if let Err(error) = crate::local_build_timing::append_jsonl(
+        &crate::local_build_timing::runs_path(&cache_roots.base),
+        &run_record,
+    ) {
+        eprintln!("local-build warning: record run duration: {error}");
+    }
     let result = LocalBuildRunResultV1 {
         schema: 1,
         policy: LOCAL_SUPPORTED_POLICY.to_string(),
@@ -2561,6 +3297,375 @@ fn selected_resolved_package_nodes(
         .collect()
 }
 
+/// The name the image-writer projection node carries. It is not a registry
+/// package (`crates/kandelo-image-module` has no
+/// `packages/registry/<name>/build.toml`); the name is a stable,
+/// single-path-component identity the projection consumer admits as a
+/// root-level member alongside `kernel.wasm`.
+const KANDELO_IMAGE_MODULE_NODE_NAME: &str = "kandelo-image-module";
+
+/// A wasm module the local-build engine builds and projects, but the package
+/// resolver does not model.
+///
+/// There is one: `crates/kandelo-image-module`, the VFS image writer that
+/// image-building package recipes drive through
+/// `images/vfs/lib/kandelo-image-fs.ts`. It is built out-of-band by its own
+/// `build-wasm.sh`, which stages a closure-derived build-key stamp next to its
+/// artifact, and it must reach the SourceOnly projection as an owned root-level
+/// member or the browser's pinned-projection resolver refuses to serve it.
+/// The machinery is written over this table, rather than for that one module,
+/// so the build, freshness and projection rules live in one place.
+///
+/// "Co-resident" names the pipeline, not the module's memory model: the image
+/// writer imports nothing, not even `env.memory`, and owns its own linear
+/// memory. Do not infer build flags or memory placement from membership in
+/// this table; each module's `build-wasm.sh` owns those.
+pub(crate) struct CoresidentSideModule {
+    /// Projection node name; also the identity the consumer's root-level
+    /// member rule admits.
+    pub(crate) node_name: &'static str,
+    /// Build script, repo-relative. Owns the build and the freshness stamp.
+    pub(crate) script: &'static str,
+    /// Crates whose contents define this artifact's closure digest. Derived
+    /// from the real build closure, never a hand-list of files.
+    pub(crate) closure_crates: &'static [&'static str],
+    /// The artifacts the script stages into `local-binaries/`, as
+    /// `(file name, target arch, required)`. A non-required artifact is
+    /// best-effort: absent is not an error, but a present one is still
+    /// freshness-checked.
+    pub(crate) artifacts: &'static [(&'static str, &'static str, bool)],
+    /// The crate list named in a staleness message, for a reader who has to
+    /// act on it.
+    closure_description: &'static str,
+}
+
+pub(crate) const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[CoresidentSideModule {
+    node_name: KANDELO_IMAGE_MODULE_NODE_NAME,
+    script: "crates/kandelo-image-module/build-wasm.sh",
+    closure_crates: &["kandelo-image-module", "runtime-core"],
+    // The image writer is not compiled per pointer width. It BUILDS an image
+    // rather than sharing a guest's address space, so one wasm32 module writes
+    // images consumed by wasm32 and wasm64 guests alike.
+    artifacts: &[("kandelo_image_module32.wasm", "wasm32", true)],
+    closure_description: "crates/kandelo-image-module, crates/runtime-core and their \
+                          workspace dependencies",
+}];
+
+/// Whether a projection node name belongs to a co-resident side module rather
+/// than a registry package. Those nodes are not package-graph members: they
+/// carry no package receipt and are re-derived by every finalization, so the
+/// package-node bookkeeping must not count them.
+fn is_coresident_side_module_node(name: &str) -> bool {
+    CORESIDENT_SIDE_MODULES
+        .iter()
+        .any(|module| module.node_name == name)
+}
+
+/// A co-resident module's projection, computed from the artifacts its
+/// `build-wasm.sh` staged into `local-binaries/`.
+///
+/// They are staged at the projection ROOT (their host-visible resolver relPath
+/// is the unadjusted artifact name), each as its own single-member node, so
+/// the consumer's root-level member rule admits them next to `kernel.wasm` and
+/// every host resolves them through the same pinned projection rather than an
+/// ambient copy.
+struct CoresidentSideModuleProjection {
+    /// The module's build key (`cargo_closure::side_module_build_key`), the
+    /// same value `build-wasm.sh` stamps; it gates freshness.
+    closure_sha: String,
+    members: Vec<MaterializedProgramMemberV1>,
+}
+
+/// A co-resident module's build key, recomputed from the current source tree
+/// the same way its build-key stamp is.
+fn current_side_module_closure_key(
+    repo: &Path,
+    module: &CoresidentSideModule,
+) -> Result<String, String> {
+    let crates: Vec<String> = module
+        .closure_crates
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    Ok(crate::util::hex(&crate::cargo_closure::side_module_build_key(
+        repo,
+        &crates,
+        module.script,
+    )?))
+}
+
+/// Compute a co-resident module's projection members from the artifacts its
+/// script staged into `local-binaries/`, verifying each carries a build-key
+/// stamp matching the current build key. A required artifact must be present;
+/// a best-effort one is projected only when present.
+fn coresident_side_module_projection(
+    repo: &Path,
+    module: &CoresidentSideModule,
+) -> Result<CoresidentSideModuleProjection, String> {
+    let script = module.script;
+    // The module's declared recipe is part of its key, computed by the one
+    // function the build script also reaches through
+    // `xtask workspace-closure-sha --recipe`. See `side_module_build_key`.
+    let closure_sha = current_side_module_closure_key(repo, module)?;
+    let mut members = Vec::new();
+    for (name, _arch, required) in module.artifacts {
+        let name = (*name).to_string();
+        let artifact = repo.join("local-binaries").join(&name);
+        if !artifact.is_file() {
+            if *required {
+                return Err(format!(
+                    "side module {name} is missing from local-binaries; \
+                     build it with `{script}`"
+                ));
+            }
+            continue;
+        }
+        let key_path = repo
+            .join("local-binaries")
+            .join(format!("{name}.build-key"));
+        let stamped = fs::read_to_string(&key_path).map_err(|error| {
+            format!(
+                "side module {name} carries no build-key stamp ({}): {error}; \
+                 rebuild with `{script}`",
+                key_path.display()
+            )
+        })?;
+        if stamped.trim() != closure_sha {
+            return Err(format!(
+                "side module {name} is stale (build-key {}, current key \
+                 {closure_sha}); rebuild with `{script}`",
+                stamped.trim()
+            ));
+        }
+        let bytes = fs::read(&artifact)
+            .map_err(|error| format!("read {}: {error}", artifact.display()))?;
+        members.push(MaterializedProgramMemberV1 {
+            source_artifact: name.clone(),
+            mirror_path: name.clone(),
+            mode: 0o644,
+            size: bytes.len() as u64,
+            sha256: sha256_bytes(&bytes),
+        });
+    }
+    members.sort_by(|left, right| {
+        (&left.mirror_path, &left.source_artifact)
+            .cmp(&(&right.mirror_path, &right.source_artifact))
+    });
+    Ok(CoresidentSideModuleProjection {
+        closure_sha,
+        members,
+    })
+}
+
+/// One source-only projection node per co-resident artifact. Each is a single
+/// root-level member so the consumer admits it under its root-level member
+/// rule (`binary-resolver.ts`).
+fn coresident_side_module_nodes(
+    module: &CoresidentSideModule,
+    projection: &CoresidentSideModuleProjection,
+) -> Vec<SourceOnlyProgramNodeV1> {
+    projection
+        .members
+        .iter()
+        .map(|member| {
+            let target_arch = module
+                .artifacts
+                .iter()
+                .find(|(name, _, _)| *name == member.mirror_path)
+                .map(|(_, arch, _)| *arch)
+                .unwrap_or("wasm32");
+            // The node's manifest identity is a stable declaration tag bound to
+            // the module's name (the members ARE the artifacts, not a package
+            // manifest); its cache key is the build key that gates freshness;
+            // its receipt digest binds the projected member content.
+            let manifest_sha256 = sha256_bytes(
+                format!("kandelo-coresident-side-module-node-v1\0{}", module.node_name).as_bytes(),
+            );
+            let mut receipt = Sha256::new();
+            receipt.update(b"kandelo-coresident-side-module-receipt-v1\0");
+            receipt.update((module.node_name.len() as u64).to_le_bytes());
+            receipt.update(module.node_name.as_bytes());
+            receipt.update((member.mirror_path.len() as u64).to_le_bytes());
+            receipt.update(member.mirror_path.as_bytes());
+            receipt.update(member.sha256.as_bytes());
+            receipt.update(member.size.to_le_bytes());
+            receipt.update((member.mode as u64).to_le_bytes());
+            let cache_receipt_sha256 = crate::util::hex(&receipt.finalize());
+            SourceOnlyProgramNodeV1 {
+                node: SourceOnlyProgramNodeIdentityV1 {
+                    kind: "package",
+                    name: module.node_name.to_string(),
+                    target_arch: target_arch.to_string(),
+                },
+                manifest_sha256,
+                cache_key_sha256: projection.closure_sha.clone(),
+                cache_receipt_sha256,
+                members: vec![member.clone()],
+            }
+        })
+        .collect()
+}
+
+/// Every co-resident module's projection, in table order.
+fn coresident_side_module_projections(
+    repo: &Path,
+) -> Result<Vec<(&'static CoresidentSideModule, CoresidentSideModuleProjection)>, String> {
+    CORESIDENT_SIDE_MODULES
+        .iter()
+        .map(|module| Ok((module, coresident_side_module_projection(repo, module)?)))
+        .collect()
+}
+
+/// Append every co-resident module's nodes to a package-derived projection
+/// authority, then re-sort to keep the consumer's (name, targetArch) ordering
+/// invariant. Appended after the package-derived candidate so the package
+/// receipt validation is untouched. Shared by the whole-graph and the partial
+/// finalizers, so both describe the same side modules.
+fn append_coresident_side_module_nodes(
+    authority: &mut SourceOnlyProgramProjectionV1,
+    projections: &[(&'static CoresidentSideModule, CoresidentSideModuleProjection)],
+) -> Result<(), String> {
+    for (module, projection) in projections {
+        for node in coresident_side_module_nodes(module, projection) {
+            if authority.nodes.iter().any(|existing| {
+                existing.node.name == node.node.name
+                    && existing.node.target_arch == node.node.target_arch
+            }) {
+                return Err(format!(
+                    "side-module node {}/{} collides with a package projection node",
+                    node.node.name, node.node.target_arch
+                ));
+            }
+            authority.nodes.push(node);
+        }
+    }
+    authority.nodes.sort_by(|left, right| {
+        (&left.node.name, &left.node.target_arch)
+            .cmp(&(&right.node.name, &right.node.target_arch))
+    });
+    Ok(())
+}
+
+/// Stage a co-resident module's artifacts into the projection root so the
+/// bytes the manifest records as members exist on disk (mirroring how the
+/// per-node materialization stages `kernel.wasm`). Copies the
+/// freshness-verified `local-binaries/` artifact and forces the recorded
+/// `0o644` mode so the consumer's stable-read mode check matches.
+fn stage_coresident_side_module_members(
+    repo: &Path,
+    output_root: &Path,
+    projection: &CoresidentSideModuleProjection,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    for member in &projection.members {
+        let src = repo.join("local-binaries").join(&member.mirror_path);
+        let dst = output_root.join(&member.mirror_path);
+        fs::copy(&src, &dst)
+            .map_err(|error| format!("stage {} -> {}: {error}", src.display(), dst.display()))?;
+        fs::set_permissions(&dst, fs::Permissions::from_mode(member.mode))
+            .map_err(|error| format!("chmod {}: {error}", dst.display()))?;
+    }
+    Ok(())
+}
+
+/// Ensure the co-resident modules are built and stamped fresh before any
+/// package node runs.
+///
+/// Before, not at finalization, because package builds consume them: every
+/// image-building recipe writes its VFS image through
+/// `images/vfs/lib/kandelo-image-fs.ts`, which loads
+/// `local-binaries/kandelo_image_module32.wasm` from disk. A module refreshed
+/// only after the scheduler would leave those builds running yesterday's
+/// writer, or failing on a missing one in a fresh worktree.
+///
+/// Fast path: `--verify-fresh` skips the build when the staged artifacts
+/// already match the current build key; only a stale, unstamped or missing
+/// artifact triggers a rebuild. This is what makes the module a build-pipeline
+/// artifact instead of a manual side step.
+fn ensure_coresident_side_modules_built(repo: &Path) -> Result<(), String> {
+    for module in CORESIDENT_SIDE_MODULES {
+        let script = repo.join(module.script);
+        let fresh = Command::new("bash")
+            .arg(&script)
+            .arg("--verify-fresh")
+            .current_dir(repo)
+            // Keep local-build's stdout machine-readable (it carries the run
+            // result JSON); the script's progress belongs on stderr.
+            .stdout(std::process::Stdio::from(std::io::stderr()))
+            .status()
+            .map_err(|error| format!("spawn {} --verify-fresh: {error}", script.display()))?;
+        if fresh.success() {
+            continue;
+        }
+        run_repo_script(repo, module.script, &[])?;
+    }
+    Ok(())
+}
+
+/// Whether the projection root already carries the current co-resident
+/// artifacts byte-for-byte AND a manifest that records their current build
+/// key. Called only on the fully-clean no-op fast path, after
+/// `ensure_coresident_side_modules_built` has refreshed the `local-binaries/`
+/// copies, so a stale or missing projected copy (a side-module source change
+/// with an otherwise-unchanged package graph) forces the finalizer to re-stage
+/// rather than leaving a stale module on disk.
+///
+/// Equal bytes alone are not enough: the manifest must agree with the current
+/// key too, or the fast path would judge the tier current while `verify-fresh`
+/// judged the same tier stale with advice ("rebuild with `./run.sh setup`")
+/// that could never clear it.
+fn coresident_side_module_projection_is_current(output_root: &Path, repo: &Path) -> bool {
+    coresident_side_module_projection_is_current_with(output_root, repo, |module| {
+        current_side_module_closure_key(repo, module)
+    })
+}
+
+/// [`coresident_side_module_projection_is_current`] with the build-key
+/// computation injected, so it is testable without a Cargo workspace.
+fn coresident_side_module_projection_is_current_with(
+    output_root: &Path,
+    repo: &Path,
+    current_closure: impl Fn(&CoresidentSideModule) -> Result<String, String>,
+) -> bool {
+    for module in CORESIDENT_SIDE_MODULES {
+        for (name, _arch, required) in module.artifacts {
+            let src = fs::read(repo.join("local-binaries").join(name)).ok();
+            let dst = fs::read(output_root.join(name)).ok();
+            match (required, src, dst) {
+                // A best-effort artifact: an absent source must also be absent here.
+                (false, None, None) => {}
+                (_, Some(source), Some(projected)) if source == projected => {}
+                _ => return false,
+            }
+        }
+    }
+    // The manifest must also record each module; a manifest without the node
+    // would pass the freshness check below vacuously.
+    let manifest_path = output_root
+        .join(".kandelo")
+        .join("source-only-program-projection-v1.json");
+    let Ok(bytes) = fs::read(&manifest_path) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    let recorded_names: BTreeSet<&str> = manifest
+        .get("nodes")
+        .and_then(|nodes| nodes.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|node| node.pointer("/node/name").and_then(|name| name.as_str()))
+        .collect();
+    if CORESIDENT_SIDE_MODULES
+        .iter()
+        .any(|module| !recorded_names.contains(module.node_name))
+    {
+        return false;
+    }
+    coresident_side_module_manifest_freshness(output_root, current_closure).is_ok()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn refreshed_source_only_program_projection(
     repo: &Path,
@@ -2602,11 +3707,18 @@ fn refreshed_source_only_program_projection(
         .into_iter()
         .flatten()
         .collect::<BTreeSet<_>>();
-    let authority = source_only_program_projection_candidate(
+    let mut authority = source_only_program_projection_candidate(
         projection,
         expected_graph_authority_sha256,
         receipts,
         &root_mirror_nodes,
+    )?;
+    // Project the co-resident side modules as owned root-level members (built
+    // out-of-band by their build-wasm.sh scripts; see
+    // `coresident_side_module_projection`).
+    append_coresident_side_module_nodes(
+        &mut authority,
+        &coresident_side_module_projections(repo)?,
     )?;
     source_only_program_projection_bytes(&authority)
 }
@@ -2643,6 +3755,10 @@ fn finalize_source_only_program_projection(
         graph_authority_sha256,
         receipts,
     )?;
+    // The co-resident side-module members the candidate records are staged into
+    // the projection root under the same lock, before the manifest goes live, so
+    // the published authority never references bytes that are not yet on disk.
+    let coresident = coresident_side_module_projections(repo)?;
     with_source_only_program_projection_lock(output_root, |authority| {
         for node in expected_receipt_nodes {
             let PlanNodeV1::Package { name, target_arch } = node else {
@@ -2675,6 +3791,10 @@ fn finalize_source_only_program_projection(
                 verify_cache,
                 receipt,
             )?;
+        }
+
+        for (_module, projection) in &coresident {
+            stage_coresident_side_module_members(repo, output_root, projection)?;
         }
 
         if verify_cache {
@@ -2819,12 +3939,17 @@ fn finalize_partial_source_only_program_projection(
         .filter(|(node, _)| publishable.contains(node))
         .map(|(node, receipt)| (node.clone(), receipt.clone()))
         .collect::<BTreeMap<_, _>>();
-    let authority = source_only_program_projection_candidate(
+    let mut authority = source_only_program_projection_candidate(
         projection,
         graph_authority_sha256,
         &subset_receipts,
         &root_mirror_nodes,
     )?;
+    // The same co-resident side modules as the whole-graph authority, so a
+    // partial authority still describes the modules package builds and hosts
+    // load, and stages their bytes under the lock before it goes live.
+    let coresident = coresident_side_module_projections(repo)?;
+    append_coresident_side_module_nodes(&mut authority, &coresident)?;
     let bytes = source_only_program_projection_bytes(&authority)?;
 
     with_source_only_program_projection_lock(output_root, |authority| {
@@ -2847,6 +3972,9 @@ fn finalize_partial_source_only_program_projection(
                 verify_cache,
                 receipt,
             )?;
+        }
+        for (_module, projection) in &coresident {
+            stage_coresident_side_module_members(repo, output_root, projection)?;
         }
         authority.replace_projection_authority(&bytes)
     })
@@ -5076,10 +6204,56 @@ fn parse_local_build_args_with_jobs(
         .ok_or_else(|| "usage: xtask local-build <plan|run|run-node> ...".to_string())?;
     match command.as_str() {
         "plan" => {
-            let mut flags = parse_named_flags(rest, &["--set"], &[], &[])?;
-            Ok(LocalBuildCommandV1::Plan {
-                set: PathBuf::from(take_required_flag(&mut flags, "--set")?),
-            })
+            let mut flags = parse_named_flags(
+                rest,
+                &["--set", "--source-cache-root", "--output-root", "--jobs"],
+                &["--product"],
+                &["--status", "--json"],
+            )?;
+            let set = PathBuf::from(take_required_flag(&mut flags, "--set")?);
+            if !flags.switches.contains("--status") {
+                // Plain `plan` prints the static graph and ignores cache,
+                // jobs, and product inputs. Rejecting those flags without
+                // `--status` keeps a forgotten `--status` from silently
+                // returning the wrong kind of answer.
+                if let Some(flag) = flags
+                    .values
+                    .keys()
+                    .chain(flags.repeated.keys())
+                    .chain(flags.switches.iter())
+                    .next()
+                {
+                    return Err(format!("local-build plan flag {flag} requires --status"));
+                }
+                return Ok(LocalBuildCommandV1::Plan { set });
+            }
+            // Defaults match `./run.sh local-build` and `./run.sh setup`, so a
+            // bare `plan --status` describes the build those would run.
+            let source_cache_root = match flags.values.remove("--source-cache-root") {
+                Some(value) => absolute_authored_path(value, "--source-cache-root")?,
+                None => default_source_cache_root()?,
+            };
+            let output_root = match flags.values.remove("--output-root") {
+                Some(value) => absolute_authored_path(value, "--output-root")?,
+                None => crate::repo_root().join("local-binaries/source-only-v1"),
+            };
+            let products = flags.repeated.remove("--product").unwrap_or_default();
+            for product in &products {
+                if product != "all" {
+                    validate_name(product, "product filter")?;
+                }
+            }
+            let explicit_jobs = flags.values.remove("--jobs");
+            let jobs =
+                select_job_count(explicit_jobs.as_deref(), environment_jobs, available_jobs)?;
+            Ok(LocalBuildCommandV1::PlanStatus(LocalBuildPlanStatusArgsV1 {
+                set,
+                source_cache_root,
+                output_root,
+                products,
+                jobs,
+                json: flags.switches.contains("--json"),
+            }))
         }
         "run" => {
             let mut flags = parse_named_flags(
@@ -5372,6 +6546,47 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_sysroot_always_checks_freshness_even_when_complete() {
+        for (sysroot_dir, arch, expected_args) in [
+            ("sysroot", "wasm32posix", "--ensure --arch wasm32posix"),
+            ("sysroot64", "wasm64posix", "--ensure --arch wasm64posix"),
+        ] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let repo = temp.path();
+            let lib = repo.join(sysroot_dir).join("lib");
+            write(&lib.join("libc.a"), "libc fixture");
+            write(
+                &repo.join("scripts/build-musl.sh"),
+                "printf '%s' \"$*\" > musl-build-args\n",
+            );
+            for script in [
+                "install-overlay-headers.sh",
+                "build-dri-stubs.sh",
+                "build-gles-stubs.sh",
+            ] {
+                write(&repo.join("scripts").join(script), "exit 0\n");
+            }
+            bootstrap_sysroot_step(repo, sysroot_dir, arch).unwrap();
+            assert_eq!(
+                fs::read_to_string(repo.join("musl-build-args")).unwrap(),
+                expected_args
+            );
+
+            fs::remove_file(repo.join("musl-build-args")).unwrap();
+            write(
+                &lib.join("libkandelo-ucontext-unsupported.a"),
+                "opt-in fixture",
+            );
+            bootstrap_sysroot_step(repo, sysroot_dir, arch).unwrap();
+            assert_eq!(
+                fs::read_to_string(repo.join("musl-build-args")).unwrap(),
+                expected_args,
+                "archive existence alone cannot establish freshness"
+            );
+        }
+    }
+
+    #[test]
     fn verify_sysroot_abi_headers_gates_missing_and_stale_headers() {
         let temp = tempfile::TempDir::new().unwrap();
         let repo = temp.path().join("repo");
@@ -5519,6 +6734,32 @@ mod tests {
         assert!(
             !source_only_program_projection_is_current(output, &authority, &receipts),
             "a projection recording another cache key for a node is stale"
+        );
+
+        // A co-resident side-module node carries no package receipt; its
+        // currency is judged separately, so it must not make the package
+        // node set look stale.
+        write(
+            &path,
+            &projection(
+                &authority,
+                &[
+                    node("kernel", 'd'),
+                    node(KANDELO_IMAGE_MODULE_NODE_NAME, '7'),
+                    node("shell", 'e'),
+                ],
+            ),
+        );
+        assert!(
+            source_only_program_projection_is_current(output, &authority, &receipts),
+            "a co-resident side-module node is not a package node"
+        );
+        assert!(
+            recorded_projection_package_nodes(output)
+                .iter()
+                .all(|node| !matches!(node, PlanNodeV1::Package { name, .. }
+                    if name == KANDELO_IMAGE_MODULE_NODE_NAME)),
+            "a co-resident side-module node is never carried forward as a package"
         );
     }
 
@@ -5830,10 +7071,15 @@ mod tests {
         version: &str,
         revision: u32,
         arch: &str,
+        abi: Option<u32>,
         cache_key_sha: &str,
         mirror_relative: &str,
     ) -> PathBuf {
-        let basename = format!("{name}-{version}-rev{revision}-{arch}-{cache_key_sha}");
+        // `canonical_path` names the ABI after the arch; generations named
+        // before it did have no ABI segment.
+        let abi_segment = abi.map(|abi| format!("abi{abi}-")).unwrap_or_default();
+        let basename =
+            format!("{name}-{version}-rev{revision}-{arch}-{abi_segment}{cache_key_sha}");
         let canonical = compiled_cache_root.join("programs").join(&basename);
         fs::create_dir_all(&canonical).unwrap();
         fs::write(canonical.join("marker"), b"fixture generation").unwrap();
@@ -5886,6 +7132,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             alpha_cache_key,
             "programs/wasm32/alpha.wasm",
         );
@@ -5896,6 +7143,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             beta_cache_key,
             "programs/wasm32/beta.wasm",
         );
@@ -5988,6 +7236,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             other_key,
             "programs/wasm32/alpha.wasm",
         );
@@ -5998,6 +7247,7 @@ mod tests {
             "1.0.0",
             1,
             "wasm32",
+            None,
             current_key,
             "programs/wasm32/alpha.wasm",
         );
@@ -6029,6 +7279,68 @@ mod tests {
         assert!(
             !removed.contains(&other_canonical) && !removed.contains(&other_receipt_sidecar),
             "the removed list must not report the surviving generation; got {removed:?}"
+        );
+    }
+
+    #[test]
+    fn clean_package_node_outputs_reads_the_key_after_the_abi_segment() {
+        // Library and program generations carry `abi<N>-` between the arch
+        // and the key. If clean took `abi<N>-<key>` for the key it would
+        // never match the current key and would leave the generation behind.
+        let root = tempfile::TempDir::new().unwrap();
+        let root = root.path();
+        package(root, "alpha", &[], &[]);
+        let reg = registry(root);
+
+        let cache = tempfile::TempDir::new().unwrap();
+        let compiled_cache_root = cache.path().join("compiled");
+        let output = tempfile::TempDir::new().unwrap();
+        let output_root = output.path();
+
+        let current_key = "cachekey-current-000000000000000000000000000000000000000";
+        let other_key = "cachekey-other-checkout-0000000000000000000000000000000";
+        let other_output = tempfile::TempDir::new().unwrap();
+        let other_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            other_output.path(),
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            Some(45),
+            other_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let current_canonical = fabricate_compiled_generation(
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "1.0.0",
+            1,
+            "wasm32",
+            Some(46),
+            current_key,
+            "programs/wasm32/alpha.wasm",
+        );
+        let current_receipt_sidecar =
+            crate::build_deps::source_only_cache_receipt_path(&current_canonical, current_key)
+                .unwrap();
+
+        let removed = clean_package_node_outputs(
+            &reg,
+            &compiled_cache_root,
+            output_root,
+            "alpha",
+            "wasm32",
+            current_key,
+        )
+        .unwrap();
+
+        assert!(!current_canonical.exists(), "current generation must be removed");
+        assert!(!current_receipt_sidecar.exists(), "current receipt must be removed");
+        assert!(
+            other_canonical.is_dir(),
+            "another cache key's generation must survive; removed {removed:?}"
         );
     }
 
@@ -6161,7 +7473,6 @@ mod tests {
                 "build_nginx_php_vfs",
                 Expectation::FoldedProduct("browser-nginx-php"),
             ),
-            ("build_node_vfs", Expectation::FoldedProduct("browser-node")),
     // mariadb-test has no `[[products]]` entry (matching the
             // sibling test-support manifests test-php.toml/test-sqlite.toml,
             // which are also manifest-only with no active product) but its
@@ -7080,6 +8391,321 @@ materialization = "lazy"
             err.contains("kernel.wasm has no __abi_version export"),
             "must name the missing export: {err}"
         );
+    }
+
+    // -- co-resident side-module freshness --
+    //
+    // The pure validators are exercised with synthetic manifests, staged bytes
+    // and known keys, so no Cargo workspace / `cargo metadata` run is needed.
+
+    const IMAGE_MODULE_ARTIFACT: &str = "kandelo_image_module32.wasm";
+
+    fn image_module() -> &'static CoresidentSideModule {
+        CORESIDENT_SIDE_MODULES
+            .iter()
+            .find(|module| module.node_name == KANDELO_IMAGE_MODULE_NODE_NAME)
+            .expect("the image writer is a co-resident side module")
+    }
+
+    fn tier_root(repo: &Path) -> PathBuf {
+        repo.join("local-binaries").join("source-only-v1")
+    }
+
+    /// A one-node projection manifest for the image writer, declaring the
+    /// given member `size`/`sha256` and node `cache_key`.
+    fn image_module_manifest(cache_key: &str, size: u64, sha256: &str) -> serde_json::Value {
+        serde_json::json!({
+            "nodes": [
+                {
+                    "node": { "kind": "package", "name": KANDELO_IMAGE_MODULE_NODE_NAME, "targetArch": "wasm32" },
+                    "manifestSha256": "00",
+                    "cacheKeySha256": cache_key,
+                    "cacheReceiptSha256": "00",
+                    "members": [
+                        { "sourceArtifact": IMAGE_MODULE_ARTIFACT, "mirrorPath": IMAGE_MODULE_ARTIFACT, "mode": 420, "size": size, "sha256": sha256 }
+                    ]
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn coresident_table_is_exactly_the_image_writer() {
+        assert_eq!(CORESIDENT_SIDE_MODULES.len(), 1);
+        let module = image_module();
+        assert_eq!(module.script, "crates/kandelo-image-module/build-wasm.sh");
+        assert_eq!(module.closure_crates, &["kandelo-image-module", "runtime-core"]);
+        assert_eq!(module.artifacts, &[(IMAGE_MODULE_ARTIFACT, "wasm32", true)]);
+    }
+
+    #[test]
+    fn coresident_projection_passes_for_a_fresh_projected_module() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let output_root = tier_root(temp.path());
+        fs::create_dir_all(&output_root).unwrap();
+        let bytes = b"image-module-bytes-fresh";
+        fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), bytes).unwrap();
+        let manifest =
+            image_module_manifest("deadbeef", bytes.len() as u64, &sha256_bytes(bytes));
+        check_projected_side_module_freshness(
+            KANDELO_IMAGE_MODULE_NODE_NAME,
+            image_module().closure_description,
+            &manifest,
+            "deadbeef",
+            &output_root,
+            &output_root.join(".kandelo/source-only-program-projection-v1.json"),
+        )
+        .expect("a fresh projected module must verify clean");
+    }
+
+    #[test]
+    fn coresident_projection_fails_when_stale_vs_source() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let output_root = tier_root(temp.path());
+        fs::create_dir_all(&output_root).unwrap();
+        let bytes = b"image-module-bytes";
+        fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), bytes).unwrap();
+        let manifest =
+            image_module_manifest("oldclosurekey", bytes.len() as u64, &sha256_bytes(bytes));
+        let err = check_projected_side_module_freshness(
+            KANDELO_IMAGE_MODULE_NODE_NAME,
+            image_module().closure_description,
+            &manifest,
+            "newclosurekey",
+            &output_root,
+            &output_root.join(".kandelo/source-only-program-projection-v1.json"),
+        )
+        .unwrap_err();
+        assert!(err.contains("oldclosurekey"), "must name the recorded key: {err}");
+        assert!(err.contains("newclosurekey"), "must name the current key: {err}");
+    }
+
+    #[test]
+    fn coresident_projection_fails_when_staged_bytes_disagree_with_manifest() {
+        // The key still matches (not stale vs source) but the staged bytes
+        // differ from what the manifest declares, so the pinned-projection
+        // resolver would reject the member.
+        let temp = tempfile::TempDir::new().unwrap();
+        let output_root = tier_root(temp.path());
+        fs::create_dir_all(&output_root).unwrap();
+        let staged = b"the-actually-staged-newer-bytes";
+        fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), staged).unwrap();
+        let manifest =
+            image_module_manifest("matchingkey", 999, &sha256_bytes(b"older-manifest-bytes"));
+        let err = check_projected_side_module_freshness(
+            KANDELO_IMAGE_MODULE_NODE_NAME,
+            image_module().closure_description,
+            &manifest,
+            "matchingkey",
+            &output_root,
+            &output_root.join(".kandelo/source-only-program-projection-v1.json"),
+        )
+        .unwrap_err();
+        assert!(err.contains("fails the boot"), "must explain the impact: {err}");
+        assert!(
+            err.contains(&format!("{}", staged.len())),
+            "must report the actual staged size: {err}"
+        );
+    }
+
+    #[test]
+    fn coresident_projection_ok_when_the_module_is_not_projected() {
+        let manifest = serde_json::json!({ "nodes": [
+            { "node": { "kind": "package", "name": "kernel", "targetArch": "wasm32" },
+              "cacheKeySha256": "x", "members": [] }
+        ]});
+        check_projected_side_module_freshness(
+            KANDELO_IMAGE_MODULE_NODE_NAME,
+            image_module().closure_description,
+            &manifest,
+            "anyclosure",
+            Path::new("/nonexistent"),
+            Path::new("/nonexistent/manifest.json"),
+        )
+        .expect("no module node -> nothing to verify");
+    }
+
+    #[test]
+    fn coresident_verify_fresh_ok_when_nothing_is_built_or_projected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        verify_fresh_coresident_side_modules(temp.path())
+            .expect("an unbuilt tree has nothing that can be stale");
+    }
+
+    #[test]
+    fn coresident_staged_artifact_must_carry_the_current_key() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let staged = repo.join("local-binaries");
+        fs::create_dir_all(&staged).unwrap();
+        let module = image_module();
+        let never = || -> Result<String, String> { panic!("no artifact: key must not be computed") };
+        verify_fresh_staged_side_module_artifacts(repo, module, never)
+            .expect("an absent artifact is not staleness");
+
+        fs::write(staged.join(IMAGE_MODULE_ARTIFACT), b"module").unwrap();
+        let err = verify_fresh_staged_side_module_artifacts(repo, module, || Ok("cur".into()))
+            .unwrap_err();
+        assert!(err.contains("carries no build-key stamp"), "{err}");
+
+        fs::write(staged.join(format!("{IMAGE_MODULE_ARTIFACT}.build-key")), "old\n").unwrap();
+        let err = verify_fresh_staged_side_module_artifacts(repo, module, || Ok("cur".into()))
+            .unwrap_err();
+        assert!(err.contains("is stale") && err.contains("old") && err.contains("cur"), "{err}");
+        assert!(err.contains(module.script), "must name the recipe to rerun: {err}");
+
+        fs::write(staged.join(format!("{IMAGE_MODULE_ARTIFACT}.build-key")), "cur\n").unwrap();
+        verify_fresh_staged_side_module_artifacts(repo, module, || Ok("cur".into()))
+            .expect("a stamp matching the current key is fresh");
+    }
+
+    /// Equal tier bytes do not make the projection current when the manifest
+    /// records an older key, or does not record the module at all: the no-op
+    /// fast path would otherwise skip the finalizer after a side-module-only
+    /// change while `verify-fresh` kept reporting the tier stale.
+    #[test]
+    fn coresident_projection_is_not_current_when_the_manifest_key_is_stale() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let repo = temp.path();
+        let output_root = tier_root(repo);
+        fs::create_dir_all(output_root.join(".kandelo")).unwrap();
+        fs::create_dir_all(repo.join("local-binaries")).unwrap();
+        let manifest_path = output_root.join(".kandelo/source-only-program-projection-v1.json");
+        let recorded = |module: &CoresidentSideModule| Ok(format!("{}-recorded", module.node_name));
+
+        let bytes = b"image-module-bytes".to_vec();
+        fs::write(repo.join("local-binaries").join(IMAGE_MODULE_ARTIFACT), &bytes).unwrap();
+        assert!(
+            !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
+            "a module missing from the tier is not current",
+        );
+        fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), &bytes).unwrap();
+        assert!(
+            !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
+            "equal bytes without a manifest are not current",
+        );
+
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&serde_json::json!({ "nodes": [] })).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
+            "a manifest that does not record the module is not current",
+        );
+
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec(&image_module_manifest(
+                &format!("{KANDELO_IMAGE_MODULE_NODE_NAME}-recorded"),
+                bytes.len() as u64,
+                &sha256_bytes(&bytes),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
+            "bytes and manifest both current",
+        );
+        let rebuilt = |_module: &CoresidentSideModule| Ok(String::from("rebuilt"));
+        assert!(
+            !coresident_side_module_projection_is_current_with(&output_root, repo, rebuilt),
+            "a manifest recording an older key must force re-finalization",
+        );
+    }
+
+    #[test]
+    fn coresident_nodes_bind_the_key_and_member_content() {
+        let module = image_module();
+        let member = |sha: &str| MaterializedProgramMemberV1 {
+            source_artifact: IMAGE_MODULE_ARTIFACT.to_string(),
+            mirror_path: IMAGE_MODULE_ARTIFACT.to_string(),
+            mode: 0o644,
+            size: 3,
+            sha256: sha.to_string(),
+        };
+        let projection = |sha: &str| CoresidentSideModuleProjection {
+            closure_sha: "k".repeat(64),
+            members: vec![member(sha)],
+        };
+        let first = coresident_side_module_nodes(module, &projection(&"1".repeat(64)));
+        let second = coresident_side_module_nodes(module, &projection(&"2".repeat(64)));
+        assert_eq!(first.len(), 1);
+        let node = &first[0];
+        assert_eq!(node.node.name, KANDELO_IMAGE_MODULE_NODE_NAME);
+        assert_eq!(node.node.target_arch, "wasm32");
+        assert_eq!(node.cache_key_sha256, "k".repeat(64));
+        assert_eq!(node.members, vec![member(&"1".repeat(64))]);
+        assert_ne!(
+            node.cache_receipt_sha256, second[0].cache_receipt_sha256,
+            "the receipt must bind the projected member content",
+        );
+    }
+
+    /// A package whose build LOADS a co-resident module must key on that
+    /// module's build closure, not only on the TypeScript that loads it.
+    ///
+    /// The image builders drive `kandelo_image_module32.wasm` through
+    /// `images/vfs/lib/kandelo-image-fs.ts`. A package that declares the loader
+    /// but not the module would stay cached across a fix to the module's Rust
+    /// -- and the cache is shared across worktrees. The crates and recipe come
+    /// from [`CORESIDENT_SIDE_MODULES`], the same closure the module's own
+    /// build key uses, never a second list here.
+    #[test]
+    fn coresident_packages_whose_build_loads_a_side_module_declare_its_closure() {
+        const LOADERS: &[(&str, &str)] = &[(
+            "images/vfs/lib/kandelo-image-fs.ts",
+            "crates/kandelo-image-module/build-wasm.sh",
+        )];
+        let repo = crate::repo_root();
+        let mut failures = Vec::new();
+        for (loader, script) in LOADERS {
+            let module = CORESIDENT_SIDE_MODULES
+                .iter()
+                .find(|m| m.script == *script)
+                .unwrap_or_else(|| panic!("{script} is not a co-resident side module recipe"));
+            // The row must stay true: the loader really names the artifact. A
+            // row whose loader stopped loading the module would otherwise force
+            // inputs nothing needs.
+            let loader_text = fs::read_to_string(repo.join(loader))
+                .unwrap_or_else(|e| panic!("read {loader}: {e}"));
+            let artifact = module.artifacts[0].0;
+            assert!(
+                loader_text.contains(artifact),
+                "{loader} no longer loads {artifact}; update this table"
+            );
+
+            for entry in fs::read_dir(repo.join("packages/registry")).unwrap() {
+                let dir = entry.unwrap().path();
+                let Ok(text) = fs::read_to_string(dir.join("build.toml")) else {
+                    continue;
+                };
+                let build = BuildToml::parse(&text)
+                    .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+                if !build.inputs.iter().any(|input| input == loader) {
+                    continue;
+                }
+                let mut want: Vec<String> = module
+                    .closure_crates
+                    .iter()
+                    .map(|name| format!("{}{name}", crate::cargo_closure::CARGO_INPUT_PREFIX))
+                    .collect();
+                want.push(module.script.to_string());
+                for input in want {
+                    if !build.inputs.contains(&input) {
+                        failures.push(format!(
+                            "{}: declares {loader}, which loads {artifact}, but not {input:?}",
+                            dir.display()
+                        ));
+                    }
+                }
+            }
+        }
+        failures.sort();
+        failures.dedup();
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     // -- snapshot_drift_check / abi_sources_changed_since_snapshot (B3) --
@@ -8129,6 +9755,63 @@ materialization = "lazy"
         ] {
             assert!(run(args).is_err());
         }
+    }
+
+    #[test]
+    fn plan_status_flags_parse_only_with_status() {
+        let args = |values: &[&str]| values.iter().map(|value| value.to_string()).collect::<Vec<_>>();
+        let jobs = std::num::NonZeroUsize::new(3);
+        assert_eq!(
+            parse_local_build_args_with_jobs(&args(&["plan", "--set", "s.toml"]), None, jobs)
+                .unwrap(),
+            LocalBuildCommandV1::Plan {
+                set: PathBuf::from("s.toml")
+            }
+        );
+        for extra in [&["--json"][..], &["--jobs", "2"], &["--product", "shell"]] {
+            let mut values = vec!["plan", "--set", "s.toml"];
+            values.extend_from_slice(extra);
+            let error =
+                parse_local_build_args_with_jobs(&args(&values), None, jobs).unwrap_err();
+            assert!(error.contains("requires --status"), "got: {error}");
+        }
+        let parsed = parse_local_build_args_with_jobs(
+            &args(&[
+                "plan",
+                "--set",
+                "s.toml",
+                "--status",
+                "--json",
+                "--source-cache-root",
+                "/cache",
+                "--output-root",
+                "/out",
+                "--product",
+                "shell",
+            ]),
+            Some("5"),
+            jobs,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed,
+            LocalBuildCommandV1::PlanStatus(LocalBuildPlanStatusArgsV1 {
+                set: PathBuf::from("s.toml"),
+                source_cache_root: PathBuf::from("/cache"),
+                output_root: PathBuf::from("/out"),
+                products: vec!["shell".to_string()],
+                jobs: 5,
+                json: true,
+            })
+        );
+        assert!(
+            parse_local_build_args_with_jobs(
+                &args(&["plan", "--set", "s.toml", "--status", "--source-cache-root", "rel"]),
+                None,
+                jobs,
+            )
+            .is_err()
+        );
     }
 
     #[test]

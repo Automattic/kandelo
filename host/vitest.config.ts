@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -40,13 +40,38 @@ export default defineConfig({
       "../packages/registry/*/test/**/*.test.ts",
       "../tests/package-system/**/*.test.ts",
       "../examples/dlopen/**/*.test.ts",
+      "../scripts/**/*.test.mjs",
+    ],
+    // check-pages-vfs-product-registry.test.mjs and vfs-product-catalog.test.mjs
+    // use node's built-in `node:test` runner, not vitest's `describe`/`it`.
+    // Their `test()` calls schedule against node:test's own runner on import,
+    // so vitest collects zero suites from them and reports the file as a
+    // failed "no test suite found" run regardless of whether the underlying
+    // assertions pass. They are unrelated to this suite; exclude them here
+    // rather than have the broad scripts/**/*.test.mjs glob swallow them.
+    exclude: [
+      ...configDefaults.exclude,
+      "../scripts/check-pages-vfs-product-registry.test.mjs",
+      "../scripts/vfs-product-catalog.test.mjs",
     ],
     globalSetup: ["test/global-setup.ts"],
+    // The default reporter counts a file that never loaded as a failed file,
+    // and reports a zero-test run as a pass. The suite-health line keeps
+    // "did not run" apart from "ran and failed", so a green or "nothing new
+    // failed" run is not mistaken for coverage. Why it exists in detail:
+    // test/support/suite-health-reporter.ts.
+    reporters: ["default", "./test/support/suite-health-reporter.ts"],
     // Keep test files in child processes. The suite itself starts many
     // worker_threads and large shared Wasm memories; nesting that work inside
     // Vitest's thread pool has historically made task reporting unreliable
     // under GitHub runner contention.
     pool: "forks",
+    // The SDK lowers exceptions and setjmp to modern wasm-EH
+    // (`-wasm-use-legacy-eh=false`), so every guest built from it needs
+    // V8's exnref support. The conformance runners pass this flag on
+    // their own node invocations; vitest workers default to an empty
+    // execArgv and must be given it explicitly.
+    execArgv: ["--experimental-wasm-exnref"],
     // Fork-heavy files launch their own process workers. Keep local runs
     // parallel, but serialize CI files so guest timeouts measure the runtime
     // behavior under test instead of runner oversubscription.

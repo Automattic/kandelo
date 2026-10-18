@@ -29,7 +29,7 @@
  *      while cancellation stays pending.
  *   3. libc/glue/channel_syscall.c::__syscall_cp calls
  *      __syscall_cp_cancel_preflight() before the blocking dispatch and
- *      __syscall_cp_check() after it. ENABLE exits immediately; MASKED
+ *      __syscall_cp_check() after it (both in syscall_cp.c). ENABLE exits immediately; MASKED
  *      returns ECANCELED so condition-wait code can relock first; DISABLE
  *      leaves the operation live. A syscall that already completed keeps
  *      its result and leaves cancellation pending for the next point.
@@ -46,6 +46,12 @@
 #include "syscall.h"
 #include <bits/kandelo_thread_syscalls.h>
 
+/* The checks that run around cancellation-point syscalls (preflight, post-
+ * syscall check, __testcancel, wake authority) live in syscall_cp.c. This
+ * file holds only what can *request* a cancellation (pthread_cancel) and
+ * what *acts* on one (__cancel), so programs that never cancel a thread do
+ * not link thread exit into every syscall. */
+
 /* Replaces libc/musl/src/thread/pthread_cancel.c::__cancel.
  * If cancellation is enabled on this thread, terminate with
  * PTHREAD_CANCELED (which also runs the cleanup-handler stack and the
@@ -60,76 +66,9 @@ hidden long __cancel(void)
 	return -ECANCELED;
 }
 
-/* Strong definition — replaces the weak dummy that stock musl installs
- * in pthread_testcancel.c when pthread_cancel.c is not linked. */
-void __testcancel(void)
-{
-	pthread_t self = __pthread_self();
-	if (self->cancel && !self->canceldisable)
-		__cancel();
-}
-
-/* Check-for-cancel hook called before a cancellation-point syscall. This is
- * the guest-side pre-registration half of the cancellation transport:
- *
- *   - ENABLE exits immediately.
- *   - DISABLE leaves the operation live.
- *   - MASKED returns -ECANCELED and switches to DISABLE so a condition wait
- *     can remove its waiter and reacquire its mutex before exiting.
- *
- * A host pending-cancel marker covers cross-thread cancellation that raced a
- * blocking registration. This preflight is still required for self-pending
- * MASKED cancellation, where pthread_cancel intentionally makes no host
- * syscall and therefore cannot install such a marker. */
-hidden long __syscall_cp_cancel_preflight(void)
-{
-	pthread_t self = __pthread_self();
-	if (!self->cancel) return 0;
-	if (self->canceldisable == PTHREAD_CANCEL_DISABLE) return 0;
-	if (self->canceldisable == PTHREAD_CANCEL_ENABLE || self->cancelasync)
-		pthread_exit(PTHREAD_CANCELED);
-	self->canceldisable = PTHREAD_CANCEL_DISABLE;
-	return -ECANCELED;
-}
-
-/* Check-for-cancel hook called after a cancellation-point syscall. This is the
- * one-function moral equivalent of stock musl's __syscall_cp_asm +
- * __syscall_cp_c combo:
- *
- *   - If the syscall was not interrupted with EINTR, return `r` unchanged.
- *     In particular, do not discard a successful syscall after its externally
- *     visible side effects have already happened.
- *   - If the thread has cancellation entirely disabled or no cancel is
- *     pending, return `r` unchanged.
- *   - If `self->cancel` is set and the state is ENABLE (or async),
- *     terminate the thread via pthread_exit(PTHREAD_CANCELED) — same
- *     path as stock __testcancel.
- *   - If the state is MASKED, synthesize a -ECANCELED return the way
- *     stock __syscall_cp_asm would, and mark the thread DISABLE so
- *     pthread_cond_wait's `if (e == ECANCELED)` branch runs cleanly
- *     after it reacquires the mutex and re-enables cancellation.  This
- *     is the behavior pthread_cond_timedwait.c expects: it sets MASKED
- *     around __timedwait_cp, checks for ECANCELED afterwards, and
- *     re-calls __pthread_testcancel once cs is restored to trigger the
- *     actual pthread_exit.
- */
-hidden long __syscall_cp_check(long r)
-{
-	if (r != -EINTR) return r;
-	long cancel = __syscall_cp_cancel_preflight();
-	return cancel ? cancel : r;
-}
-
-/* Freeze whether pthread_cancel may interrupt this exact request.
- *
- * MASKED is intentionally wakeable: pthread_cond_timedwait relies on the
- * EINTR -> ECANCELED handoff so it can reacquire the mutex before enabling
- * cancellation and exiting. DISABLE instead keeps the operation live. */
-hidden int __syscall_cp_cancel_wake_allowed(void)
-{
-	pthread_t self = __pthread_self();
-	return self->canceldisable != PTHREAD_CANCEL_DISABLE;
-}
+/* timer_create() also writes `cancel`; it reads this to make sure the
+ * strong __cancel above is linked whenever it is. See syscall_cp.c. */
+hidden const volatile unsigned char __pthread_cancel_writer_linked = 1;
 
 int pthread_cancel(pthread_t t)
 {

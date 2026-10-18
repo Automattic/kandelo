@@ -1,0 +1,27 @@
+diff --git a/engine/init.lua b/engine/init.lua
+--- a/engine/init.lua
++++ b/engine/init.lua
+@@ -44,6 +44,15 @@
+   require(path .. ".game.hitfx")
+ end
+ 
++-- Desktop tiling can change the window after engine_run selects its mode.
++-- Keep drawing and pointer coordinates on the same logical game canvas.
++function love.resize(width, height)
++  if gw and gh then
++    ww, wh = width, height
++    sx, sy = width/gw, height/gh
++  end
++end
++
+ function engine_run(config)
+   if not web then
+     love.filesystem.setIdentity(config.game_name)
+@@ -125,6 +134,7 @@
+             steam.shutdown()
+             return a or 0
+           end
++        elseif name == "resize" then love.resize(a, b)
+         elseif name == "focus" then
+           --[[]
+           if main.current:is(Arena) then

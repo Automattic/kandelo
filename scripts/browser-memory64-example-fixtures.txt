@@ -7,6 +7,7 @@
 examples/kernel_scratch_browser_test.c
 examples/process_native_layout_test.c
 examples/putenv_test.c
+examples/select_signal_test.c
 examples/sysv_ipc_test.c
 examples/terminal_attributes_api_test.c
 examples/timerfd_signalfd_scratch_test.c

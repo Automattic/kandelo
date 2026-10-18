@@ -1,0 +1,37 @@
+diff --git a/src/modules/graphics/wrap_Graphics.cpp b/src/modules/graphics/wrap_Graphics.cpp
+index db4d412..df72d02 100644
+--- a/src/modules/graphics/wrap_Graphics.cpp
++++ b/src/modules/graphics/wrap_Graphics.cpp
+@@ -42,6 +42,7 @@
+ 
+ #ifdef LOVE_KANDELO
+ extern "C" bool kandelo_love_uses_legacy_color_range();
++extern "C" bool kandelo_love_uses_legacy_canvas_dpiscale();
+ #endif
+ 
+ // Shove the wrap_Graphics.lua code directly into a raw string literal.
+@@ -87,6 +88,15 @@ static float defaultAlpha()
+ 	return usesLegacyColorRange() ? 255.0f : 1.0f;
+ }
+ 
++static bool usesLegacyCanvasDPIScale()
++{
++#ifdef LOVE_KANDELO
++	return kandelo_love_uses_legacy_canvas_dpiscale();
++#else
++	return false;
++#endif
++}
++
+ static int luax_checkgraphicscreated(lua_State *L)
+ {
+ 	if (!instance()->isCreated())
+@@ -1219,6 +1229,8 @@ int w_newCanvas(lua_State *L)
+ 
+ 	// Default to the screen's current pixel density scale.
+ 	settings.dpiScale = instance()->getScreenDPIScale();
++	if (usesLegacyCanvasDPIScale())
++		settings.dpiScale = 1.0f;
+ 
+ 	int startidx = 3;
+ 

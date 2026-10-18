@@ -1,8 +1,8 @@
 script_path = "packages/registry/sdl3/build-sdl3.sh"
 inputs = [
   "packages/registry/sdl3/build-sdl3.sh",
-  "packages/registry/sdl3/cmake/kandelo-toolchain.cmake",
-  "packages/registry/sdl3/cmake/Platform/Kandelo.cmake",
+  "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/Platform/Kandelo.cmake",
   "packages/registry/sdl3/patches/0001-recognize-kandelo-platform.patch",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"

@@ -1,0 +1,9 @@
+script_path = "packages/registry/libdbus/build-libdbus.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
+
+inputs = [
+  "packages/registry/libdbus/build-libdbus.sh",
+  "scripts/package-build-roots.sh",
+]

@@ -7,6 +7,9 @@
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
 #   ./run.sh local-build [--json] Build all local SourceOnly VFS products
+#   ./run.sh local-build --plan [--json]
+#                                 Preview it: cache hits, nodes to build, and
+#                                 an estimated duration
 #   ./run.sh cache-gc [args]      Garbage-collect the shared SourceOnly build
 #                                 cache (dry run unless --apply)
 #   ./run.sh run <example> [args] Run a Node.js example
@@ -221,9 +224,11 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_get_process_state
     kernel_get_socket_timeout_ms
     kernel_handle_channel
+    kernel_handle_channel_record
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
     kernel_host_adapter_manifest_ptr
+    kernel_install_host_stdin_pipe
     kernel_ipc_shm_lookup_mapping_for_task
     kernel_ipc_shm_record_mapping_for_process
     kernel_ipc_shm_record_mapping_for_task
@@ -235,8 +240,6 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_ipc_shmdt_for_task
     kernel_is_fd_nonblock
     kernel_mark_process_signaled
-    kernel_mq_descriptor_msgsize
-    kernel_msqid_ds_bytes
     kernel_pcm_claim_transport
     kernel_pcm_clock_update
     kernel_pcm_reconcile
@@ -254,11 +257,8 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_publish_spawn_child
     kernel_reap_exited_child
     kernel_remove_process
-    kernel_semctl_array_bytes
-    kernel_semid_ds_bytes
     kernel_set_current_tid
     kernel_set_cwd
-    kernel_shmid_ds_bytes
     kernel_spawn_exec_commit
     kernel_spawn_exec_target_prepare
     kernel_spawn_process
@@ -462,7 +462,6 @@ has_shell_vfs()     {
 }
 has_node()          { pkg_has_output node node.wasm; }
 has_spidermonkey_node() { pkg_has_output spidermonkey-node node.wasm || [ -f "$REPO_ROOT/packages/registry/spidermonkey-node/bin/node.wasm" ]; }
-has_node_vfs()      { pkg_has_output node-vfs node-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" ]; }
 has_erlang()        { pkg_has_output erlang erlang.wasm || [ -f "$REPO_ROOT/packages/registry/erlang/bin/beam.wasm" ]; }
 has_erlang_vfs()    { pkg_has_output erlang-vfs erlang-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/erlang.vfs.zst" ]; }
 has_lamp_vfs()      { pkg_has_output lamp lamp.vfs.zst; }
@@ -485,6 +484,10 @@ has_unzip()         { pkg_has_output unzip unzip.wasm || [ -f "$REPO_ROOT/packag
 has_nano()          { pkg_has_output nano nano.wasm || [ -f "$REPO_ROOT/packages/registry/nano/bin/nano.wasm" ]; }
 has_nethack()       { pkg_has_output nethack nethack.wasm || [ -f "$REPO_ROOT/packages/registry/nethack/bin/nethack.wasm" ]; }
 has_fbdoom()        { pkg_has_output fbdoom fbdoom.wasm || [ -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" ]; }
+has_foot()          { pkg_has_output foot foot.wasm; }
+has_dbus()          { pkg_has_output dbus dbus-daemon.wasm; }
+has_mako()          { pkg_has_output mako mako.wasm; }
+has_waybar()        { pkg_has_output waybar waybar.wasm; }
 has_vim()           { pkg_has_output vim vim.wasm || [ -f "$REPO_ROOT/packages/registry/vim/bin/vim.wasm" ]; }
 has_git()           { pkg_has_output git git.wasm || [ -f "$REPO_ROOT/packages/registry/git/bin/git.wasm" ]; }
 has_perl()          { pkg_has_output perl perl.wasm || [ -f "$REPO_ROOT/packages/registry/perl/bin/perl.wasm" ]; }
@@ -536,7 +539,26 @@ bootstrap_target() {
         err "bootstrap_target $target: could not build xtask"
         return 1
     }
-    bash "$REPO_ROOT/scripts/dev-shell.sh" "$xtask" bootstrap "$target" "$@"
+    local_build_events_env
+    bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
+        "$xtask" bootstrap "$target" "$@"
+}
+
+# local_build_events_env: set LOCAL_BUILD_EVENTS_ENV to an `env` prefix that
+# carries KANDELO_LOCAL_BUILD_EVENTS (the local-build scheduler's JSON-lines
+# progress file, read by scripts/agent-job) into the dev shell, or to an
+# empty array when the caller did not set it. dev-shell.sh starts from an
+# empty environment and keeps only its fixed --keep list; that list is not
+# extended here because scripts/dev-shell.sh is a global package toolchain
+# input, so any edit to it changes every package cache key and forces a full
+# rebuild. The variable only names where progress is reported and cannot
+# change what is built, so it is forwarded per call instead.
+local_build_events_env() {
+    LOCAL_BUILD_EVENTS_ENV=()
+    if [ -n "${KANDELO_LOCAL_BUILD_EVENTS:-}" ]; then
+        LOCAL_BUILD_EVENTS_ENV=(env "KANDELO_LOCAL_BUILD_EVENTS=$KANDELO_LOCAL_BUILD_EVENTS")
+    fi
 }
 
 need_kernel() {
@@ -658,6 +680,8 @@ build_mariadb_vfs() {
         return
     fi
     build_mariadb
+    # bash is /bin/sh in the image; dash ships at its own name.
+    build_bash
     build_dash
     step "Building MariaDB VFS image (wasm32)"
     # Delegate to the package-system wrapper so install_local_binary
@@ -676,6 +700,8 @@ build_mariadb64_vfs() {
         return
     fi
     build_mariadb64
+    # bash is /bin/sh in the image; dash ships at its own name.
+    build_bash
     build_dash
     step "Building MariaDB VFS image (wasm64)"
     WASM_POSIX_DEP_TARGET_ARCH=wasm64 \
@@ -772,12 +798,7 @@ build_redis() {
 build_dinit() {
     need_kernel
     need_sdk
-    # dinit uses libc++ which the mariadb build script installs into
-    # the sysroot. Force a mariadb build first if libc++ isn't there
-    # — it's the cheapest path to get the headers + library set up.
-    if [ ! -f "$REPO_ROOT/sysroot/lib/libc++.a" ]; then
-        build_mariadb
-    fi
+    # dinit resolves libcxx itself and builds against a private sysroot.
     if ! has_dinit; then
         step "Building dinit"
         bash "$REPO_ROOT/packages/registry/dinit/build-dinit.sh"
@@ -883,12 +904,6 @@ build_spidermonkey_node() {
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
         build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve spidermonkey-node)
     info "spidermonkey-node resolved"
-}
-
-build_node_vfs() {
-    # Declared VFS product; the engine resolves shell/node and runs
-    # packages/registry/node-vfs/build-node-vfs.sh (unchanged script).
-    bootstrap_target browser-node
 }
 
 build_vim_zip() {
@@ -1398,7 +1413,9 @@ build_shell_vfs() {
 
     # Declared VFS product (packages/sets/local-supported.toml); the engine
     # resolves the "shell" package closure and validates it against
-    # images/vfs/products/browser-main-shell.toml.
+    # images/vfs/products/browser-main-shell.toml, whose declared builder is
+    # packages/registry/shell/build-shell.sh (also the shell package's own
+    # build script).
     bootstrap_target browser-main-shell
 }
 
@@ -1487,6 +1504,13 @@ build_nginx_php_vfs() {
     # runs images/vfs/scripts/build-nginx-php-vfs-image.sh (unchanged
     # script), which is also the nginx-php-vfs package's own build script.
     bootstrap_target browser-nginx-php
+}
+
+build_nginx_python_vfs() {
+    # Declared VFS product; the engine resolves shell/nginx/cpython/dinit and
+    # runs images/vfs/scripts/build-nginx-python-vfs-image.sh (unchanged
+    # script), which is also the nginx-python-vfs package's own build script.
+    bootstrap_target browser-nginx-python
 }
 
 build_ruby_todo_vfs() {
@@ -1740,6 +1764,66 @@ build_fbdoom() {
     bootstrap_target fbdoom
 }
 
+build_foot() {
+    if has_foot; then
+        info "foot"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving foot.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve foot)
+    info "foot resolved"
+}
+
+build_dbus() {
+    if has_dbus; then
+        info "dbus"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving dbus-daemon.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve dbus)
+    info "dbus resolved"
+}
+
+build_mako() {
+    if has_mako; then
+        info "mako"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving mako.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve mako)
+    info "mako resolved"
+}
+
+build_waybar() {
+    if has_waybar; then
+        info "waybar"
+        return
+    fi
+    need_kernel
+    need_sdk
+    step "Resolving waybar.wasm"
+    local host_target
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$host_target" --quiet -- \
+        build-deps --arch wasm32 --binaries-dir "$REPO_ROOT/binaries" resolve waybar)
+    info "waybar resolved"
+}
+
 build_vim() {
     bootstrap_target vim
 }
@@ -1824,7 +1908,6 @@ build_target() {
         shell-vfs)  build_shell_vfs ;;
         node)       build_node ;;
         spidermonkey-node) build_spidermonkey_node ;;
-        node-vfs)   build_node_vfs ;;
         wordpress)  build_wordpress ;;
         wp-vfs)     build_wp_vfs ;;
         erlang)     build_erlang ;;
@@ -1833,6 +1916,7 @@ build_target() {
         nginx-vfs)  build_nginx_vfs ;;
         redis-vfs)  build_redis_vfs ;;
         nginx-php-vfs) build_nginx_php_vfs ;;
+        nginx-python-vfs) build_nginx_python_vfs ;;
         ruby-todo-vfs) build_ruby_todo_vfs ;;
         bc)         build_bc ;;
         file)       build_file ;;
@@ -1853,8 +1937,13 @@ build_target() {
         nethack)    build_nethack ;;
         nethack-zip) build_nethack_zip ;;
         fbdoom)     build_fbdoom ;;
+        foot)       build_foot ;;
+        dbus)       build_dbus ;;
+        mako)       build_mako ;;
+        waybar)     build_waybar ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
+        lua|love)   bootstrap_target "$target" ;;
         openssl)    build_openssl ;;
         libcurl)    build_libcurl ;;
         vim)        build_vim ;;
@@ -1877,7 +1966,7 @@ build_target() {
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node node-vfs wp-vfs lamp-vfs ruby-todo-vfs)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs dbus foot)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -1920,6 +2009,7 @@ build_all() {
     build_php
     build_php_fpm
     build_nginx_php_vfs
+    build_nginx_python_vfs
     build_mariadb
     build_mariadb_vfs
     build_redis
@@ -1932,7 +2022,6 @@ build_all() {
     build_perl_vfs
     build_ruby
     build_shell_vfs
-    build_node_vfs
     build_wordpress
     build_wp_vfs
     build_lamp_vfs
@@ -1999,8 +2088,8 @@ clean_target() {
             rm -rf "$REPO_ROOT/host/dist"
             warn "Cleaned host" ;;
         rootfs)
-            rm -f "$REPO_ROOT/host/wasm/rootfs.vfs"
-            warn "Cleaned rootfs.vfs" ;;
+            rm -f "$REPO_ROOT/host/wasm/rootfs.vfs.zst"
+            warn "Cleaned rootfs.vfs.zst" ;;
         programs)
             rm -f "$REPO_ROOT/host/wasm/fork-exec.wasm"
             rm -f "$REPO_ROOT/host/wasm/"*.wasm 2>/dev/null || true
@@ -2118,11 +2207,6 @@ clean_target() {
             rm -rf "$REPO_ROOT/packages/registry/spidermonkey-node/bin" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/spidermonkey-node.wasm"
             warn "Cleaned spidermonkey-node" ;;
-        node-vfs)
-            xtask_clean_target node-vfs
-            rm -f "$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst" \
-                  "$REPO_ROOT/local-binaries/programs/wasm32/node-vfs.vfs.zst"
-            warn "Cleaned Node VFS image" ;;
         wordpress)
             xtask_clean_target wordpress
             rm -rf "$REPO_ROOT/packages/registry/wordpress/wordpress" \
@@ -2352,7 +2436,7 @@ clean_target() {
                 clean_target "$t"
             done ;;
         all)
-            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node node-vfs wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
+            for t in kernel sysroot sysroot64 host rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano ncurses zlib openssl libcurl vim vim-zip git nginx php php-fpm mariadb mariadb-vfs mariadb64 mariadb64-vfs redis dinit msmtpd cpython python-vfs perl perl-vfs ruby shell-vfs node wordpress wp-vfs lamp-vfs erlang erlang-vfs texlive texlive-vfs dlopen; do
                 clean_target "$t"
             done ;;
         *)  err "Unknown clean target: $target"; exit 1 ;;
@@ -2407,9 +2491,12 @@ cmd_rebuild() {
     info "Rebuild complete"
 }
 
-# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE]` —
+# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--below-abi N]` —
 # garbage-collect the SourceOnly build cache this checkout uses
-# (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). A dry run
+# (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). --below-abi
+# also collects old ordinary-cache generations and debris unless isolated by
+# a source-cache override; --binary-cache-root explicitly selects that cache.
+# A dry run
 # unless --apply; the policy and its safety rules live in `xtask cache-gc`
 # (tools/xtask/src/cache_gc.rs) and docs/package-management.md.
 cmd_cache_gc() {
@@ -2422,6 +2509,52 @@ cmd_cache_gc() {
 }
 
 cmd_local_build() {
+    # `--plan` previews this exact build without running it: which nodes are
+    # cache hits, which will build, and an estimate from recorded timings.
+    # Why: whether a build takes seconds (all cached) or 10+ minutes decides
+    # how an agent should run it. A short one is one foreground call; a long
+    # one needs scripts/agent-job. Guessing wrong in a headless session or a
+    # subagent loses the result and forces a full re-run. It uses the release
+    # xtask binary because the debug build `cargo run` produces takes 6-15 s
+    # to plan, against about 1 s here; see docs/package-management.md.
+    if [ "${1:-}" = "--plan" ]; then
+        shift
+        local plan_json=()
+        if [ "${1:-}" = "--json" ]; then
+            plan_json=(--json)
+            shift
+        fi
+        if [ $# -ne 0 ]; then
+            err "Usage: $0 local-build --plan [--json]"
+            exit 2
+        fi
+        # One dev-shell entry for both the freshness build and the plan: the
+        # plan must run inside the declared shell (toolchain identity is part
+        # of every cache key, so outside it nodes look unbuilt), and each
+        # `nix develop` costs seconds, or minutes on a loaded machine.
+        local host="$KANDELO_XTASK_HOST_TRIPLE"
+        [ -n "$host" ] || { err "could not determine the host target (is rustc installed?)"; exit 1; }
+        # The plan's stdout goes to a file written inside the shell, because
+        # shell-hook banners share the launcher's stdout and would corrupt
+        # --json (the same reason cmd_local_build below uses a result file).
+        local plan_out status=0
+        plan_out="$(mktemp "${TMPDIR:-/tmp}/kandelo-local-build-plan.XXXXXX")"
+        bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
+            set -e
+            cd "$1"
+            cargo build --release -p xtask --target "$2" --quiet >&2
+            out="$3"
+            shift 3
+            "$@" > "$out"' kandelo-local-build-plan "$REPO_ROOT" "$host" "$plan_out" \
+            "$REPO_ROOT/target/$host/release/xtask" local-build plan \
+            --set "$REPO_ROOT/packages/sets/local-supported.toml" --status \
+            --source-cache-root "${KANDELO_SOURCE_CACHE_ROOT:-$HOME/.cache/kandelo/source-only}" \
+            --output-root "$REPO_ROOT/local-binaries/source-only-v1" --product all --jobs 16 \
+            "${plan_json[@]+"${plan_json[@]}"}" >&2 || status=$?
+        command cat -- "$plan_out"
+        rm -f -- "$plan_out"
+        return "$status"
+    fi
     local emit_json=0
     if [ "${1:-}" = "--json" ]; then
         emit_json=1
@@ -2447,8 +2580,10 @@ cmd_local_build() {
     # Write the helper's machine result inside that shell: Nix warnings and
     # shell-hook banners share the launcher's stdout, so capturing the outer
     # stream would corrupt the JSON protocol before jq can validate it.
+    local_build_events_env
     local command=(
         bash "$REPO_ROOT/scripts/dev-shell.sh"
+        ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"}
         bash -c 'exec bash "$1" >"$2"' kandelo-local-build "$helper" "$result_file"
     )
 
@@ -2534,7 +2669,9 @@ cmd_local_build() {
 # build. Delegates to xtask bootstrap (scripts/setup.sh) inside the
 # repository dev shell; see docs/agent-guidance/packages-and-builds.md.
 cmd_setup() {
+    local_build_events_env
     exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
+        ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
         bash "$REPO_ROOT/scripts/setup.sh" "$@"
 }
 
@@ -2722,7 +2859,7 @@ cmd_browser() {
 cmd_test() {
     local suites=("$@")
     if [ ${#suites[@]} -eq 0 ]; then
-        suites=(cargo vitest libc posix)
+        suites=(cargo vitest sdk libc posix)
     fi
 
     # Pre-test freshness check (not a divergence guard: Stage 2 collapsed
@@ -2751,6 +2888,22 @@ cmd_test() {
             vitest)
                 step "Running vitest"
                 cd "$REPO_ROOT/host"
+                if ! npx vitest run; then
+                    failed=1
+                fi
+                cd "$REPO_ROOT"
+                ;;
+            sdk)
+                # The SDK ships its own vitest suite and nothing ran it: no
+                # workflow, and no invocation in run.sh, scripts/ or xtask. Its
+                # `PKG_CONFIG_PATH` filter is what decides whether a package can
+                # see its dependencies, and a per-worktree cache root
+                # (`kandelo-lane-f`) failing that filter is what blocked php --
+                # and through php, wordpress and lamp -- for a whole session.
+                # That rule is worth a guard that actually executes.
+                step "Running SDK tests"
+                cd "$REPO_ROOT/sdk"
+                [ -d node_modules ] || npm install
                 if ! npx vitest run; then
                     failed=1
                 fi
@@ -2866,7 +3019,7 @@ cmd_list() {
     echo "  sysroot64   musl libc sysroot (wasm64)           $([ -f "$REPO_ROOT/sysroot64/lib/libc.a" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  sdk         SDK cross-compilation tools           $(command -v wasm32posix-cc &>/dev/null && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  host        TypeScript host (tsup)                $([ -d "$REPO_ROOT/host/dist" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  rootfs      Canonical host rootfs.vfs             $([ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
+    echo "  rootfs      Canonical host rootfs.vfs.zst         $([ -f "$REPO_ROOT/host/wasm/rootfs.vfs.zst" ] && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  programs    Simple C programs (sh, cat, ls, ...)  $(has_programs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  dash        dash 0.5.12 shell                      $(has_dash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  bash        bash 5.2 shell                         $(has_bash && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
@@ -2910,7 +3063,6 @@ cmd_list() {
     echo "  shell-vfs   Shell environment VFS image           $(has_shell_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  node        SpiderMonkey Node compatibility binary $(has_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  spidermonkey-node  SpiderMonkey Node-compatible binary $(has_spidermonkey_node && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
-    echo "  node-vfs    Node + npm VFS image                  $(has_node_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wordpress   WordPress + SQLite plugin             $(has_wordpress && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  wp-vfs      WordPress VFS image                   $(has_wp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"
     echo "  lamp-vfs    WordPress LAMP VFS image              $(has_lamp_vfs && echo "${GREEN}✓${RESET}" || echo "${YELLOW}○${RESET}")"

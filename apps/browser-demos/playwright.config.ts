@@ -1,5 +1,6 @@
 import { defineConfig } from "@playwright/test";
-import { lstatSync } from "node:fs";
+import { lstatSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -92,16 +93,54 @@ for (const key of browserEnvironmentKeys) {
   }
 }
 
-// Nix dev-shell build/linker paths are for toolchain commands, not
-// downloaded Playwright browser binaries. WebKitGTK reads more host
-// environment than Chromium/Firefox and can crash before navigation.
-const launchOptions = {
-  env: browserLaunchEnv,
-  args:
-    protectedBrowserBaseUrl === undefined
-    ? undefined
-    : ["--proxy-bypass-list=<-loopback>"],
-};
+// TEMPORARY WORKAROUND: remove once the pinned Playwright bundles Firefox
+// 158 or later. The bundled version is the "firefox" entry's
+// "browserVersion" in node_modules/playwright-core/browsers.json (153.0 with
+// Playwright 1.62.1).
+//
+// macOS 27 protects ~/Library/Application Support/Firefox (the installed
+// Firefox's app-data directory) behind Full Disk Access. Playwright's bundled
+// Firefox resolves that same directory despite -profile, so from a terminal
+// or agent without Full Disk Access every launch hangs or fails with "Could
+// not find profile folder". A fresh, empty CoreFoundation home keeps that
+// lookup inside a directory the test run owns.
+// Upstream: https://github.com/microsoft/playwright/issues/42768 and
+// Mozilla's fix https://phabricator.services.mozilla.com/D326501.
+//
+// To remove: delete firefoxLaunchEnv and the firefox project's
+// launchOptions, then on macOS, from a process without Full Disk Access,
+// confirm test/coi.spec.ts and test/opfs-*.spec.ts pass with
+// --project=firefox.
+const firefoxLaunchEnv: Record<string, string> =
+  process.platform === "darwin"
+    ? {
+        ...browserLaunchEnv,
+        CFFIXED_USER_HOME: mkdtempSync(join(tmpdir(), "kandelo-pw-firefox-home-")),
+      }
+    : browserLaunchEnv;
+
+const sharedLaunchArgs =
+  protectedBrowserBaseUrl === undefined
+    ? []
+    : ["--proxy-bypass-list=<-loopback>"];
+
+// Chromium lets an origin with a history of audible playback (its Media
+// Engagement Index) start Web Audio without a user gesture. Playwright's
+// contexts share that history within one browser process, so after a test
+// plays sound, a later test on the same origin could find audio already
+// running, depending on which worker ran what first. Tests that assert the
+// no-gesture state (kandelo-audio-toast) need the policy a first-time
+// visitor gets, so turn off the engagement bypass for the test browser.
+const chromiumLaunchArgs = [
+  ...sharedLaunchArgs,
+  // Mute the browser's physical output; keep Web Audio processing and
+  // autoplay policy intact so audio behavior still gets tested.
+  "--mute-audio",
+  // Chromium also replaces host ICE candidates with mDNS names, which headless
+  // test contexts cannot resolve, so a loopback WebRTC link between two
+  // contexts (the machine-sharing specs) never connects without this.
+  "--disable-features=MediaEngagementBypassAutoplayPolicies,WebRtcHideLocalIpsWithMdns",
+];
 
 export default defineConfig({
   testDir: join(__dirname, "test"),
@@ -124,7 +163,13 @@ export default defineConfig({
       assembledSiteRoot === undefined
         ? undefined
         : { "Accept-Encoding": "identity" },
-    launchOptions,
+    // Nix dev-shell build/linker paths are for toolchain commands, not
+    // downloaded Playwright browser binaries. WebKitGTK reads more host
+    // environment than Chromium/Firefox and can crash before navigation.
+    launchOptions: {
+      env: browserLaunchEnv,
+      args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
+    },
     proxy:
       protectedBrowserBaseUrl === undefined
       ? undefined
@@ -165,28 +210,17 @@ export default defineConfig({
       use: {
         browserName: "chromium",
         channel: "chromium",
-        // Chromium replaces host ICE candidates with mDNS names, which
-        // headless test contexts cannot resolve, so a loopback WebRTC
-        // link between two contexts never connects without this flag.
-        launchOptions: {
-          ...launchOptions,
-          args: [
-            ...(launchOptions.args ?? []),
-            "--disable-features=WebRtcHideLocalIpsWithMdns",
-          ],
-        },
+        launchOptions: { env: browserLaunchEnv, args: chromiumLaunchArgs },
       },
     },
     {
       name: "firefox",
-      // Playwright launches Chromium with --mute-audio and gives Firefox no
-      // equivalent, so a demo with sound plays through the host's speakers
-      // during a headless run.
       use: {
         browserName: "firefox",
         launchOptions: {
-          ...launchOptions,
+          env: firefoxLaunchEnv,
           firefoxUserPrefs: { "media.volume_scale": "0.0" },
+          args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
         },
       },
     },

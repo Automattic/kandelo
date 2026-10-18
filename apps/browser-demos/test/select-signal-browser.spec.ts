@@ -5,7 +5,11 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const browserKernelPath = resolve(repoRoot, "host/src/browser-kernel-host.ts");
-const memoryFsPath = resolve(repoRoot, "host/src/vfs/memory-fs.ts");
+// The Rust image writer. Its wasm arrives as bytes from Node, the shape the
+// program fixtures already use; the bridge no longer imports node builtins,
+// so a page can transform it like any other module.
+const imageFsModulePath = resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts");
+const imageModuleWasmPath = resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm");
 const fixturePaths = {
   wasm32: resolve(repoRoot, "examples/select_signal_test.wasm"),
   wasm64: resolve(repoRoot, "examples/select_signal_test.wasm64.wasm"),
@@ -21,12 +25,12 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
 
   const result = await page.evaluate(
-    async ({ browserKernelUrl, memoryFsUrl, wasm32Bytes, wasm64Bytes }) => {
+    async ({ browserKernelUrl, imageFsModuleUrl, imageModuleBytes, wasm32Bytes, wasm64Bytes }) => {
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const decoder = new TextDecoder();
       const pendingMarker = "TASK16_GATE=";
@@ -168,9 +172,7 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
           },
         });
         try {
-          const image = MemoryFileSystem.create(
-            new SharedArrayBuffer(256 * 1024),
-          );
+          const image = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
           await kernel.initFromImage({ vfsImage: await image.saveImage() });
           const exitCode = await kernel.spawn(
             new Uint8Array(bytes).buffer,
@@ -210,7 +212,8 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
     },
     {
       browserKernelUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
-      memoryFsUrl: new URL(`/@fs/${memoryFsPath}`, baseURL).href,
+      imageFsModuleUrl: new URL(`/@fs/${imageFsModulePath}`, baseURL).href,
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       wasm32Bytes: Array.from(readFileSync(fixturePaths.wasm32)),
       wasm64Bytes: Array.from(readFileSync(fixturePaths.wasm64)),
     },

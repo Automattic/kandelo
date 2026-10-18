@@ -14,8 +14,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 case "$TARGET_ARCH" in
     wasm32|wasm64) ;;
@@ -24,13 +25,13 @@ esac
 kandelo_package_prepare_build_roots "$SCRIPT_DIR/sqlite-work" "$TARGET_ARCH"
 
 # --- Resolver contract (with legacy fallbacks) ---
-SQLITE_VERSION="${WASM_POSIX_DEP_VERSION:-${SQLITE_VERSION:-3.49.1}}"
+SQLITE_VERSION="$WASM_POSIX_DEP_VERSION"
 SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/source"
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/build"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/sqlite-install}"
 # Legacy default URL uses the packed version form (3.49.1 → 3490100).
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 SQLITE_MAX_COMPOUND_SELECT="${SQLITE_MAX_COMPOUND_SELECT:-50}"
 SQLITE_MAX_EXPR_DEPTH="${SQLITE_MAX_EXPR_DEPTH:-100}"
 SQLITE_JSON_MAX_DEPTH="${SQLITE_JSON_MAX_DEPTH:-100}"

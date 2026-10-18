@@ -1,0 +1,50 @@
+#!/bin/sh
+# Start the Hyprland-class tiling desktop and stay in the foreground until
+# it ends.
+#
+# The same compositor as wldesktop, in dwindle mode: it tiles every window
+# and dictates each one's size through xdg configure, and reads its
+# keybindings (CTRL+Return terminal, CTRL+K clock, CTRL+P paint, CTRL+W
+# close, CTRL+1..9 workspaces; each mirrored on SUPER) from the config below.
+# A browser reserves SUPER, so CTRL is the modifier that reaches the page.
+#
+# The socket is fixed at /tmp/wayland-0 (see wldesktop for why /tmp); waiting
+# on it rather than sleeping keeps a slow first boot correct.
+set -u
+
+SOCKET=/tmp/wayland-0
+
+WLC_LAYOUT=dwindle \
+WLC_CONFIG=/usr/share/kandelo/hyprland/wlcompositor.conf \
+    /usr/local/bin/wlcompositor &
+compositor_pid=$!
+
+i=0
+while [ ! -e "$SOCKET" ]; do
+    if ! kill -0 "$compositor_pid" 2>/dev/null; then
+        echo "hyprdesktop: wlcompositor exited before binding $SOCKET" >&2
+        wait "$compositor_pid"
+        exit 1
+    fi
+    i=$((i + 1))
+    if [ "$i" -gt 100 ]; then
+        echo "hyprdesktop: timed out waiting for $SOCKET" >&2
+        kill "$compositor_pid" 2>/dev/null
+        exit 1
+    fi
+    sleep 0.1
+done
+
+# A clock and two terminals tile the screen. The foreground terminal is the
+# one whose exit ends the desktop; tear the rest down with it.
+/usr/local/bin/wlclock &
+clock_pid=$!
+/usr/local/bin/wlterm &
+term_pid=$!
+
+/usr/local/bin/wlterm
+status=$?
+
+kill "$clock_pid" "$term_pid" "$compositor_pid" 2>/dev/null
+wait "$compositor_pid" 2>/dev/null
+exit "$status"

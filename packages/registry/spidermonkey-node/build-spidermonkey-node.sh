@@ -69,6 +69,12 @@ if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
     fi
     WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto install_local_binary spidermonkey-node "$BIN_DIR/node.wasm"
     WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto install_local_binary node "$BIN_DIR/node.wasm"
+elif [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    # A resolver caller owns only its output root; never touch the
+    # checkout's local-binaries mirror from here.
+    mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
+    cp "$BIN_DIR/node.wasm" "$WASM_POSIX_DEP_OUT_DIR/node.wasm"
+    echo "  installed $WASM_POSIX_DEP_OUT_DIR/node.wasm (resolver scratch)"
 else
     for name in spidermonkey-node node; do
         dest="$REPO_ROOT/local-binaries/programs/$ARCH/$name.wasm"
@@ -76,9 +82,4 @@ else
         cp "$BIN_DIR/node.wasm" "$dest"
         echo "  installed $dest"
     done
-    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-        mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-        cp "$BIN_DIR/node.wasm" "$WASM_POSIX_DEP_OUT_DIR/node.wasm"
-        echo "  installed $WASM_POSIX_DEP_OUT_DIR/node.wasm (resolver scratch)"
-    fi
 fi

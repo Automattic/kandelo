@@ -1082,11 +1082,12 @@ describe("KernelScratchRegion", () => {
   it("rejects forged, cross-lease, reused, misplaced, and missing export pointers", () => {
     const kernelMemory = memory();
     let nextAllocation = 4096;
+    let calls = 0;
     const instance = importedKernelExportInstance(
       kernelMemory,
       "kernel_send",
       ["i32", "i32", "i32", "i32"],
-      () => 0,
+      () => { calls++; return 0; },
       () => {
         const pointer = nextAllocation;
         nextAllocation += 4096;
@@ -1129,7 +1130,7 @@ describe("KernelScratchRegion", () => {
         1,
         0,
       ]);
-    })).toThrow(/another lease/i);
+    })).toThrow(/owned range token/i);
     expect(() => first.withLease((scratch) => {
       scratch.invokeKernelExport("kernel_send", [
         1,
@@ -1158,6 +1159,7 @@ describe("KernelScratchRegion", () => {
         [1, scratch.exportPointer(0, 1), 1, 0],
       );
     })).toThrow(/not approved/i);
+    expect(calls).toBe(0);
   });
 
   it("couples every export pointer to an exact non-negative byte capacity", () => {
@@ -1451,6 +1453,51 @@ describe("KernelScratchRegion", () => {
       expect(String(reentryError)).toMatch(/sealed during.*kernel export/i);
       expect(calls).toBe(1);
     });
+  });
+
+  it("does not invoke inherited setters while materializing export arguments", () => {
+    let observedArguments: number[] | undefined;
+    let setterCalls = 0;
+    const kernelMemory = memory();
+    const instance = importedKernelExportInstance(
+      kernelMemory,
+      "kernel_send",
+      ["i32", "i32", "i32", "i32"],
+      (...args) => {
+        observedArguments = args as number[];
+        return 0;
+      },
+    );
+    const region = allocateKernelScratchRegion(
+      kernelMemory,
+      instance.exports.kernel_alloc_scratch as (size: number) => number,
+      32,
+      4,
+      "inherited setter scratch",
+      instance,
+    );
+    const original = Object.getOwnPropertyDescriptor(Object.prototype, "1");
+    let observedResult = -1;
+    try {
+      Object.defineProperty(Object.prototype, "1", {
+        configurable: true,
+        set() { setterCalls++; },
+      });
+      region.withLease((scratch) => {
+        observedResult = scratch.invokeKernelExport("kernel_send", [
+          1,
+          scratch.exportPointer(8, 1),
+          1,
+          0,
+        ]);
+      });
+    } finally {
+      if (original) Object.defineProperty(Object.prototype, "1", original);
+      else delete (Object.prototype as Record<string, unknown>)["1"];
+    }
+    expect(setterCalls).toBe(0);
+    expect(observedResult).toBe(0);
+    expect(observedArguments).toEqual([1, 4104, 1, 0]);
   });
 
   it("does not use mutable array push or iteration while materializing pointers", () => {

@@ -2,8 +2,10 @@
  * Declarative mount layout shared by Node and Browser hosts.
  *
  * The same `MountSpec[]` produces a `Promise<MountConfig[]>` via
- * per-environment resolvers — Node materialises scratch backends as host
- * directories under a session dir; the browser uses ephemeral memfs SABs.
+ * per-environment resolvers. The kernel serves the `/` image and the scratch
+ * prefixes the in-kernel tmpfs owns on both hosts, so the resolvers return only
+ * the host-backed mounts that remain: on Node, a scratch mount at any other
+ * path becomes a host directory under the session dir; the browser has none.
  *
  * `readonly` is currently advisory: `VirtualPlatformIO` does not enforce it
  * on writes. The resolver still propagates the flag for backends and routers
@@ -11,19 +13,38 @@
  */
 
 import type { MountConfig } from "./types";
-import { FILE_MODES, OPEN_FLAGS } from "../generated/abi";
-import { MemoryFileSystem } from "./memory-fs";
-import { restoreVerifiedVfsImage } from "./load-image";
 
-const O_WRONLY_CREAT_TRUNC =
-  OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
+/**
+ * Scratch prefixes the in-kernel tmpfs claims. MUST stay in exact
+ * sync with the `SCRATCH_MOUNTS` table in `crates/runtime-core/src/tmpfs.rs`; a
+ * mount whose path is one of these is served entirely by the kernel, so the
+ * host must not also materialise a backend for it (that would be a second
+ * authority the kernel never consults). A scratch mount at any other path (e.g.
+ * `/run`) stays host-backed.
+ */
+export const KERNEL_TMPFS_OWNED_PREFIXES: readonly string[] = [
+  "/tmp",
+  "/var/tmp",
+  "/var/log",
+  "/var/run",
+  "/home/maker",
+  "/root",
+  "/srv",
+];
+
+/** True when the in-kernel tmpfs owns `mountPath` exactly (a scratch prefix). */
+function kernelTmpfsOwnsMountPath(mountPath: string): boolean {
+  return KERNEL_TMPFS_OWNED_PREFIXES.includes(mountPath);
+}
 
 export interface MountSpec {
   /** Absolute VFS mount point (e.g., "/etc"). No trailing slash except "/". */
   path: string;
   /**
-   * `image`   — asynchronously restore and authenticate the supplied image.
-   * `scratch` — empty writable backend (host dir on Node, memfs in browser).
+   * `image`   — the supplied VFS image, which the kernel loads as `/` (the
+   *             only path an image mount may name).
+   * `scratch` — empty writable filesystem: the in-kernel tmpfs for its
+   *             prefixes, a host directory on Node elsewhere.
    */
   source: "image" | "scratch";
   /** Advisory mount intent; the ordinary image-backed root remains writable. */
@@ -82,108 +103,21 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/srv", source: "scratch", mode: 0o755, nosuid: true },
 ];
 
-/** Default growth ceiling for the rootfs image-backed memfs (1 GiB). */
-export const IMAGE_MEMFS_MAX_BYTES = 1 * 1024 * 1024 * 1024;
-
 /**
- * Default size for a browser scratch memfs SAB (16 MiB).
- *
- * 16 MiB is a generous baseline that accommodates real workloads we
- * already ship: SQLite WAL/journal under `/tmp`, MariaDB InnoDB log
- * spillover under `/var/log` and `/var/run`, nginx access/error logs,
- * and PHP session files under `/var/tmp`. The SAB is not pre-allocated
- * — `MemoryFileSystem` only writes used pages — so the wall-clock cost
- * of bumping from the prior 1 MiB is essentially free, while the prior
- * 1 MiB ceiling was already known to ENOSPC on the WordPress install
- * path (Task 4.3 implementer flagged this for cutover).
- *
- * Per-mount overrides can be supplied via `BrowserResolverOptions`
- * once a demo needs more than the default — none do today.
+ * Drop the scratch mounts the in-kernel tmpfs owns, so the host materialises no
+ * backend for a prefix the kernel serves. The in-kernel tmpfs is the
+ * unconditional authority for its scratch prefixes (its root modes, owners and
+ * `nosuid` come from `SCRATCH_MOUNTS` in `crates/runtime-core/src/tmpfs.rs`,
+ * not from the spec), so this filtering is always applied.
+ * Image mounts, and host-owned scratch mounts outside tmpfs's prefixes (e.g.
+ * `/run`), are preserved.
  */
-export const BROWSER_SCRATCH_SAB_BYTES = 16 * 1024 * 1024;
-
-function readTextFile(fs: MemoryFileSystem, path: string): string | null {
-  let fd: number | null = null;
-  try {
-    const st = fs.stat(path);
-    fd = fs.open(path, 0, 0);
-    const bytes = new Uint8Array(st.size);
-    let offset = 0;
-    while (offset < bytes.byteLength) {
-      const n = fs.read(fd, bytes.subarray(offset), null, bytes.byteLength - offset);
-      if (n <= 0) break;
-      offset += n;
-    }
-    return new TextDecoder().decode(bytes.subarray(0, offset));
-  } catch {
-    return null;
-  } finally {
-    if (fd !== null) {
-      try { fs.close(fd); } catch {}
-    }
-  }
-}
-
-function writeTextFile(fs: MemoryFileSystem, path: string, text: string): void {
-  const bytes = new TextEncoder().encode(text);
-  const fd = fs.open(path, O_WRONLY_CREAT_TRUNC, 0o644);
-  try {
-    if (bytes.byteLength > 0) fs.write(fd, bytes, null, bytes.byteLength);
-  } finally {
-    fs.close(fd);
-  }
-}
-
-export function normalizeLegacyRootfs(fs: MemoryFileSystem): void {
-  // Compatibility for already-published dinit demo images that contain a
-  // nobody user but not the matching nobody group. php-fpm validates
-  // `group = nobody` during pool startup and exits EX_CONFIG (78) without it.
-  const group = readTextFile(fs, "/etc/group");
-  if (group !== null && !/^nobody:/m.test(group)) {
-    writeTextFile(fs, "/etc/group", `${group.replace(/\n?$/, "\n")}nobody:x:65534:\n`);
-  }
-}
-
-function normalizeMountPoint(path: string): string {
-  return path === "/" ? path : path.replace(/\/+$/, "");
-}
-
-function isDirectoryMode(mode: number): boolean {
-  return (mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR;
-}
-
-/**
- * Ensure mount points below image-missing directories are reachable.
- *
- * The kernel checks search permissions on every parent component before
- * opening or statting a final path. Runtime mounts such as
- * `/usr/local/lib/kandelo` therefore need `/usr/local` and
- * `/usr/local/lib` to exist in the root image even though the mounted
- * backend owns the final mount point itself.
- */
-export function ensureMountParentDirectories(
-  rootfs: MemoryFileSystem,
-  mountPoints: readonly string[],
-): void {
-  for (const mountPoint of mountPoints) {
-    const normalized = normalizeMountPoint(mountPoint);
-    if (normalized === "/" || !normalized.startsWith("/")) continue;
-
-    const segments = normalized.split("/").filter(Boolean);
-    let current = "";
-    for (let i = 0; i < segments.length - 1; i++) {
-      const segment = segments[i];
-      if (segment === "." || segment === "..") break;
-
-      current += `/${segment}`;
-      try {
-        const st = rootfs.stat(current);
-        if (!isDirectoryMode(st.mode)) break;
-      } catch {
-        rootfs.mkdir(current, 0o755);
-      }
-    }
-  }
+export function filterMountSpecForKernelTmpfs(
+  spec: readonly MountSpec[],
+): MountSpec[] {
+  return spec.filter(
+    (m) => !(m.source === "scratch" && kernelTmpfsOwnsMountPath(m.path)),
+  );
 }
 
 export function validateSpec(spec: MountSpec[]): void {
@@ -209,100 +143,66 @@ export function validateSpec(spec: MountSpec[]): void {
     }
     seen.add(m.path);
   }
+  assertOnlyRootImageMount(spec);
 }
 
 /**
- * Restore and authenticate every image-backed mount before any caller is
- * allowed to normalize an image or construct scratch mounts around it.
+ * The kernel builds exactly one filesystem from an image, and it is `/`.
  *
- * @internal Shared by the Node and browser resolvers so both hosts enforce the
- * same imported-seal trust boundary.
+ * An image mount anywhere else would get no backend on either host (neither
+ * host restores images into a filesystem of its own any more), so accepting
+ * one would silently boot a machine without the tree the spec asked for.
+ * Refusing it at validation time is the truthful answer.
  */
-export async function restoreVerifiedImageMounts(
-  spec: MountSpec[],
-  rootfsImage: Uint8Array,
-): Promise<ReadonlyMap<MountSpec, MemoryFileSystem>> {
-  const restored = new Map(
-    await Promise.all(
-      spec
-        .filter((mount) => mount.source === "image")
-        .map(async (mount) => [
-          mount,
-          await restoreVerifiedVfsImage(rootfsImage, {
-            maxByteLength: IMAGE_MEMFS_MAX_BYTES,
-          }),
-        ] as const),
-    ),
-  );
-
-  // WHY: restore/verify the complete image set before normalization or scratch
-  // setup.
-  // A later forged mount must not leave an earlier mount or host directory
-  // partially mutated when the resolver rejects the boot.
-  for (const fs of restored.values()) normalizeLegacyRootfs(fs);
-  return restored;
+function assertOnlyRootImageMount(spec: readonly MountSpec[]): void {
+  for (const m of spec) {
+    if (m.source === "image" && m.path !== "/") {
+      throw new Error(
+        `MountSpec: image mount at ${m.path} is not supported; the kernel `
+          + `builds only "/" from the VFS image`,
+      );
+    }
+  }
 }
 
 /**
- * Per-mount scratch SAB sizing. Defaults to {@link BROWSER_SCRATCH_SAB_BYTES}
- * for any mount not in the map.
- */
-export interface BrowserResolverOptions {
-  /** Mount path → initial SAB size in bytes. Overrides the default. */
-  scratchSabBytes?: Record<string, number>;
-}
-
-/**
- * Materialise `spec` for the browser host. Image mounts get a fresh,
- * cryptographically verified `MemoryFileSystem`; scratch mounts get an empty
- * `MemoryFileSystem` over a small SAB (the browser has no host directory to
- * bind to).
+ * Materialise `spec` for the browser host, which means: check it, and mount
+ * nothing.
  *
- * Asynchronous input → output function with no global state.
+ * The browser has no host filesystem to mount. The image mount is served by
+ * the kernel, and a scratch mount at one of the prefixes the in-kernel tmpfs
+ * owns is removed by `filterMountSpecForKernelTmpfs`. What is left is a
+ * scratch mount at some other path, and that is refused rather than backed:
+ * Node can back one with a session directory (session seed trees need it),
+ * but the browser protocol has no such facility, and nothing on this host
+ * could provide the mount. Hearing so at resolve time beats a mount that
+ * silently is not the one the kernel sees.
+ *
+ * An image mount gets no host backend on either host. The kernel parses the
+ * image itself and owns `/`; it also verifies any imported cohort seals in the
+ * image when it loads it (`rootfs::load_image`), so the check runs on the bytes
+ * the kernel actually uses rather than on a second copy restored in the host.
  */
 export function resolveForBrowser(
   spec: MountSpec[],
   rootfsImage: Uint8Array,
-  options: BrowserResolverOptions = {},
 ): Promise<MountConfig[]> {
   validateSpec(spec);
-  return resolveValidatedForBrowser(spec, rootfsImage, options);
+  return resolveValidatedForBrowser(spec, rootfsImage);
 }
 
 async function resolveValidatedForBrowser(
   spec: MountSpec[],
-  rootfsImage: Uint8Array,
-  options: BrowserResolverOptions,
+  _rootfsImage: Uint8Array,
 ): Promise<MountConfig[]> {
-  const imageMounts = await restoreVerifiedImageMounts(spec, rootfsImage);
-  const out: MountConfig[] = [];
-  for (const m of spec) {
-    if (m.source === "image") {
-      const backend = imageMounts.get(m);
-      if (backend === undefined) {
-        throw new Error(`verified image mount is missing: ${m.path}`);
-      }
-      out.push({
-        mountPoint: m.path,
-        backend,
-        readonly: m.readonly,
-        nosuid: m.nosuid,
-      });
-    } else {
-      const bytes = options.scratchSabBytes?.[m.path] ?? BROWSER_SCRATCH_SAB_BYTES;
-      const sab = new SharedArrayBuffer(bytes);
-      const backend = MemoryFileSystem.create(sab);
-      if (m.mode !== undefined) backend.chmod("/", m.mode);
-      if (m.uid !== undefined || m.gid !== undefined) {
-        backend.chown("/", m.uid ?? 0, m.gid ?? 0);
-      }
-      out.push({
-        mountPoint: m.path,
-        backend,
-        readonly: m.readonly,
-        nosuid: m.nosuid,
-      });
-    }
+  const effective = filterMountSpecForKernelTmpfs(spec);
+  for (const m of effective) {
+    if (m.source === "image") continue;
+    throw new Error(
+      `browser scratch mount ${m.path} has no backend: the in-kernel tmpfs `
+        + `serves ${KERNEL_TMPFS_OWNED_PREFIXES.join(", ")}, and the browser `
+        + `host has no filesystem of its own to mount anywhere else`,
+    );
   }
-  return out;
+  return [];
 }

@@ -38,6 +38,12 @@ export interface Toolchain {
   nm: string;
   sysroot: string;
   glueDir: string;
+  /**
+   * The KandeloCallTypes plugin to load into C/C++ compiles, or absent to
+   * compile without it. The compiler drivers set it (ensureCalltypesPlugin);
+   * argument builders only read it.
+   */
+  calltypesPlugin?: string;
 }
 
 const REQUIRED_LLVM_TOOLS = ['clang', 'clang++', 'llvm-ar', 'llvm-ranlib', 'llvm-nm', 'wasm-ld'];

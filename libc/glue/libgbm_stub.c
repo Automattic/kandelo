@@ -51,6 +51,20 @@
 #include <string.h>
 #include <stdint.h>
 
+/* WPK GPU-tier bo allocator (mirrors wasm_posix_shared::dri). A GPU-tier
+ * bo is backed by a host WebGLTexture (+FBO) on the compositor's shared
+ * context — unmappable on the CPU side, sampled/rendered zero-copy via
+ * the multiplexer. See DRM_IOCTL_WPK_CREATE_GPU_BO in shared. On return
+ * the `format` slot carries the per-fd handle and `usage` carries the
+ * stride (the 16-byte encoding is preserved). */
+#define WPK_DRM_IOCTL_CREATE_GPU_BO 0xc01064e0u  /* _IOWR('d', 0xE0, 16) */
+struct wpk_drm_gpu_bo_create {
+    uint32_t width;
+    uint32_t height;
+    uint32_t format;   /* in: fourcc.  out: per-fd handle */
+    uint32_t usage;    /* in: GBM_BO_USE_*.  out: stride (bytes) */
+};
+
 struct gbm_device {
     int fd;  /* owned by caller; gbm_device_destroy does NOT close it */
 };
@@ -64,6 +78,7 @@ struct gbm_bo {
     uint32_t bpp;             /* bits per pixel */
     uint64_t size;            /* total bytes (pitch * height) */
     uint64_t modifier;        /* DRM_FORMAT_MOD_LINEAR for v1 */
+    int is_gpu;               /* 1 = GPU-tier (unmappable WebGLTexture bo) */
     void *map_addr;           /* lazy: set by gbm_bo_map */
     size_t map_len;
     void *user_data;
@@ -113,17 +128,58 @@ void gbm_device_destroy(struct gbm_device *gbm) {
     free(gbm);
 }
 
+/* A bo purely used as a GL render target — RENDERING set, none of the
+ * CPU-facing usages (SCANOUT, CURSOR, WRITE, LINEAR) — can be a GPU-tier
+ * bo: unmappable, backed by a host WebGLTexture the compositor samples
+ * zero-copy. Anything the CPU must map (the scanout ring is SCANOUT|
+ * RENDERING; cursors are CURSOR|WRITE) stays a linear dumb bo. */
+static int usage_wants_gpu_tier(uint32_t flags) {
+    const uint32_t cpu_facing =
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_CURSOR |
+        GBM_BO_USE_WRITE   | GBM_BO_USE_LINEAR;
+    return (flags & GBM_BO_USE_RENDERING) && !(flags & cpu_facing);
+}
+
 struct gbm_bo *gbm_bo_create(struct gbm_device *gbm,
                              uint32_t width, uint32_t height,
                              uint32_t format, uint32_t flags) {
-    (void) flags;  /* SCANOUT / CURSOR / RENDERING / LINEAR / etc.
-                     * are advisory; v1 always allocates linear
-                     * CPU-shared. The kernel rejects flags != 0
-                     * on the wire, so don't pass them through. */
     uint32_t bpp = format_bpp(format);
     if (!gbm || !bpp || !width || !height) {
         errno = EINVAL;
         return NULL;
+    }
+
+    struct gbm_bo *bo = (struct gbm_bo *) calloc(1, sizeof(*bo));
+    if (!bo) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    bo->dev      = gbm;
+    bo->width    = width;
+    bo->height   = height;
+    bo->format   = format;
+    bo->bpp      = bpp;
+    bo->modifier = DRM_FORMAT_MOD_LINEAR;
+
+    /* GPU tier first for render-only bos. On any error — notably ENOSYS
+     * when the host has no shared GL context yet (headless, or before the
+     * compositor's context exists) — fall through to a CPU-tier dumb bo,
+     * which BIND_FOREIGN_TEXTURE still samples via a host-side upload. */
+    if (usage_wants_gpu_tier(flags)) {
+        struct wpk_drm_gpu_bo_create greq;
+        memset(&greq, 0, sizeof(greq));
+        greq.width  = width;
+        greq.height = height;
+        greq.format = format;
+        greq.usage  = flags;
+        if (drmIoctl(gbm->fd, WPK_DRM_IOCTL_CREATE_GPU_BO, &greq) == 0) {
+            bo->handle = greq.format;   /* out: per-fd handle */
+            bo->stride = greq.usage;    /* out: stride (bytes) */
+            bo->size   = (uint64_t) greq.usage * height;
+            bo->is_gpu = 1;
+            return bo;
+        }
+        /* else: degrade to CPU tier below. */
     }
 
     struct drm_mode_create_dumb req;
@@ -133,26 +189,14 @@ struct gbm_bo *gbm_bo_create(struct gbm_device *gbm,
     req.bpp    = bpp;
     req.flags  = 0;
     if (drmIoctl(gbm->fd, DRM_IOCTL_MODE_CREATE_DUMB, &req) < 0) {
-        return NULL;
-    }
-
-    struct gbm_bo *bo = (struct gbm_bo *) calloc(1, sizeof(*bo));
-    if (!bo) {
         int save = errno;
-        /* Roll back kernel-side allocation on host-side OOM. */
-        drmCloseBufferHandle(gbm->fd, req.handle);
+        free(bo);
         errno = save;
         return NULL;
     }
-    bo->dev      = gbm;
-    bo->handle   = req.handle;
-    bo->width    = width;
-    bo->height   = height;
-    bo->stride   = req.pitch;
-    bo->size     = req.size;
-    bo->format   = format;
-    bo->bpp      = bpp;
-    bo->modifier = DRM_FORMAT_MOD_LINEAR;
+    bo->handle = req.handle;
+    bo->stride = req.pitch;
+    bo->size   = req.size;
     return bo;
 }
 
@@ -229,6 +273,13 @@ void *gbm_bo_map(struct gbm_bo *bo,
      * require MAP_DUMB + per-call mmap of a sub-range; consumers
      * compute sub-regions from the returned base + stride. */
     if (!bo) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (bo->is_gpu) {
+        /* GPU-tier bos live only as a host WebGLTexture — there is no CPU
+         * mapping. The kernel also rejects MAP_DUMB for them; fail here so
+         * a caller doesn't spin on a MAP_FAILED ioctl. */
         errno = EINVAL;
         return NULL;
     }

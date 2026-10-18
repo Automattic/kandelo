@@ -1,3 +1,6 @@
+import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
+import type { VfsChangeEvent } from "./vfs/types";
+import type { OwnedJobRead } from "./owned-jobs";
 /**
  * BrowserKernel — Thin proxy that communicates with a dedicated kernel
  * web worker via MessagePort. The kernel worker owns the Wasm instance
@@ -7,25 +10,25 @@
  * clients (MySQL, Redis) via async pipe operations.
  */
 
-import {
-  MemoryFileSystem,
-  type LazyDownloadEvent,
-} from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
+import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import { FramebufferRegistry } from "./framebuffer/registry";
+import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
-import {
-  machineCheckpointTransferList,
-  type CheckpointCaptureResponse,
-  type CheckpointFreezeResult,
-  type MachineCheckpoint,
-} from "./migration/checkpoint";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
   ReplicationReplayProgress,
   VfsFileSnapshot,
+  DestroyProgressEvent,
 } from "./browser-kernel-protocol";
+import {
+  machineCheckpointTransferList,
+  type CheckpointCaptureResponse,
+  type CheckpointFreezeResult,
+  type MachineCheckpoint,
+} from "./migration/checkpoint";
 import type { ReplicationLogEntry } from "./replication/log";
 import type { ReplicationReplaySpec } from "./replication/worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
@@ -40,20 +43,34 @@ export type { HttpRequest, HttpResponse };
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
 import {
-  DEFAULT_MAX_PAGES,
   DEFAULT_MAX_WORKERS,
   WASM_PAGE_SIZE,
 } from "./constants";
+import {
+  clampProcessMaxPages,
+  DESKTOP_MEMORY_PROFILE,
+  detectRuntimeMemoryProfile,
+  type RuntimeMemoryProfile,
+} from "./runtime-memory-profile";
 import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
+import { maybeDecompressImage } from "./vfs/vfs-image-transport";
+import {
+  encodeClipboardText,
+  type ClipboardOfferResult,
+  type GuestClipboardResult,
+} from "./clipboard";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
+import { pcmControlWords } from "./audio/pcm-transport";
 import type { PcmTransportDescriptor } from "./audio/pcm-transport";
+import { AudioActivityLatch } from "./audio/audio-activity-latch";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
@@ -66,9 +83,25 @@ const defaultPcmWorkletUrl = new URL(
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
-  /** Maximum wasm memory pages per process (default: 16384 = 1GB). This caps
-   *  guest brk/mmap growth; initial process memory is computed separately. */
+  /**
+   * Maximum wasm memory pages per process. This caps guest brk/mmap growth;
+   * initial process memory is computed separately.
+   *
+   * Defaults to this host's runtime memory profile (1 GiB on engines that
+   * reserve address space lazily, 256 MiB on WebKit, which charges declared
+   * ceilings against a reservation pool). A request above the profile's
+   * budget is clamped to it and reported through `onHostDiagnostic`, because
+   * silently handing a guest less address space than a demo asked for would
+   * hide the real platform boundary.
+   */
   maxMemoryPages?: number;
+  /**
+   * Override the detected runtime memory profile by id ("desktop" or
+   * "constrained"). Intended for tests and deliberate product decisions; the
+   * chosen id is reported through `onHostDiagnostic` when it is not the
+   * default desktop budget.
+   */
+  memoryProfile?: string;
   /**
    * Allocation-admission budget sampled from simultaneously live process
    * address spaces before each new allocation.
@@ -118,7 +151,7 @@ export interface BrowserKernelOptions {
   /** The kernel worker always owns the VFS exclusively: the main thread holds
    *  no VFS SharedArrayBuffer, so it is reclaimed by `Worker.terminate()` and
    *  never accumulates across image switches (Safari OOM fix). Demos build a
-   *  VFS image with {@link MemoryFileSystem} + `saveImage()` and pass it to
+   *  VFS image with `KandeloImageFs` + `saveImage()` and pass it to
    *  {@link BrowserKernel.boot} / {@link BrowserKernel.initFromImage}. Accepted
    *  for backward compatibility; the value is ignored (there is no other mode). */
   kernelOwnedFs?: boolean;
@@ -143,8 +176,8 @@ export interface BrowserKernelBootOptions {
   /** Kernel wasm bytes; if omitted, fetched from the bundled URL. */
   kernelWasm?: ArrayBuffer;
   /**
-   * Pre-built VFS image bytes from {@link MemoryFileSystem.saveImage}, OR
-   * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs`
+   * Pre-built VFS image bytes from `KandeloImageFs.saveImage()`, OR
+   * the literal `"default"` to fetch the canonical `host/wasm/rootfs.vfs.zst`
    * shipped with the worker entry. The worker takes ownership; the main
    * thread no longer has FS access.
    */
@@ -228,7 +261,7 @@ export interface BrowserKernelOwnedImageInitOptions {
 }
 
 async function fetchDefaultBrowserKernelArtifact(
-  kind: "kernelWasm" | "rootfsVfs",
+  kind: "kernelWasm",
 ): Promise<ArrayBuffer> {
   // WHY: explicit-byte consumers, including trust-boundary tests and embedded
   // hosts, must not require the demo build's default kernel/rootfs artifacts.
@@ -242,14 +275,60 @@ async function fetchDefaultBrowserKernelArtifact(
   );
 }
 
+/**
+ * Fetch the canonical rootfs image for `vfsImage: "default"`.
+ *
+ * Resolved through {@link browserDefaultRootfsVfsUrl} so the rootfs stays an
+ * on-demand chunk: it is a supporting artifact (empty-filesystem `/etc`
+ * seeding, the network demo's machine, explicit `"default"` callers), not
+ * something every boot should transfer.
+ */
+async function fetchDefaultRootfsVfsImage(): Promise<ArrayBuffer> {
+  const { browserDefaultRootfsVfsUrl } = await import(
+    "./browser-kernel-default-artifacts"
+  );
+  const url = await browserDefaultRootfsVfsUrl();
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `vfsImage:"default" could not fetch the canonical rootfs image ` +
+        `(${response.status} ${response.statusText})`,
+    );
+  }
+  return response.arrayBuffer();
+}
+
+/**
+ * Decode a zstd-compressed VFS image (`rootfs.vfs.zst`, `*.vfs.zst`) into one
+ * whole ordinary ArrayBuffer view; return any other image unchanged.
+ *
+ * The kernel's image reader takes decoded bytes — zstd is a host-side
+ * transport codec — so the host decodes before the worker sees the image,
+ * whichever entry point the caller used.
+ */
+function decodeVfsImage(image: Uint8Array): Uint8Array {
+  const decoded = maybeDecompressImage(image);
+  if (decoded === image) return image;
+  if (
+    decoded.buffer instanceof ArrayBuffer &&
+    decoded.byteOffset === 0 &&
+    decoded.byteLength === decoded.buffer.byteLength
+  ) {
+    return decoded;
+  }
+  const whole = new Uint8Array(new ArrayBuffer(decoded.byteLength));
+  whole.set(decoded);
+  return whole;
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
   private initialized = false;
-  /** POSIX shared-memory / semaphore SAB shared with the kernel worker. Small
-   *  and fixed (1 MiB); the live VFS is owned by the worker, not here. */
-  private shmSab: SharedArrayBuffer;
   private maxPages: number;
+  private readonly memoryProfile: RuntimeMemoryProfile;
+  /** Set when a caller asked for more per-process pages than the budget allows. */
+  private readonly clampedProcessMaxPagesFrom: number | undefined;
   private options: Required<
     Pick<BrowserKernelOptions, "maxWorkers" | "env">
   > &
@@ -295,11 +374,32 @@ export class BrowserKernel {
     (entries: readonly ReplicationLogEntry[]) => void
   >();
   private replicationHttpMissListeners = new Set<(key: string) => void>();
+  private destroyProgress = createDestroyProgressFanout();
+  private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
   private pcmTransport: PcmTransportDescriptor | null = null;
   private pcmDriver: BrowserPcmDriver | null = null;
+  private audioActivity: AudioActivityLatch | null = null;
+  private audioActivityListeners = new Set<(active: boolean) => void>();
 
   constructor(options: BrowserKernelOptions = {}) {
-    this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
+    // Resolve the reservation budget before anything sizes an address space.
+    // On WebKit a declared ceiling is charged whether or not it is used, so
+    // this is a real allocation decision, not presentation.
+    this.memoryProfile = detectRuntimeMemoryProfile(
+      typeof navigator === "undefined"
+        ? {}
+        : {
+          userAgent: navigator.userAgent,
+          maxTouchPoints: navigator.maxTouchPoints,
+        },
+      options.memoryProfile,
+    );
+    const clampedPages = clampProcessMaxPages(
+      options.maxMemoryPages,
+      this.memoryProfile,
+    );
+    this.maxPages = clampedPages.pages;
+    this.clampedProcessMaxPagesFrom = clampedPages.clampedFrom;
     const corsProxy = validateBrowserCorsProxyConfig(options.corsProxy);
     this.options = {
       maxWorkers: DEFAULT_MAX_WORKERS,
@@ -317,11 +417,46 @@ export class BrowserKernel {
       corsProxy,
     };
 
-    // The kernel worker owns the VFS. The main thread allocates only the
-    // small shared-memory SAB (POSIX shm/semaphores), never a VFS buffer, so
-    // nothing large accumulates on the main thread across image switches.
-    this.shmSab = new SharedArrayBuffer(1024 * 1024);
-    MemoryFileSystem.create(this.shmSab); // format shm SAB for kernel worker
+    // The kernel worker owns the machine's filesystem, POSIX shared memory
+    // included (the in-kernel tmpfs serves `/dev/shm`). The main thread holds
+    // no filesystem buffer at all, so nothing accumulates on it across image
+    // switches.
+  }
+
+  /**
+   * Surface a non-default memory budget, and any address space a caller asked
+   * for but did not get.
+   *
+   * A clamp is a real capability reduction — a guest that would have been able
+   * to grow to 1 GiB now cannot — so it must be visible rather than silently
+   * applied. The default desktop budget changes nothing and stays quiet.
+   */
+  private reportMemoryProfile(): void {
+    const notes: string[] = [];
+    if (this.memoryProfile.id !== DESKTOP_MEMORY_PROFILE.id) {
+      notes.push(
+        `memory profile "${this.memoryProfile.id}": ` +
+          `${this.memoryProfile.processMaxPages} pages per process, ` +
+          `${this.memoryProfile.kernelMaxPages} kernel pages (kernel heap and filesystem)`,
+      );
+    }
+    if (this.clampedProcessMaxPagesFrom !== undefined) {
+      notes.push(
+        `requested ${this.clampedProcessMaxPagesFrom} pages per process, ` +
+          `capped at ${this.maxPages} by this host's memory budget`,
+      );
+    }
+    if (notes.length === 0) return;
+    const diagnostic: HostDiagnostic = {
+      pid: 0,
+      source: "kernel host",
+      message: `[BrowserKernel] ${notes.join("; ")}`,
+    };
+    try {
+      this.options.onHostDiagnostic?.(diagnostic);
+    } catch (callbackError) {
+      console.error("[BrowserKernel] onHostDiagnostic callback failed:", callbackError);
+    }
   }
 
   /**
@@ -329,9 +464,10 @@ export class BrowserKernel {
    * The worker takes ownership of the FS; the main thread no longer has FS
    * access. Returns the first process's exit code.
    *
-   * Demos build the VFS image on the main thread using MemoryFileSystem +
-   * the helpers in `host/src/vfs/image-helpers`, call `saveImage()` for
-   * bytes, then pass them here.
+   * Demos build the VFS image with `KandeloImageFs` (the Rust image writer)
+   * and the helpers in `host/src/vfs/image-helpers`, call `saveImage()` for
+   * bytes, then pass them here; `apps/browser-demos/lib/kernel-owned-boot.ts`
+   * does this in a disposable worker.
    */
   async boot(options: BrowserKernelBootOptions): Promise<{ pid: number; exit: Promise<number> }> {
     await this.initFromImage(options);
@@ -354,8 +490,8 @@ export class BrowserKernel {
 
   /**
    * Load a pre-built VFS image into the kernel worker WITHOUT spawning a
-   * first process. The worker builds and takes ownership of the FS; the main
-   * thread holds no FS SharedArrayBuffer, so the whole VFS is reclaimed when
+   * first process. The kernel parses the image and owns the filesystem; the
+   * main thread keeps no filesystem state, so the whole VFS is reclaimed when
    * the kernel worker is terminated (no dependence on main-thread GC — the
    * fix for the Safari image-switch OOM). Spawn processes afterward with
    * {@link spawnFromVfs}, or call {@link boot} to load + spawn a first process
@@ -365,6 +501,8 @@ export class BrowserKernel {
     kernelWasm?: ArrayBuffer;
     vfsImage: Uint8Array | "default";
     lazyUrlBase?: string;
+    /** See `lazyUrlMap` on the init message: the image is never rewritten. */
+    lazyUrlMap?: Readonly<Record<string, string>>;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     restoreCheckpoint?: MachineCheckpoint;
@@ -376,15 +514,15 @@ export class BrowserKernel {
         ? Promise.resolve(options.kernelWasm)
         : fetchDefaultBrowserKernelArtifact("kernelWasm"),
       options.vfsImage === "default"
-        ? fetchDefaultBrowserKernelArtifact("rootfsVfs")
-            .then((b) => new Uint8Array(b))
-        : Promise.resolve(options.vfsImage),
+        ? fetchDefaultRootfsVfsImage().then((b) => decodeVfsImage(new Uint8Array(b)))
+        : Promise.resolve(decodeVfsImage(options.vfsImage)),
     ]);
 
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
       vfsImage,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
+      lazyUrlMap: options.lazyUrlMap,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       restoreCheckpoint: options.restoreCheckpoint,
@@ -415,7 +553,9 @@ export class BrowserKernel {
       : await fetchDefaultBrowserKernelArtifact("kernelWasm");
     await this.bootWorker({
       kernelWasmBytes: wasmBytes,
-      vfsImage: new Uint8Array(options.vfsImage),
+      // A compressed image decodes into a fresh whole buffer this kernel owns,
+      // so the ownership contract holds either way.
+      vfsImage: decodeVfsImage(new Uint8Array(options.vfsImage)),
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
@@ -435,6 +575,7 @@ export class BrowserKernel {
     kernelWasmBytes: ArrayBuffer;
     vfsImage: Uint8Array;
     lazyUrlBase?: string;
+    lazyUrlMap?: Readonly<Record<string, string>>;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     restoreCheckpoint?: MachineCheckpoint;
@@ -486,6 +627,8 @@ export class BrowserKernel {
       }
     };
 
+    this.reportMemoryProfile();
+
     try {
       await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -532,17 +675,21 @@ export class BrowserKernel {
           kernelWasmBytes: transferBuf,
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
+          lazyUrlMap: opts.lazyUrlMap === undefined
+            ? undefined
+            : { ...opts.lazyUrlMap },
           closedLazyAssets,
           rootfsMountSpec: opts.rootfsMountSpec === undefined
             ? undefined
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
           restoreCheckpoint: opts.restoreCheckpoint,
           replicationReplay: opts.replicationReplay,
-          shmSab: this.shmSab,
           workerEntryUrl,
           config: {
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
+            kernelMaxPages: this.memoryProfile.kernelMaxPages,
+            memoryProfileId: this.memoryProfile.id,
             maxProcessMemoryBytes:
               this.options.maxProcessMemoryBytes
               ?? this.options.maxWorkers * this.maxPages * WASM_PAGE_SIZE,
@@ -559,7 +706,7 @@ export class BrowserKernel {
           // WHY: this API is used at durable reboot boundaries where the main
           // thread has already hashed the image and will not reuse it. Transfer
           // prevents a second 512 MiB structured-clone allocation while the
-          // worker restores its own kernel-owned filesystem.
+          // worker hands the image to its kernel.
           transfer.push(opts.vfsImage.buffer as ArrayBuffer);
         }
         for (const asset of closedLazyAssets ?? []) {
@@ -707,7 +854,7 @@ export class BrowserKernel {
    * Returns the kernel-allocated pid + an exit promise.
    *
    * This does not transfer any `programBytes` across the worker boundary —
-   * the kernel reads the binary out of its own memfs at `programPath`. Use
+   * the kernel reads the binary out of its own filesystem at `programPath`. Use
    * this in `kernelOwnedFs: true` mode (or whenever the binary is already in
    * the VFS) to avoid re-shipping multi-megabyte binaries the kernel already
    * has.
@@ -719,6 +866,7 @@ export class BrowserKernel {
     programPath: string,
     argv: string[],
     options?: {
+      ownedJob?: { id: string; timeoutMs: number };
       env?: string[];
       cwd?: string;
       uid?: number;
@@ -733,6 +881,7 @@ export class BrowserKernel {
     const spawnStartedBeforeExitSequence = this.exitSequence;
     const pid = await this.request(requestId, {
       type: "spawn",
+      ownedJob: options?.ownedJob,
       requestId,
       programPath,
       argv,
@@ -791,6 +940,19 @@ export class BrowserKernel {
       throw new Error(`kernel worker returned an invalid memory-page count: ${String(result)}`);
     }
     return result;
+  }
+
+  /**
+   * Counters of the kernel worker's content-addressed compiled-module cache:
+   * compilations, reuse, digest cost, and what the retention window holds.
+   * Diagnostics only. Mirrors `NodeKernelHost.getWasmModuleCacheStats`.
+   */
+  async getWasmModuleCacheStats(): Promise<WasmModuleCacheStats> {
+    const requestId = this.nextRequestId++;
+    return await this.request(requestId, {
+      type: "get_wasm_module_cache_stats",
+      requestId,
+    }) as WasmModuleCacheStats;
   }
 
   /**
@@ -1084,6 +1246,36 @@ export class BrowserKernel {
     };
   }
 
+  /** Subscribe to teardown progress while `destroy()` reaps processes. */
+  subscribeDestroyProgress(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void {
+    return this.destroyProgress.subscribe(cb);
+  }
+
+  /**
+   * Subscribe to changes of paths under `prefix` in the worker-owned VFS. The
+   * worker forwards events only while a prefix is watched, so nothing crosses
+   * the worker boundary when nobody's listening.
+   */
+  subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void {
+    assertVfsWatchPrefix(prefix);
+    let listeners = this.vfsChangeListeners.get(prefix);
+    if (!listeners) {
+      if (this.vfsChangeListeners.size >= MAX_VFS_WATCH_PREFIXES) throw new Error("Filesystem watch capacity reached (16 prefixes)");
+      listeners = new Set();
+      this.vfsChangeListeners.set(prefix, listeners);
+      this.sendToKernel({ type: "watch_vfs_changes", prefix, enabled: true });
+    }
+    listeners.add(cb);
+    return () => {
+      const current = this.vfsChangeListeners.get(prefix);
+      if (!current?.delete(cb) || current.size > 0) return;
+      this.vfsChangeListeners.delete(prefix);
+      this.sendToKernel({ type: "watch_vfs_changes", prefix, enabled: false });
+    };
+  }
+
   private syscallListeners = new Set<(event: SyscallTraceEvent) => void>();
   private syscallPollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -1355,12 +1547,28 @@ export class BrowserKernel {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
     this.sendToKernel(
       { type: "kms_attach_canvas", crtcId, canvas, stats, opts },
       [canvas],
     );
+  }
+
+  /**
+   * Report the CRTC canvas's current display size in device pixels.
+   * Feeds the virtual connector's PREFERRED mode and the vblank pump's
+   * `webgl2-scanout` presenter, which resizes the drawing buffer and
+   * GPU-scales the scanout into it. Feed from a ResizeObserver on the
+   * placeholder canvas element.
+   */
+  kmsSetDisplaySize(
+    crtcId: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
+  ): void {
+    this.sendToKernel({ type: "kms_set_display_size", crtcId, width, height, physicalMm });
   }
 
   /**
@@ -1435,6 +1643,35 @@ export class BrowserKernel {
     return this.pcmDriver.subscribe(listener);
   }
 
+  /**
+   * Has a guest in this machine opened the audio device?
+   *
+   * Orthogonal to `getAudioState()`, which describes the host sink. This
+   * describes whether anything in the machine ever asked for one, and is what
+   * lets a UI tell an idle sink from a broken one instead of warning every
+   * machine about a device it never used.
+   */
+  getAudioActivity(): boolean {
+    return this.audioActivity?.active ?? false;
+  }
+
+  onAudioActivityChange(listener: (active: boolean) => void): () => void {
+    this.audioActivityListeners.add(listener);
+    listener(this.getAudioActivity());
+    this.audioActivity?.start();
+    return () => {
+      this.audioActivityListeners.delete(listener);
+      if (this.audioActivityListeners.size === 0) this.audioActivity?.stop();
+    };
+  }
+
+  private emitAudioActivity(): void {
+    const active = this.getAudioActivity();
+    for (const cb of this.audioActivityListeners) {
+      try { cb(active); } catch { /* listener errors don't break the loop */ }
+    }
+  }
+
   // ── PTY methods ──
 
   /** Write data to the PTY master for a process. */
@@ -1496,6 +1733,19 @@ export class BrowserKernel {
     if (resolver) resolver.resolve(status);
   }
 
+  /** Read bounded output and observed termination of a worker-owned command family. */
+  async readOwnedJob(jobId: string, offset?: number, limit?: number, cancel = false): Promise<OwnedJobRead> {
+    const requestId = this.nextRequestId++;
+    return await this.request(requestId, { type: cancel ? "cancel_owned_job" : "read_owned_job", requestId, jobId, offset, limit }) as OwnedJobRead;
+  }
+
+  /** Forget a finished job's record and free its slot. Rejects while the family is live. */
+  async releaseOwnedJob(jobId: string): Promise<void> {
+    const requestId = this.nextRequestId++;
+    await this.request(requestId, { type: "release_owned_job", requestId, jobId });
+  }
+
+
   /**
    * Read a file out of the kernel-owned VFS from the main thread. Returns the
    * bytes, or `null` if the path does not exist / is not readable. This is the
@@ -1510,6 +1760,34 @@ export class BrowserKernel {
       path,
     });
     return (result as Uint8Array | null) ?? null;
+  }
+
+  /**
+   * List a directory in the kernel-owned VFS. Returns `null` when the path
+   * does not exist. Entries are described without following a final symlink.
+   */
+  async readDirFromVfs(path: string): Promise<VfsDirEntrySnapshot[] | null> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_dir",
+      requestId,
+      path,
+    });
+    return (result as VfsDirEntrySnapshot[] | null) ?? null;
+  }
+
+  /**
+   * Describe a path in the kernel-owned VFS, following symlinks. Returns
+   * `null` when the path does not exist.
+   */
+  async statVfsPath(path: string): Promise<VfsPathStat | null> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "stat_vfs_path",
+      requestId,
+      path,
+    });
+    return (result as VfsPathStat | null) ?? null;
   }
 
   /**
@@ -1565,6 +1843,51 @@ export class BrowserKernel {
   }
 
   /**
+   * Offer `text` as the host clipboard to the guest's clipboard agent
+   * (`/dev/kandelo/clipboard`, read by kclipd on the Omarchy desktop).
+   * Resolves once the agent has installed it as the desktop's selection, or
+   * with the reason it could not — no agent running, over the 1 MiB cap,
+   * an agent error, or no answer within the timeout. CRLF line endings
+   * become LF; the text is never truncated.
+   */
+  async offerClipboardText(
+    text: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<ClipboardOfferResult> {
+    const bytes = encodeClipboardText(text);
+    if (bytes === null) return { ok: false, reason: "too-large" };
+    const requestId = this.nextRequestId++;
+    const result = await this.request(
+      requestId,
+      {
+        type: "clipboard_offer",
+        requestId,
+        text: bytes,
+        timeoutMs: options.timeoutMs,
+      },
+      [bytes.buffer as ArrayBuffer],
+    );
+    return result as ClipboardOfferResult;
+  }
+
+  /**
+   * Copy-out: resolve with the next selection the guest desktop reports
+   * (through its clipboard agent), or `timeout`. Call it before delivering
+   * the copy chord, so the guest's copy is the change it waits for.
+   */
+  async waitForGuestClipboardText(
+    options: { timeoutMs?: number } = {},
+  ): Promise<GuestClipboardResult> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "clipboard_guest_wait",
+      requestId,
+      timeoutMs: options.timeoutMs,
+    });
+    return result as GuestClipboardResult;
+  }
+
+  /**
    * Serialize the quiescent worker-owned root filesystem for a later boot.
    * The root image is durable; boot-scoped scratch and device mounts are not.
    * Callers must wait for every guest process to exit before invoking this.
@@ -1607,6 +1930,9 @@ export class BrowserKernel {
     await this.pcmDriver?.close().catch(() => {});
     this.pcmDriver = null;
     this.pcmTransport = null;
+    this.audioActivity?.stop();
+    this.audioActivity = null;
+    this.audioActivityListeners.clear();
     // WHY: process/pthread Workers are owned beneath the kernel worker. After
     // the worker's bounded graceful attempt, terminating this outer realm is
     // the final release fence for aliases that could not be detached exactly.
@@ -1625,6 +1951,8 @@ export class BrowserKernel {
     this.ptyOutputCallbacks.clear();
     this.options.onHttpBridgePendingRequests?.(0);
     this.lazyDownloadListeners.clear();
+    this.destroyProgress.clear();
+    this.vfsChangeListeners.clear();
     // Release every main-thread reference to shared buffers this kernel held.
     // `fbMemoryByPid`/`framebuffers` retain typed-array views over process
     // `WebAssembly.Memory` (up to 1 GiB max each) posted from the worker for
@@ -1745,11 +2073,28 @@ export class BrowserKernel {
     }
   }
 
+  private emitVfsChange(event: VfsChangeEvent): void {
+    for (const [prefix, listeners] of this.vfsChangeListeners) {
+      if (!vfsPathIsWithin(prefix, event.path)) continue;
+      for (const cb of listeners) {
+        try { cb(event); } catch { /* listener errors don't break the loop */ }
+      }
+    }
+  }
+
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
       case "ready": {
         if (msg.pcmTransport) {
           this.pcmTransport = msg.pcmTransport;
+          // Demand is a different fact from sink state: this watches whether
+          // anything in the machine ever opens /dev/dsp. It samples the header
+          // the kernel already publishes, and stops for good once it latches.
+          this.audioActivity = new AudioActivityLatch(
+            pcmControlWords(msg.pcmTransport),
+            () => this.emitAudioActivity(),
+          );
+          if (this.audioActivityListeners.size > 0) this.audioActivity.start();
           if (
             typeof globalThis.AudioContext === "function" ||
             "webkitAudioContext" in globalThis
@@ -1970,6 +2315,12 @@ export class BrowserKernel {
         break;
       case "lazy_download":
         this.emitLazyDownload(msg.event);
+        break;
+      case "destroy_progress":
+        this.destroyProgress.emit(msg.event);
+        break;
+      case "vfs_change":
+        this.emitVfsChange(msg.event);
         break;
       case "replication_recorded":
         for (const listener of [...this.replicationListeners]) {

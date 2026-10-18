@@ -1,0 +1,7 @@
+# Build scratch and produced artifacts are cache outputs, never committed.
+/bin/
+/build-*/
+/llvm-project-*/
+/clang-work/
+*.wasm
+*.zip

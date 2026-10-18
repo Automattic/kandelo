@@ -1,0 +1,34 @@
+--- a/terminal.c
++++ b/terminal.c
+@@ -1030,25 +1030,13 @@
+         {count_bold_italic, names_bold_italic, attrs[3], &fonts[3]},
+     };
+ 
+-    thrd_t tids[4] = {0};
+-    for (size_t i = 0; i < 4; i++) {
+-        int ret = thrd_create(&tids[i], &font_loader_thread, &data[i]);
+-        if (ret != thrd_success) {
+-            LOG_ERR("failed to create font loader thread: %s (%d)",
+-                    thrd_err_as_string(ret), ret);
+-            break;
+-        }
+-    }
+-
++    /* wasm-posix-kernel: the fontconfig stack is not concurrency-clean
++     * under this kernel's thread model — concurrent FcFontMatch calls
++     * race pattern refcounts and return garbled sizes. Load the four
++     * variants serially; fcft's cache makes the repeats cheap. */
+     bool success = true;
+-    for (size_t i = 0; i < 4; i++) {
+-        if (tids[i] != 0) {
+-            int ret;
+-            thrd_join(tids[i], &ret);
+-            success = success && ret;
+-        } else
+-            success = false;
+-    }
++    for (size_t i = 0; i < 4; i++)
++        success = font_loader_thread(&data[i]) && success;
+ 
+     for (size_t i = 0; i < 4; i++) {
+         for (size_t j = 0; j < counts[i]; j++)

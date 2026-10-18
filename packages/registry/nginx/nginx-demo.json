@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "defaultProfile": "nginx",
+  "profiles": {
+    "nginx": {
+      "identity": {
+        "title": "nginx",
+        "summary": "Static HTTP service supervised by dinit and exposed through the browser bridge.",
+        "accent": "#3a8f41",
+        "glyph": "nx",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "maxWorkers": 6
+        }
+      },
+      "init": {
+        "target": "nginx"
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "nginx demo",
+        "summary": "Service demos keep the web preview primary, while actions inspect the same running service from a shell.",
+        "groups": [
+          {
+            "title": "Service",
+            "actions": [
+              {
+                "id": "curl-home",
+                "label": "Fetch page",
+                "description": "Fetch the served page from inside the machine.",
+                "kind": "terminal.run",
+                "payload": "curl -i http://127.0.0.1:8080/ | head -40"
+              },
+              {
+                "id": "nginx-procs",
+                "label": "Workers",
+                "description": "Show nginx processes.",
+                "kind": "terminal.run",
+                "payload": "lsof | grep nginx | head -40 || true"
+              },
+              {
+                "id": "nginx-conf",
+                "label": "Config",
+                "description": "Print the top of nginx.conf.",
+                "kind": "terminal.run",
+                "payload": "sed -n '1,80p' /etc/nginx/nginx.conf"
+              }
+            ]
+          }
+        ],
+        "script": {
+          "title": "Service check",
+          "language": "sh",
+          "initialText": "curl -i http://127.0.0.1:8080/ | head -40\necho \"--- nginx processes ---\"\nlsof | grep nginx | head -40 || true"
+        },
+        "companion": {
+          "title": "Companion HTML",
+          "srcDoc": "<!doctype html>\n<html>\n<head>\n  <meta charset=\"utf-8\">\n  <style>\n    :root { color-scheme: dark; }\n    body {\n      margin: 0;\n      padding: 12px;\n      background: #191512;\n      color: #f3d6b3;\n      font: 12px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;\n    }\n    h1 {\n      margin: 0 0 8px;\n      font-size: 12px;\n      font-weight: 650;\n      letter-spacing: 0;\n      color: #fff2df;\n    }\n    p {\n      margin: 0 0 10px;\n      color: #b99d7d;\n      line-height: 1.4;\n    }\n    .row {\n      display: flex;\n      flex-wrap: wrap;\n      gap: 6px;\n    }\n    button {\n      border: 1px solid rgba(255, 169, 86, 0.28);\n      background: rgba(255, 169, 86, 0.12);\n      color: #ffe0b9;\n      border-radius: 6px;\n      padding: 7px 9px;\n      font: inherit;\n      cursor: pointer;\n    }\n    button:hover { background: rgba(255, 169, 86, 0.2); }\n    #status {\n      min-height: 16px;\n      margin-top: 10px;\n      color: #d2b08b;\n      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;\n      font-size: 11px;\n    }\n  </style>\n</head>\n<body>\n  <h1>nginx companion</h1>\n  <p>This frame has no kernel access. It can only request parent-approved action ids.</p>\n  <div class=\"row\"><button type=\"button\" data-action=\"curl-home\">Fetch</button><button type=\"button\" data-action=\"nginx-procs\">Workers</button><button type=\"button\" data-action=\"nginx-conf\">Config</button></div>\n  <div id=\"status\"></div>\n  <script>\n    const status = document.getElementById(\"status\");\n    document.addEventListener(\"click\", (event) => {\n      const button = event.target.closest(\"button[data-action]\");\n      if (!button) return;\n      const actionId = button.getAttribute(\"data-action\");\n      parent.postMessage({ type: \"kandelo.demoAction\", actionId }, \"*\");\n      status.textContent = \"sent \" + actionId;\n    });\n  </script>\n</body>\n</html>"
+        }
+      }
+    }
+  }
+}

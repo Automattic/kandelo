@@ -2,6 +2,7 @@ script_path = "packages/registry/less/build-less.sh"
 inputs = [
   "packages/registry/less/build-less.sh",
   "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"

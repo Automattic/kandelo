@@ -122,6 +122,7 @@ class RecordingGl {
   framebufferRenderbuffer(...a: unknown[]) { this.log.push(["framebufferRenderbuffer", a]); }
 
   // queries
+  finish() { this.log.push(["finish", []]); }
   getError() { return 0; }
   getParameter(p: number) {
     if (p === 0x1F03 /* GL_EXTENSIONS */) return "WEBGL_test";
@@ -150,6 +151,24 @@ function setupBinding(gl: RecordingGl, capacity = 4096) {
   b.gl = gl as unknown as WebGL2RenderingContext;
   return { reg, b };
 }
+
+it("preserves legacy extension queries and gates new capabilities by table version", () => {
+  const { b } = setupBinding(new RecordingGl());
+  const input = new Uint8Array(8);
+  const view = new DataView(input.buffer);
+  view.setUint32(0, 0x1F03 /* GL_EXTENSIONS */, true);
+  const out = new Uint8Array(4096);
+  expect(runGlQuery(b, O.QOP_GET_STRING, input.subarray(0, 4), out)).toBe(4);
+  expect(new DataView(out.buffer).getUint32(0, true)).toBe(0);
+  view.setUint32(4, 2, true);
+  const size = runGlQuery(b, O.QOP_GET_STRING, input, out);
+  expect(size).toBeGreaterThan(4);
+  expect(new TextDecoder().decode(out.subarray(4, size))).toContain("GL_EXT_texture_rg");
+  for (const version of [0, O.OP_VERSION + 1]) {
+    view.setUint32(4, version, true);
+    expect(runGlQuery(b, O.QOP_GET_STRING, input, out)).toBe(-22);
+  }
+});
 
 /** TLV writer helper. Returns the final length (header + payload). */
 class Tlv {
@@ -326,6 +345,53 @@ describe("cmdbuf decoder — TLV walker", () => {
     expect(recordedMat).toEqual(mat);
   });
 
+  it("float uniforms after an odd-length record are applied, not rejected", () => {
+    // Records are packed back to back with no padding, so one whose
+    // payload is not a multiple of 4 bytes leaves every later record
+    // unaligned. SDL's YUV upload of a 350-pixel-wide frame is one: its
+    // 175-pixel chroma rows make a 175-byte texSubImage2D. Rejecting the
+    // unaligned matrix that follows dropped the rest of the submit, and
+    // SDL, which caches the projection it believes it uploaded, drew every
+    // later frame with the stale one.
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
+    const mat: number[] = [];
+    for (let i = 0; i < 16; i++) mat.push(i * 0.25);
+    const vec = [0.5, -1, 2, 8];
+
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const rowBytes = 175;
+    const tex = t.op(O.OP_TEX_SUB_IMAGE_2D, 36 + rowBytes);
+    t.view.setUint32(tex.p, 0x0DE1, true); // TEXTURE_2D
+    t.view.setInt32(tex.p + 16, rowBytes, true); // width
+    t.view.setInt32(tex.p + 20, 1, true); // height
+    t.view.setUint32(tex.p + 24, 0x1909, true); // LUMINANCE
+    t.view.setUint32(tex.p + 28, 0x1401, true); // UNSIGNED_BYTE
+    t.view.setUint32(tex.p + 32, rowBytes, true);
+    const m = t.op(O.OP_UNIFORM_MATRIX4FV, 12 + 16 * 4);
+    expect((b.cmdbufView!.byteOffset + m.p + 12) % 4).not.toBe(0);
+    t.view.setInt32(m.p, 1, true);
+    t.view.setUint32(m.p + 4, 1, true);
+    t.view.setUint32(m.p + 8, 0, true);
+    for (let i = 0; i < 16; i++) t.view.setFloat32(m.p + 12 + i * 4, mat[i], true);
+    const u = t.op(O.OP_UNIFORM4FV, 8 + 4 * 4);
+    t.view.setInt32(u.p, 1, true);
+    t.view.setUint32(u.p + 4, 1, true);
+    for (let i = 0; i < 4; i++) t.view.setFloat32(u.p + 8 + i * 4, vec[i], true);
+    const d = t.op(O.OP_DRAW_ARRAYS, 12);
+    t.view.setUint32(d.p, 4, true);
+    t.view.setInt32(d.p + 4, 0, true);
+    t.view.setInt32(d.p + 8, 4, true);
+
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+    expect(gl.log.map((r) => r[0])).toEqual([
+      "texSubImage2D", "uniformMatrix4fv", "uniform4fv", "drawArrays",
+    ]);
+    expect((gl.log[1][1] as unknown[])[2]).toEqual(mat);
+    expect((gl.log[2][1] as unknown[])[1]).toEqual(vec);
+  });
+
   it("DrawArrays(GL_TRIANGLES, 0, 3) decodes correctly", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
@@ -403,6 +469,12 @@ describe("query handler", () => {
     const { b } = setupBinding(gl);
     return { gl, b };
   }
+
+  it("QOP_FINISH finishes the context and writes nothing", () => {
+    const { b, gl } = setup();
+    expect(runGlQuery(b, O.QOP_FINISH, input([]), out(0))).toBe(0);
+    expect(gl.log.filter(([m]) => m === "finish")).toHaveLength(1);
+  });
 
   it("QOP_GET_ERROR writes 4 bytes", () => {
     const { b } = setup();
@@ -639,5 +711,58 @@ describe("cmdbuf decoder — texture shape retention", () => {
     decodeAndDispatch(b, 0, t.p);
 
     expect(b.textureUnitNames.has(0)).toBe(false);
+  });
+});
+
+
+describe("GLES texture upload marshalling", () => {
+  for (const [type, View, values] of [
+    [0x1406, Float32Array, [0.25, 0.5, 0.75, 1]],
+    [0x8d61, Uint16Array, [0x3c00, 0x3800, 0, 0x3c00]],
+    [0x8033, Uint16Array, [0xffff]],
+  ] as const) {
+    it(`copies unaligned shared texture bytes into a typed view for ${type.toString(16)}`, () => {
+      const gl = new RecordingGl();
+      const { b } = setupBinding(gl);
+      const input = new View(values);
+      const buffer = new SharedArrayBuffer(256);
+      // Prior TLV records can put the next texture record at a nonaligned offset.
+      b.cmdbufView = new Uint8Array(buffer, 1);
+      const t = new Tlv(buffer);
+      t.p = 1;
+      const h = t.op(O.OP_TEX_IMAGE_2D, 36 + input.byteLength);
+      [0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, type, input.byteLength]
+        .forEach((n, i) => t.view.setUint32(h.p + i * 4, n, true));
+      new Uint8Array(buffer, h.p + 36, input.byteLength).set(new Uint8Array(input.buffer));
+      expect(decodeAndDispatch(b, 0, t.p - 1)).toBe(0);
+      const args = gl.log.find(row => row[0] === "texImage2D")![1];
+      const uploaded = args[8] as Float32Array | Uint16Array;
+      expect(uploaded).toBeInstanceOf(View);
+      expect(uploaded.buffer).toBeInstanceOf(ArrayBuffer);
+      expect([...uploaded]).toEqual([...values]);
+      expect(args[7]).toBe(type === 0x8d61 ? 0x140b : type);
+      expect(args[2]).toBe(type === 0x1406 ? 0x8814 : type === 0x8d61 ? 0x881a : 0x1908);
+    });
+  }
+
+  it("translates GLES2 allocation formats while preserving sized requests", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    for (const [internal, format, type, expected] of [
+      [0x1903, 0x1903, 0x1401, 0x8229], // RED byte -> R8
+      [0x8227, 0x8227, 0x1406, 0x8230], // RG float -> RG32F
+      [0x1902, 0x1902, 0x1403, 0x81a5], // depth short -> depth16
+      [0x84f9, 0x84f9, 0x84fa, 0x88f0], // packed depth/stencil
+      [0x8058, 0x1908, 0x1401, 0x8058], // explicit RGBA8
+    ]) {
+      const t = new Tlv(b.cmdbufView!.buffer);
+      const h = t.op(O.OP_TEX_IMAGE_2D, 36);
+      [0x0de1, 0, internal, 4, 4, 0, format, type, 0]
+        .forEach((n, i) => t.view.setUint32(h.p + i * 4, n, true));
+      expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+      const args = gl.log.at(-1)![1];
+      expect(args[2]).toBe(expected);
+      expect(args[8]).toBeNull();
+    }
   });
 });

@@ -30,7 +30,9 @@
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #define STBTT_STATIC
-#include "third_party/stb_truetype.h"
+/* stb_truetype.h is vendored once in the repository-root third_party/ and
+ * found through -I; inconsolata_ttf.h is generated per build. */
+#include "stb_truetype.h"
 #include "third_party/inconsolata_ttf.h"
 
 /* ----- font / atlas configuration -------------------------------- */

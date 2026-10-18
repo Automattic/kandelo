@@ -48,7 +48,7 @@ fi
 # the work dir and -I"$WORK_DIR" resolves the quote-include.
 echo "==> Generating inconsolata_ttf.h..."
 mkdir -p "$WORK_DIR/third_party"
-python3 - "$SDL2_DEMO_DIR/third_party/Inconsolata-Regular.ttf" \
+python3 - "$SOURCE_ROOT/third_party/Inconsolata-Regular.ttf" \
     "$WORK_DIR/third_party/inconsolata_ttf.h" <<'PY'
 import sys, pathlib
 src = pathlib.Path(sys.argv[1]).read_bytes()
@@ -61,7 +61,7 @@ lines = [
 dst.write_text(
     "/* Auto-generated from Inconsolata-Regular.ttf by "
     "build-sdl2-demo.sh. */\n"
-    "/* See programs/sdl2/third_party/NOTICE.md for license. */\n"
+    "/* See third_party/NOTICE.md for license. */\n"
     "#pragma once\n"
     f"static const unsigned char inconsolata_ttf[] = {{\n"
     + ",\n".join(lines) + "\n};\n"
@@ -71,6 +71,13 @@ PY
 
 PKG_CFLAGS="$(wasm32posix-pkg-config --cflags gbm libdrm egl glesv2)"
 PKG_LIBS="$(wasm32posix-pkg-config --libs gbm libdrm egl glesv2)"
+# libSDL2.a includes the Wayland video backend, which calls into
+# libwayland-{client,egl,cursor} and libxkbcommon, and libwayland-client
+# marshals through libffi. They are static archives
+# from those packages, so link them here: `-Wl,--allow-undefined` would
+# otherwise turn every wl_*/xkb_* call into an `env.*` import the host
+# resolves to a throwing stub, and SDL tries the Wayland driver before KMSDRM.
+SDL2_WAYLAND_LIBS="-L${WASM_POSIX_DEP_LIBWAYLAND_DIR:?resolver did not provide the direct libwayland dependency}/lib -L${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?resolver did not provide the direct libxkbcommon dependency}/lib -L${WASM_POSIX_DEP_LIBFFI_DIR:?resolver did not provide the direct libffi dependency}/lib -lwayland-client -lwayland-egl -lwayland-cursor -lxkbcommon -lffi"
 
 echo "==> Building the SDL2 GLSL playground..."
 wasm32posix-cc \
@@ -82,6 +89,7 @@ wasm32posix-cc \
     -D_DEFAULT_SOURCE \
     -I"$SDL2_PREFIX/include" \
     -I"$WORK_DIR" \
+    -I"$SOURCE_ROOT/third_party" \
     $PKG_CFLAGS \
     "$SDL2_DEMO_DIR/main.c" \
     "$SDL2_DEMO_DIR/audio.c" \
@@ -90,6 +98,7 @@ wasm32posix-cc \
     "$SDL2_DEMO_DIR/sound_shader.c" \
     -L"$SDL2_PREFIX/lib" \
     -lSDL2 \
+    $SDL2_WAYLAND_LIBS \
     $PKG_LIBS \
     -lm \
     -o "$OUT_BIN"

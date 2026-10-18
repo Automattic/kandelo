@@ -1,8 +1,47 @@
+import { PROCESS_STATE_EXITED } from './generated/abi';
+
 const ESRCH = 3;
 const ECHILD = 10;
 
 type GetParentPid = (pid: number) => number;
 type ReapExitedChild = (parentPid: number, childPid: number) => number;
+
+/** Reap a fully exited, detached host job without stealing a live parent's wait. */
+export function reapOwnedJobExitedProcesses(
+  kernelInstance: WebAssembly.Instance,
+  family: ReadonlySet<number>,
+): void {
+  const getParentPid = kernelInstance.exports.kernel_get_parent_pid as GetParentPid;
+  const getState = kernelInstance.exports.kernel_get_process_state as (pid: number) => number;
+  const reapExitedChild = kernelInstance.exports.kernel_reap_exited_child as ReapExitedChild;
+  const pids = Array.from(family);
+  const members = new Set(pids);
+  // WHY: verify the entire family before consuming any wait status. Reaping
+  // an exited child first would otherwise steal a still-live parent's wait.
+  for (const pid of pids) {
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 0x7fff_ffff) throw new Error('Invalid owned job process identity');
+    const state = getState(pid);
+    if (state === -ESRCH) continue; // Absent or a reaped, resource-free group identity.
+    if (state !== PROCESS_STATE_EXITED) throw new Error(`Cannot reap job process ${pid}: family member is not exited`);
+    const parent = getParentPid(pid);
+    if (parent < 0 || (parent !== 0 && !members.has(parent))) {
+      throw new Error(`Cannot reap job process ${pid}: unexpected parent ${parent}`);
+    }
+  }
+  // Children are inserted after their parents. Reap in reverse so parent
+  // records remain available until descendants have been collected.
+  for (const pid of pids.reverse()) {
+    if (getState(pid) === -ESRCH) continue;
+    const parent = getParentPid(pid);
+    if (parent === -ESRCH) continue; // A guest wait or normal host reap won.
+    if (parent < 0 || (parent !== 0 && !members.has(parent))) {
+      throw new Error(`Cannot reap job process ${pid}: unexpected parent ${parent}`);
+    }
+    // Rust atomically verifies both the parent and exited state.
+    const result = reapExitedChild(parent, pid);
+    if (result !== 0) throw new Error(`Cannot reap job process ${pid}: errno ${-result}`);
+  }
+}
 
 export type HostOwnedProcessReapResult =
   | "reaped"

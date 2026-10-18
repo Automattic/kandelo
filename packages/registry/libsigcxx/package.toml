@@ -1,0 +1,31 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# libsigc++ 2 (libsigc-2.0.a). C++ base dep for the Waybar port.
+# Named libsigcxx because the resolver's env_key keeps '+' verbatim —
+# WASM_POSIX_DEP_LIBSIGC++_DIR would not be referenceable from bash
+# (same rename convention as libc++ → libcxx). 2.10.3 ships both meson
+# and autotools; the port rides the configure cross-compile pattern.
+name = "libsigcxx"
+version = "2.10.3"
+kernel_abi = 17
+depends_on = ["libcxx@21.1.7"]
+
+[source]
+url = "https://download.gnome.org/sources/libsigc++/2.10/libsigc++-2.10.3.tar.xz"
+sha256 = "0b68dfc6313c6cc90ac989c6d722a1bf0585ad13846e79746aa87cb265904786"
+provider = "archive"
+
+[license]
+spdx = "LGPL-3.0-or-later"
+url = "https://gitlab.gnome.org/GNOME/libsigcplusplus/-/blob/2.10.3/COPYING"
+
+[build]
+script_path = "packages/registry/libsigcxx/build-libsigcxx.sh"
+
+[outputs]
+libs = ["lib/libsigc-2.0.a"]
+headers = ["include/sigc++-2.0", "lib/sigc++-2.0/include"]
+pkgconfig = ["lib/pkgconfig/sigc++-2.0.pc"]

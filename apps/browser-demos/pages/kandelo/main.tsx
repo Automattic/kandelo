@@ -18,8 +18,10 @@ if (!container) {
 }
 
 const qs = new URLSearchParams(location.search);
-const demo = qs.get("demo");
 const bootQuery = readKandeloBootQuery(location.search);
+// `?fb=test` is an app-level dev toggle for the framebuffer probe. It is
+// deliberately NOT part of any image's demo.json: it belongs to whoever is
+// debugging the host, not to the machine.
 const fbDemo = qs.get("fb"); // "test" | null
 
 const mount = (host: KernelHost) => {
@@ -65,7 +67,7 @@ void (async () => {
     // from replacing immutable bottle-backed lazy files before serialization.
     const host = await import("./kernel-host/live-setup")
       .then(({ createLiveHost }) => createLiveHost({
-        demo,
+        profile: bootQuery.profileId,
         vfsUrl: bootQuery.vfsImageUrl,
         fb: fbDemo === "test" ? "test" : "none",
         inputs: linkDescriptor?.boot.inputs ?? null,

@@ -77,12 +77,6 @@ test("exact product proofs never reuse another worktree's server", () => {
   );
   assert.equal(
     shouldReuseExistingPlaywrightServer({
-      KANDELO_NODE_VFS_STRICT: "1",
-    }),
-    false,
-  );
-  assert.equal(
-    shouldReuseExistingPlaywrightServer({
       KANDELO_PLAYWRIGHT_SERVE_DIST: "1",
     }),
     false,
@@ -96,17 +90,32 @@ test("exact product proofs never reuse another worktree's server", () => {
 });
 
 test("broad service-worker scope permission exists only in historical records", async () => {
+  // Files allowed to name the header. The scan matches any mention, so this
+  // list holds prose that FORBIDS it and a test that asserts its absence —
+  // neither grants broad scope. A file that actually sets the header does not
+  // belong here. The two 2026-08-19 design records this list used to carry are
+  // gone from the tree; the entries went with them.
+  //
+  // This file names the header only via the assembled `header` constant below,
+  // so the scan does not match this file itself.
   const allowedHistoricalRecords = new Set([
-    "docs/superpowers/plans/2026-08-19-directory-scoped-browser-builds.md",
-    "docs/superpowers/specs/2026-08-19-local-first-builds-design.md",
+    // Asserts the served response carries no such header.
+    "apps/browser-demos/test/scoped-deployments.spec.ts",
+    // "one worker must never control `/` or a sibling".
+    "docs/browser-support.md",
+    // Instructs porters not to use it to broaden a script-directory scope.
+    "docs/porting-guide.md",
   ]);
   const sourceExtensions = new Set([
     ".c", ".cjs", ".css", ".h", ".html", ".js", ".jsx", ".json", ".md",
     ".mjs", ".rs", ".sh", ".toml", ".ts", ".tsx", ".yaml", ".yml",
   ]);
   const excludedDirectories = new Set([
+    // Local worktrees and captured failure reports are evidence, not authored
+    // scope permissions. Keep production source (including .github) in scope.
+    ".context", "playwright-report", "test-results",
     ".git", ".worktrees", "binaries", "dist", "local-binaries",
-    "node_modules", "target", "test-runs",
+    "node_modules", "target", "test-runs", "sysroot", "sysroot64",
   ]);
   const header = ["service", "worker", "allowed"].join("-");
   const matches = new Set<string>();

@@ -1,0 +1,35 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# GL function-pointer dispatch (libepoxy.a). Ported for GTK3 (plan
+# docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md §4,
+# PR24) — GTK3 links epoxy unconditionally and its wayland backend
+# compiles against epoxy/egl.h. EGL dispatch only, no GLX, no X11.
+# There is no GL driver on the kernel: epoxy resolves GL symbols by
+# dlopen at first call, so as long as no GL context is created no GL
+# library is ever loaded and GTK falls back to cairo rendering. The
+# EGL platform headers (EGL/eglplatform.h, KHR/khrplatform.h) and the
+# headers-only egl.pc stub come from src/ in this package.
+name = "libepoxy"
+version = "1.5.4"
+kernel_abi = 17
+depends_on = []
+
+[source]
+url = "https://github.com/anholt/libepoxy/releases/download/1.5.4/libepoxy-1.5.4.tar.xz"
+sha256 = "0bd2cc681dfeffdef739cb29913f8c3caa47a88a451fd2bc6e606c02997289d2"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/anholt/libepoxy/blob/1.5.4/COPYING"
+
+[build]
+script_path = "packages/registry/libepoxy/build-libepoxy.sh"
+
+[outputs]
+libs = ["lib/libepoxy.a"]
+headers = ["include/epoxy", "include/EGL", "include/KHR"]
+pkgconfig = ["lib/pkgconfig/epoxy.pc", "lib/pkgconfig/egl.pc"]

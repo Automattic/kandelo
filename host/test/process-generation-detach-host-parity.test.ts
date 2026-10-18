@@ -119,6 +119,14 @@ describe("process generation detach host parity", () => {
         /processes\.delete\((?:createdPid|childPid)\)/,
       );
     });
+
+    it(`${host} includes exec in the single-owner generation retirement contract`, () => {
+      const exec = asyncFunction(source, "handleExec", "handlePosixSpawn");
+      // Exec keeps the PID. A termination that captured its old generation
+      // must share retirement ownership with exec, including rollback.
+      expect(exec).not.toMatch(/initiatingInfo\.memoryLease\.release/);
+      expect(exec).toContain("retireSupersededExecGeneration(");
+    });
   }
 
   it("browser posix_spawn rollback owns the allocated newMemory identity", () => {

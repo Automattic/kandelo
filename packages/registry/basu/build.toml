@@ -1,0 +1,14 @@
+script_path = "packages/registry/basu/build-basu.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "cf81d0f7c"
+revision    = 1
+
+# The hand-curated config.h is part of the cache key: editing it (e.g.
+# flipping a HAVE_* to track a sysroot change) must invalidate cached
+# archives. The source and build trees live under the resolver work
+# root; the resolver hashes these tracked inputs on a clean checkout.
+inputs = [
+  "packages/registry/basu/build-basu.sh",
+  "scripts/package-build-roots.sh",
+  "packages/registry/basu/src/config.h",
+]

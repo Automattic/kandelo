@@ -19,6 +19,7 @@ import {
 } from "../../host/src/binary-resolver";
 import { browserBinariesImports } from "./browser-binary-imports.mjs";
 import {
+  browserImageModule32ModuleSpecifier,
   browserKernelModuleSpecifier,
   browserRepositoryAliases,
   browserRootfsModuleSpecifier,
@@ -31,6 +32,7 @@ import {
 import {
   createSourceOnlyPublicSnapshot,
   createSourceOnlyViteAssets,
+  rewriteBinaryMirrorUrlGlobs,
 } from "./source-only-vite-assets";
 import {
   createBatchedBrowserBinaryResolution,
@@ -47,6 +49,9 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
 const authoredBrowserBinaryRelPaths = browserBinariesImports(repoRoot);
+const requiredBrowserBinaryRelPaths = new Set(
+  browserBinariesImports(repoRoot, { includeOptionalGlobs: false }),
+);
 
 // The browser demos import the VFS product catalog through this virtual
 // module. It is populated only by the removed Pages-deployment product map;
@@ -85,10 +90,19 @@ function vfsProductsVirtualModule(): Plugin {
  */
 function vfsProductsPlugin(base: string): Plugin {
   const configuredMap = process.env.KANDELO_PAGES_PRODUCT_MAP;
+  const configuredAssetGroup = process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
   if (configuredMap === undefined) {
+    // An asset group only means anything to a scoped product deployment, which
+    // a private map defines. Ignoring the group here would quietly produce an
+    // ordinary build and ship a site without the authenticated group the
+    // deployer asked for — fail loudly instead.
+    if (configuredAssetGroup !== undefined) {
+      throw new Error(
+        "KANDELO_PAGES_VFS_ASSET_GROUP_DIR requires KANDELO_PAGES_PRODUCT_MAP",
+      );
+    }
     return vfsProductsVirtualModule();
   }
-  const configuredAssetGroup = process.env.KANDELO_PAGES_VFS_ASSET_GROUP_DIR;
   if (!path.isAbsolute(configuredMap)) {
     throw new Error(
       "KANDELO_PAGES_PRODUCT_MAP must be an absolute private map path",
@@ -145,7 +159,7 @@ const sourceOnlyViteAssets = configuredSourceOnlyRoot === null
     createSourceOnlyBinarySnapshotSession(),
     [
       "kernel.wasm",
-      "programs/wasm32/rootfs.vfs",
+      "programs/wasm32/rootfs.vfs.zst",
       ...authoredBrowserBinaryRelPaths,
     ],
     {
@@ -198,8 +212,13 @@ function candidateEntryExists(relPath: string): boolean {
   // candidate tier. Entering the batch whenever that authority exists makes a
   // declared-but-missing member fail its receipt closure instead of looking
   // like an optional unowned path.
+  // The default shared resolver also considers the implicit SourceOnly
+  // mirror first. Do not reject its candidates before invoking that resolver.
   const candidates = configuredSourceOnlyRoot === null
-    ? authoredBinaryMirrorRoots.map((root) => path.resolve(root, relPath))
+    ? [
+        path.resolve(repoRoot, "local-binaries/source-only-v1", relPath),
+        ...authoredBinaryMirrorRoots.map((root) => path.resolve(root, relPath)),
+      ]
     : [path.resolve(
         configuredSourceOnlyRoot,
         ".kandelo/source-only-program-projection-v1.json",
@@ -232,7 +251,7 @@ function createBrowserBinaryResolution(
     approveBatch: (files) => access.approveBatch(files),
     approve: (file) => access.approve(file),
     candidateEntryExists,
-  });
+  }, declaredRelPaths.filter((path) => !requiredBrowserBinaryRelPaths.has(path)));
 }
 
 const browserBinaryResolution = createBrowserBinaryResolution(binaryDevAccess);
@@ -324,8 +343,12 @@ function injectBlobIframeInterceptorPlaceholder(content: string): string {
  * installed-package tiers). There is no legacy fallback path; a missing
  * kernel fails loudly instead.
  *
- * `@rootfs-vfs` resolves to `<repoRoot>/host/wasm/rootfs.vfs` (built by
+ * `@rootfs-vfs` resolves to `<repoRoot>/host/wasm/rootfs.vfs.zst` (built by
  * mkrootfs during `./run.sh setup`).
+ *
+ * `@kandelo-image-module32-wasm` resolves `kandelo_image_module32.wasm`, the
+ * image writer pages build their boot images with, through the same resolver
+ * tiers as the kernel.
  *
  * Resolution is deferred until import time so pages that don't consume
  * these aliases can run without a kernel build present. Pages that do
@@ -334,6 +357,7 @@ function injectBlobIframeInterceptorPlaceholder(content: string): string {
 function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
   const KERNEL = browserKernelModuleSpecifier;
   const ROOTFS = browserRootfsModuleSpecifier;
+  const IMAGE_MODULE32 = browserImageModule32ModuleSpecifier;
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
@@ -358,24 +382,41 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
           "kernel.wasm not found. Build it with ./run.sh setup (or cargo xtask bootstrap kernel).",
         );
       }
+      if (pathPart === IMAGE_MODULE32) {
+        // The browser BUILDS its boot image with this module — `KandeloImageFs`
+        // instantiates it — so a missing artifact is a loud error pointing at
+        // the build script, never a page that boots without an image writer.
+        if (sourceOnlyViteAssets !== null) {
+          return sourceOnlyViteAssets.resolve("kandelo_image_module32.wasm");
+        }
+        const resolved = tryResolveBinary("kandelo_image_module32.wasm");
+        if (resolved) return access.approve(resolved) + query;
+        const local = path.resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm");
+        const hosted = path.resolve(repoRoot, "host/wasm/kandelo_image_module32.wasm");
+        this.error(
+          "kandelo_image_module32.wasm not found. Run " +
+            "`scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.\n" +
+            `  Looked at: ${local}\n  Looked at: ${hosted}`,
+        );
+      }
       if (pathPart === ROOTFS) {
         if (configuredSourceOnlyRoot !== null) {
           return sourceOnlyViteAssets!.resolve(
-            "programs/wasm32/rootfs.vfs",
+            "programs/wasm32/rootfs.vfs.zst",
           );
         }
         const candidates = [
-          path.resolve(repoRoot, "host/wasm/rootfs.vfs"),
-          path.resolve(repoRoot, "local-binaries/rootfs.vfs"),
-          path.resolve(repoRoot, "binaries/rootfs.vfs"),
-          path.resolve(repoRoot, "local-binaries/programs/wasm32/rootfs.vfs"),
-          path.resolve(repoRoot, "binaries/programs/wasm32/rootfs.vfs"),
+          path.resolve(repoRoot, "host/wasm/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "local-binaries/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "binaries/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "local-binaries/programs/wasm32/rootfs.vfs.zst"),
+          path.resolve(repoRoot, "binaries/programs/wasm32/rootfs.vfs.zst"),
         ];
         for (const file of candidates) {
           if (fs.existsSync(file)) return access.approve(file) + query;
         }
         this.error(
-          "rootfs.vfs not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
+          "rootfs.vfs.zst not found. Run `bash build.sh` from the repo root, or fetch/build the rootfs package.\n" +
             candidates.map((file) => `  Looked at: ${file}`).join("\n"),
         );
       }
@@ -556,10 +597,14 @@ function resolveBinariesAlias(
   resolution: BrowserBinaryResolution,
 ): Plugin {
   const PREFIX = "@binaries/";
+  let serving = false;
 
   return {
     name: "resolve-binaries-alias",
     enforce: "pre",
+    configResolved(config) {
+      serving = config.command === "serve";
+    },
     resolveId(source, importer, options) {
       let request: BinaryMirrorImport | null = null;
       if (source.startsWith(PREFIX)) {
@@ -607,6 +652,27 @@ function resolveBinariesAlias(
           `Looked at:\n  ${local}\n  ${fetched}\n` +
           `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`,
       );
+    },
+    transform(code, id) {
+      if (sourceOnlyViteAssets !== null) return null;
+      const rewritten = rewriteBinaryMirrorUrlGlobs(code, id, {
+        resolveMirrorImport: (specifier, importer) => {
+          // Keep wildcard globs under Vite's existing discovery rules;
+          // these authored optional binary URLs are exact paths.
+          if (/[*?\[\]{}!]/.test(specifier)) return null;
+          return relativeBinaryMirrorImport(specifier, importer)?.relPath ?? null;
+        },
+        // A glob creates lazy loaders; policy admission belongs to resolveId
+        // when a loader imports its asset. No bytes or capability are exposed
+        // here, and a stale optional asset still fails when requested.
+        resolveModule: (relPath) => candidateEntryExists(relPath)
+          ? `${serving ? "/@id/" : ""}@binaries/${relPath}?url` : null,
+        // Vite otherwise resolves literal dynamic imports during analysis,
+        // before the browser calls the loader. /@id/ routes the later request
+        // back through resolveId and the same checked capability boundary.
+        deferDevImportAnalysis: serving,
+      });
+      return rewritten === null ? null : { code: rewritten, map: null };
     },
     configureServer(server) {
       access.attachServer(server);

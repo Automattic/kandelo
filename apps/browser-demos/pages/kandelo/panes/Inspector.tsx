@@ -5,7 +5,7 @@
 // error; the pane catches those and renders a host-endpoint placeholder.
 
 import * as React from "react";
-import { useKernelHost, useDmesg, useLazyDownloadSummaries } from "../kernel-host/react";
+import { useKernelHost, useDmesg, useLazyDownloadSummaries, useStatus } from "../kernel-host/react";
 import type {
   DmesgLine, ProcessEvent, ProcessInfo, MountInfo, KernelStateKV,
   MemMapEntry, SyscallEvent, VfsDirent, LazyDownloadEvent, LazyDownloadSummary,
@@ -274,9 +274,13 @@ const VfsTab: React.FC = () => {
   const [path, setPath] = React.useState("/");
   const [selected, setSelected] = React.useState<{ path: string; entry: VfsDirent } | null>(null);
   const [refresh, setRefresh] = React.useState(0);
+  // Internals opens while the machine boots, before a kernel is attached to
+  // read from. Wait for it, and list again once it is running, instead of
+  // showing a "cannot list" error that never clears.
+  const running = useStatus() === "running";
   const state = useAsyncOnce<VfsDirent[]>(
-    () => host.readDir(path),
-    [host, path, refresh],
+    () => running ? host.readDir(path) : new Promise<VfsDirent[]>(() => {}),
+    [host, path, refresh, running],
   );
   const entries = React.useMemo(() => {
     if (state.kind !== "ready") return [];

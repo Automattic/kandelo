@@ -1,17 +1,13 @@
 /**
  * Build-time WordPress installer for the browser demo VFS images.
  *
- * The builder's MemoryFileSystem is only a source snapshot for a temporary
+ * The builder's image filesystem is only a source snapshot for a temporary
  * NodeKernelHost boot, so mutations made by PHP/MariaDB inside that kernel
  * must be streamed back to the builder. This mirrors opcache-prewarm's stdout
  * dump protocol, but preserves directory/file ownership and modes for DB data.
  */
 import {
-  chmodSync,
-  lstatSync,
-  mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   rmSync,
 } from "node:fs";
@@ -19,12 +15,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { NodeKernelHost, type NodeKernelHostOptions } from "../../../host/src/node-kernel-host";
 import { resolveBinary } from "../../../host/src/binary-resolver";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 import {
   ensureDirRecursive,
   writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
 import { saveShellDerivedBuildGuestSnapshot } from "./package-shell-vfs-build";
+import { sourceDateEpochMilliseconds } from "./vfs-image-helpers";
+import { WORDPRESS_SECRET_NAMES } from "../../../apps/browser-demos/lib/init/wordpress-runtime-config";
 
 export const WORDPRESS_DEFAULT_SITE_TITLE = "WordPress on Kandelo";
 export const WORDPRESS_DEFAULT_ADMIN_USER = "admin";
@@ -35,7 +33,6 @@ const PHP_FPM_UID = 65534;
 const PHP_FPM_GID = 65534;
 const MYSQL_UID = 101;
 const MYSQL_GID = 101;
-const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 const MARIADB_PREINSTALL_SOCKET_PATH = "/data/mysql.sock";
 const MARIADB_ARIA_LOG_FILE_SIZE = 16 * 1024 * 1024;
 const MARIADB_ARIA_PAGECACHE_SIZE = 1024 * 1024;
@@ -59,12 +56,20 @@ const PHP_ARGS = [
   "-r",
 ];
 
+/**
+ * Seeds naming each build step's deterministic guest (see
+ * `preinstallDeterminism`). Distinct per step so their entropy streams are
+ * unrelated; fixed so every build of a step draws the same bytes. Changing
+ * one changes the image, like any other build input.
+ */
+const DETERMINISM_SEED_WORDPRESS_SQLITE_INSTALL = 0x5750_0001;
+const DETERMINISM_SEED_WORDPRESS_MARIADB_INSTALL = 0x5750_0002;
+
 const DUMP_BEGIN = "===WPDB_DUMP_BEGIN===\n";
 const DUMP_END = "===WPDB_DUMP_END===";
 
 interface KernelSession {
   host: NodeKernelHost;
-  hostDataDir?: string;
   runPhp: (phase: string, script: string, opts?: RunPhpOptions) => Promise<Uint8Array>;
   runPhpToHostFile: (
     phase: string,
@@ -102,8 +107,11 @@ interface DumpRecord {
 }
 
 interface PreinstallKernelHostOptions extends NodeKernelHostOptions {
-  mountDataDir?: boolean;
-  hostDataDir?: string;
+  /**
+   * Names this build's deterministic guest (see `preinstallDeterminism`).
+   * Every build-time kernel boot of an installer passes one.
+   */
+  determinismSeed: number;
   programs?: WordPressPreinstallPrograms;
 }
 
@@ -114,7 +122,7 @@ export interface WordPressPreinstallPrograms {
 }
 
 export async function preinstallWordPressSqlite(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   programs?: WordPressPreinstallPrograms,
 ): Promise<void> {
   console.log("[wp-preinstall:sqlite] installing WordPress into SQLite database...");
@@ -134,123 +142,127 @@ export async function preinstallWordPressSqlite(
     const written = ingestDump(dump, fs);
     assertVfsPath(fs, "/var/www/html/wp-content/database/wordpress.db");
     console.log(`[wp-preinstall:sqlite] wrote ${written} database entries`);
-  }, { programs });
+  }, { programs, determinismSeed: DETERMINISM_SEED_WORDPRESS_SQLITE_INSTALL });
 }
 
 export async function preinstallWordPressMariaDb(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   programs?: WordPressPreinstallPrograms,
 ): Promise<void> {
   console.log("[wp-preinstall:mariadb] initializing MariaDB /data and installing WordPress...");
-  const hostDataDir = mkdtempSync(join(tmpdir(), "wp-preinstall-data-"));
-  try {
-    const mariadbBytes = programs?.mariadb === undefined
-      ? loadProgram("programs/mariadb/mariadbd.wasm")
-      : exactProgramBuffer(programs.mariadb, "WordPress MariaDB");
-    prepareHostMariaDbDataDir(hostDataDir);
-    await withKernelSession(fs, async (session) => {
+  const mariadbBytes = programs?.mariadb === undefined
+    ? loadProgram("programs/mariadb/mariadbd.wasm")
+    : exactProgramBuffer(programs.mariadb, "WordPress MariaDB");
+  // /data lives in the booted kernel's own filesystem, as it does on a
+  // running machine. It used to be a host directory mounted into the guest,
+  // which made the image depend on the build host: on macOS's
+  // case-insensitive APFS, MariaDB switched itself to
+  // lower_case_table_names=2, on Linux it did not. It also needed a fixed
+  // 60-second wait and a kill to end the bootstrap, because the host could
+  // only watch for files to appear. Now the bootstrap runs to completion, the
+  // server shuts down cleanly, and /data is copied out through the guest.
+  await withKernelSession(fs, async (session) => {
+    try {
+      const started = Date.now();
       await bootstrapMariaDbSystemTables(session, fs, mariadbBytes);
-    }, {
-      maxWorkers: 16,
-      dataBufferSize: 256 * 1024,
-      mountDataDir: true,
-      hostDataDir,
-      programs,
+      console.log(`[wp-preinstall:mariadb] bootstrap done in ${Date.now() - started} ms`);
+      await installWordPressIntoMariaDb(session, mariadbBytes);
+      console.log(`[wp-preinstall:mariadb] install and shutdown done in ${Date.now() - started} ms`);
+    } catch (err) {
+      const diagnostics = await collectMariaDbDiagnostics(session.host);
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`${message}\n${diagnostics}`);
+    }
+    // Copy /data out through the guest, the same way the SQLite database is
+    // dumped, preserving each entry's mode and owner.
+    const dump = await session.runPhpToHostFile(
+      "dump MariaDB data directory",
+      dumpScript(["/data"], "/host-dump/data.dump"),
+      "data.dump",
+      { cwd: "/", timeoutMs: 300_000 },
+    );
+    const written = ingestDump(dump, fs);
+    assertVfsPath(fs, "/data/mysql");
+    assertVfsPath(fs, "/data/wordpress");
+    ensureMariaDbDataOwnership(fs);
+    console.log(`[wp-preinstall:mariadb] wrote ${written} /data entries`);
+  }, {
+    determinismSeed: DETERMINISM_SEED_WORDPRESS_MARIADB_INSTALL,
+    maxWorkers: 16,
+    dataBufferSize: 256 * 1024,
+    programs,
+  });
+}
+
+/**
+ * Start the server on the bootstrapped /data, run the WordPress installer
+ * against it, and shut it down cleanly: `innodb_fast_shutdown=0` makes InnoDB
+ * finish purge and flush everything before it exits, so the image's data
+ * files carry no work left for crash recovery.
+ */
+async function installWordPressIntoMariaDb(
+  session: KernelSession,
+  mariadbBytes: ArrayBuffer,
+): Promise<void> {
+  let serverDone = false;
+  let mariadbPid = 0;
+  const serverExit = session.host.spawn(
+    mariadbBytes,
+    ["mariadbd", ...mariadbServerArgs()],
+    {
+      env: BASE_ENV,
+      cwd: "/data",
+      onStarted: (pid) => {
+        mariadbPid = pid;
+      },
+    },
+  );
+  serverExit.then(() => { serverDone = true; }, () => { serverDone = true; });
+  try {
+    // A separate process waits for the socket, so that however long that
+    // takes never reaches the installer's own (deterministic) clock.
+    await session.runPhp("wait for MariaDB", waitForMariaDbSocketScript(), {
+      cwd: "/",
+      timeoutMs: 180_000,
     });
-    makeHostMariaDbDataWritable(hostDataDir);
-
-    await withKernelSession(fs, async (session) => {
-      if (!session.hostDataDir) {
-        throw new Error("MariaDB preinstall requires a host-mounted /data directory");
-      }
-      let mariadbPid = 0;
-      let resolveStarted!: (pid: number) => void;
-      const started = new Promise<number>((resolve) => { resolveStarted = resolve; });
-      const serverExit = session.host.spawn(
-        mariadbBytes,
-        ["mariadbd", ...mariadbServerArgs()],
-        {
-          env: BASE_ENV,
-          cwd: "/data",
-          onStarted: (pid) => {
-            mariadbPid = pid;
-            resolveStarted(pid);
-          },
-        },
-      );
-      serverExit.catch(() => {});
-      await withTimeout(started, 10_000, "mariadbd did not start");
-
-      try {
-        await Promise.race([
-          waitForHostPath(join(session.hostDataDir, "mysql.sock"), 180_000),
-          serverExit.then((code) => {
-            throw new Error(`mariadbd exited before readiness check completed with code ${code}`);
-          }),
-        ]);
-        await session.runPhp("install", wordpressInstallScript(), {
-          cwd: "/var/www/html",
-          timeoutMs: 240_000,
-        });
-        await session.runPhp("shutdown MariaDB", shutdownMariaDbScript(), {
-          cwd: "/var/www/html",
-          timeoutMs: 30_000,
-        });
-        await Promise.race([serverExit, delay(10_000)]);
-      } catch (err) {
-        const diagnostics = collectHostMariaDbDiagnostics(session.hostDataDir);
-        const message = err instanceof Error ? err.message : String(err);
-        throw new Error(`${message}\n${diagnostics}`);
-      } finally {
-        if (mariadbPid !== 0 && await isProcessLive(session.host, mariadbPid)) {
-          await session.host.terminateProcess(mariadbPid, 0).catch(() => {});
-          await Promise.race([serverExit, delay(2_000)]).catch(() => {});
-        }
-      }
-
-      const written = ingestHostDirectory(session.hostDataDir, fs, "/data");
-      assertVfsPath(fs, "/data/mysql");
-      assertVfsPath(fs, "/data/wordpress");
-      ensureMariaDbDataOwnership(fs);
-      console.log(`[wp-preinstall:mariadb] wrote ${written} /data entries`);
-    }, {
-      maxWorkers: 16,
-      dataBufferSize: 256 * 1024,
-      mountDataDir: true,
-      hostDataDir,
-      programs,
+    await session.runPhp("install", wordpressInstallScript(), {
+      cwd: "/var/www/html",
+      timeoutMs: 240_000,
     });
+    await session.runPhp("shutdown MariaDB", shutdownMariaDbScript(), {
+      cwd: "/var/www/html",
+      timeoutMs: 30_000,
+    });
+    const code = await withTimeout(serverExit, 180_000, "mariadbd did not shut down");
+    if (code !== 0) throw new Error(`mariadbd exited with code ${code} after SHUTDOWN`);
   } finally {
-    rmSync(hostDataDir, { recursive: true, force: true });
+    if (!serverDone && mariadbPid !== 0 && await isProcessLive(session.host, mariadbPid)) {
+      await session.host.terminateProcess(mariadbPid, 0).catch(() => {});
+      await Promise.race([serverExit, delay(2_000)]).catch(() => {});
+    }
   }
 }
 
 async function withKernelSession(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   fn: (session: KernelSession) => Promise<void>,
-  hostOptions: PreinstallKernelHostOptions = {},
+  hostOptions: PreinstallKernelHostOptions,
 ): Promise<void> {
   const imageBytes = await saveShellDerivedBuildGuestSnapshot(fs);
   const hostDumpDir = mkdtempSync(join(tmpdir(), "wp-preinstall-dump-"));
-  const hostDataDir = hostOptions.mountDataDir
-    ? hostOptions.hostDataDir ?? mkdtempSync(join(tmpdir(), "wp-preinstall-data-"))
-    : undefined;
-  const removeHostDataDir = hostOptions.mountDataDir && hostOptions.hostDataDir === undefined;
-  if (hostDataDir) chmodSync(hostDataDir, 0o777);
   const {
-    mountDataDir: _mountDataDir,
-    hostDataDir: _hostDataDir,
     programs,
+    determinismSeed,
     ...nodeHostOptions
   } = hostOptions;
   let activeStdoutSink: ((data: Uint8Array) => void) | null = null;
   let activeStdoutLabel = "";
   const host = new NodeKernelHost({
     ...nodeHostOptions,
+    imageBuildDeterminism: preinstallDeterminism(determinismSeed),
     extraMounts: [
       ...(nodeHostOptions.extraMounts ?? []),
       { mountPoint: "/host-dump", hostPath: hostDumpDir },
-      ...(hostDataDir ? [{ mountPoint: "/data", hostPath: hostDataDir }] : []),
     ],
     rootfsImage: imageBytes,
     onStdout: (_pid, data) => {
@@ -272,7 +284,6 @@ async function withKernelSession(
       : exactProgramBuffer(programs.php, "WordPress PHP");
     const session: KernelSession = {
       host,
-      hostDataDir,
       runPhp: async (phase, script, opts = {}) => {
         const chunks: Uint8Array[] = [];
         activeStdoutLabel = phase;
@@ -333,8 +344,30 @@ async function withKernelSession(
   } finally {
     await host.destroy().catch(() => {});
     rmSync(hostDumpDir, { recursive: true, force: true });
-    if (hostDataDir && removeHostDataDir) rmSync(hostDataDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * The installer runs against a deterministic guest: its wall clock starts at
+ * the instant the finished image stamps on every inode (SOURCE_DATE_EPOCH,
+ * or Kandelo's reference instant when unset) and its entropy is seeded by
+ * `seed`. WordPress's install timestamps and password salt, and MariaDB's
+ * table UUIDs, are then the same on every build, so the image is a function
+ * of its inputs and two builds under one cache key agree.
+ *
+ * Everything seeded here is public -- anyone can rebuild it -- so nothing it
+ * produces may remain a secret on a running machine. The image's first-boot
+ * service replaces the WordPress keys and salts from the machine's real
+ * entropy (`wordpressFirstBootSecretsService`), and the build installs with
+ * public placeholder keys (`buildOnlyWordPressSecrets`). Why the image is
+ * built this way rather than installed on first boot is recorded in
+ * `docs/package-management.md` ("Reproducible VFS image packages").
+ */
+function preinstallDeterminism(seed: number): NonNullable<NodeKernelHostOptions["imageBuildDeterminism"]> {
+  return {
+    seed,
+    epochSeconds: sourceDateEpochMilliseconds(process.env.SOURCE_DATE_EPOCH) / 1000,
+  };
 }
 
 function loadProgram(binaryId: string): ArrayBuffer {
@@ -372,8 +405,28 @@ function mariadbServerArgs(): string[] {
     `--socket=${MARIADB_PREINSTALL_SOCKET_PATH}`,
     "--max-connections=10",
     "--log-error=/data/error.log",
+    ...MARIADB_BUILD_ONLY_ARGS,
   ];
 }
+
+/**
+ * Build-time server settings that take timer-driven background work out of
+ * what the installer's server writes, so less of the data files depends on
+ * how many timer ticks passed while the SQL ran (it does not remove all of
+ * it; see "Reproducible VFS image packages" in docs/package-management.md): no
+ * persistent statistics recalculation (InnoDB rewrites
+ * `innodb_table_stats`/`innodb_index_stats` from a background thread), no
+ * periodic Aria checkpoints, and no buffer-pool dump (the list of cached
+ * pages at shutdown). They apply only to the build; the image's own service
+ * starts MariaDB with its defaults.
+ */
+const MARIADB_BUILD_ONLY_ARGS = [
+  "--innodb-stats-persistent=0",
+  "--innodb-stats-auto-recalc=0",
+  "--innodb-buffer-pool-dump-at-shutdown=0",
+  "--innodb-buffer-pool-load-at-startup=0",
+  "--aria-checkpoint-interval=0",
+];
 
 function mariadbBootstrapArgs(): string[] {
   return [
@@ -395,86 +448,36 @@ function mariadbBootstrapArgs(): string[] {
     "--skip-networking",
     "--log-warnings=0",
     "--log-error=/data/bootstrap.log",
+    ...MARIADB_BUILD_ONLY_ARGS,
   ];
 }
 
-function prepareHostMariaDbDataDir(hostDataDir: string): void {
-  chmodSync(hostDataDir, 0o777);
-  for (const dir of ["mysql", "tmp", "test"]) {
-    const path = join(hostDataDir, dir);
-    mkdirSync(path, { recursive: true, mode: 0o777 });
-    chmodSync(path, 0o777);
-  }
-}
-
-function makeHostMariaDbDataWritable(hostDataDir: string): void {
-  function walk(path: string): void {
-    const st = lstatSync(path);
-    if (st.isSymbolicLink()) return;
-    if (st.isDirectory()) {
-      chmodSync(path, 0o777);
-      for (const name of readdirSync(path)) walk(join(path, name));
-    } else if (st.isFile()) {
-      chmodSync(path, 0o666);
-    }
-  }
-  walk(hostDataDir);
-}
-
+/**
+ * Create MariaDB's system tables and the `wordpress` database. `--bootstrap`
+ * reads the SQL from stdin and exits at end of input; the build waits for it
+ * and requires success.
+ */
 async function bootstrapMariaDbSystemTables(
   session: KernelSession,
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   mariadbBytes: ArrayBuffer,
 ): Promise<void> {
-  if (!session.hostDataDir) {
-    throw new Error("MariaDB bootstrap requires hostDataDir");
-  }
   const bootstrapSql = readVfsFile(fs, "/etc/mariadb/bootstrap.sql");
-  let bootstrapPid = 0;
-  let resolveStarted!: (pid: number) => void;
-  const started = new Promise<number>((resolve) => { resolveStarted = resolve; });
-  const bootstrapExit = session.host.spawn(
-    mariadbBytes,
-    ["mariadbd", ...mariadbBootstrapArgs()],
-    {
-      env: BASE_ENV,
-      cwd: "/data",
-      stdin: bootstrapSql,
-      onStarted: (pid) => {
-        bootstrapPid = pid;
-        resolveStarted(pid);
-      },
-    },
+  const code = await withTimeout(
+    session.host.spawn(
+      mariadbBytes,
+      ["mariadbd", ...mariadbBootstrapArgs()],
+      { env: BASE_ENV, cwd: "/data", stdin: bootstrapSql },
+    ),
+    300_000,
+    "mariadbd --bootstrap did not exit",
   );
-  bootstrapExit.catch(() => {});
-  await withTimeout(started, 10_000, "mariadbd bootstrap did not start");
-
-  const wordpressDataDir = join(session.hostDataDir, "wordpress");
-  try {
-    await Promise.race([
-      waitForHostPath(wordpressDataDir, 120_000),
-      bootstrapExit.then((code) => {
-        if (code === 0 && hostPathExists(wordpressDataDir)) return;
-        throw new Error(`mariadbd bootstrap exited before creating wordpress database with code ${code}`);
-      }),
-    ]);
-    if (!hostPathExists(wordpressDataDir)) {
-      await waitForHostPath(wordpressDataDir, 2_000);
-    }
-    await delay(60_000);
-  } catch (err) {
-    const diagnostics = collectHostMariaDbDiagnostics(session.hostDataDir);
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`${message}\n${diagnostics}`);
-  } finally {
-    if (bootstrapPid !== 0 && await isProcessLive(session.host, bootstrapPid)) {
-      await session.host.terminateProcess(bootstrapPid, 0).catch(() => {});
-      await Promise.race([bootstrapExit, delay(2_000)]).catch(() => {});
-    }
+  if (code !== 0) {
+    throw new Error(`mariadbd --bootstrap exited with code ${code}`);
   }
 }
 
-function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsFile(fs: VfsImageFilesystem, path: string): Uint8Array {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -500,6 +503,7 @@ $_SERVER['REQUEST_METHOD'] = 'GET';
 $_SERVER['REQUEST_URI'] = '/wp-admin/install.php';
 
 define('WP_INSTALLING', true);
+${buildOnlyWordPressSecrets()}
 require_once '/var/www/html/wp-load.php';
 require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
@@ -530,53 +534,49 @@ echo "installed user_id=" . (int)($result['user_id'] ?? 0) . "\\n";
 `.trim();
 }
 
-function waitForMariaDbSocketCommand(): string {
-  return `
-i=0
-while [ $i -lt 180 ]; do
-    if [ -e ${MARIADB_SOCKET_PATH} ]; then
-        sleep 5
-        exit 0
-    fi
-    sleep 1
-    i=$((i + 1))
-done
-echo "MariaDB socket did not appear at ${MARIADB_SOCKET_PATH}" >&2
-exit 1
-`.trim();
+/**
+ * Public placeholder keys and salts for the build-time install only.
+ *
+ * wp-config.php requires the machine's secrets file, which the image does not
+ * contain (each machine writes its own on first boot), so the installer
+ * defines the constants itself first. The values are deliberately public and
+ * distinct: distinct, because WordPress ignores keys that repeat one another
+ * and instead generates and STORES random ones in the database
+ * (`wp_salt()`), which would bake seeded -- that is, public -- keys into the
+ * image; public, because nothing the build knows is secret. They sign
+ * nothing that outlives the build.
+ */
+function buildOnlyWordPressSecrets(): string {
+  return WORDPRESS_SECRET_NAMES
+    .map((name) => `define('${name}', 'kandelo-image-build-only-not-secret-${name.toLowerCase()}');`)
+    .join("\n");
 }
 
-function mariaDbDiagnosticsScript(): string {
-  return `
-foreach (['/data/bootstrap.log', '/data/error.log'] as $path) {
-    echo "== $path ==\\n";
-    if (is_file($path)) {
-        $text = file_get_contents($path);
-        echo substr($text, -6000) . "\\n";
-    } else {
-        echo "missing\\n";
-    }
-}
-echo "== /data ==\\n";
-if (is_dir('/data')) {
-    foreach (scandir('/data') as $entry) {
-        if ($entry === '.' || $entry === '..') continue;
-        $path = '/data/' . $entry;
-        $st = @stat($path);
-        echo $entry . " mode=" . decoct(($st['mode'] ?? 0) & 07777) . " size=" . ($st['size'] ?? 0) . "\\n";
-    }
-} else {
-    echo "missing\\n";
-}
-`.trim();
+async function collectMariaDbDiagnostics(host: NodeKernelHost): Promise<string> {
+  const chunks: string[] = [];
+  for (const path of ["/data/bootstrap.log", "/data/error.log"]) {
+    chunks.push(`== ${path} ==`);
+    const bytes = await host.readFileFromVfs(path).catch(() => null);
+    chunks.push(bytes === null
+      ? "missing"
+      : new TextDecoder("utf-8", { fatal: false }).decode(bytes).slice(-6000));
+  }
+  return chunks.join("\n");
 }
 
-async function collectMariaDbDiagnostics(session: KernelSession): Promise<string> {
-  const out = await session.runPhp("MariaDB diagnostics", mariaDbDiagnosticsScript(), {
-    cwd: "/",
-    timeoutMs: 15_000,
-  });
-  return new TextDecoder("utf-8", { fatal: false }).decode(out);
+function waitForMariaDbSocketScript(): string {
+  return `
+for ($i = 0; $i < 900; $i++) {
+    if (file_exists(${phpString(MARIADB_PREINSTALL_SOCKET_PATH)})) {
+        // The socket exists from bind(); give listen() a moment.
+        usleep(500000);
+        exit(0);
+    }
+    usleep(200000);
+}
+fwrite(STDERR, "MariaDB socket did not appear\\n");
+exit(1);
+`.trim();
 }
 
 function shutdownMariaDbScript(): string {
@@ -584,10 +584,13 @@ function shutdownMariaDbScript(): string {
 mysqli_report(MYSQLI_REPORT_OFF);
 $db = mysqli_init();
 if (!$db || !@mysqli_real_connect($db, 'localhost', 'root', '', '', 0, ${phpString(MARIADB_PREINSTALL_SOCKET_PATH)})) {
-    fwrite(STDERR, "MariaDB shutdown skipped: " . mysqli_connect_error() . "\\n");
-    exit(0);
+    fwrite(STDERR, "MariaDB shutdown failed to connect: " . mysqli_connect_error() . "\\n");
+    exit(1);
 }
-@$db->query('FLUSH TABLES');
+// A slow shutdown: finish purge and flush every page, so the data files the
+// image ships need no crash recovery and carry no pending background work.
+if (!$db->query('SET GLOBAL innodb_fast_shutdown = 0')) { fwrite(STDERR, $db->error . "\\n"); exit(1); }
+if (!$db->query('FLUSH TABLES')) { fwrite(STDERR, $db->error . "\\n"); exit(1); }
 @$db->query('SHUTDOWN');
 echo "mariadb shutdown requested\\n";
 exit(0);
@@ -673,7 +676,7 @@ fwrite(STDERR, "dumped " . count($records) . " entries\\n");
 `.trim();
 }
 
-function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
+function ingestDump(buf: Uint8Array, fs: VfsImageFilesystem): number {
   const text = new TextDecoder("utf-8").decode(buf);
   const beginAt = text.indexOf(DUMP_BEGIN);
   if (beginAt < 0) {
@@ -732,62 +735,7 @@ function ingestDump(buf: Uint8Array, fs: MemoryFileSystem): number {
   return records.length;
 }
 
-function ingestHostDirectory(hostRoot: string, fs: MemoryFileSystem, vfsRoot: string): number {
-  let written = 0;
-
-  function copyDir(hostDir: string, vfsDir: string): void {
-    const st = lstatSync(hostDir);
-    ensureDirRecursive(fs, vfsDir);
-    fs.chown(vfsDir, MYSQL_UID, MYSQL_GID);
-    fs.chmod(vfsDir, st.mode & 0o7777);
-    written++;
-
-    for (const name of readdirSync(hostDir)) {
-      const hostPath = join(hostDir, name);
-      const vfsPath = `${vfsDir.replace(/\/+$/, "")}/${name}`;
-      const childSt = lstatSync(hostPath);
-      if (childSt.isSymbolicLink()) continue;
-      if (childSt.isDirectory()) {
-        copyDir(hostPath, vfsPath);
-      } else if (childSt.isFile()) {
-        writeVfsBinary(fs, vfsPath, new Uint8Array(readFileSync(hostPath)), childSt.mode & 0o7777);
-        fs.chown(vfsPath, MYSQL_UID, MYSQL_GID);
-        fs.chmod(vfsPath, childSt.mode & 0o7777);
-        written++;
-      }
-    }
-  }
-
-  copyDir(hostRoot, vfsRoot);
-  return written;
-}
-
-function collectHostMariaDbDiagnostics(hostDataDir: string): string {
-  const chunks: string[] = [];
-  for (const name of ["bootstrap.log", "error.log"]) {
-    const path = join(hostDataDir, name);
-    chunks.push(`== /data/${name} ==`);
-    try {
-      chunks.push(readFileSync(path, "utf-8").slice(-6000));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      chunks.push(`missing (${message})`);
-    }
-  }
-  chunks.push("== /data ==");
-  try {
-    for (const name of readdirSync(hostDataDir).sort()) {
-      const st = lstatSync(join(hostDataDir, name));
-      chunks.push(`${name} mode=${(st.mode & 0o7777).toString(8)} size=${st.size}`);
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    chunks.push(`cannot list (${message})`);
-  }
-  return chunks.join("\n");
-}
-
-function ensureMariaDbDataOwnership(fs: MemoryFileSystem): void {
+function ensureMariaDbDataOwnership(fs: VfsImageFilesystem): void {
   for (const dir of ["/data", "/data/mysql", "/data/tmp", "/data/wordpress"]) {
     try {
       fs.chown(dir, MYSQL_UID, MYSQL_GID);
@@ -798,7 +746,7 @@ function ensureMariaDbDataOwnership(fs: MemoryFileSystem): void {
   }
 }
 
-function assertVfsPath(fs: MemoryFileSystem, path: string): void {
+function assertVfsPath(fs: VfsImageFilesystem, path: string): void {
   try {
     fs.stat(path);
   } catch {
@@ -846,28 +794,6 @@ function phpString(value: string): string {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitForHostPath(path: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      lstatSync(path);
-      return;
-    } catch {
-      await delay(500);
-    }
-  }
-  throw new Error(`timed out waiting for host path: ${path}`);
-}
-
-function hostPathExists(path: string): boolean {
-  try {
-    lstatSync(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function withTimeout<T>(

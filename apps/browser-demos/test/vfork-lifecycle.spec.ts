@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import { buildProgramsFixture, requireBuiltFixtures } from "./support/program-fixtures";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 import {
   detectPtrWidth,
   extractHeapBase,
@@ -24,18 +24,23 @@ const browserKernelModulePath = resolve(
   __dirname,
   "../../../host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(
+// The Rust image writer. Its wasm is handed in as bytes from Node, the same
+// shape the program fixtures already use -- the bridge stopped importing node
+// builtins, so a page can transform it like any other module.
+const imageFsModulePath = resolve(
   __dirname,
-  "../../../host/src/vfs/memory-fs.ts",
+  "../../../images/vfs/lib/kandelo-image-fs.ts",
 );
-const lifecycleProgramPath = resolveBinary("programs/vfork-lifecycle.wasm");
-const threadProgramPath = resolveBinary("programs/vfork-from-thread.wasm");
-const fatalProgramPath = resolveBinary("programs/vfork-fatal-lifecycle.wasm");
-const externalSignalProgramPath = resolveBinary(
-  "programs/vfork-external-signal.wasm",
+const imageModuleWasmPath = resolve(
+  __dirname,
+  "../../../local-binaries/kandelo_image_module32.wasm",
 );
-const stateProgramPath = resolveBinary("programs/vfork-posix-state.wasm");
-const execChildPath = resolveBinary("programs/exec-child.wasm");
+const lifecycleProgramPath = buildProgramsFixture("programs/wasm32/vfork-lifecycle.wasm");
+const threadProgramPath = buildProgramsFixture("programs/wasm32/vfork-from-thread.wasm");
+const fatalProgramPath = buildProgramsFixture("programs/wasm32/vfork-fatal-lifecycle.wasm");
+const externalSignalProgramPath = buildProgramsFixture("programs/wasm32/vfork-external-signal.wasm");
+const stateProgramPath = buildProgramsFixture("programs/wasm32/vfork-posix-state.wasm");
+const execChildPath = buildProgramsFixture("programs/wasm32/exec-child.wasm");
 const ordinaryForkProgramPath = resolve(
   __dirname,
   "../../../host/test/fixtures/fork-memory-clone.wasm",
@@ -117,7 +122,8 @@ async function runBrowserVforkFixture(
   return page.evaluate(
     async ({
       browserKernelModuleUrl,
-      memoryFsModuleUrl,
+      imageFsModuleUrl,
+      imageModuleBytes,
       fixtureUrl,
       execChildFixtureUrl,
       sideModuleFixtureUrl,
@@ -131,8 +137,8 @@ async function runBrowserVforkFixture(
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsModuleUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -172,9 +178,7 @@ async function runBrowserVforkFixture(
       let initialized = false;
 
       try {
-        const imageOwner = MemoryFileSystem.create(
-          new SharedArrayBuffer(2 * 1024 * 1024),
-        );
+        const imageOwner = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
         imageOwner.mkdir("/tmp", 0o755);
         if (execChildFixtureUrl) {
           const childResponse = await fetch(execChildFixtureUrl);
@@ -236,7 +240,8 @@ async function runBrowserVforkFixture(
     },
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
-      memoryFsModuleUrl: asViteFsUrl(memoryFsModulePath),
+      imageFsModuleUrl: asViteFsUrl(imageFsModulePath),
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       fixtureUrl: asViteFsUrl(fixturePath),
       execChildFixtureUrl: execChildFixturePath
         ? asViteFsUrl(execChildFixturePath)
@@ -286,6 +291,15 @@ function expectPrivatePreparationEvidence(preparation: MechanismTrace): void {
   expect(preparation.fields.get("externref_parent"), preparation.line)
     .not.toBe(preparation.fields.get("externref_child"));
 }
+
+test.beforeAll(() => requireBuiltFixtures([
+  lifecycleProgramPath,
+  threadProgramPath,
+  fatalProgramPath,
+  externalSignalProgramPath,
+  stateProgramPath,
+  execChildPath,
+]));
 
 test("observes real browser mode 1 quiescence and mode 0 copy dispatch", async ({
   page,
@@ -476,12 +490,15 @@ test("vfork keeps its browser parent parked through exit and exec", async ({
     "PARENT_RESUME_TWO",
     "CHILD_FAILED_EXEC",
     "PARENT_AFTER_FAILED_EXEC_EXIT",
-    "CHILD_NESTED_FORK_EAGAIN",
+    "GRANDCHILD_OF_VFORK_CHILD",
+    "CHILD_REAPED_GRANDCHILD",
     "CHILD_NESTED_VFORK_EAGAIN",
     "CHILD_PTHREAD_EAGAIN",
-    "PARENT_AFTER_REJECTED_OWNERSHIP",
+    "PARENT_AFTER_NESTED_OWNERSHIP",
     "PARENT_AFTER_EXEC_COMMIT",
     "PARENT_REAPED_EXEC_CHILD",
+    "argv[1]=from-detached",
+    "PARENT_SAW_DETACHED_GRANDCHILD_EXIT",
     "PASS: VFORK_LIFECYCLE",
   ]);
   expect(result.processEvents).toContain("exec");
@@ -515,10 +532,9 @@ test("vfork repeats on the browser main thread without a second full Memory", as
     "PARENT_RESUME_TWO",
     "CHILD_FAILED_EXEC",
     "PARENT_AFTER_FAILED_EXEC_EXIT",
-    "CHILD_NESTED_FORK_EAGAIN",
     "CHILD_NESTED_VFORK_EAGAIN",
     "CHILD_PTHREAD_EAGAIN",
-    "PARENT_AFTER_REJECTED_OWNERSHIP",
+    "PARENT_AFTER_NESTED_OWNERSHIP",
     "PARENT_SKIPPED_EXEC_UNDER_NO_COPY_CEILING",
     "PASS: VFORK_LIFECYCLE",
   ]);

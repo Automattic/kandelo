@@ -1,0 +1,64 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# SVG rendering library (librsvg-2.a, the C/GObject API over librsvg's
+# Rust core). The first package whose core is Rust: upstream's meson
+# build drives cargo-c to compile the `librsvg-c` crate as a static
+# library for wasm32-unknown-kandelo-std, against the pango/cairo/glib
+# stack below. Consumers include hyprcursor and hyprgraphics (plan
+# docs/plans/2026-09-30-real-hyprland-port-inventory.md).
+name = "librsvg"
+version = "2.63.2"
+kernel_abi = 45
+arches = ["wasm32"]
+depends_on = [
+  "cairo@1.18.6",
+  "pango@1.56.4",
+  "glib@2.84.4",
+  "gdk-pixbuf@2.36.12",
+  "harfbuzz@10.1.0",
+  "freetype@2.13.3",
+  "libxml2@2.13.8",
+]
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.3.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+# librsvg's meson.build requires cargo >= its MSRV (1.92.0).
+[[host_tools]]
+name = "cargo"
+version_constraint = ">=1.92.0"
+install_hints = { darwin = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh", linux = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh" }
+
+# cargo-c with the Kandelo target patch (flake.nix,
+# sdk/rust/cargo-c-kandelo.patch). librsvg requires >= 0.10.10.
+[[host_tools]]
+name = "cargo-cbuild"
+version_constraint = ">=0.10.10"
+install_hints = { darwin = "provided by flake.nix (patched pkgs.cargo-c); enter scripts/dev-shell.sh", linux = "provided by flake.nix (patched pkgs.cargo-c); enter scripts/dev-shell.sh" }
+
+[source]
+url = "https://download.gnome.org/sources/librsvg/2.63/librsvg-2.63.2.tar.xz"
+sha256 = "852b18e1a00b8605528825a27dc7748bff2a5dd254028f59dc22a34ea57e81b6"
+provider = "archive"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://gitlab.gnome.org/GNOME/librsvg/-/blob/2.63.2/COPYING.LIB"
+
+[build]
+script_path = "packages/registry/librsvg/build-librsvg.sh"
+
+[outputs]
+libs = ["lib/librsvg-2.a"]
+headers = ["include/librsvg-2.0"]
+pkgconfig = ["lib/pkgconfig/librsvg-2.0.pc"]

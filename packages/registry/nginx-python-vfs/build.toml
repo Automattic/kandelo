@@ -1,0 +1,35 @@
+script_path = "images/vfs/scripts/build-nginx-python-vfs-image.sh"
+inputs = [
+  "images/vfs/scripts/build-nginx-python-vfs-image.sh",
+  "images/vfs/scripts/build-nginx-python-vfs-image.ts",
+  "images/vfs/scripts/python-bytecode-prewarm.ts",
+  "images/vfs/scripts/dinit-image-helpers.ts",
+  "images/vfs/scripts/tracked-demo-config.ts",
+  "packages/registry/nginx-python-vfs/nginx-python-demo.json",
+  "images/vfs/scripts/package-shell-vfs-build.ts",
+  "images/vfs/scripts/shell-lazy-archives.ts",
+  "images/vfs/scripts/source-rootfs-shell-overlay.ts",
+  "images/vfs/scripts/vfs-image-helpers.ts",
+  "images/vfs/lib/init/shell-binaries.ts",
+  "images/rootfs/etc/services",
+  "packages/registry/nginx-python-vfs/app",
+  # images/vfs/scripts/python-bytecode-prewarm.ts boots a NodeKernelHost to
+  # prewarm .pyc files into the image, so the whole host runtime is part of
+  # this image's cache identity — the same reason nginx-php-vfs, lamp, and
+  # wordpress track the tree for their opcache prewarm.
+  "host/src",
+  "web-libs/kandelo-session/src/demo-config.ts",
+  "web-libs/kandelo-session/src/experimental-terminal-session.ts",
+  "web-libs/kandelo-session/src/vfs-capacity.ts",
+  "images/vfs/scripts/shell-runtime-layout.ts",
+  "images/vfs/lib/kandelo-image-fs.ts",
+  # The image writer these builders drive (images/vfs/lib/kandelo-image-fs.ts
+  # loads local-binaries/kandelo_image_module32.wasm): its cargo closure and
+  # recipe, so a writer change invalidates the images it wrote.
+  "cargo:kandelo-image-module",
+  "cargo:runtime-core",
+  "crates/kandelo-image-module/build-wasm.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 5

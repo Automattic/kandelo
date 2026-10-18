@@ -1,0 +1,132 @@
+--- a/pango/pango-attributes.c
++++ b/pango/pango-attributes.c
+@@ -1949,6 +1949,15 @@
+  *   which should be freed with [method@Pango.AttrList.unref].
+  *   Returns %NULL if @list was %NULL.
+  */
++/* wasm32-posix-kernel: GCopyFunc adapter. pango_attribute_copy takes one
++ * argument; calling it through a two-argument GCopyFunc traps on wasm's
++ * typed call_indirect. */
++static gpointer
++pango_attribute_copy_wasm_cb (gconstpointer attr, gpointer user_data)
++{
++  return pango_attribute_copy (attr);
++}
++
+ PangoAttrList *
+ pango_attr_list_copy (PangoAttrList *list)
+ {
+@@ -1961,7 +1970,7 @@
+   if (!list->attributes || list->attributes->len == 0)
+     return new;
+ 
+-  new->attributes = g_ptr_array_copy (list->attributes, (GCopyFunc)pango_attribute_copy, NULL);
++  new->attributes = g_ptr_array_copy (list->attributes, pango_attribute_copy_wasm_cb, NULL);
+ 
+   return new;
+ }
+--- a/pango/pango-context.c
++++ b/pango/pango-context.c
+@@ -34,6 +34,15 @@
+ #include "pango-script-private.h"
+ #include "pango-emoji-private.h"
+ 
++/* wasm32-posix-kernel: GFunc adapter. pango_item_free takes one argument;
++ * calling it through a two-argument GFunc traps on wasm's typed
++ * call_indirect. */
++static void
++pango_item_free_wasm_cb (gpointer item, gpointer user_data)
++{
++  pango_item_free (item);
++}
++
+ /**
+  * PangoContext:
+  *
+@@ -722,7 +731,7 @@
+ 
+   update_metrics_from_items (metrics, language, sample_str, text_len, items);
+ 
+-  g_list_foreach (items, (GFunc)pango_item_free, NULL);
++  g_list_foreach (items, pango_item_free_wasm_cb, NULL);
+   g_list_free (items);
+ 
+   g_object_unref (current_fonts);
+--- a/pango/pango-item.c
++++ b/pango/pango-item.c
+@@ -24,6 +24,15 @@
+ #include "pango-item-private.h"
+ #include "pango-impl-utils.h"
+ 
++/* wasm32-posix-kernel: GFunc adapter. pango_attribute_destroy takes one
++ * argument; calling it through a two-argument GFunc traps on wasm's
++ * typed call_indirect. */
++static void
++pango_attribute_destroy_wasm_cb (gpointer attr, gpointer user_data)
++{
++  pango_attribute_destroy (attr);
++}
++
+ /**
+  * pango_item_new:
+  *
+@@ -101,7 +110,7 @@
+ 
+   if (item->analysis.extra_attrs)
+     {
+-      g_slist_foreach (item->analysis.extra_attrs, (GFunc)pango_attribute_destroy, NULL);
++      g_slist_foreach (item->analysis.extra_attrs, pango_attribute_destroy_wasm_cb, NULL);
+       g_slist_free (item->analysis.extra_attrs);
+     }
+ 
+--- a/pango/pango-markup.c
++++ b/pango/pango-markup.c
+@@ -32,6 +32,15 @@
+ #include "pango-impl-utils.h"
+ #include "pango-utils-internal.h"
+ 
++/* wasm32-posix-kernel: GFunc adapter. pango_attribute_destroy takes one
++ * argument; calling it through a two-argument GFunc traps on wasm's
++ * typed call_indirect. */
++static void
++pango_attribute_destroy_wasm_cb (gpointer attr, gpointer user_data)
++{
++  pango_attribute_destroy (attr);
++}
++
+ /* FIXME */
+ #define _(x) x
+ 
+@@ -193,7 +202,7 @@
+ static void
+ open_tag_free (OpenTag *ot)
+ {
+-  g_slist_foreach (ot->attrs, (GFunc) pango_attribute_destroy, NULL);
++  g_slist_foreach (ot->attrs, pango_attribute_destroy_wasm_cb, NULL);
+   g_slist_free (ot->attrs);
+   g_slice_free (OpenTag, ot);
+ }
+--- a/pango/pangocairo-font.c
++++ b/pango/pangocairo-font.c
+@@ -616,7 +616,8 @@
+ }
+ 
+ static void
+-free_metrics_info (PangoCairoFontMetricsInfo *info)
++free_metrics_info (PangoCairoFontMetricsInfo *info,
++                   gpointer                   user_data)
+ {
+   pango_font_metrics_unref (info->metrics);
+   g_slice_free (PangoCairoFontMetricsInfo, info);
+--- a/pango/pangofc-font.c
++++ b/pango/pangofc-font.c
+@@ -154,7 +154,8 @@
+ }
+ 
+ static void
+-free_metrics_info (PangoFcMetricsInfo *info)
++free_metrics_info (PangoFcMetricsInfo *info,
++                   gpointer            user_data)
+ {
+   pango_font_metrics_unref (info->metrics);
+   g_slice_free (PangoFcMetricsInfo, info);

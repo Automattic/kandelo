@@ -1,0 +1,11 @@
+script_path = "packages/registry/libmad/build-libmad.sh"
+inputs = [
+  "packages/registry/libmad/build-libmad.sh",
+  "scripts/package-build-roots.sh",
+  "sdk/cmake/kandelo-toolchain.cmake",
+  "sdk/cmake/Platform/Kandelo.cmake",
+  "sdk/activate.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1

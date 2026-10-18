@@ -19,15 +19,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/mandoc-src"
 SYSROOT="$REPO_ROOT/sysroot"
-MANDOC_VERSION="${WASM_POSIX_DEP_VERSION:-${MANDOC_VERSION:-1.14.6}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://mandoc.bsd.lv/snapshots/mandoc-${MANDOC_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-8bf0d570f01e70a6e124884088870cbed7537f36328d512909eb10cd53179d9c}"
+MANDOC_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-mandoc-source"
 

@@ -24,6 +24,7 @@ const HIGHER_IS_BETTER = new Set([
   "pipe_mbps",
   "file_write_mbps",
   "file_read_mbps",
+  "stdin_mbps",
 ]);
 
 function isRegression(key: string, pctChange: number): boolean {

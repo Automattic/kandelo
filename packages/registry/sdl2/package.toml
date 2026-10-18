@@ -3,7 +3,7 @@ kind = "library"
 name = "sdl2"
 version = "2.32.10"
 kernel_abi = 43
-depends_on = ["libdrm@2.4.120"]
+depends_on = ["libdrm@2.4.120", "libwayland@1.24.0", "libxkbcommon@1.7.0"]
 arches = ["wasm32"]
 
 [source]
@@ -38,7 +38,7 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 
 [[host_tools]]
 name = "patch"
-version_constraint = ">=2.0"
+version_constraint = ">=2.7"
 probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

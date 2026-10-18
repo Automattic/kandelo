@@ -778,8 +778,14 @@ script_path = "packages/registry/{name}/build.sh"
 
     #[test]
     fn current_registry_program_dependencies_keep_the_same_graph_contract() {
+        // Pinned against a real registry package so a manifest change that
+        // breaks the graph contract fails here. `redis-vfs` is a composite VFS
+        // image whose two direct dependencies are both program packages, which
+        // is the shape this contract exists to protect. If it is ever removed,
+        // repoint this at another program package with at least two direct
+        // program dependencies rather than deleting the test.
         let registry = crate::repo_root().join("packages/registry");
-        let matrix = ["node-vfs", "node", "shell"]
+        let matrix = ["redis-vfs", "redis", "dinit"]
             .into_iter()
             .map(entry)
             .collect::<Vec<_>>();
@@ -787,7 +793,7 @@ script_path = "packages/registry/{name}/build.sh"
             Some(&registry),
             &matrix,
             &MatrixKey {
-                package: "node-vfs".to_string(),
+                package: "redis-vfs".to_string(),
                 arch: TargetArch::Wasm32,
             },
         )
@@ -795,7 +801,7 @@ script_path = "packages/registry/{name}/build.sh"
         .into_iter()
         .map(|key| key.artifact_name())
         .collect::<Vec<_>>();
-        assert_eq!(artifacts, ["node-wasm32", "shell-wasm32"]);
+        assert_eq!(artifacts, ["redis-wasm32", "dinit-wasm32"]);
     }
 
     #[test]

@@ -48,12 +48,40 @@ fn cache() -> Cache {
 
 /// A generation shaped like the engine's: the content-addressed directory
 /// plus the receipt sidecar at the engine's own receipt path, every mtime set
-/// `unused_for` in the past.
+/// `unused_for` in the past. Named the way generations were before names
+/// carried an ABI.
 fn generation(cache: &Cache, kind: &str, name: &str, key: &str, unused_for: Duration) -> PathBuf {
-    let canonical = cache
-        .compiled
-        .join(kind)
-        .join(format!("{name}-1.0-rev1-wasm32-{key}"));
+    named_generation(cache, kind, &format!("{name}-1.0-rev1-wasm32"), key, unused_for)
+}
+
+/// A generation named the way `canonical_path` names libraries and programs
+/// now, with the ABI segment.
+fn abi_generation(
+    cache: &Cache,
+    kind: &str,
+    name: &str,
+    abi: u32,
+    key: &str,
+    unused_for: Duration,
+) -> PathBuf {
+    named_generation(
+        cache,
+        kind,
+        &format!("{name}-1.0-rev1-wasm32-abi{abi}"),
+        key,
+        unused_for,
+    )
+}
+
+/// `generation` with the whole name before `-<key>` given.
+fn named_generation(
+    cache: &Cache,
+    kind: &str,
+    head: &str,
+    key: &str,
+    unused_for: Duration,
+) -> PathBuf {
+    let canonical = cache.compiled.join(kind).join(format!("{head}-{key}"));
     fs::create_dir_all(canonical.join("lib")).unwrap();
     fs::write(canonical.join("lib/lib.a"), vec![7u8; 10_000]).unwrap();
     let receipt = source_only_cache_receipt_path(&canonical, key).unwrap();
@@ -100,6 +128,12 @@ fn live_checkout(cache: &Cache, keys: &[&str]) -> tempfile::TempDir {
 
 fn policy() -> GcPolicy {
     GcPolicy::manual(DEFAULT_MAX_AGE, None)
+}
+
+fn below_abi(floor: u32) -> GcPolicy {
+    let mut policy = policy();
+    policy.below_abi = Some(floor);
+    policy
 }
 
 fn apply(cache: &Cache, policy: &GcPolicy) -> GcReport {
@@ -496,4 +530,295 @@ fn name_parsing() {
     assert_eq!(parse_size("1536MiB").unwrap(), 1536 << 20);
     assert_eq!(parse_size("4096").unwrap(), 4096);
     assert!(parse_size("12Q").is_err());
+
+    let named = format!("zlib-1.3.1-rev3-wasm32-abi46-{k}");
+    assert_eq!(generation_key(&named), Some(k.as_str()));
+    assert_eq!(generation_named_abi(&named), Some(46));
+    assert_eq!(generation_named_abi(&basename), None);
+    assert_eq!(generation_named_abi(&format!("pcre2-source-10.42-rev1-{k}")), None);
+    assert_eq!(generation_named_abi(&format!("zlib-1.3.1-rev3-wasm32-abi-{k}")), None);
+    assert_eq!(generation_named_abi(&format!("zlib-1.3.1-rev3-wasm32-abi4x-{k}")), None);
+    assert_eq!(generation_named_abi("abi46"), None);
+}
+
+#[test]
+fn below_abi_collects_old_abi_generations_at_any_age_past_a_day() {
+    let cache = cache();
+    let old_lib_key = key(30);
+    let old_lib = abi_generation(&cache, "libs", "zlib", 45, &old_lib_key, 2 * DAY);
+    let old_program = abi_generation(&cache, "programs", "bash", 45, &key(31), 2 * DAY);
+    let current = abi_generation(&cache, "libs", "zlib", 46, &key(32), 2 * DAY);
+    let old_receipt = receipt(&old_lib, &old_lib_key);
+
+    apply(&cache, &policy());
+    assert!(
+        old_lib.is_dir() && old_program.is_dir(),
+        "without --below-abi, a two-day-old generation is recent"
+    );
+
+    let report = apply(&cache, &below_abi(46));
+
+    assert!(!old_lib.exists() && !old_program.exists());
+    assert!(!old_receipt.exists(), "a collected generation's sidecars go with it");
+    assert!(current.is_dir(), "a generation at the floor is not below it");
+    assert_eq!(report.plan.generations_recent, 1);
+    assert!(report
+        .plan
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.category == Category::Generation)
+        .all(|candidate| candidate.reason.starts_with("built for ABI 45, below --below-abi 46")));
+}
+
+#[test]
+fn below_abi_keeps_root_protected_and_recently_used_generations() {
+    let cache = cache();
+    let protected_key = key(33);
+    let protected = abi_generation(&cache, "libs", "zlib", 45, &protected_key, 90 * DAY);
+    let _checkout = live_checkout(&cache, &[&protected_key]);
+    let today = abi_generation(&cache, "programs", "bash", 45, &key(34), HOUR);
+
+    let report = apply(&cache, &below_abi(46));
+
+    assert!(protected.is_dir(), "a live root protects a generation of any ABI");
+    assert!(today.is_dir(), "a generation used within the last day may be in use");
+    assert_eq!(report.plan.generations_below_abi_kept, 2);
+    assert!(report.plan.candidates.is_empty());
+}
+
+#[test]
+fn unnamed_generations_count_as_the_last_unnamed_abi_or_older() {
+    let cache = cache();
+    let unnamed = generation(&cache, "libs", "zlib", &key(35), 2 * DAY);
+
+    let report = apply(&cache, &below_abi(UNNAMED_GENERATION_MAX_ABI));
+    assert!(
+        unnamed.is_dir(),
+        "an unnamed generation may be exactly the last unnamed ABI"
+    );
+    assert_eq!(report.plan.generations_abi_unknown, 1);
+
+    let report = apply(&cache, &below_abi(UNNAMED_GENERATION_MAX_ABI + 1));
+    assert!(!unnamed.exists());
+    assert_eq!(report.plan.generations_abi_unknown, 0);
+    let reason = &report
+        .plan
+        .candidates
+        .iter()
+        .find(|candidate| candidate.category == Category::Generation)
+        .unwrap()
+        .reason;
+    assert!(
+        reason.contains(&format!("built for ABI {UNNAMED_GENERATION_MAX_ABI} or older")),
+        "{reason}"
+    );
+}
+
+#[test]
+fn below_abi_never_collects_source_generations() {
+    let cache = cache();
+    fs::create_dir_all(cache.compiled.join("sources")).unwrap();
+    let source = named_generation(
+        &cache,
+        "sources",
+        "pcre2-source-10.42-rev1",
+        &key(36),
+        2 * DAY,
+    );
+
+    let report = apply(&cache, &below_abi(u32::MAX));
+
+    assert!(source.is_dir(), "a source generation serves every ABI");
+    assert_eq!(report.plan.generations_abi_unknown, 0);
+}
+
+#[test]
+fn below_abi_rejects_a_floor_that_is_not_an_abi() {
+    for value in ["0", "-1", "forty", ""] {
+        let error = run(vec!["--below-abi".to_string(), value.to_string()]).unwrap_err();
+        assert!(error.contains("--below-abi"), "{value:?}: {error}");
+    }
+}
+
+fn binary_cache() -> Cache {
+    let mut cache = cache();
+    cache.compiled = cache.base.clone();
+    for kind in KIND_DIRS {
+        fs::create_dir_all(cache.compiled.join(kind)).unwrap();
+    }
+    cache
+}
+
+fn collect_binary(cache: &Cache, policy: &GcPolicy, apply: bool) -> GcOutcome {
+    collect_with_layout(
+        &cache.base,
+        policy,
+        apply,
+        SystemTime::now(),
+        CacheLayout::Binary,
+    )
+    .unwrap()
+}
+
+#[test]
+fn ordinary_cache_abi_collection_keeps_current_and_source_entries_at_any_age() {
+    let cache = binary_cache();
+    let old = abi_generation(&cache, "libs", "zlib", 48, &key(50), 2 * DAY);
+    let unnamed = generation(&cache, "programs", "bash", &key(51), 2 * DAY);
+    let current = abi_generation(&cache, "programs", "bash", 49, &key(52), 90 * DAY);
+    let source = named_generation(&cache, "sources", "upstream-1.0-rev1", &key(53), 90 * DAY);
+    let old_receipt = receipt(&old, &key(50));
+    let provenance = cache_provenance_path(&old, &key(50)).unwrap();
+    fs::write(&provenance, "provenance").unwrap();
+    let mut policy = below_abi(49);
+    policy.max_size = Some(0);
+
+    let GcOutcome::Completed(dry_run) = collect_binary(&cache, &policy, false) else {
+        panic!()
+    };
+    assert!(old.is_dir() && unnamed.is_dir());
+    assert!(dry_run.reclaimed_bytes >= disk_usage(&old) + disk_usage(&unnamed));
+    assert_eq!(
+        dry_run
+            .plan
+            .candidates
+            .iter()
+            .filter(|c| c.category == Category::Generation)
+            .count(),
+        2
+    );
+
+    let GcOutcome::Completed(report) = collect_binary(&cache, &policy, true) else {
+        panic!()
+    };
+    assert!(!old.exists() && !unnamed.exists() && !old_receipt.exists() && !provenance.exists());
+    assert!(
+        current.is_dir() && source.is_dir(),
+        "ordinary generations have no age or budget eviction"
+    );
+    assert!(report.plan.budget_shortfall.is_none());
+}
+
+#[test]
+fn ordinary_cache_keeps_roots_recent_use_and_running_builds() {
+    let cache = binary_cache();
+    let protected = abi_generation(&cache, "libs", "zlib", 48, &key(54), 90 * DAY);
+    let _checkout = live_checkout(&cache, &[&key(54)]);
+    let recent = abi_generation(&cache, "programs", "bash", 48, &key(55), HOUR);
+    let old = abi_generation(&cache, "programs", "bash", 48, &key(56), 2 * DAY);
+    let lock = CacheUseLock::acquire_shared(&cache.base, "test").unwrap();
+    assert!(matches!(
+        collect_binary(&cache, &below_abi(49), true),
+        GcOutcome::Skipped
+    ));
+    assert!(old.is_dir());
+    drop(lock);
+
+    let GcOutcome::Completed(report) = collect_binary(&cache, &below_abi(49), true) else {
+        panic!()
+    };
+    assert!(protected.is_dir() && recent.is_dir());
+    assert!(!old.exists());
+    assert_eq!(report.plan.generations_below_abi_kept, 2);
+    assert_eq!(
+        report.plan.below_abi_protected_bytes,
+        disk_usage(&protected)
+    );
+    assert_eq!(report.plan.below_abi_recent_bytes, disk_usage(&recent));
+}
+
+#[test]
+fn abandoned_archive_downloads_obey_pid_and_age_protection_in_both_layouts() {
+    let dead = dead_pid();
+    let live = std::process::id();
+    for layout in [CacheLayout::SourceOnly, CacheLayout::Binary] {
+        let cache = if layout == CacheLayout::Binary {
+            binary_cache()
+        } else {
+            cache()
+        };
+        let libs = cache.compiled.join("libs");
+        let old = libs.join(format!(".tmp-package-archive-label-archive-{dead}-0"));
+        let young = libs.join(format!(".tmp-package-archive-{dead}-1"));
+        let running = libs.join(format!(".tmp-package-archive-{live}-0"));
+        let unknown = libs.join(".tmp-package-archive-nonsense");
+        for path in [&old, &young, &running, &unknown] {
+            fs::write(path, b"incomplete archive").unwrap();
+            set_mtime(path, SystemTime::now() - 2 * DAY);
+        }
+        set_mtime(&young, SystemTime::now() - HOUR);
+        let _ = collect_with_layout(&cache.base, &below_abi(49), true, SystemTime::now(), layout)
+            .unwrap();
+        assert!(!old.exists());
+        assert!(young.exists() && running.exists() && unknown.exists());
+    }
+}
+
+#[test]
+fn a_symlinked_cache_kind_is_never_scanned_or_collected() {
+    let cache = binary_cache();
+    let outside = binary_cache();
+    let old = abi_generation(&outside, "libs", "zlib", 48, &key(57), 90 * DAY);
+    fs::remove_dir(cache.base.join("libs")).unwrap();
+    std::os::unix::fs::symlink(outside.base.join("libs"), cache.base.join("libs")).unwrap();
+    let GcOutcome::Completed(report) = collect_binary(&cache, &below_abi(49), true) else {
+        panic!()
+    };
+    assert!(old.is_dir());
+    assert!(report.plan.candidates.is_empty());
+    assert_eq!(report.plan.unrecognized_entries, 1);
+}
+
+#[test]
+fn binary_cache_override_requires_an_abi_floor_and_absolute_path() {
+    let error = run(vec!["--binary-cache-root=/tmp/example".to_string()]).unwrap_err();
+    assert!(error.contains("requires --below-abi"));
+    let error = run(vec![
+        "--below-abi=49".to_string(),
+        "--binary-cache-root=relative".to_string(),
+    ])
+    .unwrap_err();
+    assert!(error.contains("must be an absolute path"));
+}
+
+#[test]
+fn legacy_short_key_generations_and_debris_are_collected_without_prefix_alias_eviction() {
+    let cache = binary_cache();
+    let libs = cache.compiled.join("libs");
+    let old = libs.join("zlib-1.0-rev1-wasm32-12345678");
+    let protected = libs.join("zlib-1.0-rev1-wasm32-abcdef01");
+    let full_key = format!("abcdef01{}", "0".repeat(56));
+    let _checkout = live_checkout(&cache, &[&full_key]);
+    let sidecar = libs.join(".zlib-1.0-rev1-wasm32-12345678.kandelo-provenance.toml");
+    let work = libs.join(format!(
+        ".zlib-1.0-rev1-wasm32-12345678.work-{}-0",
+        dead_pid()
+    ));
+    for path in [&old, &protected, &work] {
+        fs::create_dir(path).unwrap();
+        fs::write(path.join("payload"), b"old artifact").unwrap();
+        set_mtime(path, SystemTime::now() - 2 * DAY);
+    }
+    fs::write(&sidecar, "old provenance").unwrap();
+    let GcOutcome::Completed(report) = collect_binary(&cache, &below_abi(49), true) else {
+        panic!()
+    };
+    assert!(!old.exists() && !sidecar.exists() && !work.exists());
+    assert!(
+        protected.is_dir(),
+        "a live full key protects every colliding legacy prefix"
+    );
+    assert_eq!(report.plan.generations_protected, 1);
+    assert_eq!(generation_key("random-user-directory-12345678"), None);
+}
+
+#[test]
+fn identical_basenames_in_different_kinds_do_not_share_sidecar_eviction() {
+    let cache = cache();
+    let old = abi_generation(&cache, "libs", "same", 48, &key(60), 90 * DAY);
+    let recent = abi_generation(&cache, "programs", "same", 48, &key(60), HOUR);
+    let recent_receipt = receipt(&recent, &key(60));
+    apply(&cache, &policy());
+    assert!(!old.exists());
+    assert!(recent.is_dir() && recent_receipt.exists());
 }

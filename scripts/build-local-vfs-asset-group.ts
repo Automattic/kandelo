@@ -31,7 +31,9 @@ import {
   type SourceOnlyBinarySnapshot,
 } from "../host/src/binary-resolver.ts";
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
-import { restoreVerifiedVfsImage } from "../host/src/vfs/load-image.ts";
+import { createBaseImageFromContainer } from "../images/vfs/lib/module-base-image.ts";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
+import { imageReadFromContainer } from "../host/src/vfs/rootfs-lazy-archives.ts";
 import {
   validateVfsAssetGroupManifest,
   type VfsAssetGroupManifestV1,
@@ -48,20 +50,13 @@ import {
 import { loadVfsProductCatalog } from "./vfs-product-catalog.mjs";
 
 const MAX_CAPTURE_BYTES = 512 * 1024 * 1024;
-const EXPECTED_IMAGE_MEMBERS = [
-  "programs/wasm32/lamp.vfs.zst",
-  "programs/wasm32/nginx-php-vfs.vfs.zst",
-  "programs/wasm32/nginx-vfs.vfs.zst",
-  "programs/wasm32/node-vfs.vfs.zst",
-  "programs/wasm32/rootfs.vfs",
-  "programs/wasm32/shell.vfs.zst",
-  "programs/wasm32/wordpress.vfs.zst",
-];
 
 export interface BuildLocalVfsAssetGroupOptions {
   assetGroupDirectory: string;
   productMapPath: string;
   sourceRoot: string;
+  /** Lower the per-capture memory budget; never raises the 512 MiB ceiling. */
+  maxCaptureBytes?: number;
 }
 
 interface ProductProjection {
@@ -80,6 +75,11 @@ interface ExpectedAsset {
 export async function buildLocalVfsAssetGroup(
   options: BuildLocalVfsAssetGroupOptions,
 ): Promise<void> {
+  const maxCaptureBytes = options.maxCaptureBytes ?? MAX_CAPTURE_BYTES;
+  if (!Number.isSafeInteger(maxCaptureBytes) || maxCaptureBytes < 0 ||
+      maxCaptureBytes > MAX_CAPTURE_BYTES) {
+    throw new Error("capture budget must be a safe integer from 0 to 512 MiB");
+  }
   const sourceRoot = exactDirectory(options.sourceRoot, "source root");
   const configuredSourceOnlyRoot = sourceOnlyBinaryRoot();
   if (configuredSourceOnlyRoot === null) {
@@ -138,96 +138,125 @@ export async function buildLocalVfsAssetGroup(
     .sort((left: ProductProjection, right: ProductProjection) =>
       ordinal(left.id, right.id),
     );
-  if (
-    products.length !== 7 ||
-    canonicalJson(
-      products.map(({ sourceMember }) => sourceMember).sort(ordinal),
-    ) !== canonicalJson(EXPECTED_IMAGE_MEMBERS)
-  ) {
-    throw new Error(
-      "generated Pages registry differs from the exact seven product images",
-    );
+  // WHY: the Pages registry (pages-vfs-products.toml, checked against its
+  // generated JSON) is the one authority for which images ship. A second
+  // hand-kept list here only went stale whenever a demo was added. Every
+  // image is verified by size and SHA-256 below; distinct members are
+  // checked with the lazy closure.
+  if (products.length === 0) {
+    throw new Error("generated Pages registry lists no product images");
+  }
+  if (!products.some(({ load }) => load === "eager")) {
+    throw new Error("generated Pages registry lists no eager product image");
   }
 
-  // WHY: one session pins the projection authority while restored images
-  // reveal the second-stage lazy closure that must be captured from it.
+  // WHY: one authority remains pinned while images reveal their lazy closure.
+  // Stage one verified body at a time: the complete deployment can exceed the
+  // in-memory capture ceiling without retaining every program simultaneously.
   const session = createSourceOnlyBinarySnapshotSession();
   const imageMembers = products.map(({ sourceMember }) => sourceMember);
-  const imageSnapshots = requireSnapshots(
-    session.snapshots(imageMembers, MAX_CAPTURE_BYTES),
-    imageMembers,
-  );
-  const expectedAssets = new Map<string, ExpectedAsset>();
-  for (const [index, snapshot] of imageSnapshots.entries()) {
-    const fs = await restoreVerifiedVfsImage(snapshot.bytes);
-    for (const entry of fs.exportLazyEntries()) {
-      addExpectedAsset(expectedAssets, entry.url, { bytes: entry.size });
-    }
-    for (const entry of fs.exportLazyArchiveEntries()) {
-      const identity = entry.content ?? entry.integrity;
-      if (identity === undefined) {
-        throw new Error(
-          `product ${products[index]!.id} has an archive without byte integrity`,
-        );
-      }
-      for (const reference of entry.content?.transports ?? [entry.url]) {
-        addExpectedAsset(expectedAssets, reference, {
-          bytes: identity.bytes,
-          sha256: identity.sha256,
-        });
-      }
-    }
-  }
-  // WHY: the expected lazy closure is derived from the product images
-  // themselves and every body is verified against the byte identity those
-  // images record, so its size is not a separate invariant. A fixed count
-  // here only went stale whenever a product gained or lost a lazy body.
-
-  const assetMembers = [...expectedAssets.values()].map(
-    ({ sourceMember }) => sourceMember,
-  );
-  const imageMemberSet = new Set(imageMembers);
-  const collision = assetMembers.find((member) => imageMemberSet.has(member));
-  if (collision !== undefined) {
-    throw new Error(
-      `SourceOnly image and lazy asset members collide at ${collision}`,
-    );
-  }
-  const allMembers = [...imageMembers, ...assetMembers];
-  if (new Set(allMembers).size !== allMembers.length) {
+  if (new Set(imageMembers).size !== imageMembers.length) {
     throw new Error("Pages VFS closure must contain distinct snapshot members");
   }
-  const snapshots = requireSnapshots(
-    session.snapshots(allMembers, MAX_CAPTURE_BYTES),
-    allMembers,
-  );
-  const captured = new Map(
-    snapshots.map((snapshot) => [snapshot.relPath, snapshot]),
-  );
-  for (const [assetPath, expected] of expectedAssets) {
-    const snapshot = captured.get(expected.sourceMember)!;
-    if (
-      snapshot.bytes.byteLength !== expected.bytes ||
-      (expected.sha256 !== undefined && snapshot.sha256 !== expected.sha256)
-    ) {
-      throw new Error(
-        `lazy asset ${assetPath} differs from its image byte identity`,
-      );
-    }
-  }
-
   const parent = dirname(assetGroupDirectory);
   mkdirSync(parent, { recursive: true, mode: 0o755 });
   const stageRoot = mkdtempSync(join(parent, ".local-vfs-asset-group-stage-"));
   const stagedGroup = join(stageRoot, "vfs-group");
   const stagedMap = join(stageRoot, "pages-vfs-products.private.json");
   try {
+    const expectedAssets = new Map<string, ExpectedAsset>();
+    const captured = new Map<string, { bytes: number; sha256: string }>();
+    for (const product of products) {
+      const snapshot = requireSnapshots(
+        session.snapshots([product.sourceMember], maxCaptureBytes),
+        [product.sourceMember],
+      )[0]!;
+      captured.set(product.sourceMember, {
+        bytes: snapshot.bytes.byteLength,
+        sha256: snapshot.sha256,
+      });
+      writeExactFile(join(stagedGroup, "images", product.output), snapshot.bytes);
+      // READ the container to list the lazy bodies it references; no filesystem
+      // is needed for a listing. The module is asked for the entries because
+      // every builder under `images/` writes with `KandeloImageFs`, whose images
+      // describe their deferred files in the in-body `SDEF` section and carry no
+      // host-side JSON trailer. Without the fourth (`moduleLazyEntries`)
+      // argument the reader sees only a trailer, would answer "no deferred
+      // bodies" for a product image full of them, and this closure would stage
+      // nothing.
+      const reader = KandeloImageFs.create();
+      reader.loadImage(snapshot.bytes);
+      const { baseImage: fs } = createBaseImageFromContainer(
+        snapshot.bytes,
+        imageReadFromContainer(snapshot.bytes),
+        undefined,
+        () => reader.lazyEntries(),
+      );
+      for (const body of fs.deferredFiles()) {
+        if (body.bytes === undefined) {
+          throw new Error(
+            `product ${product.id} has a lazy file without a declared size`,
+          );
+        }
+        addExpectedAsset(expectedAssets, body.address, { bytes: body.bytes });
+      }
+      for (const body of fs.deferredArchives()) {
+        // A body with no declared length cannot be staged: the asset group
+        // records what each reference weighs, and an archive nobody sized is a
+        // reference this closure cannot account for.
+        if (body.bytes === undefined) {
+          throw new Error(
+            `product ${product.id} has an archive without byte integrity`,
+          );
+        }
+        // ONE ADDRESS, not a mirror list. `transports` was always `[address]` —
+        // no producer can express an alternate — so iterating it registered the
+        // same reference once and read as though more were possible.
+        addExpectedAsset(expectedAssets, body.address, {
+          bytes: body.bytes,
+          sha256: body.sha256,
+        });
+      }
+    }
+    const assetMembers = [...expectedAssets.values()].map(
+      ({ sourceMember }) => sourceMember,
+    );
+    const imageMemberSet = new Set(imageMembers);
+    const collision = assetMembers.find((member) => imageMemberSet.has(member));
+    if (collision !== undefined) {
+      throw new Error(
+        `SourceOnly image and lazy asset members collide at ${collision}`,
+      );
+    }
+    const allMembers = [...imageMembers, ...assetMembers];
+    if (new Set(allMembers).size !== allMembers.length) {
+      throw new Error("Pages VFS closure must contain distinct snapshot members");
+    }
+    for (const [assetPath, expected] of expectedAssets) {
+      const snapshot = requireSnapshots(
+        session.snapshots([expected.sourceMember], maxCaptureBytes),
+        [expected.sourceMember],
+      )[0]!;
+      if (
+        snapshot.bytes.byteLength !== expected.bytes ||
+        (expected.sha256 !== undefined && snapshot.sha256 !== expected.sha256)
+      ) {
+        throw new Error(
+          `lazy asset ${assetPath} differs from its image byte identity`,
+        );
+      }
+      captured.set(expected.sourceMember, {
+        bytes: snapshot.bytes.byteLength,
+        sha256: snapshot.sha256,
+      });
+      writeExactFile(join(stagedGroup, ...assetPath.split("/")), snapshot.bytes);
+    }
     const manifest: VfsAssetGroupManifestV1 = {
       assets: [...expectedAssets.entries()]
         .map(([path, expected]) => {
           const snapshot = captured.get(expected.sourceMember)!;
           return {
-            bytes: snapshot.bytes.byteLength,
+            bytes: snapshot.bytes,
             group: "programs",
             path,
             sha256: snapshot.sha256,
@@ -242,7 +271,7 @@ export async function buildLocalVfsAssetGroup(
           eager_groups: [],
           id: product.id,
           image: {
-            bytes: snapshot.bytes.byteLength,
+            bytes: snapshot.bytes,
             path: `images/${product.output}`,
             sha256: snapshot.sha256,
           },
@@ -252,18 +281,6 @@ export async function buildLocalVfsAssetGroup(
       schema: 1,
     };
     validateVfsAssetGroupManifest(manifest);
-    for (const product of products) {
-      writeExactFile(
-        join(stagedGroup, "images", product.output),
-        captured.get(product.sourceMember)!.bytes,
-      );
-    }
-    for (const [path, expected] of expectedAssets) {
-      writeExactFile(
-        join(stagedGroup, ...path.split("/")),
-        captured.get(expected.sourceMember)!.bytes,
-      );
-    }
     const manifestBytes = Buffer.from(canonicalJson(manifest));
     writeExactFile(join(stagedGroup, "manifest.json"), manifestBytes);
     const manifestIdentity = {
@@ -277,7 +294,7 @@ export async function buildLocalVfsAssetGroup(
         const snapshot = captured.get(product.sourceMember)!;
         return {
           asset_group: manifestIdentity,
-          bytes: snapshot.bytes.byteLength,
+          bytes: snapshot.bytes,
           id: product.id,
           load: product.load,
           path: vfsProductDeploymentPath(
@@ -291,7 +308,7 @@ export async function buildLocalVfsAssetGroup(
       }),
       schema: 1,
     };
-    const stagedFileCount = validateStagedGroup(stagedGroup, manifest);
+    const stagedIdentity = validateStagedGroup(stagedGroup, manifest);
     validateStagedProductMap({
       finalMap: map,
       products,
@@ -304,7 +321,8 @@ export async function buildLocalVfsAssetGroup(
     publishGeneratedTargets({
       assetGroupDirectory,
       productMapPath,
-      stagedFileCount,
+      stagedFileCount: stagedIdentity.files,
+      stagedGroupBytes: stagedIdentity.bytes,
       stagedGroup,
       stagedMap,
     });
@@ -397,11 +415,11 @@ function requireSnapshots(
   });
 }
 
-/** Verify the staged group against its manifest; returns its file count. */
+/** Verify the staged group against its manifest; return its aggregate size. */
 function validateStagedGroup(
   root: string,
   manifest: VfsAssetGroupManifestV1,
-): number {
+): { files: number; bytes: number } {
   const expected = new Map<string, { bytes: number; sha256: string }>();
   const manifestBytes = readFileSync(join(root, "manifest.json"));
   expected.set("manifest.json", {
@@ -435,7 +453,7 @@ function validateStagedGroup(
       "staged local VFS asset-group inventory differs from its manifest",
     );
   }
-  return actual.size;
+  return { files: actual.size, bytes: [...actual.values()].reduce((sum, file) => sum + file.bytes, 0) };
 }
 
 export function publishGeneratedTargets(options: {
@@ -443,6 +461,7 @@ export function publishGeneratedTargets(options: {
   productMapPath: string;
   // Verified size of the staged group; bounds the reuse comparison.
   stagedFileCount: number;
+  stagedGroupBytes: number;
   stagedGroup: string;
   stagedMap: string;
 }, operations: { rename(from: string, to: string): void } = {
@@ -466,6 +485,7 @@ export function publishGeneratedTargets(options: {
         options.stagedGroup,
         options.assetGroupDirectory,
         options.stagedFileCount,
+        options.stagedGroupBytes,
       ) &&
       filesEqual(options.stagedMap, options.productMapPath)
     ) return;
@@ -671,11 +691,13 @@ function treesEqual(
   left: string,
   right: string,
   stagedFileCount: number,
+  stagedGroupBytes: number,
 ): boolean {
   if (!existsSync(right)) return false;
   const stagedInventory = inventory(left, {
     label: "staged asset group",
-    maxBytes: MAX_CAPTURE_BYTES,
+    // The capture ceiling bounds one file, not a verified multi-file group.
+    maxBytes: stagedGroupBytes,
     maxFiles: stagedFileCount,
   });
   const maxBytes = [...stagedInventory.values()].reduce(

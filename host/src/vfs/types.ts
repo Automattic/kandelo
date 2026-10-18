@@ -28,10 +28,6 @@ export interface DirEntry {
 export interface FileSystemBackend {
   /** Materialize deferred path backing before synchronous file I/O. */
   preparePath?(path: string): Promise<boolean>;
-  /** Stamp file times from the machine's clock rather than the host's. */
-  setTimeProvider?(time: TimeProvider): void;
-  /** Serve device randomness from the machine's source rather than the host's. */
-  setRandomProvider?(random: RandomProvider): void;
   /**
    * The bytes a machine checkpoint carries for this mount, or why there are none.
    *
@@ -91,7 +87,6 @@ export interface FileSystemBackend {
   chmod(path: string, mode: number): void;
   chown(path: string, uid: number, gid: number): void;
   lchown(path: string, uid: number, gid: number): void;
-  access(path: string, mode: number): void;
   utimensat(path: string, atimeSec: number, atimeNsec: number, mtimeSec: number, mtimeNsec: number): void;
 
   // Directory iteration
@@ -99,7 +94,25 @@ export interface FileSystemBackend {
   /** A thrown error must leave the next directory entry unconsumed. */
   readdir(handle: number): DirEntry | null;
   closedir(handle: number): void;
+
 }
+
+export type VfsChangeKind = "modify" | "delete";
+
+/**
+ * A name in this filesystem changed. `modify` fires when a handle opened for
+ * writing closes or a rename gives the name new content; `delete` fires when
+ * a name is unlinked or renamed away. Writes through a memory mapping do not
+ * pass through a handle and are not reported. Notifications are bounded hints
+ * to re-read current state. An overflow reports a watched prefix as modified.
+ */
+export interface VfsChangeEvent {
+  kind: VfsChangeKind;
+  path: string;
+  t: number;
+}
+
+export type VfsChangeListener = (event: VfsChangeEvent) => void;
 
 export interface TimeProvider {
   clockGettime(clockId: number): { sec: number; nsec: number };
@@ -114,7 +127,6 @@ export interface TimeProvider {
    * keep their remaining time and guest-visible monotonic time continues.
    */
   advanceMonotonicFloor?(floorNs: number): void;
-  nanosleep(sec: number, nsec: number): void;
 }
 
 /**

@@ -5,18 +5,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-openssl.XXXXXX")"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+OPENSSL_VERSION="$WASM_POSIX_DEP_VERSION"
+WORK_DIR="$(kandelo_package_make_work_dir openssl)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 SRC_DIR="$WORK_DIR/source"
 STAGE_DIR="$WORK_DIR/stage"
 
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
-OPENSSL_VERSION="${WASM_POSIX_DEP_VERSION:-${OPENSSL_VERSION:-3.3.2}}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/openssl-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-2e8a40b01979afe8be0bbfb3de5dc1c6709fedb46d6c89c10da114ab5fc3d281}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
 case "$TARGET_ARCH" in
@@ -45,13 +47,7 @@ for tool in "$CC" "$AR" "$RANLIB"; do
     }
 done
 
-echo "==> Downloading OpenSSL $OPENSSL_VERSION..."
-TARBALL="$WORK_DIR/openssl.tar.gz"
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "==> Verifying source sha256..."
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR"
-tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+kandelo_package_stage_primary_source openssl "$SRC_DIR" "$WORK_DIR"
 
 cd "$SRC_DIR"
 echo "==> Configuring OpenSSL for $TARGET_ARCH..."

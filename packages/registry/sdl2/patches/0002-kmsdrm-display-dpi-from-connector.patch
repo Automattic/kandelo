@@ -1,0 +1,55 @@
+Report display DPI from the KMS connector's physical size.
+
+SDL2's X11 and Wayland backends implement GetDisplayDPI from the
+display's physical size; the KMSDRM backend does not, so
+SDL_GetDisplayDPI fails there and an application that scales its UI
+by DPI (ScummVM's launcher) stays at 1x on a HiDPI display. The
+connector already carries mmWidth/mmHeight. Not Kandelo-specific;
+suitable for upstream.
+
+--- a/src/video/kmsdrm/SDL_kmsdrmvideo.c
++++ b/src/video/kmsdrm/SDL_kmsdrmvideo.c
+@@ -219,6 +219,35 @@
+     SDL_free(device);
+ 
+     SDL_KMSDRM_UnloadSymbols();
++}
++
++/* Report the display's DPI from the connector's physical size, as the X11 and
++   Wayland backends do from theirs. A connector that reports no size (0 mm, a
++   virtual or unknown display) has no DPI to give. */
++static int KMSDRM_GetDisplayDPI(_THIS, SDL_VideoDisplay *display, float *ddpi, float *hdpi, float *vdpi)
++{
++    SDL_DisplayData *dispdata = display->driverdata;
++    drmModeConnector *conn = dispdata ? dispdata->connector : NULL;
++    int w = display->current_mode.w;
++    int h = display->current_mode.h;
++    float hinches, vinches;
++
++    if (!conn || conn->mmWidth == 0 || conn->mmHeight == 0 || w <= 0 || h <= 0) {
++        return SDL_SetError("Couldn't get DPI");
++    }
++
++    hinches = ((float)conn->mmWidth) / 25.4f;
++    vinches = ((float)conn->mmHeight) / 25.4f;
++    if (ddpi) {
++        *ddpi = SDL_ComputeDiagonalDPI(w, h, hinches, vinches);
++    }
++    if (hdpi) {
++        *hdpi = ((float)w) / hinches;
++    }
++    if (vdpi) {
++        *vdpi = ((float)h) / vinches;
++    }
++    return 0;
+ }
+ 
+ static SDL_VideoDevice *KMSDRM_CreateDevice(void)
+@@ -262,6 +291,7 @@
+     device->VideoQuit = KMSDRM_VideoQuit;
+     device->GetDisplayModes = KMSDRM_GetDisplayModes;
+     device->SetDisplayMode = KMSDRM_SetDisplayMode;
++    device->GetDisplayDPI = KMSDRM_GetDisplayDPI;
+     device->CreateSDLWindow = KMSDRM_CreateWindow;
+     device->CreateSDLWindowFrom = KMSDRM_CreateWindowFrom;
+     device->SetWindowTitle = KMSDRM_SetWindowTitle;

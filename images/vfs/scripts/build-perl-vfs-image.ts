@@ -2,14 +2,15 @@
  * Build a pre-built VFS image containing Perl 5.40.3 stdlib for the
  * browser demo.
  *
- * Produces: apps/browser-demos/public/perl.vfs
+ * Produces: apps/browser-demos/public/perl.vfs.zst, or the path given as
+ * the first argument (a resolver build passes one under its work root).
  *
- * Usage: npx tsx images/vfs/scripts/build-perl-vfs-image.ts
+ * Usage: npx tsx images/vfs/scripts/build-perl-vfs-image.ts [output]
  */
 import { readFileSync, readdirSync, lstatSync, statSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   writeVfsBinary,
   ensureDir,
@@ -158,9 +159,12 @@ export async function buildPerlVfsImage(
     }
   }
 
-  // Create a 16MB SharedArrayBuffer + MemoryFileSystem
-  const sab = new SharedArrayBuffer(16 * 1024 * 1024);
-  const fs = MemoryFileSystem.create(sab);
+  // Create the image tree with the Rust writer
+  const fs = KandeloImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. The SharedArrayBuffer it used to come from was never anything but
+  // the old constructor's first argument.
+  fs.setImageCapacity(16 * 1024 * 1024);
 
   // Create standard directories
   ensureDir(fs, "/tmp");
@@ -210,7 +214,7 @@ export async function buildPerlVfsImage(
 async function main(): Promise<void> {
   await buildPerlVfsImage({
     sourceDirectory: ensureSourceExtract("perl", REPO_ROOT, LEGACY_SRC),
-    outputPath: OUT_FILE,
+    outputPath: process.argv[2] ? resolve(process.argv[2]) : OUT_FILE,
   });
 }
 

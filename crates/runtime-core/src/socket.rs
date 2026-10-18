@@ -594,6 +594,16 @@ pub fn inherit_inet_binding_owners(parent_pid: u32, child_pid: u32, sock_idx: us
     inherit_binding_owner(tcp6_bindings(), parent, child);
 }
 
+/// Credentials `SO_PEERCRED` reports for a socket's peer: the process ID
+/// and effective user/group IDs, captured when the connection was made
+/// (Linux semantics; they do not follow later `setuid` or exit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerCred {
+    pub pid: u32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
 /// Per-socket kernel state.
 ///
 /// `Clone` is hand-written (not derived) so that fork/spawn cloning
@@ -640,6 +650,12 @@ pub struct SocketInfo {
     pub peer_addr6: [u8; 16],
     /// Peer port (for connected AF_INET sockets).
     pub peer_port: u16,
+    /// AF_UNIX stream peer credentials for `SO_PEERCRED`, as Linux records
+    /// them: a socketpair and a listener hold their creator's; an accepted
+    /// socket holds the connecting process's, captured at `connect()`; a
+    /// connecting socket copies its listener's, captured at `listen()`.
+    /// `None` for every other socket.
+    pub peer_cred: Option<PeerCred>,
     /// Legacy pending connection socket indices for manually constructed or
     /// pre-shared-queue listeners. Normal AF_UNIX, AF_INET, and AF_INET6
     /// stream listeners use `shared_backlog_idx` instead.
@@ -705,6 +721,7 @@ impl SocketInfo {
             peer_addr: [0; 4],
             peer_addr6: [0; 16],
             peer_port: 0,
+            peer_cred: None,
             listen_backlog: Vec::new(),
             shared_backlog_idx: None,
             accept_wake_idx: None,
@@ -787,6 +804,7 @@ impl Clone for SocketInfo {
             peer_addr: self.peer_addr,
             peer_addr6: self.peer_addr6,
             peer_port: self.peer_port,
+            peer_cred: self.peer_cred,
             listen_backlog: Vec::new(), // consume-once: don't double-accept
             shared_backlog_idx: self.shared_backlog_idx,
             accept_wake_idx: self.accept_wake_idx,
@@ -935,6 +953,9 @@ pub struct PendingConnection {
     /// is installed so a recycled socket slot cannot receive stale OOB data.
     pub peer_pid: u32,
     pub peer_sock_idx: Option<usize>,
+    /// AF_UNIX: the connecting process's credentials at `connect()`, which
+    /// the accepted socket reports through `SO_PEERCRED`. `None` for INET.
+    pub peer_cred: Option<PeerCred>,
     /// Recv pipe index (in the global pipe table). Host writes incoming
     /// TCP data here; the accepting process reads from it.
     pub recv_pipe_idx: usize,

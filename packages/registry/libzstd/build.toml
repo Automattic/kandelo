@@ -1,0 +1,9 @@
+script_path = "packages/registry/libzstd/build-libzstd.sh"
+inputs = [
+  "packages/registry/libzstd/build-libzstd.sh",
+  "scripts/package-build-roots.sh",
+  "sdk/activate.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1

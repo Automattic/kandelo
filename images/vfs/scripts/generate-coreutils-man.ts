@@ -17,10 +17,12 @@
  * skipped — a missing page is an honest gap, never a fabricated one.
  *
  * Usage: tsx generate-coreutils-man.ts <coreutils.wasm> <capture-dir>
+ *        <kernel.wasm> <rootfs.vfs.zst>
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCentralizedProgram } from "../../../host/test/centralized-test-helper";
+import { maybeDecompressImage } from "../../../host/src/vfs/vfs-image-transport";
 
 // Resolver-driven builds run with no ambient binary projection, so the
 // kernel must come from the recipe's declared kernel dependency rather
@@ -84,12 +86,14 @@ async function main() {
   if (!bin || !outDir || !kernelPath || !rootfsPath) {
     console.error(
       "usage: generate-coreutils-man.ts <coreutils.wasm> <capture-dir>" +
-        " <kernel.wasm> <rootfs.vfs>",
+        " <kernel.wasm> <rootfs.vfs.zst>",
     );
     process.exit(2);
   }
   const kernelWasmBytes = readFileSync(kernelPath);
-  const rootfsImage = readFileSync(rootfsPath);
+  // The rootfs ships zstd-compressed (`rootfs.vfs.zst`), and the kernel's image
+  // reader takes decoded bytes: zstd is a host-side transport codec.
+  const rootfsImage = maybeDecompressImage(new Uint8Array(readFileSync(rootfsPath)));
   mkdirSync(outDir, { recursive: true });
   const uniq = Array.from(new Set(TOOLS)).sort();
   const skipped: string[] = [];

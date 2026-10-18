@@ -38,8 +38,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/ncurses-src"
@@ -49,10 +50,10 @@ WASM_BUILD_DIR="$WORK_DIR/ncurses-wasm-build"
 BIN_DIR="$WORK_DIR/bin"
 
 # --- Inputs from resolver, with legacy fallbacks ---
-NCURSES_VERSION="${WASM_POSIX_DEP_VERSION:-${NCURSES_VERSION:-6.5}}"
+NCURSES_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${KANDELO_PACKAGE_OUT_DIR:-$WORK_DIR/ncurses-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://invisible-mirror.net/archives/ncurses/ncurses-${NCURSES_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-ncurses-source"
 
@@ -245,6 +246,12 @@ export cf_cv_working_poll=yes
 export cf_cv_func_poll=yes
 export cf_cv_posix_saved_ids=yes
 
+# configure probes `ar` and settles on `-curvU`, whose `U` flag asks for real
+# member timestamps. Two builds a second apart then produce archives that
+# differ in every member header, which fails the resolver's rebuild-receipt
+# comparison. `D` is the deterministic counterpart: zeroed mtime, uid and gid.
+export cf_cv_ar_flags='-curvD'
+
 # Type sizes for wasm32.
 export ac_cv_sizeof_signed_char=1
 export ac_cv_sizeof_short=2
@@ -322,6 +329,21 @@ echo "==> Installing to $INSTALL_DIR..."
     cd "$WASM_BUILD_DIR"
     make install 2>&1 | tail -10
 )
+
+# `make install` leaves two build-machine paths in the tree, and both differ
+# between any two invocations of the same recipe.
+#
+# `ncursesw6-config` reports the configure `--prefix`, which is the resolver's
+# per-invocation staging directory. That path is deleted the moment the entry
+# is published, so the installed script answers with a directory that does not
+# exist. Nothing in the repo runs it — consumers link `-lncursesw` directly,
+# and `--enable-pc-files=no` means there is no pkg-config file to keep in step.
+rm -f "$INSTALL_DIR/bin/ncursesw6-config"
+
+# `MKkey_defs.sh` names its two input files in a generated comment in
+# `curses.h`, at whatever absolute path the source tree was staged under.
+sed -i.bak "s|$SRC_DIR/include/|include/|g" "$INSTALL_DIR/include/ncursesw/curses.h"
+rm -f "$INSTALL_DIR/include/ncursesw/curses.h.bak"
 
 # Non-wide symlinks for consumers that link `-lncurses` / `-ltinfo`.
 # Nice-to-have — the resolver only enforces the underlying wide files.

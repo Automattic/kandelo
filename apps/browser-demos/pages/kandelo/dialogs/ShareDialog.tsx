@@ -102,7 +102,16 @@ export const SharePanel: React.FC<SharePanelProps> = ({
         const desc: BootDescriptor = {
           ...baseDescriptor,
           boot: {
-            ...baseDescriptor.boot,
+            // BOOT IDENTITY COMES FROM THE IMAGE: argv/cwd/env carried here
+            // would just be the CURRENT machine's, which the opener's boot
+            // ignores (with a visible log line) in favour of its own image's
+            // init. This placeholder only satisfies validateBootDescriptor's
+            // non-empty-argv/cwd/env schema requirement; every Kandelo
+            // browser image can run this default interactive login session,
+            // so it is truthful even though it is never actually launched.
+            argv: ["bash", "-l", "-i"],
+            cwd: "/",
+            env: {},
             inputs: [await createInlineBootInput({
               id: "script",
               filename: "kandelo-link.sh",
@@ -246,8 +255,8 @@ export const SharePanel: React.FC<SharePanelProps> = ({
 /**
  * Links must open in THIS app. The codec's buildShareUrl() path modes
  * (/c/<id>, /m/…, /p/…) have no routes here, so the working link is the
- * current page URL (which already carries ?demo=/?vfs= machine identity)
- * plus the descriptor fragment.
+ * current page URL (which already carries ?vfs=<image>&profile=<id> machine
+ * identity) plus the descriptor fragment.
  */
 function workingShareUrl(fragment: string | null): string {
   const url = new URL(window.location.href);

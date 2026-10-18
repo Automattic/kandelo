@@ -1,0 +1,9 @@
+script_path = "packages/registry/lua/build-lua.sh"
+inputs = [
+  "packages/registry/lua/build-lua.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 2
+publication_state = "pending"

@@ -65,6 +65,9 @@ pub struct InFlightFd {
     /// For kernel-backed pipe FDs: the exact reference transferred to the
     /// receiver. Non-pipe descriptors leave this as `None`.
     pub pipe_ref_kind: Option<InFlightPipeRefKind>,
+    /// For DRM prime-bo FDs: the bo sidecar, without which the fd arrives as a
+    /// plain CharDevice and the receiver's `PRIME_FD_TO_HANDLE` import fails.
+    pub prime_bo: Option<crate::ofd::PrimeBoState>,
     /// True after this queued payload has acquired its one machine-wide
     /// backing and OfdId reference. Ownership transfers to the receiver or is
     /// released through the deferred queue on drop.
@@ -114,6 +117,7 @@ impl InFlightFd {
             shared_state,
             path,
             pipe_ref_kind: None,
+            prime_bo: None,
             owns_reference: false,
         }
     }
@@ -124,6 +128,7 @@ impl InFlightFd {
             file_type: self.file_type,
             host_handle: self.host_handle,
             pipe_ref_kind: self.pipe_ref_kind,
+            prime_bo_id: self.prime_bo.as_ref().map(|pb| pb.bo_id),
         }
     }
 
@@ -147,6 +152,13 @@ impl InFlightFd {
             cancel_deferred_in_flight_release();
             return Err(err);
         }
+        // SCM_RIGHTS lets the sender close its fd the instant sendmsg
+        // returns, so the queued entry cannot borrow the sender's reference.
+        // Take one of its own; `transfer_reference` hands it to the receiver
+        // and `Drop` returns it through the deferred release queue.
+        if let Some(pb) = self.prime_bo.as_ref() {
+            crate::dri::with_registry(|r| r.incref(pb.bo_id));
+        }
         self.owns_reference = true;
         Ok(())
     }
@@ -157,6 +169,12 @@ impl InFlightFd {
         debug_assert!(self.owns_reference);
         if self.owns_reference {
             transfer_in_flight_resource(self.release_metadata());
+            // The receiver increfs before this call, so dropping the queued
+            // entry's reference here can never reach zero — no host is
+            // needed to destroy backing.
+            if let Some(pb) = self.prime_bo.as_ref() {
+                crate::dri::with_registry(|r| r.decref(pb.bo_id));
+            }
             self.owns_reference = false;
             crate::ofd::release_in_flight_ofd(self.ofd_id);
             cancel_deferred_in_flight_release();
@@ -185,6 +203,7 @@ impl InFlightFd {
             shared_state: self.shared_state.clone(),
             path,
             pipe_ref_kind: self.pipe_ref_kind,
+            prime_bo: self.prime_bo.clone(),
             owns_reference: false,
         };
         if self.owns_reference {
@@ -222,6 +241,10 @@ pub struct DeferredInFlightFdRelease {
     file_type: FileType,
     host_handle: i64,
     pipe_ref_kind: Option<InFlightPipeRefKind>,
+    /// Bo whose in-flight reference this release drops. Carried here because
+    /// the queued entry owns a bo reference from `retain_reference` onward,
+    /// so a message discarded before recvmsg must give it back.
+    pub prime_bo_id: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,6 +252,8 @@ pub struct ReleasedInFlightFd {
     pub ofd_id: OfdId,
     pub final_ofd_reference: bool,
     pub host_close: Option<i64>,
+    /// Bo reference the caller must drop, destroying host backing at zero.
+    pub prime_bo_id: Option<u32>,
 }
 
 /// One SCM_RIGHTS batch attached to an exact byte range in a stream pipe.
@@ -436,6 +461,7 @@ pub fn release_deferred_in_flight_resource(
         ofd_id: release.ofd_id,
         final_ofd_reference,
         host_close,
+        prime_bo_id: release.prime_bo_id,
     }
 }
 
@@ -1654,6 +1680,7 @@ mod tests {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         }
     }
 

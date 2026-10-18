@@ -17,12 +17,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR/php-work" wasm32
-PHP_VERSION="${WASM_POSIX_DEP_VERSION:-${PHP_VERSION:-8.3.15}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.php.net/distributions/php-${PHP_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-67073c3c9c56c86461e0715d9e1806af5ddffe8e6e2eb9781f7923bbb5bd67fa}"
+PHP_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
     WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
@@ -761,6 +762,58 @@ p.write_text(s.replace(marker, guard, 1))
 PY
 fi
 
+# Upstream reproducibility defect (not a Kandelo gap): opcache's file-cache
+# writer copies the in-memory `zend_persistent_script` verbatim, including
+# `dynamic_members`, the shared-memory bookkeeping a cache FILE never uses.
+# With opcache.validate_timestamps=1 the compiler sets
+# `dynamic_members.revalidate = request_time + revalidate_freq`, so every
+# .bin carries the wall-clock second it was written: two compiles of the same
+# source produce different bytes (and a different checksum). Kandelo images
+# ship build-time file caches (images/vfs/scripts/opcache-prewarm.ts), so this
+# made the nginx-php-vfs image non-reproducible. The file-cache loader never
+# reads these fields in file_cache_only mode; when a file is loaded into SHM,
+# `last_used` is re-stamped on load and a zero `revalidate` only means the
+# first use re-checks the source timestamp. Clear the time-derived members in
+# the serialized copy, and zero the on-stack header so its struct padding
+# does not carry whatever the stack held. php-src master has the same code
+# (its msan note in zend_file_cache_script_store calls the uninitialized
+# regions out as a reproducibility problem it has not fixed).
+if [ -f ext/opcache/zend_file_cache.c ] \
+   && ! grep -q "kandelo-opcache-reproducible-file-cache" ext/opcache/zend_file_cache.c; then
+    python3 - <<'PY'
+from pathlib import Path
+
+p = Path("ext/opcache/zend_file_cache.c")
+s = p.read_text()
+
+serialize_tail = "\tzend_file_cache_serialize_early_bindings(new_script, info, buf);\n\n\tnew_script->mem = NULL;\n}\n"
+serialize_fix = (
+    "\tzend_file_cache_serialize_early_bindings(new_script, info, buf);\n\n"
+    "\tnew_script->mem = NULL;\n"
+    "\t/* kandelo-opcache-reproducible-file-cache: SHM-only, time-derived. */\n"
+    "\tnew_script->dynamic_members.last_used = 0;\n"
+    "\tnew_script->dynamic_members.revalidate = 0;\n"
+    "}\n"
+)
+if s.count(serialize_tail) != 1:
+    raise SystemExit("opcache reproducible file cache: serialize tail not found")
+s = s.replace(serialize_tail, serialize_fix, 1)
+
+store_decl = (
+    "int zend_file_cache_script_store(zend_persistent_script *script, bool in_shm)\n"
+    "{\n"
+    "\tint fd;\n"
+    "\tchar *filename;\n"
+    "\tzend_file_cache_metainfo info;\n"
+    "\tvoid *mem, *buf;\n"
+)
+if s.count(store_decl) != 1:
+    raise SystemExit("opcache reproducible file cache: store header decl not found")
+s = s.replace(store_decl, store_decl + "\tmemset(&info, 0, sizeof(info));\n", 1)
+p.write_text(s)
+PY
+fi
+
 # PHP's configure enables Zend max-execution timers only on Linux hosts even
 # when --enable-zend-max-execution-timers is explicitly requested. Allow Wasm
 # through that compile-time gate because the target-specific implementation
@@ -873,18 +926,20 @@ if [ ! -f Makefile ]; then
     # musl so intl.so shares one libc state — one allocator, one pthread key
     # table; without -u they never enter php.wasm and intl.so fails to load.
     #
-    # -Wl,-z,stack-size=4194304: 4 MB wasm stack. The default wasm-ld
-    # stack is 64 KB, which sits ~100 KB above PHP's `alloc_globals`
-    # data segment. Opcache's PASS_6 (DFA-based SSA optimization) calls
-    # zend_build_ssa, which uses do_alloca() for its DFG bitsets and
-    # var-rename worklist; on large functions like WordPress's
-    # wp-includes/ID3/module.audio-video.asf.php Analyze() (1700+ lines),
-    # the alloca'd buffer plus the deep zend_ssa_rename recursion can
-    # underflow the stack into alloc_globals, scribbling garbage onto
-    # AG(mm_heap). The next _efree call then traps with "memory access
-    # out of bounds" because it tries to dereference the now-bogus heap
-    # pointer. 4 MB gives PASS_6 enough headroom for any function that
-    # passes its own `blocks*vars > 4M` size guard.
+    # No -z stack-size= override here: the SDK's own 8 MiB default main-
+    # thread stack (see sdk/src/lib/flags.ts and docs/sdk-guide.md) is
+    # already well above the 4 MiB this build once requested explicitly for
+    # opcache's PASS_6 (DFA-based SSA optimization), which calls
+    # zend_build_ssa and can otherwise overflow a too-small stack on large
+    # functions like WordPress's wp-includes/ID3/module.audio-video.asf.php
+    # Analyze() (1700+ lines). That 4 MB request predates the SDK's 8 MiB
+    # floor (it was set against wasm-ld's original 64 KiB default, when it
+    # was genuinely load-bearing); once the SDK floor existed, the request
+    # sat below it, and the SDK at the time silently raised any sub-floor
+    # request to 8 MiB, so this call site had already been linking with
+    # 8 MiB in practice for as long as the floor existed. Removing it lets
+    # the actual, real value (the SDK default) apply without a stale number
+    # on this call site that nobody chose.
     #
     # ac_cv_lib_iconv_libiconv=yes: PHP's autoconf probe calls `libiconv()`
     # with an old-style no-argument prototype. That is tolerated by native ELF
@@ -906,7 +961,14 @@ if [ ! -f Makefile ]; then
     # musl exposes Linux unshare() as an ENOSYS stub. PHP must not advertise
     # pcntl_unshare() when this target cannot provide namespace isolation, so
     # override the cross probe with the target's real capability.
+    #
+    # Zend always compiles Fibers, and with no Fiber assembly for Wasm
+    # (--disable-fiber-asm) it builds them on <ucontext.h>. Kandelo does not
+    # support ucontext and libc defines none of it, so PHP opts in to the
+    # SDK's abort-on-call stand-ins: PHP code that never starts a Fiber runs
+    # normally, and starting one aborts with a diagnostic naming ucontext.
     PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" \
+    LIBS="-lkandelo-ucontext-unsupported" \
     CPPFLAGS="$DEP_CPPFLAGS" \
     LDFLAGS="$DEP_LDFLAGS -ldl -Wl,--export-all \
 -u setgid -u setuid -u initgroups -u writev -u asctime \
@@ -920,8 +982,7 @@ if [ ! -f Makefile ]; then
 -u pthread_cond_broadcast -u pthread_cond_destroy -u pthread_cond_signal \
 -u pthread_cond_timedwait -u pthread_cond_wait -u pthread_detach \
 -u pthread_getspecific -u pthread_key_create -u pthread_self \
--u pthread_setspecific \
--Wl,-z,stack-size=4194304" \
+-u pthread_setspecific" \
     ZLIB_CFLAGS="$ZLIB_CFLAGS_VALUE" \
     ZLIB_LIBS="$ZLIB_LIBS_VALUE" \
     SQLITE_CFLAGS="$SQLITE_CFLAGS_VALUE" \
@@ -1143,13 +1204,11 @@ if [ -f main/php_config.h ]; then
 fi
 
 # `make` per-file rules embed `INCLUDES` from configure but ignore
-# `CPPFLAGS` (which only contains `-D_GNU_SOURCE`); `INCLUDES` for
-# our libxml2 ends up as `-I.../include/libxml` because PHP's
-# `ext/libxml/config.m4` adds the `/libxml` suffix. The real PHP
-# sources `#include <libxml/parser.h>`, which needs the parent
-# `-I.../include`. Pass it via `EXTRA_CFLAGS`, which the per-file
-# rules append last.
-EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include"
+# `CPPFLAGS` (which only contains `-D_GNU_SOURCE`), so pass libxml2's own
+# pkg-config Cflags via `EXTRA_CFLAGS`, which the per-file rules append
+# last. With libxml2's upstream layout that is `-I…/include/libxml2`,
+# the directory PHP's `#include <libxml/parser.h>` resolves against.
+EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include/libxml2"
 
 echo "==> Building PHP CLI..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" cli
@@ -1349,10 +1408,9 @@ cp sapi/fpm/php-fpm "$BIN_DIR/php-fpm.wasm"
 
 # CLI and FPM both retain libc paths that can reach kernel_fork
 # (system/popen/fork wrappers for CLI, worker forks for FPM), so both
-# must be fork-instrumented. wasm-opt runs first, then fork
-# instrumentation as the tail step because the instrumenter hardcodes
-# mutable-global offsets and any later pass that reorders globals would
-# invalidate them. wasm-fork-instrument auto-discovers fork paths via
+# must be fork-instrumented. wasm-opt runs first so instrumentation covers
+# the smaller, inlined call graph; wasm-fork-instrument then runs its own
+# wasm-opt pass over the code it adds. It auto-discovers fork paths via
 # call-graph analysis; no onlylist file is required.
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -z "$WASM_OPT" ]; then

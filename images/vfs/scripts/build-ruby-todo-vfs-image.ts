@@ -13,7 +13,11 @@
  *   /usr/bin/ruby              — the Kandelo Ruby build (sqlite3 gem linked in)
  *   /usr/lib/ruby/4.0.0/**     — Ruby standard library + the sqlite3 gem lib
  *   /var/lib/todo/**           — the Roda app (app.rb, server.rb, views/, vendor/)
- *   /etc/dinit.d/todo          — dinit service running the Rack server on :8080
+ *
+ * No dinit tree — the Ruby server is booted directly as pid 1 (see the
+ * `init.program` boot in ruby-todo-demo.json / demo-config.ts). One
+ * long-running process doesn't need a service manager, and dinit is ~2.4 MB
+ * this image deliberately skips.
  *
  * Not Rails — see docs/superpowers/specs/2026-09-21-browser-ruby-todo-design.md.
  *
@@ -22,7 +26,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -34,10 +38,7 @@ import {
 } from "./vfs-image-helpers";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import { addDinitBaseSystemFiles } from "./dinit-image-helpers";
-import {
-  webPresentation,
-  writeKandeloDemoConfig,
-} from "./kandelo-demo-config";
+import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import {
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
 } from "../../../web-libs/kandelo-session/src/experimental-terminal-session";
@@ -62,7 +63,6 @@ const OUT_FILE = join(
 );
 const APP_SRC = join(REPO_ROOT, "images", "vfs", "ruby-todo-app");
 const RUBY_VFS_PATH = "/usr/bin/ruby";
-const IMAGE_INITIAL_BYTES = 64 * 1024 * 1024;
 const IMAGE_MAX_BYTES = 256 * 1024 * 1024;
 const RUBY_WASM_ARTIFACT_POLICY = {
   path: RUBY_VFS_PATH,
@@ -83,15 +83,24 @@ export interface RubyTodoVfsImageBuildInputs {
 export async function buildRubyTodoVfsImage(
   inputs: RubyTodoVfsImageBuildInputs,
 ): Promise<void> {
-  const sab = new SharedArrayBuffer(IMAGE_INITIAL_BYTES, {
-    maxByteLength: IMAGE_MAX_BYTES,
-  });
-  const fs = MemoryFileSystem.create(sab, IMAGE_MAX_BYTES);
+  const fs = KandeloImageFs.create();
+  // The growth ceiling the image declares. The kernel's export sizes the body
+  // to the tree, so this is a recorded number, not reserved bytes.
+  fs.setImageCapacity(IMAGE_MAX_BYTES);
 
   for (const dir of ["/tmp", "/home", "/dev", "/etc", "/run", "/var", "/var/lib"]) {
     ensureDir(fs, dir);
   }
   fs.chmod("/tmp", 0o777);
+
+  // The Ruby server boots as the unprivileged `maker` account (uid/gid 1000
+  // in ruby-todo-demo.json and browser-ruby-todo.toml), and /etc/passwd
+  // already says that account's home is /home/maker. Create it so the HOME
+  // the boot environment names is a real directory this uid owns, rather
+  // than a path that only happens to be unused.
+  ensureDir(fs, "/home/maker");
+  fs.chown("/home/maker", 1000, 1000);
+  fs.chmod("/home/maker", 0o755);
 
   // Ruby runtime: standard library + gem/bundler/irb scripts under /usr.
   console.log("Staging Ruby runtime...");
@@ -118,14 +127,7 @@ export async function buildRubyTodoVfsImage(
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsFile(fs, EXPERIMENTAL_TERMINAL_SESSION_PATH, EXPERIMENTAL_TERMINAL_SESSION);
 
-  writeKandeloDemoConfig(fs, {
-    version: 1,
-    profiles: {
-      "ruby-todo": {
-        presentation: webPresentation(),
-      },
-    },
-  });
+  writeTrackedDemoConfig(fs, "packages/registry/ruby/ruby-todo-demo.json");
 
   await saveImage(fs, inputs.outputPath, {
     wasmArtifactPolicies: [RUBY_WASM_ARTIFACT_POLICY],

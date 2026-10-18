@@ -88,6 +88,10 @@ const ROOT_INGRESS_METHODS = new Map([
   ["#runOrDeferKernelEntry", 1],
   ["#runOrDeferChannelKernelEntry", 2],
   ["#runOrDeferPendingSpawnCompletionKernelEntry", 2],
+  // This private constructor supplies the facade to an operation while the
+  // canonical gate callback still owns its scope. Its call sites are checked
+  // separately below; it cannot open an entry from an arbitrary caller.
+  ["#runKernelEntryOperation", 2],
 ]);
 const TRANSACTION_COMPLETION_INGRESS_METHODS = new Set([
   "#runOrDeferChannelKernelEntry",
@@ -537,6 +541,61 @@ export function auditKernelEntryContext(
       ts.SymbolFlags.Value,
       false,
     ) ?? null;
+  };
+  const canonicalConstructionOwners = new Map([
+    ["CentralizedKernelWorker.#runOrDeferKernelEntry", "runOrDeferVoidIngress"],
+    ["CentralizedKernelWorker.#runImmediateKernelEntry", "runImmediateVoidIngress"],
+    ["CentralizedKernelWorker.#runOrDeferPendingSpawnCompletionKernelEntry", "runOrDeferVoidIngress"],
+  ]);
+  const isCanonicalEntryConstruction = (
+    call: ts.CallExpression,
+    owner: string,
+  ): boolean => {
+    const gateName = canonicalConstructionOwners.get(owner);
+    if (gateName === undefined || call.arguments.length < 2) return false;
+    const declarations = call.arguments.slice(0, 2).map(argument =>
+      identifierSymbol(unwrapExpression(argument))?.declarations,
+    );
+    if (declarations.some(items => items?.length !== 1)) return false;
+    const [scope, effects] = declarations.map(items => items![0]!);
+    if (!ts.isParameter(scope!) || !ts.isParameter(effects!)) return false;
+    const callback = scope!.parent;
+    if (!isFunctionExpressionLike(callback) || effects!.parent !== callback
+      || callback.parameters[0] !== scope || callback.parameters[1] !== effects) return false;
+    const gate = callback.parent;
+    if (!ts.isCallExpression(gate) || gate.arguments[1] !== callback
+      || !ts.isPropertyAccessExpression(gate.expression)
+      || gate.expression.name.text !== gateName) return false;
+    const receiver = gate.expression.expression;
+    return ts.isPropertyAccessExpression(receiver)
+      && receiver.expression.kind === ts.SyntaxKind.ThisKeyword
+      && receiver.name.text === "#kernelEntryGate";
+  };
+  const isForwardedAuditedOperation = (
+    call: ts.CallExpression,
+    owner: string,
+    operation: ts.Expression | undefined,
+  ): boolean => {
+    if (resolvedThisMethodName(call) !== "#runKernelEntryOperation"
+      || !isCanonicalEntryConstruction(call, owner) || operation === undefined) return false;
+    const declarations = identifierSymbol(unwrapExpression(operation))?.declarations;
+    if (declarations?.length !== 1 || !ts.isParameter(declarations[0]!)) return false;
+    const parameter = declarations[0]!;
+    const method = parameter.parent;
+    // Only forward the original operation parameter. Aliases, shadowed names,
+    // stored callbacks, and operations from another owner remain unreviewed.
+    const methodName = ts.isMethodDeclaration(method)
+      ? propertyNameText(method.name, source) : null;
+    const operationIndex = methodName === null ? undefined : ROOT_INGRESS_METHODS.get(methodName);
+    return ts.isMethodDeclaration(method) && operationIndex !== undefined
+      && method.parameters[operationIndex] === parameter
+      && formatOwner(method, source) === owner
+      && parameter.type !== undefined && ts.isFunctionTypeNode(parameter.type)
+      && parameter.type.parameters.length === 1
+      && parameter.type.parameters[0]!.type !== undefined
+      && ts.isTypeReferenceNode(parameter.type.parameters[0]!.type!)
+      && parameter.type.parameters[0]!.type!.getText(source) === "KernelWorkerEntryContext"
+      && parameter.type.type.kind === ts.SyntaxKind.UndefinedKeyword;
   };
   const exactImmutableLiteralName = (
     expression: ts.Expression,
@@ -1800,14 +1859,20 @@ export function auditKernelEntryContext(
           const operationIndex = ROOT_INGRESS_METHODS.get(methodName)!;
           rootOperationIndex = operationIndex;
           const operation = node.arguments[operationIndex];
-          if (!isFunctionExpressionLike(operation)) {
+          if (methodName === "#runKernelEntryOperation"
+            && (phase !== "active" || !isCanonicalEntryConstruction(node, owner))) {
+            report("nonlexical-entry-operation", owner, node,
+              "entry construction must forward the canonical gate callback's exact scope and effects");
+          }
+          if (!isFunctionExpressionLike(operation)
+            && !isForwardedAuditedOperation(node, owner, operation)) {
             report(
               "nonlexical-entry-operation",
               owner,
               operation ?? node,
               `${methodName} requires an inline lexical operation closure`,
             );
-          } else if (
+          } else if (isFunctionExpressionLike(operation) &&
             containsAuthoritySymbol(
               operation.body,
               scopedAuthoritySymbols,

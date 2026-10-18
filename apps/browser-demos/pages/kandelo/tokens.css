@@ -436,11 +436,21 @@
   color-scheme: dark;
 }
 
+/* Viewport sizing is `dvh`, not `vh` or `%`, on purpose. On a phone a `vh`
+ * resolves against the LARGE viewport — the height the page would have if the
+ * browser retracted its toolbars — so a `100vh` app box hangs below the screen
+ * by the toolbar's height. The dock is `position: fixed; bottom: 0`, which
+ * anchors to what is actually visible, so the band `.kdocked-main` reserves for
+ * it (`--kdock-height`) ends up off-screen and the dock covers real content:
+ * the fbDOOM touch d-pad and FIRE button lost their bottom rows behind it.
+ * `dvh` tracks the visible viewport, so the reserved band and the dock line up.
+ * The `%`/`vh` declarations before each are the pre-`dvh` fallback. */
 html, body {
   margin: 0;
   padding: 0;
   width: 100%;
   height: 100%;
+  height: 100dvh;
   background: var(--k-bg);
   color: var(--k-text);
   font-family: var(--k-font-ui);
@@ -451,6 +461,7 @@ html, body {
 #kandelo-root {
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
 }
 
 * {

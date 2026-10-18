@@ -3,10 +3,8 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs";
+import type { VfsImageMetadata } from "../host/src/vfs/vfs-image-filesystem";
 
 export function assertSourceRootfsShellMetadata(
   metadata: VfsImageMetadata | null,
@@ -42,7 +40,7 @@ export function assertSourceRootfsShellImage(path: string): void {
   }
   const bytes = new Uint8Array(readFileSync(path));
   assertSourceRootfsShellMetadata(
-    MemoryFileSystem.readImageMetadata(bytes),
+    KandeloImageFs.readImageMetadata(bytes),
     path,
   );
 }

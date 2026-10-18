@@ -1,0 +1,39 @@
+# Per-library manifest for libparserutils. See docs/package-management.md.
+#
+# libparserutils is the byte-level foundation of NetSurf's parsers: charset
+# detection and conversion to UTF-8, a buffered input stream, and small
+# containers. libhubbub (HTML) and libcss (CSS) are built on it.
+#
+# Charset conversion for encodings without a built-in codec goes through
+# iconv(3), which the Kandelo sysroot's musl libc provides, so no separate
+# iconv package is needed.
+#
+# Built with the NetSurf project's own build system (the
+# netsurf-buildsystem-source package) through scripts/netsurf-library-build.sh.
+
+kind = "library"
+
+name = "libparserutils"
+version = "0.2.5"
+kernel_abi = 44
+depends_on = [
+  "netsurf-buildsystem-source@1.10",
+]
+arches = ["wasm32"]
+
+[source]
+url = "https://download.netsurf-browser.org/libs/releases/libparserutils-0.2.5-src.tar.gz"
+sha256 = "317ed5c718f17927b5721974bae5de32c3fd6d055db131ad31b4312a032ed139"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://git.netsurf-browser.org/libparserutils.git/tree/COPYING?h=release/0.2.5"
+
+[build]
+script_path = "packages/registry/libparserutils/build-libparserutils.sh"
+
+[outputs]
+libs = ["lib/libparserutils.a"]
+headers = ["include/parserutils"]
+pkgconfig = ["lib/pkgconfig/libparserutils.pc"]

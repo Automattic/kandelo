@@ -13,5 +13,7 @@ commit      = "UNPUBLISHED"
 # zip (11), curl (12), intl/ICU (13), truthful unshare detection (14), then
 # pdo_sqlite column metadata against sqlite revision 2 (15), then ABI identity
 # for the fork-instrumented opcache side module (16), then make every dylink
-# output carry complete ABI 43 side-boundary instrumentation (17).
-revision    = 17
+# output carry complete ABI 43 side-boundary instrumentation (17), then
+# stop opcache's file cache from writing wall-clock bookkeeping into each .bin
+# so build-time prewarmed caches are reproducible (18).
+revision    = 18

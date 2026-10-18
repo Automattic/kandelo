@@ -13,7 +13,7 @@ interface NavItem {
 }
 
 const NAV_PRIMARY: NavItem[] = [
-  { id: "machine", label: "Current Machine", icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="2" y="3" width="12" height="8" rx="1" /><path d="M5 13.5h6M8 11v2.5" /></svg> },
+  { id: "machine", label: "Current Computer", icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="2" y="3" width="12" height="8" rx="1" /><path d="M5 13.5h6M8 11v2.5" /></svg> },
   { id: "gallery", label: "Gallery", icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="2" y="2" width="5.5" height="5.5" rx="1" /><rect x="8.5" y="2" width="5.5" height="5.5" rx="1" /><rect x="2" y="8.5" width="5.5" height="5.5" rx="1" /><rect x="8.5" y="8.5" width="5.5" height="5.5" rx="1" /></svg> },
 ];
 

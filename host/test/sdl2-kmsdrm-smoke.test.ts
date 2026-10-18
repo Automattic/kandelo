@@ -21,5 +21,10 @@ describe("SDL2 KMSDRM video backend", () => {
       expect(result.stdout).toContain("OK kmsdrm KMSDRM");
       expect(result.stderr).not.toContain("FAIL:");
     },
+    // The program is granted 10s above, but vitest's default test timeout
+    // is 5s, so the outer limit fired first and the program's own timeout
+    // could never apply -- kernel boot plus SDL_Init runs ~12s here. Give
+    // the test room for the budget it already hands the program.
+    60_000,
   );
 });

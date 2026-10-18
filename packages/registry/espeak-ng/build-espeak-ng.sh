@@ -27,14 +27,25 @@
 #                                              declared runtime file)
 #
 # Default install dir for legacy / ad-hoc invocation is
-# ./espeak-ng-install/ next to this script.
+# ./espeak-ng-install/ next to this script. Sources and build trees live
+# under the resolver work root ($WASM_POSIX_DEP_WORK_DIR), or next to this
+# script for a standalone run.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
-PCAUDIO_SRC_DIR="$HERE/pcaudiolib-src"
-SRC_DIR="$HERE/espeak-ng-src"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$HERE"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$HERE" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+PCAUDIO_SRC_DIR="$WORK_DIR/pcaudiolib-src"
+SRC_DIR="$WORK_DIR/espeak-ng-src"
 
 # --- Resolver-contract env / legacy fallbacks ---
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$HERE/espeak-ng-install}"
@@ -42,13 +53,9 @@ INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$HERE/espeak-ng-install}"
 # --- Upstream source pins ---
 # espeak-ng publishes no source archive as a release asset, so its pin is
 # the tag archive. pcaudiolib publishes one.
-ESPEAK_VERSION="${WASM_POSIX_DEP_VERSION:-1.52.0}"
-ESPEAK_SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/espeak-ng/espeak-ng/archive/refs/tags/${ESPEAK_VERSION}.tar.gz}"
-ESPEAK_SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-bb4338102ff3b49a81423da8a1a158b420124b055b60fa76cfb4b18677130a23}"
-
-PCAUDIO_VERSION="1.3"
-PCAUDIO_SOURCE_URL="https://github.com/espeak-ng/pcaudiolib/releases/download/${PCAUDIO_VERSION}/pcaudiolib-${PCAUDIO_VERSION}.tar.gz"
-PCAUDIO_SOURCE_SHA256="e8bd15f460ea171ccd0769ea432e188532a7fb27fa73ec2d526088a082abaaad"
+ESPEAK_VERSION="$WASM_POSIX_DEP_VERSION"
+ESPEAK_SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+ESPEAK_SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 # Languages to compile. The full upstream list is ~80 languages and
 # bloats the VFS image by ~25 MB. Default to English-only for the demo;
@@ -58,15 +65,17 @@ ESPEAK_LANG_LIST="${ESPEAK_LANG_LIST:-en}"
 # --- SDK + sysroot ---
 # Source this worktree's SDK directly instead of relying on `npm link`.
 source "$REPO_ROOT/sdk/activate.sh"
-SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
-export WASM_POSIX_SYSROOT="$SYSROOT"
+# The SDK sysroot is a read-only seed. libcxx is overlaid onto a private
+# copy below, never into this shared tree.
+SDK_SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
+export WASM_POSIX_SYSROOT="$SDK_SYSROOT"
 
 if ! command -v wasm32posix-cc >/dev/null; then
     echo "ERROR: wasm32posix-cc not found on PATH after sourcing sdk/activate.sh." >&2
     exit 1
 fi
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "ERROR: kandelo sysroot not built at $SYSROOT. Run bash scripts/build-musl.sh first." >&2
+if [ ! -f "$SDK_SYSROOT/lib/libc.a" ]; then
+    echo "ERROR: kandelo sysroot not built at $SDK_SYSROOT. Run bash scripts/build-musl.sh first." >&2
     exit 1
 fi
 for tool in cmake curl tar shasum python3; do
@@ -76,27 +85,10 @@ for tool in cmake curl tar shasum python3; do
     }
 done
 
-# --- Fetch upstream sources --------------------------------------------
-# Both trees are gitignored build inputs, not vendored files. Download
-# and verify each once, then reuse it across resolves.
-fetch_source() {
-    local url="$1" sha256="$2" dest="$3" name="$4"
-    [ -d "$dest" ] && return 0
-    echo "==> Downloading $name..."
-    local tarball="$dest.tar.gz"
-    local staging="$dest.incoming"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$url" -o "$tarball"
-    echo "$sha256  $tarball" | shasum -a 256 -c -
-    rm -rf "$staging"
-    mkdir -p "$staging"
-    tar xzf "$tarball" -C "$staging" --strip-components=1
-    rm -f "$tarball"
-    mv "$staging" "$dest"
-}
-
-fetch_source "$ESPEAK_SOURCE_URL" "$ESPEAK_SOURCE_SHA256" "$SRC_DIR" "espeak-ng $ESPEAK_VERSION"
-fetch_source "$PCAUDIO_SOURCE_URL" "$PCAUDIO_SOURCE_SHA256" "$PCAUDIO_SRC_DIR" "pcaudiolib $PCAUDIO_VERSION"
+# Both inputs are verified by the resolver before compilation and copied
+# into this invocation's private work root.
+kandelo_package_stage_primary_source espeak-ng "$SRC_DIR" "$WORK_DIR"
+kandelo_package_stage_source_dependency pcaudiolib-source "$PCAUDIO_SRC_DIR" "$WORK_DIR"
 
 # --- Locate host LLVM (for glue obj compile + native build) ---
 LLVM_PREFIX="${LLVM_PREFIX:-$(brew --prefix llvm 2>/dev/null || echo /opt/homebrew/opt/llvm)}"
@@ -105,19 +97,24 @@ LLVM_CLANG="$LLVM_PREFIX/bin/clang"
 # --- Phase 0: kandelo glue objs ----------------------------------------
 # Mirrors mariadb's mariadb-glue-objs/. crt1.o comes from the sysroot;
 # the channel_syscall + compiler_rt objects come from the kandelo libc
-# glue and are linked into every user program at exec time.
-GLUE_OBJ_DIR="$HERE/glue-objs"
+# glue and are linked into every user program at exec time. They are
+# compiled against the read-only SDK seed sysroot. The toolchain file finds
+# them through ESPEAK_GLUE_OBJ_DIR.
+GLUE_OBJ_DIR="$WORK_DIR/glue-objs"
+export ESPEAK_GLUE_OBJ_DIR="$GLUE_OBJ_DIR"
 GLUE_SRC_DIR="$REPO_ROOT/libc/glue"
 mkdir -p "$GLUE_OBJ_DIR"
-if [ ! -f "$GLUE_OBJ_DIR/channel_syscall.o" ] || \
-   [ "$GLUE_SRC_DIR/channel_syscall.c" -nt "$GLUE_OBJ_DIR/channel_syscall.o" ]; then
+# Compile both objects on every build. They are two small files, and a
+# timestamp check on channel_syscall.c alone missed changes to the headers it
+# includes (abi_constants.h carries the ABI version) and to compiler_rt.c.
+{
     echo "==> Compiling kandelo glue objs..."
-    WASM_COMPILE_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-trapping-math --sysroot=$SYSROOT"
+    WASM_COMPILE_FLAGS="--target=wasm32-unknown-unknown -matomics -mbulk-memory -mexception-handling -mllvm -wasm-enable-sjlj -fno-trapping-math --sysroot=$SDK_SYSROOT"
     # shellcheck disable=SC2086
     "$LLVM_CLANG" $WASM_COMPILE_FLAGS -O2 -c "$GLUE_SRC_DIR/channel_syscall.c" -o "$GLUE_OBJ_DIR/channel_syscall.o"
     # shellcheck disable=SC2086
     "$LLVM_CLANG" $WASM_COMPILE_FLAGS -O2 -c "$GLUE_SRC_DIR/compiler_rt.c" -o "$GLUE_OBJ_DIR/compiler_rt.o"
-fi
+}
 
 # --- Phase 1: libpcaudio.a (OSS backend only) --------------------------
 # We don't run pcaudiolib's autotools / libtool — for five files we just
@@ -130,7 +127,7 @@ fi
 # qsa units compile to `return NULL` stubs; they are still built because
 # create_audio_device_object in audio.c references their symbols and
 # falls through them to the OSS object. No source file is patched.
-PCAUDIO_BUILD_DIR="$HERE/pcaudiolib-build"
+PCAUDIO_BUILD_DIR="$WORK_DIR/pcaudiolib-build"
 PCAUDIO_CONFIG_DIR="$PCAUDIO_BUILD_DIR/config"
 mkdir -p "$PCAUDIO_CONFIG_DIR"
 printf '#define HAVE_SYS_SOUNDCARD_H 1\n' > "$PCAUDIO_CONFIG_DIR/config.h"
@@ -176,7 +173,8 @@ PYEOF
 
 # Trim the dict list down to ESPEAK_LANG_LIST for the cross build so we
 # don't bloat the VFS image with ~80 languages. data.cmake is the upstream
-# file we mutate; the change is one find-and-replace and we keep a backup.
+# file we mutate (in the work-root copy); the change is one
+# find-and-replace and we keep a backup.
 DATA_CMAKE="$SRC_DIR/cmake/data.cmake"
 DATA_CMAKE_BACKUP="$DATA_CMAKE.kandelo.orig"
 if [ ! -f "$DATA_CMAKE_BACKUP" ]; then
@@ -210,16 +208,26 @@ PYEOF
 # build honours ESPEAK_LANG_LIST too. The outputs are byte tables, not
 # code, and both this host and wasm32 are little-endian, so the cross
 # build consumes them unchanged.
-NATIVE_BUILD_DIR="$HERE/espeak-ng-host-build"
+NATIVE_BUILD_DIR="$WORK_DIR/espeak-ng-host-build"
 if [ ! -d "$NATIVE_BUILD_DIR/espeak-ng-data" ]; then
     echo "==> Native build of espeak-ng (for data tools)..."
     mkdir -p "$NATIVE_BUILD_DIR"
     # Use the wrapped cc/c++ drivers on PATH, not the bare LLVM binaries
     # CMake finds first. Only the wrappers carry the host C++ standard
     # library include paths, and speechPlayer is C++.
+    #
+    # The data step runs this tool with ESPEAK_DATA_PATH set to the build
+    # dir. espeak-ng keeps that path in a 160-byte buffer on POSIX
+    # (N_PATH_HOME_DEF in speech.h) and falls back to /usr/share when it
+    # does not fit; a resolver work-root path is longer than that.
+    # speech.h lets a build raise the limit with -DN_PATH_HOME, and every
+    # dependent buffer is sized from it. Host tool only: the wasm binary
+    # reads its data from the guest's short default path.
     cmake -S "$SRC_DIR" -B "$NATIVE_BUILD_DIR" \
         -DCMAKE_C_COMPILER=cc \
         -DCMAKE_CXX_COMPILER=c++ \
+        -DCMAKE_C_FLAGS=-DN_PATH_HOME=4096 \
+        -DCMAKE_CXX_FLAGS=-DN_PATH_HOME=4096 \
         -DCMAKE_INSTALL_PREFIX=/usr \
         -DBUILD_SHARED_LIBS=OFF \
         -DUSE_MBROLA=OFF \
@@ -233,11 +241,12 @@ if [ ! -d "$NATIVE_BUILD_DIR/espeak-ng-data" ]; then
     cmake --build "$NATIVE_BUILD_DIR" --target data           -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 fi
 
-# --- Resolve libcxx, then index it into the sysroot --------------------
+# --- Resolve libcxx, then overlay it onto a private sysroot ------------
 # espeak-ng's speechPlayer synthesizer is C++, and upstream builds it
 # unconditionally — src/CMakeLists.txt adds the subdirectory without
-# testing USE_SPEECHPLAYER. Index the resolved header tree and archives
-# into the sysroot the same way build-mariadb.sh does.
+# testing USE_SPEECHPLAYER. Overlay the resolved header tree and archives
+# onto a private copy of the SDK sysroot under the work root, as dinit and
+# qtbase do, so the shared checkout sysroot is never mutated.
 LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
 if [ -z "$LIBCXX_PREFIX" ]; then
     echo "==> Resolving libcxx via cargo xtask build-deps..."
@@ -251,26 +260,33 @@ for artifact in lib/libc++.a lib/libc++abi.a include/c++/v1; do
     }
 done
 
-mkdir -p "$SYSROOT/lib" "$SYSROOT/include/c++"
-# Copy libcxx into the sysroot rather than symlinking it. A symlink points
-# into the per-user source-only cache (~/.cache/kandelo/...), which pollutes
-# the shared sysroot and trips the kandelo-sdk seed integrity check
-# (scripts/package-build-roots.sh rejects symlinks in the SDK seed because a
-# machine-specific link is not reproducible). Copying real files keeps the
-# seed clean — the same approach build-kandelo-sdk.sh uses. Remove any
-# pre-existing dst first so a prior symlink can't be followed into the cache.
-rm -f "$SYSROOT/lib/libc++.a" "$SYSROOT/lib/libc++abi.a"
-cp "$LIBCXX_PREFIX/lib/libc++.a"    "$SYSROOT/lib/libc++.a"
-cp "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
-rm -rf "$SYSROOT/include/c++/v1"
-cp -RL "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
-echo "==> libcxx resolved at $LIBCXX_PREFIX (copied into $SYSROOT)"
+export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
+# The helper requires a declared work root; a standalone run uses the one
+# beside this script.
+SYSROOT="$(
+    WASM_POSIX_DEP_WORK_DIR="$WORK_DIR" \
+        kandelo_package_prepare_private_sysroot espeak-ng "$SDK_SYSROOT" libcxx
+)"
+export WASM_POSIX_SYSROOT="$SYSROOT"
+echo "==> libcxx resolved at $LIBCXX_PREFIX (overlaid onto $SYSROOT)"
 
 # --- Phase 3: cross build of espeak-ng ---------------------------------
-CROSS_BUILD_DIR="$HERE/espeak-ng-cross-build"
+CROSS_BUILD_DIR="$WORK_DIR/espeak-ng-cross-build"
+# Configure from scratch. CMake applies a toolchain file's *_INIT flags only
+# on the first configure of a build tree, so a reused tree silently kept the
+# link line from whichever toolchain first configured it. The resolver runs
+# this script only when the package's inputs changed; that is exactly when a
+# stale cache would be wrong.
+rm -rf "$CROSS_BUILD_DIR"
 mkdir -p "$CROSS_BUILD_DIR"
 
 echo "==> Cross-compiling espeak-ng for wasm32..."
+# The toolchain file drives raw clang, so the SDK wrapper's automatic
+# work-root prefix map does not apply. Map the work root (which carries a
+# per-build PID under the resolver) here; CMake folds CFLAGS/CXXFLAGS into
+# the toolchain's *_FLAGS_INIT on first configure.
+CROSS_PREFIX_MAP="-ffile-prefix-map=$WORK_DIR=/usr/src/kandelo-build/espeak-ng"
+CFLAGS="$CROSS_PREFIX_MAP" CXXFLAGS="$CROSS_PREFIX_MAP" \
 cmake -S "$SRC_DIR" -B "$CROSS_BUILD_DIR" \
     -DCMAKE_TOOLCHAIN_FILE="$HERE/wasm32-posix-toolchain.cmake" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -304,7 +320,8 @@ cp "$CROSS_BUILD_DIR/src/espeak-ng" "$INSTALL_DIR/bin/espeak-ng.wasm"
 rm -rf "$INSTALL_DIR/share/espeak-ng-data"
 cp -R "$NATIVE_BUILD_DIR/espeak-ng-data" "$INSTALL_DIR/share/espeak-ng-data"
 
-# Restore data.cmake + deps.cmake so the source tree stays clean for next build.
+# Restore data.cmake + deps.cmake so a reused standalone source tree stays
+# clean for the next build.
 mv "$DATA_CMAKE_BACKUP" "$DATA_CMAKE"
 mv "$DEPS_CMAKE_BACKUP" "$DEPS_CMAKE"
 
@@ -334,6 +351,12 @@ PY
 
 # Both filenames exactly match the package.toml [[outputs]] and
 # [[runtime_files]] entries; the installer re-checks artifact policy.
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary espeak-ng "$INSTALL_DIR/bin/espeak-ng.wasm"
 # The resolver's validate_outputs checks $OUT_DIR/<artifact> at the root,

@@ -6,9 +6,9 @@ export interface RunResult {
   exitCode: number;
 }
 
-export function run(cmd: string, args: string[]): Promise<RunResult> {
+export function run(cmd: string, args: string[], cwd?: string): Promise<RunResult> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(cmd, args, { maxBuffer: 10 * 1024 * 1024, cwd }, (error, stdout, stderr) => {
       resolve({
         stdout: stdout ?? '',
         stderr: stderr ?? '',

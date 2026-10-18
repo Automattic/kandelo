@@ -1,3 +1,4 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build-script helpers for VFS images. Pure memfs operations are re-exported
  * from host/src/vfs/image-helpers.ts so demo runtime code can share them.
@@ -13,12 +14,13 @@ import {
 } from "fs";
 import { join, relative } from "path";
 import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
+import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import { describeWasmArtifactPolicyFailures } from "../../../host/src/constants";
-import { ABI_VERSION } from "../../../host/src/generated/abi";
+import {
+  ABI_VERSION,
+  KANDELO_REFERENCE_EPOCH_SECONDS,
+} from "../../../host/src/generated/abi";
 
 export {
   writeVfsFile,
@@ -28,7 +30,11 @@ export {
   symlink,
 } from "../../../host/src/vfs/image-helpers";
 
-import { writeVfsBinary, ensureDirRecursive } from "../../../host/src/vfs/image-helpers";
+import {
+  writeVfsBinary,
+  ensureDirRecursive,
+  symlink,
+} from "../../../host/src/vfs/image-helpers";
 
 export interface WalkOptions {
   exclude?: (relPath: string) => boolean;
@@ -47,7 +53,7 @@ export interface WalkOptions {
  * Returns the number of files written.
  */
 export function walkAndWrite(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   rootDir: string,
   mountPrefix: string,
   opts?: WalkOptions,
@@ -96,11 +102,9 @@ export function walkAndWrite(
 }
 
 /**
- * Save a MemoryFileSystem image to disk as a zstd-compressed `.vfs.zst`
- * file. The empty regions of the SharedFS allocator compress to almost
- * nothing, so this typically shrinks images by 80–95%. The browser-side
- * loader (`MemoryFileSystem.fromImage`) detects the zstd magic and
- * decompresses on load.
+ * Save a VFS image to disk as a zstd-compressed `.vfs.zst` file. The
+ * host-side transport (`host/src/vfs/vfs-image-transport.ts`) detects the
+ * zstd magic and decompresses before the kernel reads the image.
  *
  * `outFile` must end in `.vfs.zst` to make the on-disk format obvious.
  */
@@ -169,11 +173,17 @@ const MAX_SOURCE_DATE_EPOCH_SECONDS = Math.floor(
   Number.MAX_SAFE_INTEGER / 1000,
 );
 
-/** Resolve reproducible build time from SOURCE_DATE_EPOCH, defaulting to epoch. */
+/**
+ * Resolve reproducible build time from SOURCE_DATE_EPOCH.
+ *
+ * Unset means Kandelo's reference instant, not Unix epoch 0: an image whose
+ * files all carry mtime 0 is reproducible but reads as "no timestamp" to the
+ * software inside it (PHP's opcache will not cache such a file).
+ */
 export function sourceDateEpochMilliseconds(
   value: string | undefined,
 ): number {
-  if (value === undefined) return 0;
+  if (value === undefined) return KANDELO_REFERENCE_EPOCH_SECONDS * 1000;
   if (!/^(?:0|[1-9][0-9]*)$/.test(value)) {
     throw new Error(`SOURCE_DATE_EPOCH must be a non-negative whole second: ${value}`);
   }
@@ -184,7 +194,7 @@ export function sourceDateEpochMilliseconds(
   return seconds * 1000;
 }
 
-function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsBytes(fs: VfsImageFilesystem, path: string): Uint8Array {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -209,11 +219,11 @@ function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
 
 /**
  * Reject a product image during its build when normal runtime writes would
- * immediately run out of data blocks or inode slots. SharedFS accounts for
- * those resources independently, so both reserves are part of the contract.
+ * immediately run out of data blocks or inode slots. The KIFS allocator
+ * accounts for those resources independently, so both reserves are part of the contract.
  */
 export function assertVfsImageHeadroom(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   headroom: VfsImageHeadroom,
   label: string,
 ): void {
@@ -226,12 +236,26 @@ export function assertVfsImageHeadroom(
     }
   }
 
-  const stats = fs.statfs("/");
-  const freeBytes = stats.bfree * stats.frsize;
+  // The filesystem JUDGES this; nothing here recomputes it from a primitive.
+  // The image writer owns the KIFS allocator, so it answers with a verdict and
+  // the numbers behind it rather than leaving the arithmetic, and therefore the
+  // decision, to TypeScript.
+  if (!fs.checkHeadroom) {
+    throw new Error(
+      `${label} cannot report headroom: the filesystem offers no headroom ` +
+        `verdict`,
+    );
+  }
+  const verdict = fs.checkHeadroom(
+    headroom.minimumFreeBytes,
+    headroom.minimumFreeInodes,
+  );
+  const freeBytes = verdict.freeBytes;
+  const freeInodes = verdict.freeInodes;
   if (!Number.isSafeInteger(freeBytes) || freeBytes < 0) {
     throw new Error(`${label} reports an invalid free-byte count`);
   }
-  if (!Number.isSafeInteger(stats.ffree) || stats.ffree < 0) {
+  if (!Number.isSafeInteger(freeInodes) || freeInodes < 0) {
     throw new Error(`${label} reports an invalid free-inode count`);
   }
   const failures: string[] = [];
@@ -240,9 +264,9 @@ export function assertVfsImageHeadroom(
       `${freeBytes} free bytes remain; ${headroom.minimumFreeBytes} are required`,
     );
   }
-  if (stats.ffree < headroom.minimumFreeInodes) {
+  if (freeInodes < headroom.minimumFreeInodes) {
     failures.push(
-      `${stats.ffree} free inodes remain; ${headroom.minimumFreeInodes} are required`,
+      `${freeInodes} free inodes remain; ${headroom.minimumFreeInodes} are required`,
     );
   }
   if (failures.length > 0) {
@@ -255,14 +279,26 @@ export function assertVfsImageCapacity(
   image: Uint8Array,
   expectedMaxByteLength: number,
   label: string,
+  /**
+   * The filesystem that produced `image`, when the caller has it. A producer
+   * that can report its own ceiling is asked; otherwise the image writer
+   * module reads the ceiling from the artifact bytes.
+   */
+  fs?: VfsImageFilesystem,
 ): void {
   if (!Number.isSafeInteger(expectedMaxByteLength) || expectedMaxByteLength <= 0) {
     throw new Error(
       `${label} expectedMaxByteLength must be a positive safe integer`,
     );
   }
-  const actualMaxByteLength =
-    MemoryFileSystem.readImageCapacity(image).maxByteLength;
+  // Ask the producer when there is one, and otherwise ask the MODULE to read
+  // the artifact. Neither branch parses a container here: the ceiling lives in
+  // the container header and the KIFS superblock, and reading it in TypeScript
+  // would put image-format knowledge back on the host side of the boundary.
+  // Callers that hold only bytes take the second branch.
+  const actualMaxByteLength = fs?.exportCapacityBytes
+    ? fs.exportCapacityBytes()
+    : KandeloImageFs.readImageCapacity(image).maxByteLength;
   if (actualMaxByteLength !== expectedMaxByteLength) {
     throw new Error(
       `${label} has a ${actualMaxByteLength}-byte VFS capacity; ` +
@@ -271,7 +307,7 @@ export function assertVfsImageCapacity(
   }
 }
 
-function walkVfsFiles(fs: MemoryFileSystem, dir: string, out: string[] = []): string[] {
+function walkVfsFiles(fs: VfsImageFilesystem, dir: string, out: string[] = []): string[] {
   // WHY: this walk protects the artifact that will be published. A namespace
   // inspection failure is not an intentional omission and must stop the build.
   const dh = fs.opendir(dir);
@@ -363,7 +399,7 @@ function declaredWasmArtifactPolicies(
 }
 
 function assertNoStaleWasmArtifacts(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   kernelAbi: number,
   declarations: readonly VfsWasmArtifactPolicy[] = [],
 ): void {
@@ -425,7 +461,7 @@ function assertNoStaleWasmArtifacts(
 
 /** Validate and compress one image without publishing it to the host filesystem. */
 export async function serializeImage(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   artifactLabel: string,
   options: SaveImageOptions = {},
 ): Promise<SerializedVfsImage> {
@@ -449,6 +485,11 @@ export async function serializeImage(
     materializeAll: options.materializeAll,
     metadata,
     normalizeTimestampsMs: options.normalizeTimestampsMs,
+    // No free-capacity trim is requested here: this is the product-artifact
+    // boundary, and the kernel's export (`build_export_image` in
+    // crates/runtime-core/src/rootfs.rs) already sizes the body to the tree
+    // and records the growth ceiling as a number, so capacity a machine grows
+    // into never ships as download bytes.
   });
   // Materialize first when requested so the resource and Wasm checks inspect
   // the exact concrete namespace represented by the returned snapshot.
@@ -469,6 +510,7 @@ export async function serializeImage(
       image,
       options.expectedMaxByteLength,
       artifactLabel,
+      fs,
     );
   }
   // Level 19 — slow build, smaller download. Decompression speed is
@@ -488,7 +530,7 @@ export async function serializeImage(
 }
 
 export async function saveImage(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   outFile: string,
   options: SaveImageOptions = {},
 ): Promise<Uint8Array> {
@@ -512,4 +554,30 @@ export async function saveImage(
   console.log(`VFS image: ${rawMB} MB raw → ${compMB} MB zstd (${ratio}%)`);
   console.log(`Written to: ${outFile}`);
   return serialized.bytes;
+}
+
+/**
+ * The paths every Kandelo image binds to bash. `/bin/sh` is what system(),
+ * popen(), a `#!/bin/sh` script and a POSIX-conforming program exec, so it
+ * must resolve to the same shell in every reference image; bash honors POSIX
+ * mode when invoked as `sh`. A per-builder copy of this list is how three
+ * images drifted to dash while the rootfs and the shell image used bash.
+ */
+export const BASH_SHELL_PATHS = ["/bin/bash", "/bin/sh", "/usr/bin/sh"] as const;
+
+/**
+ * Install bash at /usr/bin/bash and bind every POSIX shell path to it.
+ *
+ * An image may still ship other shells (dash, for one) as ordinary commands at
+ * their own names; none of them may claim /bin/sh.
+ */
+export function installBashAsPosixShell(
+  fs: VfsImageFilesystem,
+  bash: Uint8Array,
+): void {
+  if (bash.byteLength === 0) {
+    throw new Error("installBashAsPosixShell: bash.wasm is empty");
+  }
+  writeVfsBinary(fs, "/usr/bin/bash", bash);
+  for (const path of BASH_SHELL_PATHS) symlink(fs, "/usr/bin/bash", path);
 }

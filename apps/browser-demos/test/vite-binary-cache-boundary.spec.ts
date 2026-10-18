@@ -411,6 +411,59 @@ test("Vite dependency scanning does not require the package checker", async () =
   }
 });
 
+test("legacy-policy Vite loads optional globs before rejecting requested stale bytes", async ({ page }) => {
+  const savedPolicy = process.env.WASM_POSIX_RESOLUTION_POLICY;
+  const savedSourceOnlyRoot = process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+  const namespace = `vite-optional-${randomUUID()}`;
+  const entryDirectory = generatedEntryDirectory(namespace);
+  const entry = join(entryDirectory, "entry.ts");
+  const artifact = join(repoRoot, "local-binaries", "programs", "wasm32", `${namespace}.wasm`);
+  const relativeArtifact = normalizePath(relative(entryDirectory, artifact));
+  const specifier = relativeArtifact.startsWith(".") ? relativeArtifact : `./${relativeArtifact}`;
+  let server: ViteDevServer | null = null;
+  try {
+    mkdirSync(entryDirectory, { recursive: true });
+    mkdirSync(dirname(artifact), { recursive: true });
+    writeFileSync(artifact, executableWasmWithAbi(ABI_VERSION - 1));
+    writeFileSync(entry, `export default import.meta.glob(${JSON.stringify(specifier)}, { query: "?url", import: "default" });`);
+    // This fixture tests the legacy mirror's deferred ABI rejection. The
+    // SourceOnly policy correctly omits its unowned synthetic file instead;
+    // that authority boundary is exercised by the SourceOnly fixtures below.
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+    delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+    server = await createServer({
+      configFile: join(appRoot, "vite.config.ts"), root: appRoot,
+      logLevel: "silent", server: { host: "127.0.0.1", port: 0, hmr: false },
+    });
+    await server.listen();
+    const origin = `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}`;
+    const source = await fetch(fsUrl(origin, entry));
+    expect(source.status, await source.text()).toBe(200);
+    await page.goto(`${origin}/pages/benchmark/index.html`);
+    const result = await page.evaluate(async ({ entryUrl, key }) => {
+      const module = await import(entryUrl);
+      if (typeof module.default[key] !== "function") return "loader absent";
+      try { await module.default[key](); return "stale bytes admitted"; }
+      catch { return "requested stale bytes rejected"; }
+    }, { entryUrl: fsUrl(origin, entry), key: specifier });
+    expect(result).toBe("requested stale bytes rejected");
+  } finally {
+    await server?.close();
+    rmSync(entryDirectory, { recursive: true, force: true });
+    rmSync(artifact, { force: true });
+    if (savedPolicy === undefined) {
+      delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+    } else {
+      process.env.WASM_POSIX_RESOLUTION_POLICY = savedPolicy;
+    }
+    if (savedSourceOnlyRoot === undefined) {
+      delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+    } else {
+      process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = savedSourceOnlyRoot;
+    }
+  }
+});
+
 test("SourceOnly Vite serves a verified snapshot after same-path replacement", async () => {
   const savedPolicy = process.env.WASM_POSIX_RESOLUTION_POLICY;
   const savedSourceOnlyRoot =
@@ -625,6 +678,9 @@ test("SourceOnly Vite does not fall back when an owned member is missing", async
 test("Vite serves an approved bottle member without exposing its cache", async () => {
   const savedRegistry = process.env.WASM_POSIX_DEPS_REGISTRY;
   const savedNoHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR;
+  const savedPolicy = process.env.WASM_POSIX_RESOLUTION_POLICY;
+  const savedSourceOnlyRoot =
+    process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
   const testRoot = mkdtempSync(join(tmpdir(), "kandelo-vite-cache-boundary-"));
   const namespace = `vite-cache-boundary-${randomUUID()}`;
   const programCacheRoot = binaryProgramCacheRoot();
@@ -663,7 +719,7 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     const cacheKey = writeProgramProjection(registryRoot, namespace);
     generation = join(
       programCacheRoot,
-      `${namespace}-1.0.0-rev1-wasm32-${cacheKey}`,
+      `${namespace}-1.0.0-rev1-wasm32-abi${ABI_VERSION}-${cacheKey}`,
     );
     const artifact = join(generation, "artifact.dat");
     const sidecar = join(generation, "sidecar.dat");
@@ -711,6 +767,12 @@ test("Vite serves an approved bottle member without exposing its cache", async (
     process.env.WASM_POSIX_DEPS_REGISTRY =
       registryStackWithFixture(registryRoot);
     process.env.KANDELO_BROWSER_TEST_NO_HMR = "1";
+    // This fixture is a registry bottle, which only the default policy
+    // resolves. The suite itself runs under SourceOnly (the app's dev server
+    // needs it), and this in-process server would otherwise inherit that
+    // policy and correctly refuse the member as outside the projection.
+    delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+    delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
     server = await createServer({
       configFile: join(appRoot, "vite.config.ts"),
       root: appRoot,
@@ -755,12 +817,14 @@ test("Vite serves an approved bottle member without exposing its cache", async (
       transformedSidecarSource,
     ).toBe(200);
     expect(transformedSidecarSource).toContain("sidecar.dat");
+    // Merely discovering an optional loader must grant no cache access.
+    expect((await fetch(fsUrl(origin, canonicalSidecar))).status).toBe(403);
     const sidecarModulePath = transformedSidecarSource.match(
-      /import\(("\/@fs\/[^"\n]+sidecar\.dat\?[^"\n]*url[^"\n]*")\)/,
+      /("\/@id\/@binaries\/[^"\n]+sidecar\.dat\?url")/,
     )?.[1];
     expect(sidecarModulePath, transformedSidecarSource).toBeDefined();
     const sidecarModule = await fetch(
-      new URL(JSON.parse(sidecarModulePath!), origin),
+      new URL(`${JSON.parse(sidecarModulePath!)}&import`, origin),
     );
     const sidecarModuleSource = await sidecarModule.text();
     expect(sidecarModule.status, sidecarModuleSource).toBe(200);
@@ -837,6 +901,16 @@ test("Vite serves an approved bottle member without exposing its cache", async (
       delete process.env.KANDELO_BROWSER_TEST_NO_HMR;
     } else {
       process.env.KANDELO_BROWSER_TEST_NO_HMR = savedNoHmr;
+    }
+    if (savedPolicy === undefined) {
+      delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+    } else {
+      process.env.WASM_POSIX_RESOLUTION_POLICY = savedPolicy;
+    }
+    if (savedSourceOnlyRoot === undefined) {
+      delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+    } else {
+      process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = savedSourceOnlyRoot;
     }
   }
 });
