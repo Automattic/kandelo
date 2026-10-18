@@ -208,7 +208,17 @@ pub mod process_layout;
 ///     routed local address. docs/abi-versioning.md ("ABI 50") lists each.
 /// 51: epoll notification delivery, edge/one-shot rearming, registration
 ///     lifetime, nesting validation, fairness, and stream half-close readiness.
-pub const ABI_VERSION: u32 = 51;
+/// 52: wlroots-compatible DRM master and framebuffers. The first open of
+///     `/dev/dri/card0` while no file is master becomes the master, as
+///     Linux's `drm_master_open` does. RMFB of the scanout framebuffer
+///     disables the CRTC; the new DRM_IOCTL_MODE_CLOSEFB keeps it on screen
+///     until another framebuffer replaces it. fstat of a PRIME fd reports an
+///     untyped inode of the buffer size. Framebuffers are device-wide and
+///     shared across fork, GET_CAP of an unknown capability fails with
+///     EINVAL, and new KMS ioctls get contracts. AF_NETLINK uevent sockets
+///     (with the new ESOCKTNOSUPPORT) and a read-only /sys appear.
+///     docs/abi-versioning.md ("ABI 52") lists each.
+pub const ABI_VERSION: u32 = 52;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -5427,9 +5437,30 @@ pub mod dri {
     // --- DRM_GET_CAP keys (clients call to probe features) ----------------
 
     pub const DRM_CAP_DUMB_BUFFER: u64 = 0x1;
+    pub const DRM_CAP_VBLANK_HIGH_CRTC: u64 = 0x2;
+    pub const DRM_CAP_DUMB_PREFERRED_DEPTH: u64 = 0x3;
+    pub const DRM_CAP_DUMB_PREFER_SHADOW: u64 = 0x4;
     pub const DRM_CAP_PRIME: u64 = 0x5;
+    pub const DRM_CAP_TIMESTAMP_MONOTONIC: u64 = 0x6;
+    pub const DRM_CAP_ASYNC_PAGE_FLIP: u64 = 0x7;
+    pub const DRM_CAP_CURSOR_WIDTH: u64 = 0x8;
+    pub const DRM_CAP_CURSOR_HEIGHT: u64 = 0x9;
+    pub const DRM_CAP_ADDFB2_MODIFIERS: u64 = 0x10;
+    pub const DRM_CAP_PAGE_FLIP_TARGET: u64 = 0x11;
+    pub const DRM_CAP_CRTC_IN_VBLANK_EVENT: u64 = 0x12;
+    pub const DRM_CAP_SYNCOBJ: u64 = 0x13;
+    pub const DRM_CAP_SYNCOBJ_TIMELINE: u64 = 0x14;
+    pub const DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP: u64 = 0x15;
     pub const DRM_PRIME_CAP_IMPORT: u64 = 0x1;
     pub const DRM_PRIME_CAP_EXPORT: u64 = 0x2;
+
+    // --- DRM_SET_CLIENT_CAP keys -------------------------------------------
+
+    pub const DRM_CLIENT_CAP_STEREO_3D: u64 = 1;
+    pub const DRM_CLIENT_CAP_UNIVERSAL_PLANES: u64 = 2;
+    pub const DRM_CLIENT_CAP_ATOMIC: u64 = 3;
+    pub const DRM_CLIENT_CAP_ASPECT_RATIO: u64 = 4;
+    pub const DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT: u64 = 6;
 
     // --- DRM fourcc pixel formats ----------------------------------------
     // Little-endian fourcc codes from `include/uapi/drm/drm_fourcc.h`.
@@ -5614,10 +5645,6 @@ pub mod dri {
     /// `_IOWR('d', 0xa2, drm_mode_crtc)`.
     pub const DRM_IOCTL_MODE_SETCRTC: u32 = 0xc068_64a2;
 
-    /// Linux `drm_mode_cursor` and `drm_mode_cursor2` (28/36 bytes).
-    pub const DRM_IOCTL_MODE_CURSOR: u32 = 0xc01c_64a3;
-    pub const DRM_IOCTL_MODE_CURSOR2: u32 = 0xc024_64bb;
-
     /// `_IOWR('d', 0xa6, drm_mode_get_encoder)`.
     pub const DRM_IOCTL_MODE_GETENCODER: u32 = 0xc014_64a6;
 
@@ -5633,13 +5660,85 @@ pub mod dri {
     /// `_IOWR('d', 0xb8, drm_mode_fb_cmd2)`.
     pub const DRM_IOCTL_MODE_ADDFB2: u32 = 0xc068_64b8;
 
+    /// `_IOW('d', 0x0d, drm_set_client_cap)`.
+    pub const DRM_IOCTL_SET_CLIENT_CAP: u32 = 0x4010_640d;
+
+    /// `_IOWR('d', 0xa3, drm_mode_cursor)` — legacy cursor set/move.
+    pub const DRM_IOCTL_MODE_CURSOR: u32 = 0xc01c_64a3;
+
+    /// `_IOWR('d', 0xaa, drm_mode_get_property)`.
+    pub const DRM_IOCTL_MODE_GETPROPERTY: u32 = 0xc040_64aa;
+
+    /// `_IOWR('d', 0xab, drm_mode_connector_set_property)`.
+    pub const DRM_IOCTL_MODE_SETPROPERTY: u32 = 0xc010_64ab;
+
+    /// `_IOWR('d', 0xac, drm_mode_get_blob)`.
+    pub const DRM_IOCTL_MODE_GETPROPBLOB: u32 = 0xc010_64ac;
+
+    /// `_IOWR('d', 0xb5, drm_mode_get_plane_res)`.
+    pub const DRM_IOCTL_MODE_GETPLANERESOURCES: u32 = 0xc010_64b5;
+
+    /// `_IOWR('d', 0xb6, drm_mode_get_plane)`.
+    pub const DRM_IOCTL_MODE_GETPLANE: u32 = 0xc020_64b6;
+
+    /// `_IOWR('d', 0xb9, drm_mode_obj_get_properties)`.
+    pub const DRM_IOCTL_MODE_OBJ_GETPROPERTIES: u32 = 0xc020_64b9;
+
+    /// `_IOWR('d', 0xba, drm_mode_obj_set_property)`.
+    pub const DRM_IOCTL_MODE_OBJ_SETPROPERTY: u32 = 0xc018_64ba;
+
+    /// `_IOWR('d', 0xbb, drm_mode_cursor2)` — legacy cursor with hotspot.
+    pub const DRM_IOCTL_MODE_CURSOR2: u32 = 0xc024_64bb;
+
+    /// `_IOR('d', 0x02, drm_auth)` — the open file's authentication token.
+    pub const DRM_IOCTL_GET_MAGIC: u32 = 0x8004_6402;
+
+    /// `_IOW('d', 0x11, drm_auth)` — the master authenticates a token.
+    pub const DRM_IOCTL_AUTH_MAGIC: u32 = 0x4004_6411;
+
+    /// `_IOWR('d', 0xc6, drm_mode_create_lease)`.
+    pub const DRM_IOCTL_MODE_CREATE_LEASE: u32 = 0xc018_64c6;
+
+    /// `_IOWR('d', 0xd0, drm_mode_closefb)` — drop an fb id but keep it
+    /// on the CRTC that scans it out.
+    pub const DRM_IOCTL_MODE_CLOSEFB: u32 = 0xc008_64d0;
+
     // --- KMS enums --------------------------------------------------------
 
     pub const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
     pub const DRM_MODE_CONNECTED: u32 = 1;
     pub const DRM_MODE_SUBPIXEL_UNKNOWN: u32 = 1;
+    pub const DRM_MODE_ENCODER_VIRTUAL: u32 = 5;
     pub const DRM_EVENT_VBLANK: u32 = 1;
     pub const DRM_EVENT_FLIP_COMPLETE: u32 = 2;
+
+    pub const DRM_MODE_OBJECT_ANY: u32 = 0;
+    pub const DRM_MODE_OBJECT_CRTC: u32 = 0xcccc_cccc;
+    pub const DRM_MODE_OBJECT_CONNECTOR: u32 = 0xc0c0_c0c0;
+    pub const DRM_MODE_OBJECT_ENCODER: u32 = 0xe0e0_e0e0;
+    pub const DRM_MODE_OBJECT_PROPERTY: u32 = 0xb0b0_b0b0;
+    pub const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
+
+    pub const DRM_MODE_PROP_RANGE: u32 = 1 << 1;
+    pub const DRM_MODE_PROP_IMMUTABLE: u32 = 1 << 2;
+    pub const DRM_MODE_PROP_ENUM: u32 = 1 << 3;
+    pub const DRM_MODE_PROP_BLOB: u32 = 1 << 4;
+    pub const DRM_PROP_NAME_LEN: usize = 32;
+
+    pub const DRM_PLANE_TYPE_OVERLAY: u64 = 0;
+    pub const DRM_PLANE_TYPE_PRIMARY: u64 = 1;
+    pub const DRM_PLANE_TYPE_CURSOR: u64 = 2;
+
+    pub const DRM_MODE_DPMS_ON: u64 = 0;
+    pub const DRM_MODE_DPMS_STANDBY: u64 = 1;
+    pub const DRM_MODE_DPMS_SUSPEND: u64 = 2;
+    pub const DRM_MODE_DPMS_OFF: u64 = 3;
+
+    pub const DRM_MODE_LINK_STATUS_GOOD: u64 = 0;
+    pub const DRM_MODE_LINK_STATUS_BAD: u64 = 1;
+
+    pub const DRM_MODE_CURSOR_BO: u32 = 0x01;
+    pub const DRM_MODE_CURSOR_MOVE: u32 = 0x02;
 
     // --- KMS marshalled structs -------------------------------------------
 
@@ -5802,6 +5901,113 @@ pub mod dri {
         pub tv_sec: u32,   // 8
         pub tv_usec: u32,  // 12
                            // total: 16
+    }
+
+    /// `struct drm_set_client_cap`. 16 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmSetClientCap {
+        pub capability: u64, // 0
+        pub value: u64,      // 8
+                             // total: 16
+    }
+
+    /// `struct drm_mode_get_plane_res`. 16 bytes (4 bytes of tail pad).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeGetPlaneRes {
+        pub plane_id_ptr: u64, // 0   in
+        pub count_planes: u32, // 8   in/out
+        pub pad: u32,          // 12
+                               // total: 16
+    }
+
+    /// `struct drm_mode_get_plane`. 32 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeGetPlane {
+        pub plane_id: u32,           // 0   in
+        pub crtc_id: u32,            // 4   out
+        pub fb_id: u32,              // 8   out
+        pub possible_crtcs: u32,     // 12  out
+        pub gamma_size: u32,         // 16  out
+        pub count_format_types: u32, // 20  in/out
+        pub format_type_ptr: u64,    // 24  in
+                                     // total: 32
+    }
+
+    /// `struct drm_mode_obj_get_properties`. 32 bytes (4 bytes of tail pad).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeObjGetProperties {
+        pub props_ptr: u64,       // 0   in
+        pub prop_values_ptr: u64, // 8   in
+        pub count_props: u32,     // 16  in/out
+        pub obj_id: u32,          // 20  in
+        pub obj_type: u32,        // 24  in
+        pub pad: u32,             // 28
+                                  // total: 32
+    }
+
+    /// `struct drm_mode_obj_set_property`. 24 bytes (4 bytes of tail pad).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeObjSetProperty {
+        pub value: u64,    // 0
+        pub prop_id: u32,  // 8
+        pub obj_id: u32,   // 12
+        pub obj_type: u32, // 16
+        pub pad: u32,      // 20
+                           // total: 24
+    }
+
+    /// `struct drm_mode_connector_set_property`. 16 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeConnectorSetProperty {
+        pub value: u64,        // 0
+        pub prop_id: u32,      // 8
+        pub connector_id: u32, // 12
+                               // total: 16
+    }
+
+    /// `struct drm_mode_get_property`. 64 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeGetProperty {
+        pub values_ptr: u64,       // 0   in
+        pub enum_blob_ptr: u64,    // 8   in
+        pub prop_id: u32,          // 16  in
+        pub flags: u32,            // 20  out
+        pub name: [u8; 32],        // 24  out
+        pub count_values: u32,     // 56  in/out
+        pub count_enum_blobs: u32, // 60  in/out
+                                   // total: 64
+    }
+
+    /// `struct drm_mode_get_blob`. 16 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeGetBlob {
+        pub blob_id: u32, // 0   in
+        pub length: u32,  // 4   in/out
+        pub data: u64,    // 8   in
+                          // total: 16
+    }
+
+    /// `struct drm_mode_cursor`. 28 bytes. `struct drm_mode_cursor2`
+    /// appends `hot_x` and `hot_y` (36 bytes); the leading fields match.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeCursor {
+        pub flags: u32,   // 0
+        pub crtc_id: u32, // 4
+        pub x: i32,       // 8
+        pub y: i32,       // 12
+        pub width: u32,   // 16
+        pub height: u32,  // 20
+        pub handle: u32,  // 24
+                          // total: 28
     }
 }
 
@@ -6588,6 +6794,66 @@ mod dri_tests {
         assert_eq!(DRM_MODE_CONNECTED, 1);
         assert_eq!(DRM_EVENT_VBLANK, 1);
         assert_eq!(DRM_EVENT_FLIP_COMPLETE, 2);
+    }
+
+    #[test]
+    fn kms_object_and_property_struct_sizes_match_linux_abi() {
+        assert_eq!(size_of::<WpkDrmSetClientCap>(), 16);
+        assert_eq!(size_of::<WpkDrmModeGetPlaneRes>(), 16);
+        assert_eq!(size_of::<WpkDrmModeGetPlane>(), 32);
+        assert_eq!(size_of::<WpkDrmModeObjGetProperties>(), 32);
+        assert_eq!(size_of::<WpkDrmModeObjSetProperty>(), 24);
+        assert_eq!(size_of::<WpkDrmModeConnectorSetProperty>(), 16);
+        assert_eq!(size_of::<WpkDrmModeGetProperty>(), 64);
+        assert_eq!(size_of::<WpkDrmModeGetBlob>(), 16);
+        assert_eq!(size_of::<WpkDrmModeCursor>(), 28);
+    }
+
+    #[test]
+    fn kms_object_and_property_ioctl_numbers_match_linux_uapi() {
+        let iowr = IOC_READ | IOC_WRITE;
+        let d = 'd' as u32;
+        assert_eq!(
+            DRM_IOCTL_SET_CLIENT_CAP,
+            ioc(IOC_WRITE, d, 0x0d, size_of::<WpkDrmSetClientCap>() as u32)
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_CURSOR,
+            ioc(iowr, d, 0xa3, size_of::<WpkDrmModeCursor>() as u32)
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_GETPROPERTY,
+            ioc(iowr, d, 0xaa, size_of::<WpkDrmModeGetProperty>() as u32)
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_SETPROPERTY,
+            ioc(iowr, d, 0xab, size_of::<WpkDrmModeConnectorSetProperty>() as u32)
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_GETPROPBLOB,
+            ioc(iowr, d, 0xac, size_of::<WpkDrmModeGetBlob>() as u32)
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_GETPLANERESOURCES,
+            ioc(iowr, d, 0xb5, size_of::<WpkDrmModeGetPlaneRes>() as u32)
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_GETPLANE,
+            ioc(iowr, d, 0xb6, size_of::<WpkDrmModeGetPlane>() as u32)
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_OBJ_GETPROPERTIES,
+            ioc(iowr, d, 0xb9, size_of::<WpkDrmModeObjGetProperties>() as u32)
+        );
+        assert_eq!(
+            DRM_IOCTL_MODE_OBJ_SETPROPERTY,
+            ioc(iowr, d, 0xba, size_of::<WpkDrmModeObjSetProperty>() as u32)
+        );
+        assert_eq!(DRM_IOCTL_MODE_CURSOR2, ioc(iowr, d, 0xbb, 36));
+        assert_eq!(DRM_IOCTL_GET_MAGIC, ioc(IOC_READ, d, 0x02, 4));
+        assert_eq!(DRM_IOCTL_AUTH_MAGIC, ioc(IOC_WRITE, d, 0x11, 4));
+        assert_eq!(DRM_IOCTL_MODE_CREATE_LEASE, ioc(iowr, d, 0xc6, 24));
+        assert_eq!(DRM_IOCTL_MODE_CLOSEFB, ioc(iowr, d, 0xd0, 8));
     }
 }
 

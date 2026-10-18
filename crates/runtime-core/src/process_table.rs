@@ -361,13 +361,14 @@ pub fn bump_inherited_resource_refcounts(
 }
 
 /// Incref every DRI bo referenced by the child's inherited card0 / renderD128
-/// / prime-fd OFDs — GEM-handle maps, KMS framebuffers, and prime-bo bindings.
+/// / prime-fd OFDs — GEM-handle maps and prime-bo bindings. KMS framebuffers
+/// are not per-copy: the clone shares the parent's `SharedKmsFbs`.
 ///
 /// **Spawn-only**, deliberately NOT folded into
 /// [`bump_inherited_resource_refcounts`]: unlike pipes/sockets/PTYs (whose
 /// refcount bumps live solely in that shared helper), DRI bos are increfed on
-/// the *fork* path inside deserialize (`fork::read_dri_fd_state` /
-/// `read_kms_fd_state` / the PrimeBo arm). `spawn_child`, however, builds the
+/// the *fork* path inside deserialize (`fork::read_dri_fd_state` / the
+/// PrimeBo arm). `spawn_child`, however, builds the
 /// child by value-cloning the parent's `ofd_table` and never deserializes, so
 /// its inherited DRI OFDs carry no registry ref. Calling this from
 /// `bump_inherited_resource_refcounts` would double-incref on `fork_process`
@@ -375,8 +376,8 @@ pub fn bump_inherited_resource_refcounts(
 /// eventual close-path decref (`dri_release_ofd_state`) exactly once.
 ///
 /// Without this, a `posix_spawn`'d client that inherits the compositor's
-/// `O_CLOEXEC` card0 fd (carrying the scanout bo's GEM handle + KMS
-/// framebuffer) decrefs those bos on exec with no matching incref, tombstoning
+/// `O_CLOEXEC` card0 fd (carrying the scanout bo's GEM handle) decrefs that
+/// bo on exec with no matching incref, tombstoning
 /// the compositor's still-live scanout bo in the global `BoRegistry` and
 /// freezing the desktop under a `gbm_bo_map` EINVAL flood.
 fn bump_inherited_dri_bos(child: &Process) {
@@ -396,9 +397,6 @@ fn bump_inherited_dri_bos(child: &Process) {
             crate::ofd::DriOfdState::Card { dri, kms } => {
                 for bo_id in dri.handles.values() {
                     reg.incref(*bo_id);
-                }
-                for fb in kms.fbs.values() {
-                    reg.incref(fb.bo_id);
                 }
                 if let Some(bo) = kms.cursor_bo {
                     reg.incref(bo);

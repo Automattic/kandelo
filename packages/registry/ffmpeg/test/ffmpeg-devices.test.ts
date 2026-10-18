@@ -10,8 +10,11 @@ const NODE_FFPLAY_VIDEO_EXPECTATION = {
   // SDL2 tries its Wayland video backend first; with no compositor on the
   // Node host, libwayland-client reports the missing XDG_RUNTIME_DIR and SDL
   // falls back to KMSDRM, where the renderer needs GL the Node host lacks.
+  // On quit SDL sets the CRTC back to the framebuffer it found there. None
+  // was scanning out, so that SETCRTC fails with ENOENT, as on Linux.
   err: "error: XDG_RUNTIME_DIR is invalid or not set in the environment.\n" +
-    "Failed to create window or renderer: Couldn't find matching render driver",
+    "Failed to create window or renderer: Couldn't find matching render driver" +
+    "ERROR: Could not restore CRTC",
 };
 
 const ffmpeg = ffmpegProgram("ffmpeg");

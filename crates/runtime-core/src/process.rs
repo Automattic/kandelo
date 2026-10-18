@@ -3718,8 +3718,8 @@ mod tests {
         let mut dri = DriFdState::default();
         dri.handles.insert(5, bo);
         dri.next_handle = 6;
-        let mut kms = KmsFdState::default();
-        kms.fbs.insert(
+        let kms = KmsFdState::default();
+        kms.fbs.borrow_mut().insert(
             42,
             KmsFb {
                 bo_id: bo,
@@ -3729,7 +3729,6 @@ mod tests {
                 stride: 64 * 4,
             },
         );
-        kms.next_fb_id = 43;
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
         parent
@@ -3744,7 +3743,7 @@ mod tests {
         );
 
         let mut host = test_host::NoopHost;
-        table
+        let child_pid = table
             .spawn_child_for_caller(
                 parent_pid,
                 parent_pid,
@@ -3756,17 +3755,21 @@ mod tests {
             )
             .expect("spawn_child_for_caller");
 
-        // Child inherited the card0 OFD's one GEM handle + one framebuffer;
-        // each must have taken its own registry ref so the child's eventual
-        // close-path decref is balanced.
+        let fbs = |pid: u32| table.get(pid).unwrap().ofd_table.get(ofd_idx).unwrap().kms().unwrap().fbs.clone();
+        fbs(parent_pid).borrow_mut().remove(&42);
+        assert!(fbs(child_pid).borrow().is_empty(), "spawn child must share the parent's framebuffer table");
+
+        // Child inherited the card0 OFD's one GEM handle, which must take its
+        // own registry ref so the child's eventual close-path decref is
+        // balanced. The framebuffer table is shared, not copied, so it adds
+        // none.
         assert_eq!(
             crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
-            Some(3),
-            "spawn child must incref the inherited scanout bo once per handle + fb"
+            Some(2),
+            "spawn child must incref the inherited scanout bo once per handle"
         );
 
         crate::dri::with_registry(|r| {
-            r.decref(bo);
             r.decref(bo);
             r.decref(bo);
         });
@@ -3814,12 +3817,12 @@ mod tests {
     #[test]
     fn fork_process_increfs_inherited_dri_bos_exactly_once() {
         // Guard the spawn-vs-fork incref split. DRI bos are increfed on the
-        // fork path inside deserialize (read_dri_fd_state / read_kms_fd_state),
+        // fork path inside deserialize (read_dri_fd_state),
         // NOT in the shared bump helper — spawn uses `bump_inherited_dri_bos`
         // instead. If a future change moved the DRI incref into
         // `bump_inherited_resource_refcounts`, fork_process (deserialize + bump)
         // would double-incref and leak the bo. This asserts exactly one child
-        // ref per inherited GEM handle + framebuffer.
+        // ref per inherited GEM handle, and none for the shared framebuffer.
         use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
         use crate::process_table::ProcessTable;
 
@@ -3841,8 +3844,8 @@ mod tests {
         let mut dri = DriFdState::default();
         dri.handles.insert(5, bo);
         dri.next_handle = 6;
-        let mut kms = KmsFdState::default();
-        kms.fbs.insert(
+        let kms = KmsFdState::default();
+        kms.fbs.borrow_mut().insert(
             42,
             KmsFb {
                 bo_id: bo,
@@ -3852,7 +3855,6 @@ mod tests {
                 stride: 64 * 4,
             },
         );
-        kms.next_fb_id = 43;
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
         parent
@@ -3870,19 +3872,88 @@ mod tests {
             .fork_process_for_caller(parent_pid, parent_pid)
             .expect("fork_process_for_caller");
 
-        // Parent's ref (1, synthetic) + child's one incref per handle + fb (2).
-        // A deserialize+bump double-count would show 5.
+        // Parent's ref (1, synthetic) + child's one incref for the handle (1).
+        // A deserialize+bump double-count would show 3.
         assert_eq!(
             crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
-            Some(3),
+            Some(2),
             "fork must incref each inherited DRI bo exactly once (no deserialize + bump double-count)"
         );
 
         crate::dri::with_registry(|r| {
             r.decref(bo);
             r.decref(bo);
-            r.decref(bo);
         });
+    }
+
+    #[test]
+    fn fork_child_closing_card0_keeps_the_parents_scanout_framebuffer() {
+        // sway forks and the child execs, closing its inherited O_CLOEXEC
+        // card0 fd. Linux shares one drm_file between them, so the
+        // framebuffers stay until the last close.
+        use crate::dri::kms;
+        use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
+        use crate::process_table::ProcessTable;
+
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent = table.get_mut(parent_pid).unwrap();
+        let ofd_idx = parent.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        let kms_state = KmsFdState::default();
+        kms_state.fbs.borrow_mut().insert(
+            42,
+            KmsFb {
+                bo_id: bo,
+                width: 64,
+                height: 64,
+                pixel_format: 0x34325241, // AR24
+                stride: 64 * 4,
+            },
+        );
+        parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::Card {
+                dri: DriFdState::default(),
+                kms: kms_state,
+            }));
+        let fd = parent
+            .fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+        kms::set_crtc_fb(42);
+
+        let child_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .expect("fork_process_for_caller");
+        let mut host = test_host::NoopHost;
+        crate::syscalls::sys_close(table.get_mut(child_pid).unwrap(), &mut host, fd).unwrap();
+
+        let parent_fbs = |table: &ProcessTable| {
+            table.get(parent_pid).unwrap().ofd_table.get(ofd_idx).unwrap().kms().unwrap().fbs.borrow().len()
+        };
+        assert_eq!(parent_fbs(&table), 1);
+        assert_eq!(kms::crtc_fb(), 42, "the child's close must not disable the CRTC");
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(1)
+        );
+
+        crate::syscalls::sys_close(table.get_mut(parent_pid).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(kms::crtc_fb(), 0, "the last close releases the scanout framebuffer");
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)), None);
+        kms::reset_for_test();
     }
 
     #[test]

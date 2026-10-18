@@ -7,6 +7,7 @@
 
 pub mod bo;
 pub mod cursor;
+pub mod kms;
 pub mod master;
 pub mod modes;
 
