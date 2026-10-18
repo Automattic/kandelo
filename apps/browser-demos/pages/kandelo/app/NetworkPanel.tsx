@@ -8,6 +8,7 @@ import * as React from "react";
 import { createPortal } from "react-dom";
 import type { NetworkSession } from "./use-network-session";
 import { NETWORK_PHASE_LABEL } from "./Dock";
+import { networkErrorHint } from "../../../lib/network-error-hint";
 
 export const NetworkPanel: React.FC<{ session: NetworkSession; running: boolean }> = ({ session, running }) => {
   const { state, invitation } = session;
@@ -26,6 +27,7 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; running: boolean 
   const blocked = !running || !session.available || busy;
   const self = state.snapshot?.address ?? null;
   const members = state.snapshot?.members ?? [];
+  const errorHint = networkErrorHint(state.error);
   const copy = async () => {
     if (!state.link) return;
     try { await navigator.clipboard.writeText(state.link); setCopied(true); window.setTimeout(() => setCopied(false), 1400); }
@@ -58,6 +60,7 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; running: boolean 
             <div className="knetwork-error" role="alert">
               {state.error}
               {state.errorDetail && <div className="knetwork-detail">{state.errorDetail}</div>}
+              {errorHint && <div className="knetwork-hint">{errorHint}</div>}
             </div>
           )}
           {!session.available && (

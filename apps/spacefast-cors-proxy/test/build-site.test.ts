@@ -46,7 +46,8 @@ test("site packager preserves the built app and emits a compiled file-router han
 });
 
 test("site packager rejects private build inputs and symlinks", async t => {
-  for (const forbidden of [".env.local", "pages-vfs-products.private.json", ".git", ".spacefast", "node_modules"]) {
+  for (const forbidden of [".env.local", "pages-vfs-products.private.json", ".git", ".spacefast", "node_modules",
+    "functions", "handler.ts", "handler.js", "handler.mjs", ".open-next"]) {
     const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
     await writeFile(join(root, forbidden), "private input");
     await assert.rejects(execute(process.execPath, [builder, root]), /Not a publishable build/);
@@ -74,4 +75,29 @@ test("isolation headers cover documents and workers without claiming large binar
   assert.ok(!headers.includes("examples.zip"));
   assert.ok(!headers.includes("kernel.wasm"));
   assert.equal(headers.match(/Cross-Origin-Embedder-Policy: require-corp/g)?.length, paths.length);
+});
+
+test("combined site can restrict its proxy without changing the static build or signalling route", async t => {
+  const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
+  const { stdout } = await execute(process.execPath, [builder, root, "--allow-referer", "https://site.example"]);
+  const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
+  assert.equal(await readFile(join(output, "index.html"), "utf8"), "<h1>Kandelo</h1>");
+  const { default: proxy } = await import(pathToFileURL(join(output, "functions/cors-proxy/[...rest].mjs")).href);
+  const { default: signalling } = await import(pathToFileURL(join(output, "functions/signalling.mjs")).href);
+  const url = "https://site.example/cors-proxy";
+  assert.equal((await proxy(new Request(url), { env: {} })).status, 403);
+  assert.equal((await proxy(new Request(url, { headers: { Referer: "https://site.example/page" } }), { env: {} })).status, 503);
+  assert.equal((await proxy(new Request(url, { method: "OPTIONS", headers: { Origin: "https://site.example" } }), { env: {} })).status, 204);
+  assert.equal((await signalling(new Request("https://site.example/signalling", { method: "OPTIONS" }), { env: {} })).status, 204);
+  await assert.rejects(execute(process.execPath, [builder, root, root]), /Unexpected build argument/);
+});
+
+test("a Spacefast app using a separate proxy can omit the local proxy route", async t => {
+  const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
+  const { stdout } = await execute(process.execPath, [builder, root, "--without-proxy"]);
+  const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
+  assert.deepEqual(await readdir(join(output, "functions")), ["signalling.mjs"]);
+  assert.equal(await readFile(join(output, "index.html"), "utf8"), "<h1>Kandelo</h1>");
+  assert.ok((await readFile(join(output, "_headers"), "utf8")).includes("Cross-Origin-Embedder-Policy: require-corp"));
+  await assert.rejects(execute(process.execPath, [builder, root, "--without-proxy", "--allow-referer", "https://site.example"]), /cannot be used/);
 });

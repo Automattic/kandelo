@@ -37,8 +37,9 @@ implementation of its public protocol, not a copy of the PHP source.
   are retained. Redirects to forbidden targets return 502. No automatic
   redirect following can bypass destination checks.
 - Credentialed CORS for Playground's built-in origins, the proxy's own origin,
-  and configurable exact/single-label-subdomain origins. OPTIONS needs no
-  target URL. Responses carry `X-Playground-Cors-Proxy: true`.
+  and configurable exact/single-label-subdomain origins. Restricted deployments
+  instead use an exact Referer admission list for both requests and CORS.
+  OPTIONS needs no target URL. Responses carry `X-Playground-Cors-Proxy: true`.
 - Errors preserve the proxy's own CORS headers and discard target headers.
   Upstream disconnects and malformed bodies error the stream without adding
   error text to target bytes. Client cancellation aborts the owning fetch.
@@ -114,10 +115,23 @@ counter table, increments atomically across isolates, and retains only the
 current and preceding minute. Concurrent reads can conservatively deny an
 earlier increment but cannot increase the budget. Delayed requests cannot
 use an expired window. OPTIONS does not consume the budget. A denial is 429
-with `Retry-After: 60`; a missing or failing database is 503. The SQL/broker
+with browser-readable `Retry-After: 60`; a missing or failing database is 503. The SQL/broker
 behavior is covered locally by contract fixtures. Live requests reached target
 validation after the limiter, confirming that the counter queries succeed on
 Spacefast's broker. The live 600-request ceiling was not stress-tested.
+
+This is not the same policy as Playground's production proxy. At upstream
+commit `d7b19bdb598ccb405f0dcb7afcaa9b036676c18a`, its
+[deployment limiter](https://github.com/WordPress/wordpress-playground/blob/d7b19bdb598ccb405f0dcb7afcaa9b036676c18a/packages/playground/php-cors-proxy-deployment/cors-proxy-config.php)
+uses a token bucket per IPv4 address or IPv6 /64, with capacity 1,000 and a
+refill of 100 per minute; its search-engine classification is refused.
+The reusable PHP proxy itself requires a limiter callback or an explicit
+opt-out. Kandelo preserves that fail-closed requirement, but uses a shared
+600-per-minute counter, not per-client token buckets or IP classification.
+One client can exhaust the shared budget. No trusted Spacefast client-IP
+binding has been established, so the worker does not trust a caller-supplied
+`X-Forwarded-For` as a rate-limit identity. Spacefast's own hosting quotas
+can also produce 429s independently of this worker.
 
 The reusable core also accepts `createCorsProxy({ rateLimit })` for an
 alternative durable limiter. It returns a denial Response, or void to admit.
@@ -126,7 +140,37 @@ Alternatively, explicitly set `CORS_PROXY_DISABLE_RATE_LIMIT` to `true` or `1`
 in the deployment environment. This is an operator choice; the repository
 does not disable limiting by default or emulate it with isolate-local state.
 
-`CUSTOM_SUPPORTED_ORIGINS_SPACE_SEPARATED` replaces the built-in origin list:
+### Approved Referer origins
+
+`CORS_PROXY_ALLOWED_REFERER_ORIGINS` enables a request admission policy:
+
+```text
+https://remote-oak.space.fast https://kandelo.dev
+```
+
+Only exact, canonical HTTP(S) origins are accepted, without trailing slashes,
+paths or wildcards. The value is bounded to 8 KiB. An explicitly empty list
+denies everyone; malformed configuration returns 503. Every GET, HEAD and
+POST must carry a valid `Referer` URL from that list. An `Origin`, when
+present, must match the Referer's origin. Missing, malformed or unapproved
+Referers receive 403 before database work or upstream fetch. The proxy's
+own origin is not implicitly admitted in this mode.
+
+Preflight requires an approved `Origin`, but may omit `Referer`; the actual
+request still requires it. CORS grants use the same exact list, overriding
+legacy origin rules. URLs with different schemes, ports, subdomains or
+lookalike suffixes are distinct origins. Redirected proxy requests repeat
+admission and rate-limit checks.
+
+This restricts browser use; it is not authentication. Non-browser clients can
+forge both headers, and users choosing a `no-referrer` policy cannot use this
+restricted proxy. Normal `strict-origin-when-cross-origin` retains the needed
+origin for an HTTPS proxy. Keep rate limiting and Space access controls.
+The worker requests no browser permissions and never needs media access.
+
+Without this setting, legacy CORS-only behavior is retained for existing
+combined deployments. `CUSTOM_SUPPORTED_ORIGINS_SPACE_SEPARATED` replaces
+the built-in CORS origin list in that mode:
 
 ```text
 https://kandelo.example https://*.preview.example http://localhost:5173
@@ -150,6 +194,47 @@ endpoint, wake the worker. Static
 files keep their normal serving path. The production entry uses the platform-
 Fetch workaround described above.
 
+### Separate proxy site
+
+Build a standalone proxy with an explicit list of approved client origins:
+
+```sh
+scripts/dev-shell.sh npm --prefix apps/spacefast-cors-proxy run build -- \
+  --allow-referer https://remote-oak.space.fast \
+  --allow-referer https://kandelo.dev
+```
+
+The command requires at least one `--allow-referer` and prints a unique
+`.context/spacefast-cors-proxy-build-*` directory containing only
+`handler.mjs` and `sf.jsonc`. It does not install, sign in or publish. The
+approved list is compiled into the worker and takes precedence over a runtime
+environment override. Enable the Space's database capability/`env.DB` binding
+for the default limiter. Do not disable rate limiting to work around a
+missing binding.
+
+Publish that generated directory as its own Functions Space using the chosen
+team and access settings. The separate proxy must be reachable by the client:
+Kandelo sends no Spacefast account cookies to an external proxy. A private
+Space requiring a visitor sign-in will therefore reject these anonymous
+cross-origin requests before the handler. Also verify that Spacefast's
+serving layer admits the intended Origin and preserves the worker's CORS
+headers; the earlier private combined-site probes did not establish this.
+No build command changes access or publishes anything automatically.
+
+Once its URL is known, either deployment can use it:
+
+```sh
+# WP Cloud: static Kandelo plus the portable PHP signalling endpoint.
+./run.sh build-browser --base / --out .context/kandelo-wpcloud-static \
+  --cors-proxy 'https://YOUR-PROXY.space.fast/?url=' \
+  --signalling-url /signalling/piplet.php
+```
+
+Upload that static output to WP Cloud and retain the existing PHP piplet at
+`/signalling/piplet.php`. Omitting `--cors-proxy` keeps the production default
+Playground proxy. The PHP proxy and PHP signalling implementations remain
+supported independently of Spacefast.
+
 ### Combined Kandelo site
 
 The package also includes [Spacefast signalling](../signalling/spacefast/README.md)
@@ -161,7 +246,8 @@ Build the app with the same-origin proxy, then package the generated output:
 ./run.sh build-browser --base / --out .context/kandelo-spacefast-static \
   --cors-proxy '/cors-proxy?url=' --signalling-url /signalling
 scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
-  .context/kandelo-spacefast-static
+  .context/kandelo-spacefast-static \
+  --allow-referer https://YOUR-KANDELO.space.fast
 ```
 
 The second command prints a unique `.context/spacefast-kandelo-build-*`
@@ -172,19 +258,17 @@ scripts, including clean document URLs. Binary downloads have no custom
 isolation headers: Spacefast cannot serve files above 100 MiB through its
 PHP header-serving lane. Shared memory isolation remains on pages and workers.
 Publish that directory through the Functions-aware Spacefast publishing flow.
-The packager rejects symlinks, dotenv files, dependency/auth directories and
+The packager rejects symlinks, existing root worker/function trees, dotenv files, dependency/auth directories and
 the private VFS product map. It does not copy test files or fixture keys.
 Keep the Space's access settings private unless public access is requested.
 
-Create the publishable output using the repository's existing esbuild tool:
-
-```sh
-scripts/dev-shell.sh npm --prefix apps/spacefast-cors-proxy run build
-```
-
-The command prints a new `.context/spacefast-cors-proxy-build-*` directory
-containing only `handler.mjs` and `sf.jsonc`. It does not install dependencies,
-authenticate, upload, modify an existing Space or include the test TLS keys.
+Omit `--allow-referer` from `build-site.mjs` only to retain the existing
+combined site's CORS-only policy. To use a separate proxy from a Spacefast
+app, build the static app with its absolute proxy URL instead of `/cors-proxy`;
+the standalone proxy must approve that app's deployed origin. Package that
+app with `build-site.mjs STATIC-DIRECTORY --without-proxy` so it includes
+signalling and static assets without exposing a second, unused proxy route.
+`--without-proxy` and `--allow-referer` cannot be combined.
 
 ## Verification
 
@@ -198,7 +282,12 @@ The Node 24 test runner enforces **100% lines, branches and functions** for
 `handler.ts` and every executable module under `src/`. This app has no dependency
 on kernel, package or VFS build artifacts and does not use Vitest.
 
-Tests include malformed DNS/HTTP input, DNS rebinding, mixed public/private
+The Spacefast service-contract CI workflow runs the proxy suite and the
+real MariaDB/PHP signalling suite without deployment credentials.
+
+Tests include Referer/Origin admission and spoofed-lookalike rejection,
+compiled standalone/combined allowlists, malformed DNS/HTTP input,
+DNS rebinding, mixed public/private
 answers, TLS failures, origin/header rules, uploads, redirects, ranges, caps,
 streaming and cancellation. A test-only module hook maps the production
 Cloudflare socket import to real Node TCP/TLS sockets connected to loopback

@@ -4,7 +4,8 @@ Applications that exercise Kandelo as a product surface live here.
 
 - `browser-demos/` is the Vite app for the Kandelo web UI and retained browser labs. It consumes the browser host runtime from `host/src/browser-kernel-host.ts`; host/runtime code should not live under the app tree.
 - `spacefast-cors-proxy/` implements Playground's CORS protocol for
-  Spacefast Functions and packages a combined Kandelo deployment. Production
+  Spacefast Functions, as a separate proxy with approved Referer origins or
+  packaged with a combined Kandelo deployment. Production
   uses Spacefast Fetch; its optional pinned TCP/TLS transport remains locally
   tested but blocked by the platform. See its README for verified boundaries.
 - `signalling/` carries WebRTC invite and answer codes for named sessions

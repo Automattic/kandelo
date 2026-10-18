@@ -115,14 +115,15 @@ test("unconfigured and failing rate limiters fail closed", async () => {
   }
 });
 
-test("rate limiter denies with its status and Retry-After, or admits", async () => {
-  const denied = await outcome(request(), {
+test("rate limiter denies with its status and browser-readable Retry-After, or admits", async () => {
+  const denied = await outcome(request(TARGET, { headers: { Origin: "https://playground.wordpress.net" } }), {
     rateLimit: async () => new Response("slow down", { status: 429, headers: { "Retry-After": "60" } }),
     fetch: async () => { throw new Error("must not fetch"); },
   });
   assert.equal(denied.response.status, 429);
   assert.equal(denied.response.headers.get("retry-after"), "60");
   assert.equal(denied.response.headers.get("cache-control"), "no-store");
+  assert.ok(denied.response.headers.get("access-control-expose-headers")!.includes("Retry-After"));
   assert.equal(denied.body, "slow down");
   assert.equal((await outcome(request(), { rateLimit: async () => {} })).body, "ok");
 });
@@ -621,4 +622,80 @@ test("actual HTTP transport: binary POST, multipart, ranges, HEAD, gzip and earl
   const hints = await proxy(request("https://public.example/hints"));
   assert.deepEqual(Buffer.from(await hints.arrayBuffer()), entity);
   assert.equal(hints.headers.get("x-interim"), null); assert.equal(hints.headers.get("x-final"), "yes");
+});
+
+test("restricted proxy admits only exact approved Referer origins before spending budget or fetching", async () => {
+  let fetched = 0, limited = 0;
+  const proxy = relay({ env: { CORS_PROXY_ALLOWED_REFERER_ORIGINS: "https://kandelo.dev https://remote-oak.space.fast" },
+    rateLimit: async () => { limited++; }, fetch: async () => { fetched++; return new Response("approved"); } });
+  for (const headers of [
+    {}, { Referer: "https://evil.example/" }, { Referer: "https://kandelo.dev.evil.example/" },
+    { Referer: "https://sub.kandelo.dev/" }, { Referer: "http://kandelo.dev/" },
+    { Referer: "https://kandelo.dev:8443/" }, { Referer: "null" }, { Referer: "/relative" },
+    { Referer: "file:///tmp/test" }, { Referer: "https://user@kandelo.dev/" },
+    { Referer: "https://user:pass@kandelo.dev/" }, { Referer: "https://:pass@kandelo.dev/" },
+    { Referer: "https://kandelo.dev/#fragment" },
+    { Referer: "https://kandelo.dev/", Origin: "null" },
+    { Referer: "https://kandelo.dev/", Origin: "https://evil.example" },
+    { Referer: "https://kandelo.dev/", Origin: "https://remote-oak.space.fast" },
+    { Referer: PROXY + "/", Origin: PROXY },
+  ]) {
+    const response = await proxy(request(TARGET, { headers }));
+    assert.equal(response.status, 403, JSON.stringify(headers));
+    assert.equal(await response.text(), "Forbidden: unapproved Referer origin");
+    assert.equal(response.headers.get("vary"), "Origin, Referer");
+  }
+  assert.equal(fetched, 0); assert.equal(limited, 0);
+  for (const method of ["GET", "HEAD", "POST"]) {
+    for (const origin of ["https://kandelo.dev", "https://remote-oak.space.fast"]) {
+      for (const includeOrigin of [true, false]) {
+        const headers = new Headers({ Referer: origin + "/some/page?x=1" });
+        if (includeOrigin) headers.set("Origin", origin);
+        const response = await proxy(request(TARGET, { method, headers }));
+        assert.equal(response.status, 200);
+        assert.equal(response.headers.get("access-control-allow-origin"), includeOrigin ? origin : null);
+        await response.arrayBuffer();
+      }
+    }
+  }
+  assert.equal(fetched, 12); assert.equal(limited, 12);
+});
+
+test("restricted preflight checks Origin without requiring Referer; actual requests still require it", async () => {
+  const proxy = createCorsProxy({ env: { CORS_PROXY_ALLOWED_REFERER_ORIGINS: "https://kandelo.dev" } });
+  for (const headers of [{ Origin: "https://kandelo.dev" },
+    { Origin: "https://kandelo.dev", Referer: "https://kandelo.dev/" }]) {
+    const response = await proxy(new Request(PROXY, { method: "OPTIONS", headers }));
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get("access-control-allow-origin"), "https://kandelo.dev");
+    assert.ok(response.headers.get("access-control-allow-headers")!.includes("X-Cors-Proxy-Range"));
+  }
+  for (const headers of [{}, { Origin: "null" }, { Origin: "https://evil.example" },
+    { Referer: "https://kandelo.dev/" }, { Origin: "https://kandelo.dev", Referer: "https://evil.example/" }]) {
+    assert.equal((await proxy(new Request(PROXY, { method: "OPTIONS", headers }))).status, 403);
+  }
+  const denied = await proxy(request(TARGET, { headers: { Origin: "https://kandelo.dev" } }));
+  assert.equal(denied.status, 403);
+  assert.equal(denied.headers.get("access-control-allow-origin"), "https://kandelo.dev");
+  // Approval does not bypass the default durable limiter requirement.
+  assert.equal((await proxy(request(TARGET, { headers: { Referer: "https://kandelo.dev/" } }))).status, 503);
+});
+
+test("restricted origin configuration fails closed and replaces legacy CORS grants", async () => {
+  for (const value of ["null", "not a URL", "https://kandelo.dev/", "https://*.example.com", "file://host",
+    "ftp://public.example", "https://user:pass@kandelo.dev", "https://kandelo.dev?x", "https://kandelo.dev#x",
+    "https://kandelo.dev/path", "https://kandelo.dev ".repeat(500)]) {
+    assert.equal((await relay({ env: { CORS_PROXY_ALLOWED_REFERER_ORIGINS: value } })(request())).status, 503);
+  }
+  const empty = await relay({ env: { CORS_PROXY_ALLOWED_REFERER_ORIGINS: " " } })(request());
+  assert.equal(empty.status, 403);
+  const proxy = relay({ env: { CORS_PROXY_ALLOWED_REFERER_ORIGINS: "https://kandelo.dev https://kandelo.dev",
+    CUSTOM_SUPPORTED_ORIGINS_SPACE_SEPARATED: "https://legacy.example" },
+    originRules: [{ type: "match-exact", origin: "https://override.example" }] });
+  for (const origin of ["https://legacy.example", "https://override.example", PROXY, "https://playground.wordpress.net"]) {
+    const response = await proxy(request(TARGET, { headers: { Origin: origin, Referer: origin + "/" } }));
+    assert.equal(response.status, 403); assert.equal(response.headers.get("access-control-allow-origin"), null);
+  }
+  const approved = await proxy(request(TARGET, { headers: { Origin: "https://kandelo.dev", Referer: "https://kandelo.dev/" } }));
+  assert.equal(approved.status, 200); await approved.text();
 });

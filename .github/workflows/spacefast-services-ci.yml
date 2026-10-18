@@ -1,0 +1,47 @@
+name: Spacefast service contracts
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/spacefast-services-ci.yml"
+      - ".github/actions/setup-nix/**"
+      - "apps/spacefast-cors-proxy/**"
+      - "apps/signalling/**"
+      - "flake.nix"
+      - "flake.lock"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/dev-shell.sh"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/spacefast-services-ci.yml"
+      - ".github/actions/setup-nix/**"
+      - "apps/spacefast-cors-proxy/**"
+      - "apps/signalling/**"
+      - "flake.nix"
+      - "flake.lock"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/dev-shell.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-nix
+      - name: Install build and test dependencies
+        run: scripts/dev-shell.sh npm ci --no-audit --no-fund
+      - name: Verify proxy policy, transport, rate limiting and packaging
+        run: scripts/dev-shell.sh npm --prefix apps/spacefast-cors-proxy test
+      - name: Verify signalling against real MariaDB and PHP
+        run: |
+          set -euo pipefail
+          signalling_tools="$(nix build --impure --no-link --print-out-paths -f apps/signalling/spacefast/test/tools.nix)"
+          scripts/dev-shell.sh env KANDELO_SIGNALLING_TEST_TOOLS="$signalling_tools" \
+            npm --prefix apps/signalling/spacefast test

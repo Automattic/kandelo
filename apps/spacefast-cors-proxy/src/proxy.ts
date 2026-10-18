@@ -1,6 +1,7 @@
 import { validateTarget } from "./network-policy.ts";
 import { createPinnedFetch } from "./pinned-fetch.ts";
 import type { ProxyDatabase } from "./rate-limit.ts";
+import { hasApprovedReferer, parseApprovedRefererOrigins } from "./request-policy.ts";
 
 /**
  * Playground-compatible HTTP relay for Spacefast Functions.
@@ -10,7 +11,7 @@ export const MAX_REQUEST_BYTES = 1024 * 1024;
 export const MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
 const METHODS = "GET, HEAD, POST, OPTIONS";
 const REQUEST_HEADERS = "Accept, Authorization, Content-Type, git-protocol, Range, wp_blog, wp_install, X-Cors-Proxy-Allowed-Request-Headers, X-Cors-Proxy-Content-Type, X-Cors-Proxy-Range";
-const EXPOSE_HEADERS = "X-Playground-Cors-Proxy, Content-Range, Accept-Ranges, ETag, Content-Length, Last-Modified, Date";
+const EXPOSE_HEADERS = "X-Playground-Cors-Proxy, Content-Range, Accept-Ranges, ETag, Content-Length, Last-Modified, Date, Retry-After";
 
 export type OriginRule =
   | { type: "match-exact"; origin: string }
@@ -20,6 +21,7 @@ export interface ProxyEnvironment {
   DB?: ProxyDatabase;
   CUSTOM_SUPPORTED_ORIGINS_SPACE_SEPARATED?: string;
   CORS_PROXY_DISABLE_RATE_LIMIT?: string;
+  CORS_PROXY_ALLOWED_REFERER_ORIGINS?: string;
 }
 
 export interface ProxyOptions {
@@ -172,17 +174,28 @@ export function createCorsProxy(options: ProxyOptions = {}): (request: Request) 
     const error = (status: number, message: string) => new Response(request.method === "HEAD" ? null : message,
       { status, headers });
     let rules: readonly OriginRule[];
+    let approvedReferers: string[] | undefined;
     try {
-      rules = options.originRules ?? (env.CUSTOM_SUPPORTED_ORIGINS_SPACE_SEPARATED === undefined
-        ? DEFAULT_ORIGINS : configuredOrigins(env.CUSTOM_SUPPORTED_ORIGINS_SPACE_SEPARATED));
+      if (env.CORS_PROXY_ALLOWED_REFERER_ORIGINS !== undefined) {
+        approvedReferers = parseApprovedRefererOrigins(env.CORS_PROXY_ALLOWED_REFERER_ORIGINS);
+      }
+      // Restricted deployments grant CORS only to the admission list, even
+      // when legacy CORS rules or the proxy's own origin would allow more.
+      rules = approvedReferers?.map(origin => ({ type: "match-exact", origin }))
+        ?? options.originRules ?? (env.CUSTOM_SUPPORTED_ORIGINS_SPACE_SEPARATED === undefined
+          ? DEFAULT_ORIGINS : configuredOrigins(env.CUSTOM_SUPPORTED_ORIGINS_SPACE_SEPARATED));
     } catch { return error(503, "Invalid origin configuration"); }
     const origin = request.headers.get("origin");
-    if (origin && (origin === proxy.origin || matchesOrigin(origin, rules))) {
+    if (origin && ((approvedReferers === undefined && origin === proxy.origin) || matchesOrigin(origin, rules))) {
       headers.set("access-control-allow-origin", origin);
       headers.set("access-control-allow-credentials", "true");
       headers.set("access-control-allow-methods", METHODS);
       headers.set("access-control-allow-headers", REQUEST_HEADERS);
       headers.set("access-control-expose-headers", EXPOSE_HEADERS);
+    }
+    if (approvedReferers !== undefined) {
+      headers.set("vary", "Origin, Referer");
+      if (!hasApprovedReferer(request, approvedReferers)) return error(403, "Forbidden: unapproved Referer origin");
     }
     if (request.method === "OPTIONS") {
       headers.set("allow", METHODS);

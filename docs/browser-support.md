@@ -2618,6 +2618,22 @@ with `/cors-proxy`. See [Spacefast signalling](../apps/signalling/spacefast/READ
 for storage, tests and hosting boundaries. Guest traffic still uses the peer
 link; hosting signalling on Spacefast supplies no TURN relay.
 
+WP Cloud remains a supported static host: build with
+`--signalling-url /signalling/piplet.php` and keep serving the portable PHP
+piplet there. An omitted `--cors-proxy` retains the production Playground
+proxy; an explicit URL can instead select a standalone Spacefast proxy.
+Build that separate worker with repeated `--allow-referer` origins for every
+approved app (including `https://kandelo.dev` if desired). It requires actual
+Referer admission as well as CORS grants; absent or unapproved Referers are
+403 before upstream work. Preflight uses the approved Origin. These headers
+are forgeable by non-browser clients, so the admission rule does not replace
+rate limiting or deployment access controls. The worker's durable budget is
+600 requests per minute shared by the Space, unlike Playground's per-client
+token-bucket deployment. See the
+[standalone proxy recipe](../apps/spacefast-cors-proxy/README.md#separate-proxy-site)
+for configuration, cross-origin hosting boundaries and the upstream comparison.
+
+
 
 UDP uses an unordered channel with zero retransmissions; directory control is
 ordered and reliable. The payload cap is the lesser of 65,507 bytes and the
@@ -2669,6 +2685,17 @@ defaults, and a deployment that wants peers behind symmetric NATs to connect
 names a TURN server there. Missing channel arrival is bounded to 30 seconds after
 ICE connects; the manual answer exchange has no deadline. Cancellation closes
 pending channels and connections.
+
+The network panel adds a short troubleshooting hint to peer connection
+failures and connection timeouts. On detected macOS it points to System
+Settings → Privacy & Security → Local Network; on Windows it points to the
+browser's Windows Firewall entry. Other platforms get a general reminder
+to check both peers' browser permissions, VPNs and firewalls. Platform
+detection is best effort (including iPadOS identifying as a Mac); hints do
+not inspect permission state or establish the cause of a failure. Invalid
+invitations and signalling-server errors retain their own messages without
+these peer-link hints. No permission prompts or media access are requested.
+
 Close and failure subscriptions expose established connection teardown.
 Late failure subscribers receive the recorded connection error once, so an
 ICE failure during an asynchronous consumer handoff is not lost. An orderly
