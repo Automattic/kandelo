@@ -496,10 +496,13 @@ fn now() -> (u64, u32) {
     )
 }
 
-/// Whether a canonical path lies within a scratch-mount prefix. Pure predicate;
-/// does not consider whether tmpfs authority is enabled.
+/// Whether a canonical path lies within a scratch-mount prefix that no deeper or
+/// equal foreign mount covers. Pure predicate; does not consider whether tmpfs
+/// authority is enabled.
 pub fn owns_path(path: &[u8]) -> bool {
-    match_mount(path).is_some()
+    let Some((_, rest)) = match_mount(path) else { return false };
+    let mount_len = path.len() - rest.len();
+    crate::rootfs::foreign_prefix_len(path).map_or(true, |len| len < mount_len)
 }
 
 /// Whether the in-kernel tmpfs currently claims authority over a path: tmpfs is

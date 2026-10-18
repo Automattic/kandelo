@@ -17,7 +17,7 @@
  * `rootfs::tests::owns_path_excludes_registered_foreign_mounts`.
  */
 
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,6 +90,36 @@ describe.runIf(havePrereqs)(
         } finally {
           await host.destroy().catch(() => {});
           rmSync(seedRoot, { recursive: true, force: true });
+        }
+      },
+      60_000,
+    );
+
+    it(
+      "serves guest reads and writes at the /home/maker scratch prefix from a host mount there",
+      async () => {
+        const homeRoot = mkdtempSync(join(tmpdir(), "kandelo-foreign-home-"));
+        writeFileSync(join(homeRoot, "foo"), "bar\n");
+
+        const host = new NodeKernelHost({
+          rootfsImage: new Uint8Array(readFileSync(rootfsImagePath!)),
+          extraMounts: [{ mountPoint: "/home/maker", hostPath: homeRoot }],
+        });
+
+        try {
+          await host.init(
+            asArrayBuffer(new Uint8Array(readFileSync(kernelPath!))),
+          );
+          const { exit } = await host.spawnFromVfs("/usr/bin/coreutils", [
+            "cp",
+            "/home/maker/foo",
+            "/home/maker/qux",
+          ]);
+          expect(await exit).toBe(0);
+          expect(readFileSync(join(homeRoot, "qux"), "utf8")).toBe("bar\n");
+        } finally {
+          await host.destroy().catch(() => {});
+          rmSync(homeRoot, { recursive: true, force: true });
         }
       },
       60_000,

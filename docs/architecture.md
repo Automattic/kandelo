@@ -2086,8 +2086,12 @@ image and neither keeps a filesystem of its own for `/` or the scratch
 prefixes. The only host-backed mounts left are on Node: `extraMounts` (host
 directories), session seed trees, and a scratch mount at a path the tmpfs does
 not own; each becomes a `HostFileSystem` routed by `VirtualPlatformIO`
-(`host/src/vfs/vfs.ts`). The browser has none. Cross-mount operations
-(`rename`, `link`) fail with `EXDEV`.
+(`host/src/vfs/vfs.ts`). The browser has none. A host-backed mount at or
+beneath a tmpfs prefix covers that part of the tmpfs, as a later mount
+covers the directory it is mounted on: an `extraMounts` entry at
+`/home/maker` serves `/home/maker`, and one at `/home` does not take
+`/home/maker` from the tmpfs. Cross-mount operations (`rename`, `link`)
+fail with `EXDEV`.
 
 Because every authority is in the kernel or reached through it, permission
 checks, `nosuid`, sticky directories, `O_EXCL`, FIFOs and AF_UNIX socket nodes
