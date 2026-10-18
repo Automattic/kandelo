@@ -81,6 +81,10 @@ export function useNetworkSession(host: KernelHost) {
     leave,
     partner,
     choosePartner: setChosen,
+    /** Close the sharing link with the partner; the session stays. */
+    disconnectPartner: (id: string) => controller.disconnectPartner(id),
+    /** Open a joiner's sharing link to the host again. */
+    reconnectSharing: () => controller.reconnectSharing(),
     /**
      * Give this computer's machine up to watch the partner's. An invitation
      * boots the session's machine here, so this machine is that copy.

@@ -131,6 +131,8 @@ export const SharingSection: React.FC<{
    */
   nickname: string;
   onNicknameChange: (name: string) => void;
+  /** Close the sharing link with a partner, handing a taken machine back first. */
+  onDisconnect: (id: string) => Promise<void>;
 }> = ({
   session,
   sharingTerminal,
@@ -142,6 +144,7 @@ export const SharingSection: React.FC<{
   replication,
   nickname,
   onNicknameChange,
+  onDisconnect,
 }) => {
   const { state, partner } = session;
   const note = takeNote(handover);
@@ -166,7 +169,13 @@ export const SharingSection: React.FC<{
           {`Sharing with the hosting computer failed: ${state.sharingError}`}
         </div>
       )}
-      {state.partners.length === 0 && (
+      {state.partners.length === 0 && state.link === null && state.phase === "connected" ? (
+        <div className="knetwork-actions">
+          <button type="button" className="kshare-btn" onClick={() => void session.reconnectSharing()}>
+            Connect to host again
+          </button>
+        </div>
+      ) : state.partners.length === 0 && (
         <p className="knetwork-note">
           No computer in this session can be shared with yet. Each computer
           that joins can be shown this machine, follow it, or take it over.
@@ -238,6 +247,14 @@ export const SharingSection: React.FC<{
             </p>
           )}
           <div className="knetwork-actions">
+            <button
+              type="button"
+              className="kshare-btn"
+              onClick={() => void onDisconnect(partner.id)}
+              disabled={handover.handingBack}
+            >
+              {handover.handingBack ? "Handing it back..." : "Disconnect"}
+            </button>
             {owner && handover.peerHasMachine && (
               <button type="button" className="kshare-btn" onClick={() => void session.watch()}>
                 {`Watch ${partner.name}'s machine`}
@@ -256,6 +273,12 @@ export const SharingSection: React.FC<{
           </div>
           {canTakeMachine && note !== null && (
             <p className="knetwork-note" role="status">{note}</p>
+          )}
+          {handover.handBackFailed && (
+            <p className="knetwork-note" role="status">
+              {`${partner.name} did not take the machine back. Disconnect `
+                + "again to keep it on this computer."}
+            </p>
           )}
         </>
       )}

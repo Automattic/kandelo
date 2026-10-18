@@ -35,9 +35,11 @@ import {
   appUrl,
   closeDockPopovers,
   connectPeers,
+  expectPaired,
   expectReplica,
   networkButton,
   openNetworkPanel,
+  reconnectPeers,
   takeOverButton as takeButton,
   terminalText,
   typeIntoTerminal,
@@ -156,7 +158,7 @@ test("keeps the replica across a dropped link and resumes it on the next", async
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await user.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
     await connectPeers(user, viewer, (reason) => test.skip(true, reason));
@@ -165,12 +167,10 @@ test("keeps the replica across a dropped link and resumes it on the next", async
     // The link dies. A dropped wire is not a reason to throw the machine
     // away: the replica parks at the end of the log it received, and the
     // page stays the viewer holding it.
-    await openNetworkPopover(user);
+    await openNetworkPanel(user);
     await user.getByRole("button", { name: "Disconnect" }).click();
-    await expect(networkButton(user))
-      .not.toHaveClass(/is-connected/, { timeout: 30_000 });
-    await expect(networkButton(viewer))
-      .not.toHaveClass(/is-connected/, { timeout: 30_000 });
+    await expectPaired(user, false, 30_000);
+    await expectPaired(viewer, false, 30_000);
     await closeDockPopovers([user]);
 
     // What the user does while the two are apart. It reaches the replica
@@ -191,8 +191,9 @@ test("keeps the replica across a dropped link and resumes it on the next", async
     // was torn down, so the resume half of this spec runs only where the
     // environment can form a second link; the gap half above asserted either
     // way. The wire-level guarantee — resume replays the ring, no second
-    // checkpoint — is host/test/replication/live-join.test.ts.
-    await connectPeers(user, viewer, (reason) => test.skip(true, reason));
+    // checkpoint — is host/test/replication/live-join.test.ts. The session
+    // outlives the sharing link, so the viewer connects it again in place.
+    await reconnectPeers(viewer, (reason) => test.skip(true, reason));
     await expectReplica(viewer);
 
     // The decisions made during the gap arrive on the viewer's own screen.
@@ -654,12 +655,12 @@ test("hands a taken machine back to the computer it came from on disconnect", as
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await user.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
     await connectPeers(user, viewer, (reason) => test.skip(true, reason));
     await expectReplica(viewer);
-    await openNetworkPopover(viewer);
+    await openNetworkPanel(viewer);
     await takeButton(viewer).click();
     await closeDockPopovers([user, viewer]);
     await expect(viewer.locator(".kdock-status-text"))
@@ -670,10 +671,9 @@ test("hands a taken machine back to the computer it came from on disconnect", as
     // The person who took the machine leaves, and the machine does not leave
     // with them: the computer it came from takes it back before the link
     // closes, so it runs its own machine again instead of a copy of nothing.
-    await openNetworkPopover(viewer);
+    await openNetworkPanel(viewer);
     await viewer.getByRole("button", { name: "Disconnect" }).click();
-    await expect(networkButton(viewer))
-      .not.toHaveClass(/is-connected/, { timeout: 60_000 });
+    await expectPaired(viewer, false, 60_000);
     await expect(user.locator(".kdock-status-text"))
       .toHaveAttribute("data-status", "running", { timeout: 60_000 });
     await expect(user.locator(".kdock-status")).not.toHaveAttribute("data-role");
@@ -713,12 +713,12 @@ test("keeps a machine the other computer cannot take back on the computer that d
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await user.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
     await connectPeers(user, viewer, (reason) => test.skip(true, reason));
     await expectReplica(viewer);
-    await openNetworkPopover(viewer);
+    await openNetworkPanel(viewer);
     await takeButton(viewer).click();
     await closeDockPopovers([user, viewer]);
     await expect(viewer.locator(".kdock-status-text"))
@@ -743,21 +743,20 @@ test("keeps a machine the other computer cannot take back on the computer that d
 
     // The hand back waits, says it was refused, and keeps the link. The second
     // Disconnect is the person choosing to keep the machine here.
-    await openNetworkPopover(viewer);
+    await openNetworkPanel(viewer);
     const disconnect = viewer.getByRole("button", {
       name: /^(Disconnect|Handing it back\.\.\.)$/,
     });
     await disconnect.click();
     await expect(disconnect).toHaveText("Handing it back...");
-    await expect(viewer.locator(".knetwork-take-note"))
-      .toContainText("did not take the machine back", { timeout: 60_000 });
+    await expect(viewer.getByText(/did not take the machine back/))
+      .toBeVisible({ timeout: 60_000 });
     bootKernel();
     await expect(user.locator(".kdock-status-text"))
       .toHaveAttribute("data-status", "running", { timeout: 300_000 });
-    await expect(networkButton(viewer)).toHaveClass(/is-connected/);
+    await expectPaired(viewer, true);
     await viewer.getByRole("button", { name: "Disconnect" }).click();
-    await expect(networkButton(viewer))
-      .not.toHaveClass(/is-connected/, { timeout: 30_000 });
+    await expectPaired(viewer, false, 30_000);
     await expect(viewer.locator(".kdock-status-text"))
       .toHaveAttribute("data-status", "running");
   } finally {
