@@ -27,13 +27,15 @@ interface PeerNickname {
 export function usePeerNickname(link: PeerLink | null): PeerNickname {
   const [nickname, setNicknameState] = React.useState("");
   const [peerNickname, setPeerNickname] = React.useState<string | null>(null);
-  // The name is typed before connecting and announced at link-up, so the
+  // The name is announced at link-up and again whenever it changes, so the
   // effect below reads it through a ref rather than rerun on keystrokes.
   const nicknameRef = React.useRef(nickname);
+  const announceRef = React.useRef<{ set: (name: string | null) => void } | null>(null);
 
   const setNickname = React.useCallback((name: string) => {
     nicknameRef.current = name;
     setNicknameState(name);
+    announceRef.current?.set(presentableNickname(name));
   }, []);
 
   React.useEffect(() => {
@@ -50,7 +52,11 @@ export function usePeerNickname(link: PeerLink | null): PeerNickname {
         );
       },
     );
-    return () => announce.stop();
+    announceRef.current = announce;
+    return () => {
+      announceRef.current = null;
+      announce.stop();
+    };
   }, [link]);
 
   return { nickname, setNickname, peerNickname };
