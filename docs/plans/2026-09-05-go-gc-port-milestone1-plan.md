@@ -3926,3 +3926,33 @@ would risk exhausting shared machine memory. Next: rebuild when safe,
 verify actual OPcache activation in the FrankenPHP SAPI on Node and all
 three browser engines, then run the WordPress editor workflow and measure
 memory/performance against PHP-FPM.
+
+**2026-10-17 — Add real-SAPI activation gates before the memory-safe
+rebuild.** The standalone FrankenPHP classic Node runner now accepts an
+optional ZTS OPcache module. It stages a real INI and side module, then
+asks FrankenPHP to compile and cache a separate PHP file. The WordPress
+browser-host gate performs the same request-level check for both classic
+and Caddy before checking login, editor, and restart behavior. These are
+actual PHP API observations (`opcache_get_status`, `opcache_compile_file`,
+`opcache_is_script_cached`), not a declaration that the module loaded.
+Playwright discovered all six browser-host cases and esbuild parsed both
+changed TypeScript files. The tests have not executed against the revised
+FrankenPHP/WordPress packages because those artifacts remain unbuilt; no
+OPcache activation or performance result is claimed. The older Go linker
+emitted 100,000 data segments for the 69 MiB classic Wasm, but no evidence
+yet establishes whether that or the instrumented function IR caused the
+10.6 GiB peak. Do not change the linker or instrumenter on that guess.
+
+The first activation probe exposed an incorrect assumption in the image
+recipe: PHP's file-cache-only mode reports `opcache_enabled=false`, and
+`opcache_is_script_cached` did not establish a hit. A local PHP 8.4
+diagnostic showed that normal shared-memory OPcache reports activation,
+but a newly written test file needs `opcache.file_update_protection=0`
+before the immediate compile/cache check can pass. FrankenPHP runs PHP
+threads inside one process, unlike the separate FPM worker processes, so
+the WordPress recipe now uses a 64 MiB shared OPcache instead of FPM's
+file-cache-only setting. The Node test fixture uses the same INI options;
+WordPress revision 30 reflects the changed image bytes. This is a
+configuration correction based on PHP behavior, **not** a Kandelo runtime
+result. The real ZTS module and FrankenPHP SAPI still need to be built and
+run before activation can be claimed.

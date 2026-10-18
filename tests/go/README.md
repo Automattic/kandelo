@@ -323,8 +323,15 @@ Kandelo HTTP on Node and Chromium. It does not by itself prove WordPress:
 ```sh
 scripts/dev-shell.sh bash .agents/skills/porting-software-to-kandelo/scripts/build-package.sh frankenphp-classic wasm32
 scripts/dev-shell.sh bash -c 'prefix=$(cargo xtask build-deps --arch wasm32 resolve frankenphp-classic); npx tsx packages/registry/frankenphp-classic/test/run.ts "$prefix/frankenphp-classic.wasm" "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'prefix=$(cargo xtask build-deps --arch wasm32 resolve frankenphp-classic); php_prefix=$(cargo xtask build-deps --arch wasm32 resolve php-zts); npx tsx packages/registry/frankenphp-classic/test/run.ts "$prefix/frankenphp-classic.wasm" "$(scripts/resolve-binary.sh kernel.wasm)" "$php_prefix/lib/opcache-zts.so"'
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_FRANKENPHP_CLASSIC_WASM="$(cd ../.. && cargo xtask build-deps --arch wasm32 resolve frankenphp-classic)/frankenphp-classic.wasm" npx playwright test test/frankenphp-classic.spec.ts --project=chromium'
 ```
+
+The optional third argument tests OPcache in the real FrankenPHP SAPI: it
+loads the ZTS module, compiles a separate PHP file, and checks that the file
+is cached. The WordPress browser-host test makes the same request-level
+check for classic and Caddy with a rebuilt WordPress VFS image. Neither
+gate has run on the new package revisions yet.
 
 ```sh
 scripts/dev-shell.sh bash tests/go/cgo/php-embed/build.sh

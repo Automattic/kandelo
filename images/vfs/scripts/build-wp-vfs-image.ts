@@ -409,7 +409,6 @@ export async function buildWordPressVfsImage(
   writeVfsBinary(fs, "/usr/sbin/frankenphp-caddy", inputs.frankenphpCaddy);
   writeVfsBinary(fs, "/usr/sbin/msmtpd", inputs.msmtpd);
   writeVfsBinary(fs, "/usr/lib/php/extensions/opcache-zts.so", inputs.opcacheZts);
-  ensureDirRecursive(fs, "/var/cache/opcache-zts");
   ensureDirRecursive(fs, "/etc/frankenphp");
   writeVfsFile(fs, "/etc/frankenphp/php.ini", `zend_extension=/usr/lib/php/extensions/opcache-zts.so
 
@@ -419,8 +418,8 @@ openssl.cafile=/etc/ssl/certs/ca-certificates.crt
 [opcache]
 opcache.enable=1
 opcache.enable_cli=1
-opcache.file_cache=/var/cache/opcache-zts
-opcache.file_cache_only=1
+opcache.memory_consumption=64
+opcache.file_update_protection=0
 opcache.validate_timestamps=0
 opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
 `);

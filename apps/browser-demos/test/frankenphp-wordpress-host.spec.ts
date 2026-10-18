@@ -70,6 +70,18 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
         await kernel.writeFileToVfs("/var/www/html/wp-config.php", new TextEncoder().encode(
           decoder.decode(template).replaceAll("@@APP_PATH@@", "/").replaceAll("@@PROTO@@", "http"),
         ));
+        await kernel.writeFileToVfs("/var/www/html/__kandelo_opcache_target.php", new TextEncoder().encode("<?php return 1;"));
+        await kernel.writeFileToVfs("/var/www/html/__kandelo_opcache_probe.php", new TextEncoder().encode(`<?php
+header('Content-Type: application/json');
+$status = opcache_get_status(false);
+$target = __DIR__ . '/__kandelo_opcache_target.php';
+echo json_encode([
+    'loaded' => extension_loaded('Zend OPcache'),
+    'enabled' => is_array($status) && !empty($status['opcache_enabled']),
+    'compiled' => opcache_compile_file($target),
+    'cached' => opcache_is_script_cached($target),
+], JSON_THROW_ON_ERROR);
+`));
         const { pid, exit } = await kernel.spawnFromVfs("/sbin/dinit", [
           "/sbin/dinit", "--container", "-p", "/tmp/dinitctl", serviceName,
         ], {
@@ -102,6 +114,10 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
           }
         }
         if (!homepage) throw new Error("FrankenPHP did not bind port 8080");
+        const opcacheResponse = await kernel.fetchInKernel(8080, {
+          method: "GET", url: "/__kandelo_opcache_probe.php", headers: { Host: "localhost:8080" }, body: null,
+        }, { timeoutMs: 30_000 });
+        const opcacheBody = decoder.decode(opcacheResponse.body);
         const login = await kernel.fetchInKernel(8080, {
           method: "GET", url: "/wp-login.php", headers: { Host: "localhost:8080" }, body: null,
         }, { timeoutMs: 30_000 });
@@ -184,6 +200,8 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
         const serviceLog = await kernel.readFileFromVfs(`/var/log/${serviceName}.log`);
         if (!serviceLog) throw new Error("FrankenPHP service log missing");
         return {
+          opcacheStatus: opcacheResponse.status,
+          opcacheBody,
           homepageStatus: homepage.status,
           homepageBody: decoder.decode(homepage.body),
           loginStatus: login.status,
@@ -214,6 +232,8 @@ for (const serviceName of ["frankenphp-classic", "frankenphp-caddy"] as const) {
       }
     }, { imageUrl, kernelUrl, browserKernelUrl, churnRequests, editorBurstRounds, serviceName });
 
+    expect(result.opcacheStatus, `${result.opcacheBody}\n${result.serviceLog.slice(-3000)}`).toBe(200);
+    expect(JSON.parse(result.opcacheBody)).toEqual({ loaded: true, enabled: true, compiled: true, cached: true });
     expect(result.homepageStatus, `${result.homepageBody.slice(-1000)}\n${result.serviceLog.slice(-3000)}\n${result.stderr.slice(-1000)}\n${JSON.stringify(result.diagnostics)}`).toBe(200);
     expect(result.homepageBody).toContain("WordPress on Kandelo");
     expect(result.homepageBody).not.toContain("id=\"setup\"");
