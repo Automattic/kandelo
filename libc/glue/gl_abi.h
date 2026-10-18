@@ -10,6 +10,7 @@
  * run, not as silent decode corruption.
  */
 
+#include <stddef.h>
 #include <stdint.h>
 
 #define WPK_GL_OP_VERSION 2u
@@ -175,5 +176,24 @@ struct gl_query_info {
 int      _wpk_gl_fd(void);
 uint8_t *_wpk_gl_cmdbuf_base(void);
 void     _wpk_gl_flush(void);
+
+/* An EGLImage made by eglCreateImageKHR from one dma-buf plane. A
+ * GPU-tier bo (its PRIME fd has no CPU mapping) is sampled and rendered
+ * through the host texture the bo owns; a CPU-tier bo is read from
+ * `pixels`, the caller's mapping of the dma-buf. */
+struct wpk_egl_image {
+    uint32_t handle;          /* GEM handle on the EGL session's fd */
+    uint32_t width, height;
+    uint32_t fourcc;          /* DRM_FORMAT_[AX]RGB8888 / [AX]BGR8888 */
+    uint32_t pitch;
+    const uint8_t *pixels;    /* first row of a CPU-tier image, else NULL */
+    void *map;                /* the mmap behind `pixels` */
+    size_t map_len;
+};
+
+/* The host texture name, in the current context's texture namespace,
+ * that holds a GPU-tier image's bo. 0 when there is none: a CPU-tier
+ * image, no GL context created yet, or no GL backing on this host. */
+uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image);
 
 #endif

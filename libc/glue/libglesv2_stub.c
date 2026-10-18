@@ -17,6 +17,7 @@
  */
 
 #include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -33,6 +34,13 @@ static uint8_t *g_cursor = NULL;
  * glTexSubImage2D can size source rows when splitting an upload into
  * u16-payload records. */
 static GLint g_unpack_alignment = 4;
+
+/* GL_EXT_unpack_subimage state. The host keeps these at 0: every upload
+ * record carries rows already gathered from the client image, so the
+ * row length and skips are applied here, once. */
+static GLint g_unpack_row_length = 0;
+static GLint g_unpack_skip_pixels = 0;
+static GLint g_unpack_skip_rows = 0;
 
 /* An error this library raises itself, without a host round trip
  * (glShaderBinary, a client-array draw it cannot stage). GL records the
@@ -527,19 +535,89 @@ void glGenTextures(GLsizei n, GLuint *out) {
     emit_name_array(OP_GEN_TEXTURES, n, out);
 }
 
+/* ----- EGLImage aliases ---------------------------------------------
+ *
+ * glEGLImageTarget*OES makes a texture or renderbuffer name stand for an
+ * EGLImage's storage. A GPU-tier image's storage is the host texture its
+ * bo owns, which has a name of its own in this context. The alias tables
+ * map the client's name to that host name; every call that passes the
+ * client's name to the host passes the host name instead. Deleting the
+ * client's name drops the alias and never deletes the bo's texture. */
+
+struct wpk_gl_alias { GLuint name; GLuint host; };
+struct wpk_gl_alias_table { struct wpk_gl_alias *v; size_t len, cap; };
+
+static struct wpk_gl_alias_table g_texture_aliases;
+static struct wpk_gl_alias_table g_renderbuffer_aliases;
+
+static GLuint alias_lookup(const struct wpk_gl_alias_table *t, GLuint name) {
+    for (size_t i = 0; i < t->len; i++) {
+        if (t->v[i].name == name) return t->v[i].host;
+    }
+    return 0;
+}
+
+static void alias_drop(struct wpk_gl_alias_table *t, GLuint name) {
+    for (size_t i = 0; i < t->len; i++) {
+        if (t->v[i].name != name) continue;
+        t->v[i] = t->v[--t->len];
+        return;
+    }
+}
+
+static int alias_set(struct wpk_gl_alias_table *t, GLuint name, GLuint host) {
+    alias_drop(t, name);
+    if (t->len == t->cap) {
+        size_t cap = t->cap ? t->cap * 2 : 16;
+        struct wpk_gl_alias *v = realloc(t->v, cap * sizeof *v);
+        if (!v) return 0;
+        t->v = v;
+        t->cap = cap;
+    }
+    t->v[t->len++] = (struct wpk_gl_alias){ name, host };
+    return 1;
+}
+
+static GLuint host_texture_name(GLuint name) {
+    GLuint host = name ? alias_lookup(&g_texture_aliases, name) : 0;
+    return host ? host : name;
+}
+
+static void raise_client_error(GLenum error) {
+    if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = error;
+}
+
+#define WPK_GL_TEXTURE_UNITS 32
+static GLuint g_active_unit = 0;
+static GLuint g_bound_texture_2d[WPK_GL_TEXTURE_UNITS];
+static GLuint g_bound_renderbuffer = 0;
+
 void glDeleteTextures(GLsizei n, const GLuint *names) {
     if (n <= 0 || !names) return;
+    for (GLsizei i = 0; i < n; i++) {
+        alias_drop(&g_texture_aliases, names[i]);
+        for (GLuint u = 0; u < WPK_GL_TEXTURE_UNITS; u++) {
+            if (g_bound_texture_2d[u] == names[i]) g_bound_texture_2d[u] = 0;
+        }
+    }
     emit_name_array(OP_DELETE_TEXTURES, n, names);
 }
 
-void glBindTexture(GLenum target, GLuint tex) {
+static void emit_bind_texture(GLenum target, GLuint host) {
     EMIT_BEGIN(OP_BIND_TEXTURE, 8)
     w_u32(&_c, (uint32_t)target);
-    w_u32(&_c, tex);
+    w_u32(&_c, host);
     EMIT_END()
 }
 
+void glBindTexture(GLenum target, GLuint tex) {
+    if (target == GL_TEXTURE_2D) g_bound_texture_2d[g_active_unit] = tex;
+    emit_bind_texture(target, host_texture_name(tex));
+}
+
 void glActiveTexture(GLenum unit) {
+    if (unit >= GL_TEXTURE0 && unit < GL_TEXTURE0 + WPK_GL_TEXTURE_UNITS)
+        g_active_unit = unit - GL_TEXTURE0;
     EMIT_BEGIN(OP_ACTIVE_TEXTURE, 4)
     w_u32(&_c, (uint32_t)unit);
     EMIT_END()
@@ -557,6 +635,7 @@ static uint32_t bytes_per_pixel(GLenum format, GLenum type) {
         case GL_LUMINANCE_ALPHA: case 0x8227: /* RG */ channels = 2; break;
         case GL_RGB: channels = 3; break;
         case GL_RGBA: channels = 4; break;
+        case GL_BGRA_EXT: return type == GL_UNSIGNED_BYTE ? 4 : 0;
         case 0x84F9: /* DEPTH_STENCIL */ return type == 0x84FA ? 4 : 0;
         default: return 0;
     }
@@ -572,30 +651,50 @@ static uint32_t bytes_per_pixel(GLenum format, GLenum type) {
     }
 }
 
-/* Source row stride under the current GL_UNPACK_ALIGNMENT. */
-static uint32_t unpack_row_stride(GLsizei width, uint32_t bpp) {
-    uint32_t row = (uint32_t)width * bpp;
+/* Row stride under the current GL_UNPACK_ALIGNMENT for rows of
+ * `pixels` pixels. */
+static uint32_t unpack_row_stride(GLsizei pixels, uint32_t bpp) {
+    uint32_t row = (uint32_t)pixels * bpp;
     uint32_t a = (uint32_t)g_unpack_alignment;
     return (row + a - 1u) & ~(a - 1u);
 }
 
-/* Emit one or more OP_TEX_SUB_IMAGE_2D records for a rect upload. The
- * TLV payload-length field is u16, so uploads larger than ~64 KB are
- * split into row bands; each band's data is sized to the GL client
- * image layout ((rows-1)*stride + width*bpp) so the copy never reads
- * past the caller's last row. */
-static void emit_tex_sub_image_2d(GLenum target, GLint level,
-                                  GLint xoff, GLint yoff,
-                                  GLsizei width, GLsizei height,
-                                  GLenum format, GLenum type,
-                                  const void *data) {
+/* GL_EXT_texture_format_BGRA8888: WebGL has no BGRA format, so BGRA
+ * pixels travel as RGBA with red and blue exchanged on the way. */
+static GLenum host_pixel_format(GLenum format) {
+    return format == GL_BGRA_EXT ? GL_RGBA : format;
+}
+
+static void copy_row(uint8_t *dst, const uint8_t *src, uint32_t bytes,
+                     int swap_red_blue) {
+    if (!swap_red_blue) {
+        memcpy(dst, src, bytes);
+        return;
+    }
+    for (uint32_t i = 0; i + 3 < bytes; i += 4) {
+        dst[i]     = src[i + 2];
+        dst[i + 1] = src[i + 1];
+        dst[i + 2] = src[i];
+        dst[i + 3] = src[i + 3];
+    }
+}
+
+/* Emit OP_TEX_SUB_IMAGE_2D records for `height` rows of `width` pixels,
+ * the first at `src`, each `src_stride` bytes after the one before. The
+ * TLV payload-length field is u16, so the rows are split into bands; each
+ * band's rows are packed at the host's unpack stride, whose data length
+ * is (rows-1)*stride + width*bpp. */
+static void emit_tex_rows(GLenum target, GLint level, GLint xoff, GLint yoff,
+                          GLsizei width, GLsizei height,
+                          GLenum format, GLenum type,
+                          const uint8_t *src, uint32_t src_stride) {
     uint32_t bpp = bytes_per_pixel(format, type);
-    if (bpp == 0 || data == NULL || width <= 0 || height <= 0) return;
+    if (bpp == 0 || src == NULL || width <= 0 || height <= 0) return;
+    int swap = format == GL_BGRA_EXT;
     uint32_t stride = unpack_row_stride(width, bpp);
     uint32_t tail = (uint32_t)width * bpp;
     uint32_t max_rows = (0xFFFFu - 36u) / stride;
     if (max_rows == 0) return;
-    const uint8_t *src = (const uint8_t *)data;
     for (GLsizei y = 0; y < height; ) {
         uint32_t rows = (uint32_t)(height - y);
         if (rows > max_rows) rows = max_rows;
@@ -607,58 +706,52 @@ static void emit_tex_sub_image_2d(GLenum target, GLint level,
         w_i32(&_c, yoff + y);
         w_i32(&_c, width);
         w_i32(&_c, (int32_t)rows);
-        w_u32(&_c, (uint32_t)format);
+        w_u32(&_c, (uint32_t)host_pixel_format(format));
         w_u32(&_c, (uint32_t)type);
         w_u32(&_c, dlen);
-        memcpy(_c, src + (uint32_t)y * stride, dlen);
+        for (uint32_t r = 0; r < rows; r++) {
+            copy_row(_c + r * stride,
+                     src + ((uint32_t)y + r) * src_stride, tail, swap);
+        }
         _c += dlen;
         EMIT_END()
         y += (GLsizei)rows;
     }
 }
 
+static void emit_tex_sub_image_2d(GLenum target, GLint level,
+                                  GLint xoff, GLint yoff,
+                                  GLsizei width, GLsizei height,
+                                  GLenum format, GLenum type,
+                                  const void *data) {
+    uint32_t bpp = bytes_per_pixel(format, type);
+    if (bpp == 0 || data == NULL) return;
+    GLsizei row_pixels = g_unpack_row_length > 0 ? g_unpack_row_length : width;
+    uint32_t src_stride = unpack_row_stride(row_pixels, bpp);
+    const uint8_t *src = (const uint8_t *)data
+        + (uint32_t)g_unpack_skip_rows * src_stride
+        + (uint32_t)g_unpack_skip_pixels * bpp;
+    emit_tex_rows(target, level, xoff, yoff, width, height, format, type,
+                  src, src_stride);
+}
+
 void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const void *data) {
-    uint32_t dlen = 0;
-    if (data != NULL && width > 0 && height > 0) {
-        uint32_t bpp = bytes_per_pixel(format, type);
-        if (bpp > 0) {
-            dlen = ((uint32_t)height - 1u) * unpack_row_stride(width, bpp)
-                 + (uint32_t)width * bpp;
-        }
-    }
-    /* The TLV payload-length field is u16, so the largest single-call
-     * upload that fits is 0xFFFF - 36 (header fields) ≈ 65499 bytes.
-     * Larger uploads allocate the texture with no data here and stream
-     * the pixels through chunked OP_TEX_SUB_IMAGE_2D records below. */
-    const void *inline_data = data;
-    if (dlen > 0xFFFFu - 36u) {
-        dlen = 0;
-        inline_data = NULL;
-    }
-    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u + dlen)
+    if (internalFormat == GL_BGRA_EXT) internalFormat = GL_RGBA;
+    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u)
     w_u32(&_c, (uint32_t)target);
     w_i32(&_c, level);
     w_i32(&_c, internalFormat);
     w_i32(&_c, width);
     w_i32(&_c, height);
     w_i32(&_c, border);
-    w_u32(&_c, (uint32_t)format);
+    w_u32(&_c, (uint32_t)host_pixel_format(format));
     w_u32(&_c, (uint32_t)type);
-    w_u32(&_c, dlen);
-    if (dlen > 0) {
-        /* NULL data allocates an uninitialized texture; WebGL zero-fills,
-         * so ship zeros to keep the TLV framing and semantics aligned. */
-        if (inline_data) memcpy(_c, inline_data, dlen);
-        else memset(_c, 0, dlen);
-        _c += dlen;
-    }
+    w_u32(&_c, 0u);
     EMIT_END()
-    if (inline_data == NULL && data != NULL) {
-        emit_tex_sub_image_2d(target, level, 0, 0, width, height,
-                              format, type, data);
-    }
+    emit_tex_sub_image_2d(target, level, 0, 0, width, height,
+                          format, type, data);
 }
 
 void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,
@@ -686,6 +779,17 @@ void glPixelStorei(GLenum pname, GLint param) {
     if (pname == GL_UNPACK_ALIGNMENT
         && (param == 1 || param == 2 || param == 4 || param == 8)) {
         g_unpack_alignment = param;
+    }
+    if (pname == GL_UNPACK_ROW_LENGTH_EXT || pname == GL_UNPACK_SKIP_ROWS_EXT
+        || pname == GL_UNPACK_SKIP_PIXELS_EXT) {
+        if (param < 0) {
+            raise_client_error(GL_INVALID_VALUE);
+            return;
+        }
+        if (pname == GL_UNPACK_ROW_LENGTH_EXT) g_unpack_row_length = param;
+        if (pname == GL_UNPACK_SKIP_ROWS_EXT) g_unpack_skip_rows = param;
+        if (pname == GL_UNPACK_SKIP_PIXELS_EXT) g_unpack_skip_pixels = param;
+        return;
     }
     EMIT_BEGIN(OP_PIXEL_STOREI, 8)
     w_u32(&_c, (uint32_t)pname);
@@ -797,15 +901,22 @@ void glBindFramebuffer(GLenum target, GLuint fb) {
     EMIT_END()
 }
 
-void glFramebufferTexture2D(GLenum target, GLenum attachment,
-                            GLenum textarget, GLuint texture, GLint level) {
+static void emit_framebuffer_texture_2d(GLenum target, GLenum attachment,
+                                        GLenum textarget, GLuint host,
+                                        GLint level) {
     EMIT_BEGIN(OP_FRAMEBUFFER_TEXTURE_2D, 20)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)attachment);
     w_u32(&_c, (uint32_t)textarget);
-    w_u32(&_c, texture);
+    w_u32(&_c, host);
     w_i32(&_c, level);
     EMIT_END()
+}
+
+void glFramebufferTexture2D(GLenum target, GLenum attachment,
+                            GLenum textarget, GLuint texture, GLint level) {
+    emit_framebuffer_texture_2d(target, attachment, textarget,
+                                host_texture_name(texture), level);
 }
 
 /* ----- blend -------------------------------------------------------- */
@@ -963,6 +1074,31 @@ static char *wpk_host_string(GLenum name, char *buf, size_t cap) {
     return buf;
 }
 
+static const char *const k_client_extensions[] = {
+    "GL_EXT_texture_format_BGRA8888",
+    "GL_EXT_unpack_subimage",
+    "GL_OES_EGL_image",
+};
+
+static int has_extension(const char *list, const char *name) {
+    size_t len = strlen(name);
+    for (const char *p = strstr(list, name); p; p = strstr(p + 1, name)) {
+        int starts = p == list || p[-1] == ' ';
+        int ends = p[len] == '\0' || p[len] == ' ';
+        if (starts && ends) return 1;
+    }
+    return 0;
+}
+
+static void append_client_extensions(char *list, size_t cap) {
+    for (size_t i = 0; i < sizeof k_client_extensions / sizeof k_client_extensions[0]; i++) {
+        if (has_extension(list, k_client_extensions[i])) continue;
+        size_t used = strlen(list);
+        snprintf(list + used, cap - used, "%s%s", used ? " " : "",
+                 k_client_extensions[i]);
+    }
+}
+
 /* The context this stub exposes is OpenGL ES 2.0 (EGL client version 2
  * over the host WebGL2 bridge), but the host's own strings say "WebGL
  * 2.0 (…)". Report the ES API version of the context — the same
@@ -1002,10 +1138,12 @@ const GLubyte *glGetString(GLenum name) {
             return (const GLubyte *)renderer;
         case GL_EXTENSIONS:
             /* The host reports GLES equivalents supported by this encoder
-             * version and the actual WebGL context. */
-            if (extensions[0] == '\0'
-                && !wpk_host_string(name, extensions, sizeof extensions)) {
-                return (const GLubyte *)"";
+             * version and the actual WebGL context. The extensions this
+             * library implements itself follow. */
+            if (extensions[0] == '\0') {
+                if (!wpk_host_string(name, extensions, sizeof extensions))
+                    return (const GLubyte *)"";
+                append_client_extensions(extensions, sizeof extensions);
             }
             return (const GLubyte *)extensions;
         default:
@@ -1019,6 +1157,9 @@ const GLubyte *glGetString(GLenum name) {
  * appears. */
 void glGetIntegerv(GLenum pname, GLint *data) {
     if (!data) return;
+    if (pname == GL_UNPACK_ROW_LENGTH_EXT) { *data = g_unpack_row_length; return; }
+    if (pname == GL_UNPACK_SKIP_ROWS_EXT) { *data = g_unpack_skip_rows; return; }
+    if (pname == GL_UNPACK_SKIP_PIXELS_EXT) { *data = g_unpack_skip_pixels; return; }
     uint32_t p = (uint32_t)pname;
     uint32_t count = query_value_count(pname);
     memset(data, 0, count * sizeof(GLint));
@@ -1521,10 +1662,15 @@ void glGenRenderbuffers(GLsizei n, GLuint *out) {
 
 void glDeleteRenderbuffers(GLsizei n, const GLuint *names) {
     if (n <= 0 || !names) return;
+    for (GLsizei i = 0; i < n; i++) {
+        alias_drop(&g_renderbuffer_aliases, names[i]);
+        if (g_bound_renderbuffer == names[i]) g_bound_renderbuffer = 0;
+    }
     emit_name_array(OP_DELETE_RENDERBUFFERS, n, names);
 }
 
 void glBindRenderbuffer(GLenum target, GLuint rb) {
+    if (target == GL_RENDERBUFFER) g_bound_renderbuffer = rb;
     EMIT_BEGIN(OP_BIND_RENDERBUFFER, 8)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, rb);
@@ -1532,6 +1678,8 @@ void glBindRenderbuffer(GLenum target, GLuint rb) {
 }
 
 void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height) {
+    if (target == GL_RENDERBUFFER)
+        alias_drop(&g_renderbuffer_aliases, g_bound_renderbuffer);
     EMIT_BEGIN(OP_RENDERBUFFER_STORAGE, 16)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)internalformat);
@@ -1540,14 +1688,87 @@ void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, 
     EMIT_END()
 }
 
+/* A renderbuffer whose storage is an EGLImage is the image bo's texture,
+ * so attaching it attaches that texture. */
 void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
                                GLenum renderbuffertarget, GLuint renderbuffer) {
+    GLuint host = renderbuffer
+        ? alias_lookup(&g_renderbuffer_aliases, renderbuffer) : 0;
+    if (host) {
+        emit_framebuffer_texture_2d(target, attachment, GL_TEXTURE_2D, host, 0);
+        return;
+    }
     EMIT_BEGIN(OP_FRAMEBUFFER_RENDERBUFFER, 16)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)attachment);
     w_u32(&_c, (uint32_t)renderbuffertarget);
     w_u32(&_c, renderbuffer);
     EMIT_END()
+}
+
+/* ----- GL_OES_EGL_image --------------------------------------------- */
+
+/* A GPU-tier image aliases the bound texture to the bo's host texture. A
+ * CPU-tier image is copied into the bound texture from the dma-buf
+ * mapping; binding the image again after the producer writes the buffer
+ * copies the new pixels, as wlroots does on every commit. The [AX]RGB8888
+ * byte order is B,G,R,A, so those rows travel as BGRA. */
+void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
+    if (target != GL_TEXTURE_2D) {
+        raise_client_error(GL_INVALID_ENUM);
+        return;
+    }
+    const struct wpk_egl_image *img = (const struct wpk_egl_image *)image;
+    GLuint name = g_bound_texture_2d[g_active_unit];
+    if (!img || name == 0) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!img->pixels) {
+        GLuint host = _wpk_egl_image_texture(img);
+        if (host == 0 || !alias_set(&g_texture_aliases, name, host)) {
+            raise_client_error(GL_INVALID_OPERATION);
+            return;
+        }
+        emit_bind_texture(GL_TEXTURE_2D, host);
+        return;
+    }
+    alias_drop(&g_texture_aliases, name);
+    emit_bind_texture(GL_TEXTURE_2D, name);
+    int bgra = img->fourcc == 0x34325241u || img->fourcc == 0x34325258u;
+    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u)
+    w_u32(&_c, GL_TEXTURE_2D);
+    w_i32(&_c, 0);
+    w_i32(&_c, GL_RGBA);
+    w_i32(&_c, (int32_t)img->width);
+    w_i32(&_c, (int32_t)img->height);
+    w_i32(&_c, 0);
+    w_u32(&_c, GL_RGBA);
+    w_u32(&_c, GL_UNSIGNED_BYTE);
+    w_u32(&_c, 0u);
+    EMIT_END()
+    emit_tex_rows(GL_TEXTURE_2D, 0, 0, 0,
+                  (GLsizei)img->width, (GLsizei)img->height,
+                  bgra ? GL_BGRA_EXT : GL_RGBA, GL_UNSIGNED_BYTE,
+                  img->pixels, img->pitch);
+}
+
+/* Rendering into an image needs storage the GPU writes, so only a
+ * GPU-tier image can back a renderbuffer; a CPU-tier one would leave its
+ * memory untouched by every draw. */
+void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) {
+    if (target != GL_RENDERBUFFER) {
+        raise_client_error(GL_INVALID_ENUM);
+        return;
+    }
+    const struct wpk_egl_image *img = (const struct wpk_egl_image *)image;
+    if (!img || g_bound_renderbuffer == 0 || img->pixels) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return;
+    }
+    GLuint host = _wpk_egl_image_texture(img);
+    if (host == 0 || !alias_set(&g_renderbuffer_aliases, g_bound_renderbuffer, host))
+        raise_client_error(GL_INVALID_OPERATION);
 }
 
 void glDrawBuffer(GLenum buf) {
