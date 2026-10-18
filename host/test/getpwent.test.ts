@@ -1,5 +1,5 @@
 /**
- * Task 4.6 — getpwent + friends round-trip via the rootfs.vfs mount.
+ * Task 4.6 — getpwent + friends round-trip via the rootfs.vfs.zst mount.
  *
  * After Task 4.5 removed static `/etc` interception from the kernel, the only
  * path for a user program to read /etc/passwd, /etc/group, /etc/services et
@@ -23,12 +23,12 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 const smokeWasm = join(repoRoot, "examples/getpwent_smoke.wasm");
-const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs");
+const rootfsImage = join(repoRoot, "host/wasm/rootfs.vfs.zst");
 
 const haveSmoke = existsSync(smokeWasm);
 const haveRootfs = existsSync(rootfsImage);
 
-describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () => {
+describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs.zst mount", () => {
   it("iterates all 7 /etc/passwd entries and looks up by name + uid", async () => {
     const result = await runCentralizedProgram({
       programPath: smokeWasm,
@@ -39,7 +39,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
     expect(result.exitCode, result.stderr || result.stdout).toBe(0);
 
     // Iteration: must see all 7 entries from images/rootfs/etc/passwd, in order.
-    expect(result.stdout).toContain("PWENT 0 name=root uid=0 gid=0 home=/root shell=/bin/sh");
+    expect(result.stdout).toContain("PWENT 0 name=root uid=0 gid=0 home=/root shell=/bin/bash");
     expect(result.stdout).toContain(
       "PWENT 1 name=daemon uid=1 gid=1 home=/usr/sbin shell=/usr/sbin/nologin",
     );
@@ -61,7 +61,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
     expect(result.stdout).toContain("PWENT count=7");
 
     // Targeted name lookups.
-    expect(result.stdout).toContain("PWNAM name=root uid=0 gid=0 home=/root shell=/bin/sh");
+    expect(result.stdout).toContain("PWNAM name=root uid=0 gid=0 home=/root shell=/bin/bash");
     expect(result.stdout).toContain(
       "PWNAM name=maker uid=1000 gid=1000 home=/home/maker shell=/bin/bash",
     );
@@ -71,7 +71,7 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs mount", () =
     expect(result.stdout).toContain("PWNAM name=nonexistent-user-xyz result=NULL");
 
     // Targeted uid lookups.
-    expect(result.stdout).toContain("PWUID uid=0 name=root gid=0 home=/root shell=/bin/sh");
+    expect(result.stdout).toContain("PWUID uid=0 name=root gid=0 home=/root shell=/bin/bash");
     expect(result.stdout).toContain(
       "PWUID uid=1000 name=maker gid=1000 home=/home/maker shell=/bin/bash",
     );

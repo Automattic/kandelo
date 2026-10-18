@@ -8,6 +8,10 @@
 
 import { Inflate, inflateSync } from "fflate";
 import { FILE_MODES } from "../generated/abi";
+import {
+  fetchByteRange,
+  isStrongEntityTag,
+} from "../networking/byte-range-fetch";
 
 // --- Zip format signatures ---
 
@@ -307,7 +311,9 @@ function zipCompressedData(data: Uint8Array, entry: ZipEntry): Uint8Array {
  * 2. Fetch the last ~64KiB to find the EOCD and determine CD location
  * 3. If the CD is fully within the tail, parse it directly
  * 4. Otherwise, fetch just the CD range
- * 5. Falls back to a full fetch if range requests are not supported
+ * 5. Parse the whole archive if the server or a relay answers a ranged read
+ *    with the complete entity. That body starts at offset 0; it is never
+ *    treated as the requested tail.
  */
 export async function fetchZipCentralDirectory(
   url: string,
@@ -327,27 +333,31 @@ export async function fetchZipCentralDirectory(
     if (!resp.ok) {
       throw new Error(`Fetch failed: ${resp.status} ${resp.statusText}`);
     }
-    const data = new Uint8Array(await resp.arrayBuffer());
-    return { entries: parseZipCentralDirectory(data), totalSize: data.length };
+    return parseWholeArchive(resp);
   }
+
+  // The tail and directory are separate reads, so the archive could change
+  // between them. With a strong ETag, each ranged answer must carry the same
+  // one, or the read fails instead of mixing two versions. (If-Range would
+  // do this in one request, but the browser CORS proxy cannot carry it.)
+  // Without one, only a change in total length is caught.
+  const etag = headResp.headers.get("etag");
+  const entityTag = etag !== null && isStrongEntityTag(etag) ? etag : undefined;
 
   // Step 2: Fetch tail to find EOCD
   const tailSize = Math.min(contentLength, EOCD_MAX_SEARCH);
   const tailStart = contentLength - tailSize;
-  const tailResp = await fetch(url, {
-    headers: { Range: `bytes=${tailStart}-${contentLength - 1}` },
-  });
-  if (tailResp.status !== 206) {
-    // Range not actually supported, fall back to full fetch
-    const resp = await fetch(url);
-    if (!resp.ok) {
-      throw new Error(`Fetch failed: ${resp.status} ${resp.statusText}`);
-    }
-    const data = new Uint8Array(await resp.arrayBuffer());
-    return { entries: parseZipCentralDirectory(data), totalSize: data.length };
+  const tail = await fetchByteRange(
+    url,
+    { start: tailStart, end: contentLength - 1 },
+    { entityTag },
+  );
+  if (tail.kind === "whole-entity") return parseWholeArchive(tail.response);
+  if (tail.kind === "failed") {
+    throw new Error(`ZIP tail read failed: ${tail.reason}`);
   }
-
-  const tailData = new Uint8Array(await tailResp.arrayBuffer());
+  assertSameArchiveLength(tail.completeLength, contentLength);
+  const tailData = await tail.bytes();
   const tailView = new DataView(
     tailData.buffer,
     tailData.byteOffset,
@@ -371,14 +381,17 @@ export async function fetchZipCentralDirectory(
 
   // Step 4: Fetch just the central directory range
   const cdEnd = cdOffset + cdSize - 1;
-  const cdResp = await fetch(url, {
-    headers: { Range: `bytes=${cdOffset}-${cdEnd}` },
-  });
-  if (cdResp.status !== 206) {
-    throw new Error(`Range request for CD failed: ${cdResp.status}`);
+  const cd = await fetchByteRange(
+    url,
+    { start: cdOffset, end: cdEnd },
+    { entityTag },
+  );
+  if (cd.kind === "whole-entity") return parseWholeArchive(cd.response);
+  if (cd.kind === "failed") {
+    throw new Error(`ZIP central directory read failed: ${cd.reason}`);
   }
-
-  const cdData = new Uint8Array(await cdResp.arrayBuffer());
+  assertSameArchiveLength(cd.completeLength, contentLength);
+  const cdData = await cd.bytes();
 
   // Build a buffer with CD data at the correct offset and EOCD at the end
   const fullSize = contentLength;
@@ -386,4 +399,22 @@ export async function fetchZipCentralDirectory(
   buf.set(cdData, cdOffset);
   buf.set(tailData, tailStart);
   return { entries: parseZipCentralDirectory(buf), totalSize: fullSize };
+}
+
+async function parseWholeArchive(
+  response: Response,
+): Promise<{ entries: ZipEntry[]; totalSize: number }> {
+  const data = new Uint8Array(await response.arrayBuffer());
+  return { entries: parseZipCentralDirectory(data), totalSize: data.length };
+}
+
+function assertSameArchiveLength(
+  completeLength: number | undefined,
+  contentLength: number,
+): void {
+  if (completeLength !== undefined && completeLength !== contentLength) {
+    throw new Error(
+      `ZIP archive length changed from ${contentLength} to ${completeLength} between requests`,
+    );
+  }
 }

@@ -43,12 +43,15 @@ function piplet(callable $run, ?callable $mutateSource = null): void
     }
 }
 
-function request(string $method, string $query, ?string $code = null): array
+function request(string $method, string $query, ?string $code = null, array $headers = []): array
 {
     $options = ['method' => $method, 'ignore_errors' => true, 'timeout' => 5];
     if ($code !== null) {
-        $options['header'] = 'Content-Type: text/plain';
+        $headers[] = 'Content-Type: text/plain';
         $options['content'] = $code;
+    }
+    if ($headers !== []) {
+        $options['header'] = implode("\r\n", $headers);
     }
     set_error_handler(fn (): bool => true);
     try {
@@ -189,6 +192,115 @@ test('sessions expire and are pruned from the file', function (): void {
         fn (string $source): string => str_replace(
             'MATCH_SESSION_TTL_SECONDS = 600',
             'MATCH_SESSION_TTL_SECONDS = 1',
+            $source,
+        ),
+    );
+});
+
+const ROOM = 'roomtokenroomtokenroom';
+const HOST_KEY = 'hostkeyhostkeyhostkeyhost';
+const JOIN_A = 'joinaaaaaaaaaaaaaaaaaaaa';
+const JOIN_B = 'joinbbbbbbbbbbbbbbbbbbbb';
+
+function host(string $name = 'Friday game night', string $key = HOST_KEY, string $room = ROOM): array
+{
+    return request('POST', "?room=$room&role=host", json_encode(['name' => $name]), ["X-Kandelo-Host-Key: $key"]);
+}
+
+function hostRoom(string $role, string $join, string $body, string $key = HOST_KEY): array
+{
+    return request('POST', '?room=' . ROOM . "&role=$role&join=$join", $body, ["X-Kandelo-Host-Key: $key"]);
+}
+
+function joinRoom(string $join, string $code = 'kandelo1:offer'): array
+{
+    return request('POST', '?room=' . ROOM . "&role=join&join=$join", $code);
+}
+
+function joinStatus(string $join): array
+{
+    return request('GET', '?room=' . ROOM . "&join=$join");
+}
+
+test('a room matches several joiners to one host', function (): void {
+    piplet(function (): void {
+        expect(request('GET', '?room=' . ROOM)['status'])->toBe(404);
+        expect(joinRoom(JOIN_A)['status'])->toBe(404);
+        expect(host()['status'])->toBe(200);
+        expect(json_decode(request('GET', '?room=' . ROOM)['body'], true)['name'])->toBe('Friday game night');
+        expect(joinRoom(JOIN_A, 'kandelo1:offer-a')['status'])->toBe(201);
+        expect(joinRoom(JOIN_B, 'kandelo1:offer-b')['status'])->toBe(201);
+        expect(joinRoom(JOIN_A)['status'])->toBe(409);
+        $waiting = json_decode(host()['body'], true)['joins'];
+        expect($waiting)->toBe([
+            ['join' => JOIN_A, 'offer' => 'kandelo1:offer-a'],
+            ['join' => JOIN_B, 'offer' => 'kandelo1:offer-b'],
+        ]);
+        expect(json_decode(joinStatus(JOIN_A)['body'], true))->toBe(['answer' => null, 'refused' => null]);
+        expect(hostRoom('answer', JOIN_A, 'kandelo1:answer-a')['status'])->toBe(200);
+        expect(hostRoom('refuse', JOIN_B, 'the session is full')['status'])->toBe(200);
+        expect(hostRoom('answer', JOIN_A, 'kandelo1:again')['status'])->toBe(409);
+        expect(json_decode(joinStatus(JOIN_A)['body'], true)['answer'])->toBe('kandelo1:answer-a');
+        expect(json_decode(joinStatus(JOIN_B)['body'], true)['refused'])->toBe('the session is full');
+        expect(json_decode(host()['body'], true)['joins'])->toBe([]);
+    });
+});
+
+test('only the host key acts for the host', function (): void {
+    piplet(function (string $copy): void {
+        host();
+        joinRoom(JOIN_A);
+        $other = 'someoneelsesomeoneelse';
+        expect(host('Taken over', $other)['status'])->toBe(403);
+        expect(hostRoom('answer', JOIN_A, 'kandelo1:forged', $other)['status'])->toBe(403);
+        expect(request('POST', '?room=' . ROOM . '&role=close', '', ["X-Kandelo-Host-Key: $other"])['status'])->toBe(403);
+        expect(request('POST', '?room=' . ROOM . '&role=host', json_encode(['name' => 'x']))['status'])->toBe(401);
+        expect(file_get_contents($copy))->not->toContain(HOST_KEY);
+        expect(request('POST', '?room=' . ROOM . '&role=close', '', ['X-Kandelo-Host-Key: ' . HOST_KEY])['status'])->toBe(200);
+        expect(request('GET', '?room=' . ROOM)['status'])->toBe(404);
+    });
+});
+
+test('room tokens, names and joins are validated', function (): void {
+    piplet(function (): void {
+        foreach (['short', 'Roomtokenroomtokenroom', 'room-token-room-token-room', str_repeat('a', 65)] as $token) {
+            expect(request('GET', "?room=$token")['status'])->toBe(422, $token);
+        }
+        expect(host('')['status'])->toBe(422);
+        expect(host(str_repeat('n', 65))['status'])->toBe(422);
+        expect(host("Game\u{0007} night ✨")['status'])->toBe(200);
+        expect(json_decode(request('GET', '?room=' . ROOM)['body'], true)['name'])->toBe('Game night ✨');
+        expect(joinRoom(JOIN_A, 'not a code')['status'])->toBe(422);
+        expect(request('POST', '?room=' . ROOM . '&role=nope', '', ['X-Kandelo-Host-Key: ' . HOST_KEY])['status'])->toBe(422);
+    });
+});
+
+test('a room limits joins waiting at once', function (): void {
+    piplet(function (): void {
+        host();
+        foreach (range(0, 7) as $index) {
+            expect(joinRoom('join' . str_repeat(chr(97 + $index), 20))['status'])->toBe(201);
+        }
+        expect(joinRoom('join' . str_repeat('z', 20))['status'])->toBe(503);
+        hostRoom('answer', 'join' . str_repeat('a', 20), 'kandelo1:answer');
+        expect(joinRoom('join' . str_repeat('z', 20))['status'])->toBe(201);
+    });
+});
+
+test('a room ends when its host stops checking in', function (): void {
+    piplet(
+        function (string $copy): void {
+            host();
+            joinRoom(JOIN_A);
+            usleep(1100000);
+            expect(request('GET', '?room=' . ROOM)['status'])->toBe(404);
+            expect(joinRoom(JOIN_B)['status'])->toBe(404);
+            offer('pruning');
+            expect(file_get_contents($copy))->not->toContain(ROOM);
+        },
+        fn (string $source): string => str_replace(
+            'MATCH_ROOM_TTL_SECONDS = 60',
+            'MATCH_ROOM_TTL_SECONDS = 1',
             $source,
         ),
     );

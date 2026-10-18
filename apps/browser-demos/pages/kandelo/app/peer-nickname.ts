@@ -13,7 +13,7 @@
 // stripped like every other text that arrives on the wire.
 import * as React from "react";
 import { LocalReplicationLog } from "@host/replication/log-local";
-import type { PeerLink } from "../../../lib/peer-link";
+import type { PeerLink } from "../../../lib/sharing-peer";
 import { presentableNickname } from "../../../lib/peer-nickname";
 
 interface PeerNickname {

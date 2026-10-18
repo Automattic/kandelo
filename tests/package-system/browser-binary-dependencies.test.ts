@@ -243,10 +243,12 @@ describe("browser binary dependencies", () => {
     );
   });
 
-  it("uses dinit's canonical multi-output projection path in live setup", () => {
-    const expected = "programs/wasm32/dinit/dinit.wasm";
-    expect(browserBinariesImports(repoRoot)).toContain(expected);
-
+  it("keeps dinit's canonical multi-output projection path in the index", () => {
+    // The browser app no longer imports dinit.wasm directly: since
+    // "Browser: Let VFS images describe the machines they contain" (#1409),
+    // dinit ships inside each VFS image and boots as the image's first user
+    // process. The projection index remains the canonical multi-output
+    // contract for every consumer that does resolve the binary.
     const index = JSON.parse(
       readFileSync(join(registryRoot, "program-packages.json"), "utf8"),
     );
@@ -263,7 +265,47 @@ describe("browser binary dependencies", () => {
         mirrorPath: "dinit/dinit.wasm",
       }),
     );
-    expect(`programs/wasm32/${dinit!.mirrorPath}`).toBe(expected);
+  });
+
+  it("never imports a multi-member package output at its flat spelling", () => {
+    // `selectedFlatProgramPackage` in host/src/binary-resolver.ts throws for
+    // the legacy flat spelling of an output owned by a multi-member package.
+    // An import written that way therefore fails at resolve time rather than
+    // at build time, so check every `@binaries` import against the index.
+    const index = JSON.parse(
+      readFileSync(join(registryRoot, "program-packages.json"), "utf8"),
+    );
+    const packages = index.packages as Record<string, {
+      members: Array<{ kind: string; mirrorPath: string }>;
+    }>;
+    const flatOnlyOwners = new Map<string, string>();
+    for (const [packageName, projection] of Object.entries(packages)) {
+      if (projection.members.length <= 1) continue;
+      for (const member of projection.members) {
+        if (member.kind !== "output") continue;
+        const flat = member.mirrorPath.split("/").at(-1)!;
+        flatOnlyOwners.set(flat, packageName);
+      }
+    }
+    // A true single-member package keeps the flat spelling valid even when a
+    // multi-member package also produces that output name.
+    for (const [packageName, projection] of Object.entries(packages)) {
+      if (projection.members.length > 1) continue;
+      for (const member of projection.members) {
+        if (member.kind !== "output") continue;
+        flatOnlyOwners.delete(member.mirrorPath.split("/").at(-1)!);
+      }
+    }
+
+    const offenders = browserBinariesImports(repoRoot).flatMap((relPath) => {
+      const components = relPath.split("/");
+      if (components.length !== 3 || components[0] !== "programs") return [];
+      const owner = flatOnlyOwners.get(components[2]!);
+      return owner === undefined
+        ? []
+        : [`${relPath} belongs to multi-member package ${owner}`];
+    });
+    expect(offenders).toEqual([]);
   });
 
   it("discovers syntax-level imports without treating generated source strings as imports", () => {
@@ -287,6 +329,45 @@ describe("browser binary dependencies", () => {
         "programs/wasm32/dynamic.wasm",
         "programs/wasm32/optional.vfs.zst",
       ]);
+      expect(browserBinariesImports(fixtureRoot, { includeOptionalGlobs: false }))
+        .toEqual([
+          "programs/wasm32/actual.wasm",
+          "programs/wasm32/dynamic.wasm",
+        ]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps generated browser reports outside authored import authority", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-reports-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      const nestedSource = join(browserRoot, "pages", "test-results");
+      mkdirSync(nestedSource, { recursive: true });
+      writeFileSync(join(browserRoot, "entry.ts"),
+        'import guest from "@binaries/programs/hello.wasm?url";');
+      writeFileSync(join(nestedSource, "authored.ts"),
+        'import guest from "@binaries/programs/nested.wasm?url";');
+      for (const output of ["test-results", "playwright-report"]) {
+        const resources = join(browserRoot, output, "resources");
+        mkdirSync(resources, { recursive: true });
+        // A real JSON response saved as JavaScript by Playwright's trace
+        // recorder must not make an authored-source audit parse network data.
+        writeFileSync(join(resources, "response.js"),
+          '{\n\t"Comment-authors": "",\n\t"Engine-authors": "table"\n}');
+        writeFileSync(join(resources, "captured-module.js"),
+          'import ignored from "@binaries/programs/captured.wasm?url";');
+      }
+      expect(browserBinariesImports(fixtureRoot)).toEqual([
+        "programs/wasm32/hello.wasm",
+        "programs/wasm32/nested.wasm",
+      ]);
+      writeFileSync(join(nestedSource, "authored.ts"),
+        '{\n\t"Comment-authors": ""\n}');
+      expect(() => browserBinariesImports(fixtureRoot)).toThrow(
+        /browser source failed to parse: .*authored\.ts:.*Missing semicolon/,
+      );
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }

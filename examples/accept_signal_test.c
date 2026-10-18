@@ -13,11 +13,23 @@
 #include <unistd.h>
 
 static volatile sig_atomic_t sigchld_count;
+static int handled_pipe_write = -1;
 
 static void on_sigchld(int signum)
 {
     (void)signum;
+    int saved_errno = errno;
     sigchld_count++;
+    /*
+     * WHY: tell the connector the handler has run, so the connection can
+     * never reach the listener before the signal meant to interrupt accept().
+     * write() is async-signal-safe; the pipe cannot fill in this test.
+     */
+    if (handled_pipe_write >= 0) {
+        char byte = 1;
+        (void)write(handled_pipe_write, &byte, 1);
+    }
+    errno = saved_errno;
 }
 
 static void sleep_ms(long milliseconds)
@@ -30,9 +42,36 @@ static void sleep_ms(long milliseconds)
         ;
 }
 
-static int connect_after_delay(uint16_t port)
+/*
+ * Exit 100 ms after the parent says it is about to block in accept(), so the
+ * SIGCHLD this exit raises interrupts that accept().
+ */
+static int exit_after_go(int go_pipe_read)
 {
-    sleep_ms(400);
+    char byte;
+    ssize_t n;
+    while ((n = read(go_pipe_read, &byte, 1)) < 0 && errno == EINTR)
+        ;
+    if (n != 1)
+        return 23;
+    sleep_ms(100);
+    return 0;
+}
+
+/*
+ * Connect only after the parent's SIGCHLD handler has run. A fixed delay here
+ * raced the exiting child: a Wasm child can start hundreds of milliseconds
+ * late under load, and when the connection won, accept() correctly returned
+ * it instead of EINTR.
+ */
+static int connect_after_handler(uint16_t port, int handled_pipe_read)
+{
+    char byte;
+    ssize_t n;
+    while ((n = read(handled_pipe_read, &byte, 1)) < 0 && errno == EINTR)
+        ;
+    if (n != 1)
+        return 22;
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
@@ -46,11 +85,13 @@ static int connect_after_delay(uint16_t port)
         return 21;
 
     /*
-     * WHY: keep this child alive until after the parent inspects the handler
-     * count. Otherwise the connector's own SIGCHLD could hide a lost signal
-     * from the child that was meant to interrupt accept().
+     * WHY: stay alive until the parent closes the accepted connection, which
+     * it does only after inspecting the handler count. Otherwise the
+     * connector's own SIGCHLD could hide a lost signal from the child that
+     * was meant to interrupt accept().
      */
-    sleep_ms(100);
+    while ((n = read(fd, &byte, 1)) > 0 || (n < 0 && errno == EINTR))
+        ;
     close(fd);
     return 0;
 }
@@ -88,13 +129,23 @@ static int run_case(uint16_t port, int restart)
     if (listen(listener, 4) != 0)
         return 6;
 
+    int handled[2];
+    if (pipe(handled) != 0)
+        return 14;
+    handled_pipe_write = handled[1];
+    int go[2];
+    if (pipe(go) != 0)
+        return 15;
+
     pid_t exiting_child = fork();
     if (exiting_child < 0)
         return 7;
     if (exiting_child == 0) {
         close(listener);
-        sleep_ms(100);
-        _exit(0);
+        close(handled[0]);
+        close(handled[1]);
+        close(go[1]);
+        _exit(exit_after_go(go[0]));
     }
 
     pid_t connector = fork();
@@ -102,8 +153,25 @@ static int run_case(uint16_t port, int restart)
         return 8;
     if (connector == 0) {
         close(listener);
-        _exit(connect_after_delay(port));
+        close(handled[1]);
+        close(go[0]);
+        close(go[1]);
+        _exit(connect_after_handler(port, handled[0]));
     }
+    close(handled[0]);
+    close(go[0]);
+
+    /*
+     * WHY: release the exiting child only now. Its 100 ms delay then covers
+     * just the step from here into accept(), instead of also covering the
+     * connector's fork above, which on a loaded host can take longer. When
+     * SIGCHLD arrived before accept() blocked, the handler ran first and
+     * accept() correctly returned the connection, failing the test.
+     */
+    char go_byte = 1;
+    if (write(go[1], &go_byte, 1) != 1)
+        return 16;
+    close(go[1]);
 
     errno = 0;
     int accepted = accept(listener, NULL, NULL);
@@ -143,6 +211,8 @@ static int run_case(uint16_t port, int restart)
 
     close(accepted);
     close(listener);
+    handled_pipe_write = -1;
+    close(handled[1]);
 
     int status;
     if (waitpid(exiting_child, &status, 0) != exiting_child ||

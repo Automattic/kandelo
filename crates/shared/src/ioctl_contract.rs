@@ -43,6 +43,32 @@ pub const KDGKBTYPE: u32 = 0x4b33;
 pub const KDGKBMODE: u32 = 0x4b44;
 pub const KDSKBMODE: u32 = 0x4b45;
 
+// Network-interface ioctls.
+//
+// `SIOCGIFCONF` is in this table at the size of its OUTER `struct ifconf`
+// only. The buffer its `ifc_buf` member points at is sized by the caller at
+// runtime, which this table's one-static-size-per-request model cannot
+// express; the kernel reaches that inner buffer itself, through
+// `HostIO::proc_write_bytes`, in `runtime_core::syscalls::sys_ioctl`.
+//
+// It used to be absent entirely, on the stated grounds that a process-memory
+// address is something "the kernel's separate Wasm instance cannot itself
+// reach". That was never true — `host_proc_read_bytes` /
+// `host_proc_write_bytes` have read and written guest memory from inside the
+// kernel Wasm instance since the DRI/KMS paths were written — and it is the
+// fourth "floor" the Rust-first campaign inherited as fact and then disproved
+// by reading the code. Recorded here rather than quietly deleted, because the
+// pattern is worth more than the instance: a claimed platform boundary is a
+// claim to verify, not a constraint to design around.
+pub const SIOCGIFNAME: u32 = 0x8910;
+pub const SIOCGIFCONF: u32 = 0x8912;
+pub const SIOCGIFFLAGS: u32 = 0x8913;
+pub const SIOCGIFADDR: u32 = 0x8915;
+pub const SIOCGIFBRDADDR: u32 = 0x8919;
+pub const SIOCGIFNETMASK: u32 = 0x891b;
+pub const SIOCGIFHWADDR: u32 = 0x8927;
+pub const SIOCGIFINDEX: u32 = 0x8933;
+
 /// How the request's third argument is represented by the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoctlArgKind {
@@ -136,6 +162,15 @@ macro_rules! pointer {
             wasm64_size: Some($size),
         }
     };
+    ($request:expr, $direction:ident, $wasm32_size:expr, $wasm64_size:expr) => {
+        IoctlRequestContract {
+            request: $request,
+            arg_kind: IoctlArgKind::Pointer,
+            direction: IoctlDirection::$direction,
+            wasm32_size: Some($wasm32_size),
+            wasm64_size: Some($wasm64_size),
+        }
+    };
 }
 
 /// How a request family derives the byte count it marshals.
@@ -198,6 +233,18 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
             max: EVIOC_MAX_CALLER_LENGTH,
         },
     },
+    // EVIOCGPHYS / EVIOCGUNIQ / EVIOCGPROP: caller-length string and
+    // property reads libevdev issues during construction.
+    IoctlRequestFamily {
+        dir: 2,
+        magic: b'E' as u32,
+        nr_first: crate::input::EVIOCGPHYS_NR,
+        nr_last: crate::input::EVIOCGPROP_NR,
+        direction: IoctlDirection::Out,
+        size: IoctlFamilySize::CallerEncoded {
+            max: EVIOC_MAX_CALLER_LENGTH,
+        },
+    },
     IoctlRequestFamily {
         dir: 2,
         magic: b'E' as u32,
@@ -209,7 +256,8 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
         ),
     },
     // EVIOCGKEY / EVIOCGLED / EVIOCGSW: caller-encoded state-query reads
-    // used to resynchronise after a SYN_DROPPED. Each carries its own nr
+    // libevdev issues during construction and after a SYN_DROPPED to
+    // resynchronise. Each carries its own nr
     // (0x18 / 0x19 / 0x1b), so they register as three single-nr families
     // rather than one range — 0x1a (EVIOCGSND) is deliberately absent
     // because Kandelo has no sound-key surface.
@@ -247,9 +295,9 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
 
 /// Ioctls that may reach the Rust kernel dispatcher.
 ///
-/// Keep entries sorted by unsigned request number. Network-interface ioctls
-/// are deliberately absent: the host intercepts those before kernel scratch
-/// because their outer structures contain process-memory pointers.
+/// Keep entries sorted by unsigned request number. `SIOCGIFCONF`'s entry
+/// covers only its outer `struct ifconf`; see the comment above the
+/// `SIOCGIF*` constants for the buffer it nests.
 pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // Kandelo GLES requests use small private request numbers.
     pointer!(crate::gl::GLIO_INIT, In, 4),
@@ -299,6 +347,21 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     no_arg!(crate::dri::DRM_IOCTL_SET_MASTER),
     no_arg!(crate::dri::DRM_IOCTL_DROP_MASTER),
     pointer!(SIOCATMARK, Out, 4),
+    // ifreqSize differs by pointer width: `struct ifmap`'s `unsigned long`
+    // members double from 4 to 8 bytes under wasm64.
+    pointer!(SIOCGIFNAME, InOut, 32, 40),
+    // `struct ifconf`: `int ifc_len` plus a pointer union, so 8 bytes on
+    // wasm32 and 16 on wasm64. Only the OUTER struct has a static size; the
+    // buffer `ifc_buf` points at is sized by the caller at runtime, and the
+    // kernel reaches it directly via `HostIO::proc_write_bytes` rather than
+    // through this table.
+    pointer!(SIOCGIFCONF, InOut, 8, 16),
+    pointer!(SIOCGIFFLAGS, InOut, 32, 40),
+    pointer!(SIOCGIFADDR, InOut, 32, 40),
+    pointer!(SIOCGIFBRDADDR, InOut, 32, 40),
+    pointer!(SIOCGIFNETMASK, InOut, 32, 40),
+    pointer!(SIOCGIFHWADDR, InOut, 32, 40),
+    pointer!(SIOCGIFINDEX, InOut, 32, 40),
     scalar_i32!(crate::input::EVIOCGRAB),
     pointer!(crate::oss::SNDCTL_DSP_SETBLKSIZE, In, 4),
     pointer!(crate::oss::SNDCTL_DSP_SETTRIGGER, In, 4),
@@ -340,6 +403,16 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_GET_CAP, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_MAP_DUMB, InOut, 16),
+    // width / height / format / usage in; handle and stride out in the
+    // format/usage slots (WpkDrmGpuBoCreate). Without an entry
+    // the host stages a zero-length buffer and the kernel handler rejects
+    // every GPU-tier allocation.
+    pointer!(crate::dri::DRM_IOCTL_WPK_CREATE_GPU_BO, InOut, 16),
+    // bo_handle / gl_target / ctx_id in, gl_texture_id out. Without an
+    // entry here the host stages a zero-length buffer and the kernel
+    // handler rejects every call with EINVAL, so GPU compositing can
+    // never succeed from a real guest.
+    pointer!(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETENCODER, InOut, 20),
     pointer!(crate::dri::DRM_IOCTL_MODE_PAGE_FLIP, In, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_DUMB, InOut, 32),
@@ -428,6 +501,21 @@ mod tests {
         assert_eq!(query.size_for_pointer_width(8), None);
     }
 
+    /// An ioctl handled in syscalls.rs but absent from this table is
+    /// rejected as EINVAL before the handler runs. That silently demoted
+    /// wlcompositor to its CPU path: the wallpaper texture bind was the
+    /// first unregistered WPK request a real program issued.
+    #[test]
+    fn wpk_gpu_bo_requests_are_registered() {
+        let create = request_contract(crate::dri::DRM_IOCTL_WPK_CREATE_GPU_BO).unwrap();
+        assert_eq!(create.arg_kind, IoctlArgKind::Pointer);
+        assert_eq!(create.size_for_pointer_width(4), Some(16));
+
+        let bind = request_contract(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE).unwrap();
+        assert_eq!(bind.arg_kind, IoctlArgKind::Pointer);
+        assert_eq!(bind.size_for_pointer_width(4), Some(16));
+    }
+
     /// Builds the same encoding the musl `_IOC` macros produce.
     const fn evioc(dir: u32, nr: u32, size: u32) -> u32 {
         (dir << 30) | (size << 16) | ((b'E' as u32) << 8) | nr
@@ -445,6 +533,27 @@ mod tests {
 
         let grab = request_contract(crate::input::EVIOCGRAB).unwrap();
         assert_eq!(grab.arg_kind, IoctlArgKind::ScalarI32);
+    }
+
+    /// Every DRM ioctl a guest actually issues must resolve here. Without a
+    /// contract the host stages a zero-length buffer (`if (!contract)` in
+    /// kernel-worker.ts) and the kernel's handler rejects the call on its
+    /// length check — so the feature is unreachable from a real guest while
+    /// a Rust test that hands `sys_ioctl` a pre-filled buffer still passes.
+    #[test]
+    fn every_drm_ioctl_the_guest_issues_resolves_to_a_contract() {
+        let bind = request_contract(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE)
+            .expect("BIND_FOREIGN_TEXTURE must have a marshalling contract");
+        assert_eq!(bind.arg_kind, IoctlArgKind::Pointer);
+        assert_eq!(bind.direction, IoctlDirection::InOut);
+        // bo_handle / gl_target / ctx_id in, gl_texture_id out.
+        let want = core::mem::size_of::<crate::dri::WpkDrmBindForeignTexture>();
+        assert_eq!(bind.size_for_pointer_width(4), Some(want as u32));
+        assert_eq!(bind.size_for_pointer_width(8), Some(want as u32));
+
+        // The sibling prime-import ioctl, so a regression that drops the
+        // whole DRM block is caught too.
+        assert!(request_contract(crate::dri::DRM_IOCTL_PRIME_FD_TO_HANDLE).is_some());
     }
 
     #[test]

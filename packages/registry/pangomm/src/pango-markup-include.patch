@@ -1,0 +1,22 @@
+--- a/pango/pangomm/attributes.h
++++ b/pango/pangomm/attributes.h
+@@ -29,7 +29,7 @@
+ #include <pangomm/rectangle.h>
+ #include <pangomm/color.h>
+ #include <pangomm/fontdescription.h>
+-#include <pango/pango-attributes.h>
++#include <pango/pango.h>
+ #include <glibmm/slisthandle.h>
+ 
+ 
+--- a/pango/src/attributes.hg
++++ b/pango/src/attributes.hg
+@@ -21,7 +21,7 @@
+ #include <pangomm/rectangle.h>
+ #include <pangomm/color.h>
+ #include <pangomm/fontdescription.h>
+-#include <pango/pango-attributes.h>
++#include <pango/pango.h>
+ #include <glibmm/slisthandle.h>
+ 
+ _DEFS(pangomm,pango)

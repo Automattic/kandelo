@@ -11,6 +11,7 @@ const FRAME = { memorySab: new SharedArrayBuffer(0), off: 0, len: FRAME_LEN };
 
 class RecordingGl {
   log: Array<[string, unknown[]]> = [];
+  createVertexArray() { const vao = {}; this.log.push(["createVertexArray", [vao]]); return vao; }
   bindVertexArray(v: unknown) { this.log.push(["bindVertexArray", [v]]); }
   bindFramebuffer(t: number, f: unknown) { this.log.push(["bindFramebuffer", [t, f]]); }
   viewport(...a: number[]) { this.log.push(["viewport", a]); }
@@ -18,9 +19,26 @@ class RecordingGl {
   enable(c: number) { this.log.push(["enable", [c]]); }
   disable(c: number) { this.log.push(["disable", [c]]); }
   clearColor(...a: number[]) { this.log.push(["clearColor", a]); }
+  clearDepth(...a: number[]) { this.log.push(["clearDepth", a]); }
+  clearStencil(...a: number[]) { this.log.push(["clearStencil", a]); }
+  lineWidth(...a: number[]) { this.log.push(["lineWidth", a]); }
+  depthRange(...a: number[]) { this.log.push(["depthRange", a]); }
+  polygonOffset(...a: number[]) { this.log.push(["polygonOffset", a]); }
+  sampleCoverage(...a: unknown[]) { this.log.push(["sampleCoverage", a]); }
+  bindBuffer(...a: unknown[]) { this.log.push(["bindBuffer", a]); }
+  bindRenderbuffer(...a: unknown[]) { this.log.push(["bindRenderbuffer", a]); }
+  colorMask(...a: boolean[]) { this.log.push(["colorMask", a]); }
+  depthMask(...a: boolean[]) { this.log.push(["depthMask", a]); }
+  stencilFuncSeparate(...a: number[]) { this.log.push(["stencilFuncSeparate", a]); }
+  stencilMaskSeparate(...a: number[]) { this.log.push(["stencilMaskSeparate", a]); }
+  stencilOpSeparate(...a: number[]) { this.log.push(["stencilOpSeparate", a]); }
+  blendColor(...a: number[]) { this.log.push(["blendColor", a]); }
+  vertexAttrib4f(...a: number[]) { this.log.push(["vertexAttrib4f", a]); }
   clear(m: number) { this.log.push(["clear", [m]]); }
   depthFunc(f: number) { this.log.push(["depthFunc", [f]]); }
   blendFuncSeparate(...a: number[]) { this.log.push(["blendFuncSeparate", a]); }
+  blendEquationSeparate(...a: number[]) { this.log.push(["blendEquationSeparate", a]); }
+  bindTexture(t: number, tex: unknown) { this.log.push(["bindTexture", [t, tex]]); }
   cullFace(m: number) { this.log.push(["cullFace", [m]]); }
   frontFace(m: number) { this.log.push(["frontFace", [m]]); }
   useProgram(p: unknown) { this.log.push(["useProgram", [p]]); }

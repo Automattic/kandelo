@@ -8,11 +8,8 @@ import {
   DEMO_LOGIN_PASSWORD,
   DEMO_LOGIN_PASSWORD_HASH,
 } from "../../images/vfs/lib/demo-login";
-import { DeviceFileSystem } from "../src/vfs/device-fs";
 import { ensureDirRecursive } from "../src/vfs/image-helpers";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import { NodeTimeProvider } from "../src/vfs/time";
-import { VirtualPlatformIO } from "../src/vfs/vfs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -115,12 +112,21 @@ function bytes(path: string): Uint8Array {
   return new Uint8Array(readFileSync(path));
 }
 
-function loginPlatform(
+/**
+ * THE ACCOUNT DATABASE AS A ROOT IMAGE, booted by a kernel in a worker.
+ *
+ * `/` is the kernel's, so login policy — the setuid `login` binary,
+ * `/etc/shadow` at 0o640, a home directory that may or may not exist — is
+ * exercised against the root filesystem a machine actually boots, in a kernel
+ * worker rather than main-thread mode.
+ */
+function loginRootfsImage(
   shell = "/bin/login-identity",
   createHome = true,
   accountHome = "/home/maker",
-): VirtualPlatformIO {
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
+): Promise<Uint8Array> {
+  const fs = KandeloImageFs.create();
+  fs.setImageCapacity(64 * 1024 * 1024);
   const enc = new TextEncoder();
   for (const path of ["/etc", "/bin", "/home", "/usr/bin", "/var", "/tmp"]) {
     ensureDirRecursive(fs, path);
@@ -205,13 +211,7 @@ function loginPlatform(
     0,
     bytes(loginWasm),
   );
-  return new VirtualPlatformIO(
-    [
-      { mountPoint: "/", backend: fs },
-      { mountPoint: "/dev", backend: new DeviceFileSystem(), nosuid: true },
-    ],
-    new NodeTimeProvider(),
-  );
+  return fs.saveImage();
 }
 
 async function runLogin(
@@ -237,7 +237,7 @@ async function runLogin(
     gid: options.gid ?? 1000,
     env: options.env,
     stdin: options.stdin ?? `${DEMO_LOGIN_PASSWORD}\n`,
-    io: loginPlatform(
+    rootfsImage: await loginRootfsImage(
       options.accountShell,
       options.createHome,
       options.accountHome,
@@ -302,12 +302,16 @@ describe("first-party guest login", () => {
   });
 
   it("fails instead of starting a shell outside the account's missing canonical home", async () => {
+    // `/home/maker` is one of the kernel's tmpfs scratch mounts, so it always
+    // exists on a booted machine; a missing home needs an account whose home
+    // is not a mount point.
     const result = await runLogin({
       args: "-f maker",
       stdin: "",
       uid: 0,
       gid: 0,
       createHome: false,
+      accountHome: "/home/maker-absent",
     });
 
     expect(result.exitCode).toBe(1);

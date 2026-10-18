@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 
 import { buildLocalVfsAssetGroup } from "../../../scripts/build-local-vfs-asset-group";
+import { loadVfsProductDeploymentMap } from "../../../scripts/vfs-product-deployment";
 import { runTerminalCommand } from "./support/terminal-command";
 import { startScopedStaticServer, type ScopedStaticServer } from "./support/scoped-static-server";
 
@@ -55,6 +56,12 @@ interface NamedCacheSnapshot {
   name: string;
 }
 
+interface BridgeReady {
+  type: "bridge-ready";
+  name: string;
+  appPrefix: string;
+}
+
 let fixtureRoot: string;
 let server: ScopedStaticServer;
 let vimArchiveIdentity: { bytes: number; sha256: string };
@@ -69,6 +76,9 @@ test.describe.serial("real scoped production deployments", () => {
   test.setTimeout(12 * 60_000);
 
   test.beforeAll(async () => {
+    // This hook builds three full production sites and validates a fourth.
+    // Give setup the same bounded budget as the deployment test itself.
+    test.setTimeout(12 * 60_000);
     fixtureRoot = await realpath(
       await mkdtemp(join(tmpdir(), "kandelo-scoped-deployments-")),
     );
@@ -135,13 +145,13 @@ test.describe.serial("real scoped production deployments", () => {
     await rm(fixtureRoot, { force: true, recursive: true });
   });
 
-  test("keeps real sibling shells, workers, VFS groups, and restart state isolated", async ({ browser }) => {
+  test("keeps real sibling shells, workers, VFS groups, and restart state isolated", async ({ browser, browserName }) => {
     const context = await browser.newContext();
     try {
       const pageA = await context.newPage();
       const pageB = await context.newPage();
-      await pageA.goto(`${server.origin}/a/?demo=shell`, { waitUntil: "domcontentloaded" });
-      await pageB.goto(`${server.origin}/candidate-b/?demo=shell`, { waitUntil: "domcontentloaded" });
+      await pageA.goto(`${server.origin}/a/`, { waitUntil: "domcontentloaded" });
+      await pageB.goto(`${server.origin}/candidate-b/`, { waitUntil: "domcontentloaded" });
       await Promise.all([waitForShell(pageA), waitForShell(pageB)]);
 
       await seedUnrelatedCache(pageA);
@@ -172,16 +182,9 @@ test.describe.serial("real scoped production deployments", () => {
       await pageA.reload({ waitUntil: "domcontentloaded" });
       await waitForShell(pageA);
       const corruptCacheBefore = await cachedVimEntry(pageA);
-      const expectedDiagnostic =
-        `Lazy archive SHA-256 ${corrupted.corrupt.sha256} ` +
-        `does not match expected ${vimArchiveIdentity.sha256}`;
-      const shaDiagnostics: string[] = [];
-      pageA.on("console", (message) => {
-        const matches = message.text().match(
-          /Lazy archive SHA-256 [0-9a-f]{64} does not match expected [0-9a-f]{64}/g,
-        );
-        if (matches !== null) shaDiagnostics.push(...matches);
-      });
+      // Rust reports integrity rejection through the guest's EIO path. The
+      // legacy TypeScript decoder's SHA console message is not that contract:
+      // assert both real executions fail and preserve the exact corrupt cache.
       server.clearRequests();
       const firstCorruptAttempt = await runCorruptVimProbe(pageA);
       expect(firstCorruptAttempt).toMatchObject({ exitCode: 0 });
@@ -200,13 +203,15 @@ test.describe.serial("real scoped production deployments", () => {
       expect(secondCorruptAttempt.output).toContain("VIM_CORRUPT_REJECTED");
       expect(secondCorruptAttempt.output).not.toContain("VIM_CORRUPT_MATERIALIZED");
       expect(await cachedVimEntry(pageA)).toEqual(corruptCacheBefore);
-      expect(shaDiagnostics).toEqual([expectedDiagnostic, expectedDiagnostic]);
       expect(server.requests().filter((request) =>
         request.pathname.endsWith("/vim.zip")
       )).toEqual([]);
 
-      await expect(installBridgeAuthority(pageB)).resolves.toEqual({
+      const bridge = await installBridgeAuthority(pageB);
+      expect(bridge).toEqual({
         type: "bridge-ready",
+        name: expect.stringMatching(/^[a-z]+-[a-z]+-[a-z]+$/),
+        appPrefix: `/candidate-b/computer/${bridge.name}/`,
       });
       const missingCache = "scoped-deployment-observation-must-not-create";
       await expect(readCacheSnapshot(pageB, missingCache, false)).rejects.toThrow(
@@ -228,7 +233,7 @@ test.describe.serial("real scoped production deployments", () => {
         },
       });
       expect(candidateBeforeRestart.bridgeCache.entries).toHaveLength(1);
-      assertBridgeAuthority(candidateBeforeRestart.bridgeCache, server.origin);
+      assertBridgeAuthority(candidateBeforeRestart.bridgeCache, server.origin, bridge);
       expect(candidateBeforeRestart.lazyCache.entries.length).toBeGreaterThan(0);
       expect(candidateBeforeRestart.lazyCache.entries.some((entry) =>
         new URL(entry.request.url).pathname.endsWith("/vim.zip")
@@ -247,7 +252,13 @@ test.describe.serial("real scoped production deployments", () => {
           },
         },
       }]);
-      await stopWorker(context, pageA, `${server.origin}/a/service-worker.js`);
+      if (browserName === "chromium") {
+        await stopWorker(context, pageA, `${server.origin}/a/service-worker.js`);
+      } else {
+        // Only Chromium exposes a hard-stop API. A real script update also
+        // replaces the worker realm without disrupting the sibling scope.
+        await replaceScopedWorker(pageA, "restart");
+      }
       await pageA.reload({ waitUntil: "domcontentloaded" });
       await waitForShell(pageA);
       await runTerminalCommand(pageA, "printf restart-a-ok", "restart-a-ok");
@@ -255,7 +266,7 @@ test.describe.serial("real scoped production deployments", () => {
       await expect(durableSnapshot(pageB)).resolves.toEqual(candidateBeforeRestart);
 
       const candidateBeforeUpdate = await durableSnapshot(pageB);
-      await pageA.evaluate(async () => (await navigator.serviceWorker.getRegistration("/a/"))?.update());
+      await replaceScopedWorker(pageA, "update");
       await pageA.reload({ waitUntil: "domcontentloaded" });
       await waitForShell(pageA);
       await runTerminalCommand(pageA, "printf update-a-ok", "update-a-ok");
@@ -264,7 +275,7 @@ test.describe.serial("real scoped production deployments", () => {
 
       await server.replaceRoot("a", join(fixtureRoot, "a-relocated"));
       const relocated = await context.newPage();
-      await relocated.goto(`${server.origin}/a/?demo=shell`, { waitUntil: "domcontentloaded" });
+      await relocated.goto(`${server.origin}/a/`, { waitUntil: "domcontentloaded" });
       await waitForShell(relocated);
       server.clearRequests();
       await runVimVersion(relocated);
@@ -305,13 +316,13 @@ async function writeRelocatedMap(source: string, target: string, path: string): 
 }
 
 async function readAssetGroupSha256(mapPath: string): Promise<string> {
-  const map = JSON.parse(await readFile(mapPath, "utf8")) as {
-    products?: Array<{ asset_group?: { sha256?: unknown } }>;
-  };
-  const hashes = new Set(map.products?.map((product) => product.asset_group?.sha256));
+  // The registered product set owns completeness; an image added to it must
+  // participate in the same authenticated group without a second count here.
+  const map = loadVfsProductDeploymentMap({ mapPath, sourceRoot: repoRoot });
+  const hashes = new Set(map.products.map((product) => product.asset_group?.sha256));
   const [sha256] = hashes;
   if (
-    map.products?.length !== 7 || hashes.size !== 1 ||
+    hashes.size !== 1 ||
     typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)
   ) {
     throw new Error("generated product map has no single exact asset-group identity");
@@ -344,7 +355,16 @@ async function readVimArchiveIdentity(
 }
 
 async function waitForShell(page: Page): Promise<void> {
-  await expect.poll(() => page.evaluate(() => document.body.innerText), { timeout: 180_000 }).toContain("Ready");
+  // The readiness status belongs to the demo guide, which starts closed.
+  // Open it before observing readiness; a running shell alone does not render it.
+  if (await page.locator("aside.kdemo").count() === 0) {
+    await page.getByRole("button", { name: "Demo guide" }).click({
+      timeout: 120_000,
+    });
+  }
+  await expect(page.locator("aside.kdemo .kdemo-status")).toHaveText("Ready", {
+    timeout: 180_000,
+  });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
 }
 
@@ -432,8 +452,8 @@ async function seedUnrelatedCache(page: Page): Promise<void> {
   await page.evaluate(async () => (await caches.open("unrelated-site-cache")).put("seed", new Response("seed")));
 }
 
-async function installBridgeAuthority(page: Page): Promise<unknown> {
-  return page.evaluate(async ({ appPrefix, sessionId }) => {
+async function installBridgeAuthority(page: Page): Promise<BridgeReady> {
+  return page.evaluate(async (sessionId) => {
     const controller = navigator.serviceWorker.controller;
     if (controller === null) {
       throw new Error("service worker does not control candidate deployment");
@@ -445,7 +465,7 @@ async function installBridgeAuthority(page: Page): Promise<unknown> {
     const bridge = new MessageChannel();
     bridge.port1.start();
     const reply = new MessageChannel();
-    const acknowledged = new Promise<unknown>((resolveReply, reject) => {
+    const acknowledged = new Promise<BridgeReady>((resolveReply, reject) => {
       const timeout = window.setTimeout(
         () => reject(new Error("timed out installing candidate bridge")),
         5_000,
@@ -458,11 +478,11 @@ async function installBridgeAuthority(page: Page): Promise<unknown> {
     });
     keepAlive.__scopedDeploymentBridgePorts.push(bridge.port1, reply.port1);
     controller.postMessage(
-      { type: "init-bridge", appPrefix, sessionId },
+      { type: "init-bridge", sessionId },
       [bridge.port2, reply.port2],
     );
     return acknowledged;
-  }, { appPrefix: "/candidate-b/app/", sessionId: SESSION_B });
+  }, SESSION_B);
 }
 
 async function cacheNames(page: Page): Promise<string[]> { return page.evaluate(() => caches.keys()); }
@@ -511,6 +531,7 @@ async function durableSnapshot(page: Page) {
 function assertBridgeAuthority(
   snapshot: NamedCacheSnapshot,
   origin: string,
+  bridge: BridgeReady,
 ): void {
   expect(snapshot.name).toBe(CACHE_B);
   expect(snapshot.entries).toHaveLength(1);
@@ -518,7 +539,7 @@ function assertBridgeAuthority(
   expect(entry.request).toMatchObject({
     body: null,
     method: "GET",
-    url: `${origin}/candidate-b/bridge-authority-v1`,
+    url: `${origin}/candidate-b/bridge-authority-v1/${bridge.name}`,
   });
   expect(entry.response).toMatchObject({
     headers: expect.arrayContaining([["content-type", "application/json"]]),
@@ -547,7 +568,7 @@ function assertBridgeAuthority(
   expect(authority.sessionId).toMatch(
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   );
-  expect(authority.appPrefix).toBe("/candidate-b/app/");
+  expect(authority.appPrefix).toBe(bridge.appPrefix);
   expect(Array.isArray(authority.cookies)).toBe(true);
   for (const value of authority.cookies as unknown[]) {
     expect(value !== null && typeof value === "object").toBe(true);
@@ -566,7 +587,7 @@ function assertBridgeAuthority(
     expect(new TextEncoder().encode(String(cookie.value)).byteLength)
       .toBeLessThanOrEqual(4_096);
     expect(typeof cookie.path).toBe("string");
-    expect(cookie.path).toMatch(/^\/candidate-b\/app\//);
+    expect(String(cookie.path).startsWith(bridge.appPrefix)).toBe(true);
     expect(String(cookie.path)).not.toMatch(/[\u0000-\u001f\u007f;]/);
     expect(new TextEncoder().encode(String(cookie.path)).byteLength)
       .toBeLessThanOrEqual(4_096);
@@ -638,6 +659,34 @@ async function readCacheSnapshot(
     return { entries, name };
   }, { includeExactBytes, name: cacheName });
 }
+async function replaceScopedWorker(page: Page, revision: string): Promise<void> {
+  const script = join(fixtureRoot, "a", "service-worker.js");
+  await writeFile(script, `${await readFile(script, "utf8")}\n// scoped test ${revision}\n`);
+  await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.getRegistration("/a/");
+    const previous = navigator.serviceWorker.controller;
+    if (!registration || !previous) throw new Error("deployment A has no active worker");
+    await new Promise<void>((resolveReplacement, reject) => {
+      const timeout = window.setTimeout(() => {
+        navigator.serviceWorker.removeEventListener("controllerchange", onChange);
+        reject(new Error("timed out replacing deployment A's worker"));
+      }, 30_000);
+      function onChange() {
+        if (navigator.serviceWorker.controller === previous) return;
+        window.clearTimeout(timeout);
+        navigator.serviceWorker.removeEventListener("controllerchange", onChange);
+        resolveReplacement();
+      }
+      navigator.serviceWorker.addEventListener("controllerchange", onChange);
+      void registration.update().catch((error) => {
+        window.clearTimeout(timeout);
+        navigator.serviceWorker.removeEventListener("controllerchange", onChange);
+        reject(error);
+      });
+    });
+  });
+}
+
 async function stopWorker(context: BrowserContext, page: Page, scriptURL: string): Promise<void> {
   const cdp = await context.newCDPSession(page);
   try {

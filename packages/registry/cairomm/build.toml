@@ -1,0 +1,9 @@
+script_path = "packages/registry/cairomm/build-cairomm.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "cf81d0f7c"
+revision = 1
+
+inputs = [
+  "packages/registry/cairomm/build-cairomm.sh",
+  "scripts/package-build-roots.sh",
+]

@@ -1,5 +1,6 @@
 node_modules/
 tests/results/
+test-results/
 playwright-report/
 public/*.vfs
 public/vim.zip

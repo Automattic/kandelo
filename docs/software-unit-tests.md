@@ -440,7 +440,7 @@ scripts/run-php-upstream-tests.sh \
 ```
 
 The browser VFS builder layers PHP and the PHPT source tree onto the canonical
-`rootfs.vfs`, so shell and utility coverage comes from the same packaged rootfs
+`rootfs.vfs.zst`, so shell and utility coverage comes from the same packaged rootfs
 used by other Kandelo hosts. Set `ROOTFS_VFS` or `PHP_WASM` only when testing an
 explicit alternate artifact. The browser page rewrites the rootfs's relative
 lazy executable URLs to Vite-managed assets before the legacy shared-filesystem
@@ -580,8 +580,9 @@ depend on `msync` for WAL-index coherence. That makes the observed
 `busy2.test`, `wal3.test`, and `walsetlk.test` failures kernel/filesystem
 correctness failures to fix before treating full SQLite numbers as meaningful.
 
-Other known blockers are the browser `SharedFS` 64-FD cap reducing
-`manydb.test`, a SQLite testfixture build mismatch around
+Other known blockers were recorded before the kernel took over the browser
+filesystem: the former browser filesystem's 64-FD cap reduced `manydb.test`
+(that filesystem is gone; the run has not been repeated since), a SQLite testfixture build mismatch around
 `SQLITE_ENABLE_UPDATE_DELETE_LIMIT`, and a browser artifact bug where the
 timeboxed full run exported a valid 1024-byte SQLite DB with no `jobs` table.
 
@@ -908,8 +909,6 @@ Build or fetch `kernel.wasm` before running any browser or Node suite:
 
 ```bash
 ./run.sh setup
-# or
-scripts/fetch-binaries.sh
 ```
 
 (`bash build.sh` still works as a deprecated delegator to `./run.sh setup`.)

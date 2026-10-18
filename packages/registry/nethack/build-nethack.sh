@@ -25,8 +25,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 # Reproducibility: NetHack's host makedefs bakes the build date/time into
@@ -50,10 +51,10 @@ SRC_DIR="$WORK_DIR/nethack-src"
 BIN_DIR="$WORK_DIR/bin"
 RUNTIME_DIR="$WORK_DIR/runtime"
 SYSROOT="$REPO_ROOT/sysroot"
-NETHACK_VERSION="${WASM_POSIX_DEP_VERSION:-${NETHACK_VERSION:-3.6.7}}"
+NETHACK_VERSION="$WASM_POSIX_DEP_VERSION"
 NETHACK_SHORT="${NETHACK_VERSION//./}" # Upstream tarballs drop the dots.
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.nethack.org/download/${NETHACK_VERSION}/nethack-${NETHACK_SHORT}-src.tgz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-98cf67df6debf9668a61745aa84c09bcab362e5d33f5b944ec5155d44d2aacb2}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 NETHACK_HACKDIR="${NETHACK_HACKDIR:-/usr/share/nethack}"
 NETHACK_VAR_PLAYGROUND="${NETHACK_VAR_PLAYGROUND:-/home/.nethack}"

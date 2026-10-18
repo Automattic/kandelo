@@ -1,0 +1,36 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+#
+# libdbus-1, the reference D-Bus client library, from the same dbus 1.14.10
+# release the `dbus` package builds its session daemon from. That package
+# ships programs only. QtDBus links this library (qtbase configures with
+# FEATURE_dbus_linked), which is what lets Quickshell's freedesktop
+# notification server own org.freedesktop.Notifications on the Omarchy
+# desktop's session bus.
+#
+# expat is the daemon's dependency, not the library's, but dbus's configure
+# checks for it unconditionally, so the library build resolves it too.
+kind = "library"
+
+name = "libdbus"
+version = "1.14.10"
+kernel_abi = 45
+depends_on = ["expat@2.8.3"]
+arches = ["wasm32"]
+
+[source]
+url = "https://dbus.freedesktop.org/releases/dbus/dbus-1.14.10.tar.xz"
+sha256 = "ba1f21d2bd9d339da2d4aa8780c09df32fea87998b73da24f49ab9df1e36a50f"
+provider = "archive"
+
+[license]
+spdx = "AFL-2.1 OR GPL-2.0-or-later"
+url = "https://gitlab.freedesktop.org/dbus/dbus/-/blob/dbus-1.14.10/COPYING"
+
+[build]
+script_path = "packages/registry/libdbus/build-libdbus.sh"
+
+[outputs]
+libs = ["lib/libdbus-1.a"]
+headers = ["include/dbus-1.0", "lib/dbus-1.0/include"]
+pkgconfig = ["lib/pkgconfig/dbus-1.pc"]

@@ -17,11 +17,15 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use wasm_posix_shared::Errno;
 
 use crate::ofd::FileType;
-use crate::process::{EventFdState, Process, SignalFdState, TimerFdState};
+use crate::process::{EpollInstance, EventFdState, Process, SignalFdState, TimerFdState};
 
 #[derive(Debug)]
 struct SharedBacking<T> {
     refs: u32,
+    /// Shared-mapping references (see [`SharedBackingTable::pin`]). Counted
+    /// apart from `refs`, which is one per owning OFD and whose last release
+    /// is the end of the description's lifetime.
+    pins: u32,
     value: T,
     #[cfg(test)]
     generation: u64,
@@ -50,12 +54,13 @@ impl<T> SharedBackingTable<T> {
             self.next_generation = self.next_generation.wrapping_add(1).max(1);
             SharedBacking {
                 refs: 1,
+                pins: 0,
                 value,
                 generation,
             }
         };
         #[cfg(not(test))]
-        let entry = SharedBacking { refs: 1, value };
+        let entry = SharedBacking { refs: 1, pins: 0, value };
 
         if let Some((idx, slot)) = self
             .entries
@@ -91,12 +96,15 @@ impl<T> SharedBackingTable<T> {
             .entries
             .get_mut(idx)
             .and_then(Option::as_mut)
+            .filter(|entry| entry.refs > 0)
             .ok_or(Errno::EBADF)?;
         entry.refs = entry.refs.checked_add(1).ok_or(Errno::EOVERFLOW)?;
         Ok(())
     }
 
-    /// Drop one owning OFD reference. Returns true when the backing was freed.
+    /// Drop one owning OFD reference. Returns true when that was the last
+    /// one: the descriptions' lifetime is over. The value itself is freed
+    /// then too, unless a shared mapping still pins it (see [`Self::pin`]).
     pub fn release(&mut self, idx: usize) -> bool {
         let Some(slot) = self.entries.get_mut(idx) else {
             return false;
@@ -104,12 +112,57 @@ impl<T> SharedBackingTable<T> {
         let Some(entry) = slot.as_mut() else {
             return false;
         };
+        if entry.refs == 0 {
+            return false;
+        }
         if entry.refs > 1 {
             entry.refs -= 1;
             return false;
         }
-        *slot = None;
+        entry.refs = 0;
+        if entry.pins == 0 {
+            *slot = None;
+        }
         true
+    }
+
+    /// Keep a value alive for a shared mapping after its descriptors close.
+    ///
+    /// POSIX: `mmap` adds a reference to the file that a later `close` of the
+    /// descriptor does not remove. Only a value some OFD still owns can be
+    /// pinned; a pinned value no OFD owns is reachable only through the pin.
+    pub fn pin(&mut self, idx: usize) -> Result<(), Errno> {
+        let entry = self
+            .entries
+            .get_mut(idx)
+            .and_then(Option::as_mut)
+            .filter(|entry| entry.refs > 0)
+            .ok_or(Errno::EBADF)?;
+        entry.pins = entry.pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        Ok(())
+    }
+
+    /// Drop a [`Self::pin`], freeing the value once no OFD and no other
+    /// mapping holds it.
+    pub fn unpin(&mut self, idx: usize) {
+        let Some(slot) = self.entries.get_mut(idx) else {
+            return;
+        };
+        let Some(entry) = slot.as_mut() else {
+            return;
+        };
+        entry.pins = entry.pins.saturating_sub(1);
+        if entry.pins == 0 && entry.refs == 0 {
+            *slot = None;
+        }
+    }
+
+    /// Whether some OFD still owns the value, as opposed to only a mapping.
+    pub fn is_owned(&self, idx: usize) -> bool {
+        self.entries
+            .get(idx)
+            .and_then(Option::as_ref)
+            .is_some_and(|entry| entry.refs > 0)
     }
 
     pub fn ref_count(&self, idx: usize) -> Option<u32> {
@@ -133,6 +186,10 @@ impl<T> SharedBackingTable<T> {
 pub struct MemFdBacking {
     pub data: Vec<u8>,
     pub offset: i64,
+    /// Advanced by every mutation of `data` (write, pwrite, ftruncate, a
+    /// shared-mapping writeback). The shared-mapping layer compares it to
+    /// learn that descriptor I/O changed a mapped memfd.
+    pub content_gen: u64,
 }
 
 impl MemFdBacking {
@@ -140,7 +197,13 @@ impl MemFdBacking {
         Self {
             data: Vec::new(),
             offset: 0,
+            content_gen: 0,
         }
+    }
+
+    /// Record a mutation of `data`.
+    pub fn touch_modified(&mut self) {
+        self.content_gen = self.content_gen.wrapping_add(1);
     }
 }
 
@@ -219,6 +282,7 @@ static PROCFS_BUFS: GlobalBackingTable<ProcfsBacking> = GlobalBackingTable::new(
 static SYNTHETIC_REGULARS: GlobalBackingTable<SyntheticRegularBacking> =
     GlobalBackingTable::new();
 static PCM_STREAMS: GlobalBackingTable<crate::audio::PcmStream> = GlobalBackingTable::new();
+static EPOLLS: GlobalBackingTable<EpollInstance> = GlobalBackingTable::new();
 
 // Keep synthetic backing handles disjoint from the small negative sentinels
 // used by pipes, devices, and procfs.
@@ -264,7 +328,11 @@ pub fn alloc_synthetic_regular() -> i64 {
 }
 
 pub fn is_synthetic_regular_handle(host_handle: i64) -> bool {
+    // Bounded below by the tmpfs file-handle base so the two negative-handle
+    // classes stay disjoint: synthetic regulars occupy (-TMPFS_FILE_HANDLE_BASE,
+    // -SYNTHETIC_REGULAR_HANDLE_BASE], tmpfs handles live below that.
     host_handle <= -SYNTHETIC_REGULAR_HANDLE_BASE
+        && host_handle > -crate::tmpfs::TMPFS_FILE_HANDLE_BASE
 }
 
 fn synthetic_regular_idx(host_handle: i64) -> Result<usize, Errno> {
@@ -276,6 +344,13 @@ fn synthetic_regular_idx(host_handle: i64) -> Result<usize, Errno> {
         .and_then(i64::checked_neg)
         .and_then(|idx| usize::try_from(idx).ok())
         .ok_or(Errno::EBADF)
+}
+
+/// Epoll instances, one per open file description that `epoll_create1`
+/// created. Sharing them here is what lets a `fork` child use an inherited
+/// epoll descriptor and see the parent's registrations, and vice versa.
+pub fn with_epolls<R>(f: impl for<'a> FnOnce(&'a mut SharedBackingTable<EpollInstance>) -> R) -> R {
+    EPOLLS.with(f)
 }
 
 pub fn with_pcm_streams<R>(
@@ -307,9 +382,12 @@ pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
             | FileType::SignalFd
             | FileType::MemFd
             | FileType::PcmPlayback
+            | FileType::Epoll
     ) || (file_type == FileType::Regular
         && (crate::procfs::is_procfs_buf_handle(host_handle)
-            || is_synthetic_regular_handle(host_handle)))
+            || is_synthetic_regular_handle(host_handle)
+            || crate::tmpfs::is_tmpfs_file_handle(host_handle)
+            || crate::rootfs::is_rootfs_file_handle(host_handle)))
 }
 
 /// Whether an encoded handle currently names a live backing owned here.
@@ -325,10 +403,13 @@ pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
             .is_ok_and(|idx| with_timerfds(|table| table.get(idx).is_some())),
         FileType::SignalFd => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_signalfds(|table| table.get(idx).is_some())),
+        // A memfd only a shared mapping still pins has no description left.
         FileType::MemFd => negative_handle_idx(host_handle)
-            .is_ok_and(|idx| with_memfds(|table| table.get(idx).is_some())),
+            .is_ok_and(|idx| with_memfds(|table| table.is_owned(idx))),
         FileType::PcmPlayback => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_pcm_streams(|table| table.get(idx).is_some())),
+        FileType::Epoll => negative_handle_idx(host_handle)
+            .is_ok_and(|idx| with_epolls(|table| table.get(idx).is_some())),
         FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
             with_procfs_bufs(|table| {
                 table
@@ -339,6 +420,12 @@ pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
         FileType::Regular if is_synthetic_regular_handle(host_handle) => {
             synthetic_regular_idx(host_handle)
                 .is_ok_and(|idx| with_synthetic_regulars(|table| table.get(idx).is_some()))
+        }
+        FileType::Regular if crate::tmpfs::is_tmpfs_file_handle(host_handle) => {
+            crate::tmpfs::handle_is_live(host_handle)
+        }
+        FileType::Regular if crate::rootfs::is_rootfs_file_handle(host_handle) => {
+            crate::rootfs::handle_is_live(host_handle)
         }
         _ => false,
     }
@@ -490,11 +577,22 @@ pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Er
         FileType::PcmPlayback => {
             with_pcm_streams(|table| table.add_ref(negative_handle_idx(host_handle)?))?
         }
+        FileType::Epoll => with_epolls(|table| table.add_ref(negative_handle_idx(host_handle)?))?,
         FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
             with_procfs_bufs(|table| table.add_ref(crate::procfs::procfs_buf_idx(host_handle)))?
         }
         FileType::Regular if is_synthetic_regular_handle(host_handle) => {
             with_synthetic_regulars(|table| table.add_ref(synthetic_regular_idx(host_handle)?))?
+        }
+        FileType::Regular if crate::tmpfs::is_tmpfs_file_handle(host_handle) => {
+            if !crate::tmpfs::add_ref_handle(host_handle) {
+                return Err(Errno::EBADF);
+            }
+        }
+        FileType::Regular if crate::rootfs::is_rootfs_file_handle(host_handle) => {
+            if !crate::rootfs::add_ref_handle(host_handle) {
+                return Err(Errno::EBADF);
+            }
         }
         _ => return Ok(false),
     }
@@ -523,12 +621,21 @@ pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
                 freed
             })
         }
+        FileType::Epoll => {
+            negative_handle_idx(host_handle).is_ok_and(|idx| with_epolls(|table| table.release(idx)))
+        }
         FileType::Regular if crate::procfs::is_procfs_buf_handle(host_handle) => {
             with_procfs_bufs(|table| table.release(crate::procfs::procfs_buf_idx(host_handle)))
         }
         FileType::Regular if is_synthetic_regular_handle(host_handle) => {
             synthetic_regular_idx(host_handle)
                 .is_ok_and(|idx| with_synthetic_regulars(|table| table.release(idx)))
+        }
+        FileType::Regular if crate::tmpfs::is_tmpfs_file_handle(host_handle) => {
+            crate::tmpfs::release_handle(host_handle)
+        }
+        FileType::Regular if crate::rootfs::is_rootfs_file_handle(host_handle) => {
+            crate::rootfs::release_handle(host_handle)
         }
         _ => false,
     }

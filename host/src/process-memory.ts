@@ -325,6 +325,14 @@ export interface ProcessMemoryAllocationRequest {
 }
 
 export interface ProcessMemoryAllocatorOptions {
+  /**
+   * Optional host allocation boundary. WebKit constructs fresh process
+   * memories in disposable worker realms to avoid synchronous collection
+   * stalling the kernel realm. Admission remains owned by this allocator.
+   */
+  createMemoryAsync?: (
+    request: Readonly<ProcessMemoryAllocationRequest>,
+  ) => Promise<WebAssembly.Memory>;
   /** Maximum number of simultaneously live process address spaces. */
   maxMemories: number;
   /**
@@ -644,6 +652,7 @@ export class ProcessMemoryAllocator {
   private readonly records = new Map<number, ProcessMemoryRecord>();
   private readonly recordsByMemory =
     new WeakMap<WebAssembly.Memory, ProcessMemoryRecord>();
+  private readonly allocatedMemories = new WeakSet<WebAssembly.Memory>();
   private readonly observedTargets = new WeakMap<
     object,
     { allocationId: number; targetId: number }
@@ -661,6 +670,8 @@ export class ProcessMemoryAllocator {
   private readonly retirementTelemetryOrder: number[] = [];
   private liveMemories = 0;
   private liveBytes = 0;
+  private pendingAllocations = 0;
+  private pendingAllocationBytes = 0;
   private retirementBacklogMemories = 0;
   private retirementBacklogBytes = 0;
   private retirementTelemetryRecords = 0;
@@ -746,7 +757,38 @@ export class ProcessMemoryAllocator {
   }
 
   acquire(request: ProcessMemoryAllocationRequest): ProcessMemoryLease {
+    if (this.options.createMemoryAsync) {
+      throw new Error("This host requires asynchronous process memory allocation");
+    }
     return this.acquireInternal(request);
+  }
+
+  get hasAsyncMemoryFactory(): boolean {
+    return this.options.createMemoryAsync !== undefined;
+  }
+
+  /**
+   * Capture a committed fork before the first yield. Both the temporary
+   * snapshot and the child's fresh address space pass admission together.
+   * A sibling exec can retire the parent while construction is pending;
+   * it cannot change the bytes this child inherits.
+   */
+  acquireForkClone(
+    parentMemory: WebAssembly.Memory,
+    ptrWidth: 4 | 8,
+    maximumPages: number,
+  ): Promise<ProcessMemoryLease> {
+    if (!this.options.createMemoryAsync) {
+      return Promise.resolve(acquireForkMemoryClone(
+        this, parentMemory, ptrWidth, maximumPages,
+      ));
+    }
+    const source = parentMemory.buffer;
+    return this.acquireAsynchronously({
+      ptrWidth,
+      initialPages: source.byteLength / WASM_PAGE_SIZE,
+      maximumPages,
+    }, source);
   }
 
   /**
@@ -763,7 +805,9 @@ export class ProcessMemoryAllocator {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       try {
-        return this.acquire(request);
+        return this.options.createMemoryAsync
+          ? await this.acquireAsynchronously(request)
+          : this.acquire(request);
       } catch (error) {
         if (!(error instanceof ProcessMemoryRetirementBacklogError)) {
           throw error;
@@ -816,22 +860,105 @@ export class ProcessMemoryAllocator {
     }
   }
 
-  private acquireInternal(
+  private admitAllocation(
     request: ProcessMemoryAllocationRequest,
-  ): ProcessMemoryLease {
+    snapshotBytes = 0,
+  ): number {
     this.validateRequest(request);
     this.refreshOwnedBytes();
-    const requestedBytes = request.initialPages * WASM_PAGE_SIZE;
+    const requestedBytes = this.safeAdd(
+      request.initialPages * WASM_PAGE_SIZE, snapshotBytes,
+    );
     if (requestedBytes > this.options.maxTotalBytes) {
       throw new ProcessMemoryCapacityError(
         `Process memory request exceeds admission budget ${this.options.maxTotalBytes}`,
-        requestedBytes,
-        this.liveBytes,
-        this.options.maxTotalBytes,
+        requestedBytes, this.liveBytes, this.options.maxTotalBytes,
       );
     }
     this.requireAllocationCapacity(requestedBytes);
-    const memory = this.createMemory(request);
+    return requestedBytes;
+  }
+
+  private acquireInternal(
+    request: ProcessMemoryAllocationRequest,
+  ): ProcessMemoryLease {
+    this.admitAllocation(request);
+    return this.registerFreshMemory(request, this.createMemory(request));
+  }
+
+  private acquireAsynchronously(
+    request: ProcessMemoryAllocationRequest,
+    source?: ArrayBufferLike,
+  ): Promise<ProcessMemoryLease> {
+    // Copy the descriptor too: callers cannot alter an admitted request
+    // while another worker is constructing its memory.
+    const admitted = { ...request };
+    const reservedBytes = this.admitAllocation(admitted, source?.byteLength);
+    this.pendingAllocations += 1;
+    this.pendingAllocationBytes = this.safeAdd(
+      this.pendingAllocationBytes, reservedBytes,
+    );
+    let snapshot: ArrayBuffer | undefined;
+    try {
+      if (source !== undefined) {
+        snapshot = new ArrayBuffer(source.byteLength);
+        copyArrayBufferInChunks(snapshot, source);
+      }
+    } catch (error) {
+      this.releaseAllocationReservation(reservedBytes);
+      throw error;
+    }
+    return this.finishAsyncAllocation(admitted, reservedBytes, snapshot);
+  }
+
+  private async finishAsyncAllocation(
+    request: ProcessMemoryAllocationRequest,
+    reservedBytes: number,
+    snapshot?: ArrayBuffer,
+  ): Promise<ProcessMemoryLease> {
+    try {
+      const memory = await this.options.createMemoryAsync!(request);
+      const buffer = memory.buffer as ArrayBufferLike;
+      if (!(memory instanceof WebAssembly.Memory)
+        || !(buffer instanceof SharedArrayBuffer)
+        || buffer.byteLength !== request.initialPages * WASM_PAGE_SIZE
+        || this.allocatedMemories.has(memory)) {
+        throw new Error("Host did not construct the requested fresh process memory");
+      }
+      // Guests can grow their own memories during the await. Recheck the
+      // sampled budget before exposing this new address space to the kernel.
+      this.refreshOwnedBytes();
+      if (this.liveBytes + this.pendingAllocationBytes > this.options.maxTotalBytes) {
+        throw new ProcessMemoryCapacityError(
+          "Process memory grew beyond the pending allocation budget",
+          reservedBytes, this.liveBytes, this.options.maxTotalBytes,
+        );
+      }
+      const lease = this.registerFreshMemory(request, memory);
+      try {
+        if (snapshot !== undefined) {
+          copyArrayBufferInChunks(memory.buffer, snapshot);
+        }
+        return lease;
+      } catch (error) {
+        lease.release();
+        throw error;
+      }
+    } finally {
+      this.releaseAllocationReservation(reservedBytes);
+    }
+  }
+
+  private releaseAllocationReservation(bytes: number): void {
+    this.pendingAllocations -= 1;
+    this.pendingAllocationBytes -= bytes;
+  }
+
+  private registerFreshMemory(
+    request: ProcessMemoryAllocationRequest,
+    memory: WebAssembly.Memory,
+  ): ProcessMemoryLease {
+    this.allocatedMemories.add(memory);
     const record: ProcessMemoryRecord = {
       allocationId: this.nextAllocationId++,
       memory,
@@ -901,6 +1028,9 @@ export class ProcessMemoryAllocator {
   }
 
   clear(): void {
+    if (this.pendingAllocations !== 0) {
+      throw new Error("Cannot clear process memory allocator with pending allocations");
+    }
     for (const record of this.records.values()) {
       if (record.state === "leased") {
         throw new Error(
@@ -950,9 +1080,9 @@ export class ProcessMemoryAllocator {
       retirementBacklogMemories: this.retirementBacklogMemories,
       retirementBacklogBytes: this.retirementBacklogBytes,
       chargedMemories:
-        this.liveMemories + this.retirementBacklogMemories,
+        this.liveMemories + this.pendingAllocations + this.retirementBacklogMemories,
       chargedBytes: this.safeAdd(
-        this.liveBytes,
+        this.safeAdd(this.liveBytes, this.pendingAllocationBytes),
         this.retirementBacklogBytes,
       ),
     };
@@ -1047,7 +1177,7 @@ export class ProcessMemoryAllocator {
     if (this.retirementBacklogSaturated()) {
       throw this.createRetirementBacklogError(requestedBytes);
     }
-    if (this.liveMemories >= this.options.maxMemories) {
+    if (this.liveMemories + this.pendingAllocations >= this.options.maxMemories) {
       throw new ProcessMemoryCapacityError(
         `Live process memory object budget ${this.options.maxMemories} is exhausted`,
         requestedBytes,
@@ -1055,7 +1185,7 @@ export class ProcessMemoryAllocator {
         this.options.maxTotalBytes,
       );
     }
-    if (this.liveBytes + requestedBytes > this.options.maxTotalBytes) {
+    if (this.liveBytes + this.pendingAllocationBytes + requestedBytes > this.options.maxTotalBytes) {
       throw new ProcessMemoryCapacityError(
         `Live process memory admission budget ${this.options.maxTotalBytes} is exhausted`,
         requestedBytes,

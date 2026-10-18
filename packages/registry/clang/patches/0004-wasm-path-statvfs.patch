@@ -1,0 +1,22 @@
+# LLVM portability boundary: POSIX statvfs has no mount locality flag
+#
+# LLVM's fallback assumes BSD MNT_LOCAL, which musl/POSIX do not expose.
+# A wasm target can have memory, host, OPFS, and fetched archive mounts;
+# statvfs does not distinguish their locality. Use LLVM's conservative
+# "nonlocal" answer, as on Haiku/Cygwin, rather than inventing MNT_LOCAL
+# or claiming every mount is local. LLVM then uses its normal buffered
+# file-output path. This does not replace mmap/msync/munmap semantics.
+#
+# Upstream: llvm-project, tag llvmorg-21.1.7 (LLVM 21.1.7).
+--- a/llvm/lib/Support/Unix/Path.inc	2025-12-01 07:58:50
++++ b/llvm/lib/Support/Unix/Path.inc	2026-08-27 13:49:18
+@@ -551,6 +551,9 @@
+ 
+   // vmount entry not found; "remote" is the conservative answer.
+   return false;
++#elif defined(__wasm__)
++  // POSIX statvfs has no locality flag; report unknown conservatively.
++  return false;
+ #elif defined(__MVS__)
+   // The file system can have an arbitrary structure on z/OS; must go with the
+   // conservative answer.

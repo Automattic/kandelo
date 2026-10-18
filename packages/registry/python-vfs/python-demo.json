@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "defaultProfile": "python",
+  "profiles": {
+    "python": {
+      "identity": {
+        "title": "Python",
+        "summary": "Runs `python3 -c` to print the CPython version and emit a small JSON probe.",
+        "accent": "#3776ab",
+        "glyph": "py"
+      },
+      "init": {
+        "shellCommand": "PYTHONHOME=/usr PYTHONDONTWRITEBYTECODE=1 python3 -c \"import json, sys; print('Python', sys.version.split()[0]); print(json.dumps({'kandelo': 'software'}))\""
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer"
+      }
+    }
+  }
+}

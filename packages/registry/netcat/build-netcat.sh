@@ -5,18 +5,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-NETCAT_VERSION="${WASM_POSIX_DEP_VERSION:-${NETCAT_VERSION:-0.7.1}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://downloads.sourceforge.net/project/netcat/netcat/${NETCAT_VERSION}/netcat-${NETCAT_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-30719c9a4ffbcf15676b8f528233ccc54ee6cba96cb4590975f5fd60c68a066f}"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+NETCAT_VERSION="$WASM_POSIX_DEP_VERSION"
+
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
 SRC_DIR="$WORK_DIR/netcat-src"
 BIN_DIR="$WORK_DIR/bin"
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
+# shellcheck source=/dev/null
+
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
 if [ "$TARGET_ARCH" != "wasm32" ]; then
     echo "ERROR: GNU Netcat is currently packaged for wasm32 only, got $TARGET_ARCH" >&2
@@ -48,20 +53,12 @@ if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$exp
     rm -rf "$SRC_DIR" "$BIN_DIR"
 fi
 
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading GNU Netcat $NETCAT_VERSION..."
-    DOWNLOAD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-netcat-src.XXXXXX")"
-    trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
-    TARBALL="netcat-${NETCAT_VERSION}.tar.gz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$DOWNLOAD_DIR/$TARBALL"
-    echo "==> Verifying source sha256..."
-    echo "$SOURCE_SHA256  $DOWNLOAD_DIR/$TARBALL" | shasum -a 256 -c -
-    mkdir -p "$SRC_DIR"
-    tar xzf "$DOWNLOAD_DIR/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    printf '%s\n' "$expected_source_marker" > "$SOURCE_MARKER"
-    trap - EXIT
-    rm -rf "$DOWNLOAD_DIR"
-fi
+# Under the resolver the verified, unpacked source arrives in
+# WASM_POSIX_DEP_SOURCE_DIR (from the resolver's source-archive cache, so a
+# rebuild does not depend on the upstream mirror being up); a direct run
+# downloads the archive and checks its sha256.
+kandelo_package_stage_primary_source netcat "$SRC_DIR" "$WORK_DIR"
+printf '%s\n' "$expected_source_marker" > "$SOURCE_MARKER"
 
 cd "$SRC_DIR"
 

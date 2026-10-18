@@ -1,0 +1,29 @@
+kind = "library"
+name = "libmad"
+version = "0.16.4"
+kernel_abi = 47
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://ftp.debian.org/debian/pool/main/libm/libmad/libmad_0.16.4.orig.tar.xz"
+sha256 = "cd4c3aa4bf894c957b9b8662eca109927b43b19adafc4ff67eb5349d29d45198"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://codeberg.org/tenacityteam/libmad/src/tag/0.16.4/COPYRIGHT"
+
+[build]
+script_path = "packages/registry/libmad/build-libmad.sh"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[outputs]
+libs = ["lib/libmad.a"]
+headers = ["include/mad.h"]
+pkgconfig = ["lib/pkgconfig/mad.pc"]

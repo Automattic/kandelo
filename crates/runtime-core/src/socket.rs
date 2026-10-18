@@ -18,6 +18,31 @@ use wasm_posix_shared::Errno;
 // Mirrors the `host_handle_fork_ref` / `host_handle_close_ref` pattern in
 // `crates/kernel/src/ofd.rs` for plain-file host handles.
 
+// Process-local socket indexes cannot identify connections in a shared host
+// backend: unrelated processes routinely both own socket slot zero.
+static NEXT_HOST_NET_HANDLE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+pub fn allocate_host_net_handle() -> Result<i32, Errno> {
+    NEXT_HOST_NET_HANDLE
+        .fetch_update(
+            core::sync::atomic::Ordering::Relaxed,
+            core::sync::atomic::Ordering::Relaxed,
+            |next| {
+                if next < i32::MAX as u32 {
+                    Some(next + 1)
+                } else {
+                    None
+                }
+            },
+        )
+        .map(|value| value as i32)
+        .map_err(|_| Errno::ENOBUFS)
+}
+pub fn reserve_host_net_handle(handle: i32) {
+    if handle >= 0 {
+        NEXT_HOST_NET_HANDLE.fetch_max(handle as u32 + 1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 struct HostNetRefs(UnsafeCell<Option<BTreeMap<i32, u32>>>);
 unsafe impl Sync for HostNetRefs {}
 
@@ -32,6 +57,7 @@ fn get_host_net_refs() -> &'static mut BTreeMap<i32, u32> {
 /// (fork or spawn child). If the handle is being inherited for the first
 /// time, sets the count to 2 (parent + child). Otherwise increments by 1.
 pub fn host_net_handle_fork_ref(h: i32) {
+    reserve_host_net_handle(h);
     let refs = get_host_net_refs();
     let count = refs.entry(h).or_insert(1); // 1 = the parent already has it
     *count += 1; // +1 for the child
@@ -594,6 +620,16 @@ pub fn inherit_inet_binding_owners(parent_pid: u32, child_pid: u32, sock_idx: us
     inherit_binding_owner(tcp6_bindings(), parent, child);
 }
 
+/// Credentials `SO_PEERCRED` reports for a socket's peer: the process ID
+/// and effective user/group IDs, captured when the connection was made
+/// (Linux semantics; they do not follow later `setuid` or exit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerCred {
+    pub pid: u32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
 /// Per-socket kernel state.
 ///
 /// `Clone` is hand-written (not derived) so that fork/spawn cloning
@@ -636,10 +672,18 @@ pub struct SocketInfo {
     pub bind_port: u16,
     /// Peer IPv4 address (for connected AF_INET sockets).
     pub peer_addr: [u8; 4],
+    /// Selected source for an IPv4 UDP association with a wildcard binding.
+    pub udp_source_addr: Option<[u8; 4]>,
     /// Peer IPv6 address (for connected AF_INET6 sockets).
     pub peer_addr6: [u8; 16],
     /// Peer port (for connected AF_INET sockets).
     pub peer_port: u16,
+    /// AF_UNIX stream peer credentials for `SO_PEERCRED`, as Linux records
+    /// them: a socketpair and a listener hold their creator's; an accepted
+    /// socket holds the connecting process's, captured at `connect()`; a
+    /// connecting socket copies its listener's, captured at `listen()`.
+    /// `None` for every other socket.
+    pub peer_cred: Option<PeerCred>,
     /// Legacy pending connection socket indices for manually constructed or
     /// pre-shared-queue listeners. Normal AF_UNIX, AF_INET, and AF_INET6
     /// stream listeners use `shared_backlog_idx` instead.
@@ -703,8 +747,10 @@ impl SocketInfo {
             bind_addr6: [0; 16],
             bind_port: 0,
             peer_addr: [0; 4],
+            udp_source_addr: None,
             peer_addr6: [0; 16],
             peer_port: 0,
+            peer_cred: None,
             listen_backlog: Vec::new(),
             shared_backlog_idx: None,
             accept_wake_idx: None,
@@ -785,8 +831,10 @@ impl Clone for SocketInfo {
             bind_addr6: self.bind_addr6,
             bind_port: self.bind_port,
             peer_addr: self.peer_addr,
+            udp_source_addr: self.udp_source_addr,
             peer_addr6: self.peer_addr6,
             peer_port: self.peer_port,
+            peer_cred: self.peer_cred,
             listen_backlog: Vec::new(), // consume-once: don't double-accept
             shared_backlog_idx: self.shared_backlog_idx,
             accept_wake_idx: self.accept_wake_idx,
@@ -923,6 +971,8 @@ impl SocketTable {
 
 /// A pending stream connection waiting in a shared accept queue.
 pub struct PendingConnection {
+    /// Actual destination IPv4 address selected by the routing backend.
+    pub local_addr: [u8;4],
     pub peer_addr: [u8; 4],
     pub peer_addr6: [u8; 16],
     /// True when `peer_addr6` is a native IPv6 source. For an IPv4 peer
@@ -935,6 +985,9 @@ pub struct PendingConnection {
     /// is installed so a recycled socket slot cannot receive stale OOB data.
     pub peer_pid: u32,
     pub peer_sock_idx: Option<usize>,
+    /// AF_UNIX: the connecting process's credentials at `connect()`, which
+    /// the accepted socket reports through `SO_PEERCRED`. `None` for INET.
+    pub peer_cred: Option<PeerCred>,
     /// Recv pipe index (in the global pipe table). Host writes incoming
     /// TCP data here; the accepting process reads from it.
     pub recv_pipe_idx: usize,

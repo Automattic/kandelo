@@ -11,13 +11,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR/tcl-work" wasm32
 
-TCL_VERSION="${WASM_POSIX_DEP_VERSION:-${TCL_VERSION:-8.6.16}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://prdownloads.sourceforge.net/tcl/tcl${TCL_VERSION}-src.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-91cb8fa61771c63c262efb553059b7c7ad6757afa5857af6265e4b0bdc2a14a5}"
+TCL_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/source"
     BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/build"
@@ -170,8 +171,7 @@ fi
 # --- Fork instrumentation ---
 # TCL's exec command uses fork(). Apply fork instrumentation to tclsh.
 # wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
-# no onlylist needed. Must run last — it hardcodes mutable-global offsets
-# and any later pass reordering globals would corrupt the fork buffer.
+# no onlylist needed. The tool also runs wasm-opt over the code it adds.
 TCLSH="$INSTALL_DIR/bin/tclsh8.6"
 if [ -f "$TCLSH" ]; then
     FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"

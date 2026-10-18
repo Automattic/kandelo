@@ -19,13 +19,12 @@ import {
   WORDPRESS_SETUP_SQLITE_PLUGIN_ALIAS,
   WORDPRESS_SQLITE_PLUGIN_GUEST_PATH,
 } from "../../images/vfs/scripts/wordpress-source-layout";
-import { resolveNodeNpmSource } from "../../images/vfs/scripts/build-node-vfs-image";
 import { resolveLampSystemTablesDirectory } from "../../images/vfs/scripts/build-lamp-vfs-image";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 
 const O_RDONLY = 0;
 
-function readFile(fs: MemoryFileSystem, path: string): string {
+function readFile(fs: KandeloImageFs, path: string): string {
   const size = fs.stat(path).size;
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, O_RDONLY, 0);
@@ -38,13 +37,10 @@ function readFile(fs: MemoryFileSystem, path: string): string {
 }
 
 describe("WordPress product source layout", () => {
-  it("prefers injected Node and WordPress sources without calling fallbacks", () => {
+  it("prefers injected WordPress sources without calling fallbacks", () => {
     const repoRoot = "/reviewed/kandelo";
     const fallback = vi.fn(() => "/network-fallback-must-not-run");
 
-    expect(resolveNodeNpmSource("/resolver/npm", repoRoot, fallback)).toBe(
-      "/resolver/npm",
-    );
     expect(
       resolveWordPressCoreSource(repoRoot, fallback, "/resolver/wordpress"),
     ).toBe(
@@ -63,9 +59,6 @@ describe("WordPress product source layout", () => {
   it("uses manifest-backed verified fallbacks outside resolver mode", () => {
     const fallback = vi.fn((packageName: string) => `/cache/${packageName}`);
 
-    expect(resolveNodeNpmSource(undefined, "/repo", fallback)).toBe(
-      "/cache/node-vfs",
-    );
     expect(resolveWordPressCoreSource("/repo", fallback)).toBe(
       "/cache/wordpress",
     );
@@ -73,7 +66,6 @@ describe("WordPress product source layout", () => {
       "/cache/wordpress-sqlite-integration-source",
     );
     expect(fallback.mock.calls).toEqual([
-      ["node-vfs", "/repo"],
       ["wordpress", "/repo"],
       ["wordpress-sqlite-integration-source", "/repo"],
     ]);
@@ -113,7 +105,7 @@ describe("WordPress product source layout", () => {
         pluginRoot,
         join(plugins, "sqlite-database-integration"),
       );
-      const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+      const fs = KandeloImageFs.create();
 
       expect(copyWordPressCoreSource(fs, root)).toBe(2);
       expect(readFile(fs, `${WORDPRESS_CORE_GUEST_PATH}/index.php`)).toBe(
@@ -156,7 +148,7 @@ describe("WordPress product source layout", () => {
         "index.php",
         join(plugins, "sqlite-database-integration-copy"),
       );
-      const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+      const fs = KandeloImageFs.create();
 
       expect(() => copyWordPressCoreSource(fs, root)).toThrow(
         new RegExp(
@@ -175,7 +167,7 @@ describe("WordPress product source layout", () => {
       writeFileSync(join(source, "load.php"), "plugin loader");
       writeFileSync(join(source, "includes", "driver.php"), "driver");
       writeFileSync(join(source, "build-state.db"), "excluded state");
-      const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+      const fs = KandeloImageFs.create();
 
       expect(materializeWordPressSqlitePlugin(fs, source)).toBe(2);
       expect(readFile(
@@ -199,7 +191,7 @@ describe("WordPress product source layout", () => {
     try {
       writeFileSync(join(source, "load.php"), "plugin loader");
       symlinkSync("load.php", join(source, "unexpected-alias.php"));
-      const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+      const fs = KandeloImageFs.create();
 
       expect(() => materializeWordPressSqlitePlugin(fs, source)).toThrow(
         new RegExp(

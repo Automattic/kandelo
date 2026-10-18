@@ -11,10 +11,14 @@ set -euo pipefail
 # Outputs: erlang.wasm plus a trimmed, relocatable OTP runtime archive.
 # Resolver and package callers own both the work and output directories.
 
-OTP_VERSION="${WASM_POSIX_DEP_VERSION:-${OTP_VERSION:-28.2}}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+OTP_VERSION="$WASM_POSIX_DEP_VERSION"
 OTP_TAG="OTP-${OTP_VERSION}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/erlang/otp/archive/refs/tags/${OTP_TAG}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-b984f9e02bb61637997a35daa9070ae8f41cea1667676416438c467fda3d141f}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
 if [ "$TARGET_ARCH" != "wasm32" ]; then
@@ -26,8 +30,7 @@ if ! [[ "$SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
     exit 1
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
 WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR}"
 ARTIFACT_DIR="$WORK_DIR/package-artifacts"
@@ -93,22 +96,8 @@ if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$EXP
     echo "==> Existing OTP source does not match the declared identity; replacing it..."
     rm -rf "$SRC_DIR" "$HOST_BOOTSTRAP_ROOT" "$INSTALL_DIR"
 fi
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading Erlang/OTP ${OTP_VERSION}..."
-    rm -f "$SOURCE_ARCHIVE"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-        -fsSL "$SOURCE_URL" -o "$SOURCE_ARCHIVE"
-    echo "$SOURCE_SHA256  $SOURCE_ARCHIVE" | shasum -a 256 -c -
-    mkdir -p "$SRC_DIR"
-    tar xzf "$SOURCE_ARCHIVE" -C "$SRC_DIR" --strip-components=1
-    printf '%s\n' "$EXPECTED_SOURCE_MARKER" > "$SOURCE_MARKER"
-    echo "==> Source extracted to $SRC_DIR"
-else
-    # Reused caller-owned work roots still revalidate the cached source bytes.
-    if [ -f "$SOURCE_ARCHIVE" ]; then
-        echo "$SOURCE_SHA256  $SOURCE_ARCHIVE" | shasum -a 256 -c -
-    fi
-fi
+kandelo_package_stage_primary_source erlang "$SRC_DIR" "$WORK_DIR"
+printf '%s\n' "$EXPECTED_SOURCE_MARKER" > "$SOURCE_MARKER"
 
 export ERL_TOP="$SRC_DIR"
 

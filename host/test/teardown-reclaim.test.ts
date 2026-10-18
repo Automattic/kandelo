@@ -1,6 +1,6 @@
 /*
  * Cross-engine teardown-reclamation test — runs under BOTH V8 (Node, via
- * `vitest`) and JSC (Bun, via `bun x vitest`). Exercises the shared
+ * `vitest`) and JSC (Bun, via `bun x --bun vitest`). Exercises the shared
  * `killAllBlockedForTeardown` + the host `handleDestroy` wake/drain path on
  * both engines. See docs/jsc-terminate-atomics-wait-workaround.md.
  *
@@ -24,10 +24,19 @@ import { ABI_SYSCALLS } from "../src/generated/abi";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const blockForeverBinary = join(__dirname, "../../examples/block-forever.wasm");
-const worktreeKernelBinary = join(
+const publishedWorktreeKernel = join(
   __dirname,
-  "../../local-binaries/kernel.wasm",
+  "../../local-binaries/source-only-v1/kernel.wasm",
 );
+const worktreeKernelBinary = existsSync(publishedWorktreeKernel)
+  ? publishedWorktreeKernel
+  : join(
+      __dirname,
+      "../../local-binaries/kernel.wasm",
+    );
+if (process.env.KANDELO_VITEST_RUNTIME === "bun" && !process.versions.bun) {
+  throw new Error("The Bun teardown check must execute in JavaScriptCore, not Node");
+}
 const hasBinaries =
   existsSync(blockForeverBinary) && existsSync(worktreeKernelBinary);
 
@@ -55,7 +64,8 @@ describe.skipIf(!hasBinaries)("teardown reclamation of Atomics.wait-blocked work
     // WHY: this is source-level runtime validation. The ordinary resolver may
     // select a previously published global cache generation whose host
     // manifest predates the dirty worktree, producing an unrelated init
-    // failure instead of exercising the teardown code under test.
+    // failure instead of exercising the teardown code under test. Prefer the
+    // canonical worktree SourceOnly output over the former flat output path.
     await host.init(loadWasm(worktreeKernelBinary));
 
     let pid = -1;

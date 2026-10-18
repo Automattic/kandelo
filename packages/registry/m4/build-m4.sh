@@ -8,16 +8,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/m4-src"
 BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
-M4_VERSION="${WASM_POSIX_DEP_VERSION:-${M4_VERSION:-1.4.19}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/m4/m4-${M4_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96}"
+M4_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-m4-source"
 

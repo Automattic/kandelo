@@ -28,9 +28,25 @@
  * Supported compiler/reference shapes must not be hidden behind a skip whose
  * label still claims that ABI 43 rejects them.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { resolveBinary, tryResolveBinary } from "../src/binary-resolver";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
+
+
+// This file hands each guest a 10s budget via runCentralizedProgram's
+// `timeout`. Vitest's 5s default wall budget is smaller than that, so on any
+// machine slower than a quiet CI runner the wall clock fires first and reports
+// "Test timed out in 5000ms" instead of the guest timeout the test declared.
+// Give the wall budget room to contain the guest budget; the guest timeout
+// still fails the test with its own stdout/stderr diagnostics.
+vi.setConfig({ testTimeout: 30_000 });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -474,6 +490,21 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
       maxPages: 384,
     });
   });
+
+  // P-12: the child's exit queues SIGCHLD on a parent that has a thread
+  // parked in poll(). Waking those polls by walking the live registration
+  // map never terminates — a poll that is still not ready re-registers as
+  // it retries, and the iterator visits the entry it just added — so the
+  // kernel worker spins and every process on the machine stops. Waybar hit
+  // this through wordexp(), which forks /bin/sh while waybar's signal
+  // thread sits in poll.
+  it("P-12 fork + child exit while another thread is parked in poll", async () => {
+    await runFixture("programs/p_12_fork_with_polling_thread.wasm", {
+      contains: ["THREAD_POLLING", "PRE_FORK", "CHILD: ok", "PARENT: child=", "REAPED", "PASS: P-12"],
+      timeout: 10_000,
+      useDefaultRootfs: false,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -481,26 +512,44 @@ describe("fork_instrument_coverage / P-* process & threading", () => {
 // ---------------------------------------------------------------------------
 
 describe("fork_instrument_coverage / F-* boundaries and Wasm-GC", () => {
-  // F-01: getcontext(). Empirically: musl's wasm sysroot exposes
-  // the symbol via an `env.getcontext` import that the kernel
-  // doesn't implement — the program traps at first call with
-  // "Unimplemented import: env.getcontext". That's the accepted
-  // failure mode (loud trap, not silent miscompile). Marked
-  // `it.fails` to encode the trap-as-expected contract.
-  it.fails("F-01 getcontext accepted limit (traps cleanly on unimplemented import)", async () => {
-    await runFixture("programs/f_01_ucontext_get.wasm", {
-      contains: ["PASS: F-01"],
-    });
+  // F-01 / F-02: ucontext (getcontext/makecontext/swapcontext) is a
+  // documented unsupported API (docs/posix-status.md) and libc has no such
+  // symbols. Before ABI 47 these fixtures linked anyway and trapped on
+  // "Unimplemented import: env.getcontext"; with honest links the boundary
+  // is a link failure on exactly those symbols, which is what we assert.
+  // (scripts/build-programs.sh enforces the same when building fixtures.)
+  it.each([
+    ["F-01", "programs/f_01_ucontext_get.c", /undefined symbol: getcontext/],
+    ["F-02", "programs/f_02_ucontext_makeswap.c", /undefined symbol: (makecontext|swapcontext|getcontext)/],
+  ])("%s ucontext boundary: the program does not link", (_id, rel, symbol) => {
+    const out = join(mkdtempSync(join(tmpdir(), "ucontext-boundary-")), "t.wasm");
+    const r = spawnSync(join(repoRoot, "sdk/bin/wasm32posix-cc"),
+      [join(repoRoot, rel), "-o", out], { encoding: "utf8" });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(symbol);
   });
 
-  // F-02: makecontext + swapcontext. Userspace stack-switching is
-  // unsupported by this kernel. Same trap mode as F-01 — same
-  // accepted-limit contract.
-  it.fails("F-02 makecontext/swapcontext accepted limit (traps cleanly on unimplemented import)", async () => {
-    await runFixture("programs/f_02_ucontext_makeswap.wasm", {
-      contains: ["PASS: F-02"],
-      timeout: 5_000,
+  // A package that references ucontext without depending on it (PHP's
+  // always-compiled Fibers) can opt in to libkandelo-ucontext-unsupported.
+  // The program then links, and reaching ucontext stops at the first call
+  // with a diagnostic and SIGABRT rather than running on.
+  it("F-02 ucontext opt-in: links, then aborts at the first ucontext call", async () => {
+    const out = join(mkdtempSync(join(tmpdir(), "ucontext-optin-")), "t.wasm");
+    const link = spawnSync(join(repoRoot, "sdk/bin/wasm32posix-cc"),
+      [join(repoRoot, "programs/f_02_ucontext_makeswap.c"), "-o", out,
+        "-lkandelo-ucontext-unsupported"], { encoding: "utf8" });
+    expect(link.stderr).toBe("");
+    expect(link.status).toBe(0);
+    const { exitCode, stdout, stderr } = await runCentralizedProgram({
+      programPath: out,
+      argv: ["f_02"],
+      timeout: 10_000,
+      useDefaultRootfs: false,
     });
+    expect(stderr).toContain("getcontext: ucontext is not supported on Kandelo");
+    expect(stdout).not.toContain("PASS");
+    // 134 = 128+SIGABRT; 132 is abort()'s trap backstop (see wasm-trap.test.ts).
+    expect([134, 132]).toContain(exitCode);
   });
 
   // F-03, F-04 — wasm-GC anyref / struct.new have no C-source surface.

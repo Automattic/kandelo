@@ -1,0 +1,16 @@
+[package]
+name = "kandelo-std-boundaries"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "kandelo-std-boundaries"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+[workspace]

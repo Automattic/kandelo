@@ -1,17 +1,19 @@
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, test } from "@playwright/test";
+import { devServerAssetUrl } from "./support/dev-server-assets";
 import {
   DEMO_AUTOLOGIN_MOTD,
   DEMO_LOGIN_PASSWORD,
   DEMO_LOGIN_PASSWORD_HASH,
   DEMO_SUDOERS,
 } from "../../../images/vfs/lib/demo-login";
-import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const modulePaths = {
   browserKernel: resolve(repoRoot, "host/src/browser-kernel-host.ts"),
-  memoryFs: resolve(repoRoot, "host/src/vfs/memory-fs.ts"),
+  imageFsModule: resolve(repoRoot, "images/vfs/lib/kandelo-image-fs.ts"),
+  imageModuleWasm: resolve(repoRoot, "local-binaries/kandelo_image_module32.wasm"),
   experimentalTerminalSession: resolve(
     repoRoot,
     "web-libs/kandelo-session/src/experimental-terminal-session.ts",
@@ -61,7 +63,8 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       experimentalTerminalSessionUrl,
       kernelUrl,
       loginUrl,
-      memoryFsUrl,
+      imageFsModuleUrl,
+      imageModuleBytes,
       password,
       passwordHash,
       sessionHostUrl,
@@ -72,8 +75,8 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const {
         experimentalTerminalSessionPolicy,
@@ -93,9 +96,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         fetchBytes(loginUrl),
         fetchBytes(credentialsUrl),
       ]);
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(16 * 1024 * 1024),
-      );
+      const fs = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
       for (const path of [
         "/etc",
         "/bin",
@@ -189,6 +190,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         },
       });
       const spawns: Array<{ path: string; argv: string[]; pid: number }> = [];
+      const terminalTexts = new Map<string, () => string>();
       const originalSpawnFromVfs = kernel.spawnFromVfs.bind(kernel);
       kernel.spawnFromVfs = async (
         path: string,
@@ -207,7 +209,10 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         const deadline = performance.now() + timeoutMs;
         while (!(await predicate())) {
           if (performance.now() >= deadline) {
-            throw new Error(`timed out waiting for ${label}`);
+            throw new Error(`timed out waiting for ${label}; ${JSON.stringify({
+              spawns, diagnostics,
+              terminals: Object.fromEntries([...terminalTexts].map(([path, text]) => [path, text()])),
+            })}`);
           }
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
@@ -223,6 +228,7 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
         const off = pty.onData((bytes: Uint8Array) => {
           text += new TextDecoder().decode(bytes);
         });
+        terminalTexts.set(path, () => text);
         return { pty, off, text: () => text };
       };
 
@@ -275,7 +281,6 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
           () => reattached.text().includes("Password: "),
           "password prompt",
         );
-        await new Promise((resolve) => setTimeout(resolve, 100));
         const loginPromptsBeforeFailure = occurrences(
           reattached.text(),
           "login: ",
@@ -297,7 +302,6 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
           () => occurrences(reattached.text(), "Password: ") > passwordPrompts,
           "second password prompt",
         );
-        await new Promise((resolve) => setTimeout(resolve, 100));
         reattached.pty.write(`${password}\n`);
         const credentialsBefore = occurrences(reattached.text(), "uid=1000");
         const ordinaryMotdsBefore = occurrences(
@@ -376,9 +380,10 @@ test("BrowserKernel session supervises one real login lifecycle per logical PTY"
       experimentalTerminalSessionUrl: asViteFsUrl(
         modulePaths.experimentalTerminalSession,
       ),
-      kernelUrl: asViteFsUrl(resolveBinary("kernel.wasm")),
+      kernelUrl: await devServerAssetUrl(page, "@kernel-wasm"),
       loginUrl: asViteFsUrl(loginWasm),
-      memoryFsUrl: asViteFsUrl(modulePaths.memoryFs),
+      imageFsModuleUrl: asViteFsUrl(modulePaths.imageFsModule),
+      imageModuleBytes: Array.from(readFileSync(modulePaths.imageModuleWasm)),
       password: DEMO_LOGIN_PASSWORD,
       passwordHash: DEMO_LOGIN_PASSWORD_HASH,
       sessionHostUrl: asViteFsUrl(modulePaths.sessionHost),

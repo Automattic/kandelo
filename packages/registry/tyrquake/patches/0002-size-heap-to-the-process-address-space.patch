@@ -1,0 +1,58 @@
+diff --git a/common/zone.c b/common/zone.c
+index d79bfd6..86cc4fb 100644
+--- a/common/zone.c
++++ b/common/zone.c
+@@ -18,6 +18,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ 
+ */
+ 
++#ifdef __wasm__
++#include <sys/resource.h>
++#endif
++
+ #include "cmd.h"
+ #include "common.h"
+ #include "console.h"
+@@ -1277,7 +1281,41 @@ Memory_GetSize(void)
+ 	return (size_t)atoi(com_argv[parm + 1]) << 10;
+ 
+     /* Default memory is now 256MB */
+-    return (size_t)256 << 20;
++    size_t size = (size_t)256 << 20;
++
++#ifdef __wasm__
++    /*
++     * Kandelo boundary: a WebAssembly process address space is a real,
++     * bounded linear memory, not the lazily-committed virtual range this
++     * default assumes. On a host with a small reservation pool (iOS Safari
++     * charges a shared memory's declared maximum against a ~6 GiB
++     * process-wide pool, so Kandelo gives each process 256 MiB there) the
++     * 256 MiB default IS the whole address space, so the single
++     * malloc(parms.memsize) in main() can never fit alongside this program,
++     * its stack, and the host's control pages: Sys_Error reports
++     * "Allocation of 268435456 byte heap failed" and the engine dies before
++     * drawing a frame.
++     *
++     * RLIMIT_AS reports that bound, so ask for it and keep half, leaving
++     * room for the stack, the framebuffer and sound mappings, and libc.
++     * Quake needs far less than either number -- MINIMUM_MEMORY is 5.3 MiB
++     * -- and where the default already fits (a 1 GiB address space yields a
++     * 512 MiB budget) this clamp changes nothing.
++     *
++     * An explicit -mem/-heapsize above is never clamped: an operator asking
++     * for a specific heap should get the honest allocation failure rather
++     * than a silently smaller game.
++     */
++    struct rlimit address_space;
++    if (getrlimit(RLIMIT_AS, &address_space) == 0
++        && address_space.rlim_cur != RLIM_INFINITY) {
++        size_t budget = (size_t)(address_space.rlim_cur / 2);
++        if (size > budget)
++            size = budget;
++    }
++#endif
++
++    return size;
+ }
+ 
+ void

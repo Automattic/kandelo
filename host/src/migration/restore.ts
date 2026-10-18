@@ -46,26 +46,19 @@ function refuse(reason: string): never {
 }
 
 /**
- * What a restore must say about the filesystems it did not get.
+ * What a restore must say about the host mounts it did not get.
  *
- * A gap does not refuse the checkpoint: a machine short `/tmp` is still worth
- * moving. It does have to be said out loud, because a restore that reports
- * nothing presents the machine as whole. `null` means every mount arrived.
- *
- * `dropped` names mounts the checkpoint carried that this host cannot accept,
- * which is the same gap seen from the other side: the sender read the bytes
- * and this receiver has nowhere memory-backed to put them.
+ * A gap does not refuse the checkpoint: a machine short a host directory is
+ * still worth moving. It does have to be said out loud, because a restore that
+ * reports nothing presents the machine as whole. `null` means nothing is
+ * missing.
  */
 export function describeCheckpointMountGaps(
   checkpoint: MachineCheckpoint,
-  dropped: readonly string[] = [],
 ): string | null {
   const parts = checkpoint.unreadableFilesystems.map(
     (gap) => `${gap.mountPoint} (${gap.reason})`,
   );
-  for (const mountPoint of dropped) {
-    parts.push(`${mountPoint} (this host has no memory-backed mount there)`);
-  }
   if (parts.length === 0) return null;
   return `this machine was restored without ${parts.join(", ")}`;
 }
@@ -80,7 +73,10 @@ export function describeCheckpointMountGaps(
  */
 export async function validateMachineCheckpoint(
   checkpoint: MachineCheckpoint,
-  expected: { readonly kernelAbiVersion: number },
+  expected: {
+    readonly kernelAbiVersion: number;
+    readonly rootfsImageSha256: string | null;
+  },
 ): Promise<ReadonlyMap<number, WebAssembly.Module>> {
   if (checkpoint.format !== MACHINE_CHECKPOINT_FORMAT) {
     refuse(
@@ -103,26 +99,15 @@ export async function validateMachineCheckpoint(
       + `not a whole number of pages`,
     );
   }
-  // A machine always has a root. Every other mount is optional, but a repeated
-  // or relative mount point would leave the restore choosing which bytes win.
-  const rootMount = checkpoint.filesystems.find(
-    (mount) => mount.mountPoint === "/",
-  );
-  if (rootMount === undefined) {
-    refuse("no / mount was captured");
-  } else if (rootMount.bytes.byteLength === 0) {
-    refuse("the / mount is empty");
+  // The captured `/` reads every file the machine never modified out of its
+  // boot image, by offset; over another image it would read the wrong bytes.
+  if (checkpoint.rootfsImageSha256 !== expected.rootfsImageSha256) {
+    refuse(
+      `the machine booted / image ${String(checkpoint.rootfsImageSha256)}, `
+      + `and this host booted ${String(expected.rootfsImageSha256)}`,
+    );
   }
   const seenMountPoints = new Set<string>();
-  for (const mount of checkpoint.filesystems) {
-    if (!mount.mountPoint.startsWith("/")) {
-      refuse(`mount point ${JSON.stringify(mount.mountPoint)} is not absolute`);
-    }
-    if (seenMountPoints.has(mount.mountPoint)) {
-      refuse(`mount point ${JSON.stringify(mount.mountPoint)} appears twice`);
-    }
-    seenMountPoints.add(mount.mountPoint);
-  }
   if (!Array.isArray(checkpoint.unreadableFilesystems)) {
     refuse("the checkpoint carries no unreadable-mount list");
   }
@@ -134,10 +119,7 @@ export async function validateMachineCheckpoint(
       );
     }
     if (seenMountPoints.has(gap.mountPoint)) {
-      refuse(
-        `mount point ${JSON.stringify(gap.mountPoint)} is both carried and `
-        + "unreadable",
-      );
+      refuse(`mount point ${JSON.stringify(gap.mountPoint)} appears twice`);
     }
     seenMountPoints.add(gap.mountPoint);
     // The reason is text a restore prints. A checkpoint arrives from a peer,
@@ -196,68 +178,7 @@ export async function validateMachineCheckpoint(
     }
     glPids.add(context.pid);
   }
-  if (!Array.isArray(checkpoint.epolls)) {
-    refuse("the checkpoint carries no epoll list");
-  }
-  const epollKeys = new Set<string>();
-  for (const epoll of checkpoint.epolls) {
-    validateEpoll(
-      epoll,
-      checkpoint.processes.find((bucket) => bucket.pid === epoll.pid),
-    );
-    const key = `${epoll.pid}:${epoll.epfd}`;
-    if (epollKeys.has(key)) {
-      refuse(`pid ${epoll.pid} carries two mirrors for epoll fd ${epoll.epfd}`);
-    }
-    epollKeys.add(key);
-  }
   return modules;
-}
-
-/** Cap on one epoll mirror a peer sent, far above any real interest list. */
-const MAX_EPOLL_INTERESTS = 65_536;
-
-function validateEpoll(
-  epoll: MachineCheckpoint["epolls"][number],
-  bucket: CheckpointProcessBucket | undefined,
-): void {
-  const { pid, epfd, interests } = epoll;
-  if (bucket === undefined) {
-    refuse(`an epoll mirror names pid ${pid}, which has no process bucket`);
-  }
-  if (!Number.isSafeInteger(epfd) || epfd < 0) {
-    refuse(`pid ${pid}'s epoll mirror names fd ${String(epfd)}`);
-  }
-  if (!Array.isArray(interests) || interests.length > MAX_EPOLL_INTERESTS) {
-    refuse(`pid ${pid}'s epoll ${epfd} mirror is unusable`);
-  }
-  for (const interest of interests) {
-    if (!Number.isSafeInteger(interest.fd) || interest.fd < 0) {
-      refuse(
-        `pid ${pid}'s epoll ${epfd} watches fd ${String(interest.fd)}`,
-      );
-    }
-    if (
-      !Number.isSafeInteger(interest.events)
-      || interest.events < 0
-      || interest.events > 0xffff_ffff
-    ) {
-      refuse(
-        `pid ${pid}'s epoll ${epfd} carries unusable events for fd `
-        + `${interest.fd}`,
-      );
-    }
-    if (
-      typeof interest.data !== "string"
-      || !/^\d{1,20}$/.test(interest.data)
-      || BigInt(interest.data) > 0xffff_ffff_ffff_ffffn
-    ) {
-      refuse(
-        `pid ${pid}'s epoll ${epfd} carries unusable data for fd `
-        + `${interest.fd}`,
-      );
-    }
-  }
 }
 
 /** Caps on a GL context a peer sent, far above anything a real guest makes. */
@@ -432,7 +353,7 @@ function validateGlContext(
         || uniform.name.length > 1024
         || !Array.isArray(uniform.values)
         || uniform.values.length > MAX_GL_UNIFORM_VALUES
-        || uniform.values.some((value) => typeof value !== "number")
+        || uniform.values.some((value: unknown) => typeof value !== "number")
       ) {
         refuse(`pid ${pid}'s GL program ${program.name} carries an unusable uniform`);
       }
@@ -593,6 +514,15 @@ function validateKmsState(
     }
     if (buffer.pids.length === 0) {
       refuse(`buffer object ${buffer.bo_id} is held by no process`);
+    }
+    if (
+      buffer.creatorPid !== -1
+      && !processes.some((bucket) => bucket.pid === buffer.creatorPid)
+    ) {
+      refuse(
+        `buffer object ${buffer.bo_id} was created by pid `
+        + `${String(buffer.creatorPid)}, which has no process bucket`,
+      );
     }
     for (const pid of buffer.pids) {
       if (!processes.some((bucket) => bucket.pid === pid)) {

@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=ScummVM
+Exec=/usr/local/bin/scummvm

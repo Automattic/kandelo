@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifestRelativePath =
@@ -16,7 +16,7 @@ function portableRelativePath(path: string): string {
   return path.split(sep).join("/");
 }
 
-function readManifestSources(): string[] {
+export function readBrowserMemory64FixtureSources(): string[] {
   if (!existsSync(manifestPath)) {
     fail(`missing manifest ${manifestRelativePath}`);
   }
@@ -67,7 +67,9 @@ function referencedExampleOutputs(): string[] {
     const source = readFileSync(specPath, "utf8");
     for (const match of source.matchAll(literalPattern)) {
       const referencedPath = portableRelativePath(
-        relative(repoRoot, resolve(dirname(specPath), match[2])),
+        relative(repoRoot, match[2].startsWith("examples/")
+          ? resolve(repoRoot, match[2])
+          : resolve(dirname(specPath), match[2])),
       );
       if (referencedPath.startsWith("examples/")) {
         outputs.add(referencedPath);
@@ -93,30 +95,36 @@ function assertEqualSets(expected: string[], actual: string[]): void {
   fail(`browser references and manifest outputs differ\n${details.join("\n")}`);
 }
 
-const manifestSources = readManifestSources();
-const manifestOutputs = manifestSources.map(
-  (source) => `${source.slice(0, -2)}.wasm64.wasm`,
-);
-const browserOutputs = referencedExampleOutputs();
-if (browserOutputs.length === 0) {
-  fail("no browser example memory64 references were found");
-}
-assertEqualSets(manifestOutputs, browserOutputs);
-
-// WHY: checking only the manifest against specs would still allow a producer
-// or readiness guard to regress to a partial literal list. These consumers
-// must all derive their fixture set from the same authoritative file.
-for (const consumer of [
-  "scripts/build-programs.sh",
-  "run.sh",
-  "scripts/pack-ci-test-workspace.sh",
-]) {
-  const source = readFileSync(join(repoRoot, consumer), "utf8");
-  if (!source.includes(manifestRelativePath)) {
-    fail(`${consumer} does not consume ${manifestRelativePath}`);
+export function checkBrowserMemory64FixtureContract(): void {
+  const manifestSources = readBrowserMemory64FixtureSources();
+  const manifestOutputs = manifestSources.map(
+    (source) => `${source.slice(0, -2)}.wasm64.wasm`,
+  );
+  const browserOutputs = referencedExampleOutputs();
+  if (browserOutputs.length === 0) {
+    fail("no browser example memory64 references were found");
   }
+  assertEqualSets(manifestOutputs, browserOutputs);
+
+  // WHY: checking only the manifest against specs would still allow a producer
+  // or readiness guard to regress to a partial literal list. These consumers
+  // must all derive their fixture set from the same authoritative file.
+  for (const consumer of [
+    "scripts/build-programs.sh",
+    "run.sh",
+    "scripts/pack-ci-test-workspace.sh",
+  ]) {
+    const source = readFileSync(join(repoRoot, consumer), "utf8");
+    if (!source.includes(manifestRelativePath)) {
+      fail(`${consumer} does not consume ${manifestRelativePath}`);
+    }
+  }
+
+  console.log(
+    `browser memory64 fixture contract: ${manifestOutputs.length} fixture(s) verified`,
+  );
 }
 
-console.log(
-  `browser memory64 fixture contract: ${manifestOutputs.length} fixture(s) verified`,
-);
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  checkBrowserMemory64FixtureContract();
+}

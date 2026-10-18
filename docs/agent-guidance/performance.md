@@ -36,6 +36,31 @@ npx tsx benchmarks/compare.ts benchmarks/results/before.json benchmarks/results/
 If a benchmark suite skips because its binary is missing, the claim is not
 proven. Build or fetch the prerequisite before drawing conclusions.
 
+## Comparing the finished change with its destination
+
+For a claim about performance after merge, compare the latest runtime with
+the target branch at a recorded commit. An improvement over an intermediate
+PR revision does not prove an improvement over main. Build each side with
+its own SDK, kernel and ABI-matched programs and images. Record artifact
+hashes and disclose any build-only changes needed to prepare the baseline.
+
+Use alternating baseline/candidate order on an otherwise quiet machine.
+Keep fresh-worker timings, repeated workloads and clock-only diagnostics
+separate. State when workers share one Node or browser parent process;
+those workers are not independent parent-process launches. Check timer
+resolution before interpreting a small difference, and retain the original
+results when rechecking a flag.
+
+Use CPU and allocation profiles to investigate causes, separately from
+uninstrumented timings. Align worker and profiler clocks with a shared
+marker before assigning samples to a workload phase. Confirm whether an
+allocation sampler includes objects already collected. Fewer temporary
+objects do not by themselves prove shorter garbage-collection pauses.
+See [architecture reflections](../architecture-reflections.md#measure-the-whole-request-against-the-merge-target)
+for the reasoning and [profiling](../profiling.md) for measurement details.
+
+## Keep syscall dispatch simple
+
 Do not repeat known-bad syscall hot-path "optimizations" in
 `host/src/kernel-worker.ts`:
 

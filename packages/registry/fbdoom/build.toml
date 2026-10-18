@@ -6,7 +6,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 6
+revision    = 7
 
 [[git_inputs]]
 name       = "chocolate_doom"

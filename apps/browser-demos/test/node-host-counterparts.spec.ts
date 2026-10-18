@@ -33,6 +33,11 @@ const serviceImages = {
     publicFile: "nginx-php-vfs.vfs.zst",
     buildHint: "./run.sh build nginx-php-vfs",
   },
+  nginxPython: {
+    relPath: "programs/nginx-python-vfs.vfs.zst",
+    publicFile: "nginx-python-vfs.vfs.zst",
+    buildHint: "./run.sh build nginx-python-vfs",
+  },
   wordpress: {
     relPath: "programs/wordpress.vfs.zst",
     publicFile: "wordpress.vfs.zst",
@@ -243,6 +248,54 @@ test.describe("Node-host counterparts for Kandelo browser demos", () => {
       const html = await fetchText(`http://127.0.0.1:${port}/info.php`);
       expect(html).toContain("PHP-FPM on WebAssembly");
       expect(html).toMatch(/REQUEST_URI|SERVER_SOFTWARE|PHP/);
+    } finally {
+      await stopNodeHostDemo(demo.proc);
+    }
+  });
+
+  test("nginx-python-vfs-node-startup: nginx + Python serves the Notes API like the browser nginx + Python demo", async () => {
+    test.setTimeout(240_000);
+    skipUnlessRunnable("nginx + Python Node-host demo", serviceImages.nginxPython);
+
+    const port = await getFreePort();
+    const demo = await startNodeHostDemo(
+      "packages/registry/nginx/demo/serve-python.ts",
+      [String(port)],
+      /nginx \+ Python Notes API running under dinit/i,
+      180_000,
+    );
+
+    try {
+      const html = await fetchText(`http://127.0.0.1:${port}/`);
+      expect(html).toMatch(/<html|<!DOCTYPE/i);
+
+      const health = await fetch(`http://127.0.0.1:${port}/api/health`);
+      expect(health.status).toBe(200);
+      expect(await health.json()).toEqual({ status: "ok" });
+
+      const list = await fetch(`http://127.0.0.1:${port}/api/notes`);
+      expect(list.status).toBe(200);
+      const notes = await list.json();
+      expect(Array.isArray(notes)).toBe(true);
+      expect(notes.length).toBeGreaterThanOrEqual(2);
+
+      const created = await fetch(`http://127.0.0.1:${port}/api/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "t", body: "b" }),
+      });
+      expect(created.status).toBe(201);
+      const createdNote = await created.json();
+      expect(createdNote).toMatchObject({ title: "t", body: "b" });
+      expect(typeof createdNote.id).toBe("number");
+
+      const one = await fetch(`http://127.0.0.1:${port}/api/notes/1`);
+      expect(one.status).toBe(200);
+      const oneNote = await one.json();
+      expect(oneNote.id).toBe(1);
+
+      const missing = await fetch(`http://127.0.0.1:${port}/api/notes/999999`);
+      expect(missing.status).toBe(404);
     } finally {
       await stopNodeHostDemo(demo.proc);
     }

@@ -65,6 +65,28 @@ fn source_fixture() -> SourceFixture {
     ] {
         write(&root, path, "fixture input\n");
     }
+    // The SDK input closure is a production contract, not a second list for
+    // fixtures to maintain. Materialize any newly declared global input too.
+    let inputs = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args(["build-deps", "toolchain-inputs"])
+        .output()
+        .unwrap();
+    assert!(
+        inputs.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inputs.stderr)
+    );
+    let paths: Vec<String> = serde_json::from_slice(&inputs.stdout).unwrap();
+    for relative in paths {
+        if !root.join(&relative).exists() {
+            let actual = compiled_repo_root().join(&relative);
+            if actual.is_dir() {
+                write(&root, &format!("{relative}/input"), "fixture input\n");
+            } else {
+                write(&root, &relative, "fixture input\n");
+            }
+        }
+    }
     for path in [
         ".github/actions/package-archive-build/input",
         ".github/actions/package-toolchain/input",

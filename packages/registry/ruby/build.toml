@@ -7,6 +7,10 @@ inputs = [
   "crates/wasm-local-root-spill",
   "scripts/build-local-root-spill-tool.sh",
   "scripts/run-wasm-local-root-spill.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/activate.sh",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"

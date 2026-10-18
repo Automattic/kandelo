@@ -8,6 +8,18 @@
 //!                         Args: --package <dir> --arch <wasm32|wasm64>. Used by the
 //!                         pre-flight workflow to skip already-published
 //!                         matrix entries.
+//!   workspace-closure-sha Print a content digest (64 hex chars) over the union
+//!                         of one or more workspace crates' cargo dependency
+//!                         closures. Args: --crates <a,b,c>, and for a side
+//!                         module also --recipe <repo-relative build script>,
+//!                         which folds the recipe's own digest in. For a build
+//!                         artifact with no resolver `build.toml` (so it has
+//!                         no `cargo:<crate>` cache-key input), this gives the
+//!                         same drift-proof, cargo-metadata-derived freshness
+//!                         coverage. Every `crates/*/build-wasm.sh` stamps the
+//!                         key this prints; nothing may compute part of that
+//!                         key itself, or the stamp and the checks that read it
+//!                         stop describing the same thing.
 //!   sort-package-matrix   Order a package matrix so selected package dependencies
 //!                         appear before their dependents.
 //!   partition-package-matrix
@@ -20,6 +32,17 @@
 //!                         Stream one exact regular package-archive member to
 //!                         a new output file without exposing partial bytes.
 //!   local-build           Resolve and source-build a package closure locally.
+//!                         `plan --set <file> --status [--json]` is a
+//!                         read-only dry run listing each node as cached or
+//!                         will-run, with an estimated duration from recorded
+//!                         timings, so a caller knows before starting whether
+//!                         the build takes seconds or tens of minutes. `run`
+//!                         appends scheduler events as JSON lines to
+//!                         `$KANDELO_LOCAL_BUILD_EVENTS` when set, so
+//!                         `scripts/agent-job status` can report progress,
+//!                         and records per-node and per-run durations under
+//!                         `<source cache root>/timings/` to feed that
+//!                         estimate.
 //!   bootstrap             One-command hermetic build: fork-instrument host
 //!                         tool, then the local-build engine over the whole
 //!                         supported set, then the TypeScript host build.
@@ -45,6 +68,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
+mod vfs_image_describe;
 mod vfs_products;
 mod archive_extract_member;
 mod build_deps;
@@ -59,13 +83,18 @@ mod host_tool_probe;
 mod local_abi_identity;
 mod local_build;
 mod local_build_executor;
+mod local_build_timing;
 mod package_archive_limits;
 mod package_matrix;
 mod pkg_manifest;
+mod program_env_imports;
+mod package_imports;
+mod recipe_tree_guard;
 mod remote_fetch;
 mod root_js_deps;
 mod source_archive_cache;
 mod source_extract;
+mod stamp_abi_contract;
 mod update_pkg_manifest;
 mod util;
 
@@ -76,7 +105,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh"
+                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh"
             );
             return ExitCode::from(2);
         }
@@ -86,10 +115,14 @@ fn main() -> ExitCode {
         return vfs_products::run(rest);
     }
     let result = match sub.as_str() {
+        "vfs-image" => vfs_image_describe::run(&rest),
         "dump-abi" => dump_abi::run(rest),
+        "check-program-env-imports" => program_env_imports::run(rest),
+        "check-package-imports" => package_imports::run(rest),
         "bundle-program" => bundle_program::run(rest),
         "build-deps" => build_deps::run(rest),
         "compute-cache-key-sha" => build_deps::run_compute_cache_key_sha(rest),
+        "workspace-closure-sha" => cargo_closure::run_workspace_closure_sha(rest),
         "sort-package-matrix" => package_matrix::run_sort(rest),
         "partition-package-matrix" => package_matrix::run_partition(rest),
         "package-dependency-artifacts" => package_matrix::run_dependency_artifacts(rest),
@@ -101,6 +134,7 @@ fn main() -> ExitCode {
         "clean" => local_build::run_clean(rest),
         #[cfg(unix)]
         "cache-gc" => cache_gc::run(rest),
+        "stamp-abi-contract" => stamp_abi_contract::run(&rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 import {
   type CentralizedKernelCallbacks,
@@ -31,6 +32,7 @@ import {
   SPAWN_WIRE_STRING_OFFSET_BYTES,
 } from "../src/generated/abi";
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
+import { WasmModuleCache } from "../src/wasm-module-cache";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 const E2BIG = 7;
@@ -404,32 +406,26 @@ describe("SYS_SPAWN blob transport", () => {
     expect(kernelReservedSpawn).toHaveBeenCalledTimes(2);
   });
 
-  it("ignores a resolver module that was not compiled from its candidate bytes", async () => {
+  it("snapshots candidate bytes before the resolver mutates them after preflight", async () => {
     const candidateBytes = moduleWithNamedExport("aaaa");
-    const mismatchedModule = new WebAssembly.Module(
-      moduleWithNamedExport("bbbb"),
-    );
 
     const launched = await launchCandidateBindingSpawn({
       candidateBytes,
-      candidateModule: mismatchedModule,
-      authoritativeBytes: candidateBytes,
+      authoritativeBytes: candidateBytes.slice(),
+      afterPreflight: () => candidateBytes.fill(0),
     });
 
     expect(WebAssembly.Module.exports(launched.programModule)).toEqual([
       { name: "aaaa", kind: "function" },
     ]);
-    expect(launched.programModule).not.toBe(mismatchedModule);
   });
 
-  it("binds the candidate module before resolver bytes mutate after preflight", async () => {
+  it("recompiles from committed bytes when the candidate mutates after preflight", async () => {
     const candidateBytes = moduleWithNamedExport("aaaa");
     const authoritativeBytes = moduleWithNamedExport("bbbb");
-    const resolverModule = new WebAssembly.Module(candidateBytes);
 
     const launched = await launchCandidateBindingSpawn({
       candidateBytes,
-      candidateModule: resolverModule,
       authoritativeBytes,
       afterPreflight: () => candidateBytes.set(authoritativeBytes),
     });
@@ -437,7 +433,6 @@ describe("SYS_SPAWN blob transport", () => {
     expect(WebAssembly.Module.exports(launched.programModule)).toEqual([
       { name: "bbbb", kind: "function" },
     ]);
-    expect(launched.programModule).not.toBe(resolverModule);
   });
 
   it("keeps ordinary spawn blobs in the existing channel-sized scratch", () => {
@@ -1536,6 +1531,22 @@ function createWorker(
     instance,
   );
   const worker = createCentralizedKernelWorkerTestDouble({ callbacks });
+  // WHY: the worker's own module cache hashes with WebCrypto and compiles
+  // with WebAssembly.compile, which both finish on Node's thread pool, on
+  // wall-clock time. drainSpawnGate allows a fixed number of event-loop turns
+  // and no timers (a timer could hide a stuck gate), so on a loaded host the
+  // spawn was still hashing when the test asserted. This cache runs the same
+  // identify, compile and dedupe path, but its digest and compile settle as
+  // promise jobs, so a fixed drain is enough again.
+  Object.defineProperty(worker, "wasmModules", {
+    value: new WasmModuleCache({
+      digest: async (bytes) => {
+        const digest = createHash("sha256").update(new Uint8Array(bytes)).digest();
+        return digest.buffer.slice(digest.byteOffset, digest.byteOffset + digest.byteLength);
+      },
+      compile: async (bytes) => new WebAssembly.Module(bytes),
+    }),
+  });
   worker.testAuthority.initializeKernelForTest({
     instance,
     gate,
@@ -1617,7 +1628,6 @@ function moduleWithNamedExport(name: "aaaa" | "bbbb"): Uint8Array {
 
 async function launchCandidateBindingSpawn(options: {
   candidateBytes: Uint8Array;
-  candidateModule: WebAssembly.Module;
   authoritativeBytes: Uint8Array;
   afterPreflight?: () => void;
 }): Promise<{
@@ -1660,7 +1670,6 @@ async function launchCandidateBindingSpawn(options: {
     callbacks: {
       onResolveSpawn: vi.fn(async () => ({
         programBytes: options.candidateBytes.buffer as ArrayBuffer,
-        programModule: options.candidateModule,
         argv: ["/bin/child"],
       })),
       onSpawn,

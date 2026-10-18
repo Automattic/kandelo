@@ -1,0 +1,62 @@
+kind = "program"
+name = "clang"
+version = "21.1.7"
+kernel_abi = 47
+depends_on = ["libcxx@21.1.7"]
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.7/llvm-project-21.1.7.src.tar.xz"
+sha256 = "e5b65fd79c95c343bb584127114cb2d252306c1ada1e057899b6aacdd445899e"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0 WITH LLVM-exception"
+url = "https://github.com/llvm/llvm-project/blob/llvmorg-21.1.7/LICENSE.TXT"
+
+[build]
+script_path = "packages/registry/clang/build-clang.sh"
+
+[[outputs]]
+name = "clang"
+wasm = "clang.wasm"
+
+[[outputs]]
+name = "wasm-ld"
+wasm = "wasm-ld.wasm"
+
+[[outputs]]
+name = "llvm-ar"
+wasm = "llvm-ar.wasm"
+
+[[outputs]]
+name = "llvm-ranlib"
+wasm = "llvm-ranlib.wasm"
+
+[[outputs]]
+name = "llvm-nm"
+wasm = "llvm-nm.wasm"
+
+[[host_tools]]
+name = "cmake"
+version_constraint = ">=3.20"
+probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "make"
+version_constraint = ">=3.80"
+probe = { args = ["--version"], version_regex = "GNU Make (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.8"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "clang"
+version_constraint = ">=21.0"
+probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

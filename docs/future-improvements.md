@@ -60,12 +60,13 @@ When `host_call_signal_handler` fails (invalid function table index, handler thr
 
 ### Make cross-process shared memory immediate and futex-addressable
 
-Anonymous `MAP_SHARED` inherits one host-owned backing across fork; SysV SHM
-and stable-identity regular-file mappings share backings across separately
-attached or mapped processes. Because each PID still owns a different
-WebAssembly `Memory`, coherence happens only when a process crosses a syscall
-boundary: the host merges bytes changed relative to that process's snapshot and
-then imports peer changes. A direct store does not immediately change another
+Anonymous `MAP_SHARED` inherits one host-owned backing across fork; SysV SHM,
+mappings of files the kernel owns, and stable-identity host-file mappings
+share backings across separately attached or mapped processes. Because each
+PID still owns a different WebAssembly `Memory`, coherence happens only when a
+process crosses a syscall boundary: the host (for the objects whose bytes it
+owns) or the kernel (`SharedMappingTable`) merges bytes changed relative to
+that process's snapshot and then imports peer changes. A direct store does not immediately change another
 PID's memory, and futex WAIT/WAKE cannot target the peer's separate
 `SharedArrayBuffer`.
 
@@ -79,29 +80,43 @@ application benchmarks on both hosts.
 
 **Files:** `host/src/kernel-worker.ts`, `host/src/worker-main.ts`,
 `host/src/browser-kernel-worker-entry.ts`,
-`host/src/node-kernel-worker-entry.ts`
+`host/src/node-kernel-worker-entry.ts`, `crates/runtime-core/src/memory.rs`
 
 ### Close the remaining regular-file `MAP_SHARED` gaps
 
-The mapping cache deliberately rejects objects it cannot identify or keep
-alive safely. Node, mounted VFS backends, and supported OPFS browsers now
-provide exact live-handle identity; OPFS uses session-scoped inode tokens and
-preserves an open object across rename and unlink. Initial mappings retain the
-descriptor's live handle rather than reopening its remembered pathname.
-In-kernel memfds still return `ENOTSUP` because they do not expose the host
-handle used by the file page cache, and any backend unable to prove exact,
-stable identity remains an explicit unsupported boundary.
+Two kinds of regular file are mapped differently, by whoever owns their
+bytes, and each has gaps.
 
-Further gaps are observable VM semantics rather than cache bookkeeping. Stores
-beyond the current file size are zero-filled or discarded on refresh/writeback
-instead of raising Linux `SIGBUS`, and writers outside Kandelo's direct file
-syscall paths do not invalidate cached pages. Complete support needs a
-kernel-owned memfd mapping bridge, external invalidation (or a documented
-ownership boundary), and a Wasm mechanism or instrumentation for faulting
-beyond EOF.
+**Files on a host-mounted directory** (Node `extraMounts`, session seeds, a
+host-backed scratch mount; OPFS where a host mounts it) go through the host
+page cache, which deliberately rejects objects it cannot identify or keep
+alive safely. Node and supported OPFS browsers provide exact live-handle
+identity; OPFS uses session-scoped inode tokens and preserves an open object
+across rename and unlink. Initial mappings retain the descriptor's live
+handle rather than reopening its remembered pathname, and separate mappings
+of one file converge at syscall boundaries.
+
+**Files the kernel owns** (everything under `/` and the scratch mounts,
+including `/tmp` and `/dev/shm`, and memfds) are kept coherent by the
+kernel's shared-mapping table (`SharedMappingTable` in
+`crates/runtime-core/src/memory.rs`), which pins the file for its mappings
+and sees descriptor writes through a per-file content generation. Its own
+gap: a sole writer with no live peer publishes only at `msync`, `munmap`,
+`exec`, exit or when another mapping joins, so a descriptor `read` of the
+file does not see a fresh store before then, where Linux's unified page
+cache would. The host kind closes this by publishing every observer before
+a descriptor syscall touches the file's bytes
+(`flushSharedMappingsBeforeFileSyscall`); the kernel has no such
+pre-syscall publication yet.
+
+Both kinds share the observable VM gaps: stores beyond the current file
+size are zero-filled or discarded instead of raising Linux `SIGBUS`, and
+writers outside Kandelo's direct file syscall paths do not invalidate
+cached pages.
 
 **Files:** `host/src/kernel-worker.ts`, `host/src/vfs/opfs-worker.ts`,
-`host/src/vfs/vfs.ts`, `crates/kernel/src/descriptor_backing.rs`
+`host/src/vfs/vfs.ts`, `crates/runtime-core/src/memory.rs`,
+`crates/runtime-core/src/kernel_file_mapping.rs`
 
 ### Re-evaluate the Linux-specificity of the VT keyboard input path
 
@@ -131,9 +146,29 @@ existing Linux-VT guests working and preserve Node/browser parity.
 
 ## Browser
 
+### Investigate the WebKit fbDOOM WAD-drop failure
+`apps/browser-demos/test/kandelo-doom-ingest.spec.ts` "dropping a WAD on the
+framebuffer loads it" failed in WebKit in three of three local runs on
+2026-09-28, each at a different step: the 90 s wait for the restarted
+fbDOOM to render, and a locator that never became visible. The drop itself
+works — the screenshot shows the shell running
+`/usr/local/bin/fbdoom -iwad /user.wad`, and the new fbDOOM initializing
+through `HU_Init` before it stops making visible progress. Chromium passes
+the same test, and WebKit passes the Load WAD button path, which uses the
+same restart command.
+
+That demo's keyboard input goes through the PTY (`ptyWrite`), not the host
+stdin pipe that ABI 47 changed, and no old-code baseline was available
+locally to compare against, so the failure is recorded here rather than
+attributed. The investigation should: run the test on main in WebKit to
+establish whether it predates ABI 47; compare what the drop path does
+differently from the button path (synthetic `DataTransfer` drop, focus,
+pane switching to the terminal); and capture the kernel's view of the
+restarted fbDOOM (blocked syscall, fb0 ownership) when it stalls.
+
 ### Replace the constrained public CORS proxy with an owned relay
 
-The current public proxy has a narrow five-name request-header profile. A
+The current public proxy has a narrow six-name request-header profile. A
 Kandelo-owned authenticated relay should add explicit origin policy, private
 network controls, rate limiting, abuse prevention, response limits, and
 operational ownership. Once that capability exists, remove anonymous GET
@@ -142,6 +177,50 @@ current browser boundary as complete POSIX socket or HTTP fidelity.
 
 **Files:** `host/src/networking/`, `apps/browser-demos/public/service-worker.js`,
 deployment infrastructure and browser acceptance
+
+### Technical debt: drop the `X-Cors-Proxy-Range` workaround and its preflights
+
+WP Cloud, which hosts the default proxy's PHP, strips the `Range` header
+before the request reaches PHP, so the profile's
+`rangeRequestHeaderAlias` makes every proxy dispatch repeat `Range` as
+`X-Cors-Proxy-Range`, which that proxy forwards upstream as `Range`. This
+workaround has two costs, accepted to make ranged reads work at all:
+
+- **Preflights.** The alias is not CORS-safelisted, so a ranged request
+  needs an `OPTIONS` preflight. In Chromium every ranged request pays one,
+  because of the next item; WebKit reuses a preflight for 5 seconds. The time
+  cost has not been measured.
+- **No HTTP cache.** Aliased requests use the Fetch cache mode `no-store`,
+  because the HTTP cache can rewrite `Range` without the alias and splice a
+  short body. Ranged reads through the proxy are therefore never cached.
+
+When `Range` reaches the proxy unchanged (re-measure a plain
+`Range: bytes=0-15` through `wordpress-playground-cors-proxy.net` for a
+`206`), remove `rangeRequestHeaderAlias` and the `no-store` mode from the
+profile, `BrowserCorsProxy.fetch()`/`project()`, the service worker, and the
+development relay, together with their tests and the related text in
+`docs/browser-support.md`. Simple `bytes=N-M` ranges then need no preflight
+at all.
+
+**Files:** `host/src/networking/browser-cors-proxy.ts`,
+`apps/browser-demos/lib/browser-cors-proxy.ts`,
+`apps/browser-demos/public/service-worker.js`,
+`apps/browser-demos/vite/dev-cors-proxy.ts`, upstream proxy deployment
+
+### Relay `If-Range` instead of emulating it
+
+The proxy cannot carry `If-Range`, so the browser host emulates it: a `206`
+without the matching validator is discarded for a second, whole-entity
+request. That costs a full extra request whenever the resource changed, and
+always for a date-form `If-Range`, because the proxy does not expose the
+response `Date` that proves `Last-Modified` is strong. If the proxy allowed
+and forwarded `If-Range` (its front end strips it, so it would need an alias
+like `Range`), the profile could list it and the emulation would step aside
+on its own. Exposing `Date` would make date-form `If-Range` confirmable in
+the meantime.
+
+**Files:** `host/src/networking/browser-cors-proxy.ts`,
+`apps/browser-demos/public/service-worker.js`, upstream proxy deployment
 
 ### Reject credentialed Fetch modes at the constrained proxy boundary
 
@@ -159,7 +238,7 @@ test that proves rejection happens before dispatch.
 
 git compresses the smart-HTTP `git-upload-pack` fetch request and sets
 `Content-Encoding: gzip`. The browser TLS-MITM currently decodes such bodies to
-identity and drops the header so the request fits the proxy's five-name
+identity and drops the header so the request fits the proxy's six-name
 allow-list — a faithful *equivalent* of what the guest sent, but not a
 faithful *representation* of it. The more complete behavior is to forward
 `Content-Encoding` and the compressed body unchanged. That requires
@@ -211,6 +290,98 @@ unpublished generation exists.
 **Files:** `apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts`,
 package-source publication workflows, `docs/package-sources.md`
 
+### MariaDB's bootstrap is not reproducible
+
+The `wordpress` image is byte-reproducible: its build-time installer runs
+in deterministic image-build mode and each machine rotates its secrets on
+first boot ("Reproducible VFS image packages" in
+`docs/package-management.md`, which describes this gap in full). The
+`lamp` image is not. Two builds under one key still differ in between 2
+and about 76 files under `/data` (the count varies from pair to pair), all
+from the MariaDB bootstrap, and all from the order in which the server's
+threads run:
+
+- The InnoDB redo log and system tablespace, in every pair: after bootstrap
+  the log sequence number was 43931 or 43943 across builds, and even with
+  equal sequence numbers about 970 bytes of `ib_logfile0` and 12 bytes of
+  two `ibdata1` pages differ -- the order in which the background threads'
+  mini-transactions land.
+- One byte of a time-based UUID, in some pairs: the Aria server UUID in
+  `aria_log_control` and every `.MAI` header, and the `.frm` table version
+  of the system tables the bootstrap creates. MariaDB builds these from its
+  monotonic clock; in deterministic mode that is the bootstrap thread's
+  logical clock, which counts the thread's own reads, and how many reads it
+  makes depends on how often it waits for the background threads.
+
+A deterministic clock and entropy source cannot remove a difference in
+thread order. Fewer InnoDB purge and I/O threads did not either.
+
+**Chosen direction: serialized build-time scheduling.** A
+build-time kernel runs guest threads one at a time in a fixed order: a run
+token granted by the kernel at syscall boundaries, the kernel choosing
+which runnable thread proceeds, virtual time advancing only when every
+thread is blocked, new threads and forked children held until granted the
+token, and a build-time watchdog that fails the build loudly if a thread
+spins without making syscalls. Same security boundary as the deterministic
+mode: no syscall, set once before any task, Node image builders only.
+
+**It waits on moving blocking waits into Rust.** The scheduler needs the
+kernel to know which threads are blocked and to decide every wakeup, and
+today it does not: `futex` wait/wake is handled entirely in
+`host/src/kernel-worker.ts` (`Atomics.waitAsync` on guest memory; the Rust
+`kernel_futex` is bypassed), and sleeps, `waitpid`, `rt_sigtimedwait` and
+the poll/select/accept/advisory-lock retries are parked in host lists and
+resumed by host timers, several polling every 10, 50 or 500 ms of real
+time. A scheduler layered on those would still order threads by host
+timing, and writing it in TypeScript would put kernel scheduling policy in
+the host. Moving futex, sleep, timed-wait and `waitpid` parking into the
+Rust wait queue (`crates/runtime-core/src/wait_queue.rs`, which already
+owns the deadlines) comes first; the scheduler follows it. The rejected alternatives: a pinned,
+content-addressed pre-bootstrapped `/data` as a build input (fixes one
+package, and hides a still non-reproducible step behind a checked-in
+artifact), or accepting `lamp` as non-reproducible.
+
+**Files:** `images/vfs/scripts/wordpress-preinstall.ts`,
+`crates/runtime-core/src/image_build_determinism.rs`,
+`crates/runtime-core/src/wait_queue.rs`, `host/src/kernel-worker.ts`
+
+### `check-determinism run` cannot fetch sources under its fake clock
+
+`xtask check-determinism run` gives each of its two builds a fresh source
+cache and, when `faketime` is on `PATH` (the Nix dev shell provides it),
+runs them at fixed wall clocks in 2001 and 2029. Source downloads then
+fail TLS verification ("certificate not valid yet: verification time
+981191313") after eight attempts, so on a cold source cache the first
+build fails dozens of packages and blocks what depends on them (observed
+2026-09-26 with `--product browser-nginx-php`: 61 FAILED, shell and
+nginx-php-vfs BLOCKED). The clock the check varies should reach the build
+steps, not the source fetcher: fetch outside `faketime` (or seed both
+variations from one verified source cache, which the source digests
+already pin) and apply the fake clock only to the builds.
+
+**Files:** `tools/xtask/src/determinism_check.rs`
+
+### PHP-FPM workers cannot add opcache entries under prewarmed directories
+
+`opcache-prewarm.ts` writes the cache tree it dumps
+(`/var/cache/opcache/<system-id>/var/www/...`) as root-owned `0755`
+directories. The nginx-php image's FPM workers run as `nobody` (uid
+65534), so a worker that compiles a PHP file the build did not prewarm (a
+file added or edited from the demo terminal, or a replacement for an entry
+it rejected) cannot store it: on the Node host, `file_put_contents` into
+`/var/cache/opcache/<system-id>/var/www/html` fails with `EACCES`, and a
+new script's entry never appears. The prewarmed entries themselves are
+read and used. (The kernel enforces the parent-directory permission check
+on its own filesystems, so the store fails at `mkdir` rather than at the
+file.) The same applies to
+the WordPress and LAMP images, whose build deliberately does not prewarm
+`wp-config.php` (the host rewrites it at boot); PHP recompiles it on every
+request. The fix belongs in the image builders: give the cache tree
+the ownership and mode the runtime writer needs, as the WordPress builder
+already does for its database directory.
+
+**Files:** `images/vfs/scripts/opcache-prewarm.ts`, the PHP image builders
+
 ### Define compatibility for restored lazy VFS images
 
 Kandelo currently rebuilds and publishes canonical VFS images for the current
@@ -257,6 +428,70 @@ Any follow-up should:
   or retry logic rather than kernel pointer width;
 - if the approach still looks useful, expose it as a separate `kernel32.wasm`
   build option.
+
+### Copy between kernel and process memories with a multi-memory bridge module
+Every byte that moves between a process and the kernel crosses two separate
+`WebAssembly.Memory` objects. Wasm code can address only the memories it was
+instantiated with, so today the kernel worker's JavaScript makes that hop, and
+a pipe read travels pipe buffer → kernel scratch → the reader's syscall
+channel area. Host-supplied stdin adds host → kernel scratch → pipe buffer in
+front of that (ABI 47 made host stdin a kernel pipe so a forked child shares
+fd 0 with its parent; see `docs/abi-versioning.md`).
+
+A small reusable Wasm module could remove the JavaScript hop and the scratch
+copies. It would import two memories (the kernel's and one process's, or a
+pipe arena and a process's) and export only fixed-shape copies built on
+cross-memory `memory.copy`. The host instantiates one per registered process
+and places its exports in a table the kernel owns, and the kernel calls
+through `call_indirect`, so no JavaScript sits on the copy path. A pipe read
+then becomes one copy from the pipe buffer into the reader's destination, for
+every pipe and socket, not only stdin. Importing existing memories reserves
+no new memory, so this adds no declared ceiling for JavaScriptCore to charge.
+
+The split must stay mechanism versus policy: the host supplies the bridge the
+way it supplies the memory, and the kernel alone decides pid, addresses,
+lengths, and ordering. Any follow-up should:
+
+- verify multi-memory support in every shipped engine, JavaScriptCore first
+  (V8 and SpiderMonkey ship it); without it the gain is not available on
+  Safari/iOS;
+- keep exactly one copy interface: if an engine lacks multi-memory, a
+  JavaScript fallback (`Uint8Array.set`) implements the same interface and
+  bounds, selected once at startup, never a second transfer implementation;
+- rebuild a process's bridge when `exec` replaces its memory and create a new
+  one for each `fork` child;
+- keep bytes in kernel-owned buffers. Considered and rejected, 2026-09-28:
+  leaving pipe bytes in the writer's memory (POSIX lets a writer reuse its
+  buffer as soon as `write()` returns; a pipe outlives and is shared across
+  writers), a shared pipe arena imported by every process (any process could
+  read every pipe, and C cannot address a second memory), and a host-backed
+  stdin stream that keeps all bytes in host memory (a second read path and
+  more host surface to save one copy through a 64 KiB window);
+- measure with the `stdin-throughput` and `syscall-io` suites on Node and
+  browser, before and after.
+
+### Close the Node gap in host stdin throughput
+The `stdin-throughput` suite (24 MiB of host-supplied stdin read by one
+process) measured the ABI 47 kernel-pipe path against the per-pid host
+buffer it replaced on 2026-09-28, alternating runs at load average 6–10:
+
+| Host | Per-pid host buffer (before) | Kernel pipe (ABI 47) |
+|---|---|---|
+| Node | 818, 796, 793 MiB/s | 691, 705, 679 MiB/s |
+| Chromium | 727, 774 MiB/s | 800, 828 MiB/s |
+
+Node is about 13–16% slower; Chromium is no worse (its runs take 30–33 ms and
+the guest clock has 1 ms granularity there). The likely cause, not yet
+profiled: the pipe holds 64 KiB, so 24 MiB takes about 384 refills, and if the
+reader drains the pipe before the host refills it, each refill costs a
+parked-worker wake. A second candidate is visible in the code: every refill
+defers `notifyPipeReadable`, whose last step is a broad
+`scheduleWakeBlockedRetries`, so 24 MiB schedules about 384 broad wakes of
+every blocked retry. The follow-up should profile Node first; if wakes
+dominate, refill within the kernel entry that drained the pipe so the reader
+never observes it empty, and wake only this pipe's readers and pollers. A larger host-stdin pipe would also cut refills,
+at a kernel-memory cost per spawned process. Copies are the less likely cause;
+the bridge module above addresses them.
 
 ## Kernel — regressions
 
@@ -376,10 +611,11 @@ Future cleanup:
 ### Add a real shadow-stack overflow guard beyond the SDK's 8 MiB floor
 Upstream `wasm-ld` reserves a default 64 KiB shadow stack (the linear-memory
 region the compiler uses for spilled locals, `alloca`, and address-taken
-locals). Kandelo's SDK raises executable links to an 8 MiB floor while
-preserving larger explicit requests. That floor covers the mainstream
-workloads that exposed the 64 KiB default, but it is a capacity policy rather
-than an overflow guard.
+locals). Kandelo's SDK applies an 8 MiB default to executable links that make
+no explicit stack-size request, and honours an explicit request verbatim
+(with a warning below the default). That default covers the mainstream
+workloads that exposed the 64 KiB `wasm-ld` default, but it is a capacity
+policy rather than an overflow guard.
 
 The shadow stack grows **downward** from `__stack_high`, and `wasm-ld` places it
 *immediately below* the `.data` / `.bss` segments in the same linear memory.
@@ -394,11 +630,19 @@ shadow-stack frame underflowed by ~108 KiB into PHP's `alloc_globals` data
 segment, silently corrupting `AG(mm_heap)`. The next `_efree` call dereferenced
 the now-bogus heap pointer and trapped — surfacing as "memory access out of
 bounds" inside the optimizer, with no indication that the actual cause was
-stack overflow ~thousands of frames earlier. The PHP recipe still requests
-`LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB), which the SDK raises to its 8 MiB
-floor. The larger reserve covers PHP's observed workload but doesn't *prevent*
-the failure mode: a deeper recursion or a larger `alloca` can still silently
-corrupt data, and every linked program has the same undetected-overflow risk.
+stack overflow ~thousands of frames earlier. The PHP recipe originally worked
+around this with an explicit `LDFLAGS=-Wl,-z,stack-size=4194304` (4 MiB)
+request; since that value sat below the SDK's 8 MiB default and the SDK at
+the time silently raised any sub-floor request to the default, the recipe was
+already linking with 8 MiB in practice, so the explicit flag recorded an
+intention nobody had actually verified. It has since been removed (the SDK
+now honours an explicit sub-floor request instead of silently discarding it,
+so leaving a stale 4 MiB flag in place would have started actually shrinking
+the reservation) and PHP now links with the SDK's 8 MiB default like any
+other package that makes no request. The 8 MiB reserve covers PHP's observed
+workload but doesn't *prevent* the failure mode: a deeper recursion or a
+larger `alloca` can still silently corrupt data, and every linked program has
+the same undetected-overflow risk.
 
 A real fix needs runtime detection so the failure surfaces as an obvious
 crash, not silent corruption. Possible approaches:
@@ -425,17 +669,28 @@ crash, not silent corruption. Possible approaches:
   region and trap on writes to it via `kernel_*` checks at syscall time
   (degrades to the bounds-check approach above).
 
-Once a real guard is in place, the per-program `-Wl,-z,stack-size=...`
-overrides should be audited: programs that genuinely need a larger shadow
-stack (PHP optimizer, deep parser stacks) keep the explicit override and
-document why; everything else can drop the package-local flag and rely on the
-SDK floor plus the guard.
+Once a real guard is in place, the remaining per-program
+`-Wl,-z,stack-size=...` overrides should be audited: a package task already
+removed eight call sites across seven packages (sqlite-cli, vim, sqlite's
+testfixture build, bash, git, ruby's two call sites, and php) whose explicit
+request was below the SDK's 8 MiB default and so was already linking at the
+default in practice — recording an intention nobody had actually formed.
+mariadb's two toolchain files had the same explicit 1 MiB request, but
+mariadb links through raw clang rather than through `wasm32posix-cc`, so it
+gets no SDK-applied default to fall back to; its flag was restored rather
+than removed, since deleting it would have silently dropped mariadb to
+`wasm-ld`'s own ~64 KiB default instead of any 8 MiB floor. Programs that
+genuinely need a shadow stack *larger* than the SDK default (SpiderMonkey's
+16 MiB is the current example) should keep their explicit override and
+document why; everything else that goes through the SDK driver should rely
+on the SDK default plus the guard, with no package-local flag at all.
 
 **Files:** `sdk/src/lib/flags.ts` and `sdk/kandelo/bin/wasm32posix-cc` (current
-8 MiB floor), `packages/registry/php/build-php.sh` (current 4 MiB request),
-`libc/glue/channel_syscall.c` (likely site for a syscall-entry bounds check),
-`host/src/worker-main.ts` (instantiation-time wiring for stack bounds),
-plus any other `build-*.sh` that hits the same wall in the meantime.
+8 MiB default), `packages/registry/php/build-php.sh` (no stack-size override;
+relies on the SDK default), `libc/glue/channel_syscall.c` (likely site for a
+syscall-entry bounds check), `host/src/worker-main.ts` (instantiation-time
+wiring for stack bounds), plus any other `build-*.sh` that hits the same wall
+in the meantime.
 
 **Related:** PR #423 (commit `fa9f579f6 feat(php): make opcache fully load opcache.so + survive PASS_6`) for the original root-cause analysis.
 

@@ -862,7 +862,8 @@ fn replace_branch_targets(instr: &mut Instr, replacements: &HashMap<InstrSeqId, 
 }
 
 fn push(instrs: &mut Vec<(Instr, InstrLocId)>, instr: Instr) {
-    instrs.push((instr, InstrLocId::default()));
+    let _attr = crate::size_attribution::scope(crate::size_attribution::Category::LegacyEh);
+    instrs.push((instr, crate::size_attribution::generated_loc()));
 }
 
 fn local(module: &Module, function: FunctionId) -> &LocalFunction {

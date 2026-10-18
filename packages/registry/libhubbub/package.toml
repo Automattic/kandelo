@@ -1,0 +1,37 @@
+# Per-library manifest for libhubbub. See docs/package-management.md.
+#
+# libhubbub is NetSurf's HTML5 parser: it implements the tokenizer and
+# tree-construction algorithms from the HTML specification, so malformed
+# real-world markup is repaired the way a graphical browser repairs it.
+# libdom uses it to build a document tree from page source.
+#
+# Built with the NetSurf project's own build system (the
+# netsurf-buildsystem-source package) through scripts/netsurf-library-build.sh.
+
+kind = "library"
+
+name = "libhubbub"
+version = "0.3.8"
+kernel_abi = 44
+depends_on = [
+  "netsurf-buildsystem-source@1.10",
+  "libparserutils@0.2.5",
+]
+arches = ["wasm32"]
+
+[source]
+url = "https://download.netsurf-browser.org/libs/releases/libhubbub-0.3.8-src.tar.gz"
+sha256 = "8ac1e6f5f3d48c05141d59391719534290c59cd029efc249eb4fdbac102cd5a5"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://git.netsurf-browser.org/libhubbub.git/tree/COPYING?h=release/0.3.8"
+
+[build]
+script_path = "packages/registry/libhubbub/build-libhubbub.sh"
+
+[outputs]
+libs = ["lib/libhubbub.a"]
+headers = ["include/hubbub"]
+pkgconfig = ["lib/pkgconfig/libhubbub.pc"]

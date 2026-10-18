@@ -25,10 +25,12 @@ import type { FramebufferHandle } from "../../../../../web-libs/kandelo-session/
 import {
   IngestError,
   runDemoIngest,
+  stopDeviceOwner,
   waitForProcessExit,
   type IngestPhase,
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { useFittedCanvasStyle } from "./canvasFit";
+import { useDockActions } from "./DockActions";
 import {
   createTouchKeySender,
   KEY_ENTER,
@@ -40,6 +42,12 @@ import {
 } from "./TouchControls";
 
 const FRAMEBUFFER_REBIND_TIMEOUT_MS = 10_000;
+const CAPTURE_LABELS = [
+  "mouse locked · Esc to release",
+  "captured · click locks mouse",
+  "click to play",
+  "waiting for /dev/fb0",
+] as const;
 
 export interface FramebufferProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
@@ -215,6 +223,23 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     ]).then(() => {});
   }, [host]);
 
+  // A dock action replaces the program on the display. A game reading its
+  // keyboard through a raw-mode terminal takes Ctrl+C as a keypress, so end
+  // the /dev/fb0 owner the way Load WAD does; with no owner, interrupt the
+  // shell's foreground program as other panes do.
+  const stopDisplayProgram = React.useCallback(async () => {
+    const pid = handleRef.current?.getBoundPid() ?? null;
+    if (pid === null) {
+      await host.interruptShellForeground({ timeoutMs: FRAMEBUFFER_REBIND_TIMEOUT_MS });
+      return;
+    }
+    await stopDeviceOwner(host, pid, {
+      waitForRelease: waitForFbRelease,
+      timeoutMs: FRAMEBUFFER_REBIND_TIMEOUT_MS,
+    });
+  }, [host, waitForFbRelease]);
+  const dockActions = useDockActions("fb", null, stopDisplayProgram);
+
   /** Resolve boundedly once some process has bound /dev/fb0 again. */
   const waitForFbBind = React.useCallback((): Promise<void> => {
     const handle = handleRef.current;
@@ -301,29 +326,32 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     touchTapRef.current = null;
   };
   const captureLabel = mouseCaptured
-    ? "mouse locked · Esc to release"
+    ? CAPTURE_LABELS[0]
     : focused
-    ? "captured · click locks mouse"
-    : boundPid !== null ? "click to play" : "waiting for /dev/fb0";
+    ? CAPTURE_LABELS[1]
+    : boundPid !== null ? CAPTURE_LABELS[2] : CAPTURE_LABELS[3];
   const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, 16 / 10);
   const busy = ingestPhase !== null;
   const dockControls = React.useMemo(() => (
     <DemoSurfaceDockControls
       title={`FRAMEBUFFER · /DEV/FB0${boundPid !== null ? ` · pid ${boundPid}` : ""}`}
       status={captureLabel}
+      reserve={CAPTURE_LABELS}
       active={focused || mouseCaptured}
     >
+      {dockActions.controls}
       {ingest && status === "running" && (
         <IngestControl
           accept={ingest.accept}
           label={ingest.label ?? "Load file"}
           busy={busy}
           busyLabel={ingestName ? `loading ${ingestName}…` : "loading…"}
+          testIdPrefix="fb"
           onFile={ingestFile}
         />
       )}
     </DemoSurfaceDockControls>
-  ), [boundPid, busy, captureLabel, focused, ingest, ingestFile, ingestName, mouseCaptured, status]);
+  ), [boundPid, busy, captureLabel, dockActions.controls, focused, ingest, ingestFile, ingestName, mouseCaptured, status]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -396,14 +424,15 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           Drop {ingest?.accept.join(" / ")} to load
         </div>
       )}
+      {dockActions.toasts}
       {busy && (
-        <div className="kframebuffer-toast" data-testid="fb-ingest-busy">
+        <div className="kdemo-toast" data-testid="fb-ingest-busy">
           {ingestName ? `loading ${ingestName}…` : "loading…"}
         </div>
       )}
       {ingestError && !busy && (
         <div
-          className="kframebuffer-toast"
+          className="kdemo-toast"
           data-error="true"
           data-testid="fb-ingest-error"
           role="alert"
@@ -411,7 +440,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           {ingestError}
           <button
             type="button"
-            className="kframebuffer-toast-dismiss"
+            className="kdemo-toast-dismiss"
             onClick={() => setIngestError(null)}
             aria-label="Dismiss error"
           >
@@ -436,18 +465,31 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   );
 };
 
+/**
+ * The display pane's dock row. The badge sits right of the actions, so a
+ * badge that changes width moves every action button. `reserve` lists every
+ * message the badge can show; the badge keeps the width of the widest, so
+ * focusing a button (which changes the focus message) cannot slide it away
+ * from the pointer.
+ */
 export const DemoSurfaceDockControls: React.FC<{
   title: string;
   status: string;
+  reserve?: readonly string[];
   active?: boolean;
   children?: React.ReactNode;
-}> = ({ title, status, active = false, children }) => (
+}> = ({ title, status, reserve = [], active = false, children }) => (
   <div className="kdemo-surface-controls">
     <span className="kdemo-surface-title">{title}</span>
     <span className="kdemo-surface-spacer" />
     {children}
     <span className="kdemo-surface-badge" data-active={active ? "true" : "false"}>
-      {status}
+      <span className="kdemo-surface-badge-text">{status}</span>
+      {reserve.map((text) => (
+        <span key={text} className="kdemo-surface-badge-text" data-reserve="true" aria-hidden="true">
+          {text}
+        </span>
+      ))}
     </span>
   </div>
 );
@@ -456,13 +498,15 @@ export const DemoSurfaceDockControls: React.FC<{
  * The primary ingest path: a real <input type="file">, so it works on every
  * platform including touch, where drag-and-drop does not exist.
  */
-const IngestControl: React.FC<{
+export const IngestControl: React.FC<{
   accept: string[];
   label: string;
   busy: boolean;
   busyLabel: string;
+  /** Surface that owns this control, so two panes get distinct test ids. */
+  testIdPrefix: string;
   onFile: (file: File) => void;
-}> = ({ accept, label, busy, busyLabel, onFile }) => {
+}> = ({ accept, label, busy, busyLabel, testIdPrefix, onFile }) => {
   const inputRef = React.useRef<HTMLInputElement>(null);
   return (
     <>
@@ -470,7 +514,7 @@ const IngestControl: React.FC<{
         ref={inputRef}
         type="file"
         accept={accept.join(",")}
-        data-testid="fb-ingest-input"
+        data-testid={`${testIdPrefix}-ingest-input`}
         style={{ display: "none" }}
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -482,7 +526,7 @@ const IngestControl: React.FC<{
       <button
         type="button"
         className="kdemo-surface-action"
-        data-testid="fb-ingest-button"
+        data-testid={`${testIdPrefix}-ingest-button`}
         disabled={busy}
         onClick={() => inputRef.current?.click()}
       >

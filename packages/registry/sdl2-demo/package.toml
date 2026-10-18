@@ -7,7 +7,7 @@ kind = "program"
 name = "sdl2-demo"
 version = "0.1.0"
 kernel_abi = 43
-depends_on = ["sdl2@2.32.10"]
+depends_on = ["sdl2@2.32.10", "libwayland@1.24.0", "libxkbcommon@1.7.0", "libffi@0.1.0"]
 arches = ["wasm32"]
 
 [source]
@@ -26,7 +26,7 @@ script_path = "packages/registry/sdl2-demo/build-sdl2-demo.sh"
 # this build generates into its work dir.
 [[host_tools]]
 name = "python3"
-version_constraint = ">=3.8"
+version_constraint = ">=3.11"
 probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

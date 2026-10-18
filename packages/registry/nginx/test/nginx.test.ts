@@ -5,9 +5,8 @@
  * sends HTTP requests through the TCP bridge, verifies responses, and tears down.
  */
 import { describe, it, expect } from "vitest";
-import { readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createConnection, createServer } from "node:net";
 import { CAPTURED_STDIO, CentralizedKernelWorker } from "../../../../host/src/kernel-worker";
@@ -24,6 +23,7 @@ import type {
   CentralizedWorkerInitMessage,
   WorkerToHostMessage,
 } from "../../../../host/src/worker-protocol";
+import { makeHostScratchTempRoot } from "../../../../host/test/centralized-test-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../..");
@@ -93,7 +93,7 @@ describe.skipIf(!nginxWasmPath)(
       const testPort = await getFreePort();
 
       // Write a temporary nginx.conf with the allocated port
-      const tmpDir = mkdtempSync(join(tmpdir(), "nginx-test-"));
+      const tmpDir = makeHostScratchTempRoot("nginx-test-");
       const testConf = join(tmpDir, "nginx.conf");
       const confTemplate = readFileSync(join(nginxPrefix, "nginx.conf"), "utf8");
       writeFileSync(
@@ -243,15 +243,19 @@ describe.skipIf(!nginxWasmPath)(
           },
           onExec: async () => -38,
           onExit: (pid, status) => {
-            if (pid === masterPid) {
-              referenceOwners.release(pid);
-              kw.unregisterProcess(pid);
-              resolveExit!(status);
-            } else {
-              referenceOwners.release(pid);
-              kw.deactivateProcess(pid);
-            }
+            // WHY: onExit runs as a protocol-publication effect. Its kernel
+            // capability is revoked while the entry gate drains that effect
+            // batch, so a nested kernel export from here is rejected as
+            // reentrant -- which would replace the master's real exit with a
+            // reentrancy error. Retire the process on the next fresh host
+            // turn, as the production hosts and centralized-test-helper do.
+            referenceOwners.release(pid);
             workers.delete(pid);
+            queueMicrotask(() => {
+              if (pid === masterPid) kw.unregisterProcess(pid);
+              else kw.deactivateProcess(pid);
+            });
+            if (pid === masterPid) resolveExit!(status);
           },
         },
       );

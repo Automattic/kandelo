@@ -1,18 +1,24 @@
 import {
   existsSync,
+  lstatSync,
+  mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildPhpOpcacheArgs,
   createWordPressOpcacheRunDirectory,
   removeWordPressOpcacheRunDirectory,
+  removeWordPressStage,
   resetWordPressMeasurementState,
+  stageWordPress,
 } from "../../benchmarks/suites/wordpress-state";
 
 describe("WordPress benchmark measurement state", () => {
@@ -43,6 +49,58 @@ describe("WordPress benchmark measurement state", () => {
 
       removeWordPressOpcacheRunDirectory(opcacheRunDirectory);
       expect(existsSync(opcacheRunDirectory)).toBe(false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("stages WordPress at the same paths whichever checkout it comes from", () => {
+    // opcache mirrors each script's absolute path, so a checkout one
+    // directory deeper used to cost an extra mkdir per cached script.
+    const scratch = mkdtempSync(join(tmpdir(), "kandelo-wordpress-benchmark-stage-"));
+    try {
+      const makeCheckout = (relativeRoot: string) => {
+        const root = join(scratch, relativeRoot);
+        const wpDir = join(root, "wordpress");
+        const plugin = join(root, "sqlite-database-integration");
+        mkdirSync(join(wpDir, "wp-content/plugins"), { recursive: true });
+        mkdirSync(plugin, { recursive: true });
+        writeFileSync(join(wpDir, "wp-settings.php"), "<?php\n");
+        writeFileSync(join(plugin, "load.php"), "<?php // plugin\n");
+        // setup.sh links the plugin in by absolute path.
+        symlinkSync(plugin, join(wpDir, "wp-content/plugins/sqlite-database-integration"));
+        const router = join(root, "router.php");
+        writeFileSync(router, "<?php // router\n");
+        return { wpDir, router };
+      };
+      const shallow = makeCheckout("a");
+      const deep = makeCheckout("a/much/deeper/checkout");
+      const stageParent = join(scratch, "stages");
+      mkdirSync(stageParent);
+
+      const fromShallow = stageWordPress(shallow.wpDir, shallow.router, stageParent);
+      const fromDeep = stageWordPress(deep.wpDir, deep.router, stageParent);
+      try {
+        for (const stage of [fromShallow, fromDeep]) {
+          expect(relative(stageParent, stage.root)).not.toMatch(/^\.\./);
+          const stagedPlugin = join(stage.wpDir, "wp-content/plugins/sqlite-database-integration");
+          // A real directory: db.php's realpath() must not lead back into
+          // the checkout.
+          expect(lstatSync(stagedPlugin).isSymbolicLink()).toBe(false);
+          expect(readFileSync(join(stagedPlugin, "load.php"), "utf8")).toContain("plugin");
+          expect(readFileSync(stage.routerScript, "utf8")).toContain("router");
+          // router.php finds WordPress at dirname(__DIR__)/wordpress.
+          expect(join(dirname(dirname(stage.routerScript)), "wordpress")).toBe(stage.wpDir);
+          expect(stage.databaseDirectory).toBe(join(stage.wpDir, "wp-content/database"));
+        }
+        expect(fromDeep.wpDir.length).toBe(fromShallow.wpDir.length);
+        expect(fromDeep.wpDir.split("/").length).toBe(fromShallow.wpDir.split("/").length);
+      } finally {
+        removeWordPressStage(fromShallow);
+        removeWordPressStage(fromDeep);
+      }
+      expect(existsSync(fromShallow.root)).toBe(false);
+      expect(existsSync(fromDeep.root)).toBe(false);
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }

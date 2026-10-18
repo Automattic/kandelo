@@ -65,31 +65,6 @@ export interface CheckpointFramebuffer {
 }
 
 /**
- * One epoll instance's interest list, as the host mirrors it.
- *
- * The kernel's own epoll state rides inside the kernel memory copy, but
- * `epoll_pwait` is served from a host-side mirror of the interest list that
- * the host builds by watching `epoll_ctl` (`kernel_handle_channel` crashes in
- * Chrome for `epoll_pwait`). A restored machine's host never saw those calls,
- * so the mirror is machine state the checkpoint must carry: without it, every
- * restored `epoll_wait` answers EBADF for an fd the guest genuinely holds.
- *
- * `data` is the guest's `epoll_data`, a u64 carried as decimal text because
- * the checkpoint codec is JSON plus binary blobs and JSON has no u64.
- */
-export interface CheckpointEpollInterest {
-  readonly fd: number;
-  readonly events: number;
-  readonly data: string;
-}
-
-export interface CheckpointEpoll {
-  readonly pid: number;
-  readonly epfd: number;
-  readonly interests: readonly CheckpointEpollInterest[];
-}
-
-/**
  * One GBM buffer object and its pixels.
  *
  * A bound buffer's bytes also ride inside the process memory copy, but the KMS
@@ -103,6 +78,8 @@ export interface CheckpointGbmBuffer {
   readonly w: number;
   readonly h: number;
   readonly stride: number;
+  /** The writer of a PRIME-shared buffer, or -1 once it exited. */
+  readonly creatorPid: number;
   readonly pids: readonly number[];
   readonly bindings: readonly {
     readonly pid: number;
@@ -195,19 +172,18 @@ export interface CheckpointMachine {
   readonly disarmUnwindRequests: () => void;
   readonly copyKernelMemory: () => Uint8Array;
   /**
-   * Every mount this machine writes to, `/` first, whether or not it answers.
+   * SHA-256 of the `/` image this machine booted, as hex; null without one.
    *
-   * A machine's files are spread across mounts, not held in one: `/` carries
-   * the image while `/home/maker`, `/root`, `/tmp`, `/var/*` and `/srv` are
-   * separate scratch filesystems with buffers of their own. Reading only `/`
-   * would move a machine whose processes survive but whose working files do
-   * not.
-   *
-   * A mount whose backend holds no shared buffer stays in this list and says
-   * why. Dropping it here would leave the checkpoint unable to tell a restore
-   * that the machine it rebuilds is short a filesystem.
+   * The kernel memory copy carries `/` and the scratch mounts, but `/` keeps
+   * reading every file the machine never modified out of the boot image, by
+   * offset. A restore over any other image would read the wrong bytes.
    */
-  readonly filesystemBuffers: () => readonly CheckpointMountSource[];
+  readonly rootfsImageSha256: () => string | null;
+  /**
+   * The host directories mounted beneath `/`, which stay on the computer that
+   * runs them. Each one is named in the checkpoint as a gap.
+   */
+  readonly hostMounts: () => readonly string[];
   /** Read under the freeze: bindings and write-based pixels are quiescent. */
   readonly framebuffers: () => readonly CheckpointFramebuffer[];
   /** Read under the freeze: the display is quiescent. */
@@ -219,7 +195,6 @@ export interface CheckpointMachine {
    *  not need them: the guest's context state travels here, a restore
    *  rebuilds it, and the restored guest's own draws repaint the screen. */
   readonly glContexts: () => readonly CheckpointGlContext[];
-  readonly epollInterests: () => readonly CheckpointEpoll[];
   /** This machine's CLOCK_MONOTONIC in nanoseconds. */
   readonly monotonicNowNs: () => number;
   readonly kernelAbiVersion: () => number;
@@ -239,57 +214,21 @@ export interface CheckpointMachine {
   readonly onLaunchQueuedDuringFreeze?: (listener: () => void) => () => void;
 }
 
-/**
- * What a mount answers when a checkpoint asks for its bytes.
- *
- * A backend that keeps its files in a SharedArrayBuffer answers `bytes`. One
- * that keeps them anywhere else answers `none` with the reason a restore
- * reports.
- */
-export type CheckpointBytes =
-  | { readonly kind: "bytes"; readonly buffer: SharedArrayBuffer }
-  | { readonly kind: "none"; readonly reason: string };
-
-/** One mount, as the freeze finds it. */
-export interface CheckpointMountSource {
-  /** Absolute mount point, exactly as the mount layout names it. */
-  readonly mountPoint: string;
-  readonly bytes: CheckpointBytes;
+/** SHA-256 of a `/` boot image, as hex: what a checkpoint names it by. */
+export async function rootfsImageSha256(image: ArrayBuffer | Uint8Array): Promise<string> {
+  // `crypto.subtle` rejects a SharedArrayBuffer-backed view.
+  const bytes = image instanceof Uint8Array && image.buffer instanceof ArrayBuffer
+    ? image as Uint8Array<ArrayBuffer>
+    : new Uint8Array(image as ArrayBufferLike).slice();
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /**
- * Ask every mount for its bytes, in the order the mount layout names them.
- *
- * Both host entries build `filesystemBuffers` from this rather than reading
- * buffers themselves, so a backend that cannot answer produces the same
- * recorded refusal on Node and in the browser.
- */
-export function askMountsForCheckpointBytes(
-  mounts: readonly {
-    readonly mountPoint: string;
-    readonly backend: { checkpointBytes?(): CheckpointBytes };
-  }[],
-): readonly CheckpointMountSource[] {
-  return mounts.map((mount) => ({
-    mountPoint: mount.mountPoint,
-    bytes: mount.backend.checkpointBytes?.() ?? {
-      kind: "none",
-      reason: "this mount's backend reports no checkpoint bytes",
-    },
-  }));
-}
-
-/** One memory-backed mount, as a checkpoint carries it. */
-export interface CheckpointMount {
-  readonly mountPoint: string;
-  readonly bytes: Uint8Array;
-}
-
-/**
- * One mount a checkpoint could not carry, and what its backend said.
+ * One mount a checkpoint could not carry, and why.
  *
  * Carrying nothing for a host directory is defensible; saying nothing about it
- * is not, so the refusal travels with the checkpoint.
+ * is not, so the gap travels with the checkpoint.
  */
 export interface CheckpointMountGap {
   readonly mountPoint: string;
@@ -320,32 +259,21 @@ export interface CheckpointProcessBucket {
  * refuses a checkpoint whose format it does not know rather than guessing at
  * the missing or extra fields.
  */
-export const MACHINE_CHECKPOINT_FORMAT = 7;
+export const MACHINE_CHECKPOINT_FORMAT = 8;
 
 export interface MachineCheckpoint {
   readonly format: typeof MACHINE_CHECKPOINT_FORMAT;
   /** The ABI the captured kernel ran; a restore refuses any other. */
   readonly kernelAbiVersion: number;
-  readonly kernelMemory: Uint8Array;
   /**
-   * Every memory-backed mount, `/` first.
-   *
-   * A restore rebuilds each mount from its own bytes. Carrying only `/` would
-   * hand over a machine whose processes continue but whose `/home/maker`,
-   * `/root`, `/tmp`, `/var/*` and `/srv` came up empty underneath them.
-   *
-   * How much of that a host reaches follows from how it resolves
-   * `DEFAULT_MOUNT_SPEC`. `resolveForBrowser` backs every scratch mount with a
-   * `MemoryFileSystem`; `resolveForNodeKernelSession` backs each one with a
-   * `HostFileSystem` under the per-boot session directory, which owns no
-   * SharedArrayBuffer for the freeze to read. Only memory-backed mounts reach
-   * this field, so a Node checkpoint carries `/` alone and a Node machine
-   * moves without its working directories. Every mount that stayed behind is
-   * named in {@link unreadableFilesystems}.
+   * The kernel's linear memory, which holds `/` and the scratch mounts as
+   * well as the processes' kernel state.
    */
-  readonly filesystems: readonly CheckpointMount[];
+  readonly kernelMemory: Uint8Array;
+  /** The `/` image the restore must boot; see `CheckpointMachine`. */
+  readonly rootfsImageSha256: string | null;
   /**
-   * Every mount the freeze asked for bytes and did not get, with the reason.
+   * Every host mount the checkpoint left behind, with the reason.
    *
    * A machine short a filesystem is still a machine worth moving, so a gap
    * here does not refuse the checkpoint. It does mean a restore must say what
@@ -367,8 +295,6 @@ export interface MachineCheckpoint {
    * take, which a restore reports rather than absorbs.
    */
   readonly gl: readonly CheckpointGlContext[];
-  /** Every epoll interest mirror, empty for a machine that never used epoll. */
-  readonly epolls: readonly CheckpointEpoll[];
   /**
    * The captured machine's CLOCK_MONOTONIC at the freeze, in nanoseconds.
    *
@@ -390,13 +316,7 @@ export interface MachineCheckpoint {
  */
 export interface MachineCheckpointSummary {
   readonly kernelMemoryBytes: number;
-  /** Every mount's bytes added together. */
-  readonly filesystemBytes: number;
-  readonly filesystems: readonly {
-    readonly mountPoint: string;
-    readonly bytes: number;
-  }[];
-  /** The mounts the freeze could not read, so a caller holding no bytes sees them. */
+  /** The mounts the checkpoint left behind, so a caller holding no bytes sees them. */
   readonly unreadableFilesystems: readonly CheckpointMountGap[];
   readonly framebuffers: readonly {
     readonly pid: number;
@@ -445,14 +365,6 @@ function summarizeMachineCheckpoint(
 ): MachineCheckpointSummary {
   return {
     kernelMemoryBytes: checkpoint.kernelMemory.byteLength,
-    filesystemBytes: checkpoint.filesystems.reduce(
-      (total, mount) => total + mount.bytes.byteLength,
-      0,
-    ),
-    filesystems: checkpoint.filesystems.map((mount) => ({
-      mountPoint: mount.mountPoint,
-      bytes: mount.bytes.byteLength,
-    })),
     unreadableFilesystems: checkpoint.unreadableFilesystems,
     framebuffers: checkpoint.framebuffers.map((framebuffer) => ({
       pid: framebuffer.pid,
@@ -520,7 +432,6 @@ export function machineCheckpointTransferList(
 ): ArrayBuffer[] {
   return [
     checkpoint.kernelMemory.buffer as ArrayBuffer,
-    ...checkpoint.filesystems.map((mount) => mount.bytes.buffer as ArrayBuffer),
     ...checkpoint.framebuffers.flatMap((framebuffer) =>
       framebuffer.hostBuffer === null
         ? []
@@ -836,24 +747,15 @@ function readMachine(
   machine: CheckpointMachine,
   sources: readonly CheckpointProcessSource[],
 ): MachineCheckpoint {
-  const mounts = machine.filesystemBuffers();
   return {
     format: MACHINE_CHECKPOINT_FORMAT,
     kernelAbiVersion: machine.kernelAbiVersion(),
     kernelMemory: machine.copyKernelMemory(),
-    filesystems: mounts.flatMap((mount) =>
-      mount.bytes.kind === "bytes"
-        ? [{
-          mountPoint: mount.mountPoint,
-          bytes: new Uint8Array(mount.bytes.buffer).slice(),
-        }]
-        : []
-    ),
-    unreadableFilesystems: mounts.flatMap((mount) =>
-      mount.bytes.kind === "none"
-        ? [{ mountPoint: mount.mountPoint, reason: mount.bytes.reason }]
-        : []
-    ),
+    rootfsImageSha256: machine.rootfsImageSha256(),
+    unreadableFilesystems: machine.hostMounts().map((mountPoint) => ({
+      mountPoint,
+      reason: "a host directory stays with the computer that mounts it",
+    })),
     monotonicNs: machine.monotonicNowNs(),
     framebuffers: machine.framebuffers().map((framebuffer) => ({
       ...framebuffer,
@@ -863,7 +765,6 @@ function readMachine(
     })),
     kms: machine.kmsState(),
     gl: machine.glContexts(),
-    epolls: machine.epollInterests(),
     processes: sources.map((source) => {
       const memory = new Uint8Array(source.memory.buffer).slice();
       const threads = source.threads();

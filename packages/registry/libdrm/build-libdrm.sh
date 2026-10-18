@@ -15,15 +15,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-libdrm.XXXXXX")"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+WORK_DIR="$(kandelo_package_make_work_dir libdrm)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
 
-LIBDRM_VERSION="${WASM_POSIX_DEP_VERSION:-2.4.120}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://dri.freedesktop.org/libdrm/libdrm-${LIBDRM_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-3bf55363f76c7250946441ab51d3a6cc0ae518055c0ff017324ab76cdefb327a}"
+LIBDRM_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:?WASM_POSIX_DEP_OUT_DIR must name the resolver staging directory}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
@@ -47,13 +49,8 @@ SRC_DIR="$WORK_DIR/source"
 BUILD_DIR="$WORK_DIR/build"
 REPRO_FLAGS="-ffile-prefix-map=$WORK_DIR=/usr/src/libdrm -fdebug-prefix-map=$WORK_DIR=/usr/src/libdrm -fmacro-prefix-map=$WORK_DIR=/usr/src/libdrm"
 
-echo "==> Downloading libdrm $LIBDRM_VERSION..."
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-    -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR" "$BUILD_DIR" "$INSTALL_DIR/lib" \
-         "$INSTALL_DIR/include/drm" "$INSTALL_DIR/include/libdrm"
-tar xJf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+kandelo_package_stage_primary_source libdrm "$SRC_DIR" "$WORK_DIR"
+mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include/drm" "$INSTALL_DIR/include/libdrm"
 
 # Stage the KMS-side sources into a flat build dir — only the four
 # files SDL2's KMSDRM backend pulls in transitively, plus the UAPI
@@ -163,7 +160,30 @@ cp "$SRC_DIR/include/drm/drm_fourcc.h" "$INSTALL_DIR/include/drm/"
 cp "$SRC_DIR/xf86drm.h"                "$INSTALL_DIR/include/libdrm/"
 cp "$SRC_DIR/xf86drmMode.h"            "$INSTALL_DIR/include/libdrm/"
 
+# A consumer that defines __linux__ (Qt clients must) sends drm.h down
+# its Linux branch, which includes <linux/types.h> and <asm/ioctl.h> —
+# UAPI headers musl does not ship. Install the same forwarding shims
+# this script compiles against, so the installed headers are
+# self-contained; the .pc's -I${includedir} puts them on the path.
+mkdir -p "$INSTALL_DIR/include/linux" "$INSTALL_DIR/include/asm"
+cp "$BUILD_DIR/linux/types.h" "$INSTALL_DIR/include/linux/"
+cp "$BUILD_DIR/asm/ioctl.h"   "$INSTALL_DIR/include/asm/"
+
+mkdir -p "$INSTALL_DIR/lib/pkgconfig"
+cat > "$INSTALL_DIR/lib/pkgconfig/libdrm.pc" <<PCEOF
+prefix=\${pcfiledir}/../..
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: libdrm
+Description: Userspace interface to kernel DRM services
+Version: $LIBDRM_VERSION
+Libs: -L\${libdir} -ldrm
+Cflags: -I\${includedir} -I\${includedir}/libdrm -I\${includedir}/drm
+PCEOF
+
 test -f "$INSTALL_DIR/lib/libdrm.a"
 test -f "$INSTALL_DIR/include/libdrm/xf86drmMode.h"
 test -f "$INSTALL_DIR/include/drm/drm_fourcc.h"
+test -f "$INSTALL_DIR/lib/pkgconfig/libdrm.pc"
 echo "==> libdrm $LIBDRM_VERSION KMS-subset package complete"

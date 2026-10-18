@@ -51,13 +51,16 @@ impl ArchiveFormat {
             Ok(Self::TarZst)
         } else if lc.ends_with(".zip") {
             Ok(Self::Zip)
-        } else if lc.ends_with(".tar") {
+        } else if lc.ends_with(".tar") || lc.ends_with(".gem") {
+            // RubyGems packages are tar containers. Treat the pinned outer
+            // container like any tar input; recipes unpack data.tar.gz only
+            // inside their private work root after resolver verification.
             Ok(Self::Tar)
         } else {
             Err(format!(
                 "could not detect archive format from URL extension: {url:?} \
                  (supported: .tar.gz, .tgz, .tar.xz, .txz, .tar.bz2, .tbz2, .tbz, \
-                  .tar.zst, .tzst, .zip, .tar)"
+                  .tar.zst, .tzst, .zip, .tar, .gem)"
             ))
         }
     }
@@ -913,6 +916,10 @@ mod tests {
         ));
         assert!(matches!(
             ArchiveFormat::from_url("https://x/p.tar").unwrap(),
+            ArchiveFormat::Tar
+        ));
+        assert!(matches!(
+            ArchiveFormat::from_url("https://x/p.gem").unwrap(),
             ArchiveFormat::Tar
         ));
     }

@@ -11,11 +11,13 @@ set -euo pipefail
 #   1. Host build: generates import_executables.cmake (native helper programs)
 #   2. Cross build: uses CMake toolchain file for wasm32 or wasm64
 
-MARIADB_VERSION="${WASM_POSIX_DEP_VERSION:-${MARIADB_VERSION:-10.5.28}}"
 MARIADB_MAJOR="10.5"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+MARIADB_VERSION="$WASM_POSIX_DEP_VERSION"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
@@ -38,11 +40,10 @@ while [ $# -gt 0 ]; do
 done
 
 # shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 kandelo_package_prepare_build_roots \
     "$SCRIPT_DIR/mariadb-work-$WASM_ARCH" "$WASM_ARCH"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://archive.mariadb.org/mariadb-${MARIADB_VERSION}/source/mariadb-${MARIADB_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-0b5070208da0116640f20bd085f1136527f998cc23268715bcbf352e7b7f3cc1}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/source"

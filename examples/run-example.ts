@@ -15,7 +15,7 @@
 
 import { closeSync, existsSync, openSync, readFileSync, statSync } from "fs";
 import { resolve, dirname, isAbsolute } from "path";
-import { NodeKernelHost } from "../host/src/node-kernel-host";
+import { NodeKernelHost, resolveRootfsArtifact } from "../host/src/node-kernel-host";
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import { writeAllSync } from "./run-example-output";
 import {
@@ -23,6 +23,7 @@ import {
     type ResolvedBuiltinPrograms,
 } from "./run-example-builtins";
 import { isWithinRealDirectory } from "./run-example-paths";
+import { prepareRunExampleRootfs } from "./run-example-rootfs";
 import {
     buildRunExampleGuestEnvironment,
     resolveRunExampleFilesystem,
@@ -106,7 +107,7 @@ const diffWasm = optionalBinary("programs/diffutils/diff.wasm");
 const cmpWasm = optionalBinary("programs/diffutils/cmp.wasm");
 const sdiffWasm = optionalBinary("programs/diffutils/sdiff.wasm");
 const diff3Wasm = optionalBinary("programs/diffutils/diff3.wasm");
-const perlWasm = optionalBinary("programs/perl.wasm");
+const perlWasm = optionalBinary("programs/perl/perl.wasm");
 const nanoWasm = optionalBinary("programs/nano.wasm");
 const tclshWasm = optionalBinary("programs/tcl.wasm");
 const testfixtureBuild = resolve(
@@ -443,7 +444,10 @@ async function main() {
     }
 
     let programPath: string;
-    if (name.endsWith(".wasm")) {
+    if (name.endsWith(".wasm") || (isAbsolute(name) && existsSync(name))) {
+        // WHY: cross-built programs for a target without an executable
+        // suffix are still Wasm modules (FFmpeg's FATE runs `…/ffmpeg`
+        // through --target-exec); an explicit absolute path is unambiguous.
         programPath = resolve(name);
     } else if (builtinPrograms[name]) {
         programPath = builtinPrograms[name]!;
@@ -504,14 +508,22 @@ async function main() {
     let host: NodeKernelHost | undefined;
     let status = 1;
     try {
+        const rootfs = runnerFilesystem.isolated
+            ? prepareRunExampleRootfs(new Uint8Array(
+                readFileSync(resolveRootfsArtifact().selectedPath),
+            ))
+            : {};
         host = new NodeKernelHost({
             maxWorkers: 4,
+            // Exec authority stays in the image; local bytes only supply
+            // its declared lazy transport.
             rootfsImage: runnerFilesystem.rootfsImage,
+            ...(runnerFilesystem.rootfsMountSpec === undefined
+                ? {}
+                : { rootfsMountSpec: runnerFilesystem.rootfsMountSpec }),
             sessionSeedTrees: runnerFilesystem.sessionSeedTrees,
-            // WHY: isolated mode must give explicitly resolved guest tools
-            // precedence over same-named lazy rootfs stubs. `execPrograms` is
-            // the worker's narrow, pre-VFS capability; waiting for the
-            // fallback callback would let the stub start transport I/O first.
+            // These maps are spawn-preflight inputs only. VFS-backed exec
+            // materializes the image's own executable through lazy transport.
             execPrograms: isolatedExecPrograms,
             // Direct build outputs are not immutable resolver generations.
             // Snapshot their exact bytes before worker startup so replacement
@@ -565,11 +577,22 @@ async function main() {
                 processArgv,
                 spawnOptions,
             ).then(({ exit }) => exit);
-        const timeoutPromise = new Promise<number>((_, reject) => {
-            setTimeout(() => reject(new Error("Process timed out")), timeoutMs);
+        // On the watchdog, exit 124 as timeout(1) does: the conformance
+        // runners tell a time-out from a failure by that status, and a
+        // runner's TEST_TIMEOUT arrives here as TIMEOUT, so this watchdog,
+        // not the runner's outer kill, is usually the one that fires.
+        const timedOut = Symbol("timed out");
+        const timeoutPromise = new Promise<typeof timedOut>((resolve) => {
+            setTimeout(() => resolve(timedOut), timeoutMs);
         });
 
-        status = await Promise.race([exitPromise, timeoutPromise]);
+        const outcome = await Promise.race([exitPromise, timeoutPromise]);
+        if (outcome === timedOut) {
+            console.error(`Process timed out after ${timeoutMs} ms`);
+            status = 124;
+        } else {
+            status = outcome;
+        }
     } finally {
         await host?.destroy().catch(() => {});
         if (guestOutputFd !== null) closeSync(guestOutputFd);

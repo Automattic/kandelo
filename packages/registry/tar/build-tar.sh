@@ -8,16 +8,19 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+TAR_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/tar-src"
 BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
-TAR_VERSION="${WASM_POSIX_DEP_VERSION:-${TAR_VERSION:-1.35}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/tar/tar-${TAR_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-4d62ff37342ec7aed748535323930c7cf94acf71c3591882b26a7ea50f3edc16}"
+
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-tar-source"
 
@@ -55,12 +58,8 @@ if [ -d "$SRC_DIR" ] && \
    [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
     rm -rf "$SRC_DIR" "$BIN_DIR"
 fi
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified tar $TAR_VERSION source..."
-    kandelo_package_stage_verified_source tar "$SRC_DIR" \
-        "$VERIFIED_SOURCE_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
-    printf '%s\n' "$expected_source_marker" >"$SOURCE_MARKER"
-fi
+kandelo_package_stage_primary_source tar "$SRC_DIR" "$WORK_DIR"
+printf '%s\n' "$expected_source_marker" > "$SOURCE_MARKER"
 
 cd "$SRC_DIR"
 

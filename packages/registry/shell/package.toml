@@ -10,6 +10,9 @@ depends_on = [
   "bash@5.2.37",
   "fbdoom@0.1.0",
   "modeset@0.1.0",
+  "sdl2-demo@0.1.0",
+  "wayland-demo@0.1.0",
+  "espeak-ng@1.52.0",
   "ncurses@6.5",
   "less@668",
   "tar@1.35",
@@ -17,15 +20,27 @@ depends_on = [
   "netcat@0.7.1",
   "wget@1.25.0",
   "git@2.47.1",
+  "jq@1.8.2",
+  "php@8.3.15",
   "gzip@1.13",
   "bzip2@1.0.8",
   "xz@5.6.2",
   "zstd@1.5.6",
   "zip@3.0",
   "unzip@6.0",
+  "lhasa@0.4.0",
+  "tyrquake@0.71.0",
   "lsof@0.1.0",
   "nano@8.0",
   "sqlite-cli@3.49.1",
+  "foot@1.17.2",
+  "dbus@1.14.10",
+  "qtgallery@0.1.0",
+  "quickshell@0.3.1",
+  "scummvm@2026.3.0",
+  "love@11.5-kandelo-kms",
+  "elinks@0.20.0",
+  "ffmpeg@9.0",
   "vim-browser-bundle@9.1.0900",
   "nethack-browser-bundle@3.6.7",
   "ruby-browser-bundle@4.0.5",
@@ -35,6 +50,7 @@ depends_on = [
   "mandoc-browser-bundle@1.14.6",
   "coreutils-docs@9.6",
   "lsof-docs@0.1.0",
+  "kandelo-sdk-browser-bundle@21.1.7",
 ]
 
 # Composite VFS image for the browser shell demo: the rootfs package plus exact
@@ -57,6 +73,6 @@ wasm = "shell.vfs.zst"
 
 [[host_tools]]
 name = "node"
-version_constraint = ">=20.0"
+version_constraint = ">=22.0"
 probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

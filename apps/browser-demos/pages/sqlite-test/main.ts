@@ -4,9 +4,9 @@
  * Exposes window.__runSqliteTest("select1.test", timeoutMs) for Playwright.
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { MemoryFileSystem } from "@host/vfs/memory-fs";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
 import { writeVfsFile } from "@host/vfs/image-helpers";
-import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
+import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import { finalizeKernelOwnedImage, settleWebKitReclaim } from "../../lib/kernel-owned-boot";
 import {
   patchTestrunnerForKandelo,
@@ -50,7 +50,7 @@ let kernelBytes: ArrayBuffer | null = null;
 let vfsImageBytes: Uint8Array | null = null;
 let testfixtureBytes: ArrayBuffer | null = null;
 
-function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsFile(fs: KandeloImageFs, path: string): Uint8Array {
   const st = fs.stat(path);
   const fd = fs.open(path, 0, 0);
   try {
@@ -96,7 +96,7 @@ async function collectArtifactsFromKernel(
   return artifacts.length > 0 ? artifacts : undefined;
 }
 
-function installTestrunnerPatches(fs: MemoryFileSystem): void {
+function installTestrunnerPatches(fs: KandeloImageFs): void {
   const runnerPath = "/sqlite/test/testrunner.tcl";
   const decoder = new TextDecoder();
   const runner = decoder.decode(readVfsFile(fs, runnerPath));
@@ -110,11 +110,11 @@ function installTestrunnerPatches(fs: MemoryFileSystem): void {
   ].join("\n"), 0o644);
 }
 
-async function createFs(): Promise<MemoryFileSystem> {
+async function createFs(): Promise<KandeloImageFs> {
   if (!vfsImageBytes) throw new Error("SQLite test VFS image not loaded");
   // WHY: chmod and Tcl patching mutate imported state before the worker sees
   // it, so a forged sealed cohort must fail before either operation.
-  const fs = await restoreVerifiedVfsImage(vfsImageBytes, {
+  const fs = await restoreVerifiedImageForBuild(vfsImageBytes, {
     maxByteLength: 512 * 1024 * 1024,
   });
   fs.chmod("/sqlite", 0o777);

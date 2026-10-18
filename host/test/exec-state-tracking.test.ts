@@ -32,8 +32,10 @@ import {
   PROCESS_STARTUP_MAX_ENVP_COUNT,
 } from "../src/generated/abi";
 import { EXEC_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
+import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
+import { createKernelSharedMappingStub } from "./support/kernel-shared-mapping-stub";
 const preparedExecFixture = new Uint8Array(
   readFileSync("../local-binaries/programs/wasm32/exec-child.wasm"),
 );
@@ -67,6 +69,67 @@ function preparedExecExports(memory: WebAssembly.Memory) {
 }
 
 describe("opaque prepared exec target launch", () => {
+  it.each(["prepare", "interpreter", "size", "read", "cancel", "commit"])(
+    "retries %s contention without lending or repeating consumed authority",
+    async phase => {
+      const script = new TextEncoder().encode("#!/bin/exact\n");
+      const targets = new Map([[31, script], [32, preparedExecFixture]]);
+      let refused = false;
+      const attempt = (operation: string): void => {
+        if (phase === operation && !refused) {
+          refused = true;
+          throw new KernelReentrantEntryError(`test ${operation}`);
+        }
+      };
+      const events: string[] = [];
+      const cancel = vi.fn((_owner: number, target: number) => {
+        attempt("cancel");
+        expect(target).toBe(31);
+        return 0;
+      });
+      const start = vi.fn(async () => { events.push("start"); return 0; });
+      const discard = vi.fn();
+      const commit = vi.fn((_target: number, _size: number, consumed: () => void) => {
+        attempt("commit");
+        consumed();
+        events.push("commit");
+        queueMicrotask(() => events.push("after-commit microtask"));
+        return 0;
+      });
+      await expect(launchPreparedExecTarget({
+        kernel: {
+          execTargetSize: (_owner, target) => {
+            attempt("size");
+            return BigInt(targets.get(target)!.byteLength);
+          },
+          execTargetRead: (_owner, target, offset, destination) => {
+            attempt("read");
+            const bytes = targets.get(target)!;
+            const start = Number(offset);
+            const count = Math.min(destination.byteLength, bytes.byteLength - start);
+            destination.set(bytes.subarray(start, start + count));
+            return count;
+          },
+          execTargetCancel: cancel,
+        },
+        ownerPid: 7, pid: 7, callerTid: 7,
+        diagnosticPath: "/bin/script", argv: ["script"], envp: [],
+        expectedAbi: ABI_VERSION,
+        materializePath: async () => {},
+        prepareInitialTarget: () => { attempt("prepare"); return 31; },
+        prepareInterpreterTarget: () => { attempt("interpreter"); return 32; },
+        compileModule: bytes => WebAssembly.compile(bytes),
+        commitTarget: commit,
+      }, async () => ({ onCommitFailure: discard, startAfterCommit: start }))).resolves.toBe(0);
+      expect(refused).toBe(true);
+      expect(discard).not.toHaveBeenCalled();
+      expect(start).toHaveBeenCalledOnce();
+      expect(commit).toHaveBeenCalledTimes(phase === "commit" ? 2 : 1);
+      expect(cancel).toHaveBeenCalledTimes(phase === "cancel" ? 2 : 1);
+      expect(events).toEqual(["commit", "start", "after-commit microtask"]);
+    },
+  );
+
   it("reads exact short chunks and rejects an unsafe signed size with one cancel", async () => {
     const expected = Uint8Array.from([1, 2, 3, 4, 5]);
     const cancel = vi.fn(() => 0);
@@ -139,6 +202,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["script", "argument"],
       envp: ["A=B"],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async (path) => {
         materialized.push(path);
       },
@@ -203,6 +267,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [] as string[],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async () => {},
       prepareInitialTarget: () => nextTarget++,
       prepareInterpreterTarget: () => {
@@ -267,6 +332,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async () => {},
       prepareInitialTarget: () => target,
       prepareInterpreterTarget: () => {
@@ -287,6 +353,14 @@ describe("opaque prepared exec target launch", () => {
       markTargetConsumed();
       throw new Error("host import threw after Rust consumed the target");
     })).rejects.toThrow("host import threw after Rust consumed the target");
+    expect(cancel).toHaveBeenCalledTimes(1);
+    const consumedFailure = new KernelReentrantEntryError("consumed target");
+    const consumedCommit = vi.fn((_target: number, _size: number, markTargetConsumed: () => void) => {
+      markTargetConsumed();
+      throw consumedFailure;
+    });
+    await expect(launch(44, consumedCommit)).rejects.toBe(consumedFailure);
+    expect(consumedCommit).toHaveBeenCalledOnce();
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
@@ -325,6 +399,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async () => {},
       prepareInitialTarget: () => 51,
       prepareInterpreterTarget: () => {
@@ -392,6 +467,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async () => {},
       prepareInitialTarget: () => 52,
       prepareInterpreterTarget: () => {
@@ -441,6 +517,7 @@ describe("opaque prepared exec target launch", () => {
       argv: ["program"],
       envp: [],
       expectedAbi: ABI_VERSION,
+      compileModule: (bytes: ArrayBuffer) => WebAssembly.compile(bytes),
       materializePath: async () => {},
       prepareInitialTarget: () => 53,
       prepareInterpreterTarget: () => {
@@ -1013,9 +1090,11 @@ describe("exec host-state transition", () => {
       [pathPtr, path.length, blobPtr, 40, 0, 0],
     );
     worker.handleSyscall(channel);
+    // The final target's module lookup hashes the bytes with WebCrypto, which
+    // settles on a later task than the kernel spawn itself.
     await flushMicrotasksUntil(
-      () => kernelSpawn.mock.calls.length === 1,
-      "spawn child was not created after candidate compilation",
+      () => onSpawn.mock.calls.length === 1,
+      "spawn child was not launched after candidate compilation",
     );
     expect(worker.callbacks.onResolveSpawn).toHaveBeenCalledOnce();
     expect(
@@ -1065,6 +1144,8 @@ describe("exec host-state transition", () => {
         exports: {
           kernel_spawn_process: () => 100,
           kernel_remove_process: vi.fn(),
+          // Registration hands the kernel the child's data model.
+          kernel_set_process_pointer_width: () => 0,
           kernel_get_fd_accept_wake_idx: (_pid: number, fd: number) =>
             fd === 4 ? 41 : -1,
           kernel_find_listener_fd_by_accept_wake:
@@ -1541,57 +1622,52 @@ describe("exec host-state transition", () => {
     expect(worker.currentHandlePid).toBe(0);
   });
 
-  it("copies SysV mappings before commit and forgets mirrors after Rust detaches", () => {
+  it("publishes SysV attachments before commit and forgets the mirrors after", () => {
     const memory = new WebAssembly.Memory({ initial: 1 });
     new Uint8Array(memory.buffer, 0x1000, 4).set([1, 2, 3, 4]);
     const kernelMemory = new WebAssembly.Memory({ initial: 2 });
-    const writeChunk = vi.fn(() => 4);
-    const readChunk = vi.fn((_id: number, _offset: number, outPtr: number, len: number) => {
-      new Uint8Array(kernelMemory.buffer, outPtr, len).fill(0);
-      return len;
-    });
     const detach = vi.fn(() => 0);
+    const sysv = createKernelSharedMappingStub();
+    sysv.seed(7, 0x1000, { segId: 3, size: 4, readOnly: false });
     const worker = createWorker({
       processes: new Map([[7, { channels: [{ pid: 7, memory }], memory }]]),
-      shmMappings: new Map([[7, new Map([
-        [0x1000, {
-          segId: 3,
-          size: 4,
-          readOnly: false,
-          snapshot: new Uint8Array(4),
-          seenVersion: 0,
-        }],
-      ])]]),
-      shmSegmentVersions: new Map([[3, 0]]),
+      kernelSharedMappingPids: new Set([7]),
       currentHandlePid: 0,
       kernelMemory,
       getKernelMem: () => new Uint8Array(kernelMemory.buffer),
       toKernelPtr: (value: number) => value,
       kernelInstance: {
         exports: {
-          kernel_ipc_shm_read_chunk: readChunk,
-          kernel_ipc_shm_write_chunk: writeChunk,
           kernel_ipc_shmdt_for_process: detach,
+          ...sysv.exports,
         },
       },
     });
 
+    // The preflight must force a final publication while the old address
+    // space is still readable, but must not touch attachment identity: a
+    // failed exec has to be able to keep using it.
     expect(worker.prepareAddressSpaceForExec(7)).toBe(0);
-    expect(writeChunk).toHaveBeenCalledWith(
-      3,
-      0,
-      workerScratchPointer(worker) + CH_DATA,
-      4,
-    );
+    expect(sysv.callsTo("kernel_shared_mapping_sync_process")).toEqual([
+      { name: "kernel_shared_mapping_sync_process", args: [7, 1] },
+    ]);
     expect(detach).not.toHaveBeenCalled();
-    expect(worker.shmMappings.has(7)).toBe(true);
+    expect(sysv.count(7)).toBe(1);
 
+    // The Rust exec commit already drained the attachment records, so
+    // finalization forgets the mirror WITHOUT detaching: repeating the detach
+    // would release a different same-segment attachment.
     expect(worker.finalizeAddressSpaceForExec(7)).toBe(0);
+    expect(sysv.callsTo("kernel_shared_mapping_release_process")).toEqual([
+      { name: "kernel_shared_mapping_release_process", args: [7, 0, 0] },
+    ]);
     expect(detach).not.toHaveBeenCalled();
-    expect(worker.shmMappings.has(7)).toBe(false);
+    expect(sysv.count(7)).toBe(0);
   });
 
-  it("commits the exact caller and target before pruning closed epoll mirrors", () => {
+  // Epoll registrations need no exec-time pruning here: the kernel owns them
+  // and drops those whose description close-on-exec closed.
+  it("commits the exact caller and target", () => {
     let ambientPid = 0;
     let committedCaller = 0;
     let committedTarget = 0;
@@ -1614,13 +1690,6 @@ describe("exec host-state transition", () => {
           kernel_fd_is_open: (_pid: number, fd: number) => openFds.has(fd) ? 1 : 0,
         },
       },
-      epollInterests: new Map([
-        ["7:6", [
-          { fd: 8, events: 1, data: 11n },
-          { fd: 9, events: 1, data: 12n },
-        ]],
-        ["7:10", []],
-      ]),
     });
 
     expect(worker.kernelExecCommit(7, 11, 13)).toBe(0);
@@ -1628,10 +1697,6 @@ describe("exec host-state transition", () => {
     expect(committedTarget).toBe(13);
     expect(ambientPid).toBe(7);
     expect(worker.currentHandlePid).toBe(0);
-    expect(worker.epollInterests.get("7:6")).toEqual([
-      { fd: 8, events: 1, data: 11n },
-    ]);
-    expect(worker.epollInterests.has("7:10")).toBe(false);
   });
 
   it("fails loudly when the target-aware commit export is absent", () => {
@@ -1800,12 +1865,6 @@ describe("exec host-state transition", () => {
           },
         ]),
       ),
-      epollInterests: new Map([
-        ["8:4", [{ fd: 6, events: 1, data: 1n }]],
-        ["9:4", [{ fd: 6, events: 1, data: 2n }]],
-        ["10:4", [{ fd: 6, events: 1, data: 3n }]],
-        ["11:4", [{ fd: 6, events: 1, data: 4n }]],
-      ]),
     });
 
     expect(worker.shouldLaunchPendingChild(8)).toBe(false);
@@ -1818,10 +1877,6 @@ describe("exec host-state transition", () => {
     expect(listenerClose.get(9)).not.toHaveBeenCalled();
     expect(listenerClose.get(10)).toHaveBeenCalledOnce();
     expect(listenerClose.get(11)).toHaveBeenCalledOnce();
-    expect(worker.epollInterests.has("8:4")).toBe(false);
-    expect(worker.epollInterests.has("9:4")).toBe(true);
-    expect(worker.epollInterests.has("10:4")).toBe(false);
-    expect(worker.epollInterests.has("11:4")).toBe(false);
     expect(removeProcess).not.toHaveBeenCalled();
   });
 });

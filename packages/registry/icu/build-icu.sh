@@ -32,8 +32,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
 source "$REPO_ROOT/sdk/activate.sh"
+ICU_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found after sourcing sdk/activate.sh." >&2
@@ -41,13 +44,13 @@ if ! command -v wasm32posix-cc &>/dev/null; then
 fi
 
 # --- Inputs from resolver, with ad-hoc fallbacks ---
-ICU_VERSION="${WASM_POSIX_DEP_VERSION:-${ICU_VERSION:-74.2}}"
+
 ICU_VER_UNDERSCORE="${ICU_VERSION//./_}"          # 74.2 -> 74_2
 ICU_MAJOR="${ICU_VERSION%%.*}"                     # 74.2 -> 74
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/icu-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/unicode-org/icu/releases/download/release-${ICU_MAJOR}-${ICU_VERSION#*.}/icu4c-${ICU_VER_UNDERSCORE}-src.tgz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-68db082212a96d6f53e35d60f47d38b962e9f9d207a74cfac78029ae8ff5e08c}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
@@ -85,8 +88,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-SRC_ROOT="$WORK_DIR/source"             # contains icu/ (with source/)
-ICU_SRC="$SRC_ROOT/icu/source"
+SRC_ROOT="$WORK_DIR/source"             # verified archive's single top-level root
+ICU_SRC="$SRC_ROOT/source"
 HOST_BUILD="$WORK_DIR/host-build"       # stage-1 native build (out-of-tree)
 
 # --- Resolve libcxx (ICU is C++), symlink into sysroot (mariadb pattern) ---
@@ -120,16 +123,7 @@ rm -rf  "$SYSROOT/include/c++/v1"
 ln -sfn "$LIBCXX_PREFIX/include/c++/v1"  "$SYSROOT/include/c++/v1"
 
 # --- Fetch + verify source ---
-if [ ! -d "$ICU_SRC" ]; then
-    echo "==> Downloading ICU $ICU_VERSION..."
-    TARBALL="$WORK_DIR/icu4c-${ICU_VER_UNDERSCORE}-src.tgz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    echo "==> Verifying source sha256..."
-    echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    mkdir -p "$SRC_ROOT"
-    tar xzf "$TARBALL" -C "$SRC_ROOT"    # extracts icu/
-    rm "$TARBALL"
-fi
+kandelo_package_stage_primary_source icu "$SRC_ROOT" "$WORK_DIR"
 
 NPROC="$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
 

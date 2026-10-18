@@ -162,9 +162,12 @@ fn has_br_table_in(module: &Module, export_name: &str) -> bool {
         walrus::FunctionKind::Local(f) => f,
         _ => panic!("export `{export_name}` is not a local function"),
     };
+    // A region with one landing replays through a single-target
+    // `state >= REWINDING; br_if` guard instead of a br_table.
     let mut found = false;
-    walk_all(func, func.entry_block(), 0, &mut |_, _, instr| {
-        if matches!(instr, Instr::BrTable(_)) {
+    walk_all(func, func.entry_block(), 0, &mut |seq, _, instr| {
+        let guard = matches!(instr, Instr::BrIf(br) if br.block == seq);
+        if matches!(instr, Instr::BrTable(_)) || guard {
             found = true;
         }
     });

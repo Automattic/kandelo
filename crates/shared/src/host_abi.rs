@@ -10,15 +10,9 @@ use core::mem::{offset_of, size_of};
 use crate::abi::extended_syscalls as extra_syscalls;
 use crate::process_layout;
 use crate::{
-    kernel_scratch_wire, platform_limits, Syscall, WasmTimespec, SCHED_AFFINITY_MASK_SIZE,
-    WASM_RUSAGE_WIRE_SIZE,
+    kernel_scratch_wire, platform_limits, Syscall, WasmEpollEvent, WasmTimespec,
+    SCHED_AFFINITY_MASK_SIZE, WASM_RUSAGE_WIRE_SIZE,
 };
-
-/// Private channel argument used to carry the calling process's pointer width.
-///
-/// WHY: one kernel Wasm instance may serve wasm32 and wasm64 processes, so its
-/// own compilation target cannot select a caller-native structure layout.
-pub const PROCESS_POINTER_WIDTH_ARG_INDEX: u8 = 5;
 
 /// Direction of a marshalled pointer argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,9 +40,43 @@ pub enum SyscallArgSize {
     /// Fixed byte length.
     Fixed { size: u32 },
     /// Fixed native structure size selected from the calling process's data
-    /// model.  Encountering this form also makes the host write the process
-    /// pointer width to [`PROCESS_POINTER_WIDTH_ARG_INDEX`].
+    /// model.
+    ///
+    /// The kernel reads that data model from the calling process's registered
+    /// pointer width, which is recorded once at process creation, inherited
+    /// across `fork`, and replaced when a new image commits. It is not carried
+    /// per call: one kernel Wasm instance serves wasm32 and wasm64 processes
+    /// at once, but the width is a property of an address space, not of a
+    /// syscall.
     ProcessLayout { wasm32_size: u32, wasm64_size: u32 },
+    /// The kernel dereferences this pointer itself, through the cross-memory
+    /// primitives `HostIO::proc_read_bytes` / `HostIO::proc_write_bytes`.
+    ///
+    /// The host copies nothing. It passes the caller's raw guest address
+    /// through unchanged — which requires the slot to be declared
+    /// `channel_scalar::ChannelScalarKind::ProcessAddress` so its full
+    /// physical bits survive. The layout the kernel is about to parse is
+    /// caller-native rather than kernel-native, so, as with
+    /// [`Self::ProcessLayout`], the kernel selects it from the calling
+    /// process's registered pointer width.
+    ///
+    /// WHY THIS FORM EXISTS. The four size rules above all answer "how many
+    /// bytes" from static metadata plus one other argument. Some POSIX
+    /// arguments cannot be answered that way at all: `msgctl`'s buffer is an
+    /// input for `IPC_SET` and an output for `IPC_STAT`; `semctl`'s fourth
+    /// argument is a scalar for `SETVAL` and a `u16` array whose length is a
+    /// property of the semaphore set for `GETALL`/`SETALL`; a `struct msghdr`
+    /// holds three further guest pointers whose sizes it carries in its own
+    /// fields. Before this form the host answered those questions in
+    /// TypeScript, which put caller-native structure layout knowledge in a
+    /// second language, beside — and free to drift from — the Rust types that
+    /// define it.
+    ///
+    /// The direction is retained as documentation of which way bytes flow;
+    /// the host enforces nothing from it. Null-pointer handling belongs to
+    /// the kernel too, because the correct errno is per-syscall and, for the
+    /// IPC control calls, per-command.
+    KernelDereferenced,
 }
 
 /// An exceptional source for the number of output bytes copied back to the
@@ -173,6 +201,12 @@ macro_rules! deref {
 macro_rules! fixed {
     ($size:expr) => {
         SyscallArgSize::Fixed { size: $size }
+    };
+}
+
+macro_rules! kernel_dereferenced {
+    () => {
+        SyscallArgSize::KernelDereferenced
     };
 }
 
@@ -446,6 +480,22 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(0, Out, fixed!(390), required)]
     ),
     entry!(Syscall::Pipe2 as u32, [desc!(0, Out, fixed!(8), required)]),
+    // --- Scatter/gather I/O -------------------------------------------------
+    //
+    // `struct iovec` is caller-native and each entry holds a further guest
+    // pointer whose length lives in the same entry, so no static size rule can
+    // describe the argument. The kernel walks the table itself through the
+    // cross-memory primitives, gathers or scatters in one operation to keep
+    // PIPE_BUF and datagram boundaries intact, and bounds the transfer by
+    // SSIZE_MAX rather than by any host staging capacity.
+    entry!(
+        Syscall::Writev as u32,
+        [desc!(1, In, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        Syscall::Readv as u32,
+        [desc!(1, Out, kernel_dereferenced!(), nullable)]
+    ),
     entry!(
         Syscall::Getrlimit as u32,
         [desc!(1, Out, fixed!(RLIMIT_SIZE), required)]
@@ -643,6 +693,22 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, In, arg!(0, mul 4), required)]
     ),
     entry!(
+        Syscall::Sendmsg as u32,
+        // `struct msghdr` is caller-native and carries three further guest
+        // pointers — `msg_name`, the `msg_iov` array, and `msg_control` —
+        // each sized by one of its own fields. The kernel walks them through
+        // the cross-memory primitives.
+        [desc!(1, In, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        Syscall::Recvmsg as u32,
+        // InOut: the kernel reads the caller's iovec capacities and control
+        // buffer length, then writes the received bytes, the source address,
+        // any ancillary data, `msg_namelen`, `msg_controllen` and `msg_flags`
+        // back through the same header.
+        [desc!(1, InOut, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
         Syscall::Wait4 as u32,
         [
             desc!(1, Out, fixed!(4), nullable),
@@ -804,6 +870,13 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(2, Out, fixed!(SCHED_AFFINITY_MASK_SIZE), required)]
     ),
     entry!(
+        // `EPOLL_CTL_DEL` ignores the event, and musl lets a caller pass null
+        // for it, so the pointer is nullable rather than required. The kernel
+        // (`sys_epoll_ctl`) reads `events`/`data` from the staged bytes.
+        extra_syscalls::SYS_EPOLL_CTL,
+        [desc!(3, In, fixed!(size_of::<WasmEpollEvent>() as u32), nullable)]
+    ),
+    entry!(
         extra_syscalls::SYS_TIMERFD_SETTIME,
         [
             desc!(2, In, fixed!(32), required),
@@ -906,6 +979,28 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(2, InOut, fixed!(8), nullable)]
     ),
     entry!(
+        extra_syscalls::SYS_PREADV,
+        [desc!(1, Out, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        extra_syscalls::SYS_PWRITEV,
+        [desc!(1, In, kernel_dereferenced!(), nullable)]
+    ),
+    // preadv2/pwritev2 are Linux extensions, not POSIX interfaces. Their sixth
+    // guest argument is `flags`, and it now arrives intact: the host used to
+    // overwrite that slot with the caller's pointer width, which is registered
+    // per process instead. The kernel implements RWF_NOWAIT and refuses every
+    // other RWF_* bit with EOPNOTSUPP rather than ignoring it — see
+    // `wasm_posix_shared::rwf_flags` and `docs/abi-versioning.md`.
+    entry!(
+        extra_syscalls::SYS_PREADV2,
+        [desc!(1, Out, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        extra_syscalls::SYS_PWRITEV2,
+        [desc!(1, In, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
         extra_syscalls::SYS_LCHOWN,
         [desc!(0, In, cstring!(), required)]
     ),
@@ -977,7 +1072,13 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         extra_syscalls::SYS_MQ_TIMEDSEND,
         [
-            desc!(1, In, arg!(2), required),
+            // `msg_len` is a byte count the queue may refuse: POSIX requires
+            // EMSGSIZE when it exceeds this descriptor's `mq_msgsize`, and
+            // only the kernel holds that attribute. Sizing a host staging
+            // buffer from `msg_len` instead would let an oversized request
+            // fail as ENOMEM — or, above the channel's data capacity, as
+            // EINVAL — before the queue could report EMSGSIZE.
+            desc!(1, In, kernel_dereferenced!(), nullable),
             // mq_send(3) reaches this syscall with a null timeout.
             desc!(4, In, fixed!(WASM_TIMESPEC_SIZE), nullable),
         ]
@@ -985,7 +1086,12 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         extra_syscalls::SYS_MQ_TIMEDRECEIVE,
         [
-            desc!(1, Out, arg!(2), required),
+            // `msg_len` is a capacity, and POSIX requires EMSGSIZE when it is
+            // SMALLER than `mq_msgsize`. The complete result is bounded by
+            // `mq_msgsize`, the kernel's own attribute, so the kernel is the
+            // only party that can both check the capacity and size the
+            // transfer.
+            desc!(1, Out, kernel_dereferenced!(), nullable),
             desc!(3, Out, fixed!(4), nullable),
             // mq_receive(3) reaches this syscall with a null timeout.
             desc!(4, In, fixed!(WASM_TIMESPEC_SIZE), nullable),
@@ -1027,8 +1133,39 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         ]
     ),
     entry!(
+        extra_syscalls::SYS_MSGRCV,
+        // `struct msgbuf` opens with a native `long mtype` — four bytes on
+        // wasm32, eight on wasm64 — followed by the message text. One kernel
+        // instance serves both data models, so the prefix width is a property
+        // of the caller, not of the kernel's own compilation target.
+        [desc!(1, Out, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        extra_syscalls::SYS_MSGSND,
+        [desc!(1, In, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        extra_syscalls::SYS_MSGCTL,
+        // Direction and size both depend on `cmd`: IPC_SET reads a
+        // caller-native `struct msqid_ds`, IPC_STAT writes one, and IPC_RMID
+        // touches no caller memory at all.
+        [desc!(2, InOut, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
         extra_syscalls::SYS_SEMOP,
         [desc!(1, In, arg!(2, mul 6), required)]
+    ),
+    entry!(
+        extra_syscalls::SYS_SEMCTL,
+        // The fourth argument is a `union semun`: a scalar for SETVAL, a
+        // `struct semid_ds *` for IPC_STAT/IPC_SET, and a `u16 *` array for
+        // GETALL/SETALL whose length is `nsems` — a property of the semaphore
+        // set, which only the kernel holds.
+        [desc!(3, InOut, kernel_dereferenced!(), nullable)]
+    ),
+    entry!(
+        extra_syscalls::SYS_SHMCTL,
+        [desc!(2, InOut, kernel_dereferenced!(), nullable)]
     ),
     entry!(
         extra_syscalls::SYS_SIGNALFD,
@@ -1193,6 +1330,14 @@ mod tests {
                         entry.syscall_number, arg.arg_index
                     ),
                     SyscallArgSize::Deref { .. } => {}
+                    // No host-computed extent to validate: the kernel derives
+                    // the size, and the null case is its decision too.
+                    SyscallArgSize::KernelDereferenced => assert!(
+                        arg.nullable,
+                        "syscall {} arg {} lets the kernel decide the null case, \
+                         so the host must not enforce a non-null pointer",
+                        entry.syscall_number, arg.arg_index
+                    ),
                 }
                 if arg.nullable {
                     actual_nullable.push((entry.syscall_number, arg.arg_index));
@@ -1241,6 +1386,31 @@ mod tests {
             (extra_syscalls::SYS_MQ_GETSETATTR, 2),
             (extra_syscalls::SYS_ACCEPT4, 1),
             (extra_syscalls::SYS_ACCEPT4, 2),
+            // EPOLL_CTL_DEL ignores the event argument entirely, and musl
+            // passes the caller's pointer through unexamined, so a null there
+            // is an ordinary request to omit it rather than a fault. ADD and
+            // MOD do read it, and `kernel_epoll_ctl` returns EFAULT for a null
+            // under those two operations -- the per-command null policy the
+            // host must not decide.
+            (extra_syscalls::SYS_EPOLL_CTL, 3),
+            // Kernel-dereferenced arguments are nullable by construction: the
+            // correct errno for a null pointer is per-syscall and, for the
+            // IPC control calls, per-command, so the kernel decides it.
+            (extra_syscalls::SYS_MQ_TIMEDSEND, 1),
+            (extra_syscalls::SYS_MQ_TIMEDRECEIVE, 1),
+            (extra_syscalls::SYS_MSGRCV, 1),
+            (extra_syscalls::SYS_MSGSND, 1),
+            (extra_syscalls::SYS_MSGCTL, 2),
+            (extra_syscalls::SYS_SEMCTL, 3),
+            (extra_syscalls::SYS_SHMCTL, 2),
+            (Syscall::Sendmsg as u32, 1),
+            (Syscall::Recvmsg as u32, 1),
+            (Syscall::Writev as u32, 1),
+            (Syscall::Readv as u32, 1),
+            (extra_syscalls::SYS_PREADV, 1),
+            (extra_syscalls::SYS_PWRITEV, 1),
+            (extra_syscalls::SYS_PREADV2, 1),
+            (extra_syscalls::SYS_PWRITEV2, 1),
         ];
         actual_nullable.sort_unstable();
         expected_nullable.sort_unstable();
@@ -1270,13 +1440,16 @@ mod tests {
             }
         );
 
-        assert!(
-            SYSCALL_ARG_DESCRIPTORS
-                .iter()
-                .all(|entry| entry.syscall_number != extra_syscalls::SYS_MSGRCV
-                    && entry.syscall_number != extra_syscalls::SYS_MSGSND),
-            "native-long SysV messages must use the width-aware host handler"
-        );
+        // The native-long `struct msgbuf` prefix is caller-width, so no static
+        // size rule describes it. It is the kernel that reads it, through the
+        // cross-memory primitives, with the caller's width supplied in the
+        // private sixth channel slot.
+        for syscall in [extra_syscalls::SYS_MSGRCV, extra_syscalls::SYS_MSGSND] {
+            let args = find(syscall).args;
+            assert_eq!(args.len(), 1);
+            assert_eq!(args[0].arg_index, 1);
+            assert_eq!(args[0].size, SyscallArgSize::KernelDereferenced);
+        }
 
         let lchown = find(extra_syscalls::SYS_LCHOWN).args[0];
         assert_eq!(lchown.arg_index, 0);
@@ -1486,9 +1659,7 @@ mod tests {
     }
 
     #[test]
-    fn process_native_layouts_carry_both_widths_and_width_slot() {
-        assert_eq!(PROCESS_POINTER_WIDTH_ARG_INDEX, 5);
-
+    fn process_native_layouts_carry_both_widths() {
         fn assert_layout(
             syscall: u32,
             arg_index: u8,
@@ -1751,10 +1922,94 @@ mod tests {
             extra_syscalls::SYS_MSGRCV,
             extra_syscalls::SYS_MSGSND,
         ] {
-            assert!(
-                maybe_find(syscall).is_none(),
-                "nested iovec syscall {syscall} needs its reviewed host handler"
-            );
+            // An argument holding further guest pointers can never be
+            // described by a static size rule. Every one of these is present
+            // only as `KernelDereferenced`, which copies nothing and hands the
+            // kernel the raw guest address. What must never appear is a
+            // CString / Arg / Deref / Fixed / ProcessLayout rule, which would
+            // stage the outer record and silently drop everything it points
+            // at — nor may one drop out of the table, which would hand the
+            // argument back to a host-side marshaller.
+            let entry = find(syscall);
+            for arg in entry.args {
+                assert_eq!(
+                    arg.size,
+                    SyscallArgSize::KernelDereferenced,
+                    "nested-pointer syscall {syscall} arg {} cannot use a static size rule",
+                    arg.arg_index
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kernel_dereferenced_syscalls_stay_reviewed() {
+        // A `KernelDereferenced` (or `ProcessLayout`) argument hands the kernel
+        // a caller-native layout to parse, so the kernel must know the caller's
+        // data model. It reads that from the process's registered pointer
+        // width. No channel argument slot is spent on it, which is why
+        // preadv2/pwritev2 below keep their own sixth argument, `flags`.
+        //
+        // Adding a syscall here means reviewing its argument meanings.
+        let mut actual: Vec<u32> = SYSCALL_ARG_DESCRIPTORS
+            .iter()
+            .filter(|entry| {
+                entry
+                    .args
+                    .iter()
+                    .any(|arg| arg.size == SyscallArgSize::KernelDereferenced)
+            })
+            .map(|entry| entry.syscall_number)
+            .collect();
+        let mut expected = self::std::vec![
+            Syscall::Writev as u32,
+            Syscall::Readv as u32,
+            Syscall::Sendmsg as u32,
+            Syscall::Recvmsg as u32,
+            extra_syscalls::SYS_PREADV,
+            extra_syscalls::SYS_PWRITEV,
+            // Sixth argument is the caller's own `flags`; see above.
+            extra_syscalls::SYS_PREADV2,
+            extra_syscalls::SYS_PWRITEV2,
+            extra_syscalls::SYS_MQ_TIMEDSEND,
+            extra_syscalls::SYS_MQ_TIMEDRECEIVE,
+            extra_syscalls::SYS_MSGRCV,
+            extra_syscalls::SYS_MSGSND,
+            extra_syscalls::SYS_MSGCTL,
+            extra_syscalls::SYS_SEMCTL,
+            extra_syscalls::SYS_SHMCTL,
+        ];
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "review argument meanings before adding or removing a \
+             kernel-dereferenced syscall"
+        );
+    }
+
+    #[test]
+    fn kernel_dereferenced_arguments_declare_a_process_address_slot() {
+        // The host passes the raw guest address straight through, so the
+        // channel scalar contract must preserve every physical bit. A slot
+        // left at the default i32 kind would truncate a wasm64 address above
+        // 4 GiB to its low word — silently, and only on wasm64.
+        for entry in SYSCALL_ARG_DESCRIPTORS {
+            for arg in entry.args {
+                if arg.size != SyscallArgSize::KernelDereferenced {
+                    continue;
+                }
+                assert_eq!(
+                    crate::channel_scalar::argument_kind(
+                        entry.syscall_number,
+                        arg.arg_index as usize
+                    ),
+                    crate::channel_scalar::ChannelScalarKind::ProcessAddress,
+                    "syscall {} arg {} is kernel-dereferenced but not declared a process address",
+                    entry.syscall_number,
+                    arg.arg_index
+                );
+            }
         }
     }
 

@@ -1,5 +1,5 @@
 import { BrowserKernel } from "../../../../../host/src/browser-kernel-host";
-import { MemoryFileSystem } from "../../../../../host/src/vfs/memory-fs";
+import { createEmptyBuildFs } from "../../../../../apps/browser-demos/lib/kernel-owned-boot";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -100,10 +100,11 @@ async function main(): Promise<void> {
       }),
     ]);
 
-    const memfs = MemoryFileSystem.create(
-      new SharedArrayBuffer(96 * 1024 * 1024, { maxByteLength: 192 * 1024 * 1024 }),
-      192 * 1024 * 1024,
-    );
+    // The IMAGE BUILDER a browser demo uses. There is no buffer to reserve:
+    // capacity is what the exported image DECLARES it may grow to, and the
+    // builder's memory grows with the tree — so this no longer costs 96 MiB of
+    // shared memory before a byte is written.
+    const memfs = await createEmptyBuildFs(192 * 1024 * 1024);
     for (const dir of ["/tmp", "/root", "/dev"]) ensureDir(memfs, dir);
     memfs.chmod("/tmp", 0o777);
     memfs.chmod("/root", 0o700);

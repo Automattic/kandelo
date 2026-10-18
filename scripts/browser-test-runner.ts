@@ -17,7 +17,12 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const BROWSER_DIR = resolve(REPO_ROOT, "apps/browser-demos");
-const VITE_PORT = 5199; // Use different port than demo tests to avoid conflicts
+// A different default port than the demo tests use. --strictPort makes a
+// taken port fail loudly: without it Vite silently moves to the next free
+// port while every page.goto below still loads this one, so the run would
+// test whatever server already listens here. Choose a free port with
+// KANDELO_BROWSER_TEST_RUNNER_PORT when running several runners at once.
+const VITE_PORT = Number(process.env.KANDELO_BROWSER_TEST_RUNNER_PORT ?? 5199);
 const DEFAULT_TIMEOUT = 30_000;
 
 interface TestResult {
@@ -36,7 +41,14 @@ async function startViteServer(): Promise<ChildProcess> {
   return new Promise((resolvePromise, reject) => {
     const proc = spawn(
       "npx",
-      ["vite", "--config", resolve(BROWSER_DIR, "vite.config.ts"), "--port", String(VITE_PORT)],
+      [
+        "vite",
+        "--config",
+        resolve(BROWSER_DIR, "vite.config.ts"),
+        "--port",
+        String(VITE_PORT),
+        "--strictPort",
+      ],
       {
         cwd: BROWSER_DIR,
         stdio: ["ignore", "pipe", "pipe"],

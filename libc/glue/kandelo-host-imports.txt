@@ -1,0 +1,13 @@
+__c_longjmp
+__channel_base
+__cpp_exception
+__wasm_dlclose
+__wasm_dlerror
+__wasm_dlopen
+__wasm_dlopen_commit
+__wasm_dlopen_main
+__wasm_dlopen_next
+__wasm_dlopen_prepare
+__wasm_dlsym
+__wasm_posix_vm_interrupt_after
+memory

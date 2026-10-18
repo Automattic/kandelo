@@ -30,6 +30,7 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_set_brk_limit",
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
+  "kernel_set_process_pointer_width",
   "kernel_vblank",
 ] as const;
 
@@ -168,6 +169,7 @@ describe("kernel process registration entry authority", () => {
       }
       return 0;
     });
+    const setPointerWidth = vi.fn(() => 0);
     harness = makeHarness({
       kernel_create_process_with_stdio: createProcess,
       kernel_get_process_state: getProcessState,
@@ -179,6 +181,7 @@ describe("kernel process registration entry authority", () => {
       kernel_set_brk_limit: setBrkLimit,
       kernel_set_max_addr: setMaxAddr,
       kernel_set_mmap_base: setMmapBase,
+      kernel_set_process_pointer_width: setPointerWidth,
       kernel_vblank: () => 0,
     }, pointerWidth);
 
@@ -196,6 +199,11 @@ describe("kernel process registration entry authority", () => {
 
     expect(createProcess).toHaveBeenCalledWith(0, 0, 0);
     expect(getProcessState).toHaveBeenCalledWith(pid);
+    // The process's data model is registered with the kernel exactly once,
+    // as part of the same registration that publishes its layout. The kernel
+    // reads it back per syscall rather than being told again.
+    expect(setPointerWidth).toHaveBeenCalledWith(pid, pointerWidth);
+    expect(setPointerWidth).toHaveBeenCalledTimes(1);
     expect(begin).toHaveBeenCalledWith(pid);
     expect(commit).toHaveBeenCalledWith(pid, 41);
     expect(cancel).not.toHaveBeenCalled();
@@ -229,6 +237,7 @@ describe("kernel process registration entry authority", () => {
       setBrkLimit: vi.fn(() => 0),
       setMaxAddr: vi.fn(() => 0),
       setMmapBase: vi.fn(() => 0),
+      setPointerWidth: vi.fn(() => 0),
     };
     const caught: unknown[] = [];
     let harness!: ProcessEntryHarness;
@@ -244,6 +253,7 @@ describe("kernel process registration entry authority", () => {
       kernel_set_brk_limit: exportCalls.setBrkLimit,
       kernel_set_max_addr: exportCalls.setMaxAddr,
       kernel_set_mmap_base: exportCalls.setMmapBase,
+      kernel_set_process_pointer_width: exportCalls.setPointerWidth,
       kernel_vblank: () => {
         const attempts: Array<() => unknown> = [
           () => harness.worker.createProcess(CAPTURED_STDIO),
@@ -362,6 +372,7 @@ describe("kernel process registration entry authority", () => {
       const setBrkLimit = vi.fn(() => 0);
       const setMaxAddr = vi.fn(() => 0);
       const setMmapBase = vi.fn(() => 0);
+      const setPointerWidth = vi.fn(() => 0);
       harness = makeHarness({
         kernel_create_process_with_stdio: () => 63,
         kernel_get_process_state: () => PROCESS_STATE_RUNNING,
@@ -373,6 +384,7 @@ describe("kernel process registration entry authority", () => {
         kernel_set_brk_limit: setBrkLimit,
         kernel_set_max_addr: setMaxAddr,
         kernel_set_mmap_base: setMmapBase,
+        kernel_set_process_pointer_width: setPointerWidth,
         kernel_vblank: () => 0,
       }, pointerWidth);
       const memory = processMemory();
@@ -401,6 +413,9 @@ describe("kernel process registration entry authority", () => {
       expect(setBrkLimit).not.toHaveBeenCalled();
       expect(setMaxAddr).not.toHaveBeenCalled();
       expect(setMmapBase).not.toHaveBeenCalled();
+      // The data model is published with the rest of the layout, so a
+      // registration that never reached the layout stage never registered one.
+      expect(setPointerWidth).not.toHaveBeenCalled();
 
       harness.worker.registerProcess(63, memory, [65_536], {
         argv: ["retry-program", ""],

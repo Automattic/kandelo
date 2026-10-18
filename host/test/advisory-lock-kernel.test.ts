@@ -1,15 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   linkSync,
-  mkdtempSync,
   renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
+import { makeHostScratchTempRoot } from "./centralized-test-helper";
 
 import { resolveBinary } from "../src/binary-resolver";
 import {
@@ -18,9 +17,10 @@ import {
 } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import type { PlatformIO } from "../src/types";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
+import { FixedTreeBackend } from "./support/fixed-tree-backend";
+
 import {
   computeProcessMemoryLayout,
   createProcessMemory,
@@ -39,6 +39,11 @@ import {
   CH_SYSCALL,
   FCNTL_FLOCK_BYTES,
 } from "../src/generated/abi";
+// The in-kernel tmpfs owns the scratch prefixes unconditionally, so these
+// advisory-lock cases stage their host-backed files outside every scratch
+// prefix (`makeHostScratchTempRoot`) and drive them through NodePlatformIO to
+// exercise host-file identity (rename/unlink/recreate, fork inheritance).
+
 
 const O_RDWR = 2;
 const O_CREAT = 0o100;
@@ -318,14 +323,18 @@ async function makeWorker(
 
 describe("Rust advisory locks through the real kernel Wasm", () => {
   it("qualifies file identity by backend object, not mount path", async () => {
-    const root = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
-    const first = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
-    const second = MemoryFileSystem.create(new SharedArrayBuffer(1024 * 1024));
-    for (const backend of [first, second]) {
-      const handle = backend.open("/file", O_CREAT | O_RDWR, 0o600);
-      backend.close(handle);
-    }
-    // Both independent backends allocate the same first regular-file inode.
+    // THE COLLISION IS THE POINT, and a fake is what lets the test state it.
+    // Two fresh in-memory filesystems happened to allocate the same first
+    // inode; asserting that was asserting an allocator's behaviour in order to
+    // reach a claim about mount identity. Handing both backends the same
+    // number says what the test needs in one line and cannot drift.
+    const tree = (ino: number) => ({
+      "/": { mode: 0o040755, ino: 1 },
+      "/file": { mode: 0o100644, ino, size: 0 },
+    });
+    const root = new FixedTreeBackend(tree(1));
+    const first = new FixedTreeBackend(tree(42));
+    const second = new FixedTreeBackend(tree(42));
     expect(first.stat("/file").ino).toBe(second.stat("/file").ino);
 
     const platform = new VirtualPlatformIO(
@@ -374,7 +383,7 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
   });
 
   it("uses live file identity across aliases, rename, unlink, and recreate", async () => {
-    const root = mkdtempSync(join(tmpdir(), "kandelo-advisory-identity-"));
+    const root = makeHostScratchTempRoot("kandelo-advisory-identity-");
     const original = join(root, "database");
     const alias = join(root, "database-link");
     const renamed = join(root, "database-renamed");
@@ -445,7 +454,7 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
   });
 
   it("does not inherit POSIX process locks across fork", async () => {
-    const root = mkdtempSync(join(tmpdir(), "kandelo-advisory-process-fork-"));
+    const root = makeHostScratchTempRoot("kandelo-advisory-process-fork-");
     const path = join(root, "file");
     writeFileSync(path, "data");
     const worker = await makeWorker();
@@ -491,7 +500,7 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
   });
 
   it("keeps OFD locks through dup and fork until the last machine reference", async () => {
-    const root = mkdtempSync(join(tmpdir(), "kandelo-advisory-ofd-"));
+    const root = makeHostScratchTempRoot("kandelo-advisory-ofd-");
     const path = join(root, "file");
     writeFileSync(path, "data");
     const worker = await makeWorker();
@@ -538,7 +547,7 @@ describe("Rust advisory locks through the real kernel Wasm", () => {
   });
 
   it("stores 4096 separated ranges and reports conflict before exhaustion", async () => {
-    const root = mkdtempSync(join(tmpdir(), "kandelo-advisory-capacity-"));
+    const root = makeHostScratchTempRoot("kandelo-advisory-capacity-");
     const path = join(root, "file");
     writeFileSync(path, "capacity");
     const worker = await makeWorker();

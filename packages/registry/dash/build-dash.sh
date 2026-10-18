@@ -9,16 +9,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/dash-src"
 BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
-DASH_VERSION="${WASM_POSIX_DEP_VERSION:-${DASH_VERSION:-0.5.12}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-http://gondor.apana.org.au/~herbert/dash/files/dash-${DASH_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-6a474ac46e8b0b32916c4c60df694c82058d3297d8b385b74508030ca4a8f28a}"
+DASH_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-dash-source"
 

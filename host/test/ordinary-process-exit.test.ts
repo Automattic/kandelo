@@ -24,7 +24,16 @@ describe("ordinary process exit diagnostics", () => {
     expect(child.error).toBeUndefined();
     expect(child.signal).toBeNull();
     expect(child.status, child.stderr).toBe(0);
-    expect(child.stderr).toBe("");
+    // Locally built test fixtures come from scripts/build-programs.sh, which
+    // emits raw SDK output without the kandelo.abi.contract stamp; the worker
+    // then prints its documented legacy-binary warning. That intended
+    // diagnostic is not the "nonzero exit leaked to stderr" failure this test
+    // guards against, so it is the one line allowed here.
+    const unexpectedStderr = child.stderr
+      .split("\n")
+      .filter((line) => !line.includes("lacks a kandelo.abi.contract stamp"))
+      .join("\n");
+    expect(unexpectedStderr).toBe("");
 
     const result = JSON.parse(child.stdout) as {
       exitCode: number;

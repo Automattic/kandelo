@@ -111,3 +111,101 @@ export async function waitForSessionAnswer(
   }
   return null;
 }
+
+/*
+ * Rooms: any number of computers joining one hosting computer, the centre
+ * of a star network. The room token travels in the link people share and
+ * opens the room to joiners; the host key never leaves the hosting
+ * computer and is the only authority for the host's side of the room.
+ */
+
+const ROOM_TOKEN_PATTERN = /^[a-z]{20,64}$/;
+const ROOM_POLL_MS = 1500;
+/** An unanswered join expires on the server after two minutes. */
+const ROOM_ANSWER_WAIT_MS = 2 * 60 * 1000;
+const HOST_KEY_HEADER = "X-Kandelo-Host-Key";
+
+export interface RoomJoinRequest { join: string; offer: string }
+export interface HostedRoom { room: string; name: string; joins: RoomJoinRequest[] }
+
+export function validRoomToken(token: string): boolean {
+  return ROOM_TOKEN_PATTERN.test(token);
+}
+
+/** 26 random lowercase letters, about 122 bits, without modulo bias. */
+export function randomRoomToken(length = 26): string {
+  let token = "";
+  const bytes = new Uint8Array(64);
+  while (token.length < length) {
+    crypto.getRandomValues(bytes);
+    for (const byte of bytes) {
+      // 234 is the largest multiple of 26 at or below 256.
+      if (byte < 234 && token.length < length) token += String.fromCharCode(97 + (byte % 26));
+    }
+  }
+  return token;
+}
+
+function roomUrl(server: string, room: string, query: Record<string, string> = {}): string {
+  if (!validRoomToken(room)) throw new Error("a room token is 20 to 64 lowercase letters");
+  const url = new URL(server);
+  url.searchParams.set("room", room);
+  for (const [key, value] of Object.entries(query)) url.searchParams.set(key, value);
+  return url.href;
+}
+
+/** The room is gone: it never existed, expired, or its host closed it. */
+export class RoomClosedError extends Error {}
+
+async function roomRequest<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(url, { cache: "no-store", ...init });
+  if (response.status === 404) throw new RoomClosedError(await refusal(response));
+  if (!response.ok) throw new Error(await refusal(response));
+  return (await response.json()) as T;
+}
+
+/** Create or keep the room, and collect joins still waiting for an answer. */
+export function hostRoom(server: string, room: string, key: string, name: string): Promise<HostedRoom> {
+  return roomRequest(roomUrl(server, room, { role: "host" }), {
+    method: "POST", headers: { [HOST_KEY_HEADER]: key, "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function answerRoomJoin(server: string, room: string, key: string, join: string, answer: string): Promise<void> {
+  await roomRequest(roomUrl(server, room, { role: "answer", join }), { method: "POST", headers: { [HOST_KEY_HEADER]: key }, body: answer });
+}
+
+export async function refuseRoomJoin(server: string, room: string, key: string, join: string, reason: string): Promise<void> {
+  await roomRequest(roomUrl(server, room, { role: "refuse", join }), { method: "POST", headers: { [HOST_KEY_HEADER]: key }, body: reason });
+}
+
+export async function closeRoom(server: string, room: string, key: string): Promise<void> {
+  await roomRequest(roomUrl(server, room, { role: "close" }), { method: "POST", headers: { [HOST_KEY_HEADER]: key }, body: "" });
+}
+
+export function readRoom(server: string, room: string): Promise<{ room: string; name: string }> {
+  return roomRequest(roomUrl(server, room));
+}
+
+export async function postRoomJoin(server: string, room: string, join: string, offer: string): Promise<void> {
+  await roomRequest(roomUrl(server, room, { role: "join", join }), { method: "POST", body: offer });
+}
+
+/**
+ * Poll one join until the host answers it. Returns null when the attempt
+ * is superseded; a refusal or an expired room is the failure it is.
+ */
+export async function waitForRoomAnswer(
+  server: string, room: string, join: string, stillWanted: () => boolean,
+): Promise<string | null> {
+  const deadline = Date.now() + ROOM_ANSWER_WAIT_MS;
+  while (stillWanted()) {
+    if (Date.now() > deadline) throw new Error("the hosting computer did not answer");
+    const status = await roomRequest<{ answer: string | null; refused: string | null }>(roomUrl(server, room, { join }));
+    if (status.refused !== null) throw new Error(`the hosting computer refused: ${status.refused}`);
+    if (status.answer !== null) return status.answer;
+    await new Promise((resolve) => setTimeout(resolve, ROOM_POLL_MS));
+  }
+  return null;
+}

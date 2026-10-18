@@ -5,12 +5,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-if [ "$#" -ne 0 ]; then
-    exec node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
-        "$REPO_ROOT/images/vfs/scripts/staged-product-inputs.ts" \
-        platform-rootfs "$@"
-fi
-
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     require_resolver_root() {
         local env_name="$1" value="$2"
@@ -60,7 +54,7 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
             ;;
     esac
 
-    VFS="$out_real/rootfs.vfs"
+    VFS="$out_real/rootfs.vfs.zst"
     ROOTFS_OUT="$VFS" \
         ROOTFS_PACKAGE_MANIFEST="$work_real/rootfs-packages.MANIFEST" \
         ROOTFS_BINARIES_DIR="$work_real/rootfs-binaries" \
@@ -70,18 +64,18 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
         bash "$REPO_ROOT/scripts/build-rootfs.sh"
 else
     bash "$REPO_ROOT/scripts/build-rootfs.sh"
-    VFS="$REPO_ROOT/host/wasm/rootfs.vfs"
+    VFS="$REPO_ROOT/host/wasm/rootfs.vfs.zst"
     [ -f "$VFS" ] || { echo "ERROR: $VFS not produced by builder" >&2; exit 1; }
 
     source "$REPO_ROOT/scripts/install-local-binary.sh"
     install_local_binary rootfs "$VFS"
 
     mkdir -p "$REPO_ROOT/local-binaries"
-    cp "$VFS" "$REPO_ROOT/local-binaries/rootfs.vfs"
-    echo "  installed $REPO_ROOT/local-binaries/rootfs.vfs"
+    cp "$VFS" "$REPO_ROOT/local-binaries/rootfs.vfs.zst"
+    echo "  installed $REPO_ROOT/local-binaries/rootfs.vfs.zst"
 fi
 
 [ -f "$VFS" ] && [ ! -L "$VFS" ] || {
-    echo "ERROR: exact rootfs.vfs was not produced: $VFS" >&2
+    echo "ERROR: exact rootfs.vfs.zst was not produced: $VFS" >&2
     exit 1
 }

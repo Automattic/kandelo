@@ -298,6 +298,16 @@ rescheduling its platform-owned retry queues. This metadata adds no extra
 host-to-kernel call; it makes the already-observable stream explicit in the
 ABI snapshot.
 
+`kernel_take_pty_readiness_changed() -> u32` is an additive kernel export.
+It returns 1 once for coalesced PTY queue/mode/hangup readiness changes, then
+0 until another change occurs. It adds no fields or reason bits to the packed
+wake stream and changes no guest syscall signatures or layouts. Existing
+hosts retain their readiness retry timers; updated hosts consume the
+notification under the same entry gate as the packed stream. The existing
+ABI version is retained because guest calling conventions remain compatible.
+The strict snapshot-digest gate still requires artifacts stamped against the
+previous snapshot to be rebuilt through the normal package/fixture path.
+
 The pending ABI 43 contract additionally makes the Rust `Process` authoritative
 for each System V shared-memory attachment's process address, segment id, and
 size. After the host has materialized an attachment and its byte-coherence
@@ -711,7 +721,8 @@ differs from the kernel Wasm width. The host stages `msgctl`/`shmctl`
 private sixth kernel-dispatch slot. The required
 `kernel_semctl_array_bytes(pid, tid, semid, command)` export performs the
 permission-aware GETALL/SETALL size preflight; the host does not substitute a
-read-only `IPC_STAT` query for a write-only SETALL operation.
+read-only `IPC_STAT` query for a write-only SETALL operation. (ABI 46 moves this marshalling into the kernel and
+removes the sizing exports and the private sixth-slot width; see "ABI 46".)
 
 Generated process-layout descriptors apply the same caller-width rule to
 `stack_t` (12/24 bytes), the kernel-facing four-native-`long` `itimerval`
@@ -734,7 +745,8 @@ Neither `optlen` nor padding bytes may select a data model. The public
 five-argument `kernel_setsockopt` export is structurally unchanged and uses
 the kernel's native width for direct calls; only channel dispatch consumes the
 host-private width. Adding the generated layout constants and correcting this
-interpretation remain part of unpublished ABI 43 and do not create ABI 44.
+interpretation remain part of unpublished ABI 43 and do not create ABI 44. (ABI 46 replaces the private sixth-slot width with
+the process's registered pointer width.)
 
 Signal and timer transport also change incompatibly in ABI 43. The
 `kernel_timer_create` export grows from three arguments to
@@ -856,33 +868,747 @@ separate Node.js/real-Chromium results belong in the draft PR evidence ledger
 after the candidate is frozen. No latency improvement or broad performance
 no-regression is claimed here.
 
-### ABI 44 machine checkpoint and restore
+### ABI 44 device identity and the Wayland stack
 
-ABI 44 versions the machine-migration contract: a running machine can be
+ABI 44 exists because `WasmStat` changed shape: it grows from 88 to 96
+bytes with a trailing `st_rdev: u64` (offset 88, the slot libc's
+`struct kstat` already reserved). Virtual device nodes report a
+Linux-encoded `dev_t` -- `/dev/input/event{N}` is char major 13, minor
+64+N -- because the real libinput path backend is handed only a node's
+`st_rdev` (`udev_device_new_from_devnum`) and must recover the node from
+it. Every artifact built against ABI 43 must be rebuilt; strict
+`__abi_version` equality already refuses to mix them.
+
+The rest of the Wayland stack's contract changes ride the same epoch. The
+structural ones are recorded in the snapshot; the semantic ones change
+what an existing call returns, which the snapshot cannot see, so they are
+listed here:
+
+- **`SO_PEERCRED`** (`struct ucred {pid, uid, gid}`), with Linux's
+  capture points: an accepted AF_UNIX stream socket reports the process
+  that called `connect()`, the connecting socket reports the listener as
+  of `listen()`, a socketpair and a listener report their creator, and a
+  socket with no AF_UNIX peer reports `{0, -1, -1}`. Before this epoch
+  the kernel did not implement the option: `getsockopt(SO_PEERCRED)`
+  failed with `ENOPROTOOPT`.
+- **evdev ioctls**: `EVIOCGPHYS`/`EVIOCGUNIQ`/`EVIOCGPROP` join the
+  caller-length `E`-magic families that libevdev issues while it
+  constructs a device.
+- **`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE`**: an in/out ioctl that binds a
+  bo imported from another process as a GL texture on the caller's GL
+  session (GPU compositing).
+- **Blocking `read()` of `/dev/dri/card0`** with no event queued now waits
+  for one (the host parks it until the vblank tick delivers flip
+  completions), as Linux's `drm_read` does. It used to return 0 -- end of
+  file -- which libdrm's `drmHandleEvent` took as "no event", so a program
+  that page-flipped and then waited flipped again into `EBUSY`.
+- **`lseek()` on a prime-bo fd** behaves like a Linux dma-buf: only
+  offset 0 with `SEEK_SET` or `SEEK_END`, and `SEEK_END` reports the
+  buffer's size. It used to fail as an unsupported seek.
+- **epoll registrations** are keyed on (fd, open file description), as on
+  Linux: one survives `close(fd)` while a `dup` keeps its description
+  open, ends once the last fd to it closes, and a new file reusing the fd
+  number is a separate registration. Before, a registration was keyed on
+  the fd number alone and outlived its file. Epoll instances now also cross
+  `fork()` and `posix_spawn()` with their registrations (the child's
+  inherited epoll fd used to name no instance), and the host's `epoll_wait`
+  evaluates the kernel's registrations instead of keeping its own mirror;
+  the new `kernel_epoll_watched_fd(pid, index)` export lists the fds a
+  parked wait registers wakeups on. Fork state moves to `FORK_VERSION` 16
+  to carry the instances (and each socket's peer credentials).
+- **An epoll fd inside `poll()` or another epoll** reports `POLLIN` when
+  one of its registrations is ready, as on Linux (nesting is followed four
+  levels deep). It used to report never ready, so an event loop that
+  watches an inner epoll fd -- libinput's inside libwayland's -- never woke.
+- **A PRIME buffer fd passed over `SCM_RIGHTS`** holds its own reference
+  to the buffer while in flight, as a Linux dma-buf fd does. The sender
+  may close its copy as soon as `sendmsg()` returns; that used to drop the
+  last reference and destroy the buffer before the receiver imported it.
+
+Each semantic change corrects behavior toward Linux without changing a
+layout. They share this epoch rather than taking their own because a
+binary built against ABI 43 cannot run against an ABI 44 kernel at all;
+no artifact can observe the old semantics under the new number.
+
+### ABI 45 the DRI desktop stack
+
+The Hyprland-class compositor, the toolkit ports behind foot, Waybar and
+mako, the Omarchy desktop shell, Qt with Quickshell, and ScummVM change
+the kernel's host-facing contract, so they take a new epoch. Every artifact built against ABI 44
+must be rebuilt.
+
+Structural changes (recorded in the snapshot):
+
+- **`host_gl_present` returns a status.** The kernel import changed from
+  `(i32) -> ()` to `(i32) -> (i32)`, so a GPU-tier present can report
+  failure to the guest's `eglSwapBuffers`. A host built for ABI 44
+  provides the old signature and cannot instantiate this kernel.
+- **GPU-tier buffer objects.** `DRM_IOCTL_WPK_CREATE_GPU_BO` used to fail
+  with `ENOSYS`; it now allocates a bo backed by a host WebGL2 texture and
+  framebuffer through the new `host_gbm_gpu_bo_create` import, and joins
+  the ioctl contract table. Without a shared GL context (headless Node, or
+  before the compositor's context exists) the host returns `ENOSYS` and
+  the guest falls back to a CPU dumb bo.
+- **`GLIO_CREATE_SURFACE` attributes** grow from 12 to 20 bytes: a
+  reserved field names the bo whose framebuffer the window surface
+  renders into.
+- **A new `host_kms_connector_mm` import** reports the display's physical
+  size, which `DRM_IOCTL_MODE_GETCONNECTOR` now returns in
+  `mm_width`/`mm_height` (they were always 0). A host built for ABI 44
+  lacks the import and cannot instantiate this kernel. Host imports are not
+  in the structural snapshot, which is why this is listed by hand.
+- **`kernel_swap_poll_sigmask` / `kernel_restore_poll_sigmask`** exports
+  let the host hold an epoll_pwait signal mask for the whole wait. The
+  host still runs epoll_pwait itself (it converts the wait to poll
+  retries), so without them the mask argument would be ignored and a
+  signal the caller unblocks only inside the wait would never arrive.
+
+Semantic changes (not visible to the snapshot):
+
+- **epoll_pwait's signal mask covers the whole wait,** and a signal that
+  the mask allows ends a parked wait so its handler runs. Before, a
+  thread parked in epoll_pwait never saw a signal until the wait ended
+  on its own (foot reaps children with SIGCHLD from exactly that wait).
+- **SA_RESTART alone decides** whether a wait interrupted by a handler
+  restarts; a handler without it now makes the call fail with `EINTR`.
+- **sendmsg and recvmsg gather every iovec,** not only the first.
+- **A new thread's initial stack pointer is 16-byte aligned,** which C++
+  and varargs code require.
+- **The GL command stream gains three ops and a query:**
+  `OP_DETACH_SHADER`, `OP_VERTEX_ATTRIB_4FV`, `OP_DELETE_FRAMEBUFFERS` and
+  `QOP_GET_SHADER_PRECISION_FORMAT` (`crates/shared` `gl` module,
+  `libc/glue/gl_abi.h`). A guest GLES library that emits them needs a host
+  that decodes them.
+- **`/dev/input/event1` is an absolute pointer.** It no longer advertises
+  `REL_X`/`REL_Y` (only the wheel axes stay relative), so consumers such as
+  SDL's evdev backend read its `EV_ABS` positions, and its `EVIOCGABS`
+  range follows the connector mode the display advertises. Before, the host
+  faked absolute positions by pegging a relative cursor to the origin.
+- **`inotify_init`, `inotify_add_watch` and `inotify_rm_watch` fail with
+  `ENOSYS`.** They used to succeed with an fd that never delivered events,
+  which kept Qt's and glib's file watchers from taking their polling
+  fallback.
+- **A `MAP_FIXED` mapping inside an existing mapping carves it,** leaving
+  the rest of the old mapping in place, rather than evicting the whole
+  mapping.
+
+These share one epoch because a binary or host built for ABI 44 cannot
+run against an ABI 45 kernel at all.
+
+### ABI 46 fork metadata that survives wasm-opt
+
+Fork instrumentation used to be the last step before a binary shipped.
+From ABI 46 the instrumenter runs `wasm-opt -O2` over its own output,
+which shrinks the code section of every measured program by 3–6% (see
+"Optimization around instrumentation" in
+[fork-instrumentation.md](fork-instrumentation.md)). wasm-opt is free to
+delete imports nothing calls and to renumber the rest, so this epoch
+removes the instrumenter metadata's dependence on import positions. Every
+fork-instrumented artifact built against ABI 45 must be rebuilt.
+
+Structural changes (recorded in the snapshot):
+
+- **`kandelo.wpk_fork.imported_globals` and
+  `kandelo.wpk_fork.imported_tables` move to format 2.** Each record's
+  word at offset 20 used to hold the import's position in the import
+  section. It is now reserved and must be zero. Hosts find the import by
+  its kind, module name and field name instead. If several imports share
+  that identity, the k-th record pairs with the k-th such import, and the
+  counts must agree. A format 1 section fails validation.
+
+Semantic changes (not visible to the snapshot):
+
+- **Fork-runtime imports are optional when absent and exact when
+  present.** Instrumentation is proven by the capability section, the
+  `wpk_fork_*` control exports and the descriptors, which wasm-opt keeps.
+  Imports are not: a module cannot use an import it does not declare, and
+  wasm-opt removes the ones nothing calls. Two rules remain. The
+  linked-frame core (`__wpk_fork_frame_reserve`, `commit`, `next`) is
+  all-or-nothing, and a module with those frame imports must import the
+  private unwind tag, because every instrumented frame catches it. A module
+  with no fork-path frames of its own (it only re-exports `env.fork`, or
+  wasm-opt removed every fork-path function) imports neither. Previously
+  hosts, the shell guards and package publication required every
+  `__wpk_fork_*` import, the resume table and the activation global, and
+  required the frame core whenever fork was imported.
+- **Instrumented modules declare every Wasm feature they use** in
+  `target_features`. The instrumenter scans its output (operators, value
+  and block types, memories, tables, tags) and adds what is missing. Its
+  reference codecs use GC instructions such as `ref.test (ref i31)`,
+  exception codecs return tuples (multivalue), and shared memories get
+  atomic guards; wasm-opt enables only the features a module declares, so
+  without the declaration it rejected every instrumented module.
+
+Fork sinks (prototype; see
+[plans/2026-10-02-fork-sinks.md](plans/2026-10-02-fork-sinks.md)) share
+this epoch:
+
+- **New optional import `env.__wpk_fork_boundary`, new export
+  `wpk_fork_resume_sink(i32)`, and a new custom section
+  `kandelo.wpk_fork.boundaries`** (`KFSB`, format 1: a count, then one
+  record per boundary of a frame ordinal and a thunk-signature index).
+  They are present only when the instrumenter found a boundary. A
+  boundary is a function whose child, after fork, never returns to its
+  caller.
+- **Fork can complete below `_start`.** The parent's unwind stops at the
+  deepest boundary on the stack. That function calls
+  `__wpk_fork_boundary`, during which the host seals the capture, sends
+  `SYS_FORK` and begins parent or abort replay. It then restarts its own
+  callees in place. A child whose outermost replay frame is a boundary
+  enters through `wpk_fork_resume_sink` instead of `_start`. That entry
+  returns only if the sink itself returned, which the host reports as
+  "fork child returned through its sink frame". A trap in the child's own
+  code ends the process by its signal, like any other trap.
+- **New custom section `kandelo.wpk_fork.dlopen_contract`** on a
+  dlopen-capable main module analysed with compiler facts. Its text form
+  is `v1`, a `mode` line (`traced-entries` or
+  `assume-all-entries-fork-returning`), an `address-taken` line (`0` or
+  `1`) and one `fork-returning <export>` line per exported function whose
+  fork child can return to its caller. Under `traced-entries`, hosts
+  refuse at `dlopen` a side module that imports a listed export (as an
+  `env` function or a `GOT.func` slot), and every side module when
+  `address-taken` is `1` (today's instrumenter never emits that
+  combination; it switches such a module to
+  `assume-all-entries-fork-returning`). A module without the section loads side modules
+  as before; the instrumenter then never assumed anything about them.
+  `kandelo.calltypes` and `kandelo.calltypes.code-sha256` are build inputs
+  to the instrumenter, which removes them; they are not part of the ABI.
+- **The crt no longer passes `main` as a pointer, and
+  `__libc_start_main` calls its stage 2 directly**, so neither function
+  is in the indirect function table. This is not an ABI surface by
+  itself. The fork analysis relies on it.
+- **A vfork child may `fork()` and `posix_spawn()`.** Both used to fail
+  with `EAGAIN`. The fork copies the borrowed memory, and the grandchild
+  adopts the vfork child's own continuation root (worker init field
+  `forkLaunchRootFromCaller`). This is a host and kernel behavior change
+  with no layout change. A binary built for an earlier ABI 46 host gets
+  success where it got `EAGAIN`, which no correct program relied on. A
+  nested `vfork()` and `pthread_create()` from a vfork child still fail
+  with `EAGAIN`.
+
+Additive changes within ABI 46 (no bump; see "Additive changes within an
+ABI epoch" below):
+
+- **`/dev/kandelo/clipboard`, the host clipboard device.** Five new
+  kernel exports, listed as optional host-adapter exports, so a host
+  checks for them and reports "unsupported" against a kernel without
+  them: `kernel_clipboard_stage(ptr, len, offset)`,
+  `kernel_clipboard_offer()` and `kernel_clipboard_ack(seq)` carry host
+  text to the agent and its answer back, and
+  `kernel_clipboard_guest_generation()` and
+  `kernel_clipboard_guest_read(out_ptr, out_capacity, offset)` read back the
+  desktop selection the agent reports (copy-out). A new
+  `clipboard_device_abi` snapshot section records the guest-visible
+  record header `{u32 version, u32 kind, u32 seq, u32 len}`, its two
+  kinds (`KIND_OFFER_TEXT` = 1, host to agent; `KIND_GUEST_TEXT` = 2,
+  agent to host), the acknowledgement `{u32 seq, i32 status}` and their
+  constants, generated into `<kandelo/clipboard.h>` and
+  `host/src/generated/abi.ts`. A `write()` to the device is either an
+  8-byte acknowledgement or one whole `KIND_GUEST_TEXT` record. The new
+  device path changes `open("/dev/kandelo/clipboard")` from `ENOENT` to
+  success and adds `/dev/kandelo` to `ls /dev`; no binary built before it
+  depended on either, and an agent built against it fails with `ENOENT`
+  on an older ABI 46 kernel, which is the honest answer. Changing the
+  record or acknowledgement layout later is incompatible and needs a
+  bump; `dump-abi` accepts the section's first appearance as additive
+  and classifies later changes inside it like any other section. No new
+  kernel imports and no new wakeup types: the host learns the agent's
+  answer by polling `kernel_clipboard_ack` on a timer, and a copy-out by
+  polling `kernel_clipboard_guest_generation` while a copy gesture is
+  pending.
+
+### ABI 47 honest program links and kernel-owned host stdin
+
+ABI 47 declares, in `shared::abi::HOST_ENV_IMPORTS`, every import the host
+supplies to a user program from the `env` module (besides the fork runtime's,
+which `WPK_FORK_REQUIRED_*` already declare). The snapshot records it as
+`host_env_imports`, the host receives it as `HOST_ENV_IMPORTS` in
+`host/src/generated/abi.ts`, and `dump-abi` writes the link-time allowance
+`libc/glue/kandelo-host-imports.txt`, which replaces `--allow-undefined` in
+every executable link. Before ABI 47 an executable could leave any symbol
+undefined and the host stubbed unknown imports with a throwing function, so
+configure checks accepted functions Kandelo lacks and programs trapped when
+they first called one. An ABI 47 host refuses to instantiate a program that
+imports anything undeclared from `env` (`host/src/env-imports.ts`), and
+`scripts/check-program-env-imports.sh` surveys built programs for the same
+rule. Both read the fork runtime's imports from the declarations too,
+including `WPK_FORK_GLOBAL_IMPORTS`, the two immutable globals fork
+instrumentation adds (the activation index and the table-generation fence).
+
+ABI 47 also gives host-supplied stdin a kernel pipe
+(`kernel_install_host_stdin_pipe`): fd 0 is an ordinary pipe read end shared
+across `fork`, `dup`, and `exec`, instead of a host handle answered per pid.
+
+The GL command stream gains `OP_BLEND_FUNC_SEPARATE`,
+`OP_BLEND_EQUATION_SEPARATE` and the query `QOP_FINISH` (`crates/shared` `gl`
+module, `libc/glue/gl_abi.h`, `host/src/webgl/ops.ts`), which back
+`glBlendFuncSeparate`, `glBlendEquationSeparate`/`glBlendEquation` and
+`glFinish`. Without them SDL2's GLES2 renderer, which looks up all of these at
+startup, could not be created. A guest GLES library that emits them needs a
+host that decodes them, so they ride this epoch rather than `OP_VERSION`.
+
+Every artifact is rebuilt for ABI 47; the strict `__abi_version` equality
+check rejects ABI 46 programs. As with any bump, the committed resolver bundle
+`scripts/resolve-binary.bundle.mjs` embeds the ABI version and the required
+kernel exports, so it is regenerated (`scripts/build-resolve-binary-bundle.sh`)
+in the same change; a stale bundle rejects the new kernel "by artifact policy".
+
+### ABI 48 opaque transport, kernel-owned marshalling, and kernel-owned readiness
+
+ABI 48 takes the host out of the syscall data path. The guest marshals its
+own pointer arguments, the kernel reads the arguments no static rule can
+describe straight out of the caller's memory, and readiness, epoll interest
+lists, and blocking-wait deadlines become kernel state. Every program must be
+relinked against a rebuilt musl (the syscall glue changed), and every kernel
+and host artifact is rebuilt with it; a binary or host built for ABI 47
+cannot run against an ABI 48 kernel.
+
+Structural changes (recorded in the snapshot):
+
+- **Opaque channel records.** A new request flag,
+  `REQUEST_FLAG_OPAQUE_RECORD` (bit 3 of `request_flags`), says the channel
+  data buffer begins with a self-describing syscall record: record ABI v1 in
+  `crates/shared/src/channel_record.rs` (magic, record ABI, syscall number,
+  span count, the record's total byte length, the six scalar words, then span
+  descriptors with direction and byte range). The host copies exactly
+  `record_len` bytes into kernel scratch and back, and the kernel refuses a
+  length outside `[64, 65480]` or a span ending past it; a record syscall
+  never moves the rest of the 64 KiB data buffer. The guest glue emits one for every non-blocking syscall from
+  the generated `bits/kandelo_syscall_marshal.h`; the kernel decodes it
+  (`crates/runtime-core/src/channel_record_decode.rs`). Host-intercepted and
+  host-retried blocking syscalls stay on the raw-argument path; the
+  authoritative list is `crates/shared/src/host_raw_syscalls.rs`. The host
+  hands a flagged request to the new export `kernel_handle_channel_record`
+  (same channel layout as `kernel_handle_channel`, no retry token), and only
+  that entry point decodes a record: `kernel_handle_channel` never inspects
+  the data buffer for the record magic.
+- **A fifth channel status, `TEARDOWN` = 4.** The host publishes it to unwind a
+  guest thread parked in the channel wait without resuming an image that is
+  being abandoned; the glue traps on observing it. A guest built for ABI 47
+  would read it as an unknown status.
+- **`SyscallArgSize::KernelDereferenced`.** A new argument size kind: the host
+  copies nothing and the kernel reads and writes the caller's memory itself
+  through `host_proc_read_bytes` / `host_proc_write_bytes`. It is declared
+  for `writev`/`readv` (81/82), `sendmsg`/`recvmsg` (333/334),
+  `preadv`/`pwritev`/`preadv2`/`pwritev2` (295–298), `msgsnd`/`msgrcv`/
+  `msgctl` (339/338/340), `semctl` (343), `shmctl` (347), and
+  `mq_timedsend`/`mq_timedreceive` (137/138). `epoll_ctl` (240) gains a
+  descriptor for its nullable 16-byte input event.
+- **The caller's pointer width is registered per process.** New export
+  `kernel_set_process_pointer_width(pid, width)`; `Process` carries the width,
+  a fork child inherits it, and the host registers it again for the image an
+  exec installs. Channel argument slot 5 is no longer overwritten with the
+  width on any path (three writers in the host, three in the guest glue), so
+  slot 5 of `preadv2`/`pwritev2` is declared a `u32` scalar and carries the
+  caller's `flags`. `PROCESS_POINTER_WIDTH_ARG_INDEX` leaves the generated
+  TypeScript.
+- **The fixed kernel-scratch message wires are retired.** `KernelIovecWire`,
+  `KernelMsghdrWire`, `KernelCmsghdrWire`, and
+  `kernel_message_wire.flattened_iovec_count` leave the snapshot, because
+  nothing stages them any more.
+- **Kernel exports: 333 → 199.** Removed: the five sizing exports the host no
+  longer needs (`kernel_msqid_ds_bytes`, `kernel_semid_ds_bytes`,
+  `kernel_shmid_ds_bytes`, `kernel_semctl_array_bytes`,
+  `kernel_mq_descriptor_msgsize`); 24 exports nothing anywhere called
+  (for example `kernel_get_fork_state`, `kernel_set_fork_exec`,
+  `kernel_tgkill`, `kernel_is_signal_blocked`; the matching dead declarations
+  in `libc/glue/syscall_imports.h` went too, and the matching arms of the
+  legacy `libc/glue/syscall_glue.c`, which no build links, now return
+  `ENOSYS`); and 116 dispatch-only handlers (`kernel_open`, `kernel_close`,
+  `kernel_sendmsg`, `kernel_epoll_ctl`, …) that `kernel_handle_channel`
+  reaches as plain Rust calls, so their export attribute published a symbol
+  with no consumer.
+  Added: `kernel_set_process_pointer_width`, `kernel_epoll_wake_indices`,
+  `kernel_handle_channel_record` (also added to
+  `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS`), and
+  the wait-deadline family `kernel_set_wait_queue_enabled`,
+  `kernel_wait_deadline_open`, `kernel_wait_deadline_remaining_ns`,
+  `kernel_wait_deadline_close`, `kernel_wait_retire_process`,
+  `kernel_next_wait_deadline_ns`, `kernel_wait_queue_len`, and
+  `kernel_wait_queue_stats`. `kernel_shmid_ds_bytes` leaves
+  `HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS`.
+- **Network-readiness facts.** `io_multiplexing.net_readiness` defines the
+  fact word a host backend reports (bytes buffered, end of stream, send ready,
+  send closed, hang-up, sticky error, unobservable).
+- **Network-interface ioctls join the ioctl contract.** `SIOCGIFNAME`,
+  `SIOCGIFCONF`, `SIOCGIFADDR`, `SIOCGIFHWADDR`, and `SIOCGIFINDEX` are served
+  by the kernel.
+
+Host imports (not in the structural snapshot, so listed here): the kernel
+imports 82 host functions, down from 85. Removed: `host_nanosleep`,
+`host_sigsuspend_wait`, `host_futex_wait`, `host_call_signal_handler` (none
+had a live caller, and the first three would have blocked the one kernel
+thread every process shares), and `host_net_poll`. Added: `host_net_readiness`
+(returns the fact word above instead of `poll` `revents`) and
+`host_network_local_address`. `host_proc_read_bytes` and
+`host_proc_write_bytes` change signature: the guest address is now a 64-bit
+value, so a wasm64 pointer above 4 GiB is not truncated. A host built for
+ABI 47 cannot instantiate this kernel.
+
+The kernel fork/exec state record moves from `FORK_VERSION` 16 to 17: it
+carries the registered pointer width, and it no longer serializes per-process
+epoll registrations (see below).
+
+Semantic changes (not visible to the snapshot):
+
+- **A malformed or contradictory channel request fails only its own
+  syscall.** The request header and record are written by the guest, so they
+  are untrusted input. Each of these completes the one request with `EINVAL`
+  and dispatches nothing: an unknown request-flag bit (as before),
+  `REQUEST_FLAG_OPAQUE_RECORD` on a host-raw syscall (the host previously
+  stopped the whole kernel worker, taking every process with it), the flag
+  with no record in the data buffer (previously the raw arguments ran as if
+  the flag were clear), a record that does not decode, and a record whose
+  syscall number differs from the header's (previously the record's syscall
+  ran). A raw request whose data buffer happens to begin with a record header
+  (a `write` of such bytes, or record bytes left in the reused kernel scratch
+  by an earlier request) is no longer decoded as a record; previously such
+  bytes redirected that request, and later scalar-only requests from any
+  process, to the syscall the bytes named.
+- **epoll instances belong to the open file description.** `dup`, `fork`, and
+  a non-CLOEXEC `exec` reach the same instance, so a fork child's `epoll_ctl`
+  is visible to the parent. Interests are keyed on (registered descriptor
+  number, open file description). `epoll_ctl` with a null event is `EFAULT`
+  for `EPOLL_CTL_ADD`/`EPOLL_CTL_MOD`. The host keeps no copy of any
+  interest list.
+- **The kernel decides socket readiness.** Backends report facts and
+  `runtime_core::net_readiness::stream_revents` maps them to `revents` for
+  every backend on both hosts.
+- **Blocking-wait deadlines are kernel state on `CLOCK_MONOTONIC`.** A
+  wall-clock step no longer moves a pending `poll`, `select`, `epoll_wait`,
+  `sigtimedwait`, or futex timeout. The host refuses to boot a kernel without
+  `kernel_set_wait_queue_enabled` rather than fall back to wall-clock
+  arithmetic.
+- **`usleep` and an `epoll_wait` on an empty interest list no longer sleep the
+  kernel thread.**
+- **`preadv2`/`pwritev2` honour `flags`:** `RWF_NOWAIT` is implemented and
+  every other `RWF_*` bit is refused with `EOPNOTSUPP`.
+- **`sendmsg`/`recvmsg` read the caller's `msghdr`, iovec table and CMSG
+  chain in the kernel,** in the caller's data model; `msg_controllen` above
+  64 KiB is `EINVAL`; `recvmsg` publishes `msg_namelen`, `msg_controllen`,
+  and `msg_flags` only for a delivered message; a blocked `sendmsg` retry
+  keeps the descriptors it already captured.
+- **SysV IPC and POSIX message queues are kernel-marshalled.** A blocked
+  `msgsnd` keeps the payload it copied at entry and never re-reads the
+  caller's buffer; `semctl` `GETALL`/`SETALL` size the array from the set
+  itself under the requested command's permission check, with no `IPC_STAT`
+  probe.
+
+### ABI 49 the kernel owns the root filesystem
+
+ABI 49 moves the machine's filesystem into the kernel. `/` is an in-kernel
+filesystem the kernel builds by parsing the VFS image itself
+(`crates/runtime-core/src/rootfs.rs`, reading the image through
+`kandelo_image_fs.rs`), and the scratch mounts (`/tmp`, `/var/tmp`,
+`/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`, and `/dev/shm`) are
+an in-kernel tmpfs (`tmpfs.rs`). The host stops being a filesystem: it serves
+positioned reads of the image it holds, fetches the bytes of files the image
+only names, and keeps a handle-only interface for host directories mounted
+beneath `/`. The TypeScript filesystem (`MemoryFileSystem` and the vendored
+SharedFS) is deleted. The guest syscall ABI and the libc glue are unchanged,
+but `__abi_version` equality is exact, so every program, package archive and
+VFS image is rebuilt for 49; a kernel or host built for ABI 48 cannot run
+against the other.
+
+Structural changes (recorded in the snapshot):
+
+- **Kernel exports: 199 → 233.** Added, all optional for the host-adapter
+  manifest (a host that boots without a `/` image calls none of the rootfs
+  ones, and a process that holds no kernel-owned shared mapping none of the
+  shared-mapping ones):
+  - `kernel_rootfs_load_image(len_lo, len_hi)`: parse the boot image through
+    `host_image_read` and install it as `/`. Refuses an image without the
+    `KLZY` section (`EINVAL`) and an image whose metadata declares a
+    different `kernelAbi` (`EPROTO`).
+  - `kernel_set_rootfs_enabled`, `kernel_set_tmpfs_enabled`: hand `/` and
+    the scratch prefixes to the in-kernel filesystems.
+  - `kernel_set_rootfs_nosuid`: publish whether `/` was mounted `nosuid`.
+  - `kernel_set_rootfs_now(sec_lo, sec_hi, nsec)`: the wall clock the base
+    tree is stamped with.
+  - `kernel_rootfs_set_foreign_prefixes(ptr, len)` and
+    `kernel_rootfs_set_foreign_mount_roots(ptr, len)`: the host-mounted
+    directories beneath `/` that the rootfs must not claim, and the
+    directory handle that anchors each one.
+  - `kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
+    `kernel_rootfs_stat_mode`, `kernel_rootfs_unlink_file`,
+    `kernel_rootfs_mkdir_parents`: the host's own access to kernel-owned
+    files (the main thread's `read_vfs_file`/`write_vfs_file`/
+    `unlink_vfs_file`, the spawn preflight's program reads, and the browser's
+    per-session TLS root certificate). A path under a scratch mount reaches
+    tmpfs; any other path reaches the rootfs.
+  - `kernel_rootfs_inspect_stat`, `kernel_rootfs_inspect_read_file`,
+    `kernel_rootfs_inspect_directory`: live worker inspection through the
+    native namespace walker, including mount-crossing symlinks and current
+    owners. Directory records carry `WasmStat` and the link target; workers
+    copy bounded chunks out of kernel scratch within one serialized entry.
+  - `kernel_rootfs_lazy_resource_limits`: the validated image's URI cohort
+    and declared transfer bounds. Node uses it to preserve one asynchronous
+    resolver checkpoint on first use; both hosts stop oversized downloads
+    before retaining them. Rust remains responsible for content validation.
+  - `kernel_rootfs_export_container_read(off_lo, off_hi, buf, len)`: stream
+    the finished image of the live `/`, which replaces the host rebuilding
+    one (`export_rootfs_image`).
+  - `kernel_rootfs_load_manifest` and `kernel_rootfs_export_tree`: an
+    alternative loader for a pre-walked tree and a metadata dump of the live
+    tree, kept as entry points for tests and tools.
+  - `kernel_set_image_build_determinism(seed_lo, seed_hi, epoch_lo,
+    epoch_hi)`: boot a kernel whose realtime clock counts up from a fixed
+    epoch and whose entropy is a seeded stream, for image builders only
+    (`crates/runtime-core/src/image_build_determinism.rs`). The host refuses
+    to boot a determinism-requesting builder on a kernel without it.
+  - The kernel's shared-mapping table (`SharedMappingTable` in
+    `crates/runtime-core/src/memory.rs`), which keeps SysV attachments and
+    `MAP_SHARED` mappings of kernel-owned files coherent and replaces the
+    host's TypeScript SysV mirror (`shmMappings` / `shmSegmentVersions`).
+    The host calls them at the points it already published its own
+    shared mappings:
+    - `kernel_shared_mapping_process_count(pid)`: how many such mappings a
+      process holds; the host caches "any" per pid for its syscall-boundary
+      early-out.
+    - `kernel_shared_mapping_sync_process(pid, force)`: publish and refresh
+      at a syscall boundary (`force` at fork, the exec preflight and
+      teardown).
+    - `kernel_shared_mapping_release_process(pid, publish, detach)` and
+      `kernel_shared_mapping_inherit(parent, child, child_memory_len)`:
+      teardown/exec, and fork as one transaction covering the SysV
+      attachment records too.
+    - `kernel_shared_mapping_file_track(pid, addr, fd, len, file_offset,
+      writable, memory_len)`: after `mmap` of a kernel-owned file; the
+      kernel populates the range. `kernel_shared_mapping_flush`,
+      `_unmap`, `_remap`, `_prepare_write` and `_protect` follow `msync`,
+      `munmap`, `mremap` and `mprotect`. Process addresses and lengths are
+      `u64`, so a wasm64 process can map above 4 GiB.
+    - `kernel_shared_mapping_sysv_track`, `_sysv_sync_segment`,
+      `_sysv_publish_mapping`, `_sysv_drop_mapping`: `shmat` and `shmdt`.
+- **New errno values** `EDOM` (33), `EPROTO` (71), and `ENOEXEC` (8) join
+  `wasm_posix_shared::Errno`, and `host/src/generated/abi.ts` gains a
+  generated `ERRNO` table and `KANDELO_REFERENCE_EPOCH_SECONDS`.
+
+Host imports (not in the structural snapshot, so listed here): the kernel
+imports 77 host functions, down from 82.
+
+- Removed, the path-taking filesystem family: `host_open`, `host_stat`,
+  `host_lstat`, `host_statfs`, `host_pathconf`, `host_mkdir`, `host_rmdir`,
+  `host_unlink`, `host_rename`, `host_link`, `host_symlink`, `host_readlink`,
+  `host_chmod`, `host_chown`, `host_lchown`, `host_access`, `host_opendir`,
+  `host_closedir`.
+- Added, the handle-only family, each naming exactly one path component
+  relative to a directory handle the host issued: `host_openat`,
+  `host_fstatat`, `host_mkdirat`, `host_unlinkat`, `host_renameat`,
+  `host_linkat`, `host_symlinkat`, `host_readlinkat`, `host_fchmodat`,
+  `host_fchownat`. A directory is an ordinary handle (`host_openat` with
+  `O_DIRECTORY`), iterated by `host_readdir` and released by `host_close`.
+  The whole family is reached only under a host mount whose root handle the
+  host published; a host with none (the browser) never sees a call.
+- Changed: `host_utimensat` takes `(dir, name_ptr, name_len, atime_sec,
+  atime_nsec, mtime_sec, mtime_nsec, flags)`.
+- Added, the byte pipe for the kernel-owned `/`: `host_image_read(buf, len,
+  off_lo, off_hi)`, a positioned read of the boot image, and
+  `host_fetch_deferred(uri_ptr, uri_len, buf, len, off_lo, off_hi)`, a
+  positioned read of a resource the image names by URI but does not carry
+  (a URL-backed lazy file or a lazy archive). The kernel relays the image's
+  URI unread; the host fetches it and answers `EAGAIN` while the fetch is in
+  flight.
+- Added `host_discard_deferred(uri_ptr, uri_len)`: native length or digest
+  rejection evicts the completed transport cache entry. The failed read
+  returns `EIO`; a later explicit read may fetch fresh bytes. Transport
+  failures keep their bounded retry policy and are not cleared by this hook.
+
+VFS image binding (not in the structural snapshot):
+
+- An image must carry the kernel lazy-linkage section `KLZY` (container flag
+  bit 4, `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY`; layout in `crates/shared/src/lib.rs`)
+  so the kernel can learn every lazy file's real size and archive membership
+  without parsing the host-side JSON sections. Images written before ABI 49
+  have none and are refused; rebuild them.
+- The image metadata's `kernelAbi` is checked by the kernel at load
+  (`image_policy::check_declared_abi`). The TypeScript binary resolver no
+  longer opens VFS images to make that check.
+- Images are written by the Rust writer (`crates/runtime-core/src/kandelo_image_write.rs`,
+  reached from TypeScript builders through `crates/kandelo-image-module`).
+  The filesystem body's superblock magic is `KIFS`, and `statfs(2)` on the
+  image reports that `f_type`.
+
+Semantic changes (not visible to the snapshot):
+
+- **`/` and the scratch mounts are kernel state on both hosts.** Their
+  metadata, permissions and contents live in the kernel's linear memory;
+  only unmodified image content stays in the host's copy of the image.
+  `fsync` on their files and directories succeeds without host work.
+  Creating, removing, linking or renaming an entry enforces parent write and
+  search permission and the sticky bit there as on host mounts.
+- **`_PC_PIPE_BUF` always has a value** (4096), including on the kernel's own
+  filesystems and on captured stdio; the host pathconf table is gone and a
+  host without `fpathconf(3)` defers to the kernel's.
+- **`MAP_SHARED` mappings of a kernel-owned file** (anything under `/` or a
+  scratch mount, including `/dev/shm`, and memfds) are kept coherent by the
+  kernel: separate mappings, across `fork` and across independent opens,
+  converge at syscall boundaries, read-only ones included; a publication is
+  written into the file at once, so `read(2)` sees it; `write(2)`,
+  `ftruncate(2)` and `O_TRUNC` show through existing mappings at the next
+  boundary; writeback never grows a file past EOF; and the file stays alive
+  for its mappings after its descriptors close or it is unlinked. A memfd
+  `MAP_SHARED`, which ABI 48 populated once and never wrote back, is
+  included. A writeback the file refuses is recorded at
+  `/proc/kandelo/writeback_losses`, a new procfs file.
+- **The SysV attachment mirror is kernel state.** Unchanged for a guest,
+  including that a sole surviving attachment imports a departed peer's
+  writes.
+- **`/dev/shm` is tmpfs on both hosts**, not a host mount; the browser host no
+  longer allocates a POSIX-shared-memory SharedArrayBuffer.
+- **`mount(2)` is still `ENOSYS`.** The in-kernel filesystems are configured
+  by the host at boot, not by the guest.
+
+### ABI 50 guest networking through host-owned segments
+
+ABI 50 lets a guest machine's ordinary POSIX sockets reach another machine
+through a segment the host owns, such as the WebRTC remote segment. The remote
+UDP segment exposed a kernel assumption that a routed IPv4 address must belong
+to one hard-coded demo subnet; the host, which owns the interface, now
+answers that question. `__abi_version` equality is exact, so every program,
+package archive and VFS image is rebuilt for 50.
+
+Structural changes (recorded in the snapshot):
+
+- **`env.host_udp_source_address(a, b, c, d) -> i64`** is a new kernel import.
+  Its four arguments are the destination octets; the result is a nonzero
+  packed source IPv4 address in network byte order, or a negative errno. The
+  host derives it from the kernel worker's actual `NetworkIO` interface, and a
+  host without a routed UDP interface answers `ENETUNREACH`.
+- **Remote TCP imports.** `env.host_net_connect_from(handle, addr_ptr,
+  addr_len, port, source, source_port)` starts a connect from an explicit
+  bound source; `env.host_net_local_endpoint(handle) -> i64` reports the
+  actual local address and port of a connected stream (packed address in the
+  high bits, port in the low 16), or a negative errno; and
+  `env.host_net_shutdown(handle, how)` disables stream directions on the host
+  connection. A host without one of these answers `EOPNOTSUPP`, which the
+  kernel reports instead of pretending the operation happened.
+- **Accepted-stream reset exports.** `kernel_tcp_connection_id(recv, send)`
+  returns a non-reused token for an accepted stream's pipe pair, and
+  `kernel_reset_tcp_connection(recv, send, token)` resets both halves only
+  when that token still owns them, so a pipe index freed by a half-close
+  cannot authorize a reset of a later connection. `kernel_inject_connection`
+  gains a trailing routed local-address argument.
+
+Semantic changes:
+
+- **UDP bind ownership belongs to the host.** Binding a specific
+  non-loopback address delegates the ownership check to HostIO, and a host
+  without a network adapter refuses it with `EADDRNOTAVAIL` instead of
+  accepting an address it cannot deliver to. The kernel no longer limits
+  binds and routes to the `10.88.0.0/16` demo subnet.
+- **Connected wildcard UDP sockets keep their selected source.**
+  `getsockname` reports the source the host selected for the association,
+  and an `AF_UNSPEC` disconnect clears it while keeping the bound port.
+  Fork state format 18 carries that selected source to the child, so an
+  inherited connected socket reports the same local address.
+- **`FIONREAD` on a datagram socket reports the next queued packet's size**
+  (zero for an empty packet or queue) instead of zero.
+- **Host `EHOSTUNREACH` and `ENOBUFS` reach the guest as themselves.** Both
+  are now kernel `Errno` values, so a host that reports an unreachable peer
+  or exhausted buffers is no longer converted to `EIO`.
+- **A failed host-backed connect stays reported.** Every later `poll`,
+  `select` or `epoll` wait reports the socket ready (with `POLLERR` until
+  `SO_ERROR` consumes the error), instead of only the wait that observed the
+  failure. A caller whose first wait absorbed the failure used to wait for a
+  connection that had already failed.
+- **Host-backed TCP shutdown keeps the connection handle.** `shutdown`
+  changes directions on the shared connection and the handle is released only
+  at close, so a half-close no longer drops a connection that another
+  descriptor still holds. An unsupported host shutdown fails without changing
+  the kernel's shutdown flags.
+- **Host connection handles are machine-wide.** They are allocated across
+  processes instead of reusing a process-local socket slot, so two processes'
+  first sockets no longer collide in a shared host backend.
+- **Stream resets are sticky and shared.** A reset reported by the host is
+  visible as `ECONNRESET` through every descriptor that shares the socket,
+  raises `POLLERR`, and is reported once through `SO_ERROR`. Accepted
+  connections report the routed local address from `getsockname`.
+
+ABI 50 also carries the interface configuration that network sessions need,
+added before anything shipped under the number:
+
+- **`env.host_network_interface(buf) -> i32` replaces
+  `env.host_network_local_address(buf) -> i32`.** It writes the assigned IPv4
+  address followed by the netmask of its link (8 bytes, network byte order)
+  and returns 1, or returns 0 when the interface has no address. A host must
+  report the netmask whenever it reports an address; the kernel derives the
+  interface flags and broadcast address from the pair, and treats a
+  non-contiguous netmask as no configuration. A host built for an earlier
+  ABI 50 tree provides the old import and cannot instantiate this kernel.
+  Host imports are not in the structural snapshot, so this is listed by hand.
+- **`SIOCGIFFLAGS`, `SIOCGIFNETMASK` and `SIOCGIFBRDADDR`** join the
+  interface ioctls and the ioctl contract table, all with `struct ifreq`
+  replies. Before, the kernel answered them `ENOTTY`. Loopback is
+  `IFF_UP|IFF_LOOPBACK|IFF_RUNNING` with netmask 255.0.0.0 and no broadcast
+  address. `eth0` is `IFF_UP|IFF_RUNNING|IFF_BROADCAST` only while the host
+  has assigned it an address; outside any network its flags are zero and the
+  address queries fail with `EADDRNOTAVAIL`, as `SIOCGIFADDR` already did.
+  These interfaces are not POSIX; they report the kernel's real interface
+  state to programs that enumerate it.
+- **A subnet broadcast needs `SO_BROADCAST`.** Sending or connecting a UDP
+  socket to `eth0`'s directed broadcast address fails with `EACCES` unless
+  `SO_BROADCAST` is set, as the limited broadcast address already did. The
+  check asks the host for the interface configuration only for a destination
+  that would leave the machine.
+- **The internet egress is a NAT link.** The Node socket backend and the
+  browser fetch and TLS bridges report `eth0` as `10.0.2.15/24`, so the
+  interface queries above describe the link TCP actually leaves on. Three
+  answers change with it: `getsockname` on an internet stream reports
+  `10.0.2.15` and its port instead of the host's real address (Node) or
+  `EOPNOTSUPP` (browser); a UDP datagram for anywhere beyond the machine
+  fails with `EHOSTUNREACH` instead of `ENETUNREACH`, because the route
+  exists and its gateway cannot deliver UDP; and the browser bridges' DNS
+  answers come from `198.18.0.0/15`, assigned in order, instead of hashes
+  into `10.0.0.0/8` that could collide with each other or a session's
+  subnet.
+- **libc `getifaddrs` uses those ioctls.** musl builds the list from
+  rtnetlink, which Kandelo does not provide, so `getifaddrs` failed. The
+  overlay lists every interface with its IPv4 address, netmask and broadcast
+  address, and a null `ifa_addr` for an interface without an address. It
+  reports no `AF_PACKET` or IPv6 entries, because the kernel models neither
+  on these interfaces.
+
+### ABI 51 machine checkpoint and restore
+
+ABI 51 versions the machine-migration contract: a running machine can be
 frozen into a checkpoint, torn down, and restored — in the same tab, in
-another tab, or on another host.
+another tab, or on another computer.
 
 The syscall channel reserves an 8-byte checkpoint request area directly
-below the 56-byte signal delivery area, at the tail of the 65,536-byte
-data buffer. It holds one `u32` request word. The host publishes the word
-before completing a process's pending syscall; libc's post-syscall
-trampoline clears it and calls the new process import
-`kernel.kernel_checkpoint`. The import takes nothing and returns nothing:
-the capture pass unwinds the call stack into linear memory instead of
-returning, and a rewind resumes the guest after the syscall that carried
-the request. Every freshly built main program imports the hook, and hosts
-validate its signature the way they validate `kernel.kernel_fork`. The
-import is also the instrumenter's checkpoint seed, so programs that never
-fork still carry the unwind machinery.
+below the signal delivery area, at the tail of the data buffer. It holds one
+`u32` request word, a bit set. The host publishes the word before completing
+a process's pending syscall; libc's post-syscall trampoline clears it and,
+when `CHECKPOINT_REQUEST_UNWIND` is set, calls the new process import
+`kernel.kernel_checkpoint`. The import takes nothing and returns nothing: the
+capture pass unwinds the call stack into linear memory instead of returning,
+and a rewind resumes the guest after the syscall that carried the request.
+Every freshly built main program imports the hook, and hosts validate its
+signature the way they validate `kernel.kernel_fork`. The import is also the
+instrumenter's checkpoint seed, so programs that never fork still carry the
+unwind machinery.
 
-Restore adds four kernel exports. `kernel_enumerate_host_handles` and
-`kernel_remap_host_handles` let a receiver read the host handles held
-inside restored kernel memory and rewrite them to its own.
-`kernel_rearm_host_timers` re-arms a restored process's armed interval
-timer with its remaining time (POSIX timer slots store no deadline, so
-their remaining time stays a documented gap). `kernel_pty_index_for_pid`
-lets the receiver re-seed the host maps that route terminal input to a
-restored process's PTY.
+The freeze completes a parked blocking syscall with `EINTR` so the process
+reaches the trampoline at all, and publishes `CHECKPOINT_REQUEST_RESTART`
+beside `CHECKPOINT_REQUEST_UNWIND`. The bit tells the guest to resubmit the
+interrupted syscall once the rewind returns; no signal was caught, so the
+caller is owed the call it was making.
+
+Restore adds kernel exports. `kernel_enumerate_host_handles` and
+`kernel_remap_host_handles` let a receiver read the host handles held inside
+restored kernel memory and rewrite them to its own. `kernel_rearm_host_timers`
+re-arms a restored process's armed interval timer with its remaining time
+(POSIX timer slots store no deadline, so their remaining time stays a
+documented gap). `kernel_pty_index_for_pid` lets the receiver re-seed the host
+maps that route terminal input to a restored process's PTY.
+`kernel_cancel_host_owned_wait` retires the kernel wait state of a task the
+freeze completes, naming the task explicitly. The kernel also imports
+`host_accept_select`, the host's choice of which waiting acceptor takes a
+connection, so a replica can replay that choice.
+
+The kernel owns `/` since ABI 49, so the kernel memory copy carries the
+filesystem. The receiver boots the same VFS image: unmodified image content
+stays in the host's copy of the image and is not part of the checkpoint.
 
 ## The snapshot
 

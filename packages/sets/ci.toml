@@ -12,5 +12,4 @@ packages = [
   "wordpress",
   "lamp",
   "node",
-  "node-vfs",
 ]

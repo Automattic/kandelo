@@ -1108,33 +1108,7 @@ static int util_msgfmt(int argc, char **argv) {
     return rc;
 }
 
-static int util_gencat(int argc, char **argv) {
-    if (argc < 3) {
-        fprintf(stderr, "gencat: usage: gencat catalog msgfile...\n");
-        return 1;
-    }
-    FILE *out = fopen(argv[1], "wb");
-    if (!out) {
-        perror(argv[1]);
-        return 1;
-    }
-    int rc = 0;
-    for (int i = 2; i < argc; i++) {
-        FILE *in = fopen(argv[i], "rb");
-        if (!in) {
-            perror(argv[i]);
-            rc = 1;
-            continue;
-        }
-        rc |= copy_stream(in, out);
-        fclose(in);
-    }
-    if (fclose(out) != 0) {
-        perror(argv[1]);
-        rc = 1;
-    }
-    return rc;
-}
+#include "gencat.h"
 
 static void emit_po_string(FILE *out, const char *s, size_t n) {
     fputs("msgid \"", out);

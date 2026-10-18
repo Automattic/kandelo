@@ -2,7 +2,13 @@ kind = "program"
 name = "vim"
 version = "9.1.0900"
 kernel_abi = 7
-depends_on = []
+# build-vim.sh links libncursesw/libtinfow, so ncurses is a direct dependency
+# and must be declared: the declaration is what gives the build engine an edge
+# to order ncurses before vim and hand the built prefix over in
+# `WASM_POSIX_DEP_NCURSES_DIR`. Undeclared, vim resolved ncurses itself while
+# the engine was building it concurrently, and the two builds raced to publish
+# the same content-addressed entry.
+depends_on = ["ncurses@6.5"]
 
 [source]
 url = "https://github.com/vim/vim/archive/refs/tags/v9.1.0900.tar.gz"

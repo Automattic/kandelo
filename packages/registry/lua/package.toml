@@ -1,0 +1,24 @@
+kind = "library"
+
+name = "lua"
+version = "5.2.4"
+kernel_abi = 47
+arches = ["wasm32"]
+depends_on = []
+
+[source]
+provider = "archive"
+url = "https://www.lua.org/ftp/lua-5.2.4.tar.gz"
+sha256 = "b9e2e4aad6789b3b63a056d442f7b39f0ecfca3ae0f1fc0ae4e9614401b69f4b"
+
+[license]
+spdx = "MIT"
+url = "https://www.lua.org/license.html"
+
+[build]
+script_path = "packages/registry/lua/build-lua.sh"
+
+[outputs]
+libs = ["lib/liblua.a"]
+headers = ["include"]
+pkgconfig = ["lib/pkgconfig/lua5.2.pc"]

@@ -3,6 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# WHY: cargo's lock serializes builds in a shared target dir, but the copy
+# out of $OUT below runs after cargo releases it, so a concurrent resolve
+# could swap the file mid-copy. A resolver build gets a private target dir
+# under its work root; a standalone run keeps the checkout's target/.
+if [ -z "${CARGO_TARGET_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
+    CARGO_TARGET_DIR="$WASM_POSIX_DEP_WORK_DIR/target"
+fi
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 export CARGO_TARGET_DIR
 OUT="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/kandelo_kernel.wasm"
@@ -19,7 +26,8 @@ if ! cargo -V | grep -q 'nightly'; then
     exit 1
 fi
 
-cargo build --release -p kandelo -Z build-std=core,alloc
+# --locked: never rewrite the checkout's Cargo.lock from a package build.
+cargo build --locked --release -p kandelo -Z build-std=core,alloc
 
 if [ ! -f "$OUT" ]; then
     echo "build-kernel: expected output not found: $OUT" >&2
@@ -49,9 +57,11 @@ wasm_require_exports "$OUT" \
     kernel_get_process_state \
     kernel_get_socket_timeout_ms \
     kernel_handle_channel \
+    kernel_handle_channel_record \
     kernel_has_sa_nocldstop \
     kernel_host_adapter_manifest_len \
     kernel_host_adapter_manifest_ptr \
+    kernel_install_host_stdin_pipe \
     kernel_ipc_shm_lookup_mapping_for_task \
     kernel_ipc_shm_record_mapping_for_process \
     kernel_ipc_shm_record_mapping_for_task \
@@ -63,8 +73,6 @@ wasm_require_exports "$OUT" \
     kernel_ipc_shmdt_for_task \
     kernel_is_fd_nonblock \
     kernel_mark_process_signaled \
-    kernel_mq_descriptor_msgsize \
-    kernel_msqid_ds_bytes \
     kernel_pcm_claim_transport \
     kernel_pcm_clock_update \
     kernel_pcm_reconcile \
@@ -82,11 +90,9 @@ wasm_require_exports "$OUT" \
     kernel_publish_spawn_child \
     kernel_reap_exited_child \
     kernel_remove_process \
-    kernel_semctl_array_bytes \
-    kernel_semid_ds_bytes \
+    kernel_reset_tcp_connection \
     kernel_set_current_tid \
     kernel_set_cwd \
-    kernel_shmid_ds_bytes \
     kernel_spawn_exec_commit \
     kernel_spawn_exec_target_prepare \
     kernel_spawn_process \
@@ -97,6 +103,7 @@ wasm_require_exports "$OUT" \
     kernel_spawn_scratch_pointer \
     kernel_spawn_scratch_retained_capacity \
     kernel_take_process_timer_cleanup \
+    kernel_tcp_connection_id \
     kernel_thread_exit \
     kernel_thread_has_deliverable \
     kernel_transfer_channel_execute \

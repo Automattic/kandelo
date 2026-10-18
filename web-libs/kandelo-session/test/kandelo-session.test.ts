@@ -2,7 +2,6 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   LiveKernelHost,
   type BootDescriptor,
-  type FileSystemLike,
   type KernelLike,
   type LazyDownloadEvent,
   type MachineStatus,
@@ -20,13 +19,6 @@ import {
 } from "../src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../src/demo-config-vfs";
 import {
-  DOOM_COMMAND,
-  builtinDemoAssets,
-  builtinDemoGuide,
-  builtinDemoPresentation,
-  nodeGuide,
-} from "../src/demo-guides";
-import {
   experimentalTerminalSessionPolicy,
   parseExperimentalTerminalSession,
 } from "../src/experimental-terminal-session";
@@ -43,6 +35,8 @@ import {
   HARD_CAPS,
   validateBootDescriptor,
 } from "../src/boot-descriptor";
+import { webPreviewForMachineChromeMessage } from "../src/machine-chrome-message";
+import { followShellOutput } from "../src/demo-dock-action";
 
 /**
  * Vitest coverage for the kandelo-session kernel-host surface:
@@ -232,55 +226,17 @@ describe("BootDescriptor: package-layer validation", () => {
   });
 });
 
-function makeFs(files: Record<string, string>): FileSystemLike {
+/** A kernel's VFS readers over a fixed set of regular files. */
+function makeVfs(
+  files: Record<string, string>,
+): Pick<KernelLike, "readFileFromVfs"> {
   const encoder = new TextEncoder();
-  const entries = new Map(
-    Object.entries(files).map(([path, text]) => [path, encoder.encode(text)]),
-  );
-  const handles = new Map<number, { data: Uint8Array; offset: number }>();
-  let nextHandle = 1;
-
-  const fs: FileSystemLike = {
-    stat(path: string) {
-      const data = entries.get(path);
-      if (!data) throw new Error(`ENOENT: ${path}`);
-      return { mode: 0o100644, size: data.byteLength, mtimeMs: 0, uid: 0, gid: 0 };
-    },
-    open(path: string) {
-      const data = entries.get(path);
-      if (!data) throw new Error(`ENOENT: ${path}`);
-      const handle = nextHandle++;
-      handles.set(handle, { data, offset: 0 });
-      return handle;
-    },
-    read(handle: number, buffer: Uint8Array, offset: number | null, length: number) {
-      const entry = handles.get(handle);
-      if (!entry) throw new Error(`EBADF: ${handle}`);
-      const start = offset ?? 0;
-      const available = entry.data.byteLength - entry.offset;
-      const n = Math.max(0, Math.min(length, available, buffer.byteLength - start));
-      if (n > 0) {
-        buffer.set(entry.data.subarray(entry.offset, entry.offset + n), start);
-        entry.offset += n;
-      }
-      return n;
-    },
-    close(handle: number) {
-      handles.delete(handle);
-      return 0;
-    },
-    readlink(path: string) {
-      throw new Error(`EINVAL: ${path}`);
-    },
-    opendir(path: string) {
-      throw new Error(`ENOTDIR: ${path}`);
-    },
-    readdir() {
-      return null;
-    },
-    closedir() {},
+  return {
+    readFileFromVfs: async (path: string) =>
+      Object.prototype.hasOwnProperty.call(files, path)
+        ? encoder.encode(files[path])
+        : null,
   };
-  return fs;
 }
 
 // ── LiveKernelHost ─────────────────────────────────────────────────────
@@ -313,6 +269,194 @@ describe("LiveKernelHost: status", () => {
     host.subscribeStatus(cb);
     host.setStatus("running");
     expect(cb).not.toHaveBeenCalled();
+  });
+});
+
+describe("LiveKernelHost: worker-owned VFS", () => {
+  const encoder = new TextEncoder();
+
+  it("reads files and directories through async worker readers", async () => {
+    const files: Record<string, string> = {
+      "/etc/passwd": "root:x:0:0::/root:/bin/sh\nmaker:x:1000:1000::/home/maker:/bin/bash\n",
+      "/etc/group": "root:x:0:\nmaker:x:1000:\n",
+      "/home/maker/mcp/run_command.json": "{}",
+    };
+    const host = new LiveKernelHost();
+    host.attachKernel({
+      readFileFromVfs: async (path: string) =>
+        path in files ? encoder.encode(files[path]) : null,
+      readDirFromVfs: async (path: string) =>
+        path === "/home/maker/mcp"
+          ? [{ name: "run_command.json", mode: 0o100644, size: 2, uid: 1000, gid: 1000 }]
+          : null,
+    } as any);
+
+    expect(await host.readFileText("/home/maker/mcp/run_command.json")).toBe("{}");
+    await expect(host.readFile("/missing")).rejects.toThrow(/ENOENT:.*\/missing/);
+    expect(await host.readDir("/home/maker/mcp")).toEqual([
+      {
+        name: "run_command.json",
+        kind: "f",
+        mode: "-rw-r--r--",
+        owner: "maker",
+        group: "maker",
+        size: "2",
+        target: undefined,
+      },
+    ]);
+    await expect(host.readDir("/missing")).rejects.toThrow(/ENOENT:.*\/missing/);
+  });
+
+  it("formats worker metadata without following directory-entry symlinks", async () => {
+    const host = new LiveKernelHost({
+      kernel: {
+        ...makeVfs({ "/etc/passwd": "root:x:0:0::/root:/bin/sh\n" }),
+        readDirFromVfs: async () => [
+          { name: "run_command.json", mode: 0o100644, size: 437, uid: 0, gid: 0 },
+          { name: "sh", mode: 0o120777, size: 7, uid: 0, gid: 0, target: "/bin/sh" },
+        ],
+      },
+    });
+
+    expect(await host.readDir("/home/maker/mcp")).toEqual([
+      {
+        name: "run_command.json", kind: "f", mode: "-rw-r--r--",
+        owner: "root", group: "root", size: "437", target: undefined,
+      },
+      {
+        name: "sh", kind: "l", mode: "lrwxrwxrwx",
+        owner: "root", group: "root", size: "7", target: "/bin/sh",
+      },
+    ]);
+  });
+
+  it("rejects reads when the kernel has no worker readers", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({} as any);
+    await expect(host.readFile("/etc/passwd")).rejects.toThrow("no readFileFromVfs");
+    await expect(host.readDir("/etc")).rejects.toThrow("no readDirFromVfs");
+  });
+});
+
+describe("LiveKernelHost: raw VFS surface", () => {
+  it("reports a missing path as null rather than an error", async () => {
+    const host = new LiveKernelHost({
+      kernel: {
+        readFileFromVfs: async () => null,
+        readDirFromVfs: async () => null,
+      } as any,
+    });
+
+    expect(await host.readVfsFile("/absent")).toBeNull();
+    expect(await host.readVfsDir("/absent")).toBeNull();
+  });
+
+  it("rejects raw operations when the kernel has no worker VFS surface", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({} as any);
+    await expect(host.readVfsFile("/etc/passwd")).rejects.toThrow("no VFS surface");
+    await expect(host.readVfsDir("/etc")).rejects.toThrow("no VFS surface");
+  });
+});
+
+describe("LiveKernelHost: owned jobs", () => {
+  const ownedJobKernel = (exit: Promise<number>) => {
+    const spawnFromVfs = vi.fn(async () => ({ pid: 7, exit }));
+    const readOwnedJob = vi.fn(async () => ({ expired: true as const, oldest: 0 }));
+    const releaseOwnedJob = vi.fn(async () => {});
+    return { spawnFromVfs, readOwnedJob, releaseOwnedJob };
+  };
+
+  it("names the family, bounds it and gives it an immediate stdin EOF", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.startOwnedJob("job-1", "/bin/bash", ["bash", "-c", "true"], {
+      timeoutMs: 1234,
+      cwd: "/home/maker",
+      env: ["FOO=bar"],
+      uid: 1000,
+      gid: 1000,
+    });
+
+    expect(kernel.spawnFromVfs).toHaveBeenCalledWith("/bin/bash", ["bash", "-c", "true"], {
+      ownedJob: { id: "job-1", timeoutMs: 1234 },
+      cwd: "/home/maker",
+      env: ["FOO=bar"],
+      uid: 1000,
+      gid: 1000,
+      stdin: new Uint8Array(0),
+    });
+  });
+
+  it("hands the family the stdin bytes it is given", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+    const stdin = new Uint8Array([1, 2]);
+
+    await host.startOwnedJob("job-1", "/bin/sh", ["sh", "-c", "cat > /tmp/foo"], { timeoutMs: 1234, stdin });
+
+    expect(kernel.spawnFromVfs).toHaveBeenCalledWith("/bin/sh", ["sh", "-c", "cat > /tmp/foo"], expect.objectContaining({ stdin }));
+  });
+
+  it("consumes the root exit so a destroyed machine cannot reject unhandled", async () => {
+    const kernel = ownedJobKernel(Promise.reject(new Error("computer destroyed")));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.startOwnedJob("job-1", "/bin/bash", ["bash"], { timeoutMs: 1 });
+    // An unconsumed rejection surfaces within this tick and fails the file.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("forwards the cursor and the cancel flag to the worker", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.readOwnedJob("job-1", 16, 64, true);
+
+    expect(kernel.readOwnedJob).toHaveBeenCalledWith("job-1", 16, 64, true);
+  });
+
+  it("forwards a release to the worker", async () => {
+    const kernel = ownedJobKernel(Promise.resolve(0));
+    const host = new LiveKernelHost({ kernel: kernel as any });
+
+    await host.releaseOwnedJob("job-1");
+
+    expect(kernel.releaseOwnedJob).toHaveBeenCalledWith("job-1");
+  });
+
+  it("rejects when the attached kernel cannot own a command family", async () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({ spawnFromVfs: async () => ({ pid: 1, exit: Promise.resolve(0) }) } as any);
+    await expect(
+      host.startOwnedJob("job-1", "/bin/bash", ["bash"], { timeoutMs: 1 }),
+    ).rejects.toThrow("cannot own a command family");
+    await expect(host.readOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
+    await expect(host.releaseOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
+  });
+});
+
+describe("LiveKernelHost: VFS change events", () => {
+  it("delegates prefix subscriptions to the attached kernel", () => {
+    const offKernel = vi.fn();
+    const subscribeVfsChanges = vi.fn(() => offKernel);
+    const host = new LiveKernelHost({
+      kernel: { ...makeVfs({ "/etc/passwd": "" }), subscribeVfsChanges } as any,
+    });
+    const callback = vi.fn();
+
+    const off = host.subscribeVfsChanges("/home/maker/mcp", callback);
+
+    expect(subscribeVfsChanges).toHaveBeenCalledWith("/home/maker/mcp", callback);
+    off();
+    expect(offKernel).toHaveBeenCalledOnce();
+  });
+
+  it("rejects subscriptions when the attached kernel cannot report changes", () => {
+    const host = new LiveKernelHost();
+    host.attachKernel({} as any);
+    expect(() => host.subscribeVfsChanges("/home/maker/mcp", () => {})).toThrow("cannot report VFS changes");
   });
 });
 
@@ -1043,7 +1187,7 @@ describe("LiveKernelHost: lazy download events", () => {
     const offKernel = vi.fn();
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
           kernelCb = cb;
           return offKernel;
@@ -1216,7 +1360,7 @@ describe("LiveKernelHost: lazy download events", () => {
         error,
       })));
     });
-    host.attachKernel({ fs: makeFs({ "/etc/passwd": "" }) } as any);
+    host.attachKernel({ ...makeVfs({ "/etc/passwd": "" }) } as any);
 
     expect(seen.at(-1)).toMatchObject({
       id: "active",
@@ -1234,11 +1378,11 @@ describe("LiveKernelHost: lazy download events", () => {
 
   it("notifies summary consumers when a new boot clears completed history", async () => {
     let kernelCb: ((event: LazyDownloadEvent) => void) | null = null;
-    const replacementKernel = { fs: makeFs({ "/etc/passwd": "" }) } as any;
+    const replacementKernel = { ...makeVfs({ "/etc/passwd": "" }) } as any;
     const host = new LiveKernelHost({
       descriptor: DUMMY_DESCRIPTOR,
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         subscribeLazyDownloads(cb: (event: LazyDownloadEvent) => void) {
           kernelCb = cb;
           return vi.fn();
@@ -1275,7 +1419,7 @@ describe("LiveKernelHost: lazy download events", () => {
 
   it("cancels and clears an active ledger when its kernel is detached", () => {
     const host = new LiveKernelHost({
-      kernel: { fs: makeFs({ "/etc/passwd": "" }) } as any,
+      kernel: { ...makeVfs({ "/etc/passwd": "" }) } as any,
     });
     const rawEvents: LazyDownloadEvent[] = [];
     const summaryStates: string[][] = [];
@@ -1311,7 +1455,7 @@ describe("LiveKernelHost: lazy download events", () => {
     const host = new LiveKernelHost({
       status: "running",
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         destroy,
       } as any,
     });
@@ -1345,7 +1489,7 @@ describe("LiveKernelHost: lazy download events", () => {
 
 describe("LiveKernelHost: process listing", () => {
   it("resolves process snapshot UIDs through /etc/passwd", async () => {
-    const fs = makeFs({
+    const vfs = makeVfs({
       "/etc/passwd": [
         "root:x:0:0:root:/root:/bin/sh",
         "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
@@ -1355,7 +1499,7 @@ describe("LiveKernelHost: process listing", () => {
     });
     const host = new LiveKernelHost({
       kernel: {
-        fs,
+        ...vfs,
         enumProcs: async () => [
           { pid: 100, ppid: 0, uid: 0, gid: 0, vsizeBytes: 1024, state: "S", comm: "dinit", cmdline: "/sbin/dinit" },
           { pid: 101, ppid: 100, uid: 33, gid: 33, vsizeBytes: 2048, state: "S", comm: "php-fpm", cmdline: "php-fpm: pool www" },
@@ -1369,80 +1513,62 @@ describe("LiveKernelHost: process listing", () => {
   });
 });
 
-describe("LiveKernelHost: machine PCM lifecycle", () => {
-  it("forwards explicit activation and state changes independently of framebuffer", async () => {
-    let state: import("../src/kernel-host").MachineAudioState = "suspended";
-    let emit: ((next: import("../src/kernel-host").MachineAudioState) => void) | null = null;
-    const prepareAudio = vi.fn(async () => {});
-    const resumeAudio = vi.fn(async () => {
-      state = "running";
-      emit?.(state);
-    });
-    const suspendAudio = vi.fn(async () => {
-      state = "suspended";
-      emit?.(state);
-    });
+describe("LiveKernelHost: VFS reads go through the kernel worker", () => {
+  const passwd = "root:x:0:0::/root:/bin/sh\nwww-data:x:33:33::/var/www:/bin/false\n";
+  const group = "root:x:0:\nwww-data:x:33:\n";
+
+  it("reads a file through readFileFromVfs", async () => {
     const host = new LiveKernelHost({
-      kernel: {
-        prepareAudio,
-        resumeAudio,
-        suspendAudio,
-        getAudioState: () => state,
-        onAudioStateChange: (cb: typeof emit) => {
-          emit = cb;
-          cb?.(state);
-          return () => { emit = null; };
-        },
-      } as never,
+      kernel: makeVfs({ "/etc/motd": "hello" }) as KernelLike,
     });
-    const observed: string[] = [];
-    const off = host.subscribeAudioState((next) => observed.push(next));
-
-    await host.prepareAudio();
-    await host.resumeAudio();
-    expect(prepareAudio).toHaveBeenCalledOnce();
-    expect(resumeAudio).toHaveBeenCalledOnce();
-    expect(host.getAudioState()).toBe("running");
-    await host.suspendAudio();
-    expect(host.getAudioState()).toBe("suspended");
-    expect(observed).toContain("running");
-    expect(observed.at(-1)).toBe("suspended");
-
-    host.detachKernel();
-    expect(observed.at(-1)).toBe("unavailable");
-    off();
+    expect(await host.readFileText("/etc/motd")).toBe("hello");
   });
 
-  it("retains framebuffer startAudio as a non-owning machine-audio adapter", async () => {
-    let state: import("../src/kernel-host").MachineAudioState = "suspended";
-    const resumeAudio = vi.fn(async () => { state = "running"; });
-    const suspendAudio = vi.fn(async () => { state = "suspended"; });
-    const framebuffers = {
-      list: () => [],
-      onChange: () => () => {},
-    };
+  it("reports a missing file as ENOENT instead of returning empty bytes", async () => {
+    const host = new LiveKernelHost({ kernel: makeVfs({}) as KernelLike });
+    await expect(host.readFile("/nope")).rejects.toThrow(/ENOENT.*\/nope/);
+  });
+
+  it("fails loudly when the attached kernel has no VFS readers", async () => {
+    const host = new LiveKernelHost({ kernel: {} as KernelLike });
+    await expect(host.readFile("/etc/motd")).rejects.toThrow(/no readFileFromVfs/);
+    await expect(host.readDir("/")).rejects.toThrow(/no readDirFromVfs/);
+    await expect(host.stat("/")).rejects.toThrow(/no statVfsPath/);
+    await expect(host.enumProcs()).rejects.toThrow(/no enumProcs/);
+  });
+
+  it("lists a directory with owner names, kinds and symlink targets", async () => {
     const host = new LiveKernelHost({
       kernel: {
-        framebuffers,
-        getProcessMemory: () => undefined,
-        resumeAudio,
-        suspendAudio,
-        getAudioState: () => state,
-      } as never,
+        ...makeVfs({ "/etc/passwd": passwd, "/etc/group": group }),
+        readDirFromVfs: async (path: string) => path === "/srv" ? [
+          { name: "site", mode: 0o040755, size: 0, uid: 33, gid: 33 },
+          { name: "index.html", mode: 0o100644, size: 2048, uid: 0, gid: 0 },
+          { name: "current", mode: 0o120777, size: 4, uid: 7, gid: 7, target: "site" },
+        ] : null,
+      } as KernelLike,
     });
+    expect(await host.readDir("/srv")).toEqual([
+      { name: "site", kind: "d", mode: "drwxr-xr-x", owner: "www-data", group: "www-data", size: "—", target: undefined },
+      { name: "index.html", kind: "f", mode: "-rw-r--r--", owner: "root", group: "root", size: "2.0K", target: undefined },
+      { name: "current", kind: "l", mode: "lrwxrwxrwx", owner: "7", group: "7", size: "4", target: "site" },
+    ]);
+    await expect(host.readDir("/missing")).rejects.toThrow(/ENOENT.*\/missing/);
+  });
 
-    const framebuffer = host.attachFramebuffer({} as HTMLCanvasElement);
-    const output = await framebuffer.startAudio();
-    expect(output).not.toBeNull();
-    expect(output!.getState()).toBe("suspended");
-    await output!.resume();
-    expect(resumeAudio).toHaveBeenCalledOnce();
-    expect(output!.getState()).toBe("running");
-
-    output!.close();
-    expect(suspendAudio).not.toHaveBeenCalled();
-    expect(output!.getState()).toBe("running");
-    framebuffer.close();
+  it("stats a path, and resolves null for a missing one", async () => {
+    const host = new LiveKernelHost({
+      kernel: {
+        ...makeVfs({ "/etc/passwd": passwd, "/etc/group": group }),
+        statVfsPath: async (path: string) => path === "/srv/site"
+          ? { mode: 0o040755, size: 0, uid: 33, gid: 33 }
+          : null,
+      } as KernelLike,
+    });
+    expect(await host.stat("/srv/site")).toEqual({
+      name: "site", kind: "d", mode: "drwxr-xr-x", owner: "www-data", group: "www-data", size: "—",
+    });
+    expect(await host.stat("/srv/gone")).toBeNull();
   });
 
   it("types into a taken-over machine's screen before any terminal is opened", async () => {
@@ -1547,13 +1673,122 @@ describe("LiveKernelHost: machine PCM lifecycle", () => {
   });
 });
 
+describe("LiveKernelHost: machine PCM lifecycle", () => {
+  it("forwards explicit activation and state changes independently of framebuffer", async () => {
+    let state: import("../src/kernel-host").MachineAudioState = "suspended";
+    let emit: ((next: import("../src/kernel-host").MachineAudioState) => void) | null = null;
+    const prepareAudio = vi.fn(async () => {});
+    const resumeAudio = vi.fn(async () => {
+      state = "running";
+      emit?.(state);
+    });
+    const suspendAudio = vi.fn(async () => {
+      state = "suspended";
+      emit?.(state);
+    });
+    const host = new LiveKernelHost({
+      kernel: {
+        prepareAudio,
+        resumeAudio,
+        suspendAudio,
+        getAudioState: () => state,
+        onAudioStateChange: (cb: typeof emit) => {
+          emit = cb;
+          cb?.(state);
+          return () => { emit = null; };
+        },
+      } as never,
+    });
+    const observed: string[] = [];
+    const off = host.subscribeAudioState((next) => observed.push(next));
+
+    await host.prepareAudio();
+    await host.resumeAudio();
+    expect(prepareAudio).toHaveBeenCalledOnce();
+    expect(resumeAudio).toHaveBeenCalledOnce();
+    expect(host.getAudioState()).toBe("running");
+    await host.suspendAudio();
+    expect(host.getAudioState()).toBe("suspended");
+    expect(observed).toContain("running");
+    expect(observed.at(-1)).toBe("suspended");
+
+    host.detachKernel();
+    expect(observed.at(-1)).toBe("unavailable");
+    off();
+  });
+
+  it("retains framebuffer startAudio as a non-owning machine-audio adapter", async () => {
+    let state: import("../src/kernel-host").MachineAudioState = "suspended";
+    const resumeAudio = vi.fn(async () => { state = "running"; });
+    const suspendAudio = vi.fn(async () => { state = "suspended"; });
+    const framebuffers = {
+      list: () => [],
+      onChange: () => () => {},
+    };
+    const host = new LiveKernelHost({
+      kernel: {
+        framebuffers,
+        getProcessMemory: () => undefined,
+        resumeAudio,
+        suspendAudio,
+        getAudioState: () => state,
+      } as never,
+    });
+
+    const framebuffer = host.attachFramebuffer({} as HTMLCanvasElement);
+    const output = await framebuffer.startAudio();
+    expect(output).not.toBeNull();
+    expect(output!.getState()).toBe("suspended");
+    await output!.resume();
+    expect(resumeAudio).toHaveBeenCalledOnce();
+    expect(output!.getState()).toBe("running");
+
+    output!.close();
+    expect(suspendAudio).not.toHaveBeenCalled();
+    expect(output!.getState()).toBe("running");
+    framebuffer.close();
+  });
+
+  it("reports guest audio demand from the kernel and defaults to false without it", () => {
+    let emit: ((active: boolean) => void) | null = null;
+    let active = false;
+    const host = new LiveKernelHost({
+      kernel: {
+        getAudioActivity: () => active,
+        onAudioActivityChange: (cb: (value: boolean) => void) => {
+          emit = cb;
+          cb(active);
+          return () => { emit = null; };
+        },
+      } as never,
+    });
+
+    const observed: boolean[] = [];
+    const off = host.subscribeAudioActivity((value) => observed.push(value));
+    expect(observed).toEqual([false]);
+
+    active = true;
+    emit?.(true);
+    expect(observed).toEqual([false, true]);
+    expect(host.getAudioActivity()).toBe(true);
+    off();
+
+    // Review Focus 3: a kernel that predates this API must not crash the shell.
+    const legacy = new LiveKernelHost({ kernel: {} as never });
+    expect(legacy.getAudioActivity()).toBe(false);
+    const offLegacy = legacy.subscribeAudioActivity(() => {});
+    expect(typeof offLegacy).toBe("function");
+    offLegacy();
+  });
+});
+
 describe("LiveKernelHost: shell command queue", () => {
   it("uses the worker-returned pid for a transferred shell binary", async () => {
     const outputPids: number[] = [];
     const writePids: number[] = [];
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawn(
           _programBytes: ArrayBuffer,
           _argv: string[],
@@ -1593,7 +1828,7 @@ describe("LiveKernelHost: shell command queue", () => {
     const spawn = vi.fn();
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawn,
         spawnFromVfs,
         onPtyOutput() {},
@@ -1627,6 +1862,77 @@ describe("LiveKernelHost: shell command queue", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
+  it("leaves the winsize to the visible terminal when commands are written headlessly", async () => {
+    const encoder = new TextEncoder();
+    let onOutput: ((data: Uint8Array) => void) | null = null;
+    const resizes: Array<[number, number, number]> = [];
+    const host = new LiveKernelHost({
+      kernel: {
+        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          onOutput = callback;
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize(pid: number, rows: number, cols: number) {
+          resizes.push([pid, rows, cols]);
+        },
+        ptyWrite(_pid: number, data: Uint8Array) {
+          // Ctrl+C ends the foreground editor; everything else starts one.
+          if (data[0] === 0x03) onOutput?.(encoder.encode("^C\nkandelo$ "));
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/maker",
+    });
+
+    // The Shell pane fits xterm to the viewport and attaches at that size.
+    await host.attachPty("/dev/pts/0", { cols: 174, rows: 51 });
+    // A boot-link script, a demo guide action, and a dock action all reach
+    // the same PTY without a terminal of their own.
+    await host.dispatchShellCommand("vim /etc/gitconfig");
+    const stopFollowing = await followShellOutput(host, () => {});
+    stopFollowing();
+    await host.interruptShellForeground();
+
+    expect(resizes).toEqual([[100, 51, 174]]);
+  });
+
+  it("spawns a headlessly attached shell at the size the visible terminal last set", async () => {
+    const spawnFromVfs = vi.fn(async () => ({
+      pid: 100,
+      exit: new Promise<number>(() => {}),
+    }));
+    const host = new LiveKernelHost({
+      kernel: {
+        spawnFromVfs,
+        onPtyOutput() {},
+        ptyResize() {},
+        ptyWrite() {},
+        // The shell (pid 100) is no longer in the process table.
+        enumProcs: async () => [{ pid: 1 }],
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      argv: ["bash", "-l", "-i"],
+    });
+
+    await host.attachPty("/dev/pts/0", { cols: 174, rows: 51 });
+    // The shell has since exited; a headless attach respawns it.
+    await host.attachPty("/dev/pts/0");
+
+    expect(spawnFromVfs).toHaveBeenCalledTimes(2);
+    expect(spawnFromVfs).toHaveBeenLastCalledWith(
+      "/bin/bash",
+      ["bash", "-l", "-i"],
+      expect.objectContaining({ ptyCols: 174, ptyRows: 51 }),
+    );
+  });
+
   it("rejects a default shell without a VFS path or fallback bytes", () => {
     const host = new LiveKernelHost();
     expect(() => host.setDefaultShell({
@@ -1637,7 +1943,7 @@ describe("LiveKernelHost: shell command queue", () => {
   it("reports when a VFS-only shell is used with a kernel that cannot spawn it", async () => {
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawn: vi.fn(),
         onPtyOutput() {},
         ptyResize() {},
@@ -1663,7 +1969,7 @@ describe("LiveKernelHost: shell command queue", () => {
 
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
           onOutput = callback;
@@ -1711,7 +2017,7 @@ describe("LiveKernelHost: shell command queue", () => {
 
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
         onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
           onOutput = callback;
@@ -1749,6 +2055,47 @@ describe("LiveKernelHost: shell command queue", () => {
     expect(completed).toBe(true);
   });
 
+  it("shows injected text on an attached terminal without writing to the guest", async () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+    const writes: Uint8Array[] = [];
+    const host = new LiveKernelHost({
+      kernel: {
+        ...makeVfs({ "/etc/passwd": "" }),
+        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, data: Uint8Array) {
+          writes.push(data);
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: ["PS1=kandelo$ "],
+      cwd: "/home/maker",
+    });
+
+    expect(host.injectPtyOutput("/dev/pts/0", "[agent] ls")).toBe(false);
+
+    const pty = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    const seen: string[] = [];
+    pty.onData((bytes) => seen.push(decoder.decode(bytes)));
+    expect(host.injectPtyOutput("/dev/pts/0", "[agent] ls")).toBe(true);
+    expect(seen).toContain("[agent] ls");
+    expect(writes).toEqual([]);
+
+    const later = await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+    const replayed: string[] = [];
+    later.onData((bytes) => replayed.push(decoder.decode(bytes)));
+    expect(replayed).toContain("[agent] ls");
+    expect(host.injectPtyOutput("/dev/pts/9", "[agent] ls")).toBe(false);
+  });
+
   it("serializes concurrent PTY attaches for the same terminal session", async () => {
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
@@ -1763,7 +2110,7 @@ describe("LiveKernelHost: shell command queue", () => {
 
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => {
           spawnCalls++;
           await spawnGate;
@@ -1821,7 +2168,7 @@ describe("LiveKernelHost: shell command queue", () => {
 
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => {
           const pid = allocatedPids.shift()!;
           livePids.add(pid);
@@ -1888,7 +2235,7 @@ describe("LiveKernelHost: shell command queue", () => {
 
     const host = new LiveKernelHost({
       kernel: {
-        fs: makeFs({ "/etc/passwd": "" }),
+        ...makeVfs({ "/etc/passwd": "" }),
         spawnFromVfs: async () => {
           const pid = allocatedPids.shift()!;
           const exit = new Promise<number>((resolve) => {
@@ -2501,6 +2848,118 @@ describe("LiveKernelHost: surface availability", () => {
   });
 });
 
+describe("demo chrome offline/reconnecting message mapping", () => {
+  const MINTED = "happy-teal-otter";
+  const APP_PREFIX = `/kandelo/app/${MINTED}/`;
+  const running = () => true;
+
+  function hostWithRunningPreview(): LiveKernelHost {
+    const host = new LiveKernelHost();
+    host.setWebPreview({
+      label: "WordPress",
+      url: APP_PREFIX,
+      status: "running",
+      message: "HTTP bridge ready",
+    });
+    return host;
+  }
+
+  it("takes this machine's web preview offline on a matching SW push", () => {
+    const host = hostWithRunningPreview();
+    const next = webPreviewForMachineChromeMessage({
+      data: { type: "machine-offline", name: MINTED },
+      mintedName: MINTED,
+      current: host.getWebPreview(),
+      isCurrent: running,
+    });
+    expect(next).not.toBeNull();
+    host.setWebPreview(next!);
+
+    expect(host.getWebPreview()?.status).toBe("offline");
+    expect(host.getWebPreview()?.message).toMatch(/no longer running/i);
+    // Identity is preserved so the same pane annotates itself offline.
+    expect(host.getWebPreview()?.url).toBe(APP_PREFIX);
+    expect(host.getWebPreview()?.label).toBe("WordPress");
+    // The web surface stays available so the offline banner keeps its pane
+    // mounted instead of the view falling back to syslog/terminal.
+    expect(host.getSurfaceAvailability().web).toBe(true);
+  });
+
+  it("shows reconnecting on a transient service-worker-restart push", () => {
+    const host = hostWithRunningPreview();
+    const next = webPreviewForMachineChromeMessage({
+      data: { type: "machine-reconnecting", name: MINTED },
+      mintedName: MINTED,
+      current: host.getWebPreview(),
+      isCurrent: running,
+    });
+    expect(next).not.toBeNull();
+    host.setWebPreview(next!);
+
+    expect(host.getWebPreview()?.status).toBe("reconnecting");
+    expect(host.getWebPreview()?.message).toMatch(/reconnect/i);
+    expect(host.getSurfaceAvailability().web).toBe(true);
+  });
+
+  it("ignores a push addressed to a different machine", () => {
+    const host = hostWithRunningPreview();
+    const next = webPreviewForMachineChromeMessage({
+      data: { type: "machine-offline", name: "eager-blue-fern" },
+      mintedName: MINTED,
+      current: host.getWebPreview(),
+      isCurrent: running,
+    });
+    expect(next).toBeNull();
+    expect(host.getWebPreview()?.status).toBe("running");
+  });
+
+  it("ignores pushes once the boot has been superseded", () => {
+    const host = hostWithRunningPreview();
+    const next = webPreviewForMachineChromeMessage({
+      data: { type: "machine-offline", name: MINTED },
+      mintedName: MINTED,
+      current: host.getWebPreview(),
+      isCurrent: () => false,
+    });
+    expect(next).toBeNull();
+    expect(host.getWebPreview()?.status).toBe("running");
+  });
+
+  it("ignores unrelated or malformed service worker messages", () => {
+    const host = hostWithRunningPreview();
+    for (
+      const data of [
+        { type: "need-bridge", name: MINTED },
+        { type: "machine-offline" },
+        null,
+        "machine-offline",
+      ] as unknown[]
+    ) {
+      expect(
+        webPreviewForMachineChromeMessage({
+          data,
+          mintedName: MINTED,
+          current: host.getWebPreview(),
+          isCurrent: running,
+        }),
+      ).toBeNull();
+    }
+    expect(host.getWebPreview()?.status).toBe("running");
+  });
+
+  it("does nothing when the machine never exposed a web preview", () => {
+    const host = new LiveKernelHost();
+    const next = webPreviewForMachineChromeMessage({
+      data: { type: "machine-offline", name: MINTED },
+      mintedName: MINTED,
+      current: host.getWebPreview(),
+      isCurrent: running,
+    });
+    expect(next).toBeNull();
+    expect(host.getWebPreview()).toBeNull();
+  });
+});
+
 describe("LiveKernelHost: snapshot delegates to takeSnapshot", () => {
   it("returns a Snapshot whose descriptor matches the host's", async () => {
     const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR });
@@ -2534,35 +2993,51 @@ describe("Kandelo demo config", () => {
     });
   });
 
-  it("resolves profile presentation over image defaults", () => {
+  it("resolves the selected profile's presentation, and only that profile's", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
-      presentation: {
-        bootPrimary: "syslog",
-        runningPrimary: ["terminal", "syslog"],
-        terminalAccess: "primary",
-        internalsAccess: "drawer",
-      },
       profiles: {
+        shell: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["terminal", "syslog"],
+            terminalAccess: "primary",
+            internalsAccess: "drawer",
+          },
+        },
         doom: {
           presentation: {
             bootPrimary: "syslog",
             runningPrimary: ["framebuffer", "terminal", "syslog"],
             terminalAccess: "drawer",
             internalsAccess: "drawer",
-            autoCommand: "/usr/local/bin/fbdoom -iwad /doom1.wad",
             touchControls: true,
+          },
+        },
+        sdl2: {
+          presentation: {
+            bootPrimary: "syslog",
+            runningPrimary: ["kms", "terminal", "syslog"],
+            terminalAccess: "drawer",
+            internalsAccess: "drawer",
+            hostPointer: true,
           },
         },
       },
     }));
     expect(config).not.toBeNull();
 
+    // A KMS guest that draws no cursor keeps the browser pointer; the
+    // default (absent) hides it for guests that draw their own.
+    expect(resolveDemoPresentation(config!, "sdl2")?.hostPointer).toBe(true);
+    expect(resolveDemoPresentation(config!, "doom")?.hostPointer).toBeUndefined();
+
     const presentation = resolveDemoPresentation(config!, "doom");
     expect(presentation.runningPrimary).toEqual(["framebuffer", "terminal", "syslog"]);
     expect(presentation.terminalAccess).toBe("drawer");
-    expect(presentation.autoCommand).toContain("fbdoom");
     expect(presentation.touchControls).toBe(true);
+    // A sibling profile's block is not a fallback for this one.
+    expect(resolveDemoPresentation(config!, "unknown")).toBeNull();
   });
 
   it("throws when profile metadata is incomplete", () => {
@@ -2640,21 +3115,19 @@ describe("Kandelo demo config", () => {
   it("resolves and validates profile assets", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
-      assets: [
-        { path: "/common.dat", url: "https://example.invalid/common.dat" },
-      ],
       profiles: {
         doom: {
           assets: [
+            { path: "/common.dat", url: "https://example.invalid/common.dat" },
             {
               path: "/doom1.wad",
               url: "https://example.invalid/doom1.wad",
               sha256: "abc123",
               mode: 420,
-              devCorsProxy: true,
             },
           ],
         },
+        shell: {},
       },
     }));
     expect(config).not.toBeNull();
@@ -2666,9 +3139,10 @@ describe("Kandelo demo config", () => {
         url: "https://example.invalid/doom1.wad",
         sha256: "abc123",
         mode: 420,
-        devCorsProxy: true,
       },
     ]);
+    // Assets belong to the profile that declares them; no sibling inherits.
+    expect(resolveDemoAssets(config!, "shell")).toEqual([]);
   });
 
   it("throws when profile assets use a relative path", () => {
@@ -2718,50 +3192,24 @@ describe("Kandelo demo config", () => {
     expect(resolveDemoGuide(config!, "missing")).toBeNull();
   });
 
-  it("provides built-in Node guide metadata for stale VFS images", () => {
-    const guide = builtinDemoGuide("node");
-
-    expect(guide).toEqual(nodeGuide());
-    expect(guide?.title).toBe("SpiderMonkey Node.js demo");
-    expect(guide?.groups?.[0].actions.map((action) => action.id)).toContain("install-cowsay");
-    expect(builtinDemoGuide("wordpress-sqlite")?.groups?.[0].actions[0]).toMatchObject({
-      id: "wp-admin-login",
-      kind: "web.wordpressLogin",
-    });
-  });
-
-  it("provides built-in presentation and assets for stale VFS images", () => {
-    expect(builtinDemoPresentation("shell")).toMatchObject({
-      runningPrimary: ["terminal", "syslog"],
-    });
-    expect(builtinDemoPresentation("wordpress-mariadb")).toMatchObject({
-      runningPrimary: ["web", "terminal", "syslog"],
-    });
-    expect(builtinDemoPresentation("doom")).toMatchObject({
-      runningPrimary: ["framebuffer", "terminal", "syslog"],
-      autoCommand: DOOM_COMMAND,
-    });
-
-    expect(builtinDemoAssets("doom")).toEqual([
-      expect.objectContaining({ path: "/doom1.wad", devCorsProxy: true }),
-    ]);
-    expect(builtinDemoAssets("node")).toEqual([]);
-  });
-
   it("rejects duplicate guide action ids", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
       version: 1,
-      guide: {
-        title: "Bad guide",
-        groups: [
-          {
-            title: "Actions",
-            actions: [
-              { id: "dup", label: "One", kind: "terminal.run", payload: "echo one" },
-              { id: "dup", label: "Two", kind: "terminal.write", payload: "two\n" },
+      profiles: {
+        shell: {
+          guide: {
+            title: "Bad guide",
+            groups: [
+              {
+                title: "Actions",
+                actions: [
+                  { id: "dup", label: "One", kind: "terminal.run", payload: "echo one" },
+                  { id: "dup", label: "Two", kind: "terminal.write", payload: "two\n" },
+                ],
+              },
             ],
           },
-        ],
+        },
       },
     }));
     expect(config).not.toBeNull();
@@ -3061,5 +3509,223 @@ describe("Kandelo VFS consumer capacity contract", () => {
       undefined,
       "custom.vfs.zst",
     )).toThrow("profile permits");
+  });
+});
+
+describe("LiveKernelHost: KMS display size lifecycle", () => {
+  // attachKmsDisplay's ResizeObserver feeds kmsDisplaySizes and pushes each
+  // size to the kernel; the boot flow awaits the first report
+  // (whenKmsDisplaySized) before starting a mode-picking client. A stale
+  // entry from the previous session would satisfy that wait before the new
+  // pane pushed anything → 1920×1080 letterbox on every reboot.
+  class FakeResizeObserver {
+    static instances: FakeResizeObserver[] = [];
+    disconnected = false;
+    constructor(public cb: (entries: unknown[]) => void) {
+      FakeResizeObserver.instances.push(this);
+    }
+    observing = false;
+    observe(): void {
+      this.observing = true;
+      this.disconnected = false;
+    }
+    disconnect(): void {
+      this.disconnected = true;
+      this.observing = false;
+    }
+  }
+
+  // A real ResizeObserverEntry carries both boxes; at a device-pixel ratio
+  // of 1 the CSS content box equals the device-pixel box.
+  const fireResize = (ro: FakeResizeObserver, w: number, h: number) =>
+    ro.cb([{
+      devicePixelContentBoxSize: [{ inlineSize: w, blockSize: h }],
+      contentRect: { width: w, height: h },
+    }]);
+  // The physical size the host derives from the CSS box (96 px per inch).
+  const mmFor = (w: number, h: number) => ({
+    width: (w * 25.4) / 96,
+    height: (h * 25.4) / 96,
+  });
+
+  const makeKmsKernel = () => ({
+    kmsAttachCanvas: vi.fn(),
+    kmsSetDisplaySize: vi.fn(),
+  });
+
+  const makeCanvas = () =>
+    ({ transferControlToOffscreen: () => ({}) }) as unknown as HTMLCanvasElement;
+
+  const withFakeResizeObserver = (fn: () => void) => {
+    const real = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = FakeResizeObserver;
+    FakeResizeObserver.instances = [];
+    try {
+      fn();
+    } finally {
+      (globalThis as { ResizeObserver?: unknown }).ResizeObserver = real;
+    }
+  };
+
+  it("detachKernel clears the reported sizes and the stale observer stops feeding them", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernelA = makeKmsKernel();
+      host.attachKernel(kernelA as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      expect(host.attachKmsDisplay(makeCanvas())).not.toBeNull();
+      const ro = FakeResizeObserver.instances[0];
+      expect(ro).toBeDefined();
+
+      fireResize(ro, 800, 600);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 800, height: 600 });
+      expect(kernelA.kmsSetDisplaySize).toHaveBeenCalledWith(1, 800, 600, mmFor(800, 600));
+
+      host.detachKernel();
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+
+      // A late delivery from the dead pane must not repopulate the map
+      // (or poke the dead kernel) — the observer disconnects instead.
+      kernelA.kmsSetDisplaySize.mockClear();
+      fireResize(ro, 800, 600);
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+      expect(kernelA.kmsSetDisplaySize).not.toHaveBeenCalled();
+      expect(ro.disconnected).toBe(true);
+    });
+  });
+
+  it("an old session's observer never feeds the next session's kernel", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernelA = makeKmsKernel();
+      host.attachKernel(kernelA as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      const roA = FakeResizeObserver.instances[0];
+      fireResize(roA, 800, 600);
+
+      // Second boot: detach, attach a fresh kernel + remounted pane.
+      host.detachKernel();
+      const kernelB = makeKmsKernel();
+      host.attachKernel(kernelB as any);
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+
+      kernelA.kmsSetDisplaySize.mockClear();
+      fireResize(roA, 800, 600);
+      expect(host.getKmsDisplaySize(1)).toBeUndefined();
+      expect(kernelA.kmsSetDisplaySize).not.toHaveBeenCalled();
+      expect(kernelB.kmsSetDisplaySize).not.toHaveBeenCalled();
+
+      // The remounted pane's own observer serves the new session.
+      host.attachKmsDisplay(makeCanvas());
+      const roB = FakeResizeObserver.instances[1];
+      fireResize(roB, 1024, 768);
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 1024, height: 768 });
+      expect(kernelB.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1024, 768, mmFor(1024, 768));
+    });
+  });
+
+  it("whenKmsDisplaySized resolves on the pane's first report, after the kernel has it", async () => {
+    let sized: Promise<{ width: number; height: number } | undefined> | undefined;
+    let kernel: ReturnType<typeof makeKmsKernel> | undefined;
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      sized = host.whenKmsDisplaySized(1, 60_000);
+      host.attachKmsDisplay(makeCanvas());
+      fireResize(FakeResizeObserver.instances[0], 0, 0);   // hidden: ignored
+      fireResize(FakeResizeObserver.instances[0], 1280, 720);
+    });
+    expect(await sized).toEqual({ width: 1280, height: 720 });
+    expect(kernel!.kmsSetDisplaySize).toHaveBeenCalledWith(1, 1280, 720, mmFor(1280, 720));
+  });
+
+  it("closing the pane's handle disconnects its observer; a StrictMode reuse reconnects it", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.attachKernel(makeKmsKernel() as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const canvas = makeCanvas();
+      const handle = host.attachKmsDisplay(canvas)!;
+      const ro = FakeResizeObserver.instances[0];
+      expect(ro.observing).toBe(true);
+      handle.close();                       // unmount: no dangling observer
+      expect(ro.observing).toBe(false);
+      expect(host.attachKmsDisplay(canvas)).toBe(handle); // StrictMode remount
+      expect(ro.observing).toBe(true);
+      expect(FakeResizeObserver.instances).toHaveLength(1);
+    });
+  });
+
+  it("kmsDisplayCanvas keeps one canvas per CRTC for the kernel's lifetime", () => {
+    // A program's WebGL context is bound to the canvas it was created on,
+    // so a remounted pane must get the SAME element back — and the same
+    // handle, without a second transferControlToOffscreen().
+    const realDocument = (globalThis as { document?: unknown }).document;
+    let transfers = 0;
+    (globalThis as { document?: unknown }).document = {
+      createElement: (tag: string) => {
+        expect(tag).toBe("canvas");
+        return {
+          width: 300,
+          height: 150,
+          transferControlToOffscreen: () => {
+            transfers++;
+            return {};
+          },
+        };
+      },
+    };
+    try {
+      withFakeResizeObserver(() => {
+        const host = new LiveKernelHost();
+        const kernelA = makeKmsKernel();
+        host.attachKernel(kernelA as any);
+        const size = { width: 1920, height: 1080 };
+
+        const canvas = host.kmsDisplayCanvas(1, size);
+        expect(canvas.width).toBe(1920);
+        expect(canvas.height).toBe(1080);
+        const handle = host.attachKmsDisplay(canvas, 1)!;
+        handle.close(); // pane unmount
+
+        // Remount: same element, same handle, one transfer.
+        expect(host.kmsDisplayCanvas(1, { width: 640, height: 480 })).toBe(canvas);
+        expect(canvas.width).toBe(1920); // size applies only at creation
+        expect(host.attachKmsDisplay(canvas, 1)).toBe(handle);
+        expect(transfers).toBe(1);
+        expect(kernelA.kmsAttachCanvas).toHaveBeenCalledTimes(1);
+
+        // Each CRTC has its own canvas.
+        expect(host.kmsDisplayCanvas(2)).not.toBe(canvas);
+
+        // The next kernel gets a fresh canvas: this one's control belongs
+        // to the detached kernel's worker.
+        host.detachKernel();
+        host.attachKernel(makeKmsKernel() as any);
+        expect(host.kmsDisplayCanvas(1, size)).not.toBe(canvas);
+      });
+    } finally {
+      (globalThis as { document?: unknown }).document = realDocument;
+    }
+  });
+
+  it("whenKmsDisplaySized is bounded, and a detach releases it", async () => {
+    vi.useFakeTimers();
+    try {
+      const host = new LiveKernelHost();
+      host.attachKernel(makeKmsKernel() as any);
+      const timedOut = host.whenKmsDisplaySized(1, 2_000);
+      vi.advanceTimersByTime(2_000);
+      expect(await timedOut).toBeUndefined();
+
+      const detached = host.whenKmsDisplaySized(1, 60_000);
+      host.detachKernel();
+      expect(await detached).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { FetchNetworkBackend, EagainError } from "../src/networking/fetch-backend";
 import { TlsNetworkBackend, type TlsMitmConnection } from "../src/networking/tls-network-backend";
+import { NET_READINESS } from "../src/generated/abi";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -70,6 +71,66 @@ async function recvWhenReady(
   throw new Error("timed out waiting for response");
 }
 
+const CHUNKED_END = "0\r\n\r\n";
+
+/** Read until the guest would consider the response complete: the chunked
+ *  terminator, or EOF. Responses now arrive in pieces as they stream. */
+async function recvResponse(
+  backend: Pick<TlsNetworkBackend, "recv">,
+  handle: number,
+): Promise<string> {
+  let text = "";
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    let bytes: Uint8Array;
+    try {
+      bytes = backend.recv(handle, 4096, 0);
+    } catch (err) {
+      if (err instanceof EagainError) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        continue;
+      }
+      throw err;
+    }
+    if (bytes.length === 0) return text;
+    text += decoder.decode(bytes);
+    if (text.endsWith(CHUNKED_END)) return text;
+  }
+  throw new Error(`timed out reading response; have ${JSON.stringify(text)}`);
+}
+
+/** The body a chunked-decoding client reconstructs from `response`. */
+function dechunk(response: string): string {
+  let rest = response.slice(response.indexOf("\r\n\r\n") + 4);
+  let body = "";
+  for (;;) {
+    const lineEnd = rest.indexOf("\r\n");
+    const size = parseInt(rest.slice(0, lineEnd), 16);
+    if (size === 0) return body;
+    body += rest.slice(lineEnd + 2, lineEnd + 2 + size);
+    rest = rest.slice(lineEnd + 2 + size + 2);
+  }
+}
+
+/** A response body the test feeds piece by piece. */
+function controlledBody(): {
+  stream: ReadableStream<Uint8Array>;
+  push(text: string): void;
+  end(): void;
+  fail(error: Error): void;
+} {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) { controller = c; },
+  });
+  return {
+    stream,
+    push: (text) => controller.enqueue(encoder.encode(text)),
+    end: () => controller.close(),
+    fail: (error) => controller.error(error),
+  };
+}
+
 /**
  * Loopback stand-in for the TLS 1.2 server engine. The real engine encrypts the
  * server's plaintext response asynchronously before it surfaces on
@@ -108,15 +169,15 @@ class LoopbackMitmTls implements TlsMitmConnection {
 }
 
 async function waitForReadable(
-  backend: Pick<TlsNetworkBackend, "poll">,
+  backend: Pick<TlsNetworkBackend, "readiness">,
   handle: number,
 ): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (Date.now() < deadline) {
-    if ((backend.poll(handle, 0x0001) & 0x0001) !== 0) return;
+    if ((backend.readiness(handle) & NET_READINESS.RECV_READY) !== 0) return;
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  throw new Error("timed out waiting for readable poll");
+  throw new Error("timed out waiting for readable bytes");
 }
 
 describe("FetchNetworkBackend", () => {
@@ -129,7 +190,17 @@ describe("FetchNetworkBackend", () => {
       const backend = new FetchNetworkBackend();
       const addr = backend.getaddrinfo("example.com");
       expect(addr.length).toBe(4);
-      expect(addr[0]).toBe(10); // 10.x.x.x range
+      // 198.18.0.0/15: never routed on the internet, and clear of a
+      // session's 10.89.0.0/24 and every virtual link's subnet.
+      expect(addr[0]).toBe(198);
+      expect(addr[1] & 0xfe).toBe(18);
+    });
+
+    it("never gives two names the same address", () => {
+      const backend = new FetchNetworkBackend();
+      const seen = new Set<string>();
+      for (let i = 0; i < 2000; i++) seen.add(Array.from(backend.getaddrinfo(`host-${i}.example`)).join("."));
+      expect(seen.size).toBe(2000);
     });
 
     it("returns deterministic results for same hostname", () => {
@@ -209,11 +280,38 @@ describe("FetchNetworkBackend", () => {
     });
   });
 
-  describe("poll", () => {
-    it("reports writable readiness without echoing requested error bits", () => {
+  describe("readiness", () => {
+    it("reports facts only — a fresh connection accepts a write and has nothing to read", () => {
       const backend = new FetchNetworkBackend();
       backend.connect(1, new Uint8Array([93, 184, 216, 34]), 80);
-      expect(backend.poll(1, 0x0004 | 0x0008)).toBe(0x0004);
+      // No `events` argument exists to echo back: this backend can no longer
+      // claim readiness the caller merely asked about. It reports that the
+      // engine will take a write, and nothing else.
+      expect(backend.readiness(1)).toBe(NET_READINESS.SEND_READY);
+    });
+
+    it("reports a completed empty-bodied response as end-of-stream, not hangup", async () => {
+      // A finished HTTP response is EOF on this response, not a dead
+      // connection: the kernel turns RECV_EOF into POLLIN (recv returns 0)
+      // and leaves POLLOUT set for the next keep-alive request. This backend
+      // used to report POLLHUP here, alongside an unconditional POLLOUT —
+      // a pair POSIX calls mutually exclusive.
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("hi")));
+      const backend = new FetchNetworkBackend();
+      const addr = backend.getaddrinfo("example.com");
+      backend.connect(1, addr, 80);
+      backend.send(
+        1,
+        new TextEncoder().encode("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+        0,
+      );
+      await waitForReadable(backend, 1);
+      while (backend.recv(1, 4096, 0).length > 0) { /* drain */ }
+
+      const facts = backend.readiness(1);
+      expect(facts & NET_READINESS.RECV_EOF).toBe(NET_READINESS.RECV_EOF);
+      expect(facts & NET_READINESS.HANGUP).toBe(0);
+      expect(facts & NET_READINESS.SEND_READY).toBe(NET_READINESS.SEND_READY);
     });
   });
 
@@ -385,7 +483,7 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     backend.connect(1, addr, 80);
 
     sendGet(backend, 1, "/first");
-    const first = decoder.decode(await recvWhenReady(backend, 1));
+    const first = await recvResponse(backend, 1);
     expect(first).toContain("first");
     expect(first.toLowerCase()).not.toContain("connection: close");
 
@@ -393,7 +491,7 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     expect(() => backend.recv(1, 4096, 0)).toThrow(EagainError);
 
     resolveSecond(new Response("second"));
-    expect(decoder.decode(await recvWhenReady(backend, 1))).toContain("second");
+    expect(dechunk(await recvResponse(backend, 1))).toBe("second");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -412,12 +510,85 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     backend.connect(1, addr, 80);
 
     sendGet(backend, 1, "/encoded");
-    const response = decoder.decode(await recvWhenReady(backend, 1));
-    expect(response).toContain("plain");
-    expect(response.toLowerCase()).toContain("content-length: 5");
-    expect(response.toLowerCase()).not.toContain("content-length: 999");
+    const response = await recvResponse(backend, 1);
+    // fetch() already decoded the body, so the upstream length (999) and
+    // encoding describe bytes the guest never receives. The stream is framed
+    // by chunks instead, which describe exactly what arrives.
+    expect(dechunk(response)).toBe("plain");
+    expect(response.toLowerCase()).toContain("transfer-encoding: chunked");
+    expect(response.toLowerCase()).not.toContain("content-length");
     expect(response.toLowerCase()).not.toContain("content-encoding");
     expect(response.toLowerCase()).not.toContain("connection: close");
+  });
+
+  it("hands body bytes to the guest before the upstream response finishes", async () => {
+    const body = controlledBody();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body.stream, {
+      headers: { "content-type": "application/zip" },
+    })));
+
+    const backend = new TlsNetworkBackend();
+    backend.connect(1, backend.getaddrinfo("example.com"), 80);
+    sendGet(backend, 1, "/big.zip");
+
+    body.push("first-piece");
+    let seen = "";
+    while (!seen.includes("first-piece")) {
+      seen += decoder.decode(await recvWhenReady(backend, 1));
+    }
+    // The upstream has not finished, so the guest is told to wait, not EOF.
+    expect(() => backend.recv(1, 4096, 0)).toThrow(EagainError);
+    // Nor does the backend report end-of-stream: the kernel decides POLLHUP
+    // from these facts, and an unfinished body must not look finished.
+    expect(backend.readiness(1) & NET_READINESS.RECV_EOF).toBe(0);
+
+    body.push("second-piece");
+    body.end();
+    const rest = await recvResponse(backend, 1);
+    expect(dechunk(seen + rest)).toBe("first-piecesecond-piece");
+  });
+
+  it("keeps an exact Content-Length where chunked framing does not apply", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response("legacy", { headers: { "content-type": "text/plain" } }))));
+
+    const backend = new TlsNetworkBackend();
+    backend.connect(1, backend.getaddrinfo("example.com"), 80);
+    backend.send(1, encoder.encode("GET /old HTTP/1.0\r\nHost: example.com\r\n\r\n"), 0);
+    const response = await recvResponse(backend, 1);
+    expect(response.toLowerCase()).toContain("content-length: 6");
+    expect(response.toLowerCase()).not.toContain("transfer-encoding");
+    expect(response.endsWith("legacy")).toBe(true);
+  });
+
+  it("delivers what arrived, then the failure, when the upstream body breaks", async () => {
+    const body = controlledBody();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body.stream)));
+
+    const backend = new TlsNetworkBackend();
+    backend.connect(1, backend.getaddrinfo("example.com"), 80);
+    sendGet(backend, 1, "/flaky");
+    body.push("partial");
+    let seen = "";
+    while (!seen.includes("partial")) {
+      seen += decoder.decode(await recvWhenReady(backend, 1));
+    }
+    body.fail(new Error("network reset"));
+
+    await expect(async () => {
+      for (;;) {
+        try {
+          backend.recv(1, 4096, 0);
+        } catch (err) {
+          if (err instanceof EagainError) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            continue;
+          }
+          throw err;
+        }
+      }
+    }).rejects.toThrow("network reset");
+    expect(seen).not.toContain(CHUNKED_END);
   });
 
   it("routes HTTP fetches through the configured CORS proxy", async () => {
@@ -617,14 +788,69 @@ describe("TlsNetworkBackend TLS MITM path", () => {
 
     await waitForReadable(backend, 1);
     const peeked = backend.recv(1, 8, MSG_PEEK);
-    expect(backend.poll(1, 0x0001) & 0x0001).toBe(0x0001);
+    expect(backend.readiness(1) & NET_READINESS.RECV_READY)
+      .toBe(NET_READINESS.RECV_READY);
     const consumed = backend.recv(1, 8, 0);
     expect(peeked).toEqual(consumed);
-    const response = decoder.decode(
-      new Uint8Array([...consumed, ...await recvWhenReady(backend, 1)]),
-    );
+    const response = decoder.decode(consumed) + await recvResponse(backend, 1);
     expect(response).toContain("200");
-    expect(response).toContain(body);
+    expect(dechunk(response)).toBe(body);
+  });
+
+  it("streams an HTTPS body to the guest as it arrives", async () => {
+    const body = controlledBody();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body.stream)));
+    let tls!: LoopbackMitmTls;
+    const backend = new TlsNetworkBackend({
+      createTlsConnection: () => (tls = new LoopbackMitmTls()),
+    });
+    await backend.init();
+    backend.connect(1, backend.getaddrinfo("example.com"), 443);
+    await tls.serverEnd.upstream.writable
+      .getWriter()
+      .write(encoder.encode("GET /big.zip HTTP/1.1\r\nHost: example.com\r\n\r\n"));
+
+    body.push("early-bytes");
+    let seen = "";
+    while (!seen.includes("early-bytes")) {
+      seen += decoder.decode(await recvWhenReady(backend, 1));
+    }
+    expect(seen).not.toContain(CHUNKED_END);
+
+    body.push("late-bytes");
+    body.end();
+    const rest = await recvResponse(backend, 1);
+    expect(dechunk(seen + rest)).toBe("early-byteslate-bytes");
+  });
+
+  it("closes an HTTPS response cut short instead of completing it", async () => {
+    const body = controlledBody();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body.stream)));
+    let tls!: LoopbackMitmTls;
+    const backend = new TlsNetworkBackend({
+      createTlsConnection: () => (tls = new LoopbackMitmTls()),
+    });
+    await backend.init();
+    backend.connect(1, backend.getaddrinfo("example.com"), 443);
+    await tls.serverEnd.upstream.writable
+      .getWriter()
+      .write(encoder.encode("GET /flaky HTTP/1.1\r\nHost: example.com\r\n\r\n"));
+
+    body.push("partial");
+    // Erroring a stream discards chunks still queued in it, so let the guest
+    // receive the partial body before the upstream breaks.
+    let seen = "";
+    while (!seen.includes("partial")) {
+      seen += decoder.decode(await recvWhenReady(backend, 1));
+    }
+    body.fail(new Error("network reset"));
+    // EOF without the zero-length chunk: a chunked decoder reports a
+    // truncated transfer, never a 502 forged after a 200 head.
+    const response = seen + await recvResponse(backend, 1);
+    expect(response).toContain("200");
+    expect(response).toContain("partial");
+    expect(response).not.toContain(CHUNKED_END);
+    expect(response).not.toContain("502");
   });
 
   it("routes decrypted HTTPS requests through the configured CORS proxy", async () => {

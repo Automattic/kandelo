@@ -353,49 +353,10 @@ do
   fi
 done
 
-staging_preflight_job="$(job_block "$STAGING_WORKFLOW" preflight)"
-staging_compute_step="$(step_run_block "$STAGING_WORKFLOW" "Compute matrix")"
-grep -Fq 'stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}' \
-  <<<"$staging_preflight_job" ||
-  fail "staging preflight must expose exact wasm32 node-vfs membership"
-grep -Fq 'any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")' \
-  <<<"$staging_compute_step" ||
-  fail "staging preflight must derive Node acceptance from the sealed matrix"
-grep -Fq 'stages_node_vfs: ${{ steps.compute.outputs.stages_node_vfs }}' \
-  <<<"$preflight_job" ||
-  fail "prepare preflight must expose exact wasm32 node-vfs membership"
-grep -Fq 'any(.[]; .package == \"node-vfs\" and .arch == \"wasm32\")' \
-  <<<"$preflight_step" ||
-  fail "prepare preflight must derive Node acceptance from its exact matrices"
-grep -Fq 'echo "stages_node_vfs=false" >> "$GITHUB_OUTPUT"' \
-  <<<"$preflight_step" ||
-  fail "non-staging prepare runs must close the Node acceptance output"
 prepare_test_suite=$(job_block "$PREPARE" test-suite)
 grep -Fq 'needs: [synthesize-merge, change-scope, preflight, test-gate-prepare]' \
   <<<"$prepare_test_suite" ||
   fail "prepare test suites must consume the exact package matrix"
-grep -Fq 'STAGES_NODE_VFS: ${{ needs.preflight.outputs.stages_node_vfs }}' \
-  <<<"$prepare_test_suite" ||
-  fail "prepare browser acceptance must receive exact node-vfs membership"
-pages_node_acceptance="$(
-  step_run_block "$PAGES_WORKFLOW" "Run exact Pages Node npm acceptance"
-)"
-grep -Fq 'KANDELO_NODE_VFS_SHA256' <<<"$pages_node_acceptance" ||
-  fail "Pages Node acceptance must verify the resolved Node image digest"
-grep -Fq -- "--grep '@node-npm-acceptance'" <<<"$pages_node_acceptance" ||
-  fail "Pages Node acceptance must use the stable selector"
-NODE_ACCEPTANCE_SPEC="$REPO_ROOT/apps/browser-demos/test/kandelo-node.spec.ts"
-grep -Fq 'KANDELO_NODE_VFS_SHA256' "$NODE_ACCEPTANCE_SPEC" ||
-  fail "Node acceptance must bind the fetched VFS bytes"
-grep -Fq 'KANDELO_TEST_BASE_URL' "$NODE_ACCEPTANCE_SPEC" ||
-  fail "Node acceptance must navigate through the deployed base path"
-grep -Fq '@node-npm-acceptance' "$NODE_ACCEPTANCE_SPEC" ||
-  fail "Node acceptance must expose its stable workflow selector"
-grep -Fq 'if (localBootAssetRoot) {' "$NODE_ACCEPTANCE_SPEC" ||
-  fail "Node acceptance must scope controlled-proxy assertions to its fixture"
-if grep -Fq 'test.skip(true, "Required binary not built' "$NODE_ACCEPTANCE_SPEC"; then
-  fail "Node acceptance must fail closed when production assets are missing"
-fi
 grep -Fq 'pr_commit_count: ${{ steps.synthesize.outputs.pr_commit_count }}' <<<"$synthesize_job" || \
   fail "synthesize-merge must export the full-history PR commit count"
 grep -Fq 'PR_COMMIT_COUNT=$(git rev-list --count "$BASE_SHA..$PR_HEAD_SHA")' <<<"$synthesize_step" || \

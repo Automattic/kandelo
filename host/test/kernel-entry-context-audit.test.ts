@@ -9,6 +9,72 @@ function violationKinds(source: string): KernelEntryContextViolationKind[] {
 }
 
 describe("kernel entry-context static audit", () => {
+  const constructionFixture = (body: string, extra = "") => `
+    interface KernelWorkerEntryContext { instance: WebAssembly.Instance; }
+    class CentralizedKernelWorker {
+      #kernelEntryGate = {
+        runOrDeferVoidIngress(_label: string,
+          _callback: (scope: unknown, effects: unknown) => undefined): void {}
+      };
+      #runKernelEntryOperation(_scope: unknown, _effects: unknown,
+        _operation: (entry: KernelWorkerEntryContext) => undefined): undefined {
+        return undefined;
+      }
+      #kernelInstanceForEntry(entry: KernelWorkerEntryContext): WebAssembly.Instance {
+        return entry.instance;
+      }
+      #read(entry: KernelWorkerEntryContext): undefined {
+        const read = this.#kernelInstanceForEntry(entry).exports.read as () => number;
+        read(); return undefined;
+      }
+      #runOrDeferKernelEntry(label: string,
+        operation: (entry: KernelWorkerEntryContext) => undefined): void {
+        ${body}
+      }
+      ${extra}
+    }
+  `;
+
+  it("audits constructor operations and preserves exact gateway forwarding", () => {
+    expect(auditKernelEntryContext(constructionFixture(`
+      this.#kernelEntryGate.runOrDeferVoidIngress(label, (scope, effects) => {
+        if (label === "observed") {
+          return this.#runKernelEntryOperation(scope, effects, (entry) => this.#read(entry));
+        }
+        return this.#runKernelEntryOperation(scope, effects, operation);
+      });
+    `))).toEqual([]);
+  });
+
+  it("rejects an alias in place of the gateway's original operation", () => {
+    const violations = auditKernelEntryContext(constructionFixture(`
+      const stored = operation;
+      this.#kernelEntryGate.runOrDeferVoidIngress(label, (scope, effects) => {
+        return this.#runKernelEntryOperation(scope, effects, stored);
+      });
+    `));
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.kind).toBe("nonlexical-entry-operation");
+  });
+
+  it("rejects constructor calls with fabricated scope or effects", () => {
+    const violations = auditKernelEntryContext(constructionFixture(`
+      this.#kernelEntryGate.runOrDeferVoidIngress(label, (scope, effects) => {
+        return this.#runKernelEntryOperation({}, effects, (entry) => this.#read(entry));
+      });
+    `));
+    expect(violations.some(({ text }) => text.includes("exact scope and effects"))).toBe(true);
+  });
+
+  it("rejects entry construction outside a canonical gate callback", () => {
+    const violations = auditKernelEntryContext(constructionFixture("", `
+      dispatch(): void {
+        this.#runKernelEntryOperation({}, {}, (entry) => this.#read(entry));
+      }
+    `));
+    expect(violations.some(({ kind }) => kind === "nonlexical-entry-operation")).toBe(true);
+  });
+
   it("accepts explicit lexical authority and detached host effects", () => {
     const violations = auditKernelEntryContext(`
       interface KernelWorkerEntryContext {

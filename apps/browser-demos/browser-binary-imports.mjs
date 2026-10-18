@@ -24,13 +24,20 @@ import {
 const modulePath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = resolve(dirname(modulePath), "../..");
 
-function walkFiles(root) {
+function walkFiles(root, browserRoot = root) {
   const out = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     if (entry.name === "node_modules" || entry.name === "dist") continue;
+    // Playwright records response bodies with MIME-derived extensions. A
+    // JSON body can become a .js trace resource; reports are generated
+    // evidence, never authored browser inputs. Ignore only app-root outputs.
+    if (root === browserRoot &&
+      (entry.name === "test-results" || entry.name === "playwright-report")) {
+      continue;
+    }
     const full = join(root, entry.name);
     if (entry.isDirectory()) {
-      out.push(...walkFiles(full));
+      out.push(...walkFiles(full, browserRoot));
     } else if (entry.isSymbolicLink()) {
       // WHY: the browser-input projection is content-bound to a Git tree.
       // Following a symlink would let untracked ambient bytes change which
@@ -52,11 +59,18 @@ function normalizeBinariesRel(rel) {
 }
 
 function staticModuleReferences(text, file) {
-  const ast = parse(text, {
-    sourceType: "unambiguous",
-    sourceFilename: file,
-    plugins: ["jsx", "typescript", "importAttributes"],
-  });
+  let ast;
+  try {
+    ast = parse(text, {
+      sourceType: "unambiguous",
+      sourceFilename: file,
+      plugins: ["jsx", "typescript", "importAttributes"],
+    });
+  } catch (error) {
+    throw new Error(`browser source failed to parse: ${file}: ${error.message}`, {
+      cause: error,
+    });
+  }
   const references = [];
   const pending = [ast.program];
   while (pending.length > 0) {
@@ -380,7 +394,10 @@ function browserHtmlEntryModules(repoRoot, browserRoot, entry) {
  * documented app-only dependency install, while root package audits re-export
  * the same implementation instead of maintaining a second parser.
  */
-export function browserBinariesImports(repoRoot = defaultRepoRoot) {
+export function browserBinariesImports(
+  repoRoot = defaultRepoRoot,
+  { includeOptionalGlobs = true } = {},
+) {
   const browserRoot = join(repoRoot, "apps", "browser-demos");
   const imports = new Set();
   const mirrorRoots = [
@@ -390,7 +407,8 @@ export function browserBinariesImports(repoRoot = defaultRepoRoot) {
 
   for (const file of walkFiles(browserRoot)) {
     const text = readFileSync(file, "utf8");
-    for (const specifier of staticModuleSpecifiers(text, file)) {
+    for (const { kind, specifier } of staticModuleReferences(text, file)) {
+      if (kind === "glob" && !includeOptionalGlobs) continue;
       if (specifier.startsWith("@binaries/")) {
         const rel = specifier.slice("@binaries/".length).split("?", 1)[0];
         imports.add(normalizeBinariesRel(rel));

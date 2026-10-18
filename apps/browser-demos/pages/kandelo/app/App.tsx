@@ -2,23 +2,23 @@
 // switches machine views and opens exploratory panes for gallery and overlays.
 
 import * as React from "react";
-import { useDemoGuide, useKernelHost, useLazyDownloads } from "../kernel-host/react";
+import { flushSync } from "react-dom";
+import { useDemoGuide, useKernelHost, useLazyDownloads, useMachineProgress } from "../kernel-host/react";
+import { useVfsTools } from "../webmcp/use-vfs-tools";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
+import { MachineProgressOverlay } from "../panes/MachineProgressOverlay";
 import { descriptorFromGalleryItem } from "../gallery-descriptor";
 import { Gallery } from "../views/Gallery";
 import { EmptyState } from "../views/EmptyState";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { SharedMachine } from "../panes/SharedMachine";
-import { NetworkPopup } from "./NetworkPopup";
 import { useMachineHandover } from "./machine-handover";
 import { useMachineReplication } from "./machine-replication";
-import { usePeerNickname } from "./peer-nickname";
-import { usePeerSession } from "./peer-session";
 import { useFramebufferPublisher } from "./shared-framebuffer";
 import { useTerminalPublisher } from "./shared-terminal";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
-import { navigateToGalleryItemUrl, replaceGalleryItemUrl } from "../url-state";
+import { galleryItemUrl } from "../url-state";
 import { ShareDialog } from "../dialogs/ShareDialog";
 import type {
   BootDescriptor,
@@ -27,7 +27,12 @@ import type {
   MachineAudioState,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
+import { useWebMcp } from "../webmcp/use-webmcp";
+import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
+import { useNetworkSession } from "./use-network-session";
+import { NetworkPanel } from "./NetworkPanel";
+import { SharingSection } from "./SharingSection";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
@@ -59,17 +64,18 @@ const THEME_MODES: Array<{ mode: ThemeMode; label: string }> = [
 
 const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
   gallery: {
-    title: "Launch New Machine",
-    subtitle: "Choose a published Kandelo machine or local demo image to boot.",
+    title: "Launch New Computer",
+    subtitle: "Choose a published Kandelo computer or local demo image to boot.",
   },
 };
 
 export const App: React.FC = () => {
   const host = useKernelHost();
+  const networkSession = useNetworkSession(host);
   const demoGuide = useDemoGuide();
   const lazyDownloads = useLazyDownloads();
+  const machineProgress = useMachineProgress();
   const surface = useMachineSurfaceController();
-  const peer = usePeerSession();
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
@@ -82,15 +88,17 @@ export const App: React.FC = () => {
   const [internalsOpen, setInternalsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
-  const [networkOpen, setNetworkOpen] = React.useState(false);
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
   const [themeOpen, setThemeOpen] = React.useState(false);
   const [terminals, setTerminals] = React.useState<ShellTerminal[]>(() => [createShellTerminal(1)]);
   const [activeTerminalId, setActiveTerminalId] = React.useState("tty-1");
+  useVfsTools(() => terminals.find((terminal) => terminal.id === activeTerminalId)?.path ?? null);
   const [audioState, setAudioState] = React.useState<MachineAudioState>(() => host.getAudioState());
+  const [audioActive, setAudioActive] = React.useState<boolean>(() => host.getAudioActivity());
   const [audioError, setAudioError] = React.useState<string | null>(null);
   const nextTerminalIndex = React.useRef(2);
+  const webMcpPreview = React.useRef<DisplayHandle | null>(null);
   const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
 
   // One machine sends one surface: the one the person holding it is looking
@@ -98,22 +106,22 @@ export const App: React.FC = () => {
   // computer with a screen and a shell stacked in one column, with nothing
   // saying which of them the other person is using.
   const presenting = surface.status === "running" ? surface.activePrimary : null;
+  const sharingLink = networkSession.partner?.link ?? null;
   const terminalSharing = useTerminalPublisher(
     host,
-    peer.link,
+    sharingLink,
     terminals.find((terminal) => terminal.id === activeTerminalId)?.path,
     presenting === "terminal",
   );
   const sharingScreen = useFramebufferPublisher(
     host,
-    peer.link,
+    sharingLink,
     presenting === "framebuffer",
   );
   // Replication first: a viewer running a replica is still a viewer, and the
   // handover must not offer that replica as a second machine to take.
-  const replication = useMachineReplication(host, peer.link);
-  const handover = useMachineHandover(host, peer.link, replication.replicating);
-  const names = usePeerNickname(peer.link);
+  const replication = useMachineReplication(host, sharingLink);
+  const handover = useMachineHandover(host, sharingLink, replication.replicating);
 
   const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
   React.useEffect(() => {
@@ -127,11 +135,42 @@ export const App: React.FC = () => {
   const desc = host.getBootDescriptor();
   const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
 
+  // Keep the machine and the address bar in agreement across back/forward.
+  //
+  // Gallery launches now use `pushState` instead of navigating, so the browser
+  // no longer reloads on back/forward — it just fires `popstate` and changes
+  // the URL underneath us. Without this the address bar would name a machine
+  // that is not running, which is exactly the kind of lie the platform
+  // contract forbids.
+  //
+  // KNOWN LIMITATION: this reloads rather than booting the popped descriptor
+  // in place, so back/forward is still a real navigation and still leaks one
+  // machine's workers. That is a single user action rather than the
+  // accumulating switch loop this change fixes, and reloading is what
+  // back/forward already did before. Booting the popped URL in place needs a
+  // URL-to-descriptor path that also handles `#k1=` links and protected
+  // candidate mode; see the PR for why that is deferred.
+  React.useEffect(() => {
+    const onPopState = () => {
+      window.location.reload();
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
   React.useEffect(
     () => host.subscribeAudioState((state) => {
       setAudioState(state);
       if (state === "running") setAudioError(null);
     }),
+    [host],
+  );
+
+  // Whether any guest in this machine has opened the audio device. Separate
+  // from the sink's state: it is what tells a real audio failure apart from a
+  // sink nothing ever asked for.
+  React.useEffect(
+    () => host.subscribeAudioActivity(setAudioActive),
     [host],
   );
 
@@ -190,16 +229,8 @@ export const App: React.FC = () => {
     setDemoDockControls(null);
     setDemoGuidePopup(null);
     setInternalsOpen(false);
-    setNetworkOpen(false);
     setThemeOpen(false);
   }, [desc.id]);
-
-  // The popup exists to buy a connection. Once there is one it is covering the
-  // machine it was opened to share, so it gets out of the way; the Network
-  // button stays lit and reopens it for the controls that outlive the codes.
-  React.useEffect(() => {
-    if (peer.link) setNetworkOpen(false);
-  }, [peer.link]);
 
   const closeDockPane = React.useCallback(() => {
     setDockPane(null);
@@ -208,7 +239,6 @@ export const App: React.FC = () => {
   const selectDockPane = React.useCallback((pane: DockPaneId | null) => {
     setInternalsOpen(false);
     setDemoGuideOpen(false);
-    setNetworkOpen(false);
     setThemeOpen(false);
     setDockPane((current) => current === pane ? null : pane);
   }, []);
@@ -216,7 +246,6 @@ export const App: React.FC = () => {
   const selectMachineView = React.useCallback((view: DockViewId) => {
     setDockPane(null);
     setInternalsOpen(false);
-    setNetworkOpen(false);
     setThemeOpen(false);
     surface.chooseView(view);
   }, [surface]);
@@ -225,7 +254,6 @@ export const App: React.FC = () => {
     if (!demoGuide) return;
     setDockPane(null);
     setInternalsOpen(false);
-    setNetworkOpen(false);
     setThemeOpen(false);
     setDemoGuideOpen((open) => !open);
   }, [demoGuide]);
@@ -234,24 +262,14 @@ export const App: React.FC = () => {
     if (!surface.canUseInternals) return;
     setDockPane(null);
     setDemoGuideOpen(false);
-    setNetworkOpen(false);
     setThemeOpen(false);
     setInternalsOpen((open) => !open);
   }, [surface.canUseInternals]);
-
-  const toggleNetwork = React.useCallback(() => {
-    setDockPane(null);
-    setDemoGuideOpen(false);
-    setInternalsOpen(false);
-    setThemeOpen(false);
-    setNetworkOpen((open) => !open);
-  }, []);
 
   const toggleTheme = React.useCallback(() => {
     setDockPane(null);
     setDemoGuideOpen(false);
     setInternalsOpen(false);
-    setNetworkOpen(false);
     setThemeOpen((open) => !open);
   }, []);
 
@@ -261,41 +279,87 @@ export const App: React.FC = () => {
     });
   }, [host, closeDockPane]);
 
+  const launchGalleryItem = React.useCallback(async (item: GalleryItem) => {
+    let vfsImageUrl = item.vfsImageUrl;
+    if (!vfsImageUrl && item.resolveVfsImageUrl) {
+      try {
+        vfsImageUrl = await item.resolveVfsImageUrl();
+      } catch (err) {
+        // Applying the descriptor below lets the host surface the same
+        // missing-artifact error through its normal boot diagnostics.
+        console.warn("resolveVfsImageUrl failed:", err);
+      }
+    }
+    // Boot in place, then move the address bar to match.
+    //
+    // Launching used to call `location.assign` whenever the item carried a
+    // VFS image URL, which navigates. A navigation destroys this document
+    // without running the machine's teardown, and on JavaScriptCore a worker
+    // parked in `Atomics.wait` does not release its OS thread when the
+    // browser terminates it — so every gallery switch leaked the whole
+    // machine's worker set and the tab grew until it threw "Out of memory".
+    // Measured at roughly +2.4 leaked threads per navigation. See
+    // docs/jsc-terminate-atomics-wait-workaround.md and
+    // benchmarks/measure-machine-switch-leak.mjs.
+    //
+    // `applyBootDescriptor` awaits the previous kernel's `destroy()` while
+    // this document is still alive, which is what lets those workers exit on
+    // their own. The descriptor already carries the image URL
+    // (`descriptorFromGalleryItem` -> `mountsWithRootImageUrl`), so nothing
+    // about the `?vfs=` contract changes: `pushState` writes exactly the URL
+    // `location.assign` would have, and a cold load still reads it from
+    // `location.search`.
+    const next = descriptorFromGalleryItem(
+      vfsImageUrl ? { ...item, vfsImageUrl } : item,
+      host.getBootDescriptor(),
+    );
+    await host.applyBootDescriptor(next);
+    if (vfsImageUrl) {
+      // WHY after the boot: if composition fails, applyBootDescriptor throws
+      // and the address bar keeps naming the machine that is actually
+      // loaded, rather than one that never booted.
+      const url = galleryItemUrl({ ...item, vfsImageUrl });
+      if (url !== window.location.href) {
+        window.history.pushState(null, "", url);
+      }
+    }
+    closeDockPane();
+  }, [host, closeDockPane]);
+
   const onLaunchGalleryItem = React.useCallback((item: GalleryItem) => {
-    void (async () => {
-      let vfsImageUrl = item.vfsImageUrl;
-      if (!vfsImageUrl && item.resolveVfsImageUrl) {
-        try {
-          vfsImageUrl = await item.resolveVfsImageUrl();
-        } catch (err) {
-          // Applying the descriptor below lets the host surface the same
-          // missing-artifact error through its normal boot diagnostics.
-          console.warn("resolveVfsImageUrl failed:", err);
-        }
-      }
-      const launched = vfsImageUrl ? { ...item, vfsImageUrl } : item;
-      // A connected computer boots in place. Navigating would close the peer
-      // connection this document holds, and the two people would have to
-      // exchange invite codes again to get it back.
-      if (vfsImageUrl && peer.link === null) {
-        navigateToGalleryItemUrl(launched);
-        return;
-      }
+    void launchGalleryItem(item).catch((err) => console.warn("applyBootDescriptor failed:", err));
+  }, [launchGalleryItem]);
 
-      const next = descriptorFromGalleryItem(launched, host.getBootDescriptor());
-      await host.applyBootDescriptor(next);
-      if (vfsImageUrl) replaceGalleryItemUrl(launched);
-      closeDockPane();
-    })().catch((err) => {
-      console.warn("applyBootDescriptor failed:", err);
-    });
-  }, [host, closeDockPane, peer.link]);
-
-  const onAddTerminal = React.useCallback(() => {
+  const createTerminal = React.useCallback((activate: boolean) => {
     const terminal = createShellTerminal(nextTerminalIndex.current++);
     setTerminals((prev) => [...prev, terminal]);
-    setActiveTerminalId(terminal.id);
+    if (activate) setActiveTerminalId(terminal.id);
+    return terminal;
   }, []);
+
+  const onAddTerminal = React.useCallback(() => { createTerminal(true); }, [createTerminal]);
+
+  useWebMcp({
+    host, terminals, activeTerminalId,
+    createTerminal: (activate) => {
+      let terminal!: ShellTerminal;
+      flushSync(() => {
+        terminal = createTerminal(activate);
+        if (activate) selectMachineView("terminal");
+      });
+      return terminal;
+    },
+    selectTerminal: (id) => {
+      flushSync(() => { setActiveTerminalId(id); selectMachineView("terminal"); });
+    },
+    launch: launchGalleryItem,
+    navigatePreview: (path) => {
+      if (!webMcpPreview.current) return false;
+      webMcpPreview.current.navigate(path);
+      selectMachineView("demo");
+      return true;
+    },
+  });
 
   const onRemoveTerminalId = React.useCallback((id: string) => {
     const removedIndex = terminals.findIndex((terminal) => terminal.id === id);
@@ -310,18 +374,6 @@ export const App: React.FC = () => {
   }, [terminals]);
 
   const isEmpty = surface.status === "idle";
-  // Only in a pair. A computer on its own is neither, and one machine with
-  // one person at it needs no word for that.
-  const pairRole =
-    peer.link === null
-      ? null
-      : isEmpty || replication.replicating
-        ? "viewer"
-        : "user";
-  // A name only for someone you are watching: on your own dock you know who
-  // you are, so the user's badge keeps the role word, and the other person's
-  // name replaces only "Viewer". Null falls back to the role words.
-  const pairRoleName = pairRole === "viewer" ? names.peerNickname : null;
   const dockActiveView: DockViewId | null = !isEmpty && surface.activeView !== "internals"
     ? surface.activeView
     : null;
@@ -392,164 +444,182 @@ export const App: React.FC = () => {
       onLaunchItem={onLaunchGalleryItem}
       onBrowseAll={() => setDockPane("gallery")}
       onApplyDescriptor={applyDescriptor}
-      peerNote={peer.link
+      peerNote={sharingLink
         ? handover.handedOver
           ? "You handed this machine over. It is starting on the other computer."
           : "Connected. Waiting for the other computer to share a screen."
         : null}
-      watching={peer.link !== null}
+      watching={sharingLink !== null}
     />
   );
 
   return (
-    <div className={appClassName} style={appStyle} data-audio-state={audioState}>
-      <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
-        {(isEmpty || handover.taking || replication.joining) && peer.link ? (
-          // While a machine is arriving, this pane stays up over the boot that
-          // is running behind it. `taking` ends when `adoptMachine` resolves,
-          // and `joining` when `replicateMachine` does — both after the
-          // checkpoint has restored, so the swap happens when there is a live
-          // screen to swap to.
-          <SharedMachine
-            link={peer.link}
-            moving={moving}
-            held={held}
-            idle={emptyState}
-          />
-        ) : isEmpty ? (
-          emptyState
-        ) : (
-          <MachineView
-            surface={surface}
-            demoGuideOpen={demoGuideOpen}
-            onDemoGuideOpenChange={setDemoGuideOpen}
-            onDemoDockControlsChange={setDemoDockControls}
-            onDemoGuidePopupChange={setDemoGuidePopup}
-            internalsTab={internalsTab}
-            terminals={terminals}
-            activeTerminalId={activeTerminalId}
-            onActiveTerminalId={setActiveTerminalId}
-            onAddTerminal={onAddTerminal}
-            onPreviewPathChange={
-              replication.publishing ? replication.navigation.publish : undefined
-            }
-            previewViewerPath={
-              replication.replicating
-                ? replication.navigation.viewerPath
-                : undefined
-            }
-            onPreviewCursorChange={
-              replication.publishing ? replication.cursor.publish : undefined
-            }
-            previewViewerCursor={
-              replication.replicating ? replication.cursor.viewerCursor : null
-            }
-            onPreviewScrollChange={
-              replication.publishing ? replication.scroll.publish : undefined
-            }
-            previewViewerScroll={
-              replication.replicating ? replication.scroll.viewerScroll : null
-            }
-            previewReloadToken={previewReloadToken}
+    <div className={appClassName} style={appStyle} data-audio-state={audioState} data-audio-active={audioActive ? "true" : "false"}>
+      <div
+        data-machine-content
+        {...(machineProgress === null ? {} : { inert: true })}
+      >
+        <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
+          {(isEmpty || handover.taking || replication.joining) && sharingLink ? (
+            // While a machine is arriving, this pane stays up over the boot
+            // that is running behind it. `taking` ends when `adoptMachine`
+            // resolves, and `joining` when `replicateMachine` does — both
+            // after the checkpoint has restored, so the swap happens when
+            // there is a live screen to swap to.
+            <SharedMachine
+              link={sharingLink}
+              moving={moving}
+              held={held}
+              idle={emptyState}
+            />
+          ) : isEmpty ? (
+            emptyState
+          ) : (
+            <MachineView
+              webMcpPreviewRef={webMcpPreview}
+              surface={surface}
+              demoGuideOpen={demoGuideOpen}
+              onDemoGuideOpenChange={setDemoGuideOpen}
+              onDemoDockControlsChange={setDemoDockControls}
+              onDemoGuidePopupChange={setDemoGuidePopup}
+              internalsTab={internalsTab}
+              terminals={terminals}
+              activeTerminalId={activeTerminalId}
+              onActiveTerminalId={setActiveTerminalId}
+              onAddTerminal={onAddTerminal}
+              onPreviewPathChange={
+                replication.publishing ? replication.navigation.publish : undefined
+              }
+              previewViewerPath={
+                replication.replicating
+                  ? replication.navigation.viewerPath
+                  : undefined
+              }
+              onPreviewCursorChange={
+                replication.publishing ? replication.cursor.publish : undefined
+              }
+              previewViewerCursor={
+                replication.replicating ? replication.cursor.viewerCursor : null
+              }
+              onPreviewScrollChange={
+                replication.publishing ? replication.scroll.publish : undefined
+              }
+              previewViewerScroll={
+                replication.replicating ? replication.scroll.viewerScroll : null
+              }
+              previewReloadToken={previewReloadToken}
+            />
+          )}
+        </main>
+
+        {dockPane && meta && (
+          <>
+            <div
+              className="kdock-pane-dismiss-layer"
+              aria-hidden="true"
+              onPointerDown={closeDockPane}
+            />
+            <DockPane
+              pane={dockPane}
+              title={meta.title}
+              subtitle={meta.subtitle}
+              onClose={closeDockPane}
+            >
+              {dockPane === "gallery" && (
+                <Gallery
+                  compact
+                  onLaunch={onLaunchGalleryItem}
+                />
+              )}
+            </DockPane>
+          </>
+        )}
+
+        <LazyDownloadToasts downloads={lazyDownloads} />
+        {surface.status === "running" && audioActive && audioState !== "running" && (
+          <AudioStatusToast
+            state={audioState}
+            error={audioError}
+            onEnable={activateAudio}
           />
         )}
-      </main>
 
-      {dockPane && meta && (
-        <>
-          <div
-            className="kdock-pane-dismiss-layer"
-            aria-hidden="true"
-            onPointerDown={closeDockPane}
-          />
-          <DockPane
-            pane={dockPane}
-            title={meta.title}
-            subtitle={meta.subtitle}
-            onClose={closeDockPane}
-          >
-            {dockPane === "gallery" && (
-              <Gallery
-                compact
-                onLaunch={onLaunchGalleryItem}
+        {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
+
+        {networkSession.open && (
+          <NetworkPanel
+            session={networkSession}
+            running={surface.status === "running"}
+            sharing={
+              <SharingSection
+                session={networkSession}
+                sharingTerminal={terminalSharing.sharing}
+                sharingScreen={sharingScreen}
+                handover={handover}
+                canTakeMachine={
+                  (isEmpty || replication.replicating)
+                  && !replication.joining
+                  && handover.peerHasMachine
+                }
+                hasMachine={!isEmpty}
+                presenting={presenting}
+                replication={replication}
               />
-            )}
-          </DockPane>
-        </>
-      )}
-
-      <LazyDownloadToasts downloads={lazyDownloads} />
-      {surface.status === "running" && audioState !== "running" && (
-        <AudioStatusToast
-          state={audioState}
-          error={audioError}
-          onEnable={activateAudio}
-        />
-      )}
-
-      {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
-
-      <Dock
-        activePane={dockPane}
-        activeView={dockActiveView}
-        viewControls={viewControls}
-        guidePopup={demoGuidePopup}
-        internalsPopup={internalsPopup}
-        networkPopup={
-          <NetworkPopup
-            session={peer}
-            sharingTerminal={terminalSharing.sharing}
-            sharingScreen={sharingScreen}
-            handover={handover}
-            canTakeMachine={
-              (isEmpty || replication.replicating)
-              && !replication.joining
-              && handover.peerHasMachine
             }
-            hasMachine={!isEmpty}
-            presenting={presenting}
-            replication={replication}
-            nickname={names.nickname}
-            onNicknameChange={names.setNickname}
           />
-        }
-        themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
-        guideAvailable={!isEmpty && demoGuide !== null}
-        guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
-        internalsAvailable={!isEmpty && surface.canUseInternals}
-        internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
-        networkOpen={networkOpen}
-        networkConnected={peer.link !== null}
-        role={pairRole}
-        roleName={pairRoleName}
-        themeOpen={themeOpen}
-        shareAvailable={!isEmpty}
-        // A machine on its way here is booting, whatever the surface it is
-        // replacing happens to be doing. During a take-over the departing
-        // replica still reports "running", and showing that beside a role
-        // that already says "user" would claim a typeable machine before
-        // there is one: the arriving image boots and restores first, and the
-        // dock says "Running" when that machine is the one running.
-        status={handover.taking || replication.joining ? "booting" : surface.status}
-        machineTitle={isEmpty ? "Kandelo" : desc.title}
-        viewDisabled={{
-          demo: !surface.canOpenDemo,
-          terminal: !surface.canUseTerminal,
-        }}
-        onSelectPane={selectDockPane}
-        onSelectView={selectMachineView}
-        onToggleGuide={toggleDemoGuide}
-        onToggleInternals={toggleInternals}
-        onToggleNetwork={toggleNetwork}
-        onToggleTheme={toggleTheme}
-        onOpenShare={() => setShareOpen(true)}
-        onCloseGuide={() => setDemoGuideOpen(false)}
-        onCloseInternals={() => setInternalsOpen(false)}
-        onCloseNetwork={() => setNetworkOpen(false)}
-        onCloseTheme={() => setThemeOpen(false)}
-        onHeightChange={setDockHeight}
-        onLayoutChange={onDockLayoutChange}
-      />
+        )}
+
+        <Dock
+          networkPhase={networkSession.state.phase}
+          onOpenNetwork={() => networkSession.setOpen(true)}
+          activePane={dockPane}
+          activeView={dockActiveView}
+          viewControls={viewControls}
+          guidePopup={demoGuidePopup}
+          internalsPopup={internalsPopup}
+          themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
+          guideAvailable={!isEmpty && demoGuide !== null}
+          guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
+          internalsAvailable={!isEmpty && surface.canUseInternals}
+          internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
+          // Only in a pair. A computer on its own is neither, and one machine
+          // with one person at it needs no word for that.
+          role={
+            sharingLink === null
+              ? null
+              : isEmpty || replication.replicating
+                ? "viewer"
+                : "user"
+          }
+          themeOpen={themeOpen}
+          shareAvailable={!isEmpty}
+          // A machine on its way here is booting, whatever the surface it is
+          // replacing happens to be doing. During a take-over the departing
+          // replica still reports "running", and showing that beside a role
+          // that already says "user" would claim a typeable machine before
+          // there is one: the arriving image boots and restores first, and the
+          // dock says "Running" when that machine is the one running.
+          status={handover.taking || replication.joining ? "booting" : surface.status}
+          machineTitle={isEmpty ? "Kandelo" : desc.title}
+          viewDisabled={{
+            demo: !surface.canOpenDemo,
+            terminal: !surface.canUseTerminal,
+          }}
+          onSelectPane={selectDockPane}
+          onSelectView={selectMachineView}
+          onToggleGuide={toggleDemoGuide}
+          onToggleInternals={toggleInternals}
+          onToggleTheme={toggleTheme}
+          onOpenShare={() => setShareOpen(true)}
+          onCloseGuide={() => setDemoGuideOpen(false)}
+          onCloseInternals={() => setInternalsOpen(false)}
+          onCloseTheme={() => setThemeOpen(false)}
+          onHeightChange={setDockHeight}
+          onLayoutChange={onDockLayoutChange}
+        />
+      </div>
+
+      <MachineProgressOverlay />
     </div>
   );
 };
@@ -566,7 +636,7 @@ const AudioStatusToast: React.FC<{
       ? "This browser does not provide the required Web Audio output."
       : state === "error"
       ? "The browser audio sink could not be started."
-      : "Browser policy pauses audio until you interact with this machine."
+      : "Browser policy pauses audio until you interact with this computer."
   );
   return (
     <aside className="kdownload-toasts kpcm-audio-status" aria-label="Audio status" aria-live="polite">

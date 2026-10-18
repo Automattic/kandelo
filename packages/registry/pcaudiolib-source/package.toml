@@ -1,0 +1,12 @@
+kind = "source"
+name = "pcaudiolib-source"
+version = "1.3"
+
+[source]
+provider = "archive"
+url = "https://github.com/espeak-ng/pcaudiolib/releases/download/1.3/pcaudiolib-1.3.tar.gz"
+sha256 = "e8bd15f460ea171ccd0769ea432e188532a7fb27fa73ec2d526088a082abaaad"
+
+[license]
+spdx = "GPL-3.0-or-later"
+url = "https://github.com/espeak-ng/pcaudiolib/blob/1.3/COPYING"

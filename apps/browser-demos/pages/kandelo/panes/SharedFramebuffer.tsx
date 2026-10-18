@@ -27,7 +27,7 @@
 import * as React from "react";
 import { FramebufferRegistry, attachCanvas } from "@host/framebuffer";
 import { LocalFramebufferMirror } from "@host/migration/mirror-local";
-import type { PeerLink } from "../../../lib/peer-link";
+import type { PeerLink } from "../../../lib/sharing-peer";
 import { useFittedCanvasStyle } from "./canvasFit";
 
 /** fbDOOM's 640×400 screen, used until the peer announces its geometry. */

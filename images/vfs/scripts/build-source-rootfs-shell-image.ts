@@ -3,14 +3,17 @@ import { lstatSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { ABI_VERSION } from "../../../host/src/generated/abi";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { ABI_VERSION, ERRNO } from "../../../host/src/generated/abi";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
+import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   MAX_KANDELO_DEMO_CONFIG_BYTES,
   parseKandeloDemoConfig,
-  resolveDemoPresentation,
+  resolveDemoDockActions,
+  resolveDemoInit,
   validateKandeloDemoConfig,
+  type DemoDockMenuEntryConfig,
   type KandeloDemoConfig,
 } from "../../../web-libs/kandelo-session/src/demo-config";
 import {
@@ -25,6 +28,7 @@ import {
   saveImage,
   sourceDateEpochMilliseconds,
   writeVfsBinary,
+  writeVfsFile,
 } from "./vfs-image-helpers";
 import { SHELL_LAZY_BINARY_SPECS } from "../lib/init/shell-binaries";
 import {
@@ -37,15 +41,40 @@ import {
 } from "./source-rootfs-shell-overlay";
 
 const REGULAR_FILE_MODE = 0o100000;
+const DIRECTORY_MODE = 0o040000;
 const SYMBOLIC_LINK_MODE = 0o120000;
 const FILE_TYPE_MASK = 0o170000;
 const EXECUTE_BITS = 0o111;
 
+// WHY: the SDL2 GLSL playground's shader presets are repository-owned source
+// text, not a resolver-published package artifact — same status as the demo
+// config JSON above. Read directly from the tracked programs/ tree rather
+// than through a resolver dependency.
+const SDL2_PRESET_ROOT = fileURLToPath(
+  new URL("../../../programs/sdl2/presets", import.meta.url),
+);
+const SDL2_SHADER_PRESETS: ReadonlyArray<{
+  guestPath: string;
+  sourcePath: string;
+}> = [
+  { guestPath: "image/plasma.frag", sourcePath: "image/plasma.frag" },
+  { guestPath: "image/audio_bars.frag", sourcePath: "image/audio_bars.frag" },
+  { guestPath: "image/tunnelwisp.frag", sourcePath: "image/tunnelwisp.frag" },
+  { guestPath: "sound/tunnelwisp.frag", sourcePath: "sound/tunnelwisp.frag" },
+  { guestPath: "sound/sine.frag", sourcePath: "sound/sine.frag" },
+  { guestPath: "sound/fm_bell.frag", sourcePath: "sound/fm_bell.frag" },
+  { guestPath: "sound/noise_sweep.frag", sourcePath: "sound/noise_sweep.frag" },
+  { guestPath: "sound/chord.frag", sourcePath: "sound/chord.frag" },
+];
+
 export interface SourceRootfsShellInputs {
   rootfsPath: string;
   bashPath: string;
-  fbdoomPath: string;
-  modesetPath: string;
+  wldesktopPath: string;
+  omarchydesktopPath: string;
+  desktopDataPath: string;
+  libinputQuirksPath: string;
+  espeakNgDataPath: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
   outFile: string;
@@ -53,7 +82,26 @@ export interface SourceRootfsShellInputs {
   sourceDateEpoch?: string;
 }
 
-const REQUIRED_BASH_ALIASES = ["/bin/bash", "/usr/bin/bash"] as const;
+// Every image binds bash as /bin/sh (docs/package-management.md); check
+// the sh aliases, not only the bash names, so a regression cannot pass.
+const REQUIRED_BASH_ALIASES = [
+  "/bin/bash",
+  "/usr/bin/bash",
+  "/bin/sh",
+  "/usr/bin/sh",
+] as const;
+
+/**
+ * The only Wasm programs this composer may write eagerly, together with every
+ * hard link to them (Bash is also /bin/sh). Bash is the account shell: login
+ * execs it on every boot, before any machine could benefit from deferring it.
+ * Every other program is a lazy file (SHELL_LAZY_BINARY_SPECS).
+ * WHY enforce it: each eager byte is downloaded by every visitor before the
+ * machine boots, and eager programs accumulate one convenient addition at a
+ * time — 2.4 MB of compressed image had grown to 4.1 MB this way.
+ */
+const EAGER_SHELL_PROGRAMS: ReadonlySet<string> = new Set(["/usr/bin/bash"]);
+const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d] as const;
 export const SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES = [
   ...readSourceRootfsShellResolverDependencies(),
 ] as const;
@@ -116,6 +164,48 @@ function readRegularInput(path: string, label: string): Uint8Array {
   return new Uint8Array(readFileSync(path));
 }
 
+/**
+ * Unpack a package's data zip under `root`, as ordinary files (0644).
+ *
+ * For data a program opens from a compiled-in directory by plain open/read —
+ * espeak-ng's voices, libinput's device quirks — rather than through the
+ * range-mapped reads a lazy archive mount serves.
+ */
+function unpackDataZip(fs: KandeloImageFs, root: string, zipBytes: Uint8Array): void {
+  ensureDirRecursive(fs, root);
+  for (const entry of parseZipCentralDirectory(zipBytes)) {
+    if (entry.isDirectory) continue;
+    const target = `${root}/${entry.fileName}`;
+    ensureDirRecursive(fs, target.slice(0, target.lastIndexOf("/")));
+    writeVfsBinary(fs, target, extractZipEntry(zipBytes, entry), 0o644);
+  }
+}
+
+/**
+ * Bake the SDL2 GLSL playground's shader presets into the image.
+ *
+ * The playground's source-resolution chain is
+ *   1. /home/shaders/<mode>/current.frag       (user-editable)
+ *   2. /usr/share/shaders/<mode>/<preset>.frag (preset, baked here)
+ *   3. built-in fallback compiled into main.c
+ * tunnelwisp is the boot default for both modes; the others are loadable
+ * through the editor's Ctrl+L preset browser.
+ */
+function writeSdl2ShaderPresets(fs: KandeloImageFs): void {
+  ensureDirRecursive(fs, "/usr/share/shaders/image");
+  ensureDirRecursive(fs, "/usr/share/shaders/sound");
+  for (const preset of SDL2_SHADER_PRESETS) {
+    const source = decodeUtf8(
+      readRegularInput(
+        join(SDL2_PRESET_ROOT, preset.sourcePath),
+        `sdl2 shader preset ${preset.sourcePath}`,
+      ),
+      `sdl2 shader preset ${preset.sourcePath}`,
+    );
+    writeVfsFile(fs, `/usr/share/shaders/${preset.guestPath}`, source);
+  }
+}
+
 function decodeUtf8(bytes: Uint8Array, label: string): string {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -138,6 +228,10 @@ function loadDemoConfig(path: string, label: string): KandeloDemoConfig {
 }
 
 const SOURCE_ROOTFS_DEMO_COMMANDS = {
+  love: {
+    executable: "/usr/local/bin/love",
+    command: "/usr/local/bin/love /usr/share/love/examples/pong",
+  },
   doom: {
     executable: "/usr/local/bin/fbdoom",
     command: "/usr/local/bin/fbdoom -iwad /doom1.wad",
@@ -146,7 +240,463 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
     executable: "/usr/local/bin/modeset",
     command: "/usr/local/bin/modeset",
   },
+  quake: {
+    executable: "/usr/local/bin/quake",
+    command: "/usr/local/bin/quake",
+  },
+  scummvm: {
+    executable: "/usr/local/bin/scummvm",
+    command: "/usr/local/bin/scummvm",
+  },
+  "ffmpeg-fbdev": {
+    executable: "/usr/bin/ffmpeg",
+    command: "/usr/bin/ffmpeg -nostdin -re -f lavfi -i testsrc=duration=60:size=320x240:rate=10 -f lavfi -i sine=duration=60 -map 0:v -pix_fmt bgra -f fbdev /dev/fb0 -map 1:a -f oss /dev/dsp",
+  },
+  ffplay: {
+    executable: "/usr/bin/ffplay",
+    command: "/usr/bin/ffplay -autoexit -f lavfi 'testsrc=duration=60:size=320x240:rate=10[out0];sine=duration=60[out1]'",
+  },
 } as const;
+
+/**
+ * The Quake software demo's launch wrapper, written eagerly to
+ * /usr/local/bin/quake. It extracts id1/pak0.pak from id's original shareware
+ * archive on first launch using the image's own lazy tools (unzip -> lha), then
+ * execs the lazy engine at /usr/bin/quake with the shareware basedir. Using an
+ * absolute engine path avoids recursing back into this wrapper via PATH. The
+ * step is idempotent and surfaces failure honestly; the engine then reports its
+ * own missing-data error rather than faking success.
+ */
+const QUAKE_LAUNCH_SCRIPT = `#!/bin/sh
+set -e
+BASE=/usr/share/quake
+PAK="$BASE/id1/pak0.pak"
+ZIP="$BASE/quake106.zip"
+if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
+    echo "quake: extracting shareware data from quake106.zip..." >&2
+    mkdir -p "$BASE/id1"
+    cd "$BASE"
+    unzip -o "$ZIP" >/dev/null
+    lha xf resource.1 >/dev/null 2>&1 || true
+    src="$(find "$BASE" -iname 'pak0.pak' 2>/dev/null | head -n1)"
+    if [ -n "$src" ] && [ "$src" != "$PAK" ]; then cp "$src" "$PAK"; fi
+    if [ -f "$PAK" ]; then
+        echo "quake: extracted id1/pak0.pak" >&2
+    else
+        echo "quake: extraction failed; no pak0.pak produced" >&2
+    fi
+fi
+exec /usr/bin/quake -basedir "$BASE" "$@"
+`;
+
+/**
+ * The ScummVM demo's launch wrapper, written eagerly to /usr/local/bin/scummvm.
+ * It execs the lazy engine at /usr/bin/scummvm (an absolute path, so PATH
+ * cannot recurse into this wrapper) after two pieces of setup:
+ *
+ * - SDL's display follows where it is launched. Inside a Wayland session (a
+ *   compositor's socket at $XDG_RUNTIME_DIR/wayland-0, e.g. from Omarchy's
+ *   launcher or a terminal on that desktop) SDL picks its Wayland backend and
+ *   ScummVM opens as a window. On a bare display (the ScummVM machine) the
+ *   video driver is pinned to KMSDRM, and because Kandelo has no libudev,
+ *   SDL's evdev layer only finds the kernel's input devices when
+ *   SDL_EVDEV_DEVICES lists them (class 2 = keyboard, 1 = mouse). Audio is
+ *   OSS either way.
+ * - The config lives in the user's home, because ScummVM rewrites it whenever
+ *   the user adds a game or changes an option. The first launch seeds it so
+ *   the launcher's "Add Game" browser opens in the upload directory.
+ *   gui_scale is ScummVM's own user multiplier and stays at its default of
+ *   100%; the display's factor comes from SDL's display DPI, which SDL
+ *   computes from the physical size the kernel reports on the connector
+ *   (KMSDRM) or the compositor reports on wl_output (Wayland).
+ *
+ * It then stays alive beside the engine to unpack uploads. "Load game data"
+ * writes one archive to $GAMES/upload.zip while ScummVM keeps running (the
+ * user keeps their place in the launcher), and nothing else can run the
+ * extraction: the machine's terminal is ScummVM's. The wrapper polls for the
+ * archive — inotify is unimplemented (ENOSYS), and polling is what a watcher
+ * falls back to — unzips it in place, and removes it so the peak filesystem
+ * cost is one archive plus its contents. The host writes the file in one
+ * kernel-worker task, so the wrapper never sees a partial archive.
+ *
+ * Because the engine runs as an asynchronous list in a non-interactive shell,
+ * POSIX has it start with SIGINT and SIGQUIT ignored, so Ctrl+C at the
+ * machine's terminal (and the ScummVM machine's dock action, which sends
+ * exactly that) would kill only this wrapper and orphan an engine still
+ * holding the display. The trap forwards the interrupt as SIGTERM, which the
+ * engine does not ignore (SDL turns it into a normal quit), and waits for it,
+ * so the shell prompt returns only once the display is free.
+ */
+const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
+set -e
+GAMES=/usr/share/scummvm-games
+INI="\${HOME:-/home/maker}/scummvm.ini"
+if [ ! -f "$INI" ]; then
+    printf '[scummvm]\\ngui_scale=100\\nbrowser_lastpath=%s\\n' "$GAMES" > "$INI"
+fi
+export SDL_AUDIODRIVER=dsp
+if [ -z "\${XDG_RUNTIME_DIR:-}" ] || [ ! -S "$XDG_RUNTIME_DIR/\${WAYLAND_DISPLAY:-wayland-0}" ]; then
+    export SDL_VIDEODRIVER=kmsdrm
+    export SDL_EVDEV_DEVICES=2:/dev/input/event0,1:/dev/input/event1
+fi
+/usr/bin/scummvm --config="$INI" "$@" &
+engine=$!
+trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; exit 130' INT TERM
+set +e
+while kill -0 "$engine" 2>/dev/null; do
+    if [ -f "$GAMES/upload.zip" ]; then
+        echo "scummvm: extracting uploaded game data..." >&2
+        if unzip -o -q "$GAMES/upload.zip" -d "$GAMES"; then
+            echo "scummvm: extracted into $GAMES; add it from the launcher" >&2
+        else
+            echo "scummvm: could not extract the upload (not a zip archive?)" >&2
+        fi
+        rm -f "$GAMES/upload.zip"
+    fi
+    sleep 1
+done
+wait "$engine"
+`;
+
+/**
+ * The freeware games the ScummVM machine can fetch: one tracked data file,
+ * repository-owned like the demo config and the SDL2 presets, read directly.
+ *
+ * The rights holders made these games freeware and the ScummVM project
+ * distributes them. No package carries one: `scummvm-play` downloads the
+ * archive from inside the machine the first time it is asked to, through
+ * the guest's ordinary HTTPS path (in a browser, the machine's CORS proxy,
+ * because downloads.scummvm.org grants no CORS). The file therefore lands in
+ * the image as the catalog that script reads, and the ScummVM profile's dock
+ * menu in /etc/kandelo/demo.json must list exactly its games
+ * (`requireScummvmFreewareMenu`), so a menu entry can never name a game the
+ * machine cannot fetch, nor a fetchable game go missing from the menu.
+ *
+ * A game the catalog knows but this build cannot run is `unavailable`, with
+ * the reason: the menu shows it disabled, so the gap stays visible.
+ */
+const SCUMMVM_FREEWARE_CATALOG_SOURCE = fileURLToPath(
+  new URL("../../../packages/registry/shell/scummvm-freeware-games.json", import.meta.url),
+);
+const SCUMMVM_PLAY_CATALOG = "/usr/local/share/scummvm-play/games.tsv";
+const SCUMMVM_PLAY_COMMAND = "/usr/local/bin/scummvm-play";
+/** The dock action whose menu lists the catalog. */
+const SCUMMVM_FREEWARE_MENU_ACTION = "freeware";
+
+export interface ScummvmFreewareGame {
+  id: string;
+  title: string;
+  /** The engine plugin the game loads (lib<engine>.so). */
+  engine: string;
+  url: string;
+  /** The digest ScummVM publishes beside the archive (<archive>.sha256). */
+  sha256: string;
+  /**
+   * The archive's size. scummvm-play reports progress against it: guest
+   * downloads reach the program as chunked responses, so curl itself never
+   * learns the total.
+   */
+  bytes: number;
+}
+
+export interface ScummvmFreewareCatalog {
+  games: ScummvmFreewareGame[];
+  unavailable: Array<{ id: string; title: string; reason: string }>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function loadScummvmFreewareCatalog(
+  path = SCUMMVM_FREEWARE_CATALOG_SOURCE,
+): ScummvmFreewareCatalog {
+  const value: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const fail = (message: string): never => {
+    throw new Error(`ScummVM freeware catalog ${path}: ${message}`);
+  };
+  if (!isRecord(value) || value.version !== 1) fail("must be version 1");
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.games) || !Array.isArray(record.unavailable)) {
+    fail("must list games and unavailable");
+  }
+  const ids = new Set<string>();
+  const id = (entry: Record<string, unknown>): string => {
+    const value = entry.id;
+    // An id is a scummvm-play argument and a directory name.
+    if (typeof value !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
+      fail(`invalid id ${JSON.stringify(value)}`);
+    }
+    if (ids.has(value as string)) fail(`duplicate id ${value}`);
+    ids.add(value as string);
+    return value as string;
+  };
+  // Titles become one TSV field and a status line.
+  const text = (value: unknown, field: string): string =>
+    typeof value === "string" && value.length > 0 && !/[\t\r\n]/.test(value)
+      ? value
+      : fail(`${field} must be one line of text`);
+  const games = (record.games as unknown[]).map((entry): ScummvmFreewareGame => {
+    if (!isRecord(entry)) fail("every game must be an object");
+    const game = entry as Record<string, unknown>;
+    const gameId = id(game);
+    // The builder names no URL itself (nothing it composes is fetched at
+    // build time), so the catalog's are checked by their parts.
+    const url = typeof game.url === "string" && URL.canParse(game.url)
+      ? new URL(game.url)
+      : null;
+    if (
+      url === null
+      || url.protocol !== "https:"
+      || url.hostname !== "downloads.scummvm.org"
+      || !url.pathname.startsWith("/frs/")
+    ) {
+      fail(`${gameId} must download over HTTPS from the ScummVM project's /frs/ archive`);
+    }
+    if (typeof game.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(game.sha256)) {
+      fail(`${gameId} needs a lowercase hex SHA-256`);
+    }
+    if (!Number.isSafeInteger(game.bytes) || (game.bytes as number) <= 0) {
+      fail(`${gameId} needs its archive size in bytes`);
+    }
+    return {
+      id: gameId,
+      title: text(game.title, `${gameId}.title`),
+      engine: text(game.engine, `${gameId}.engine`),
+      url: game.url as string,
+      sha256: game.sha256 as string,
+      bytes: game.bytes as number,
+    };
+  });
+  const unavailable = (record.unavailable as unknown[]).map((entry) => {
+    if (!isRecord(entry)) fail("every unavailable game must be an object");
+    const game = entry as Record<string, unknown>;
+    const gameId = id(game);
+    return {
+      id: gameId,
+      title: text(game.title, `${gameId}.title`),
+      reason: text(game.reason, `${gameId}.reason`),
+    };
+  });
+  return { games, unavailable };
+}
+
+/** "69 MB", or "59 KB" below a megabyte: the menu's and the script's size. */
+export function formatDownloadSize(bytes: number): string {
+  return bytes >= 1_000_000
+    ? `${Math.round(bytes / 1_000_000)} MB`
+    : `${Math.max(1, Math.round(bytes / 1_000))} KB`;
+}
+
+/** The dock menu entries the catalog requires, in catalog order. */
+export function scummvmFreewareMenuEntries(
+  catalog: ScummvmFreewareCatalog,
+): DemoDockMenuEntryConfig[] {
+  return [
+    ...catalog.games.map((game) => ({
+      id: game.id,
+      label: game.title,
+      detail: formatDownloadSize(game.bytes),
+      restart: `${SCUMMVM_PLAY_COMMAND} ${game.id}`,
+    })),
+    ...catalog.unavailable.map((game) => ({
+      id: game.id,
+      label: game.title,
+      unavailable: game.reason,
+    })),
+  ];
+}
+
+/** One game per line: id, bytes, size label, SHA-256, URL, title. */
+function scummvmPlayCatalogTsv(catalog: ScummvmFreewareCatalog): string {
+  return catalog.games
+    .map((game) => [
+      game.id,
+      String(game.bytes),
+      formatDownloadSize(game.bytes),
+      game.sha256,
+      game.url,
+      game.title,
+    ].join("\t") + "\n")
+    .join("");
+}
+
+/**
+ * `/usr/local/bin/scummvm-play GAME`, the ScummVM machine's dock actions:
+ * fetch a catalog game, verify it, unpack it, and start it. `--list` prints
+ * the catalog, so the same games are a command away in the terminal.
+ *
+ * - Archives larger than the proxy's 100 MiB response limit start with
+ *   32 MiB ranges; smaller archives start with one request. On failure both
+ *   switch to 16 MiB ranges and keep every complete range. The download
+ *   runs in the background so the script can report progress against the
+ *   catalog's size, including the active attempt, and the trap stops it on
+ *   Ctrl+C:
+ *   a background job in a non-interactive shell ignores SIGINT, so the
+ *   dock's interrupt would otherwise leave curl running.
+ * - The SHA-256 makes a changed or truncated download a loud failure instead
+ *   of a game that half-starts. The archive is deleted once unpacked, so the
+ *   filesystem holds one copy, beside the game's own licence files.
+ * - ScummVM itself finds the game: `--add --recursive` runs only its
+ *   detection (compiled into the program, so no engine plugin loads) and
+ *   records each game it adds as a launcher target. One target starts
+ *   directly; a collection (the WAGE games) opens the launcher instead.
+ *   `.targets` is written last, so a session that stopped partway fetches
+ *   again rather than trusting a partial unpack.
+ *
+ * Every step announces itself as a `scummvm-play: ` line and the download
+ * as a `#### N%` line: the dock shows both while the display is dark.
+ */
+export const SCUMMVM_PLAY_SCRIPT = `#!/bin/sh
+set -e
+CATALOG=${SCUMMVM_PLAY_CATALOG}
+GAMES=/usr/share/scummvm-games
+TAB=$(printf '\\t')
+RANGE_LIMIT=$((100 * 1024 * 1024))
+RANGE_SIZE=$((32 * 1024 * 1024))
+FALLBACK_SIZE=$((16 * 1024 * 1024))
+MAX_ATTEMPTS=3
+say() { echo "scummvm-play: $*" >&2; }
+download() {
+    expected_status=$1
+    expected_bytes=$2
+    max_attempts=$3
+    shift 3
+    attempt=1
+    while [ "$attempt" -le "$max_attempts" ]; do
+        rm -f "$ZIP.part" "$ZIP.status"
+        curl -fsSL -o "$ZIP.part" -w '%{http_code}' "$@" "$URL" > "$ZIP.status" &
+        fetch=$!
+        trap 'kill "$fetch" 2>/dev/null; rm -f "$ZIP" "$ZIP.part" "$ZIP.status"; exit 130' INT TERM
+        while kill -0 "$fetch" 2>/dev/null; do
+            got=0
+            if [ -f "$ZIP" ]; then got=$(wc -c < "$ZIP"); fi
+            if [ -f "$ZIP.part" ]; then got=$((got + $(wc -c < "$ZIP.part"))); fi
+            percent=$((got * 100 / BYTES))
+            if [ "$percent" -gt 99 ]; then percent=99; fi
+            printf '#### %d%%\\r' "$percent" >&2
+            sleep 1
+        done
+        status=0
+        wait "$fetch" || status=$?
+        response=$(cat "$ZIP.status" 2>/dev/null || true)
+        received=0
+        if [ -f "$ZIP.part" ]; then received=$(wc -c < "$ZIP.part"); fi
+        if [ "$status" -eq 0 ] && [ "$response" = "$expected_status" ] &&
+           [ "$received" -eq "$expected_bytes" ]; then
+            if [ "$expected_status" = 206 ]; then
+                if ! cat "$ZIP.part" >> "$ZIP"; then return 1; fi
+            elif ! mv "$ZIP.part" "$ZIP"; then
+                return 1
+            fi
+            rm -f "$ZIP.part" "$ZIP.status"
+            trap - INT TERM
+            return 0
+        fi
+        rm -f "$ZIP.part" "$ZIP.status"
+        if [ "$expected_status" = 206 ] && [ "$response" = 200 ]; then
+            trap - INT TERM
+            return 2
+        fi
+        if [ "$attempt" -eq "$max_attempts" ]; then break; fi
+        attempt=$((attempt + 1))
+        say "Retrying download (attempt $attempt/$max_attempts)..."
+        sleep "$((attempt - 1))"
+    done
+    trap - INT TERM
+    return 1
+}
+download_ranges() {
+    chunk_size=$1
+    attempts=$2
+    : > "$ZIP"
+    offset=0
+    while [ "$offset" -lt "$BYTES" ]; do
+        end=$((offset + chunk_size - 1))
+        if [ "$end" -ge "$BYTES" ]; then end=$((BYTES - 1)); fi
+        if download 206 "$((end - offset + 1))" "$attempts" -r "$offset-$end"; then
+            offset=$((end + 1))
+        else
+            range_status=$?
+            if [ "$chunk_size" -eq "$FALLBACK_SIZE" ]; then return "$range_status"; fi
+            say "Retrying in 16 MiB ranges..."
+            chunk_size=$FALLBACK_SIZE
+            attempts=$MAX_ATTEMPTS
+        fi
+    done
+}
+if [ "\${1:-}" = "--list" ]; then
+    cut -f1,3,6 "$CATALOG"
+    exit 0
+fi
+case "\${1:-}" in
+    ""|*[!a-z0-9-]*)
+        echo "usage: scummvm-play GAME (scummvm-play --list shows the games)" >&2
+        exit 2
+        ;;
+esac
+LINE=$(grep "^$1$TAB" "$CATALOG" || true)
+if [ -z "$LINE" ]; then
+    say "No game called $1 (scummvm-play --list shows the games)"
+    exit 2
+fi
+IFS="$TAB" read -r ID BYTES SIZE SHA256 URL TITLE <<ROW
+$LINE
+ROW
+DIR="$GAMES/$ID"
+ZIP="$GAMES/$ID.zip"
+if [ ! -f "$DIR/.targets" ]; then
+    say "Downloading $TITLE ($SIZE) from downloads.scummvm.org..."
+    rm -f "$ZIP" "$ZIP.part" "$ZIP.status"
+    downloaded=0
+    if [ "$BYTES" -gt "$RANGE_LIMIT" ]; then
+        if download_ranges "$RANGE_SIZE" 1; then downloaded=1; fi
+    elif download 200 "$BYTES" 1; then
+        downloaded=1
+    else
+        say "Retrying in 16 MiB ranges..."
+        if download_ranges "$FALLBACK_SIZE" "$MAX_ATTEMPTS"; then
+            downloaded=1
+        elif [ "$?" -eq 2 ]; then
+            say "Range requests unavailable; retrying the full download..."
+            rm -f "$ZIP"
+            if download 200 "$BYTES" "$((MAX_ATTEMPTS - 1))"; then downloaded=1; fi
+        fi
+    fi
+    if [ "$downloaded" -eq 0 ]; then
+        rm -f "$ZIP" "$ZIP.part" "$ZIP.status"
+        say "Download failed"
+        exit 1
+    fi
+    rm -f "$ZIP.status"
+    printf '#### 100%%\\n' >&2
+    say "Verifying the download (SHA-256)..."
+    if ! echo "$SHA256  $ZIP" | sha256sum -c - >/dev/null 2>&1; then
+        rm -f "$ZIP"
+        say "Checksum mismatch; refusing to run the download"
+        exit 1
+    fi
+    say "Unpacking the game..."
+    rm -rf "$DIR"
+    mkdir -p "$DIR"
+    if ! unzip -o -q "$ZIP" -d "$DIR"; then
+        rm -rf "$ZIP" "$DIR"
+        say "Unpacking failed"
+        exit 1
+    fi
+    rm -f "$ZIP"
+    say "Adding it to ScummVM..."
+    /usr/local/bin/scummvm --add --recursive -p "$DIR" \\
+        | sed -n 's/^  Target: *//p' > "$DIR/.targets.partial"
+    mv "$DIR/.targets.partial" "$DIR/.targets"
+fi
+if [ "$(grep -c . "$DIR/.targets" || true)" = 1 ]; then
+    say "Starting $TITLE..."
+    exec /usr/local/bin/scummvm "$(cat "$DIR/.targets")"
+fi
+say "Opening the ScummVM launcher; $TITLE is in its game list"
+exec /usr/local/bin/scummvm
+`;
 
 export function composeSourceRootfsDemoConfig(
   basePath: string,
@@ -157,13 +707,20 @@ export function composeSourceRootfsDemoConfig(
     profileOverlayPath,
     "source-rootfs demo profile overlay",
   );
-  if (
-    overlay.presentation !== undefined ||
-    overlay.assets !== undefined ||
-    overlay.guide !== undefined
-  ) {
+  // Composition merges `profiles` and takes every other top-level field
+  // verbatim from the base, so anything else the overlay declares is silently
+  // discarded. Reject by ALLOW-LIST rather than by naming the block keys: an
+  // enumeration of known blocks rots the moment KandeloDemoConfig grows a key
+  // (it already missed `identity`, `runtime`, `init`, `web`, `display`, and
+  // `defaultProfile`), and a rotted guard is worse than none because it reads
+  // as protection.
+  const strayOverlayKeys = Object.keys(overlay)
+    .filter((key) => key !== "version" && key !== "profiles")
+    .sort();
+  if (strayOverlayKeys.length > 0) {
     throw new Error(
-      "source-rootfs demo profile overlay must contain only named profiles",
+      "source-rootfs demo profile overlay must contain only named profiles, "
+        + `but declares: ${strayOverlayKeys.join(", ")}`,
     );
   }
   const baseProfiles = base.profiles ?? {};
@@ -224,7 +781,7 @@ export function composeSourceRootfsDemoConfig(
 }
 
 function requireOwnedDemoCommands(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   demoBytes: Uint8Array,
 ): void {
   const config = parseKandeloDemoConfig(
@@ -236,8 +793,9 @@ function requireOwnedDemoCommands(
   for (const [profileId, expected] of Object.entries(
     SOURCE_ROOTFS_DEMO_COMMANDS,
   )) {
-    const presentation = resolveDemoPresentation(config, profileId);
-    if (presentation?.autoCommand !== expected.command) {
+    const init = resolveDemoInit(config, profileId);
+    if (init === null || !("shellCommand" in init)
+      || init.shellCommand !== expected.command) {
       throw new Error(
         `source-rootfs demo profile ${profileId} must launch ${expected.command}`,
       );
@@ -254,8 +812,46 @@ function requireOwnedDemoCommands(
   }
 }
 
+/**
+ * The ScummVM profile's dock actions may run only catalog games, and its
+ * freeware menu must list the whole catalog, in order. The overlay JSON is
+ * tracked so the browser can read the menu without building the image; this
+ * keeps that copy and the catalog from drifting apart.
+ */
+function requireScummvmFreewareMenu(
+  demoBytes: Uint8Array,
+  catalog: ScummvmFreewareCatalog,
+): void {
+  const config = parseKandeloDemoConfig(decodeUtf8(demoBytes, "composed demo config"));
+  if (config === null) {
+    throw new Error("composed demo config has an unsupported version");
+  }
+  const actions = resolveDemoDockActions(config, "scummvm");
+  const gameIds = new Set(catalog.games.map((game) => game.id));
+  for (const action of actions) {
+    if (!("restart" in action)) continue;
+    const gameId = action.restart.startsWith(`${SCUMMVM_PLAY_COMMAND} `)
+      ? action.restart.slice(SCUMMVM_PLAY_COMMAND.length + 1)
+      : "";
+    if (!gameIds.has(gameId)) {
+      throw new Error(
+        `scummvm dock action ${action.id} must run ${SCUMMVM_PLAY_COMMAND} with a catalog game`,
+      );
+    }
+  }
+  const menu = actions.find((action) => action.id === SCUMMVM_FREEWARE_MENU_ACTION);
+  const expected = scummvmFreewareMenuEntries(catalog);
+  if (menu === undefined || !("menu" in menu) || !isDeepStrictEqual(menu.menu, expected)) {
+    throw new Error(
+      `scummvm dock action ${SCUMMVM_FREEWARE_MENU_ACTION} must list the freeware `
+        + "catalog (packages/registry/shell/scummvm-freeware-games.json); expected menu:\n"
+        + JSON.stringify(expected, null, 2),
+    );
+  }
+}
+
 function requireImageExecutable(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   config: ExperimentalTerminalProgram,
 ): void {
   const stat = (() => {
@@ -277,7 +873,7 @@ function requireImageExecutable(
 }
 
 function readExperimentalTerminalSession(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
 ): ExperimentalTerminalSession {
   let stat;
   try {
@@ -307,7 +903,6 @@ function readExperimentalTerminalSession(
 
 interface LazyIdentity {
   ino: number;
-  generation?: number;
 }
 
 interface BashAliasContract {
@@ -322,47 +917,99 @@ interface SourceBashIdentity {
   aliases: BashAliasContract[];
 }
 
+/**
+ * Identity is the inode NUMBER alone, where it used to be the inode number and
+ * a generation counter.
+ *
+ * The counter existed because inode numbers can be REUSED: delete a file and a
+ * later one may take its number, so two different files would compare equal.
+ * The module mints inode numbers from a counter that only rises and never
+ * hands one back, so within a build an inode number identifies one file for
+ * the whole life of the tree, and there is nothing for a generation to
+ * disambiguate.
+ *
+ * `bigint` because the module's inode numbers are 64-bit; comparing them
+ * loosely would defeat the point of comparing them at all.
+ */
 function sameLazyIdentity(
-  entry: { ino: number; generation?: number },
+  entry: { ino: number | bigint },
   identity: LazyIdentity,
 ): boolean {
-  return entry.ino === identity.ino && entry.generation === identity.generation;
+  return Number(entry.ino) === identity.ino;
 }
 
+type LazyRecords = {
+  files: ReturnType<KandeloImageFs["lazyEntries"]>["files"];
+  trees: ReturnType<KandeloImageFs["lazyEntries"]>["archives"];
+};
+
 function lazyRecords(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   omittedIdentities: readonly LazyIdentity[] = [],
-): {
-  files: ReturnType<MemoryFileSystem["exportLazyEntries"]>;
-  trees: ReturnType<MemoryFileSystem["exportLazyArchiveEntries"]>;
-} {
+): LazyRecords {
+  const { files, archives } = fs.lazyEntries();
   return {
-    files: fs
-      .exportLazyEntries()
-      .filter(
-        (entry) =>
-          !omittedIdentities.some((identity) =>
-            sameLazyIdentity(entry, identity)
-          ),
-      ),
-    trees: fs.exportLazyArchiveEntries(),
+    files: files.filter(
+      (entry) =>
+        !omittedIdentities.some((identity) => sameLazyIdentity(entry, identity)),
+    ),
+    trees: archives,
   };
 }
 
-function lazyState(
-  fs: MemoryFileSystem,
+/**
+ * The lazy state that must survive a SAVE.
+ *
+ * Inode numbers are deliberately dropped. The writer assigns them when it lays
+ * out the image, so a saved copy legitimately renumbers every file -- comparing
+ * them across a serialization asserts that the writer did NOT do its job.
+ *
+ * What is compared is what a save must not change: WHICH paths are deferred,
+ * how big each really is, which archive backs it, and the fetch description it
+ * carries. A lost file, a changed size, a re-pointed archive or a dropped
+ * description all still fail this.
+ */
+function serializedLazyState(
+  fs: KandeloImageFs,
   omittedIdentities: readonly LazyIdentity[] = [],
 ): string {
-  return JSON.stringify(lazyRecords(fs, omittedIdentities));
+  const { files, trees } = lazyRecords(fs, omittedIdentities);
+  const withoutIno = ({ ino: _ino, ...rest }: { ino: bigint }) => rest;
+  return stableJson({ files: files.map(withoutIno), trees });
+}
+
+/**
+ * Render a lazy record as text for comparison.
+ *
+ * `JSON.stringify` THROWS on a `bigint` and renders a `Uint8Array` as an object
+ * of indices, and a lazy record carries both: inode numbers are 64-bit and a
+ * fetch description is bytes. The descriptor is rendered as hex because it is
+ * OPAQUE -- decoding it to print something friendlier would make this
+ * comparison depend on a format the kernel promises not to read.
+ *
+ * It is ONE function because it was briefly two: `lazyState` got the replacer
+ * and `requirePreservedLazyState` kept a bare `JSON.stringify`, so the second
+ * threw "Do not know how to serialize a BigInt" in a product build that the
+ * test suites never reached. Two renderers of the same record could also drift
+ * into disagreeing about equality, which is worse than throwing.
+ */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner) =>
+    typeof inner === "bigint"
+      ? inner.toString()
+      : inner instanceof Uint8Array
+        ? Buffer.from(inner).toString("hex")
+        : inner,
+  );
 }
 
 /** The lazy identity at `path`, or null if `path` is not a lazy file. */
 function optionalLazyIdentity(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   path: string,
 ): LazyIdentity | null {
-  const lazy = fs.getLazyEntry(path);
-  return lazy === null ? null : { ino: lazy.ino, generation: lazy.generation };
+  if (!fs.isPathDeferred(path)) return null;
+  return { ino: Number(fs.lstat(path).ino) };
 }
 
 /**
@@ -376,7 +1023,7 @@ function optionalLazyIdentity(
  * change or no change at all.
  */
 function requireManSupersededByMandoc(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   priorIdentity: LazyIdentity | null,
 ): void {
   if (priorIdentity === null) return;
@@ -395,10 +1042,10 @@ function requireManSupersededByMandoc(
 
 function requireExpectedLazyState(
   before: string,
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   label: string,
 ): void {
-  const after = lazyState(fs);
+  const after = serializedLazyState(fs);
   if (after !== before) {
     throw new Error(
       `${label} changed rootfs lazy file or tree identities\n` +
@@ -408,44 +1055,45 @@ function requireExpectedLazyState(
 }
 
 function requirePreservedLazyState(
-  expected: ReturnType<typeof lazyRecords>,
-  fs: MemoryFileSystem,
+  expected: LazyRecords,
+  fs: KandeloImageFs,
   label: string,
 ): void {
   const actual = lazyRecords(fs);
-  const actualFiles = new Set(
-    actual.files.map((entry) => JSON.stringify(entry)),
-  );
-  const actualTrees = new Set(
-    actual.trees.map((entry) => JSON.stringify(entry)),
-  );
+  const actualFiles = new Set(actual.files.map(stableJson));
+  const actualTrees = new Set(actual.trees.map(stableJson));
   for (const entry of expected.files) {
-    if (!actualFiles.has(JSON.stringify(entry))) {
+    if (!actualFiles.has(stableJson(entry))) {
       throw new Error(`${label} changed a rootfs lazy file identity`);
     }
   }
   for (const entry of expected.trees) {
-    if (!actualTrees.has(JSON.stringify(entry))) {
+    if (!actualTrees.has(stableJson(entry))) {
       throw new Error(`${label} changed a rootfs lazy tree identity`);
     }
   }
 }
 
-function requireCompleteProductShellContract(fs: MemoryFileSystem): void {
+function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
-    if (fs.getLazyEntry(spec.vfsPath) === null) {
+    if (!fs.isPathDeferred(spec.vfsPath)) {
       throw new Error(
         `source-rootfs shell omitted production lazy utility ${spec.vfsPath}`,
       );
     }
   }
-  const archiveUrls = new Set(
-    fs.exportLazyArchiveEntries().map((entry) => entry.url),
-  );
+  // Asked of the TREE rather than of a list of URLs. The contract being checked
+  // is that the shipped shell can actually run each of these -- which is that
+  // the member is present and still deferred, not that some table mentions a
+  // URL. A URL is the archive's transport and lives in the fetch description
+  // the kernel carries without reading; a rebuild that changed one would fail
+  // this check while shipping exactly the right contents.
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
-    if (!archiveUrls.has(spec.archiveUrl)) {
+    const member = `${spec.mountPrefix}${spec.requiredMember}`;
+    if (!fs.isPathDeferred(member)) {
       throw new Error(
-        `source-rootfs shell omitted production lazy archive ${spec.archiveUrl}`,
+        `source-rootfs shell omitted production lazy archive ${spec.archiveUrl}` +
+          ` (${member} is not a deferred member of it)`,
       );
     }
   }
@@ -494,13 +1142,19 @@ function strictResolverFromDependencyEnvironment(
         `${key} must be a real resolver-owned directory: ${root}`,
       );
     }
-    const artifact = join(root, basename(resolverPath));
+    // A package's program is its output root's basename; a runtime file
+    // keeps its path under the package (programs/<pkg>/share/...), which
+    // mirrors the package's output tree.
+    const packagePrefix = `programs/${dependency}/`;
+    const artifact = resolverPath.startsWith(packagePrefix)
+      ? join(root, resolverPath.slice(packagePrefix.length))
+      : join(root, basename(resolverPath));
     readRegularInput(artifact, `${dependency} dependency output`);
     return artifact;
   };
 }
 
-function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
+function readVfsBytes(fs: KandeloImageFs, path: string): Uint8Array {
   const size = fs.stat(path).size;
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, 0, 0);
@@ -522,33 +1176,105 @@ function readVfsBytes(fs: MemoryFileSystem, path: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * Paths of the regular files whose bytes are stored in the image and begin
+ * with the Wasm magic. Lazy files and lazy-archive trees are skipped without
+ * being read, so the walk never materializes deferred content.
+ */
+function eagerWasmPrograms(fs: KandeloImageFs): Set<string> {
+  const programs = new Set<string>();
+  const magic = new Uint8Array(WASM_MAGIC.length);
+  const walk = (dir: string): void => {
+    const handle = fs.opendir(dir);
+    try {
+      for (let entry = fs.readdir(handle); entry; entry = fs.readdir(handle)) {
+        if (entry.name === "." || entry.name === "..") continue;
+        const path = dir === "/" ? `/${entry.name}` : `${dir}/${entry.name}`;
+        if (fs.isPathDeferred(path)) continue;
+        const stat = fs.lstat(path);
+        const type = stat.mode & FILE_TYPE_MASK;
+        if (type === DIRECTORY_MODE) {
+          walk(path);
+          continue;
+        }
+        if (
+          type !== REGULAR_FILE_MODE ||
+          fs.getLazyEntry(path) !== null ||
+          stat.size < magic.byteLength
+        ) {
+          continue;
+        }
+        const fd = fs.open(path, 0, 0);
+        try {
+          if (fs.read(fd, magic, null, magic.byteLength) !== magic.byteLength) {
+            throw new Error(`short VFS read for ${path}`);
+          }
+        } finally {
+          fs.close(fd);
+        }
+        if (WASM_MAGIC.every((byte, index) => magic[index] === byte)) {
+          programs.add(path);
+        }
+      }
+    } finally {
+      fs.closedir(handle);
+    }
+  };
+  walk("/");
+  return programs;
+}
+
+function requireLazyShellPrograms(
+  sourcePrograms: ReadonlySet<string>,
+  fs: KandeloImageFs,
+): void {
+  const allowedInodes = new Set(
+    [...EAGER_SHELL_PROGRAMS].map((path) => fs.stat(path).ino),
+  );
+  const added = [...eagerWasmPrograms(fs)]
+    .filter(
+      (path) =>
+        !sourcePrograms.has(path) && !allowedInodes.has(fs.lstat(path).ino),
+    )
+    .sort();
+  if (added.length > 0) {
+    throw new Error(
+      "source-rootfs shell must add programs as lazy files " +
+        "(SHELL_LAZY_BINARY_SPECS), but wrote eager Wasm at: " +
+        added.join(", "),
+    );
+  }
+}
+
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) return false;
   return left.every((byte, index) => byte === right[index]);
 }
 
 function requireLazyBashIdentity(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
 ): SourceBashIdentity {
   const bashPath = REQUIRED_BASH_ALIASES[0];
-  const lazy = fs.getLazyEntry(bashPath);
-  if (lazy === null) {
+  if (!fs.stat(bashPath).deferred) {
     throw new Error(`${bashPath} must be a lazy source-rootfs entry`);
   }
-  const identity = { ino: lazy.ino, generation: lazy.generation };
-  const hardlinkPaths = Array.from(
-    new Set([lazy.path, ...(lazy.paths ?? [])]),
-  ).sort();
+  const identity = { ino: Number(fs.stat(bashPath).ino) };
+  // The hardlinks are DERIVED from the tree rather than read from a list the
+  // filesystem kept beside it. A hardlink is one inode reachable by several
+  // paths, so the paths sharing this inode ARE the hardlinks -- and a list that
+  // could disagree with the tree is a list that eventually will.
+  const hardlinkPaths = fs
+    .lazyEntries()
+    .files.filter((entry) => Number(entry.ino) === identity.ino)
+    .map((entry) => entry.path)
+    .sort();
   const aliases: BashAliasContract[] = [];
   for (const alias of REQUIRED_BASH_ALIASES) {
     const linkStat = fs.lstat(alias);
     const stat = fs.stat(alias);
-    const aliasLazy = fs.getLazyEntry(alias);
-    if (
-      stat.ino !== lazy.ino ||
-      aliasLazy === null ||
-      !sameLazyIdentity(aliasLazy, identity)
-    ) {
+    // Through `stat`, not `lstat`: an alias may be a symlink, and what must
+    // match is the file it RESOLVES to.
+    if (Number(stat.ino) !== identity.ino || !stat.deferred) {
       throw new Error(
         `${alias} must resolve to the complete lazy Bash identity`,
       );
@@ -575,7 +1301,7 @@ function requireLazyBashIdentity(
 }
 
 function requireMaterializedBashIdentity(
-  fs: MemoryFileSystem,
+  fs: KandeloImageFs,
   contract: SourceBashIdentity,
   expectedBytes: Uint8Array,
 ): void {
@@ -593,7 +1319,7 @@ function requireMaterializedBashIdentity(
     ) {
       throw new Error(`${path} lost the materialized Bash hardlink identity`);
     }
-    if (fs.getLazyEntry(path) !== null || fs.isPathDeferred(path)) {
+    if (fs.isPathDeferred(path)) {
       throw new Error(`${path} remained lazy after Bash materialization`);
     }
     if (!bytesEqual(readVfsBytes(fs, path), expectedBytes)) {
@@ -611,7 +1337,7 @@ function requireMaterializedBashIdentity(
       throw new Error(`${alias.path} changed Bash symlink target`);
     }
     const stat = fs.stat(alias.path);
-    if (stat.ino !== canonical.ino || fs.getLazyEntry(alias.path) !== null) {
+    if (Number(stat.ino) !== Number(canonical.ino) || stat.deferred) {
       throw new Error(`${alias.path} does not resolve to materialized Bash`);
     }
     if (!bytesEqual(readVfsBytes(fs, alias.path), expectedBytes)) {
@@ -633,23 +1359,51 @@ export async function buildSourceRootfsShellImage(
   inputs: SourceRootfsShellInputs,
 ): Promise<Uint8Array> {
   const rootfs = readRegularInput(inputs.rootfsPath, "rootfs dependency");
-  const sourceMetadata = MemoryFileSystem.readImageMetadata(rootfs);
+  // READING THE METADATA LOADS THE IMAGE, and the loader refuses one that
+  // declares an ABI it does not speak. So a WRONG ABI arrives here as `EPROTO`
+  // rather than as a number this gate can compare, and the gate's own message
+  // — which names the requirement and is the reason a build's failure is
+  // actionable — would never be reached.
+  //
+  // The refusal is the loader's and stays the loader's; what this adds is the
+  // sentence a person building an image needs. A MISSING declaration still
+  // reaches the comparison below, because an image that declares no ABI makes
+  // no claim for the loader to refuse.
+  let sourceMetadata;
+  try {
+    sourceMetadata = KandeloImageFs.readImageMetadata(rootfs);
+  } catch (error) {
+    if ((error as { errno?: number } | null)?.errno === ERRNO.EPROTO) {
+      throw new Error(
+        `rootfs dependency must explicitly declare kernel ABI ${ABI_VERSION}; ` +
+          `it declares a different one and this reader cannot say which — ` +
+          `rebuild it`,
+      );
+    }
+    throw error;
+  }
   if (sourceMetadata?.kernelAbi !== ABI_VERSION) {
     throw new Error(
       `rootfs dependency must explicitly declare kernel ABI ${ABI_VERSION}; ` +
         `got ${String(sourceMetadata?.kernelAbi)}`,
     );
   }
-  const sourceCapacity = MemoryFileSystem.readImageCapacity(rootfs);
-  const fs = MemoryFileSystem.fromImagePreservingCapacity(rootfs);
-  // WHY: this builder exports and preserves lazy state from an imported image;
-  // authenticate atomic seals before the source image gains that authority.
-  await fs.verifyImportedLazyAtomicGroupSeals();
+  const sourceCapacity = KandeloImageFs.readImageCapacity(rootfs);
+  // The load AUTHENTICATES. Verification runs inside the module's
+  // `sm_load_image`, so the source image gains its authority only after its
+  // activation cohorts checked out -- there is no window between importing and
+  // authenticating, and no second call to forget.
+  const fs = KandeloImageFs.create();
+  fs.loadImage(rootfs);
   const terminalSession = readExperimentalTerminalSession(fs);
+  // The rootfs owns its own eager programs (login); only what this composer
+  // adds is held to the lazy default.
+  const sourceEagerPrograms = eagerWasmPrograms(fs);
   const demo = composeSourceRootfsDemoConfig(
     inputs.demoConfigPath,
     inputs.demoProfileOverlayPath,
   );
+  const scummvmCatalog = loadScummvmFreewareCatalog();
 
   // WHY: the terminal document is image-owned policy. Validate its programs
   // against the unmodified source rootfs before overlays can accidentally make
@@ -671,8 +1425,26 @@ export async function buildSourceRootfsShellImage(
   const unrelatedLazyBefore = lazyRecords(fs, omittedLazyIdentities);
 
   const bash = readRegularInput(inputs.bashPath, "bash dependency");
-  const fbdoom = readRegularInput(inputs.fbdoomPath, "fbdoom dependency");
-  const modeset = readRegularInput(inputs.modesetPath, "modeset dependency");
+  const wldesktop = readRegularInput(
+    inputs.wldesktopPath,
+    "wldesktop launcher dependency",
+  );
+  const omarchydesktop = readRegularInput(
+    inputs.omarchydesktopPath,
+    "omarchydesktop launcher dependency",
+  );
+  const desktopData = readRegularInput(
+    inputs.desktopDataPath,
+    "desktop data dependency",
+  );
+  const libinputQuirks = readRegularInput(
+    inputs.libinputQuirksPath,
+    "libinput quirks dependency",
+  );
+  const espeakNgData = readRegularInput(
+    inputs.espeakNgDataPath,
+    "espeak-ng data dependency",
+  );
 
   // WHY: Bash remains the ordinary account shell and is therefore eager after
   // login. Opening its canonical alias follows a symlink when present,
@@ -692,18 +1464,82 @@ export async function buildSourceRootfsShellImage(
   requireCompleteProductShellContract(fs);
 
   ensureDirRecursive(fs, "/usr/local/bin");
-  writeVfsBinary(fs, "/usr/local/bin/fbdoom", fbdoom, 0o755);
-  writeVfsBinary(fs, "/usr/local/bin/modeset", modeset, 0o755);
+  // The desktops' launchers are small scripts, written eagerly. Every Wasm
+  // program they exec (wlcompositor, wlterm, foot, Quickshell, ...)
+  // is a lazy file registered by the overlay above, so a machine that never
+  // starts a desktop never fetches them.
+  writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
+  writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
+  // Configs, themes, .desktop entries, the shell's QML, fontconfig and D-Bus
+  // configs, and the font: everything the desktops read is image data here,
+  // not page staging.
+  unpackDataZip(fs, "/usr/share/kandelo", desktopData);
+  // wlcompositor's statically linked libinput reads its device quirks from
+  // LIBINPUT_QUIRKS_DIR, compiled in as /usr/share/libinput.
+  unpackDataZip(fs, "/usr/share/libinput", libinputQuirks);
+  // The Quake engine, unzip, and lha are lazy /usr/bin binaries; only this
+  // small extraction+launch wrapper is written eagerly.
+  writeVfsBinary(
+    fs,
+    "/usr/local/bin/quake",
+    new TextEncoder().encode(QUAKE_LAUNCH_SCRIPT),
+    0o755,
+  );
+  // The quake profile stages quake106.zip into this basedir at page load, and
+  // the wrapper (running as the unprivileged demo user) extracts id1/pak0.pak
+  // beneath it. The directory must exist (the asset writer does not create
+  // parents) and be world-writable so the demo user can create id1/ and write
+  // the extracted pak.
+  ensureDirRecursive(fs, "/usr/share");
+  ensureDirRecursive(fs, "/usr/share/quake", 0o777);
+  // ScummVM: the engine, its plugins and its GUI data are lazy; only the launch
+  // wrapper, scummvm-play and its catalog are eager. Game data is either the
+  // user's own upload or a freeware game scummvm-play fetches; both land in
+  // this directory and the unprivileged demo user unzips them in place — it
+  // must be world-writable, like the Quake basedir above.
+  writeVfsBinary(
+    fs,
+    "/usr/local/bin/scummvm",
+    new TextEncoder().encode(SCUMMVM_LAUNCH_SCRIPT),
+    0o755,
+  );
+  writeVfsBinary(
+    fs,
+    SCUMMVM_PLAY_COMMAND,
+    new TextEncoder().encode(SCUMMVM_PLAY_SCRIPT),
+    0o755,
+  );
+  ensureDirRecursive(fs, "/usr/local/share/scummvm-play");
+  writeVfsBinary(
+    fs,
+    SCUMMVM_PLAY_CATALOG,
+    new TextEncoder().encode(scummvmPlayCatalogTsv(scummvmCatalog)),
+    0o644,
+  );
+  ensureDirRecursive(fs, "/usr/share/scummvm-games", 0o777);
+  // Create the id1 game dir too: the bring-your-own-pak ingest writes
+  // /usr/share/quake/id1/pak0.pak directly (host.writeFile requires the parent
+  // to exist), and that path must work even offline when no quake106.zip was
+  // staged and the wrapper's own `mkdir -p id1` never ran.
+  ensureDirRecursive(fs, "/usr/share/quake/id1", 0o777);
+  // /usr/bin/espeak-ng itself is a lazy file.
+  // libespeak-ng's PATH_ESPEAK_DATA is compiled in as /usr/share.
+  unpackDataZip(fs, "/usr/share/espeak-ng-data", espeakNgData);
+  writeSdl2ShaderPresets(fs);
   // WHY: the package shell must not promise optional programs it does not own.
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot
   // advertise a demo that boots successfully but never launches its workload.
   requireOwnedDemoCommands(fs, demo);
+  requireScummvmFreewareMenu(demo, scummvmCatalog);
   ensureDirRecursive(fs, "/etc/kandelo");
   writeVfsBinary(fs, KANDELO_DEMO_CONFIG_PATH, demo, 0o644);
 
+  // Checked before saving so a rejected composition writes no output.
+  requireLazyShellPrograms(sourceEagerPrograms, fs);
+
   // WHY: Bash is the one intentional eager identity. Every other source-rootfs
   // first-use download must retain the same path, URL, size, and tree metadata.
-  const composedLazyState = lazyState(fs);
+  const composedLazyState = serializedLazyState(fs);
 
   const image = await saveImage(fs, inputs.outFile, {
     expectedMaxByteLength: sourceCapacity.maxByteLength,
@@ -719,20 +1555,21 @@ export async function buildSourceRootfsShellImage(
     ),
   });
 
-  const outputMetadata = MemoryFileSystem.readImageMetadata(image);
+  const outputMetadata = KandeloImageFs.readImageMetadata(image);
   if (outputMetadata?.kernelAbi !== ABI_VERSION) {
     throw new Error("composed shell lost its explicit kernel ABI");
   }
   if (
-    MemoryFileSystem.readImageCapacity(image).maxByteLength !==
+    KandeloImageFs.readImageCapacity(image).maxByteLength !==
     sourceCapacity.maxByteLength
   ) {
     throw new Error("composed shell changed the rootfs capacity contract");
   }
-  const outputFs = MemoryFileSystem.fromImagePreservingCapacity(image);
-  // WHY: post-save assertions are a separate import boundary and must verify
-  // the exact serialized seals rather than inherit trust from the source fs.
-  await outputFs.verifyImportedLazyAtomicGroupSeals();
+  // A separate import boundary on purpose: the post-save assertions check the
+  // bytes that were WRITTEN rather than inheriting trust from the tree that
+  // wrote them. Loading them back is what authenticates their seals.
+  const outputFs = KandeloImageFs.create();
+  outputFs.loadImage(image);
   requireMaterializedBashIdentity(outputFs, sourceBash, bash);
   requireExpectedLazyState(
     composedLazyState,
@@ -749,8 +1586,11 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
   const allowed = new Set([
     "--rootfs",
     "--bash",
-    "--fbdoom",
-    "--modeset",
+    "--wldesktop",
+    "--omarchydesktop",
+    "--desktop-data",
+    "--libinput-quirks",
+    "--espeak-ng-data",
     "--demo-config",
     "--demo-profile-overlay",
     "--dependency-contract",
@@ -768,8 +1608,12 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     ) {
       throw new Error(
         "usage: build-source-rootfs-shell-image.ts " +
-          "--rootfs <rootfs.vfs> --bash <bash.wasm> --fbdoom <fbdoom.wasm> " +
-          "--modeset <modeset.wasm> " +
+          "--rootfs <rootfs.vfs.zst> --bash <bash.wasm> " +
+          "--wldesktop <wldesktop> " +
+          "--omarchydesktop <omarchydesktop> " +
+          "--desktop-data <kandelo-desktop-data.zip> " +
+          "--libinput-quirks <libinput-quirks.zip> " +
+          "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
           "--out <shell.vfs.zst>",
@@ -783,8 +1627,11 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
   return {
     rootfsPath: values.get("--rootfs")!,
     bashPath: values.get("--bash")!,
-    fbdoomPath: values.get("--fbdoom")!,
-    modesetPath: values.get("--modeset")!,
+    wldesktopPath: values.get("--wldesktop")!,
+    omarchydesktopPath: values.get("--omarchydesktop")!,
+    desktopDataPath: values.get("--desktop-data")!,
+    libinputQuirksPath: values.get("--libinput-quirks")!,
+    espeakNgDataPath: values.get("--espeak-ng-data")!,
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
     outFile: values.get("--out")!,

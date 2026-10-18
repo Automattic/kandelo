@@ -21,18 +21,28 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/libpng-src"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+LIBPNG_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/libpng-src"
 
 # --- Inputs from resolver, with legacy fallbacks ---
-LIBPNG_VERSION="${WASM_POSIX_DEP_VERSION:-${LIBPNG_VERSION:-1.6.43}}"
+
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libpng-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://download.sourceforge.net/libpng/libpng-${LIBPNG_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 # autoconf bakes --prefix into the Makefile. A rerun from a different
 # INSTALL_DIR would install into the wrong path, so always build in a
 # fresh dir rather than reusing a stale libpng-build/.
-BUILD_DIR="$SCRIPT_DIR/libpng-build"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/libpng-build"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
@@ -53,21 +63,8 @@ if [ -z "$ZLIB_PREFIX" ]; then
     fi
 fi
 
-# --- Fetch + verify source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading libpng $LIBPNG_VERSION..."
-    TARBALL="/tmp/libpng-${LIBPNG_VERSION}.tar.xz"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    else
-        echo "==> (no SOURCE_SHA256 declared; skipping verification)"
-    fi
-    mkdir -p "$SRC_DIR"
-    tar xf "$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "$TARBALL"
-fi
+# --- Stage verified source ---
+kandelo_package_stage_primary_source libpng "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 # Fresh build + install dir each run. The cache path varies per key
 # and autoconf-generated Makefiles are not portable across prefixes.

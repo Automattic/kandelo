@@ -9,16 +9,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/coreutils-src"
 BIN_DIR="$WORK_DIR/bin"
 SYSROOT="$REPO_ROOT/sysroot"
-COREUTILS_VERSION="${WASM_POSIX_DEP_VERSION:-${COREUTILS_VERSION:-9.6}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/coreutils/coreutils-${COREUTILS_VERSION}.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-7a0124327b398fd9eb1a6abde583389821422c744ffa10734b24f557610d3283}"
+COREUTILS_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-coreutils-source"
 
@@ -125,7 +126,11 @@ if [ ! -f Makefile ]; then
     export gl_cv_func_wcrtomb_retval=yes
     export gl_cv_func_iswcntrl_works=yes
     export gl_cv_func_wcwidth_works=yes
-    export gl_cv_func_re_compile_pattern_working=yes
+    # No gl_cv_func_re_compile_pattern_working seed: musl has no GNU regex
+    # API (re_compile_pattern, re_search, re_syntax_options), so gnulib must
+    # compile its own. Seeding "yes" made configure skip it, and before
+    # ABI 47 the program linked anyway and trapped on the first regex
+    # (expr, csplit, ...) with "Unimplemented import: env.re_compile_pattern".
     export gl_cv_func_link_follows_symlink=no
     export gl_cv_func_lstat_dereferences_slashed_symlink=yes
     export gl_cv_func_stat_dir_slash=yes

@@ -153,20 +153,11 @@ describe("machine checkpoint of a running guest", () => {
         if (response.status !== "captured") return;
         const { summary } = response;
         expect(summary.kernelMemoryBytes).toBeGreaterThan(0);
-        expect(summary.filesystemBytes).toBeGreaterThan(0);
         // A caller that asks for the summary holds no bytes, so the mounts the
-        // freeze could not read have to reach it here or not at all.
-        expect(summary.filesystems.map((m) => m.mountPoint)).toEqual(["/"]);
-        expect(summary.unreadableFilesystems.map((g) => g.mountPoint))
-          .toEqual([
-            "/tmp",
-            "/var/tmp",
-            "/var/log",
-            "/var/run",
-            "/home/maker",
-            "/root",
-            "/srv",
-          ]);
+        // freeze left behind have to reach it here or not at all. The kernel
+        // owns `/` and every scratch mount in DEFAULT_MOUNT_SPEC, so a default
+        // Node machine leaves none behind.
+        expect(summary.unreadableFilesystems).toEqual([]);
         const captured = summary.processes.find((p) => p.pid === pid);
         expect(captured).toBeDefined();
         expect(captured!.memoryBytes).toBeGreaterThan(0);
@@ -221,38 +212,19 @@ describe("machine checkpoint of a running guest", () => {
         expect(response.status).toBe("captured");
         if (response.status !== "captured") return;
         const { checkpoint } = response;
-        expect(checkpoint.format).toBe(7);
+        expect(checkpoint.format).toBe(8);
         expect(checkpoint.kernelAbiVersion).toBe(ABI_VERSION);
+        // The kernel memory carries `/` and the scratch mounts, so it is the
+        // only filesystem state that travels.
         expect(checkpoint.kernelMemory.byteLength).toBeGreaterThan(0);
-        // `/` alone, because `resolveForNodeKernelSession` gives every scratch
-        // mount in DEFAULT_MOUNT_SPEC a HostFileSystem with no
-        // SharedArrayBuffer for the freeze to read. A Node machine moves
-        // without its working directories. The set is asserted exactly so that
-        // giving Node memory-backed scratch mounts fails here rather than
-        // silently changing what a handover moves.
-        const mountPoints = checkpoint.filesystems.map((m) => m.mountPoint);
-        expect(mountPoints).toEqual(["/"]);
-        for (const mount of checkpoint.filesystems) {
-          expect(mount.bytes.byteLength).toBeGreaterThan(0);
-        }
-        // Every mount that stayed behind is named. A checkpoint that dropped
-        // them from both lists would let a restore present this machine as
-        // whole when seven of its eight filesystems did not travel.
-        expect(checkpoint.unreadableFilesystems.map((g) => g.mountPoint))
-          .toEqual([
-            "/tmp",
-            "/var/tmp",
-            "/var/log",
-            "/var/run",
-            "/home/maker",
-            "/root",
-            "/srv",
-          ]);
-        for (const gap of checkpoint.unreadableFilesystems) {
-          expect(gap.reason).toBe(
-            "a host directory backs this mount and owns no shared buffer",
-          );
-        }
+        // `/` still reads every file the machine never modified out of its
+        // boot image, so the checkpoint names that image for the restore.
+        expect(checkpoint.rootfsImageSha256).toMatch(/^[0-9a-f]{64}$/);
+        // Only a host directory stays behind, and the default Node layout
+        // mounts none. Asserted exactly so that a host mount appearing in the
+        // default layout fails here rather than silently changing what a
+        // handover moves.
+        expect(checkpoint.unreadableFilesystems).toEqual([]);
         const bucket = checkpoint.processes.find((p) => p.pid === pid);
         expect(bucket).toBeDefined();
         expect(bucket!.memory.byteLength).toBeGreaterThan(0);
@@ -325,8 +297,8 @@ describe("machine checkpoint of a running guest", () => {
         expect(response.status).toBe("captured");
         if (response.status !== "captured") return;
         const { summary } = response;
-        expect(summary.kernelMemoryBytes).toBeGreaterThan(0);
-        expect(summary.filesystemBytes).toBeGreaterThan(wad.byteLength);
+        // The IWAD was written into `/`, which the kernel memory carries.
+        expect(summary.kernelMemoryBytes).toBeGreaterThan(wad.byteLength);
         const captured = summary.processes.find((p) => p.pid === pid);
         expect(captured).toBeDefined();
         // The guest loaded the IWAD, so its image holds more than the wad.
@@ -396,16 +368,11 @@ describe("machine checkpoint of a running guest", () => {
         const response = await host.captureCheckpoint(TIMEOUTS);
         const elapsed = Date.now() - started;
 
-        // The pthread's replica is one generation behind, so it must take the
-        // archive writer. That writer used to be held shut by the main
-        // thread's reader: the main thread reached the freeze first and parked
-        // in `nanosleep` still holding it, so the pthread ran out its bounded
-        // wait and the capture refused itself with "the dynamic-loader archive
-        // writer stayed held".
-        //
-        // Arming the freeze now interrupts a parked wait rather than waiting
-        // for the parked thread to reach a syscall completion, so the reader
-        // is given back and the deadlock never forms.
+        // The pthread's replica is one generation behind when the freeze
+        // reaches it, and the main thread is already parked holding an archive
+        // reader. The writer that `reconcileNow` waits for is therefore never
+        // free, so the pthread adopts the newer generation under a reader of
+        // its own.
         expect(response.status).toBe("captured");
         // Ending promptly is the point: the capture resolves the contention
         // rather than sitting on it until the 10 s unwind deadline.
@@ -429,9 +396,8 @@ describe("machine checkpoint of a running guest", () => {
     { timeout: 60_000 },
     async () => {
       // The fixture's "thread" mode makes the pthread load the side module,
-      // so the thread whose replica is behind — and whose bounded writer wait
-      // used to refuse the capture — is the main thread. This drives the
-      // process kernel_checkpoint site the way the test above drives the
+      // so the thread whose replica is behind is the main thread. This drives
+      // the process kernel_checkpoint site the way the test above drives the
       // pthread one.
       const sideModule = buildSideModule();
       const { host, pid } = await startReadyGuest("checkpoint-dlopen.wasm", {
@@ -472,15 +438,16 @@ describe("machine checkpoint of a running guest", () => {
         // Both gates close synchronously inside the capture_checkpoint
         // handler, and the worker port delivers these three messages in the
         // order they are posted, so the two admissions below meet a closed
-        // gate rather than racing the freeze.
+        // gate rather than racing the freeze. The write goes first: the
+        // queued launch gives the machine back before the next message.
         const capture = host.captureCheckpoint(TIMEOUTS);
-        const launch = host.spawn(programBytes("test-pthread.wasm"), [
-          "test-pthread",
-        ]);
         const write = host.writeFileToVfs("/tmp/qux", qux);
         const writeRefused = expect(write).rejects.toThrow(
           "cannot write a rootfs file",
         );
+        const launch = host.spawn(programBytes("test-pthread.wasm"), [
+          "test-pthread",
+        ]);
 
         // A launch is never refused: the read must not be visible as a failed
         // spawn. It waits out the freeze — the capture gives the machine back

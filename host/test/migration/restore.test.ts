@@ -9,7 +9,10 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { NodeKernelHost } from "../../src/node-kernel-host";
+import {
+  NodeKernelHost,
+  resolveRootfsArtifact,
+} from "../../src/node-kernel-host";
 import {
   DEFAULT_MOUNT_SPEC,
   type MountSpec,
@@ -22,7 +25,11 @@ import {
   PROCESS_STARTUP_MAX_ARGV_COUNT,
 } from "../../src/generated/abi";
 import { FORK_SAVE_BUFFER_SIZE } from "../../src/process-memory";
-import type { MachineCheckpoint } from "../../src/migration/checkpoint";
+import { maybeDecompressImage } from "../../src/vfs/vfs-image-transport";
+import {
+  rootfsImageSha256,
+  type MachineCheckpoint,
+} from "../../src/migration/checkpoint";
 import {
   CheckpointRefusedError,
   describeCheckpointMountGaps,
@@ -30,7 +37,25 @@ import {
 } from "../../src/migration/restore";
 
 const TIMEOUTS = { unwindTimeoutMs: 10_000, vforkTimeoutMs: 5_000 };
-const EXPECTED = { kernelAbiVersion: ABI_VERSION };
+
+/**
+ * What a host booted over the default `/` image expects of a checkpoint.
+ *
+ * The image is hashed here, apart from the capture, so a capture that named
+ * the wrong image fails the accepting path rather than agreeing with itself.
+ */
+async function defaultHostExpectation(): Promise<{
+  kernelAbiVersion: number;
+  rootfsImageSha256: string;
+}> {
+  const image = maybeDecompressImage(
+    new Uint8Array(readFileSync(resolveRootfsArtifact().selectedPath)),
+  );
+  return {
+    kernelAbiVersion: ABI_VERSION,
+    rootfsImageSha256: await rootfsImageSha256(image),
+  };
+}
 
 function programBytes(name: string): ArrayBuffer {
   const bytes = readFileSync(join(findRepoRoot(), "examples", name));
@@ -42,12 +67,14 @@ function programBytes(name: string): ArrayBuffer {
 
 async function captureRealCheckpoint(
   program = "checkpoint-loop.wasm",
+  rootfsMountSpec?: readonly MountSpec[],
 ): Promise<MachineCheckpoint> {
   let ready = () => {};
   const isReady = new Promise<void>((resolve) => { ready = resolve; });
   let output = "";
   const host = new NodeKernelHost({
     rootfsImage: "default",
+    rootfsMountSpec,
     onStdout: (_pid, data) => {
       output += new TextDecoder().decode(data);
       if (output.includes("READY")) ready();
@@ -84,9 +111,10 @@ describe("checkpoint validation", () => {
     { timeout: 60_000 },
     async () => {
       const captured = await captureRealCheckpoint();
+      const expected = await defaultHostExpectation();
 
       await expect(
-        validateMachineCheckpoint(cloneCheckpoint(captured), EXPECTED),
+        validateMachineCheckpoint(cloneCheckpoint(captured), expected),
       ).resolves.toEqual(
         new Map(
           captured.processes.map((bucket) => [
@@ -103,7 +131,7 @@ describe("checkpoint validation", () => {
         const checkpoint = cloneCheckpoint(captured) as
           Mutable<MachineCheckpoint>;
         corrupt(checkpoint);
-        const attempt = validateMachineCheckpoint(checkpoint, EXPECTED);
+        const attempt = validateMachineCheckpoint(checkpoint, expected);
         await expect(attempt).rejects.toThrow(CheckpointRefusedError);
         await expect(attempt).rejects.toThrow(reason);
       };
@@ -122,40 +150,24 @@ describe("checkpoint validation", () => {
           checkpoint.kernelMemory.subarray(0, 100);
       }, "not a whole number of pages");
 
+      // `/` reads every file the machine never modified out of its boot
+      // image, by offset, so the same kernel memory over another image would
+      // read the wrong bytes.
+      const otherImage = "0".repeat(64);
       await refusal((checkpoint) => {
-        (checkpoint as { filesystems: unknown }).filesystems = [
-          { mountPoint: "/", bytes: new Uint8Array(0) },
-        ];
-      }, "the / mount is empty");
+        (checkpoint as { rootfsImageSha256: string | null })
+          .rootfsImageSha256 = otherImage;
+      }, `the machine booted / image ${otherImage}, `
+        + `and this host booted ${expected.rootfsImageSha256}`);
 
-      await refusal((checkpoint) => {
-        (checkpoint as { filesystems: unknown }).filesystems = [
-          { mountPoint: "/home/maker", bytes: new Uint8Array([1]) },
-        ];
-      }, "no / mount was captured");
-
-      // Two buckets for one mount leave the restore choosing which bytes win.
-      await refusal((checkpoint) => {
-        (checkpoint as { filesystems: unknown }).filesystems = [
-          { mountPoint: "/", bytes: new Uint8Array([1]) },
-          { mountPoint: "/home/maker", bytes: new Uint8Array([1]) },
-          { mountPoint: "/home/maker", bytes: new Uint8Array([2]) },
-        ];
-      }, "appears twice");
-
-      await refusal((checkpoint) => {
-        (checkpoint as { filesystems: unknown }).filesystems = [
-          { mountPoint: "/", bytes: new Uint8Array([1]) },
-          { mountPoint: "home/maker", bytes: new Uint8Array([1]) },
-        ];
-      }, "is not absolute");
-
-      // A mount cannot be both carried and left behind: a restore reading the
-      // two lists would report a gap it just filled.
+      // A restore printing the gaps would name one host mount twice.
       await refusal((checkpoint) => {
         (checkpoint as { unreadableFilesystems: unknown }).unreadableFilesystems =
-          [{ mountPoint: "/", reason: "no" }];
-      }, "is both carried and unreadable");
+          [
+            { mountPoint: "/run", reason: "no" },
+            { mountPoint: "/run", reason: "no" },
+          ];
+      }, 'mount point "/run" appears twice');
 
       await refusal((checkpoint) => {
         (checkpoint as { unreadableFilesystems: unknown }).unreadableFilesystems =
@@ -306,6 +318,7 @@ describe("checkpoint validation", () => {
             w: 8,
             h: 8,
             stride: 32,
+            creatorPid: pid,
             pids: [pid],
             bindings: [{ pid, addr: 0, len: 256 }],
             pixels: new Uint8Array(256),
@@ -362,32 +375,9 @@ describe("checkpoint validation", () => {
         checkpoint.kms = kms;
       }, /DRM master is pid 424242, which has no process bucket/);
 
-      await refusal((checkpoint) => {
-        (checkpoint as { epolls: unknown }).epolls = undefined;
-      }, "carries no epoll list");
-
-      await refusal((checkpoint) => {
-        checkpoint.epolls = [{ pid: 424242, epfd: 3, interests: [] }];
-      }, /an epoll mirror names pid 424242, which has no process bucket/);
-
-      await refusal((checkpoint) => {
-        checkpoint.epolls = [{
-          pid: checkpoint.processes[0]!.pid,
-          epfd: 3,
-          interests: [{ fd: 4, events: 1, data: "not a number" }],
-        }];
-      }, /carries unusable data for fd 4/);
-
-      await refusal((checkpoint) => {
-        checkpoint.epolls = [
-          { pid: checkpoint.processes[0]!.pid, epfd: 3, interests: [] },
-          { pid: checkpoint.processes[0]!.pid, epfd: 3, interests: [] },
-        ];
-      }, /carries two mirrors for epoll fd 3/);
-
       // The corruptions above never touched the captured object itself.
       await expect(
-        validateMachineCheckpoint(cloneCheckpoint(captured), EXPECTED),
+        validateMachineCheckpoint(cloneCheckpoint(captured), expected),
       ).resolves.toBeDefined();
 
       // DRM leaves a CRTC modeset when its framebuffer goes, so a CRTC naming
@@ -397,7 +387,7 @@ describe("checkpoint validation", () => {
       kms.fbs = [];
       staleBinding.kms = kms;
       await expect(
-        validateMachineCheckpoint(staleBinding, EXPECTED),
+        validateMachineCheckpoint(staleBinding, expected),
       ).resolves.toBeDefined();
     },
   );
@@ -516,13 +506,29 @@ describe("checkpoint validation", () => {
     "says which filesystems a restored Node machine did not get",
     { timeout: 120_000 },
     async () => {
-      const checkpoint = await captureRealCheckpoint();
-      // Every scratch mount on Node is a HostFileSystem, so the capture read
-      // `/` alone. A restore that reported nothing would present this machine
-      // as whole when seven of its eight filesystems stayed behind.
+      // The kernel carries `/` and every scratch mount it owns, so a default
+      // Node machine leaves nothing behind.
+      const whole = await captureRealCheckpoint();
+      expect(whole.unreadableFilesystems).toEqual([]);
+
+      // A scratch mount outside the kernel's prefixes is a host directory,
+      // which stays with this computer. A restore that reported nothing would
+      // present the machine as whole.
+      const spec: MountSpec[] = [
+        ...DEFAULT_MOUNT_SPEC,
+        { path: "/run", source: "scratch", mode: 0o755, nosuid: true },
+      ];
+      const checkpoint = await captureRealCheckpoint(undefined, spec);
+      expect(checkpoint.unreadableFilesystems).toEqual([
+        {
+          mountPoint: "/run",
+          reason: "a host directory stays with the computer that mounts it",
+        },
+      ]);
       const diagnostics: string[] = [];
       const receiver = new NodeKernelHost({
         rootfsImage: "default",
+        rootfsMountSpec: spec,
         restoreCheckpoint: checkpoint,
         onHostDiagnostic: (diagnostic) => {
           if (diagnostic.source === "checkpoint restore") {
@@ -532,14 +538,10 @@ describe("checkpoint validation", () => {
       });
       await receiver.init();
       try {
-        expect(diagnostics).toHaveLength(1);
-        for (const mountPoint of DEFAULT_MOUNT_SPEC.map((m) => m.path)) {
-          if (mountPoint === "/") continue;
-          expect(diagnostics[0]).toContain(mountPoint);
-        }
-        expect(diagnostics[0]).toContain(
-          "a host directory backs this mount and owns no shared buffer",
-        );
+        expect(diagnostics).toEqual([
+          "this machine was restored without /run "
+          + "(a host directory stays with the computer that mounts it)",
+        ]);
       } finally {
         await receiver.destroy();
       }
@@ -599,21 +601,12 @@ describe("checkpoint validation", () => {
     "serves epoll_wait from a restored machine",
     { timeout: 120_000 },
     async () => {
-      // The host answers epoll_pwait from its mirror of the interest list,
-      // built by watching epoll_ctl. The captured guest registered its pipe
-      // before the freeze, so the mirror must arrive with the checkpoint —
-      // a restore without it answers EBADF and the guest's tick dies.
+      // The captured guest registered its pipe before the freeze. The interest
+      // list lives on the kernel's epoll description, so it arrives inside
+      // the kernel memory copy; a restore that lost it would answer EBADF
+      // and the guest's tick would die.
       const checkpoint = await captureRealCheckpoint("checkpoint-epoll.wasm");
       const pid = checkpoint.processes[0]!.pid;
-      expect(checkpoint.epolls).toEqual([{
-        pid,
-        epfd: expect.any(Number),
-        interests: [{
-          fd: expect.any(Number),
-          events: expect.any(Number),
-          data: expect.any(String),
-        }],
-      }]);
 
       let output = "";
       let sawTick = () => {};
@@ -797,6 +790,7 @@ describe("checkpoint validation", () => {
     { timeout: 120_000 },
     async () => {
       const checkpoint = await captureRealCheckpoint("checkpoint-threads.wasm");
+      const expected = await defaultHostExpectation();
       expect(checkpoint.processes.length).toBe(1);
       const bucket = checkpoint.processes[0]!;
       const pid = bucket.pid;
@@ -808,7 +802,7 @@ describe("checkpoint validation", () => {
       // thread's frames parked forever.
       const missingThread = cloneCheckpoint(checkpoint);
       (missingThread.processes[0]! as { threads: unknown[] }).threads = [];
-      const missingAttempt = validateMachineCheckpoint(missingThread, EXPECTED);
+      const missingAttempt = validateMachineCheckpoint(missingThread, expected);
       await expect(missingAttempt).rejects.toThrow(CheckpointRefusedError);
       await expect(missingAttempt).rejects.toThrow(/thread record\(s\)/);
 
@@ -819,7 +813,7 @@ describe("checkpoint validation", () => {
         7,
         true,
       );
-      const brokenAttempt = validateMachineCheckpoint(brokenAnchor, EXPECTED);
+      const brokenAttempt = validateMachineCheckpoint(brokenAnchor, expected);
       await expect(brokenAttempt).rejects.toThrow(CheckpointRefusedError);
       await expect(brokenAttempt).rejects.toThrow(
         /tid \d+'s continuation root is unusable/,
@@ -834,7 +828,7 @@ describe("checkpoint validation", () => {
           corrupted.processes[0]!.threads[0]! as
             unknown as Record<string, unknown>,
         );
-        const attempt = validateMachineCheckpoint(corrupted, EXPECTED);
+        const attempt = validateMachineCheckpoint(corrupted, expected);
         await expect(attempt).rejects.toThrow(CheckpointRefusedError);
         await expect(attempt).rejects.toThrow(reason);
       };
@@ -860,7 +854,7 @@ describe("checkpoint validation", () => {
       };
       const duplicateAttempt = validateMachineCheckpoint(
         duplicateTid,
-        EXPECTED,
+        expected,
       );
       await expect(duplicateAttempt).rejects.toThrow(CheckpointRefusedError);
       await expect(duplicateAttempt).rejects.toThrow(
@@ -900,8 +894,7 @@ describe("checkpoint validation", () => {
     "restores a file mid-write, a directory mid-iteration, and a pending alarm",
     { timeout: 120_000 },
     async () => {
-      // The fixture needs a writable root: a checkpoint carries the
-      // image-backed root filesystem, and scratch mounts do not travel.
+      // The fixture writes its files under a writable `/`.
       const spec: MountSpec[] = [
         { path: "/", source: "image", readonly: false },
       ];
@@ -985,22 +978,17 @@ describe("what a restore says about the mounts it did not get", () => {
     ).toBe("this machine was restored without /tmp (a host directory)");
   });
 
-  it("names a carried mount this host had nowhere to put", () => {
-    expect(describeCheckpointMountGaps(carried([]), ["/srv"])).toBe(
-      "this machine was restored without /srv "
-      + "(this host has no memory-backed mount there)",
-    );
-  });
-
-  it("reports both directions in one line", () => {
+  it("names every missing mount in one line", () => {
     expect(
       describeCheckpointMountGaps(
-        carried([{ mountPoint: "/tmp", reason: "a host directory" }]),
-        ["/srv"],
+        carried([
+          { mountPoint: "/tmp", reason: "a host directory" },
+          { mountPoint: "/run", reason: "a host directory" },
+        ]),
       ),
     ).toBe(
       "this machine was restored without /tmp (a host directory), "
-      + "/srv (this host has no memory-backed mount there)",
+      + "/run (a host directory)",
     );
   });
 });
@@ -1016,7 +1004,6 @@ describe("what a restore does with a handed-over checkpoint", () => {
       // can refuse — and the machine adopted from moved buffers must be whole.
       const checkpoint = await captureRealCheckpoint();
       const memories = checkpoint.processes.map((bucket) => bucket.memory);
-      const mounts = checkpoint.filesystems.map((mount) => mount.bytes);
       expect(checkpoint.kernelMemory.byteLength).toBeGreaterThan(0);
       expect(memories.length).toBeGreaterThan(0);
 
@@ -1027,9 +1014,10 @@ describe("what a restore does with a handed-over checkpoint", () => {
       });
       await replica.init();
       try {
+        // The kernel memory carries `/` and the scratch mounts, so its
+        // transfer moves the machine's files too.
         expect(checkpoint.kernelMemory.byteLength).toBe(0);
         for (const memory of memories) expect(memory.byteLength).toBe(0);
-        for (const bytes of mounts) expect(bytes.byteLength).toBe(0);
 
         const second = await replica.captureCheckpoint(TIMEOUTS);
         expect(second.status).toBe("captured");

@@ -32,7 +32,7 @@ import type {
   CapturedMachine,
   KernelHost,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import type { PeerLink } from "../../../lib/peer-link";
+import type { PeerLink } from "../../../lib/sharing-peer";
 
 /**
  * How long a taker waits for the keeper's machine.
