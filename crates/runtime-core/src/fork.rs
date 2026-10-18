@@ -625,6 +625,7 @@ const FILE_ID_HOST: u8 = 1;
 const FILE_ID_KERNEL_MEMFD: u8 = 2;
 const FILE_ID_KERNEL_SYNTHETIC_REGULAR: u8 = 3;
 const FILE_ID_KERNEL_PROCFS_REGULAR: u8 = 4;
+const FILE_ID_KERNEL_SYSFS_REGULAR: u8 = 5;
 
 fn write_file_id(w: &mut Writer<'_>, file_id: Option<FileId>) -> Result<(), Errno> {
     match file_id {
@@ -655,6 +656,13 @@ fn write_file_id(w: &mut Writer<'_>, file_id: Option<FileId>) -> Result<(), Errn
             w.write_u8(FILE_ID_KERNEL_PROCFS_REGULAR)?;
             w.write_u64(object_id)
         }
+        Some(FileId::Kernel {
+            kind: KernelFileKind::SysFsRegular,
+            object_id,
+        }) => {
+            w.write_u8(FILE_ID_KERNEL_SYSFS_REGULAR)?;
+            w.write_u64(object_id)
+        }
     }
 }
 
@@ -675,6 +683,10 @@ fn read_file_id(r: &mut Reader<'_>) -> Result<Option<FileId>, Errno> {
         })),
         FILE_ID_KERNEL_PROCFS_REGULAR => Ok(Some(FileId::Kernel {
             kind: KernelFileKind::ProcFsRegular,
+            object_id: r.read_u64()?,
+        })),
+        FILE_ID_KERNEL_SYSFS_REGULAR => Ok(Some(FileId::Kernel {
+            kind: KernelFileKind::SysFsRegular,
             object_id: r.read_u64()?,
         })),
         _ => Err(Errno::EINVAL),
@@ -1200,10 +1212,12 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                     SocketDomain::Unix => 0,
                     SocketDomain::Inet => 1,
                     SocketDomain::Inet6 => 2,
+                    SocketDomain::Netlink => 3,
                 })?;
                 w.write_u32(match sock.sock_type {
                     SocketType::Stream => 0,
                     SocketType::Dgram => 1,
+                    SocketType::Raw => 2,
                 })?;
                 w.write_u32(sock.protocol)?;
                 w.write_u32(match sock.state {
@@ -1267,6 +1281,8 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                 // inherited so forked listeners register against the same
                 // readiness event as the parent.
                 w.write_u32(sock.accept_wake_idx.unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(sock.netlink_port)?;
+                w.write_u32(sock.netlink_groups)?;
                 write_durable_socket_state(&mut w, sock)?;
                 // Skip dgram_queue for fork (child starts with empty queue)
             }
@@ -1594,11 +1610,13 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
                 0 => SocketDomain::Unix,
                 1 => SocketDomain::Inet,
                 2 => SocketDomain::Inet6,
+                3 => SocketDomain::Netlink,
                 _ => return Err(Errno::EINVAL),
             };
             let sock_type = match r.read_u32()? {
                 0 => SocketType::Stream,
                 1 => SocketType::Dgram,
+                2 => SocketType::Raw,
                 _ => return Err(Errno::EINVAL),
             };
             let protocol = r.read_u32()?;
@@ -1709,6 +1727,8 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             } else {
                 Some(aw_raw)
             };
+            sock.netlink_port = r.read_u32()?;
+            sock.netlink_groups = r.read_u32()?;
             read_durable_socket_state(&mut r, &mut sock)?;
             sockets.insert_at(idx, sock);
         }
@@ -3052,6 +3072,33 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn test_fork_roundtrips_netlink_socket_port_and_groups() {
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+
+        let mut proc = Process::new(1);
+        let mut socket = SocketInfo::new(
+            SocketDomain::Netlink,
+            SocketType::Raw,
+            crate::netlink::NETLINK_KOBJECT_UEVENT,
+        );
+        socket.state = SocketState::Bound;
+        socket.netlink_port = 42;
+        socket.netlink_groups = 4;
+        let socket_idx = install_socket_for_fork(&mut proc, socket);
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 43).unwrap();
+        let inherited = child.sockets.get(socket_idx).unwrap();
+
+        assert_eq!(inherited.domain, SocketDomain::Netlink);
+        assert_eq!(inherited.sock_type, SocketType::Raw);
+        assert_eq!(inherited.protocol, crate::netlink::NETLINK_KOBJECT_UEVENT);
+        assert_eq!(inherited.state, SocketState::Bound);
+        assert_eq!((inherited.netlink_port, inherited.netlink_groups), (42, 4));
     }
 
     #[test]

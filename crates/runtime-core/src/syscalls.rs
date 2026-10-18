@@ -2119,27 +2119,18 @@ fn handle_input_ioctl(
             if buf.len() < core::mem::size_of::<WpkInputId>() {
                 return Err(Errno::EINVAL);
             }
-            let device = input_state(proc, ofd_idx)?.device;
-            let id = WpkInputId {
-                bustype: BUS_VIRTUAL,
-                vendor: 0x1209,
-                product: if device == 0 { 0x0001 } else { 0x0002 },
-                version: 0x0001,
-            };
+            let id = crate::input::device_id(input_state(proc, ofd_idx)?.device);
             unsafe {
                 core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkInputId, id);
             }
             Ok(())
         }
         n if n == EVIOCGNAME_NR && dir == 2 => {
-            let device = input_state(proc, ofd_idx)?.device;
-            let name: &[u8] = if device == 0 {
-                b"wpk virtual keyboard\0"
-            } else {
-                b"wpk virtual pointer\0"
-            };
-            let copy_len = name.len().min(size).min(buf.len());
-            buf[..copy_len].copy_from_slice(&name[..copy_len]);
+            let name = crate::input::device_name(input_state(proc, ofd_idx)?.device).as_bytes();
+            let copy_len = (name.len() + 1).min(size).min(buf.len());
+            let name_len = copy_len.min(name.len());
+            buf[..name_len].copy_from_slice(&name[..name_len]);
+            buf[name_len..copy_len].fill(0);
             Ok(())
         }
         n if (EVIOCGBIT_NR_BASE..EVIOCGBIT_NR_BASE + 32).contains(&n) && dir == 2 => {
@@ -2500,6 +2491,11 @@ fn namespace_lstat_raw(
     if is_procfs_namespace_path(path) {
         return Err(Errno::ENOENT);
     }
+    if crate::sysfs::is_namespace_path(path) {
+        return crate::sysfs::lookup(path)
+            .map(|node| crate::sysfs::stat(&node))
+            .ok_or(Errno::ENOENT);
+    }
     // `/dev/shm` is a higher-priority writable host mount on both Node and
     // browser. Its root metadata must come from that mount rather than the
     // synthetic devfs directory fallback.
@@ -2567,6 +2563,8 @@ fn namespace_readlink_raw(
             return Err(Errno::EINVAL);
         }
         crate::procfs::procfs_readlink(proc, &entry, &mut target)?
+    } else if crate::sysfs::is_namespace_path(path) {
+        sysfs_readlink(path, &mut target)?
     } else if crate::tmpfs::claims_path(path) {
         crate::tmpfs::readlink(path, &mut target)?
     } else if crate::rootfs::claims_path(path) {
@@ -2582,6 +2580,18 @@ fn namespace_readlink_raw(
         return Err(Errno::ENOENT);
     }
     Ok(target)
+}
+
+/// Copy a sysfs symlink's target into `buf` as readlink(2) does: truncated
+/// to the buffer, returning the copied length.
+fn sysfs_readlink(path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+    let node = crate::sysfs::lookup(path).ok_or(Errno::ENOENT)?;
+    if node.kind != crate::sysfs::SysfsKind::Symlink {
+        return Err(Errno::EINVAL);
+    }
+    let len = node.content.len().min(buf.len());
+    buf[..len].copy_from_slice(&node.content[..len]);
+    Ok(len)
 }
 
 fn append_path_component(path: &mut Vec<u8>, component: &[u8]) {
@@ -2713,6 +2723,7 @@ fn resolve_namespace_path_from(
             Ok(stat) => stat,
             Err(Errno::ENOENT) if is_final && options.allow_missing_final => {
                 if is_procfs_namespace_path(&candidate)
+                    || crate::sysfs::is_namespace_path(&candidate)
                     || (is_devfs_namespace_path(&candidate)
                         && !is_delegated_devfs_path(&candidate))
                 {
@@ -3049,6 +3060,7 @@ fn inspect_directory_entry(
 
 fn ensure_host_mutable_namespace_path(path: &[u8]) -> Result<(), Errno> {
     if is_procfs_namespace_path(path)
+        || crate::sysfs::is_namespace_path(path)
         || (is_devfs_namespace_path(path) && !is_delegated_devfs_path(path))
         || synthetic_file_content(path).is_some()
     {
@@ -3967,6 +3979,9 @@ pub fn sys_open(
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
     }
+    if crate::sysfs::is_namespace_path(&resolved) {
+        return crate::sysfs::open(proc, resolved, oflags);
+    }
 
     // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
     if !is_delegated_devfs_path(&resolved) && crate::devfs::match_devfs_dir(&resolved).is_some() {
@@ -4353,6 +4368,7 @@ pub fn validate_scm_rights_transfer_metadata(
                 | crate::devfs::DEVFS_DIR_HANDLE
                 | crate::tmpfs::TMPFS_DIR_SENTINEL
                 | crate::rootfs::ROOTFS_DIR_SENTINEL
+                | crate::sysfs::SYSFS_DIR_HANDLE
         )
         .then_some(())
         .ok_or(Errno::EOPNOTSUPP),
@@ -4935,8 +4951,9 @@ fn release_ofd_reference_impl(
                     || host_handle == crate::devfs::DEVFS_DIR_HANDLE
                     || host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
                     || host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
+                    || host_handle == crate::sysfs::SYSFS_DIR_HANDLE
                 {
-                    // Procfs/devfs/tmpfs/rootfs directory: nothing to clean up
+                    // Procfs/devfs/tmpfs/rootfs/sysfs directory: nothing to clean up
                 } else if file_type == FileType::CharDevice && host_handle < 0 {
                     // Virtual char devices have no host handle to close.
                     // Nothing to clean up on host side
@@ -5585,7 +5602,7 @@ pub fn sys_read(
             if shut_rd {
                 return Ok(0);
             }
-            if sock_type == SocketType::Dgram {
+            if sock_type != SocketType::Stream {
                 return sys_recv(proc, host, fd, buf, 0);
             }
             match domain {
@@ -5627,6 +5644,7 @@ pub fn sys_read(
                         return Err(Errno::EAGAIN);
                     }
                 }
+                SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
             }
         }
         FileType::TimerFd => {
@@ -6123,7 +6141,7 @@ pub fn sys_write(
                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                 return Err(Errno::EPIPE);
             }
-            if sock_type == SocketType::Dgram {
+            if sock_type != SocketType::Stream {
                 return sys_send(proc, host, fd, buf, 0);
             }
             match domain {
@@ -6177,6 +6195,7 @@ pub fn sys_write(
                         return Err(Errno::EAGAIN);
                     }
                 }
+                SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
             }
         }
         FileType::EventFd => {
@@ -6522,6 +6541,7 @@ pub fn sys_lseek(
             || backing_handle == crate::devfs::DEVFS_DIR_HANDLE
             || backing_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
             || backing_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
+            || backing_handle == crate::sysfs::SYSFS_DIR_HANDLE
         {
             let sentinel = backing_handle;
             let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
@@ -7900,6 +7920,12 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
     } else if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
         synthetic_file_stat(&ofd.path, proc.effective_uid(), proc.effective_gid())
             .ok_or(Errno::EBADF)
+    } else if matches!(ofd.file_id, Some(FileId::Kernel { kind: KernelFileKind::SysFsRegular, .. }))
+        || ofd.host_handle == crate::sysfs::SYSFS_DIR_HANDLE
+    {
+        crate::sysfs::lookup(&ofd.path)
+            .map(|node| crate::sysfs::stat(&node))
+            .ok_or(Errno::EBADF)
     } else if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
         crate::tmpfs::fstat(ofd.host_handle)
     } else if crate::rootfs::is_rootfs_file_handle(ofd.host_handle) {
@@ -8570,6 +8596,9 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return procfs_entry_stat(proc, host, &entry, true);
     }
+    if let Some(node) = crate::sysfs::lookup(&resolved) {
+        return Ok(crate::sysfs::stat(&node));
+    }
     if !is_delegated_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(
             &resolved,
@@ -8615,6 +8644,9 @@ pub fn sys_lstat(
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return procfs_entry_stat(proc, host, &entry, false);
+    }
+    if let Some(node) = crate::sysfs::lookup(&resolved) {
+        return Ok(crate::sysfs::stat(&node));
     }
     if !is_delegated_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(
@@ -9133,6 +9165,9 @@ pub fn sys_readlink(
         // Not a symlink — EINVAL per POSIX
         return Err(Errno::EINVAL);
     }
+    if crate::sysfs::is_namespace_path(&resolved) {
+        return sysfs_readlink(&resolved, buf);
+    }
 
     if let Some(target_fd) = match_dev_fd(&resolved) {
         let target = dev_fd_link_target(proc, &resolved, target_fd)?;
@@ -9326,6 +9361,7 @@ pub fn sys_access(
     )?;
     if amode & W_OK != 0
         && (is_procfs_namespace_path(&resolved.path)
+            || crate::sysfs::is_namespace_path(&resolved.path)
             || synthetic_file_content(&resolved.path).is_some())
     {
         return Err(Errno::EACCES);
@@ -9394,9 +9430,10 @@ pub fn sys_opendir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Re
     }
     check_access(proc, &st, R_OK | X_OK)?;
     if is_procfs_namespace_path(&resolved.path)
+        || crate::sysfs::is_namespace_path(&resolved.path)
         || (is_devfs_namespace_path(&resolved.path) && !is_delegated_devfs_path(&resolved.path))
     {
-        // Kernel-owned procfs/devfs directory iteration is implemented by
+        // Kernel-owned procfs/devfs/sysfs directory iteration is implemented by
         // open(O_DIRECTORY)+getdents64. This legacy directory-stream API has
         // no synthetic-stream sentinel, so fail truthfully instead of routing
         // the name into a hidden host directory.
@@ -9691,6 +9728,29 @@ pub fn sys_getdents64(
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         ofd.dir_host_handle
     };
+
+    if dir_handle == crate::sysfs::SYSFS_DIR_HANDLE
+        || dir_handle == -2 && crate::sysfs::is_namespace_path(&path)
+    {
+        if dir_handle == -2 {
+            return Ok(0);
+        }
+        let entry_offset = proc
+            .ofd_table
+            .get(ofd_idx)
+            .ok_or(Errno::EBADF)?
+            .dir_entry_offset;
+        let (bytes, new_offset, exhausted) =
+            crate::sysfs::getdents64(&path, buf, entry_offset)?;
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.dir_entry_offset = new_offset;
+            ofd.set_directory_offset(new_offset);
+            if exhausted {
+                ofd.dir_host_handle = -2;
+            }
+        }
+        return Ok(bytes);
+    }
 
     // Devfs directories: generate entries in-kernel
     if dir_handle == crate::devfs::DEVFS_DIR_HANDLE
@@ -11566,6 +11626,24 @@ pub fn find_listener_fd_by_accept_wake(proc: &Process, wake_idx: u32) -> Option<
     })
 }
 
+fn is_netlink_socket(proc: &Process, fd: i32) -> bool {
+    let Some(ofd) = proc
+        .fd_table
+        .get(fd)
+        .ok()
+        .and_then(|entry| proc.ofd_table.get(entry.ofd_ref.0))
+    else {
+        return false;
+    };
+    if ofd.file_type != FileType::Socket {
+        return false;
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    proc.sockets
+        .get(sock_idx)
+        .is_some_and(|sock| sock.domain == crate::socket::SocketDomain::Netlink)
+}
+
 /// Create a socket, returning the new fd.
 pub fn sys_socket(
     proc: &mut Process,
@@ -11581,15 +11659,22 @@ pub fn sys_socket(
         AF_UNIX => SocketDomain::Unix,
         AF_INET => SocketDomain::Inet,
         AF_INET6 => SocketDomain::Inet6,
+        AF_NETLINK => SocketDomain::Netlink,
         _ => return Err(Errno::EAFNOSUPPORT),
     };
 
     let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
-    let stype = match base_type {
-        SOCK_STREAM => SocketType::Stream,
-        SOCK_DGRAM => SocketType::Dgram,
+    let stype = match (dom, base_type) {
+        (SocketDomain::Netlink, SOCK_DGRAM) => SocketType::Dgram,
+        (SocketDomain::Netlink, SOCK_RAW) => SocketType::Raw,
+        (SocketDomain::Netlink, _) => return Err(Errno::ESOCKTNOSUPPORT),
+        (_, SOCK_STREAM) => SocketType::Stream,
+        (_, SOCK_DGRAM) => SocketType::Dgram,
         _ => return Err(Errno::EPROTOTYPE),
     };
+    if dom == SocketDomain::Netlink && protocol != crate::netlink::NETLINK_KOBJECT_UEVENT {
+        return Err(Errno::EPROTONOSUPPORT);
+    }
 
     let sock = SocketInfo::new(dom, stype, protocol);
     let sock_idx = proc.sockets.alloc(sock);
@@ -12757,6 +12842,7 @@ fn dgram_matches_connected_peer(
         SocketDomain::Unix => sock
             .peer_idx
             .is_some_and(|peer| unix_dgram_matches_peer(owner_pid, peer, datagram)),
+        SocketDomain::Netlink => false,
     }
 }
 
@@ -13112,6 +13198,11 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
                 Ok(path_offset)
             }
         }
+        SocketDomain::Netlink => Ok(crate::netlink::write_sockaddr(
+            buf,
+            sock.netlink_port,
+            sock.netlink_groups,
+        )),
     }
 }
 
@@ -13141,6 +13232,7 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
                 return Err(Errno::ENOTCONN);
             }
         }
+        SocketDomain::Netlink => {}
     }
     match sock.domain {
         SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.peer_addr, sock.peer_port)),
@@ -13152,6 +13244,7 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
                     as usize,
             )
         }
+        SocketDomain::Netlink => Ok(crate::netlink::write_sockaddr(buf, 0, 0)),
     }
 }
 
@@ -13167,6 +13260,9 @@ pub fn sys_shutdown(
 ) -> Result<(), Errno> {
     use wasm_posix_shared::socket::*;
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EOPNOTSUPP);
+    }
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
 
@@ -13275,6 +13371,9 @@ pub fn sys_send(
     use crate::socket::{SocketDomain, SocketState, SocketType};
     use wasm_posix_shared::socket::{MSG_NOSIGNAL, MSG_OOB};
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EOPNOTSUPP);
+    }
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -13311,6 +13410,7 @@ pub fn sys_send(
                 return Err(Errno::ECONNREFUSED);
             }
             SocketDomain::Unix => {}
+            SocketDomain::Netlink => return Err(Errno::EOPNOTSUPP),
         }
     }
     if sock.state != SocketState::Connected {
@@ -13386,6 +13486,7 @@ pub fn sys_send(
             }
             result
         }
+        SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
     }
 }
 
@@ -13404,6 +13505,9 @@ pub fn sys_recv(
     use wasm_posix_shared::socket::{MSG_OOB, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EAGAIN);
+    }
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -13498,11 +13602,13 @@ pub fn sys_getsockopt(proc: &mut Process, fd: i32, level: u32, optname: u32) -> 
             SO_TYPE => Ok(match sock.sock_type {
                 SocketType::Stream => SOCK_STREAM,
                 SocketType::Dgram => SOCK_DGRAM,
+                SocketType::Raw => SOCK_RAW,
             }),
             SO_DOMAIN => Ok(match sock.domain {
                 SocketDomain::Unix => AF_UNIX,
                 SocketDomain::Inet => AF_INET,
                 SocketDomain::Inet6 => AF_INET6,
+                SocketDomain::Netlink => AF_NETLINK,
             }),
             // Linux semantics: return cached errno and clear it.
             SO_ERROR => {
@@ -14241,6 +14347,15 @@ pub fn sys_bind(
             sock.state = SocketState::Bound;
             Ok(())
         }
+        SocketDomain::Netlink => {
+            let (port, groups) = crate::netlink::parse_sockaddr(addr)?;
+            let pid = proc.pid;
+            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            sock.netlink_port = if port == 0 { pid } else { port };
+            sock.netlink_groups = groups;
+            sock.state = SocketState::Bound;
+            Ok(())
+        }
     }
 }
 
@@ -14284,6 +14399,7 @@ pub fn sys_listen(
                 sys_bind(proc, host, fd, &wildcard)?;
             }
             SocketDomain::Unix => return Err(Errno::EINVAL),
+            SocketDomain::Netlink => return Err(Errno::EOPNOTSUPP),
         }
     } else if state != SocketState::Bound && state != SocketState::Listening {
         return Err(Errno::EINVAL);
@@ -14345,6 +14461,7 @@ pub fn sys_listen(
             }
         }
         SocketDomain::Unix => {}
+        SocketDomain::Netlink => {}
     }
     Ok(())
 }
@@ -14433,6 +14550,7 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
                 SocketDomain::Unix => {
                     accepted.bind_path = bind_path;
                 }
+                SocketDomain::Netlink => {}
             }
             accepted.peer_port = pc.peer_port;
             accepted.peer_cred = pc.peer_cred;
@@ -14776,7 +14894,7 @@ pub fn sys_connect(
                                 SocketDomain::Inet6 => {
                                     is_unspecified_addr6(s.bind_addr6) && !ipv6_v6only(s)
                                 }
-                                SocketDomain::Unix => false,
+                                SocketDomain::Unix | SocketDomain::Netlink => false,
                             }
                         {
                             listener_idx = Some(i);
@@ -15083,6 +15201,7 @@ pub fn sys_connect(
 
             Ok(())
         }
+        SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
     }
 }
 
@@ -15157,6 +15276,9 @@ pub fn sys_sendto(
 ) -> Result<usize, Errno> {
     use crate::socket::{SocketDomain, SocketState, SocketType};
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EOPNOTSUPP);
+    }
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -15189,6 +15311,7 @@ pub fn sys_sendto(
             let peer_idx = resolve_unix_datagram_destination(proc, host, addr)?;
             unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf, Vec::new())
         }
+        SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
     };
     finish_datagram_send(proc, flags, result)
 }
@@ -15334,6 +15457,7 @@ fn recv_datagram_message(
             );
             wasm_posix_shared::kernel_scratch_wire::SOCKADDR_UNIX_PATH_OFFSET_BYTES as usize
         }
+        SocketDomain::Netlink => crate::netlink::write_sockaddr(addr_buf, 0, 0),
     };
 
     Ok(MessageReceive {
@@ -15357,6 +15481,9 @@ pub fn sys_recvfrom(
 ) -> Result<(usize, usize), Errno> {
     use crate::socket::SocketType;
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EAGAIN);
+    }
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -15752,9 +15879,16 @@ fn poll_check_depth(
                             revents |= POLLIN;
                         }
                     }
+                    if sock.domain == crate::socket::SocketDomain::Netlink
+                        && pollfd.events & POLLOUT != 0
+                    {
+                        revents |= POLLOUT;
+                    }
                     // DGRAM socket readiness is datagram-queue based for reads
                     // and generally writable unless the write side is shut down.
-                    if sock.sock_type == SocketType::Dgram {
+                    if sock.sock_type == SocketType::Dgram
+                        && sock.domain != crate::socket::SocketDomain::Netlink
+                    {
                         if sock.connect_error != 0 {
                             revents |= POLLERR;
                         }
@@ -16205,6 +16339,9 @@ pub fn sys_openat(
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
     }
+    if crate::sysfs::is_namespace_path(&resolved) {
+        return crate::sysfs::open(proc, resolved, oflags);
+    }
 
     // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
     if !is_delegated_devfs_path(&resolved) && crate::devfs::match_devfs_dir(&resolved).is_some() {
@@ -16380,6 +16517,9 @@ pub fn sys_fstatat(
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
         return procfs_entry_stat(proc, host, &entry, follow);
+    }
+    if let Some(node) = crate::sysfs::lookup(&resolved) {
+        return Ok(crate::sysfs::stat(&node));
     }
     if !is_delegated_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(
@@ -18558,6 +18698,7 @@ pub fn sys_pathconf(
         return terminal_pathconf_value(name);
     }
     if is_procfs_namespace_path(&resolved)
+        || crate::sysfs::is_namespace_path(&resolved)
         || (is_devfs_namespace_path(&resolved) && !is_delegated_devfs_path(&resolved))
     {
         return virtual_filesystem_pathconf_value(name);
@@ -18643,6 +18784,7 @@ pub fn sys_fpathconf(
             if is_terminal {
                 terminal_pathconf_value(name)
             } else if is_procfs_namespace_path(&path)
+                || crate::sysfs::is_namespace_path(&path)
                 || (is_devfs_namespace_path(&path) && !is_delegated_devfs_path(&path))
             {
                 virtual_filesystem_pathconf_value(name)
@@ -19222,6 +19364,7 @@ pub fn sys_faccessat(
     let resolved = resolve_at_path(proc, host, dirfd, path, options)?;
     if amode & W_OK != 0
         && (is_procfs_namespace_path(&resolved.path)
+            || crate::sysfs::is_namespace_path(&resolved.path)
             || synthetic_file_content(&resolved.path).is_some())
     {
         return Err(Errno::EACCES);
@@ -19427,6 +19570,9 @@ pub fn sys_readlinkat(
             return crate::procfs::procfs_readlink(proc, &entry, buf);
         }
         return Err(Errno::EINVAL);
+    }
+    if crate::sysfs::is_namespace_path(&resolved) {
+        return sysfs_readlink(&resolved, buf);
     }
 
     if let Some(target_fd) = match_dev_fd(&resolved) {
@@ -19735,6 +19881,24 @@ fn procfs_statfs() -> WasmStatfs {
     }
 }
 
+fn sysfs_statfs() -> WasmStatfs {
+    WasmStatfs {
+        f_type: 0x6265_6572, // SYSFS_MAGIC
+        f_bsize: 4096,
+        f_blocks: 0,
+        f_bfree: 0,
+        f_bavail: 0,
+        f_files: 0,
+        f_ffree: 0,
+        f_fsid: 0,
+        f_namelen: 255,
+        f_frsize: 4096,
+        f_flags: wasm_posix_shared::statfs_flags::ST_RDONLY
+            | wasm_posix_shared::statfs_flags::ST_NOSUID,
+        _pad: 0,
+    }
+}
+
 fn devfs_statfs() -> WasmStatfs {
     WasmStatfs {
         f_type: 0x1373, // DEVFS_SUPER_MAGIC
@@ -19783,6 +19947,9 @@ fn virtual_statfs_for_path(resolved: &[u8], pid: u32) -> Option<WasmStatfs> {
         || resolved.starts_with(b"/proc/")
     {
         return Some(procfs_statfs());
+    }
+    if crate::sysfs::is_namespace_path(resolved) {
+        return Some(sysfs_statfs());
     }
     if (!is_delegated_devfs_path(resolved) && crate::devfs::match_devfs_dir(resolved).is_some())
         || match_virtual_device(resolved).is_some()
@@ -19984,6 +20151,9 @@ pub fn sys_sendmsg(
     use crate::socket::{SocketDomain, SocketState, SocketType};
     use wasm_posix_shared::socket::{MSG_NOSIGNAL, MSG_OOB};
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EOPNOTSUPP);
+    }
     if ancillary_fds.is_empty() {
         return if let Some(addr) = addr {
             sys_sendto(proc, host, fd, iov_base, flags, addr)
@@ -20082,6 +20252,7 @@ pub fn sys_sendmsg(
                 Ok(written)
             }
         }
+        SocketType::Raw => Err(Errno::EOPNOTSUPP),
     }
 }
 
@@ -20098,6 +20269,9 @@ pub fn sys_recvmsg(
     use wasm_posix_shared::socket::{MSG_CMSG_CLOEXEC, MSG_OOB, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EAGAIN);
+    }
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -52163,6 +52337,249 @@ impl HostIO for RelSymlinkMock {
                 .unwrap_err();
             assert_eq!(err, Errno::ENOTTY, "EVIOCGRAB(0) must be rejected too");
         }
+    }
+
+    fn uevent_monitor(proc: &mut Process, host: &mut MockHostIO, sock_type: u32) -> i32 {
+        use wasm_posix_shared::socket::*;
+        sys_socket(
+            proc,
+            host,
+            AF_NETLINK,
+            sock_type | SOCK_NONBLOCK,
+            crate::netlink::NETLINK_KOBJECT_UEVENT,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn netlink_accepts_only_uevent_datagram_or_raw_sockets() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        assert_eq!(
+            sys_socket(&mut proc, &mut host, AF_NETLINK, SOCK_DGRAM, 0),
+            Err(Errno::EPROTONOSUPPORT)
+        );
+        assert_eq!(
+            sys_socket(&mut proc, &mut host, AF_NETLINK, SOCK_STREAM, crate::netlink::NETLINK_KOBJECT_UEVENT),
+            Err(Errno::ESOCKTNOSUPPORT)
+        );
+        let raw = uevent_monitor(&mut proc, &mut host, SOCK_RAW);
+        assert_eq!(sys_getsockopt(&mut proc, raw, SOL_SOCKET, SO_TYPE), Ok(SOCK_RAW));
+        assert_eq!(sys_getsockopt(&mut proc, raw, SOL_SOCKET, SO_DOMAIN), Ok(AF_NETLINK));
+    }
+
+    #[test]
+    fn netlink_monitor_binds_to_its_pid_and_never_receives() {
+        use wasm_posix_shared::poll::*;
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(42);
+        let mut host = MockHostIO::new();
+        let fd = uevent_monitor(&mut proc, &mut host, SOCK_DGRAM);
+        let mut addr = [0u8; 12];
+        addr[0] = AF_NETLINK as u8;
+        addr[8] = 4;
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
+
+        let mut name = [0u8; 12];
+        assert_eq!(sys_getsockname(&proc, fd, &mut name), Ok(12));
+        assert_eq!(crate::netlink::parse_sockaddr(&name), Ok((42, 4)));
+
+        let mut buf = [0u8; 64];
+        assert_eq!(sys_recv(&mut proc, &mut host, fd, &mut buf, 0), Err(Errno::EAGAIN));
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf), Err(Errno::EAGAIN));
+        assert_eq!(sys_send(&mut proc, &mut host, fd, b"add@/", 0), Err(Errno::EOPNOTSUPP));
+
+        let mut fds = [WasmPollFd { fd, events: (POLLIN | POLLOUT) as i16, revents: 0 }];
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut fds, 0), Ok(1));
+        assert_eq!(fds[0].revents, POLLOUT as i16);
+    }
+
+    #[test]
+    fn netlink_rejects_foreign_addresses_and_connection_operations() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = uevent_monitor(&mut proc, &mut host, SOCK_RAW);
+        let mut addr = [0u8; 12];
+        addr[0] = AF_NETLINK as u8;
+        assert_eq!(sys_bind(&mut proc, &mut host, fd, &addr[..8]), Err(Errno::EINVAL));
+        let mut inet = addr;
+        inet[0] = AF_INET as u8;
+        assert_eq!(sys_bind(&mut proc, &mut host, fd, &inet), Err(Errno::EINVAL));
+
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &addr), Err(Errno::EOPNOTSUPP));
+        assert_eq!(sys_listen(&mut proc, &mut host, fd, 1), Err(Errno::EOPNOTSUPP));
+        assert_eq!(sys_shutdown(&mut proc, &mut host, fd, SHUT_RDWR), Err(Errno::EOPNOTSUPP));
+        assert_eq!(sys_sendto(&mut proc, &mut host, fd, b"add@/", 0, &addr), Err(Errno::EOPNOTSUPP));
+        let mut buf = [0u8; 64];
+        let mut from = [0u8; 12];
+        assert_eq!(
+            sys_recvfrom(&mut proc, &mut host, fd, &mut buf, 0, &mut from),
+            Err(Errno::EAGAIN)
+        );
+    }
+
+    #[test]
+    fn sysfs_resolves_a_drm_devnum_the_way_libdrm_does() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let drm_dir = sys_stat(&mut proc, &mut host, b"/sys/dev/char/226:0/device/drm").unwrap();
+        assert_eq!(drm_dir.st_mode & S_IFMT, S_IFDIR);
+
+        let link = sys_lstat(&mut proc, &mut host, b"/sys/dev/char/226:0").unwrap();
+        assert_eq!(link.st_mode & S_IFMT, S_IFLNK);
+        let mut target = [0u8; 128];
+        let len = sys_readlink(&mut proc, &mut host, b"/sys/dev/char/226:0", &mut target).unwrap();
+        assert_eq!(&target[..len], b"../../devices/platform/kandelo-drm/drm/card0");
+
+        let fd = sys_open(&mut proc, &mut host, b"/sys/dev/char/226:128/uevent", O_RDONLY, 0).unwrap();
+        let mut uevent = [0u8; 128];
+        let len = sys_read(&mut proc, &mut host, fd, &mut uevent).unwrap();
+        assert_eq!(
+            &uevent[..len],
+            b"MAJOR=226\nMINOR=128\nDEVNAME=dri/renderD128\nDEVTYPE=drm_minor\n"
+        );
+        assert_eq!(sys_fstat(&proc, &mut host, fd).unwrap().st_size, len as u64);
+    }
+
+    #[test]
+    fn sysfs_is_read_only_and_owns_its_namespace() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/sys/class/drm/card0/uevent", O_WRONLY, 0),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/sys/missing").unwrap_err(), Errno::ENOENT);
+        assert_eq!(sys_mkdir(&mut proc, &mut host, b"/sys/missing", 0o755), Err(Errno::EROFS));
+    }
+
+    #[test]
+    fn sysfs_is_a_read_only_mount_of_existing_files() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let st = sys_statfs(&mut proc, &mut host, b"/sys").unwrap();
+        assert_eq!(st.f_type, 0x6265_6572);
+        assert_ne!(st.f_flags & wasm_posix_shared::statfs_flags::ST_RDONLY, 0);
+
+        let uevent = b"/sys/class/drm/card0/uevent";
+        assert_eq!(
+            sys_open(&mut proc, &mut host, uevent, O_RDONLY | O_DIRECTORY, 0),
+            Err(Errno::ENOTDIR)
+        );
+        assert_eq!(
+            sys_open(&mut proc, &mut host, uevent, O_RDONLY | O_CREAT | O_EXCL, 0o644),
+            Err(Errno::EEXIST)
+        );
+    }
+
+    #[test]
+    fn sysfs_stays_read_only_beside_the_in_kernel_rootfs() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/sys", 0o555, 0, 0, 2).unwrap();
+        crate::rootfs::insert_base_dir(b"/data", 0o777, 0, 0, 3).unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        assert_eq!(sys_mkdir(&mut proc, &mut host, b"/sys/x", 0o755), Err(Errno::EROFS));
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/sys/x", O_WRONLY | O_CREAT, 0o644),
+            Err(Errno::EROFS)
+        );
+        assert_eq!(
+            sys_unlink(&mut proc, &mut host, b"/sys/class/drm/card0/uevent"),
+            Err(Errno::EROFS)
+        );
+        let fd = sys_open(&mut proc, &mut host, b"/data/f", O_WRONLY | O_CREAT, 0o644).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(sys_rename(&mut proc, &mut host, b"/data/f", b"/sys/f"), Err(Errno::EROFS));
+        assert!(sys_stat(&mut proc, &mut host, b"/sys/class/drm/card0").is_ok());
+    }
+
+    #[test]
+    fn a_rootfs_directory_lists_its_entries_beside_sysfs() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/data", 0o777, 0, 0, 2).unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for name in [&b"/data/foo"[..], &b"/data/bar"[..]] {
+            let fd = sys_open(&mut proc, &mut host, name, O_WRONLY | O_CREAT, 0o644).unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        let fd = sys_open(&mut proc, &mut host, b"/data", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let mut buf = [0u8; 512];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+        let mut names = Vec::new();
+        let mut pos = 0;
+        while pos < len {
+            let reclen = u16::from_le_bytes([buf[pos + 16], buf[pos + 17]]) as usize;
+            let name = &buf[pos + 19..pos + reclen];
+            names.push(name[..name.iter().position(|&b| b == 0).unwrap()].to_vec());
+            pos += reclen;
+        }
+        names.sort();
+        assert_eq!(names, [b".".to_vec(), b"..".to_vec(), b"bar".to_vec(), b"foo".to_vec()]);
+    }
+
+    #[test]
+    fn sysfs_file_stays_readable_in_a_forked_child() {
+        use crate::process_table::ProcessTable;
+
+        const PARENT: u32 = 100;
+        const FORK_CHILD: u32 = 101;
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        assert_eq!(table.create_process().unwrap(), PARENT);
+        let fd = sys_open(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            b"/sys/dev/char/226:0/uevent",
+            O_RDONLY,
+            0,
+        )
+        .unwrap();
+        let mut first = [0u8; 10];
+        sys_read(table.get_mut(PARENT).unwrap(), &mut host, fd, &mut first).unwrap();
+        assert_eq!(&first, b"MAJOR=226\n");
+
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), FORK_CHILD);
+        let mut rest = [0u8; 64];
+        let len = sys_read(table.get_mut(FORK_CHILD).unwrap(), &mut host, fd, &mut rest).unwrap();
+        assert_eq!(&rest[..len], b"MINOR=0\nDEVNAME=dri/card0\nDEVTYPE=drm_minor\n");
+
+        table.remove_process(PARENT).unwrap();
+        table.remove_process(FORK_CHILD).unwrap();
+    }
+
+    #[test]
+    fn sysfs_lists_a_directory() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/sys/class/drm", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let mut buf = [0u8; 512];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+        let mut names = Vec::new();
+        let mut pos = 0;
+        while pos < len {
+            let reclen = u16::from_le_bytes([buf[pos + 16], buf[pos + 17]]) as usize;
+            let name = &buf[pos + 19..pos + reclen];
+            names.push(name[..name.iter().position(|&b| b == 0).unwrap()].to_vec());
+            pos += reclen;
+        }
+        assert_eq!(names, [b".".to_vec(), b"..".to_vec(), b"card0".to_vec(), b"renderD128".to_vec()]);
+    }
+
+    #[test]
+    fn dri_nodes_stat_with_drm_major_226_rdev() {
+        let card = virtual_device_stat(VirtualDevice::DriCard0, 0, 0);
+        let render = virtual_device_stat(VirtualDevice::DriRenderD128, 0, 0);
+        assert_eq!(card.st_rdev, makedev(226, 0));
+        assert_eq!(render.st_rdev, makedev(226, 128));
     }
 
     #[test]
