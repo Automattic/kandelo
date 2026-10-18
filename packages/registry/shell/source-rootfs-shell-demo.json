@@ -212,6 +212,38 @@
         "hostPointer": true
       }
     },
+    "cage": {
+      "identity": {
+        "title": "cage kiosk",
+        "summary": "Upstream cage, a wlroots kiosk compositor, on /dev/dri/card0: wlroots' GLES2 renderer draws through the host's WebGL2 bridge into gbm scanout buffers, and cage shows one application full screen — wlterm, a VT100 terminal running a shell. Exiting the shell ends the session.",
+        "accent": "#5b8c3a",
+        "glyph": "C",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp /usr/local/bin/cage -- /usr/local/bin/wlterm"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
     "omarchy": {
       "identity": {
         "title": "Omarchy-style desktop",

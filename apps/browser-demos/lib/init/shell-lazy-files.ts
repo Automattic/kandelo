@@ -35,6 +35,7 @@ import sqlite3WasmUrl from "@binaries/programs/wasm32/sqlite3.wasm?url";
 import lhaWasmUrl from "@binaries/programs/wasm32/lha.wasm?url";
 import quakeWasmUrl from "@binaries/programs/wasm32/quake.wasm?url";
 import footWasmUrl from "@binaries/programs/wasm32/foot.wasm?url";
+import cageWasmUrl from "@binaries/programs/wasm32/cage/cage.wasm?url";
 import dbusDaemonWasmUrl from "@binaries/programs/wasm32/dbus/dbus-daemon.wasm?url";
 import qtgalleryWasmUrl from "@binaries/programs/wasm32/qtgallery.wasm?url";
 import quickshellWasmUrl from "@binaries/programs/wasm32/quickshell.wasm?url";
@@ -111,6 +112,7 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/lha.wasm": lhaWasmUrl,
   "programs/quake.wasm": quakeWasmUrl,
   "programs/foot.wasm": footWasmUrl,
+  "programs/cage/cage.wasm": cageWasmUrl,
   "programs/dbus/dbus-daemon.wasm": dbusDaemonWasmUrl,
   "programs/qtgallery.wasm": qtgalleryWasmUrl,
   "programs/quickshell.wasm": quickshellWasmUrl,

@@ -2287,6 +2287,13 @@
   visibility: hidden;
   pointer-events: none;
 }
+/* The terminal view gives the full-width dock's reserved space to the
+   terminal, while the demo view keeps it out of the surface. Keep it out
+   here too, so the size reported while the terminal shows is the size the
+   demo view shows. */
+.kdocked-app.is-terminal-view.is-dock-full-width .kmachine-primary-slot.is-hidden.is-measured {
+  bottom: var(--kdock-height, 0px);
+}
 .kmachine-primary-slot > * {
   flex: 1;
 }

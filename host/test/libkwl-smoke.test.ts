@@ -1,53 +1,43 @@
 /**
- * PR7 Phase-2 gate: the libkwl toolkit (examples/libs/libkwl) drives a real
- * client window against the wlcompositor server — connect, map, composite,
- * and route input — through its create/draw/commit/dispatch API.
+ * The libkwl toolkit (examples/libs/libkwl) drives a real client window
+ * under cage, the wlroots kiosk compositor — connect, map, and route input
+ * — through its create/draw/commit/dispatch API.
  *
- * Spawns TWO programs under one NodeKernelHost — the compositor
- * (programs/wlcompositor/wlcompositor.c) and a libkwl app
- * (programs/kwldemo.c) — talking over the AF_UNIX socket at /tmp/wayland-0,
- * the same harness as host/test/wlcompositor-smoke.test.ts. Where that test
+ * cage runs a libkwl app (programs/kwldemo.c) as its session client over
+ * the AF_UNIX socket at /tmp/wayland-0. Where host/test/cage-smoke.test.ts
  * uses a hand-written raw libwayland-client, this one exercises the toolkit:
  *
- *   - kwl_window_create() binds the globals, maps a 320x240 toplevel, and
- *     allocates its double-buffered wl_shm buffer over a gbm prime-fd;
- *   - the app clears the back buffer to a non-black bg, draws a button with
- *     libwpkdraw, and commits — the compositor imports + composites it, and
- *     its COMPOSITE_SAMPLE at surface-local (10,10) lands in libkwl's CSD
- *     titlebar (rows 0–27, bg 0x2a3040), asserted non-black — proving the
- *     client's buffer crossed the process boundary;
- *   - a host-injected absolute pointer motion moves the cursor to a point
- *     inside the window, and a button press there is routed through libkwl
- *     to KWL_POINTER_BUTTON → ON_CLICK;
+ *   - kwl_window_create() binds the globals, maps a toplevel, and allocates
+ *     its double-buffered wl_shm buffer over a gbm prime-fd; cage maximizes
+ *     it to the output and maps it once a committed buffer imports;
  *   - a host-injected key A is compiled through libkwl's xkb path to
- *     KWL_TEXT "a" → GOT_TEXT.
+ *     KWL_TEXT "a" → GOT_TEXT, with and without shift;
+ *   - a host-injected absolute pointer motion moves the cursor to a point
+ *     inside the button, and a button press there is routed through libkwl
+ *     to KWL_POINTER_BUTTON → ON_CLICK.
  *
- * Both processes exit 0. Skips if the binaries aren't built (bare checkout).
+ * kwldemo exits 0, and cage exits with its status. Skips if the binaries
+ * aren't built (bare checkout).
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { WLROOTS_ENV, compositorBytes, hasSession, sessionRootfs } from "./wlroots-session";
 
-const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
 const kwldemoBin = tryResolveBinary("programs/kwldemo.wasm");
-const hasBinaries = !!compositorBin && !!kwldemoBin;
+const hasBinaries = hasSession("cage") && !!kwldemoBin;
 
-// The input canvas matches the compositor's card0 output (1920x1080) so an
-// injected absolute pointer coordinate maps 1:1 to the compositor's cursor
-// position (ABS_X.maximum = canvasW-1, scaled to g.width). We then move the
-// cursor to a point inside the kwldemo window before pressing — the
-// compositor's default cursor centre (960,540) is outside it. The v2
-// compositor places an unmatched app_id at the first cascade slot
-// (160,120), and libkwl adds a KWL_TITLEBAR_H (28px) CSD bar above the
-// 320x240 content, so the content occupies (160,148)–(480,388) on the
-// output.
+// The input canvas matches card0's output (1920x1080) so an injected
+// absolute pointer coordinate maps 1:1 to the cursor position. cage places
+// the maximized window at (0,0), and libkwl adds a KWL_TITLEBAR_H (28px)
+// CSD bar above the content.
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
-// Output-space point mapping to content-local (160,152) — comfortably
-// inside the kwldemo button rect (8,8)–(312,232).
-const POINT_X = 320;
-const POINT_Y = 300;
+// Output-space point mapping to content-local (100,72) — inside the
+// kwldemo button rect (8,8)–(312,232).
+const POINT_X = 100;
+const POINT_Y = 100;
 
 // linux/input-event-codes.h
 const EV_SYN = 0x00;
@@ -59,11 +49,6 @@ const ABS_Y = 0x01;
 const KEY_A = 30;
 const KEY_LEFTSHIFT = 42;
 const BTN_LEFT = 0x110;
-
-function loadBytes(path: string): ArrayBuffer {
-  const buf = readFileSync(path);
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-}
 
 async function waitFor(
   ref: { value: string },
@@ -79,16 +64,16 @@ async function waitFor(
   throw new Error(`Timed out waiting for ${JSON.stringify(needle)}.\n${context()}`);
 }
 
-describe("libkwl — toolkit window maps, composites, and routes input", () => {
+describe("libkwl — toolkit window maps and routes input", () => {
   it.skipIf(!hasBinaries)(
-    "kwldemo bg composites; injected button + key reach the app",
+    "kwldemo maps; injected button + key reach the app",
     async () => {
-      const compositorBytes = loadBytes(compositorBin!);
-      const kwldemoBytes = loadBytes(kwldemoBin!);
-
       const out = { value: "" };
       const err = { value: "" };
       const host = new NodeKernelHost({
+        rootfsImage: await sessionRootfs("cage", [
+          { path: "/usr/bin/kwldemo", bytes: new Uint8Array(readFileSync(kwldemoBin!)), mode: 0o755 },
+        ]),
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
       });
@@ -100,26 +85,13 @@ describe("libkwl — toolkit window maps, composites, and routes input", () => {
         await host.init();
         host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
-        // --- compositor (server) ---
-        const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
-        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
-
-        // --- kwldemo (libkwl client) ---
-        const demoExit = host.spawn(kwldemoBytes, ["kwldemo"], {});
+        const cageExit = host.spawn(compositorBytes("cage"), ["cage", "--", "/usr/bin/kwldemo"], {
+          env: WLROOTS_ENV,
+        });
 
         // The toolkit bound globals, mapped the toplevel, drew + committed a
         // frame, and the compositor presented it before printing KWLDEMO_READY.
         await waitFor(out, "KWLDEMO_READY", 20_000, dump);
-
-        // The compositor imported the app's prime-fd and composited the
-        // window; the sample at surface-local (10,10) is in the CSD
-        // titlebar (rows 0-27, bg 0x2a3040) and must be non-black.
-        await waitFor(out, "COMPOSITE_SAMPLE", 5_000, dump);
-        const sample = out.value.match(/COMPOSITE_SAMPLE x=\d+ y=\d+ px=0x([0-9a-f]{8})/);
-        expect(sample, `no composite sample.\n${dump()}`).not.toBeNull();
-        const px = parseInt(sample![1], 16);
-        expect(px & 0xffffff, `composited pixel is black (0x${px.toString(16)})\n${dump()}`)
-          .not.toBe(0);
 
         // Keyboard first — kwldemo's loop exits once it has seen both a
         // click and a text event, so all key assertions must precede the
@@ -152,22 +124,15 @@ describe("libkwl — toolkit window maps, composites, and routes input", () => {
         host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
         await waitFor(out, "ON_CLICK", 10_000, dump);
 
-        // The app saw both events and exits cleanly.
-        const demoCode = await Promise.race([
-          demoExit,
+        // The app saw both events and exits cleanly; cage exits with its
+        // status.
+        const cageCode = await Promise.race([
+          cageExit,
           new Promise<number>((_, reject) =>
-            setTimeout(() => reject(new Error(`kwldemo timed out.\n${dump()}`)), 25_000)),
+            setTimeout(() => reject(new Error(`cage timed out.\n${dump()}`)), 25_000)),
         ]);
-        expect(demoCode, `kwldemo exit.\n${dump()}`).toBe(0);
+        expect(cageCode, `cage exit.\n${dump()}`).toBe(0);
         expect(out.value).toContain("KWLDEMO_OK");
-
-        // The compositor exits once its last client disconnects.
-        const compCode = await Promise.race([
-          compExit,
-          new Promise<number>((_, reject) =>
-            setTimeout(() => reject(new Error(`compositor timed out.\n${dump()}`)), 10_000)),
-        ]);
-        expect(compCode, `compositor exit.\n${dump()}`).toBe(0);
       } finally {
         await host.destroy().catch(() => {});
       }
