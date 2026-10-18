@@ -4013,3 +4013,23 @@ outside this change. The ABI snapshot check also fails on unrelated
 existing kernel/export/IOCTL differences; no ABI files or public
 instrumentation layout changed here. Full FrankenPHP instrumentation,
 Node/Chromium boot, and WordPress validation remain open.
+
+**2026-10-17 — Test pre-instrument optimization before changing the
+FrankenPHP recipes.** The raw classic executable's active element
+segment lists all 43,502 defined functions, so omitting resume thunks
+for non-table functions cannot materially shrink this Go build. The
+instrumenter's documented pre-optimization pipeline was also tested on
+the captured raw executable, without publishing either output. Binaryen
+126 with `--all-features -Os` and `-O2` produced approximately 51–52 MiB
+modules with 40,505 functions; the fork-closure report still selected
+33,027 activations, only 3.5% fewer than raw. The `-O2` optimization
+itself peaked at 1.26 GiB RSS, and its fork-closure analysis peaked at
+1.80 GiB versus 1.93 GiB for raw. This does not plausibly remove the
+full rewrite's observed 10.6 GiB memory gate. WABT 1.0.36 reports an
+invalid block signature in both optimized outputs, but Node 24's
+`WebAssembly.validate` accepts raw, `-Os`, and `-O2`; this conflicting
+validator evidence is not a browser/runtime behavior test. The proposed
+recipe edits were reverted rather than introduce an unvalidated
+pre-optimization step for both FrankenPHP executables. Next establish
+safe memory headroom and measure the full instrumenter after the
+reference-analysis lifetime change, then build and run the package.
