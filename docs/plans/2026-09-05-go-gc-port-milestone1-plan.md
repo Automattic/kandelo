@@ -4049,3 +4049,20 @@ guest probe's assertions had passed. A fresh Playwright server on port
 5429 passed without that error. These checks establish ZTS embed and
 module loading, **not** OPcache activation in the FrankenPHP SAPI or
 WordPress behavior; those require the still-unbuilt executable.
+
+**2026-10-17 — Stop duplicating source instructions during fork rewrite.**
+The top-level and nested switch transforms used to take each original
+instruction region from Walrus and then clone every surviving
+instruction into partition chunks, retaining the original allocation
+until the function returned. The final rewrite now partitions the taken
+region by ownership. Read-only pre-analysis still clones where it needs
+an owned partition; this change does not alter call-site classification,
+continuation metadata, or the ABI. All 388 `fork-instrument` crate tests
+passed. Four nested/legacy WAT fixtures and the 3,000-function reference
+stress fixture emitted byte-identical Wasm versus the pre-change tool.
+The stress run used 210 MiB peak RSS, versus 205 MiB in the immediately
+preceding run; this is not evidence of a peak reduction at that scale.
+The change removes a transient full-region duplicate, but the new peak
+for the 34,233-activation FrankenPHP executable remains **unmeasured**.
+Do not treat this as clearance to rebuild under the current roughly
+5 GiB of unused system memory.

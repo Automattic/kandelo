@@ -1523,7 +1523,7 @@ fn instrument_one_function_switch(
         std::mem::take(&mut local_mut(module, func_id).block_mut(entry_id).instrs);
 
     // Partition the body at top-level fork-path call sites.
-    let (mut chunks, mut call_sites) = partition_body(&original_body, fork_path, module);
+    let (mut chunks, mut call_sites) = partition_body(original_body, fork_path, module);
     for site in &mut call_sites {
         site.lexical_replay = matches!(
             site.target,
@@ -2878,15 +2878,15 @@ fn walk_seq_for_carryovers(
 /// - All instructions from the original body are either in a chunk or
 ///   consumed as a call-site head.
 fn partition_body(
-    original: &[(Instr, InstrLocId)],
+    original: Vec<(Instr, InstrLocId)>,
     fork_path: &HashSet<FunctionId>,
     module: &Module,
 ) -> (Vec<Vec<(Instr, InstrLocId)>>, Vec<CallSiteInfo>) {
     let mut chunks: Vec<Vec<(Instr, InstrLocId)>> = vec![Vec::new()];
     let mut calls: Vec<CallSiteInfo> = Vec::new();
 
-    for (instr, loc) in original.iter() {
-        match instr {
+    for (instr, loc) in original {
+        match &instr {
             Instr::Call(c) if fork_path.contains(&c.func) => {
                 let sig_ty = module.funcs.get(c.func).ty();
                 calls.push(CallSiteInfo {
@@ -2894,7 +2894,7 @@ fn partition_body(
                     lexical_replay: false,
                     sig_ty,
                     resume_ty: None,
-                    loc: *loc,
+                    loc,
                 });
                 chunks.push(Vec::new());
             }
@@ -2904,7 +2904,7 @@ fn partition_body(
                     lexical_replay: false,
                     sig_ty: ci.ty,
                     resume_ty: None,
-                    loc: *loc,
+                    loc,
                 });
                 chunks.push(Vec::new());
             }
@@ -2914,7 +2914,7 @@ fn partition_body(
                     lexical_replay: false,
                     sig_ty: call.ty,
                     resume_ty: None,
-                    loc: *loc,
+                    loc,
                 });
                 chunks.push(Vec::new());
             }
@@ -2922,7 +2922,7 @@ fn partition_body(
                 chunks
                     .last_mut()
                     .expect("chunks always has at least one entry")
-                    .push((instr.clone(), *loc));
+                    .push((instr, loc));
             }
         }
     }
@@ -9122,7 +9122,7 @@ fn instrument_one_function_nested_switch(
             let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
             let original = &local_ro.block(seq_id).instrs;
             let (chunks, landings) =
-                partition_region_instrs(local_ro, original, direct, &regions, fork_path);
+                partition_region_instrs(original.iter().cloned(), direct, &regions, fork_path);
             for (landing_idx, landing) in landings.iter().enumerate() {
                 let LandingKind::DirectCall { call_idx } = &landing.kind else {
                     continue;
@@ -9253,7 +9253,7 @@ fn instrument_one_function_nested_switch(
             });
             let original = &local_ro.block(seq_id).instrs;
             let (chunks, landings) =
-                partition_region_instrs(local_ro, original, direct, &regions, fork_path);
+                partition_region_instrs(original.iter().cloned(), direct, &regions, fork_path);
             assert_eq!(
                 spill_types.len(),
                 landings.len(),
@@ -9394,7 +9394,7 @@ fn instrument_one_function_nested_switch(
             let direct = direct_idxs_per_seq.get(&seq_id).unwrap_or(&empty_idxs);
             let original = &local_ro.block(seq_id).instrs;
             let (_, landings) =
-                partition_region_instrs(local_ro, original, direct, &regions, fork_path);
+                partition_region_instrs(original.iter().cloned(), direct, &regions, fork_path);
             for (landing_idx, landing) in landings.iter().enumerate() {
                 let Some(CarryoverPlan::Spill { spill_locals }) =
                     carryover_plans.get(&(seq_id, landing_idx))
@@ -9865,13 +9865,8 @@ fn transform_region_seq(
     // Take the original instrs of this region.
     let original: Vec<(Instr, InstrLocId)> = std::mem::take(&mut local.block_mut(seq_id).instrs);
 
-    let (mut chunks, mut landings) = partition_region_instrs(
-        local,
-        &original,
-        direct_idxs_at_this_seq,
-        regions,
-        fork_path,
-    );
+    let (mut chunks, mut landings) =
+        partition_region_instrs(original, direct_idxs_at_this_seq, regions, fork_path);
 
     // Sub-commit 2.6c: if this seq has body params, prepend LocalGets
     // to chunks[0] so the params are restored onto POST_0's local
@@ -9997,13 +9992,8 @@ fn transform_entry_region(
 ) {
     let original: Vec<(Instr, InstrLocId)> = std::mem::take(&mut local.block_mut(seq_id).instrs);
 
-    let (mut chunks, mut landings) = partition_region_instrs(
-        local,
-        &original,
-        direct_idxs_at_this_seq,
-        regions,
-        fork_path,
-    );
+    let (mut chunks, mut landings) =
+        partition_region_instrs(original, direct_idxs_at_this_seq, regions, fork_path);
     for (li, landing) in landings.iter_mut().enumerate() {
         if let Some(plan) = carryover_plans.get(&(seq_id, li)) {
             landing.carryover = Some(plan.clone());
@@ -10196,8 +10186,7 @@ fn apply_landing_materializations_to_chunks(
 /// any CallIndirect) appear in this seq's instrs. Non-fork-path
 /// direct calls fall through to the chunk verbatim.
 fn partition_region_instrs(
-    _f: &LocalFunction,
-    original: &[(Instr, InstrLocId)],
+    original: impl IntoIterator<Item = (Instr, InstrLocId)>,
     direct_idxs_at_this_seq: &[u32],
     regions: &HashMap<InstrSeqId, RegionInfo>,
     fork_path: &HashSet<FunctionId>,
@@ -10207,12 +10196,12 @@ fn partition_region_instrs(
 
     let mut direct_cursor = 0usize;
 
-    for (instr, loc) in original.iter() {
+    for (instr, loc) in original {
         // A fork-path-relevant call at this seq's level: direct Call
         // to a fork-path callee, OR any CallIndirect (conservatively
         // assumed to potentially reach a fork-path callee — same
         // policy as discover_calls_and_regions).
-        let is_fork_landing = match instr {
+        let is_fork_landing = match &instr {
             Instr::Call(c) => fork_path.contains(&c.func),
             Instr::CallIndirect(_) => true,
             Instr::CallRef(_) => true,
@@ -10237,10 +10226,10 @@ fn partition_region_instrs(
         let mut sub_lo_hi: Option<(u32, u32)> = None;
         let mut ifelse_then_range: Option<(u32, u32)> = None;
         let mut ifelse_else_range: Option<(u32, u32)> = None;
-        let is_ifelse = matches!(instr, Instr::IfElse(_));
+        let is_ifelse = matches!(&instr, Instr::IfElse(_));
 
         if is_ifelse {
-            if let Instr::IfElse(ie) = instr {
+            if let Instr::IfElse(ie) = &instr {
                 if let Some(info) = regions.get(&ie.consequent) {
                     ifelse_then_range = Some((info.range_lo, info.range_hi));
                 }
@@ -10264,7 +10253,7 @@ fn partition_region_instrs(
                 }
             }
         } else {
-            for child in nested_seqs(instr) {
+            for child in nested_seqs(&instr) {
                 if let Some(child_info) = regions.get(&child) {
                     sub_lo_hi = match sub_lo_hi {
                         None => Some((child_info.range_lo, child_info.range_hi)),
@@ -10292,14 +10281,14 @@ fn partition_region_instrs(
             };
             landings.push(LandingInfo {
                 kind,
-                sub_region_instr: Some((instr.clone(), *loc)),
+                sub_region_instr: Some((instr, loc)),
                 carryover: None, // populated later if classify allows
             });
             chunks.push(Vec::new());
             continue;
         }
 
-        chunks.last_mut().unwrap().push((instr.clone(), *loc));
+        chunks.last_mut().unwrap().push((instr, loc));
     }
 
     (chunks, landings)
