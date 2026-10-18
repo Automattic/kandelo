@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 #
-# Build libxkbcommon.a for wasm32-posix-kernel, pinned to libxkbcommon 1.7.0.
+# Build libxkbcommon.a for wasm32-posix-kernel.
 #
-# We bypass upstream's meson build: it runs host-side feature probes that
-# misreport against the wasm sysroot. Instead we mirror alsa-lib / libwayland
-# — compile the core TUs directly with a hand-curated config.h (src/config.h)
-# and a bison-generated xkbcomp parser. See
-# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR4).
+# The port builds through upstream's meson build with the SDK cross file
+# (sdk/meson/wasm32posix.ini). Only the libxkbcommon library target is
+# compiled: upstream always defines its test executables, and they are
+# not part of this package.
 #
 # Honors the dep-resolver build-script contract (docs/package-management.md):
 # when invoked via `cargo xtask build-deps resolve libxkbcommon` the resolver
@@ -32,11 +31,14 @@ INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libxkbcommon-install}"
 SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
 SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
+BUILD_DIR="$WORK_DIR/xkbcommon-build"
+CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"
+
 # --- Toolchain ----------------------------------------------------------
-for tool in wasm32posix-cc wasm32posix-ar bison; do
+for tool in wasm32posix-cc meson ninja bison; do
     if ! command -v "$tool" &>/dev/null; then
         echo "ERROR: $tool not found. Enter scripts/dev-shell.sh (provides the" >&2
-        echo "       wasm toolchain + bison from flake.nix)." >&2
+        echo "       wasm toolchain, meson, ninja and bison from flake.nix)." >&2
         exit 1
     fi
 done
@@ -57,9 +59,7 @@ if [ ! -d "$SRC_DIR" ]; then
     printf '%s\n' "$expected_source_marker" > "$SOURCE_MARKER"
 fi
 
-# Fresh build + install each run — stale objects would shadow config
-# changes and the cache key varies per build.
-BUILD_DIR="$WORK_DIR/xkbcommon-build"
+# Fresh build dir each run — meson bakes --prefix into the build tree.
 rm -rf "$BUILD_DIR"
 # Empty the output prefix rather than replacing it: the resolver owns
 # WASM_POSIX_DEP_OUT_DIR and records its inode identity, so an rm -rf +
@@ -67,89 +67,40 @@ rm -rf "$BUILD_DIR"
 # ("build stage changed identity and was preserved").
 mkdir -p "$INSTALL_DIR"
 find "$INSTALL_DIR" -mindepth 1 -delete
-mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include/xkbcommon"
 
-SRC="$SRC_DIR/src"
+# The XKB data paths are compiled into the library and resolved inside
+# the Kandelo machine, not under the install prefix: the xkeyboard-config
+# package's rules sit at /usr/share/X11/xkb there. --datadir sets the
+# legacy X11 root, which upstream derives from it and exposes no option
+# for.
+echo "==> Configuring libxkbcommon $XKB_VERSION for wasm32..."
+meson setup "$BUILD_DIR" "$SRC_DIR" \
+    --cross-file "$CROSS_FILE" \
+    --prefix "$INSTALL_DIR" \
+    --libdir lib \
+    --datadir /usr/share \
+    -Dbuildtype=plain \
+    -Doptimization=2 \
+    -Dxkb-config-root=/usr/share/X11/xkb \
+    -Dxkb-config-extra-path=/etc/xkb \
+    -Dx-locale-root=/usr/share/X11/locale \
+    -Denable-tools=false \
+    -Denable-x11=false \
+    -Denable-wayland=false \
+    -Denable-xkbregistry=false \
+    -Denable-docs=false \
+    -Denable-bash-completion=false
 
-# --- config.h + bison-generated parser ---------------------------------
-# Sources #include "config.h"; place it at the source root so -I"$SRC_DIR"
-# resolves it for every TU (the quoted include falls through to the -I dir).
-cp "$SCRIPT_DIR/src/config.h" "$SRC_DIR/config.h"
+echo "==> Building libxkbcommon..."
+meson compile -C "$BUILD_DIR" xkbcommon
 
-echo "==> Generating xkbcomp parser with $(bison --version | head -1)..."
-# Mirrors meson's yacc_gen: prefix _xkbcommon_, emit parser.c + parser.h.
-bison --defines="$SRC/xkbcomp/parser.h" -o "$SRC/xkbcomp/parser.c" \
-    -p _xkbcommon_ "$SRC/xkbcomp/parser.y"
+echo "==> Installing to $INSTALL_DIR..."
+meson install -C "$BUILD_DIR" --no-rebuild
 
-# --- Compile ------------------------------------------------------------
-CFLAGS=(
-    -O2 -fPIC -fvisibility=hidden -std=gnu11
-    # (config.h #defines _GNU_SOURCE; sources include it first)
-    "-I$SRC_DIR"          # config.h at source root
-    "-I$SRC"              # internal headers (utils.h, xkbcomp/parser.h, ...)
-    "-I$SRC_DIR/include"  # public xkbcommon/*.h
-    -Wno-unused-parameter
-    -Wno-unused-function
-    -Wno-unused-variable
-)
-
-# TU paths are relative to src/; two subdirs each contribute a keymap.c /
-# state.c / parser.c, so encode the subdir in the object name to avoid
-# collisions in the flat build dir.
-compile() {
-    local tu="$1"
-    local obj="$BUILD_DIR/$(echo "$tu" | sed 's#/#_#g; s#\.c$#.o#')"
-    echo "    $tu" >&2
-    wasm32posix-cc -c "${CFLAGS[@]}" "$SRC/$tu" -o "$obj"
-    echo "$obj"
-}
-
-TUS=(
-    atom.c context.c context-priv.c keysym.c keysym-utf.c
-    keymap.c keymap-priv.c state.c text.c utf8.c utils.c
-    compose/parser.c compose/paths.c compose/state.c compose/table.c
-    xkbcomp/action.c xkbcomp/ast-build.c xkbcomp/compat.c xkbcomp/expr.c
-    xkbcomp/include.c xkbcomp/keycodes.c xkbcomp/keymap.c xkbcomp/keymap-dump.c
-    xkbcomp/keywords.c xkbcomp/parser.c xkbcomp/rules.c xkbcomp/scanner.c
-    xkbcomp/symbols.c xkbcomp/types.c xkbcomp/vmod.c xkbcomp/xkbcomp.c
-)
-
-echo "==> Compiling ${#TUS[@]} TUs for wasm32..."
-OBJS=()
-for tu in "${TUS[@]}"; do
-    OBJS+=("$(compile "$tu")")
-done
-
-echo "==> Archiving libxkbcommon.a..."
-wasm32posix-ar rcs "$INSTALL_DIR/lib/libxkbcommon.a" "${OBJS[@]}"
-
-# --- Install public headers --------------------------------------------
-echo "==> Installing headers..."
-for h in \
-    xkbcommon.h xkbcommon-names.h xkbcommon-keysyms.h \
-    xkbcommon-compat.h xkbcommon-compose.h
-do
-    cp "$SRC_DIR/include/xkbcommon/$h" "$INSTALL_DIR/include/xkbcommon/$h"
-done
-
-# --- pkg-config .pc file (step 12b) ------------------------------------
-# SDL2's Wayland backend gate requires `xkbcommon >= 0.5.0` via pkg-config
-# (configure.ac CheckWayland). The wasm32posix-pkg-config wrapper reads
-# this through PKG_CONFIG_PATH (kandelo cache paths pass its filter).
-echo "==> Writing xkbcommon.pc..."
-PC_DIR="$INSTALL_DIR/lib/pkgconfig"
-mkdir -p "$PC_DIR"
-cat > "$PC_DIR/xkbcommon.pc" <<EOF
-prefix=$INSTALL_DIR
-libdir=\${prefix}/lib
-includedir=\${prefix}/include
-
-Name: xkbcommon
-Description: XKB API common to servers and clients
-Version: $XKB_VERSION
-Libs: -L\${libdir} -lxkbcommon
-Cflags: -I\${includedir}
-EOF
+if [ ! -f "$INSTALL_DIR/lib/libxkbcommon.a" ]; then
+    echo "ERROR: Build failed — library not found at $INSTALL_DIR/lib/libxkbcommon.a" >&2
+    exit 1
+fi
 
 echo "==> libxkbcommon $XKB_VERSION installed at $INSTALL_DIR"
 echo "    lib/libxkbcommon.a ($(wc -c < "$INSTALL_DIR/lib/libxkbcommon.a") bytes)"

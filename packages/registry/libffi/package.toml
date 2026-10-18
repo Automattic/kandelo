@@ -49,3 +49,4 @@ script_path = "packages/registry/libffi/build-libffi.sh"
 [outputs]
 libs = ["lib/libffi.a"]
 headers = ["include/ffi.h"]
+pkgconfig = ["lib/pkgconfig/libffi.pc"]

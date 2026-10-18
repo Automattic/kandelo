@@ -89,7 +89,7 @@ describe("SDL /dev/dsp integration fixture", () => {
     // libSDL2.a is static and carries SDL's Wayland backend, so its
     // consumers link that backend's libraries themselves.
     expect(manifest).toContain(
-      'depends_on = ["sdl2@2.32.10", "sdl3@3.4.10", "libwayland@1.24.0", "libxkbcommon@1.7.0", "libffi@0.1.0"]',
+      'depends_on = ["sdl2@2.32.10", "sdl3@3.4.10", "libwayland@1.24.0", "libxkbcommon@1.13.2", "libffi@0.1.0"]',
     );
     expect(manifest).toContain('wasm = "sdl2-dsp-test.wasm"');
     expect(manifest).toContain('wasm = "sdl3-dsp-test.wasm"');
@@ -131,7 +131,7 @@ describe("SDL_mixer playwave /dev/dsp integration fixture", () => {
       'sha256 = "938dff531d00ace2296557a6599abe6f34599e2f34f0a4a08a397e2ccac8b8f7"',
     );
     expect(manifest).toContain(
-      'depends_on = ["sdl2@2.32.10", "libwayland@1.24.0", "libxkbcommon@1.7.0", "libffi@0.1.0"]',
+      'depends_on = ["sdl2@2.32.10", "libwayland@1.24.0", "libxkbcommon@1.13.2", "libffi@0.1.0"]',
     );
     expect(manifest).toContain('name = "playwave"');
     expect(manifest).toContain('wasm = "playwave.wasm"');

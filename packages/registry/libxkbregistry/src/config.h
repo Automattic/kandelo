@@ -1,9 +1,10 @@
 /*
- * Hand-curated config.h for the wasm32-posix-kernel libxkbcommon port
- * (packages/registry/libxkbcommon), pinned to libxkbcommon 1.7.0.
+ * Hand-curated config.h for the libxkbregistry port
+ * (packages/registry/libxkbregistry), pinned to libxkbcommon 1.7.0.
  *
- * We bypass upstream's meson build because its feature probes run against
- * the build host, not the wasm sysroot (see build-libxkbcommon.sh and
+ * This package compiles two libxkbcommon translation units without
+ * upstream's meson build, whose feature probes run against the build host,
+ * not the wasm sysroot (see
  * docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5). The HAVE_*
  * flags below therefore reflect our musl wasm sysroot:
  *   - present: __builtin_expect, mmap, strndup, asprintf, vasprintf.

@@ -14,7 +14,7 @@ name = "cairo"
 version = "1.18.6"
 kernel_abi = 17
 depends_on = [
-  "pixman@0.42.2",
+  "pixman@0.46.4",
   "freetype@2.13.3",
   "fontconfig@2.15.0",
   "libpng@1.6.43",

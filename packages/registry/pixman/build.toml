@@ -2,7 +2,8 @@ script_path = "packages/registry/pixman/build-pixman.sh"
 inputs = [
   "packages/registry/pixman/build-pixman.sh",
   "scripts/package-build-roots.sh",
+  "sdk/meson/wasm32posix.ini",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "d1c57b6b5"
-revision    = 1
+revision    = 2

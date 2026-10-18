@@ -25,7 +25,7 @@ depends_on = [
   "libdrm@2.4.134",
   "wayland-protocols@1.47",
   "libwayland@1.24.0",
-  "libxkbcommon@1.7.0",
+  "libxkbcommon@1.13.2",
   "fontconfig@2.15.0",
   "freetype@2.13.3",
   "harfbuzz@10.1.0",
