@@ -157,7 +157,7 @@ index 2ec9586..5eb309e 100644
  // #cgo CFLAGS: -Wall -Werror
  // #cgo linux CFLAGS: -D_GNU_SOURCE
 -// #cgo LDFLAGS: -lphp -lm -lutil
-+// #cgo LDFLAGS: -L${SRCDIR}/lib -lphp -licui18n -licuio -licuuc -licudata -lc++ -lc++abi -lcurl -lzip -lxml2 -lssl -lcrypto -lsqlite3 -liconv -lz -lkandelo-ucontext-unsupported
++// #cgo LDFLAGS: -L${SRCDIR}/lib -lphp -licui18n -licuio -licuuc -licudata -lc++ -lc++abi -lcurl -lzip -lxml2 -lssl -lcrypto -lsqlite3 -liconv -lz -lkandelo-ucontext-unsupported -ldl
 +// #cgo !kandelo LDFLAGS: -lm -lutil
  // #cgo linux LDFLAGS: -ldl -lresolv
  // #cgo darwin LDFLAGS: -Wl,-rpath,/usr/local/lib -liconv -ldl

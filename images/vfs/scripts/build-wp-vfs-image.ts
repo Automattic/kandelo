@@ -374,6 +374,7 @@ export interface WordPressVfsImageBuildInputs {
   frankenphpClassic: Uint8Array;
   frankenphpCaddy: Uint8Array;
   opcache: Uint8Array;
+  opcacheZts: Uint8Array;
   msmtpd: Uint8Array;
   dinit?: DinitBinaryInputs;
   buildPrograms?: {
@@ -407,9 +408,21 @@ export async function buildWordPressVfsImage(
   writeVfsBinary(fs, "/usr/sbin/frankenphp-classic", inputs.frankenphpClassic);
   writeVfsBinary(fs, "/usr/sbin/frankenphp-caddy", inputs.frankenphpCaddy);
   writeVfsBinary(fs, "/usr/sbin/msmtpd", inputs.msmtpd);
+  writeVfsBinary(fs, "/usr/lib/php/extensions/opcache-zts.so", inputs.opcacheZts);
+  ensureDirRecursive(fs, "/var/cache/opcache-zts");
   ensureDirRecursive(fs, "/etc/frankenphp");
-  writeVfsFile(fs, "/etc/frankenphp/php.ini", `curl.cainfo=/etc/ssl/certs/ca-certificates.crt
+  writeVfsFile(fs, "/etc/frankenphp/php.ini", `zend_extension=/usr/lib/php/extensions/opcache-zts.so
+
+curl.cainfo=/etc/ssl/certs/ca-certificates.crt
 openssl.cafile=/etc/ssl/certs/ca-certificates.crt
+
+[opcache]
+opcache.enable=1
+opcache.enable_cli=1
+opcache.file_cache=/var/cache/opcache-zts
+opcache.file_cache_only=1
+opcache.validate_timestamps=0
+opcache.blacklist_filename=/etc/php-opcache-blacklist.txt
 `);
   ensureDirRecursive(fs, "/etc/dinit.d");
   writeVfsFile(fs, FRANKENPHP_ENV_PATH,
@@ -508,6 +521,10 @@ async function main(): Promise<void> {
   const shellRoot = process.env.WASM_POSIX_DEP_SHELL_DIR;
   const nginxRoot = process.env.WASM_POSIX_DEP_NGINX_DIR;
   const phpRoot = process.env.WASM_POSIX_DEP_PHP_DIR;
+  const phpZtsRoot = process.env.WASM_POSIX_DEP_PHP_ZTS_DIR;
+  if (phpZtsRoot === undefined) {
+    throw new Error("WASM_POSIX_DEP_PHP_ZTS_DIR is required to build the WordPress image");
+  }
   const frankenphpRoot = process.env.WASM_POSIX_DEP_FRANKENPHP_CLASSIC_DIR;
   const frankenphpCaddyRoot = process.env.WASM_POSIX_DEP_FRANKENPHP_CADDY_DIR;
   const dinitRoot = process.env.WASM_POSIX_DEP_DINIT_DIR;
@@ -534,6 +551,7 @@ async function main(): Promise<void> {
     opcache: new Uint8Array(readFileSync(phpRoot === undefined
       ? resolveBinary("programs/php/opcache.so")
       : join(phpRoot, "opcache.so"))),
+    opcacheZts: new Uint8Array(readFileSync(join(phpZtsRoot, "lib/opcache-zts.so"))),
     msmtpd: new Uint8Array(readFileSync(msmtpdRoot === undefined
       ? resolveBinary("programs/msmtpd.wasm")
       : join(msmtpdRoot, "msmtpd.wasm"))),

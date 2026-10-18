@@ -67,6 +67,13 @@ export GOMODCACHE="$WORK_DIR/gomodcache" GOTMPDIR="$WORK_DIR/tmp"
 export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm CGO_ENABLED=1 CC=wasm32posix-cc
 php_include="$WASM_POSIX_DEP_PHP_ZTS_DIR/include/php"
 export CGO_CFLAGS="-I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
+mapfile -t requested_exports < <(node "$REPO_ROOT/scripts/wasm-side-module-c-exports.mjs" \
+    "$WASM_POSIX_DEP_PHP_ZTS_DIR/lib/opcache-zts.so")
+test "${#requested_exports[@]}" -gt 0
+export_flags=()
+for symbol in "${requested_exports[@]}"; do
+    export_flags+=("-Wl,--export-dynamic-symbol=$symbol")
+done
 
 mkdir -p "$MODULE_DIR"
 tar --exclude=.git -cf - -C "$WASM_POSIX_BUILD_GIT_XSYS_DIR" . |
@@ -74,6 +81,7 @@ tar --exclude=.git -cf - -C "$WASM_POSIX_BUILD_GIT_XSYS_DIR" . |
 chmod -R u+w "$MODULE_DIR"
 (cd "$SOURCE_DIR" && "$GO_ROOT/bin/go" mod edit -replace=golang.org/x/sys=../xsys-kandelo)
 (cd "$SOURCE_DIR" && "$GO_ROOT/bin/go" build -tags 'nomercure nowatcher' \
+    -ldflags="-extldflags '${export_flags[*]}'" \
     -o "$WORK_DIR/frankenphp-classic.wasm" ./cmd/kandelo-classic)
 unset CC CXX AR RANLIB CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$WORK_DIR/frankenphp-classic.wasm" \

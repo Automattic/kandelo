@@ -7,6 +7,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/scripts/package-build-roots.sh"
 
+if [ -z "${WASM_POSIX_DEP_PHP_ZTS_DIR:-}" ]; then
+    WASM_POSIX_DEP_PHP_ZTS_DIR="$(
+        cd "$REPO_ROOT" && cargo xtask build-deps --arch wasm32 resolve php-zts
+    )"
+    export WASM_POSIX_DEP_PHP_ZTS_DIR
+fi
+
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = source-only-v1 ]; then
         : "${WASM_POSIX_DEP_SOURCE_DIR:?SourceOnly WordPress builds require verified core source}"

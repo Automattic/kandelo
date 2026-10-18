@@ -80,6 +80,13 @@ export GOMODCACHE="$WORK_DIR/gomodcache" GOTMPDIR="$WORK_DIR/tmp"
 export GOROOT="$GO_ROOT" GOOS=kandelo GOARCH=wasm CGO_ENABLED=1 CC=wasm32posix-cc
 php_include="$WASM_POSIX_DEP_PHP_ZTS_DIR/include/php"
 export CGO_CFLAGS="-I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
+mapfile -t requested_exports < <(node "$REPO_ROOT/scripts/wasm-side-module-c-exports.mjs" \
+    "$WASM_POSIX_DEP_PHP_ZTS_DIR/lib/opcache-zts.so")
+test "${#requested_exports[@]}" -gt 0
+export_flags=()
+for symbol in "${requested_exports[@]}"; do
+    export_flags+=("-Wl,--export-dynamic-symbol=$symbol")
+done
 
 stage_go_module xsys "$WASM_POSIX_BUILD_GIT_XSYS_DIR" golang.org/x/sys
 stage_go_module bbolt "$WASM_POSIX_BUILD_GIT_BBOLT_DIR" go.etcd.io/bbolt
@@ -88,6 +95,7 @@ stage_go_module logrus "$WASM_POSIX_BUILD_GIT_LOGRUS_DIR" github.com/sirupsen/lo
 stage_go_module certificate-transparency "$WASM_POSIX_BUILD_GIT_CERTIFICATE_TRANSPARENCY_DIR" github.com/google/certificate-transparency-go
 
 (cd "$SOURCE_DIR/caddy" && "$GO_ROOT/bin/go" build -tags nowatcher \
+    -ldflags="-extldflags '${export_flags[*]}'" \
     -o "$WORK_DIR/frankenphp-caddy.wasm" ./cmd/kandelo)
 unset CC CXX AR RANLIB CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$WORK_DIR/frankenphp-caddy.wasm" \

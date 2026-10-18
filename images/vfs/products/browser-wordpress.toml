@@ -23,6 +23,12 @@ role = "runtime"
 materialization = "embedded"
 
 [[software.package]]
+name = "php-zts"
+outputs = ["opcache-zts"]
+source_roles = []
+role = "build"
+
+[[software.package]]
 name = "frankenphp-classic"
 outputs = ["frankenphp-classic"]
 source_roles = []

@@ -3906,3 +3906,23 @@ is a build regression check, not a fresh CLI/FPM runtime soak. After the
 fixture cleanup, both ABI-stamped Node probes passed again, and the combined
 PHP embed, ZTS OPcache `dlopen`, and generic C-export browser run passed 9/9
 across Chromium, Firefox, and WebKit.
+
+**2026-10-17 — Wire real FrankenPHP OPcache activation through packages and
+the WordPress image.** Both FrankenPHP package builds now derive the ZTS
+side module's required C exports from its Wasm imports and pass them through
+the Go fork's general external-linker export option; the upstream cgo link
+line also selects the SDK's `dlopen` library. The `php-zts` package projects
+its OPcache side module as a named VFS product input. WordPress declares
+`php-zts` directly, stages the module separately from FPM's NTS module,
+and uses its own FrankenPHP INI and file-cache directory. The file cache is
+not prewarmed; no performance result is implied. Shell syntax, diff checks,
+the VFS product catalog tests (3/3), the package-output projection shell
+test, and importing the image builder under
+the dev shell passed. The ZTS revision 6, classic revision 24, Caddy revision
+3, and WordPress revision 29 packages have **not** been rebuilt or booted
+on these changes. The system had only 0.35–5.5 GiB free during this step,
+well below the prior 10.6 GiB classic instrumenter peak, so a full rebuild
+would risk exhausting shared machine memory. Next: rebuild when safe,
+verify actual OPcache activation in the FrankenPHP SAPI on Node and all
+three browser engines, then run the WordPress editor workflow and measure
+memory/performance against PHP-FPM.

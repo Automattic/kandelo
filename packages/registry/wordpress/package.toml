@@ -10,6 +10,7 @@ depends_on = [
     "shell@0.1.0",
     "nginx@1.24.0",
     "php@8.3.15",
+    "php-zts@8.3.15",
     "frankenphp-classic@1.11.0",
     "frankenphp-caddy@1.11.0",
     "dinit@0.19.4",

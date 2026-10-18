@@ -1277,6 +1277,10 @@ if [ "$PHP_BUILD_VARIANT" = "zts-embed" ]; then
     cp libs/libphp.a "$INSTALL_DIR/lib/libphp.a"
     build_opcache_side_module "$INSTALL_DIR/lib/opcache-zts.so"
     cp -R "$WORK_DIR/install/usr/include/php" "$INSTALL_DIR/include/php"
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        kandelo_package_project_requested_vfs_output opcache-zts \
+            "$INSTALL_DIR/lib/opcache-zts.so"
+    fi
     exit 0
 fi
 
