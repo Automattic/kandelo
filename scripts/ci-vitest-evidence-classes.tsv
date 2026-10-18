@@ -22,6 +22,7 @@ host/test/browser-pcm-driver.test.ts	source-only
 host/test/browser-wasm-fetch.test.ts	source-only
 host/test/browser-worker-adapter.test.ts	source-only
 host/test/byte-range-fetch.test.ts	source-only
+host/test/cage-smoke.test.ts	prepared-product
 host/test/catch-ref-fresh-worker.test.ts	prepared-product
 host/test/centralized-spawn.test.ts	prepared-product
 host/test/channel-listener-reclamation.test.ts	source-only
@@ -64,6 +65,7 @@ host/test/dri-registry.test.ts	source-only
 host/test/dri-smoke.test.ts	prepared-product
 host/test/dylink-fork-archive.test.ts	source-only
 host/test/dylink.test.ts	source-only
+host/test/egl-dmabuf-smoke.test.ts	prepared-product
 host/test/environment-lifecycle.test.ts	prepared-product
 host/test/epoll-semantics.test.ts	prepared-product
 host/test/exec-brk-base.test.ts	prepared-product
@@ -265,7 +267,7 @@ host/test/putenv.test.ts	prepared-product
 host/test/qt-gui-smoke.test.ts	source-only
 host/test/qt-qml-smoke.test.ts	source-only
 host/test/qtgallery-smoke.test.ts	prepared-product
-host/test/qtwaylandscanner-host-tool.test.ts	source-only
+host/test/qtwaylandscanner-host-tool.test.ts	prepared-product
 host/test/quickshell-shell-smoke.test.ts	prepared-product
 host/test/quickshell-smoke.test.ts	prepared-product
 host/test/readdir-atomicity.test.ts	source-only
@@ -312,6 +314,7 @@ host/test/sqlite-testrunner-patch.test.ts	source-only
 host/test/startup-crt-contract.test.ts	source-only
 host/test/startup-metadata-capacity.test.ts	source-only
 host/test/sudo-lite.test.ts	prepared-product
+host/test/sway-smoke.test.ts	prepared-product
 host/test/syscall-cp-offset.test.ts	prepared-product
 host/test/sysv-ipc.test.ts	prepared-product
 host/test/tar.test.ts	source-only
@@ -360,12 +363,13 @@ host/test/wasm-module-reflection.test.ts	source-only
 host/test/wasm-trap.test.ts	prepared-product
 host/test/wasm64.test.ts	prepared-product
 host/test/waybar-smoke.test.ts	prepared-product
-host/test/wayland-protocols-scanner.test.ts	source-only
+host/test/wayland-protocols-scanner.test.ts	prepared-product
 host/test/webgl-bridge.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
 host/test/webgl-gpu-bo.test.ts	source-only
 host/test/webgl-main-forward.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only
+host/test/webgl-present-target.test.ts	source-only
 host/test/webgl-registry.test.ts	source-only
 host/test/webgl-shadow.test.ts	source-only
 host/test/webgl-submit-drain.test.ts	source-only
