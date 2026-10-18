@@ -296,13 +296,13 @@ struct surface {
 
 /* ---- wl_shm pool / buffer (custom, gbm-backed) ------------------------- */
 
-/* libwayland's built-in wl_shm mmaps the client's pool fd directly, but on
- * this kernel a plain file/memfd mmap is NOT shared across processes — only
- * the DRI bo registry is (host SharedArrayBuffer). So the client backs its
- * pool with a renderD128 dumb-bo and passes its prime-fd; we import that
- * prime-fd via gbm and map it, aliasing the same shared bytes. This is the
- * "gbm_bo_import path for wl_shm" the plan names (§8.1). Buffers may sit
- * at any offset in the pool; the formats are XRGB/ARGB8888. */
+/* libwayland's built-in wl_shm mmaps the client's pool fd directly. This
+ * compositor imports every pool as a gbm bo instead, so it can bind it as a
+ * GPU texture: the client backs its pool with a renderD128 dumb-bo and
+ * passes its prime-fd; we import that prime-fd via gbm and map it, aliasing
+ * the same shared bytes. This is the "gbm_bo_import path for wl_shm" the
+ * plan names (§8.1). Buffers may sit at any offset in the pool; the formats
+ * are XRGB/ARGB8888. */
 struct shm_pool {
     int fd;
     int32_t size;

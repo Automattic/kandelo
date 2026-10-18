@@ -4,8 +4,8 @@
  * wlcompositor server end-to-end so host/test/wlcompositor-smoke.test.ts
  * can assert the compositor actually composites and routes input:
  *
- *   1. connect to /run/wayland-0, bind the v1 globals (wl_compositor,
- *      wl_shm, xdg_wm_base, wl_seat, wl_output).
+ *   1. connect to $WAYLAND_DISPLAY (else /tmp/wayland-0), bind the v1
+ *      globals (wl_compositor, wl_shm, xdg_wm_base, wl_seat, wl_output).
  *   2. create an xdg_toplevel, ack the compositor's configure.
  *   3. allocate a renderD128 dumb-bo, paint it solid red, and hand its
  *      prime-fd to wl_shm as the pool — the shared-buffer path that lets
@@ -79,6 +79,7 @@ struct client {
     struct xdg_toplevel *toplevel;
 
     int configured;     /* got + acked the initial xdg configure */
+    int attached;       /* the buffer is attached and committed */
     int frame_done;     /* compositor flipped our buffer */
     int presented;      /* wp_presentation_feedback resolved (either event) */
     int got_keymap;     /* wl_keyboard.keymap arrived + parsed */
@@ -373,6 +374,10 @@ static void xdg_surface_configure(void *data, struct xdg_surface *xs,
     struct client *c = data;
     xdg_surface_ack_configure(xs, serial);
     c->configured = 1;
+    /* A compositor that waits for clients to apply a configure (sway's
+     * transactions) gets the commit it waits for; the buffer is kept. */
+    if (c->attached)
+        wl_surface_commit(c->surface);
 }
 static const struct xdg_surface_listener xdg_surface_listener = {
     .configure = xdg_surface_configure,
@@ -607,10 +612,17 @@ int main(void) {
     struct client c;
     memset(&c, 0, sizeof(c));
 
-    int fd = connect_socket();
-    if (fd < 0) return 1;
-    struct wl_display *display = wl_display_connect_to_fd(fd);
-    if (!display) { fprintf(stderr, "wl_display_connect_to_fd\n"); return 1; }
+    /* A compositor that exports WAYLAND_DISPLAY names its own socket;
+     * sway, for one, never uses wayland-0. */
+    struct wl_display *display;
+    if (getenv("WAYLAND_DISPLAY")) {
+        display = wl_display_connect(NULL);
+    } else {
+        int fd = connect_socket();
+        if (fd < 0) return 1;
+        display = wl_display_connect_to_fd(fd);
+    }
+    if (!display) { fprintf(stderr, "wl_display_connect\n"); return 1; }
 
     struct wl_registry *registry = wl_display_get_registry(display);
     wl_registry_add_listener(registry, &registry_listener, &c);
@@ -742,6 +754,7 @@ int main(void) {
         wp_presentation_feedback_add_listener(fb, &feedback_listener, &c);
     }
     wl_surface_commit(c.surface);
+    c.attached = 1;
 
     /* The frame callback fires once the compositor has flipped our pixels;
      * the presentation feedback resolves on the same flip. */
