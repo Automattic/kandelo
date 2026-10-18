@@ -102,6 +102,7 @@ class RecordingGl {
   uniform2f(l: unknown, x: number, y: number) { this.log.push(["uniform2f", [l, x, y]]); }
   uniform3f(l: unknown, x: number, y: number, z: number) { this.log.push(["uniform3f", [l, x, y, z]]); }
   uniform4f(l: unknown, x: number, y: number, z: number, w: number) { this.log.push(["uniform4f", [l, x, y, z, w]]); }
+  uniformMatrix3fv(l: unknown, t: boolean, m: Float32Array) { this.log.push(["uniformMatrix3fv", [l, t, [...m]]]); }
   uniformMatrix4fv(l: unknown, t: boolean, m: Float32Array) { this.log.push(["uniformMatrix4fv", [l, t, [...m]]]); }
   uniform4fv(l: unknown, v: Float32Array) { this.log.push(["uniform4fv", [l, [...v]]]); }
 
@@ -118,6 +119,7 @@ class RecordingGl {
   bindFramebuffer(t: number, f: unknown) { this.log.push(["bindFramebuffer", [t, f]]); }
   framebufferTexture2D(...a: unknown[]) { this.log.push(["framebufferTexture2D", a]); }
   bindRenderbuffer(t: number, r: unknown) { this.log.push(["bindRenderbuffer", [t, r]]); }
+  deleteRenderbuffer(r: unknown) { this.log.push(["deleteRenderbuffer", [r]]); }
   renderbufferStorage(...a: number[]) { this.log.push(["renderbufferStorage", a]); }
   framebufferRenderbuffer(...a: unknown[]) { this.log.push(["framebufferRenderbuffer", a]); }
 
@@ -343,6 +345,49 @@ describe("cmdbuf decoder — TLV walker", () => {
     expect(call).toBeDefined();
     const recordedMat = (call![1] as unknown[])[2] as number[];
     expect(recordedMat).toEqual(mat);
+  });
+
+  it("UniformMatrix3fv reads nine floats per matrix", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
+    const mat: number[] = [];
+    for (let i = 0; i < 18; i++) mat.push(i * 0.25);
+
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_UNIFORM_MATRIX3FV, 12 + 18 * 4);
+    t.view.setInt32(h.p, 1, true);
+    t.view.setUint32(h.p + 4, 2, true);
+    t.view.setUint32(h.p + 8, 0, true);
+    for (let i = 0; i < 18; i++) {
+      t.view.setFloat32(h.p + 12 + i * 4, mat[i], true);
+    }
+
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+    const call = gl.log.find((r) => r[0] === "uniformMatrix3fv");
+    expect((call![1] as unknown[])[2]).toEqual(mat);
+  });
+
+  it("DeleteRenderbuffers deletes and forgets each named renderbuffer", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const gen = t.op(O.OP_GEN_RENDERBUFFERS, 12);
+    t.view.setUint32(gen.p, 2, true);
+    t.view.setUint32(gen.p + 4, 5, true);
+    t.view.setUint32(gen.p + 8, 6, true);
+    const del = t.op(O.OP_DELETE_RENDERBUFFERS, 8);
+    t.view.setUint32(del.p, 1, true);
+    t.view.setUint32(del.p + 4, 5, true);
+
+    const rbo5 = (() => {
+      decodeAndDispatch(b, 0, gen.p + 12);
+      return b.rbos.get(5);
+    })();
+    expect(decodeAndDispatch(b, gen.p + 12, t.p - (gen.p + 12))).toBe(0);
+    expect(gl.log).toContainEqual(["deleteRenderbuffer", [rbo5]]);
+    expect(b.rbos.has(5)).toBe(false);
+    expect(b.rbos.has(6)).toBe(true);
   });
 
   it("float uniforms after an odd-length record are applied, not rejected", () => {

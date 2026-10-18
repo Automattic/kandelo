@@ -12,15 +12,18 @@
  * at link time when both archives are pulled in.
  */
 
+#define EGL_EGLEXT_PROTOTYPES
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "gl_abi.h"
@@ -28,6 +31,8 @@
 void glDrawBuffer(GLenum buf);
 void glDrawBuffers(GLsizei n, const GLenum *bufs);
 void glReadBuffer(GLenum src);
+void glEGLImageTargetTexture2DOES(GLenum target, void *image);
+void glEGLImageTargetRenderbufferStorageOES(GLenum target, void *image);
 
 static int      g_fd            = -1;
 static uint8_t *g_cmdbuf_base   = NULL;
@@ -35,6 +40,13 @@ static EGLint   g_last_error    = EGL_SUCCESS;
 static int      g_initialized   = 0;
 static int      g_context_made  = 0;
 static int      g_surface_made  = 0;
+/* eglMakeCurrent state. The host has one GL context per process and keeps
+ * no notion of "current", so binding and releasing are bookkeeping here;
+ * a surfaceless bind (EGL_KHR_surfaceless_context) renders only into
+ * framebuffer objects. */
+static int      g_current       = 0;
+static int      g_current_surfaceless = 0;
+static EGLint   g_client_version = 2;
 /* GPU-tier producer target: the bo handle (from PRIME_FD_TO_HANDLE /
  * gbm_bo) whose FBO the NEXT eglCreateWindowSurface renders into. Set by
  * wpkEglSetWindowSurfaceTarget, consumed once and cleared. 0 = an
@@ -94,6 +106,17 @@ EGLDisplay eglGetPlatformDisplay(EGLenum platform, void *native_display,
         return EGL_NO_DISPLAY;
     }
     return EGL_DPY_HANDLE;
+}
+
+/* EGL_EXT_platform_base spelling of eglGetPlatformDisplay, with an
+ * EGLint attribute list. */
+EGLDisplay eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
+                                    const EGLint *attrib_list) {
+    if (attrib_list && attrib_list[0] != EGL_NONE) {
+        g_last_error = EGL_BAD_ATTRIBUTE;
+        return EGL_NO_DISPLAY;
+    }
+    return eglGetPlatformDisplay(platform, native_display, NULL);
 }
 
 EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
@@ -194,6 +217,9 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
     }
 
     struct gl_context_attrs attrs = { .client_version = 2, .reserved = {0,0,0} };
+    /* EGL_KHR_no_config_context: `config` may be EGL_NO_CONFIG_KHR. There
+     * is one config, and a context draws to any surface, so the config
+     * selects nothing either way. */
     if (attrib_list) {
         for (const EGLint *a = attrib_list; a[0] != EGL_NONE; a += 2) {
             if (a[0] == EGL_CONTEXT_CLIENT_VERSION) attrs.client_version = (uint32_t)a[1];
@@ -205,6 +231,7 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
         return EGL_NO_CONTEXT;
     }
     g_context_made = 1;
+    g_client_version = (EGLint)attrs.client_version;
     return EGL_CONTEXT_HANDLE;
 }
 
@@ -287,13 +314,36 @@ void _wpk_egl_window_retarget(void *egl_window) {
 
 EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
                           EGLSurface read, EGLContext ctx) {
+    /* EGL 1.5 §3.7.3: releasing the current context takes no surfaces and
+     * accepts EGL_NO_DISPLAY. Queued commands are submitted first, so
+     * they run before whatever the caller does next with the buffers they
+     * rendered. */
+    if (ctx == EGL_NO_CONTEXT) {
+        if (dpy != EGL_NO_DISPLAY && dpy != EGL_DPY_HANDLE) {
+            g_last_error = EGL_BAD_DISPLAY;
+            return EGL_FALSE;
+        }
+        if (draw != EGL_NO_SURFACE || read != EGL_NO_SURFACE) {
+            g_last_error = EGL_BAD_MATCH;
+            return EGL_FALSE;
+        }
+        _wpk_gl_flush();
+        g_current = 0;
+        g_current_surfaceless = 0;
+        return EGL_TRUE;
+    }
     if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
-    if (draw != EGL_SURFACE_HANDLE || read != EGL_SURFACE_HANDLE
-        || ctx != EGL_CONTEXT_HANDLE) {
-        g_last_error = EGL_BAD_MATCH;
+    if (ctx != EGL_CONTEXT_HANDLE || !g_context_made) {
+        g_last_error = EGL_BAD_CONTEXT;
         return EGL_FALSE;
     }
-    if (!g_context_made || !g_surface_made) {
+    if (draw == EGL_NO_SURFACE && read == EGL_NO_SURFACE) {
+        g_current = 1;
+        g_current_surfaceless = 1;
+        return EGL_TRUE;
+    }
+    if (draw != EGL_SURFACE_HANDLE || read != EGL_SURFACE_HANDLE
+        || !g_surface_made) {
         g_last_error = EGL_BAD_MATCH;
         return EGL_FALSE;
     }
@@ -304,6 +354,48 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
     }
     // The cmdbuf was mmap'd in eglInitialize so the host's gl_bind
     // fires before GLIO_CREATE_CONTEXT — see the rationale there.
+    g_current = 1;
+    g_current_surfaceless = 0;
+    return EGL_TRUE;
+}
+
+EGLContext eglGetCurrentContext(void) {
+    return g_current ? EGL_CONTEXT_HANDLE : EGL_NO_CONTEXT;
+}
+
+EGLDisplay eglGetCurrentDisplay(void) {
+    return g_current ? EGL_DPY_HANDLE : EGL_NO_DISPLAY;
+}
+
+EGLSurface eglGetCurrentSurface(EGLint readdraw) {
+    if (readdraw != EGL_READ && readdraw != EGL_DRAW) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_NO_SURFACE;
+    }
+    return g_current && !g_current_surfaceless ? EGL_SURFACE_HANDLE
+                                               : EGL_NO_SURFACE;
+}
+
+EGLBoolean eglQueryContext(EGLDisplay dpy, EGLContext ctx,
+                           EGLint attribute, EGLint *value) {
+    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
+    if (ctx != EGL_CONTEXT_HANDLE || !g_context_made) {
+        g_last_error = EGL_BAD_CONTEXT;
+        return EGL_FALSE;
+    }
+    if (!value) { g_last_error = EGL_BAD_PARAMETER; return EGL_FALSE; }
+    switch (attribute) {
+        case EGL_CONFIG_ID:              *value = 1; break;
+        case EGL_CONTEXT_CLIENT_TYPE:    *value = EGL_OPENGL_ES_API; break;
+        case EGL_CONTEXT_CLIENT_VERSION: *value = g_client_version; break;
+        case EGL_RENDER_BUFFER:
+            *value = g_current && !g_current_surfaceless ? EGL_BACK_BUFFER
+                                                         : EGL_NONE;
+            break;
+        default:
+            g_last_error = EGL_BAD_ATTRIBUTE;
+            return EGL_FALSE;
+    }
     return EGL_TRUE;
 }
 
@@ -338,6 +430,8 @@ EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext ctx) {
     if (dpy != EGL_DPY_HANDLE || ctx != EGL_CONTEXT_HANDLE) return EGL_FALSE;
     ioctl(g_fd, GLIO_DESTROY_CONTEXT, NULL);
     g_context_made = 0;
+    g_current = 0;
+    g_current_surfaceless = 0;
     return EGL_TRUE;
 }
 
@@ -355,6 +449,8 @@ EGLBoolean eglTerminate(EGLDisplay dpy) {
     g_initialized = 0;
     g_context_made = 0;
     g_surface_made = 0;
+    g_current = 0;
+    g_current_surfaceless = 0;
     return EGL_TRUE;
 }
 
@@ -367,10 +463,11 @@ EGLint eglGetError(void) {
 /* The "1.5" below is the version clients branch on, and this archive
  * does not define the whole 1.5 entry-point set: the sync objects
  * (eglCreateSync/eglDestroySync/eglClientWaitSync/eglWaitSync/
- * eglGetSyncAttrib), the images (eglCreateImage/eglDestroyImage),
+ * eglGetSyncAttrib), the core images (eglCreateImage/eglDestroyImage;
+ * EGL_KHR_image_base's eglCreateImageKHR imports dma-bufs),
  * eglCreatePlatformWindowSurface/eglCreatePlatformPixmapSurface, and
  * several 1.0-1.4 queries (eglGetConfigs, eglQuerySurface,
- * eglQueryContext, eglGetCurrent*, eglSurfaceAttrib, eglBindTexImage,
+ * eglSurfaceAttrib, eglBindTexImage,
  * eglReleaseTexImage, eglCopyBuffers, eglCreatePixmapSurface,
  * eglCreatePbufferFromClientBuffer) are all absent. That gap is
  * deliberately left visible rather than papered over with a plausible
@@ -381,12 +478,26 @@ EGLint eglGetError(void) {
  * consumer needs it; eglQuerySurface in particular needs the granted
  * surface size, which GLIO_CREATE_SURFACE does not report back today. */
 const char *eglQueryString(EGLDisplay dpy, EGLint name) {
-    if (dpy != EGL_DPY_HANDLE) return NULL;
+    /* EGL_EXT_client_extensions: EGL_NO_DISPLAY answers the extensions
+     * that exist before a display does. The GBM platform is the one this
+     * backend is (see eglGetPlatformDisplay). */
+    if (dpy == EGL_NO_DISPLAY && name == EGL_EXTENSIONS) {
+        return "EGL_EXT_client_extensions EGL_EXT_platform_base "
+               "EGL_KHR_platform_gbm EGL_MESA_platform_gbm";
+    }
+    if (dpy != EGL_DPY_HANDLE) {
+        g_last_error = EGL_BAD_DISPLAY;
+        return NULL;
+    }
     switch (name) {
         case EGL_VENDOR:      return "wasm-posix-kernel";
         case EGL_VERSION:     return "1.5 wpk";
         case EGL_CLIENT_APIS: return "OpenGL_ES";
-        case EGL_EXTENSIONS:  return "";
+        case EGL_EXTENSIONS:
+            return "EGL_EXT_image_dma_buf_import "
+                   "EGL_EXT_image_dma_buf_import_modifiers "
+                   "EGL_KHR_image_base EGL_KHR_no_config_context "
+                   "EGL_KHR_surfaceless_context";
         default:              return NULL;
     }
 }
@@ -440,7 +551,8 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(glDrawElements);
     WPK_MAP_GL(glDrawBuffer);
     WPK_MAP_GL(glDrawBuffers);
-
+    WPK_MAP_GL(glEGLImageTargetRenderbufferStorageOES);
+    WPK_MAP_GL(glEGLImageTargetTexture2DOES);
     WPK_MAP_GL(glEnable);
     WPK_MAP_GL(glEnableVertexAttribArray);
     WPK_MAP_GL(glFinish);
@@ -542,6 +654,11 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(glVertexAttrib4fv);
     WPK_MAP_GL(glVertexAttribPointer);
     WPK_MAP_GL(glViewport);
+    WPK_MAP_GL(eglCreateImageKHR);
+    WPK_MAP_GL(eglDestroyImageKHR);
+    WPK_MAP_GL(eglGetPlatformDisplayEXT);
+    WPK_MAP_GL(eglQueryDmaBufFormatsEXT);
+    WPK_MAP_GL(eglQueryDmaBufModifiersEXT);
     return NULL;
 }
 
@@ -676,4 +793,217 @@ void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
     if (dpy != EGL_DPY_HANDLE || g_fd < 0) return;
     struct wpk_drm_gem_close req = { .handle = bo_handle, .pad = 0 };
     ioctl(g_fd, WPK_DRM_IOCTL_GEM_CLOSE, &req);
+}
+
+/* ----- EGL_EXT_image_dma_buf_import ------------------------------- */
+
+/* The dma-buf formats a bo can carry: the 32-bpp fourccs the kernel's
+ * buffer allocators accept, each a single linear plane. Spelled out
+ * because libEGL must not depend on libdrm headers. */
+#define WPK_FOURCC_ARGB8888 0x34325241u /* 'AR24' */
+#define WPK_FOURCC_XRGB8888 0x34325258u /* 'XR24' */
+#define WPK_FOURCC_ABGR8888 0x34324241u /* 'AB24' */
+#define WPK_FOURCC_XBGR8888 0x34324258u /* 'XB24' */
+#define WPK_MOD_LINEAR      0x0000000000000000ull
+#define WPK_MOD_INVALID     0x00ffffffffffffffull
+
+static const EGLint k_dmabuf_formats[] = {
+    (EGLint)WPK_FOURCC_ARGB8888, (EGLint)WPK_FOURCC_XRGB8888,
+    (EGLint)WPK_FOURCC_ABGR8888, (EGLint)WPK_FOURCC_XBGR8888,
+};
+#define WPK_DMABUF_FORMAT_COUNT \
+    ((EGLint)(sizeof k_dmabuf_formats / sizeof k_dmabuf_formats[0]))
+
+static int dmabuf_format_supported(EGLint fourcc) {
+    for (EGLint i = 0; i < WPK_DMABUF_FORMAT_COUNT; i++) {
+        if (k_dmabuf_formats[i] == fourcc) return 1;
+    }
+    return 0;
+}
+
+/* Import plane 0 of a dma-buf. The import holds its own GEM reference, so
+ * the caller may close the fd afterwards. Whether the bo has a CPU mapping
+ * decides how GL reads it: a GPU-tier bo's PRIME fd refuses mmap with
+ * EINVAL, and its pixels live only in the host texture the bo owns; a
+ * CPU-tier bo stays mapped for the image's lifetime, so a texture bound to
+ * it can be refreshed from memory. */
+EGLImageKHR eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
+                              EGLClientBuffer buffer,
+                              const EGLint *attrib_list) {
+    if (dpy != EGL_DPY_HANDLE || !g_initialized) {
+        g_last_error = EGL_BAD_DISPLAY;
+        return EGL_NO_IMAGE_KHR;
+    }
+    if (target != EGL_LINUX_DMA_BUF_EXT || ctx != EGL_NO_CONTEXT
+        || buffer != NULL) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_NO_IMAGE_KHR;
+    }
+    EGLint width = -1, height = -1, fourcc = 0, fd = -1, offset = 0, pitch = -1;
+    int has_lo = 0, has_hi = 0;
+    uint32_t mod_lo = 0, mod_hi = 0;
+    for (const EGLint *a = attrib_list; a && a[0] != EGL_NONE; a += 2) {
+        switch (a[0]) {
+            case EGL_WIDTH:                       width = a[1]; break;
+            case EGL_HEIGHT:                      height = a[1]; break;
+            case EGL_LINUX_DRM_FOURCC_EXT:        fourcc = a[1]; break;
+            case EGL_DMA_BUF_PLANE0_FD_EXT:       fd = a[1]; break;
+            case EGL_DMA_BUF_PLANE0_OFFSET_EXT:   offset = a[1]; break;
+            case EGL_DMA_BUF_PLANE0_PITCH_EXT:    pitch = a[1]; break;
+            case EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT:
+                has_lo = 1; mod_lo = (uint32_t)a[1]; break;
+            case EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT:
+                has_hi = 1; mod_hi = (uint32_t)a[1]; break;
+            /* Every image is preserved: binding never discards pixels. */
+            case EGL_IMAGE_PRESERVED_KHR:         break;
+            /* Every supported format has one plane. */
+            case EGL_DMA_BUF_PLANE1_FD_EXT:
+            case EGL_DMA_BUF_PLANE1_OFFSET_EXT:
+            case EGL_DMA_BUF_PLANE1_PITCH_EXT:
+            case EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT:
+            case EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT:
+            case EGL_DMA_BUF_PLANE2_FD_EXT:
+            case EGL_DMA_BUF_PLANE2_OFFSET_EXT:
+            case EGL_DMA_BUF_PLANE2_PITCH_EXT:
+            case EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT:
+            case EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT:
+            case EGL_DMA_BUF_PLANE3_FD_EXT:
+            case EGL_DMA_BUF_PLANE3_OFFSET_EXT:
+            case EGL_DMA_BUF_PLANE3_PITCH_EXT:
+            case EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT:
+            case EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT:
+                g_last_error = EGL_BAD_ATTRIBUTE;
+                return EGL_NO_IMAGE_KHR;
+            default:
+                g_last_error = EGL_BAD_PARAMETER;
+                return EGL_NO_IMAGE_KHR;
+        }
+    }
+    if (width < 0 || height < 0 || fourcc == 0 || fd < 0 || pitch < 0
+        || has_lo != has_hi) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_NO_IMAGE_KHR;
+    }
+    uint64_t modifier = has_lo ? ((uint64_t)mod_hi << 32) | mod_lo
+                               : WPK_MOD_INVALID;
+    if (!dmabuf_format_supported(fourcc)
+        || (modifier != WPK_MOD_LINEAR && modifier != WPK_MOD_INVALID)) {
+        g_last_error = EGL_BAD_MATCH;
+        return EGL_NO_IMAGE_KHR;
+    }
+    if (width == 0 || height == 0 || offset < 0
+        || (uint64_t)pitch < (uint64_t)width * 4u) {
+        g_last_error = EGL_BAD_ACCESS;
+        return EGL_NO_IMAGE_KHR;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        g_last_error = EGL_BAD_ACCESS;
+        return EGL_NO_IMAGE_KHR;
+    }
+    uint64_t last = (uint64_t)offset + (uint64_t)pitch * (uint64_t)(height - 1)
+                  + (uint64_t)width * 4u;
+    if (last > (uint64_t)st.st_size) {
+        g_last_error = EGL_BAD_ACCESS;
+        return EGL_NO_IMAGE_KHR;
+    }
+
+    struct wpk_egl_image *image = calloc(1, sizeof *image);
+    if (!image) {
+        g_last_error = EGL_BAD_ALLOC;
+        return EGL_NO_IMAGE_KHR;
+    }
+    image->handle = wpkEglImportDmabufHandle(dpy, fd);
+    if (image->handle == 0) {
+        free(image);
+        g_last_error = EGL_BAD_ACCESS;
+        return EGL_NO_IMAGE_KHR;
+    }
+    image->width = (uint32_t)width;
+    image->height = (uint32_t)height;
+    image->fourcc = (uint32_t)fourcc;
+    image->pitch = (uint32_t)pitch;
+
+    void *map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) {
+        /* A GPU-tier bo has no CPU mapping (EINVAL). Its texture is the
+         * whole bo, so it cannot honor a plane offset. */
+        EGLint error = errno != EINVAL ? EGL_BAD_ALLOC
+                     : offset != 0     ? EGL_BAD_ACCESS
+                                       : EGL_SUCCESS;
+        if (error == EGL_SUCCESS) return (EGLImageKHR)image;
+        wpkEglCloseBoHandle(dpy, image->handle);
+        free(image);
+        g_last_error = error;
+        return EGL_NO_IMAGE_KHR;
+    }
+    image->map = map;
+    image->map_len = (size_t)st.st_size;
+    image->pixels = (const uint8_t *)map + offset;
+    return (EGLImageKHR)image;
+}
+
+EGLBoolean eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image) {
+    if (dpy != EGL_DPY_HANDLE) {
+        g_last_error = EGL_BAD_DISPLAY;
+        return EGL_FALSE;
+    }
+    struct wpk_egl_image *img = (struct wpk_egl_image *)image;
+    if (!img) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_FALSE;
+    }
+    if (img->map) munmap(img->map, img->map_len);
+    wpkEglCloseBoHandle(dpy, img->handle);
+    free(img);
+    return EGL_TRUE;
+}
+
+uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {
+    if (!image || image->pixels) return 0;
+    return wpkEglBindBoTexture(EGL_DPY_HANDLE, image->handle, GL_TEXTURE_2D);
+}
+
+EGLBoolean eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,
+                                    EGLint *formats, EGLint *num_formats) {
+    if (dpy != EGL_DPY_HANDLE) {
+        g_last_error = EGL_BAD_DISPLAY;
+        return EGL_FALSE;
+    }
+    if (max_formats < 0 || !num_formats || (max_formats > 0 && !formats)) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_FALSE;
+    }
+    if (max_formats == 0) {
+        *num_formats = WPK_DMABUF_FORMAT_COUNT;
+        return EGL_TRUE;
+    }
+    EGLint n = max_formats < WPK_DMABUF_FORMAT_COUNT ? max_formats
+                                                     : WPK_DMABUF_FORMAT_COUNT;
+    for (EGLint i = 0; i < n; i++) formats[i] = k_dmabuf_formats[i];
+    *num_formats = n;
+    return EGL_TRUE;
+}
+
+/* Every format has exactly one layout, LINEAR, and it can be rendered to,
+ * so no modifier is external-only. */
+EGLBoolean eglQueryDmaBufModifiersEXT(EGLDisplay dpy, EGLint format,
+                                      EGLint max_modifiers,
+                                      EGLuint64KHR *modifiers,
+                                      EGLBoolean *external_only,
+                                      EGLint *num_modifiers) {
+    if (dpy != EGL_DPY_HANDLE) {
+        g_last_error = EGL_BAD_DISPLAY;
+        return EGL_FALSE;
+    }
+    if (!dmabuf_format_supported(format) || max_modifiers < 0
+        || !num_modifiers || (max_modifiers > 0 && !modifiers)) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_FALSE;
+    }
+    *num_modifiers = 1;
+    if (max_modifiers == 0) return EGL_TRUE;
+    modifiers[0] = WPK_MOD_LINEAR;
+    if (external_only) external_only[0] = EGL_FALSE;
+    return EGL_TRUE;
 }

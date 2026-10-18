@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
-import { ensurePresentTarget } from "../src/webgl/present-target.js";
+import { blitGpuScanout, ensurePresentTarget } from "../src/webgl/present-target.js";
 
 function makeGl() {
   const texture = {}, framebuffer = {}, depthStencil = {}, previousRenderbuffer = {};
@@ -66,4 +66,60 @@ it("clears deleted framebuffer references after a failed resize and can retry", 
   expect(gl.deleteRenderbuffer).toHaveBeenCalledWith(depthStencil);
   expect(ensurePresentTarget(binding)).toBe(true);
   expect(gl.createFramebuffer).toHaveBeenCalledTimes(2);
+});
+
+const GL_READ_FRAMEBUFFER = 0x8ca8;
+const GL_DRAW_FRAMEBUFFER = 0x8ca9;
+const GL_READ_FRAMEBUFFER_BINDING = 0x8caa;
+const GL_DRAW_FRAMEBUFFER_BINDING = 0x8ca6;
+const GL_SCISSOR_TEST = 0x0c11;
+const GL_COLOR_BUFFER_BIT = 0x4000;
+const GL_NEAREST = 0x2600;
+
+class RecordingGl {
+  readonly SCISSOR_TEST = GL_SCISSOR_TEST;
+  readonly COLOR_BUFFER_BIT = GL_COLOR_BUFFER_BIT;
+  readonly NEAREST = GL_NEAREST;
+  log: Array<[string, unknown[]]> = [];
+  read: unknown = { kind: "fbo", id: "guest-read" };
+  draw: unknown = { kind: "fbo", id: "guest-draw" };
+  scissor = true;
+
+  getParameter(p: number) {
+    if (p === GL_READ_FRAMEBUFFER_BINDING) return this.read;
+    if (p === GL_DRAW_FRAMEBUFFER_BINDING) return this.draw;
+    if (p === GL_SCISSOR_TEST) return this.scissor;
+    return null;
+  }
+  bindFramebuffer(target: number, fbo: unknown) {
+    this.log.push(["bindFramebuffer", [target, fbo]]);
+  }
+  blitFramebuffer(...args: number[]) { this.log.push(["blitFramebuffer", args]); }
+  enable(cap: number) { this.log.push(["enable", [cap]]); }
+  disable(cap: number) { this.log.push(["disable", [cap]]); }
+}
+
+it("copies a GPU scanout buffer onto the canvas with the top row first", () => {
+  const gl = new RecordingGl();
+  const registry = new GlContextRegistry();
+  registry.bind({ pid: 1, cmdbufAddr: 0, cmdbufLen: 0 });
+  const binding = registry.get(1)!;
+  binding.gl = gl as unknown as WebGL2RenderingContext;
+  const fbo = { kind: "fbo", id: "scanout" } as unknown as WebGLFramebuffer;
+
+  blitGpuScanout(binding, { fbo }, 640, 480);
+
+  expect(gl.log).toEqual([
+    ["disable", [GL_SCISSOR_TEST]],
+    ["bindFramebuffer", [GL_READ_FRAMEBUFFER, fbo]],
+    ["bindFramebuffer", [GL_DRAW_FRAMEBUFFER, null]],
+    ["blitFramebuffer", [
+      0, 0, 640, 480,
+      0, 480, 640, 0,
+      GL_COLOR_BUFFER_BIT, GL_NEAREST,
+    ]],
+    ["enable", [GL_SCISSOR_TEST]],
+    ["bindFramebuffer", [GL_READ_FRAMEBUFFER, gl.read]],
+    ["bindFramebuffer", [GL_DRAW_FRAMEBUFFER, gl.draw]],
+  ]);
 });

@@ -129,3 +129,36 @@ export function blitPresentTarget(b: GlBinding): void {
   gl.bindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
   gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
 }
+
+/** Show a GPU-tier scanout buffer: blit `bo`'s FBO onto the default
+ *  framebuffer of the canvas `b` claimed. A renderer that draws into its
+ *  own scanout buffers (wlroots) never presents a window surface; the
+ *  page flip that latches the buffer is its present. KMS buffers hold the
+ *  top row first, so the blit flips Y onto the bottom-up default
+ *  framebuffer. */
+export function blitGpuScanout(
+  b: GlBinding,
+  bo: { fbo: WebGLFramebuffer },
+  width: number,
+  height: number,
+): void {
+  const gl = b.gl;
+  if (!gl) return;
+
+  const prevRead = gl.getParameter(GL_READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+  const prevDraw = gl.getParameter(GL_DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+  const scissor = gl.getParameter(gl.SCISSOR_TEST) as boolean;
+  if (scissor) gl.disable(gl.SCISSOR_TEST);
+
+  gl.bindFramebuffer(GL_READ_FRAMEBUFFER, bo.fbo);
+  gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, null);
+  gl.blitFramebuffer(
+    0, 0, width, height,
+    0, height, width, 0,
+    gl.COLOR_BUFFER_BIT, gl.NEAREST,
+  );
+
+  if (scissor) gl.enable(gl.SCISSOR_TEST);
+  gl.bindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
+  gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
+}
