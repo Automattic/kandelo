@@ -362,14 +362,18 @@ pub struct PrimeBoState {
 /// negative sentinel space by construction, not by call-site convention:
 /// the `VirtualDevice` range (-1..=-11, so the fd is never routed to a
 /// render or card ioctl path), `PROCFS_DIR_HANDLE` (-150),
-/// `DEVFS_DIR_HANDLE` (-160), and procfs buffers (<= -`PROCFS_BUF_BASE`).
+/// `DEVFS_DIR_HANDLE` (-160), `TMPFS_DIR_SENTINEL` (-170),
+/// `ROOTFS_DIR_SENTINEL` (-180), and procfs buffers
+/// (<= -`PROCFS_BUF_BASE`).
 /// -200 was the first procfs buffer handle; it was safe only because every
 /// procfs dispatch happened to check the file type first.
-pub const PRIME_FD_HOST_HANDLE: i64 = -170;
+pub const PRIME_FD_HOST_HANDLE: i64 = -195;
 const _: () = assert!(
     PRIME_FD_HOST_HANDLE > -crate::procfs::PROCFS_BUF_BASE
         && PRIME_FD_HOST_HANDLE != crate::procfs::PROCFS_DIR_HANDLE
         && PRIME_FD_HOST_HANDLE != crate::devfs::DEVFS_DIR_HANDLE
+        && PRIME_FD_HOST_HANDLE != crate::tmpfs::TMPFS_DIR_SENTINEL
+        && PRIME_FD_HOST_HANDLE != crate::rootfs::ROOTFS_DIR_SENTINEL
 );
 
 /// Per-fd state for `/dev/dri/renderD128` opens.
