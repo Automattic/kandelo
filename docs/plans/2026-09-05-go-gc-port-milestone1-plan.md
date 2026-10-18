@@ -4066,3 +4066,18 @@ The change removes a transient full-region duplicate, but the new peak
 for the 34,233-activation FrankenPHP executable remains **unmeasured**.
 Do not treat this as clearance to rebuild under the current roughly
 5 GiB of unused system memory.
+
+**2026-10-17 — Pause at the FrankenPHP memory gate.** A bounded
+inspection of the captured raw classic Wasm found that all 100,000 data
+segments are active. Their offsets increase and every neighboring pair
+has a gap; the segments contain about 32.3 MiB of payload. The current
+module-state planner converts each active segment to a passive one and
+adds an offset global before generating replay initialization. This is
+a concrete place to investigate instrumentation size, but no segment
+coalescing or replay change has been made: gap sizes, data-index uses,
+overlap semantics, and fork-child initialization must be checked before
+any such transform could be sound. During this inspection, system unused
+memory fell to about 1.5 GiB. No full instrumenter or package build was
+started. Resume only when sufficient memory is available; first measure
+the new full-instrumenter peak safely, then rebuild FrankenPHP and the
+WordPress image and run the real OPcache/Node/Chromium gates.
