@@ -2275,6 +2275,123 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(onExit).toHaveBeenCalledWith(42, 137);
   });
 
+  it("drops only the dead process's own waits on signal death", () => {
+    const deadMemory = createSharedMemory();
+    const liveMemory = createSharedMemory();
+    const dead = createChannel(42, deadMemory);
+    const live = createChannel(7, liveMemory);
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_signal: vi.fn((pid: number) => pid === 42 ? 15 : 0),
+    });
+    worker.processes = new Map([
+      [42, { channels: [dead], memory: deadMemory }],
+      [7, { channels: [live], memory: liveMemory }],
+    ]);
+    const liveWaiter = {
+      parentPid: 7,
+      channel: live,
+      origArgs: [-1, 0, 0, 0],
+      pid: -1,
+      options: 0,
+      syscallNr: ABI_SYSCALLS.Wait4,
+    };
+    worker.waitingForChild = [
+      {
+        parentPid: 42,
+        channel: dead,
+        origArgs: [43, 0, 0, 0],
+        pid: 43,
+        options: 0,
+        syscallNr: ABI_SYSCALLS.Wait4,
+      },
+      liveWaiter,
+    ];
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit: vi.fn() };
+
+    worker.handleProcessTerminated(dead);
+
+    expect(worker.waitingForChild).toEqual([liveWaiter]);
+  });
+
+  it("drops the dead process's own waitid wait on signal death", () => {
+    const deadMemory = createSharedMemory();
+    const liveMemory = createSharedMemory();
+    const dead = createChannel(42, deadMemory);
+    const live = createChannel(7, liveMemory);
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_signal: vi.fn((pid: number) => pid === 42 ? 15 : 0),
+    });
+    worker.processes = new Map([
+      [42, { channels: [dead], memory: deadMemory }],
+      [7, { channels: [live], memory: liveMemory }],
+    ]);
+    const liveWaiter = {
+      parentPid: 7,
+      channel: live,
+      origArgs: [0, 0, 0, 4, 0],
+      pid: -1,
+      options: 4,
+      syscallNr: ABI_SYSCALLS.Waitid,
+    };
+    worker.waitingForChild = [
+      {
+        parentPid: 42,
+        channel: dead,
+        origArgs: [1, 43, 0, 4, 0],
+        pid: 43,
+        options: 4,
+        syscallNr: ABI_SYSCALLS.Waitid,
+      },
+      liveWaiter,
+    ];
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit: vi.fn() };
+
+    worker.handleProcessTerminated(dead);
+
+    expect(worker.waitingForChild).toEqual([liveWaiter]);
+  });
+
+  it("drops only the dead process's own waits on SIGKILL death", () => {
+    const deadMemory = createSharedMemory();
+    const liveMemory = createSharedMemory();
+    const dead = createChannel(42, deadMemory);
+    const live = createChannel(7, liveMemory);
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_signal: vi.fn((pid: number) => pid === 42 ? 9 : 0),
+    });
+    worker.processes = new Map([
+      [42, { channels: [dead], memory: deadMemory }],
+      [7, { channels: [live], memory: liveMemory }],
+    ]);
+    const liveWaiter = {
+      parentPid: 7,
+      channel: live,
+      origArgs: [-1, 0, 0, 0],
+      pid: -1,
+      options: 0,
+      syscallNr: ABI_SYSCALLS.Wait4,
+    };
+    worker.waitingForChild = [
+      {
+        parentPid: 42,
+        channel: dead,
+        origArgs: [43, 0, 0, 0],
+        pid: 43,
+        options: 0,
+        syscallNr: ABI_SYSCALLS.Wait4,
+      },
+      liveWaiter,
+    ];
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit: vi.fn() };
+
+    worker.handleProcessTerminated(dead);
+
+    expect(worker.waitingForChild).toEqual([liveWaiter]);
+  });
+
   it("cooperatively quiesces a signaled vfork borrower at its pending channel", () => {
     const memory = createSharedMemory();
     const channel = createChannel(42, memory);

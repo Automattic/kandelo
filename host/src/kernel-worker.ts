@@ -24372,6 +24372,12 @@ export class CentralizedKernelWorker {
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(exitingPid);
     this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry);
     this.hostReaped.add(exitingPid);
+    // A dead process's own wait4/waitid can never complete: Rust no longer
+    // has a live task to bind its signal dequeue to. Its channels stay
+    // registered until the deferred exit callback deactivates them.
+    this.waitingForChild = (this.waitingForChild ?? []).filter(
+      (waiter) => waiter.parentPid !== exitingPid,
+    );
     this.releaseAllSharedMemoryForProcess(exitingPid, true, entry);
     // Default signal delivery has already transitioned the Rust Process to
     // Exited and released its process/OFD/flock records. Consume that generic
