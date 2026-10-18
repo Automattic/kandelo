@@ -11,7 +11,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeKernelHost } from "../../src/node-kernel-host";
@@ -22,8 +22,10 @@ const TIMEOUTS = { unwindTimeoutMs: 10_000, vforkTimeoutMs: 5_000 };
 const CAPTURE_ROUNDS = 12;
 
 function buildStormFixture(name: string): Uint8Array {
-  const buildDir = join(tmpdir(), "wasm-checkpoint-exec");
-  mkdirSync(buildDir, { recursive: true });
+  // Its own directory: the two exec test files build the same fixture and
+  // run in parallel, and instrumenting a path the other file already
+  // instrumented is refused.
+  const buildDir = mkdtempSync(join(tmpdir(), "wasm-checkpoint-exec-"));
   const wasmPath = join(buildDir, `${name}.wasm`);
   execFileSync(
     "wasm32posix-cc",

@@ -404,7 +404,7 @@ export function captureGlContext(
 
   gl.bindFramebuffer(GL_READ_FRAMEBUFFER, priorReadFbo);
   gl.bindBuffer(GL_COPY_READ_BUFFER, priorCopyRead);
-  gl.bindVertexArray(b.shadow.vao);
+  gl.bindVertexArray(b.shadow.vao ?? b.shadow.defaultVao);
   gl.pixelStorei(GL_PACK_ALIGNMENT, b.shadow.packAlignment);
 
   const shadow = b.shadow;
@@ -694,8 +694,10 @@ function readVaos(
 ): CheckpointGlVao[] {
   const out: CheckpointGlVao[] = [];
   const maxAttribs = Number(gl.getParameter(GL_MAX_VERTEX_ATTRIBS) ?? 0);
+  // Vertex array 0 is the binding's own stand-in for WebGL's default, which
+  // stays empty (see `GlShadowState.defaultVao`).
   const sources: [number, WebGLVertexArrayObject | null][] = [
-    [0, null],
+    [0, b.shadow.defaultVao],
     ...[...b.vaos].map(
       ([name, vao]) => [name, vao] as [number, WebGLVertexArrayObject],
     ),

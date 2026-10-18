@@ -635,8 +635,8 @@ export async function createLiveHost(
   // that came to watch another computer's machine contending with one of its
   // own. A gallery launch arrives later, through applyBootDescriptor.
   const machineRequested = protectedProfile !== undefined ||
-    Boolean(opts.demo?.trim()) || Boolean(opts.vfsUrl?.trim()) ||
-    Boolean(opts.profile?.trim());
+    Boolean(opts.vfsUrl?.trim()) || Boolean(opts.profile?.trim()) ||
+    (opts.inputs?.length ?? 0) > 0 || opts.parameters != null;
   let host: LiveKernelHost;
   let protectedBoot: Promise<void> | undefined;
   const activateProtectedProfile = (): Promise<void> => {

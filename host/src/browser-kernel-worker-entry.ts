@@ -1,3 +1,4 @@
+import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 import { OwnedJobs } from "./owned-jobs";
 /**
  * Kernel Worker Entry Point — Dedicated web worker that hosts the
@@ -74,9 +75,12 @@ import {
   type HttpResponse,
 } from "./networking/in-kernel-http";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
-import type { FileSystemBackend, MountConfig } from "./vfs/types";
+import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
-import { withBrowserMitmCaEnv } from "./networking/browser-mitm-ca-env";
+import {
+  BROWSER_MITM_CA_BUNDLE_PATH,
+  withBrowserMitmCaEnv,
+} from "./networking/browser-mitm-ca-env";
 import { patchWasmForThread } from "./worker-main";
 import {
   describeWasmArtifactPolicyFailures,
@@ -111,7 +115,7 @@ import {
 import { CheckpointFreezeGateCoordinator } from "./checkpoint-freeze-gate";
 import { ProcessExecutionGenerationAllocator } from "./process-execution-generation";
 import {
-  askMountsForCheckpointBytes,
+  rootfsImageSha256,
   captureMachineCheckpoint,
   captureMachineCheckpointSummary,
   machineCheckpointTransferList,
@@ -202,8 +206,10 @@ const O_WRONLY_CREAT_TRUNC =
 // State
 let kernelWorker: CentralizedKernelWorker;
 let workerAdapter: BrowserWorkerAdapter;
-/** Every mount a checkpoint asks, in mount-spec order with `/` first. */
-let checkpointMounts: { mountPoint: string; backend: FileSystemBackend }[] = [];
+/** The host directories mounted beneath `/`, which a checkpoint leaves behind. */
+let checkpointHostMounts: string[] = [];
+/** SHA-256 of this machine's `/` image; null when it booted without one. */
+let bootImageSha256: string | null = null;
 let io: VirtualPlatformIO;
 /**
  * This machine's own clock, kept so recording can be turned off again.
@@ -255,7 +261,8 @@ const checkpointMachine: CheckpointMachine = {
   armUnwindRequests: () => kernelWorker.armCheckpointUnwind(),
   disarmUnwindRequests: () => kernelWorker.disarmCheckpointUnwind(),
   copyKernelMemory: () => kernelWorker.copyKernelMemoryForCheckpoint(),
-  filesystemBuffers: () => askMountsForCheckpointBytes(checkpointMounts),
+  rootfsImageSha256: () => bootImageSha256,
+  hostMounts: () => checkpointHostMounts,
   monotonicNowNs: () => {
     const now = io.clockGettime(1);
     return now.sec * 1_000_000_000 + now.nsec;
@@ -1122,6 +1129,8 @@ async function createFreshProcessMemory(
 
 // ── Init ──
 
+const remoteSegmentRuntime = new RemoteSegmentRuntime();
+
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = false;
   initFailure = null;
@@ -1186,10 +1195,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   let restoredProgramModules:
     | ReadonlyMap<number, WebAssembly.Module>
     | undefined;
+  bootImageSha256 = msg.vfsImage ? await rootfsImageSha256(msg.vfsImage) : null;
   if (msg.restoreCheckpoint) {
     restoredProgramModules = await validateMachineCheckpoint(
       msg.restoreCheckpoint,
-      { kernelAbiVersion: ABI_VERSION },
+      { kernelAbiVersion: ABI_VERSION, rootfsImageSha256: bootImageSha256 },
     );
   }
   const specMounts = await restoreBrowserKernelInitMounts(
@@ -1222,12 +1232,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       init === undefined ? globalThis.fetch(url) : globalThis.fetch(url, init);
   }
   const mounts: MountConfig[] = [...specMounts];
-  // Every host mount the freeze must ask. The kernel-owned `/` and its
-  // scratch mounts travel inside the kernel memory copy, so they are absent.
-  checkpointMounts = mounts.map((mount) => ({
-    mountPoint: mount.mountPoint,
-    backend: mount.backend,
-  }));
+  checkpointHostMounts = mounts.map((mount) => mount.mountPoint);
   // The host mounts are exactly the sibling filesystems the kernel's rootfs
   // must not claim. Mirrors the Node entry.
   const rootfsForeignPrefixes = mounts.map((m) => m.mountPoint);
@@ -1246,7 +1251,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // The service worker handles CORS proxying transparently in both dev and
   // production, keeping the browser networking path identical across modes.
   await tlsBackend.init();
-  io.network = tlsBackend;
+  // The session network wraps the browser backend for the machine's life, so
+  // a network session can start or end while guest programs are running.
+  io.network = msg.remoteNetwork
+    ? await remoteSegmentRuntime.initialize(msg.remoteNetwork, tlsBackend)
+    : remoteSegmentRuntime.install(tlsBackend);
 
   // The MITM CA certificate is installed after `init`, below: it is
   // per-session runtime data that can never be in an image, and `/` is the
@@ -1464,11 +1473,15 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   }
 
   if (msg.restoreCheckpoint && restoredProgramModules) {
+    const gaps = describeCheckpointMountGaps(msg.restoreCheckpoint);
+    if (gaps !== null) {
+      reportHostDiagnostic(
+        { pid: 0, source: "checkpoint restore", message: gaps },
+        "warn",
+      );
+    }
     kernelWorker.rebindRestoredHostHandles(
       msg.restoreCheckpoint.processes.map((bucket) => ({ pid: bucket.pid })),
-    );
-    kernelWorker.restoreEpollInterestsFromCheckpoint(
-      msg.restoreCheckpoint.epolls,
     );
     // Before the first restored process resumes: its next GL submit must
     // find a binding, or a machine that was healthy when captured fails
@@ -5051,6 +5064,7 @@ async function performDestroy() {
         "Audio clock did not consume the queued close tail before machine teardown; the remaining tail was discarded.",
     });
   }
+  remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
   initReady = false;
   initFailure = "kernel worker destroyed";
@@ -5354,10 +5368,12 @@ const sw = globalThis as unknown as {
 
 sw.onmessage = (e: MessageEvent) => {
   const msg = e.data as MainToKernelMessage;
+  if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
   switch (msg.type) {
     case "init":
       void handleInit(msg).catch((err) => {
         const error = formatError(err);
+        remoteSegmentRuntime.close();
         initReady = false;
         initFailure = error;
         console.error("[kernel-worker] init failed:", err);

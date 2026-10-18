@@ -902,11 +902,11 @@
 
 .kdemo-surface-badge {
   flex: 0 1 auto;
+  /* Every message shares one grid cell, so the badge is as wide as the
+     widest reserved message (DemoSurfaceDockControls). */
+  display: inline-grid;
   min-width: 0;
   max-width: min(42vw, 360px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   padding: 2px 6px;
   border: 1px solid var(--kdock-border);
   border-radius: 5px;
@@ -916,6 +916,18 @@
   letter-spacing: 0.04em;
   line-height: 1.35;
   text-transform: uppercase;
+}
+
+.kdemo-surface-badge-text {
+  grid-area: 1 / 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kdemo-surface-badge-text[data-reserve="true"] {
+  visibility: hidden;
 }
 
 .kdemo-surface-badge[data-active="true"] {
@@ -4832,3 +4844,66 @@
   opacity: 0.45;
   transition: opacity 200ms ease-out;
 }
+
+/* Network session button and panel. The panel reuses the share dialog. */
+.knetwork-button { position: relative; }
+.knetwork-button::after {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: transparent;
+}
+.knetwork-button[data-state="connected"]::after { background: var(--k-ok); }
+.knetwork-button[data-state="hosting"]::after,
+.knetwork-button[data-state="joining"]::after { background: var(--k-warn); }
+.knetwork-button[data-state="error"]::after { background: var(--k-err); }
+.knetwork { width: min(520px, 100%); }
+.knetwork form { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.knetwork form .kshare-btn-primary { margin-left: 0; }
+.knetwork-actions { display: flex; gap: 8px; }
+.knetwork-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-surface-sunk);
+  font-size: 13px;
+}
+.knetwork-status > span:last-child { margin-left: auto; color: var(--k-text-muted); font-size: 12px; }
+.knetwork-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--k-text-faint); flex-shrink: 0; }
+.knetwork-status[data-phase="connected"] .knetwork-dot { background: var(--k-ok); }
+.knetwork-status[data-phase="hosting"] .knetwork-dot,
+.knetwork-status[data-phase="joining"] .knetwork-dot { background: var(--k-warn); }
+.knetwork-status[data-phase="error"] .knetwork-dot { background: var(--k-err); }
+.knetwork-error { color: var(--k-err); font-size: 12.5px; }
+.knetwork-detail { margin-top: 4px; color: var(--k-text-faint); font-family: var(--k-font-mono); font-size: 11px; }
+.knetwork-note { margin: 0; color: var(--k-text-muted); font-size: 12px; line-height: 1.45; }
+.knetwork-field { display: flex; flex-direction: column; gap: 4px; width: 100%; color: var(--k-text-muted); font-size: 12px; }
+.knetwork-field input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  background: var(--k-surface-sunk);
+  color: var(--k-text);
+  font: 13px var(--k-font-ui);
+}
+.knetwork-members { list-style: none; margin: 0; padding: 0; }
+.knetwork-members li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--k-border);
+  font-size: 13px;
+}
+.knetwork-members code { font-family: var(--k-font-mono); min-width: 7.5em; }
+.knetwork-members small { margin-left: auto; color: var(--k-text-faint); font-size: 11px; }

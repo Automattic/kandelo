@@ -5,6 +5,8 @@ import type {
 } from "./demo-config";
 import type { ClipboardPasteFailure } from "./clipboard-paste";
 import { advanceLazyDownloadSummary } from "./lazy-download";
+import type { RemoteSegmentPeer } from "../../../host/src/networking/remote-segment-port";
+import type { RemoteSessionSnapshot } from "../../../host/src/networking/remote-segment-runtime";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -254,6 +256,16 @@ export interface KernelLike {
    * /dev/fb0 holder — before launching its replacement.
    */
   signalProcess?(pid: number, signum: number): Promise<boolean>;
+  /**
+   * Network-session controls on the running machine. The kernel worker
+   * owns the session's addresses and forwarding; these only start, join,
+   * and end it, and hand it WebRTC links as MessagePorts.
+   */
+  hostRemoteNetwork?(): Promise<string>;
+  joinRemoteNetwork?(peer: RemoteSegmentPeer): Promise<string>;
+  attachRemotePeer?(peer: RemoteSegmentPeer): Promise<number>;
+  leaveRemoteNetwork?(): Promise<void>;
+  remoteNetworkSnapshot?(): Promise<RemoteSessionSnapshot>;
   /**
    * Write `bytes` to `path` in the kernel-owned VFS. Its parent must already
    * exist. The kernel worker owns the filesystem, so this is an async
@@ -1326,6 +1338,17 @@ export interface KernelHost {
    * exists. Rejects when the attached kernel cannot signal.
    */
   signalProcess(pid: number, signum: number): Promise<boolean>;
+
+  // network sessions
+  /** Start hosting a session; resolves this machine's session address. */
+  hostRemoteNetwork(): Promise<string>;
+  /** Join the session at the other end of `peer`; resolves the assigned address. */
+  joinRemoteNetwork(peer: RemoteSegmentPeer): Promise<string>;
+  /** Admit one more computer to the session this machine hosts. */
+  attachRemotePeer(peer: RemoteSegmentPeer): Promise<number>;
+  /** End this machine's part in its session. A host ends it for everyone. */
+  leaveRemoteNetwork(): Promise<void>;
+  remoteNetworkSnapshot(): Promise<RemoteSessionSnapshot>;
 
   // inspector
   enumProcs(): Promise<ProcessInfo[]>;
@@ -3379,6 +3402,22 @@ export class LiveKernelHost implements KernelHost {
     }
     return this.kernel.signalProcess(pid, signum);
   }
+
+  // ── KernelHost: network sessions ────────────────────────────────────────
+
+  private remoteNetwork() {
+    const kernel = this.kernel;
+    if (!kernel?.hostRemoteNetwork || !kernel.joinRemoteNetwork || !kernel.attachRemotePeer
+      || !kernel.leaveRemoteNetwork || !kernel.remoteNetworkSnapshot) {
+      throw new Error("LiveKernelHost: the attached kernel cannot join network sessions.");
+    }
+    return kernel as Required<Pick<KernelLike, "hostRemoteNetwork" | "joinRemoteNetwork" | "attachRemotePeer" | "leaveRemoteNetwork" | "remoteNetworkSnapshot">>;
+  }
+  async hostRemoteNetwork(): Promise<string> { return this.remoteNetwork().hostRemoteNetwork(); }
+  async joinRemoteNetwork(peer: RemoteSegmentPeer): Promise<string> { return this.remoteNetwork().joinRemoteNetwork(peer); }
+  async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> { return this.remoteNetwork().attachRemotePeer(peer); }
+  async leaveRemoteNetwork(): Promise<void> { return this.remoteNetwork().leaveRemoteNetwork(); }
+  async remoteNetworkSnapshot(): Promise<RemoteSessionSnapshot> { return this.remoteNetwork().remoteNetworkSnapshot(); }
 
   async readDir(path: string): Promise<VfsDirent[]> {
     if (!this.kernel?.readDirFromVfs) {

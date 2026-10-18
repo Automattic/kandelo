@@ -32,6 +32,8 @@ import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/
 import { useWebMcp } from "../webmcp/use-webmcp";
 import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
+import { useNetworkSession } from "./use-network-session";
+import { NetworkPanel } from "./NetworkPanel";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
@@ -70,6 +72,7 @@ const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
 
 export const App: React.FC = () => {
   const host = useKernelHost();
+  const networkSession = useNetworkSession(host);
   const demoGuide = useDemoGuide();
   const lazyDownloads = useLazyDownloads();
   const machineProgress = useMachineProgress();
@@ -566,7 +569,11 @@ export const App: React.FC = () => {
 
         {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
 
+        {networkSession.open && <NetworkPanel session={networkSession} running={surface.status === "running"} />}
+
         <Dock
+          networkPhase={networkSession.state.phase}
+          onOpenNetwork={() => networkSession.setOpen(true)}
           activePane={dockPane}
           activeView={dockActiveView}
           viewControls={viewControls}

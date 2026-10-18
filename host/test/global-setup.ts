@@ -31,6 +31,21 @@ const examplesDir = join(repoRoot, "examples");
 const fixturesDir = join(__dirname, "fixtures");
 
 const C_TEST_FIXTURES = [
+  {src:join(fixturesDir,"tcp-state-observation.c"),out:join(fixturesDir,"tcp-state-observation.wasm")},
+  {
+    src: join(fixturesDir, "udp-state-observation.c"),
+    out: join(fixturesDir, "udp-state-observation.wasm"),
+    // The probe forks to check that a connected UDP source survives fork.
+    forkInstrument: true,
+  },
+  {
+    src: join(fixturesDir, "interface-observation.c"),
+    out: join(fixturesDir, "interface-observation.wasm"),
+  },
+  {
+    src: join(fixturesDir, "udp-broadcast-observation.c"),
+    out: join(fixturesDir, "udp-broadcast-observation.wasm"),
+  },
   {
     src: join(fixturesDir, "process-memory-reclamation-churn.c"),
     out: join(fixturesDir, "process-memory-reclamation-churn.wasm"),

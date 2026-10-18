@@ -12,16 +12,17 @@ function fakeCheckpoint(marker: number): MachineCheckpoint {
     format: MACHINE_CHECKPOINT_FORMAT,
     kernelAbiVersion: 43,
     kernelMemory: new Uint8Array([marker]),
-    filesystems: [
-      { mountPoint: "/", bytes: new Uint8Array([marker, marker]) },
-      { mountPoint: "/home/maker", bytes: new Uint8Array([marker]) },
+    rootfsImageSha256: marker.toString(16).padStart(64, "0"),
+    unreadableFilesystems: [
+      {
+        mountPoint: "/home/maker",
+        reason: "a host directory stays with the computer that mounts it",
+      },
     ],
-    unreadableFilesystems: [],
     monotonicNs: 5_000_000_000,
     framebuffers: [],
     kms: { fbs: [], crtcs: [], masterPid: null, buffers: [] },
     gl: [],
-    epolls: [],
     processes: [],
   };
 }
@@ -114,9 +115,12 @@ describe("local checkpoint handover", () => {
     try {
       const taken = await taker.take(5_000);
       expect(taken.kernelMemory).toEqual(new Uint8Array([9]));
-      expect(taken.filesystems).toEqual([
-        { mountPoint: "/", bytes: new Uint8Array([9, 9]) },
-        { mountPoint: "/home/maker", bytes: new Uint8Array([9]) },
+      expect(taken.rootfsImageSha256).toBe("9".padStart(64, "0"));
+      expect(taken.unreadableFilesystems).toEqual([
+        {
+          mountPoint: "/home/maker",
+          reason: "a host directory stays with the computer that mounts it",
+        },
       ]);
       expect(taken.monotonicNs).toBe(5_000_000_000);
       expect(sent).toBe(1);

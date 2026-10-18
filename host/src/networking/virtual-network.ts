@@ -211,6 +211,19 @@ interface TcpConnection {
   status: number;
 }
 
+/**
+ * The IPv4 subnet one virtual link carries. Every machine on the link is
+ * inside it, so the kernel can report a truthful netmask and broadcast
+ * address for the interface the link backs.
+ */
+export interface VirtualNetworkSubnet {
+  network: Uint8Array | [number, number, number, number];
+  prefixLength: number;
+}
+
+const toU32 = (addr: Uint8Array) => ((addr[0] << 24) | (addr[1] << 16) | (addr[2] << 8) | addr[3]) >>> 0;
+const fromU32 = (value: number) => new Uint8Array([value >>> 24, (value >>> 16) & 255, (value >>> 8) & 255, value & 255]);
+
 export interface VirtualNetworkMachineOptions {
   id: string;
   address: Uint8Array | [number, number, number, number];
@@ -218,6 +231,12 @@ export interface VirtualNetworkMachineOptions {
 }
 
 export class LocalVirtualNetwork {
+  /** The link's netmask, in network byte order. */
+  readonly netmask: Uint8Array;
+  /** The link's directed broadcast address, or null on a /31 or /32 link. */
+  readonly broadcastAddress: Uint8Array | null;
+  private readonly networkAddress: number;
+  private readonly mask: number;
   private machines = new Map<string, VirtualNetworkBackend>();
   private addressOwners = new Map<string, string>();
   private hostnames = new Map<string, Uint8Array>();
@@ -225,11 +244,35 @@ export class LocalVirtualNetwork {
   private udpEndpoints: UdpEndpoint[] = [];
   private tcpPeersByMachine = new Map<string, Set<VirtualTcpPeer>>();
 
+  constructor(subnet: VirtualNetworkSubnet) {
+    const { prefixLength } = subnet;
+    if (!Number.isInteger(prefixLength) || prefixLength < 1 || prefixLength > 32) {
+      throw new Error("a virtual link's prefix length is 1 to 32");
+    }
+    this.mask = prefixLength === 32 ? 0xffffffff : (~((1 << (32 - prefixLength)) - 1)) >>> 0;
+    this.networkAddress = toU32(copyAddr(new Uint8Array(subnet.network))) & this.mask;
+    if (this.networkAddress !== toU32(copyAddr(new Uint8Array(subnet.network)))) {
+      throw new Error("a virtual link's network address has host bits set");
+    }
+    this.netmask = fromU32(this.mask);
+    this.broadcastAddress = prefixLength <= 30 ? fromU32((this.networkAddress | ~this.mask) >>> 0) : null;
+  }
+
+  /** Whether `addr` names every machine on this link. */
+  isBroadcast(addr: Uint8Array): boolean {
+    if (addr.length === 4 && addr.every((part) => part === 255)) return true;
+    return this.broadcastAddress !== null && ipKey(addr) === ipKey(this.broadcastAddress);
+  }
+
   attachMachine(options: VirtualNetworkMachineOptions): VirtualNetworkBackend {
     const address = copyAddr(options.address instanceof Uint8Array
       ? options.address
       : new Uint8Array(options.address));
     const key = ipKey(address);
+    if ((toU32(address) & this.mask) !== this.networkAddress
+      || (this.broadcastAddress && (toU32(address) === this.networkAddress || this.isBroadcast(address)))) {
+      throw new Error(`address ${key} is not a host address on this link`);
+    }
     if (this.addressOwners.has(key)) {
       throw new Error(`address ${key} is already attached`);
     }
@@ -261,6 +304,8 @@ export class LocalVirtualNetwork {
     this.tcpPeersByMachine.delete(machineId);
     backend.resetAllConnections();
   }
+
+  hasAddress(addr: Uint8Array): boolean { return this.addressOwners.has(ipKey(addr)); }
 
   resolve(hostname: string): Uint8Array | null {
     const direct = parseNumericIpv4Hostname(hostname);
@@ -375,6 +420,11 @@ export class LocalVirtualNetwork {
   }
 
   sendDatagram(datagram: UdpDatagram): number {
+    // A broadcast reaches every machine on the link, the sender's included.
+    if (this.isBroadcast(datagram.dstAddr)) {
+      this.broadcastDatagram(datagram, () => true);
+      return 0;
+    }
     const dstKey = ipKey(datagram.dstAddr);
     const targetMachineId = this.addressOwners.get(dstKey);
     if (!targetMachineId) return EHOSTUNREACH;
@@ -391,6 +441,25 @@ export class LocalVirtualNetwork {
       dstPort: datagram.dstPort,
       data: datagram.data.slice(),
     });
+  }
+
+  /**
+   * Deliver one limited broadcast (255.255.255.255) to every endpoint on its
+   * port that accepts it, as a broadcast reaches every host on a link. Only
+   * wildcard-bound sockets hear it: a socket bound to a unicast address does
+   * not, as on Linux. `reaches` selects which machines the copy is for.
+   */
+  broadcastDatagram(datagram: UdpDatagram, reaches: (machineId: string) => boolean): void {
+    for (const endpoint of [...this.udpEndpoints]) {
+      if (endpoint.port !== datagram.dstPort || endpoint.addrKey !== ANY || !reaches(endpoint.machineId)) continue;
+      endpoint.target.receive({
+        srcAddr: copyAddr(datagram.srcAddr),
+        srcPort: datagram.srcPort,
+        dstAddr: copyAddr(datagram.dstAddr),
+        dstPort: datagram.dstPort,
+        data: datagram.data.slice(),
+      });
+    }
   }
 
   private machineOwnsAddress(machineId: string, addrKey: string): boolean {
@@ -421,6 +490,7 @@ export class LocalVirtualNetwork {
 export class VirtualNetworkBackend implements NetworkIO {
   private connections = new Map<number, TcpConnectionPeer>();
   private connectErrors = new Map<number, number>();
+  private localEndpoints = new Map<number, NetworkAddress>();
   private nextEphemeralPort = 49152;
 
   constructor(
@@ -429,12 +499,22 @@ export class VirtualNetworkBackend implements NetworkIO {
     readonly localAddress: Uint8Array,
   ) {}
 
-  connect(handle: number, addr: Uint8Array, port: number): void {
+  get localNetmask(): Uint8Array { return copyAddr(this.network.netmask); }
+
+  udpSourceAddress(destination: Uint8Array): Uint8Array | number {
+    return this.network.hasAddress(destination) || this.network.isBroadcast(destination)
+      ? copyAddr(this.localAddress) : 101;
+  }
+
+  connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void {
     if (this.connections.has(handle)) {
       this.connectErrors.set(handle, EISCONN);
       return;
     }
-    const sourcePort = this.allocateEphemeralPort();
+    if (source && (source.addr.length !== 4 || (!source.addr.every(v=>v===0) && !source.addr.every((v,i)=>v===this.localAddress[i])))) {
+      this.connectErrors.set(handle,EADDRNOTAVAIL); return;
+    }
+    const sourcePort = source?.port || this.allocateEphemeralPort();
     const result = this.network.connectTcp(
       this.machineId,
       { addr: this.localAddress, port: sourcePort },
@@ -442,6 +522,7 @@ export class VirtualNetworkBackend implements NetworkIO {
     );
     if (result.status === 0) {
       this.connections.set(handle, result.peer);
+      this.localEndpoints.set(handle,{addr:copyAddr(this.localAddress),port:sourcePort});
       this.connectErrors.delete(handle);
     } else {
       this.connectErrors.set(handle, result.status);
@@ -477,10 +558,23 @@ export class VirtualNetworkBackend implements NetworkIO {
     return NET_READINESS.UNOBSERVABLE;
   }
 
+  localEndpoint(handle: number): NetworkAddress {
+    const value = this.localEndpoints.get(handle);
+    if (!value) throw Object.assign(new Error("ENOTCONN"),{errno:ENOTCONN});
+    return {addr:copyAddr(value.addr),port:value.port};
+  }
+
+  shutdown(handle: number, how: number): void {
+    const conn = this.connections.get(handle);
+    if (!conn) throw Object.assign(new Error("ENOTCONN"), {errno: ENOTCONN});
+    conn.shutdown(how);
+  }
+
   close(handle: number): void {
     const conn = this.connections.get(handle);
     if (conn) conn.close();
     this.connections.delete(handle);
+    this.localEndpoints.delete(handle);
     this.connectErrors.delete(handle);
   }
 
@@ -507,7 +601,12 @@ export class VirtualNetworkBackend implements NetworkIO {
   }
 
   sendDatagram(datagram: UdpDatagram): number {
-    return this.network.sendDatagram(datagram);
+    // A socket bound to INADDR_ANY retains that wildcard in getsockname(),
+    // but its outgoing packet needs the address of the selected interface.
+    return this.network.sendDatagram({
+      ...datagram,
+      srcAddr: ipKey(datagram.srcAddr) === ANY ? this.localAddress : datagram.srcAddr,
+    });
   }
 
   resetAllConnections(): void {

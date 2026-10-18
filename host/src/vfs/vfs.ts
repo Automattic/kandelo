@@ -292,9 +292,8 @@ export class VirtualPlatformIO implements PlatformIO {
     return resolved.backend.preparePath?.(resolved.relativePath) ?? false;
   }
 
-  reserveHandleFloors(fileFloor: number, dirFloor: number): void {
-    if (this.nextFileHandle < fileFloor) this.nextFileHandle = fileFloor;
-    if (this.nextDirHandle < dirFloor) this.nextDirHandle = dirFloor;
+  reserveHandleFloor(floor: number): void {
+    if (this.nextHandle < floor) this.nextHandle = floor;
   }
 
   advanceMonotonicFloor(floorNs: number): void {
@@ -784,7 +783,6 @@ export class VirtualPlatformIO implements PlatformIO {
    */
   setTimeProvider(time: TimeProvider): void {
     this.time = time;
-    this.publishTimeProvider();
   }
 
   clockGettime(clockId: number): { sec: number; nsec: number } {

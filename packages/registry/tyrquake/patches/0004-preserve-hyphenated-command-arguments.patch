@@ -1,0 +1,26 @@
+TyrQuake interprets every hyphen in a +command argument as an option
+prefix. Thus +connect peer-2 becomes connect peer before DNS resolution.
+Only recognize command and option prefixes at word boundaries. This is an
+upstream command-line parser defect, independent of Kandelo hostnames.
+
+Reference: pinned TyrQuake common/cmd.c, Cmd_StuffCmds_f.
+
+--- a/common/cmd.c
++++ b/common/cmd.c
+@@ -276,11 +276,13 @@
+     build[0] = 0;
+ 
+     for (i = 0; i < s - 1; i++) {
+-	if (text[i] == '+') {
++	if (text[i] == '+' && (i == 0 || text[i - 1] == ' ')) {
+ 	    i++;
+ 
+-	    for (j = i;
+-		 (text[j] != '+') && (text[j] != '-') && (text[j] != 0); j++);
++	    /* A hyphen inside a hostname is data, not an option prefix. */
++	    for (j = i; text[j] != 0; j++)
++		if ((text[j] == '+' || text[j] == '-') && text[j - 1] == ' ')
++		    break;
+ 
+ 	    c = text[j];
+ 	    text[j] = 0;

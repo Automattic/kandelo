@@ -106,7 +106,7 @@ export interface PlatformIO {
    * stale value would make old and new indistinguishable before the remap
    * rewrites them. Only hosts that restore checkpoints need this hook.
    */
-  reserveHandleFloors?(fileFloor: number, dirFloor: number): void;
+  reserveHandleFloor?(floor: number): void;
   /**
    * Keep every future CLOCK_MONOTONIC reading at or above `floorNs`. See
    * `TimeProvider.advanceMonotonicFloor`; hosts that restore checkpoints
@@ -325,7 +325,15 @@ export interface UdpReceiveTarget {
 export interface NetworkIO {
   /** IPv4 address owned by this guest network stack, when known. */
   readonly localAddress?: Uint8Array;
-  connect(handle: number, addr: Uint8Array, port: number): void;
+  /**
+   * Netmask of the link `localAddress` is on, in network byte order. A
+   * stack that reports an address must report its netmask: the kernel
+   * derives the interface's flags and broadcast address from the pair.
+   */
+  readonly localNetmask?: Uint8Array;
+  /** Select a real routed UDP source; positive errno when no route exists. */
+  udpSourceAddress?(destination: Uint8Array): Uint8Array | number;
+  connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void;
   /** 0 = connected, positive errno = failed, -11 = still pending (EAGAIN). */
   connectStatus(handle: number): number;
   send(handle: number, data: Uint8Array, flags: number): number;
@@ -344,6 +352,10 @@ export interface NetworkIO {
    * wake-every-round with `EAGAIN` from `recv`/`send`.
    */
   readiness?(handle: number): number;
+  /** Actual local endpoint of a connected stream, when the host exposes it. */
+  localEndpoint?(handle: number): NetworkAddress;
+  /** Disable stream directions while preserving the connection handle. */
+  shutdown?(handle: number, how: number): void;
   close(handle: number): void;
   getaddrinfo(hostname: string): Uint8Array; // Returns 4-byte IPv4
   listenTcp?(listenerId: string, addr: Uint8Array, port: number, target: TcpListenTarget): number;

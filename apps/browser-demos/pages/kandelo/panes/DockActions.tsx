@@ -47,7 +47,11 @@ interface Following {
  * presenting again, because the stage is dark in between. Without one
  * (null) there is no signal for "running again", so no progress is shown.
  */
-export function useDockActions(testIdPrefix: string, frameCount: number | null = null): {
+export function useDockActions(
+  testIdPrefix: string,
+  frameCount: number | null = null,
+  stop?: () => Promise<void>,
+): {
   controls: React.ReactNode;
   toasts: React.ReactNode;
 } {
@@ -88,6 +92,7 @@ export function useDockActions(testIdPrefix: string, frameCount: number | null =
     let output = "";
     try {
       await runDemoDockAction(host, action, {
+        stop,
         onPhase: async (phase) => {
           setRunning({ id: buttonId, phase });
           if (phase !== "starting" || frameCountRef.current === null) return;
@@ -114,7 +119,7 @@ export function useDockActions(testIdPrefix: string, frameCount: number | null =
     } finally {
       setRunning(null);
     }
-  }, [host, running, stopFollowing]);
+  }, [host, running, stopFollowing, stop]);
 
   const controls = React.useMemo(() => {
     if (status !== "running" || actions.length === 0) return null;

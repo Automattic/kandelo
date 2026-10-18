@@ -5596,6 +5596,7 @@ pub fn sys_read(
                             let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
                                     .ok_or(Errno::EBADF)?;
+                            if let Some(error) = pipe.stream_error() { return Err(error); }
                             let n = pipe.read(buf);
                             if n > 0 {
                                 return Ok(n);
@@ -6133,6 +6134,7 @@ pub fn sys_write(
                             let pipe =
                                 unsafe { crate::pipe::global_pipe_table().get_mut(send_buf_idx) }
                                     .ok_or(Errno::EBADF)?;
+                            if let Some(error) = pipe.stream_error() { return Err(error); }
                             if !pipe.is_read_end_open() {
                                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                                 return Err(Errno::EPIPE);
@@ -11908,22 +11910,20 @@ fn bind_device_allows_ipv6(sock: &crate::socket::SocketInfo, addr: [u8; 16]) -> 
     }
 }
 
-fn is_supported_udp_bind_addr(addr: [u8; 4]) -> bool {
-    addr == [0, 0, 0, 0]
-        || is_loopback_addr(addr)
-        || is_virtual_network_addr(addr)
-        || addr == [255, 255, 255, 255]
-}
-
-fn is_supported_udp_route_addr(addr: [u8; 4]) -> bool {
-    addr == [0, 0, 0, 0]
-        || is_loopback_addr(addr)
-        || is_virtual_network_addr(addr)
-        || is_ipv4_multicast_addr(addr)
-}
-
 fn is_virtual_network_addr(addr: [u8; 4]) -> bool {
     addr[0] == 10 && addr[1] == 88
+}
+
+/// A destination that names every host on a link: the limited broadcast
+/// address, or the configured interface's directed (subnet) broadcast
+/// address. Sending to either needs `SO_BROADCAST`. Only a destination that
+/// would leave the machine is checked against the host's interface.
+fn requires_broadcast_permission(addr: [u8; 4], host: &mut dyn HostIO) -> bool {
+    addr == [255, 255, 255, 255]
+        || (addr != [0, 0, 0, 0]
+            && !is_loopback_addr(addr)
+            && !is_ipv4_multicast_addr(addr)
+            && crate::netif::is_interface_broadcast(addr, host))
 }
 
 fn is_ipv4_multicast_addr(addr: [u8; 4]) -> bool {
@@ -12148,9 +12148,6 @@ fn udp_bind_socket(
     addr: [u8; 4],
     port: u16,
 ) -> Result<(), Errno> {
-    if !is_supported_udp_bind_addr(addr) {
-        return Err(Errno::EADDRNOTAVAIL);
-    }
     if !bind_device_allows_ipv4(proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?, addr, true) {
         return Err(Errno::EADDRNOTAVAIL);
     }
@@ -12435,7 +12432,7 @@ fn udp_send_datagram(
     if state == SocketState::Connected {
         udp_take_socket_error(proc, sock_idx)?;
     }
-    if dst_addr == [255, 255, 255, 255] {
+    if requires_broadcast_permission(dst_addr, host) {
         use wasm_posix_shared::socket::{SOL_SOCKET, SO_BROADCAST};
 
         let broadcast_enabled = proc
@@ -13100,7 +13097,17 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
     let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
 
     match sock.domain {
-        SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.bind_addr, sock.bind_port)),
+        SocketDomain::Inet => {
+            let address = if sock.sock_type == crate::socket::SocketType::Dgram
+                && sock.state == crate::socket::SocketState::Connected
+                && sock.bind_addr == [0; 4]
+            {
+                sock.udp_source_addr.ok_or(Errno::EADDRNOTAVAIL)?
+            } else {
+                sock.bind_addr
+            };
+            Ok(write_sockaddr_in(buf, address, sock.bind_port))
+        }
         SocketDomain::Inet6 => Ok(write_sockaddr_in6(buf, sock.bind_addr6, sock.bind_port)),
         SocketDomain::Unix => {
             use wasm_posix_shared::socket::AF_UNIX;
@@ -13176,8 +13183,8 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
 
 /// Shut down part of a full-duplex socket connection.
 ///
-/// For AF_INET/AF_INET6 sockets with SHUT_RDWR, also releases this process's
-/// reference to the host network handle.
+/// Host-backed streams retain their handle until close: shutdown changes
+/// directions on the shared connection without releasing descriptor ownership.
 pub fn sys_shutdown(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -13194,11 +13201,24 @@ pub fn sys_shutdown(
     }
 
     let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    if !matches!(how, SHUT_RD | SHUT_WR | SHUT_RDWR) {
+        return Err(Errno::EINVAL);
+    }
+    let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+    if let Some(handle) = sock.host_net_handle {
+        let changes_read = matches!(how, SHUT_RD | SHUT_RDWR) && !sock.shut_rd;
+        let changes_write = matches!(how, SHUT_WR | SHUT_RDWR) && !sock.shut_wr;
+        if changes_read || changes_write {
+            // Apply host shutdown before changing kernel flags. An unsupported
+            // adapter must not masquerade as a successful half-close.
+            host.host_net_shutdown(handle, how)?;
+        }
+    }
     // Taking the resource indexes makes shutdown idempotent and prevents a
     // later close, process exit, fork, or SCM_RIGHTS transfer from dropping or
     // resurrecting the same pipe reference. Explicit SHUT_RD is a hard receive
     // refusal; only normal close uses TCP's orderly orphaned-receive state.
-    let (send_idx, recv_idx, net_handle, datagram_send_state_changed) = {
+    let (send_idx, recv_idx, datagram_send_state_changed) = {
         let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
         let is_unix_dgram = sock.domain == crate::socket::SocketDomain::Unix
             && sock.sock_type == crate::socket::SocketType::Dgram;
@@ -13217,7 +13237,6 @@ pub fn sys_shutdown(
                 (
                     None,
                     sock.recv_buf_idx.take(),
-                    None,
                     is_unix_dgram && !was_shut_rd,
                 )
             }
@@ -13225,7 +13244,6 @@ pub fn sys_shutdown(
                 sock.shut_wr = true;
                 (
                     sock.send_buf_idx.take(),
-                    None,
                     None,
                     is_unix_dgram && !was_shut_wr,
                 )
@@ -13236,7 +13254,6 @@ pub fn sys_shutdown(
                 (
                     sock.send_buf_idx.take(),
                     sock.recv_buf_idx.take(),
-                    sock.host_net_handle.take(),
                     is_unix_dgram && (!was_shut_rd || !was_shut_wr),
                 )
             }
@@ -13260,11 +13277,6 @@ pub fn sys_shutdown(
             crate::wakeup::push(recv_idx as u32, crate::wakeup::WAKE_READABLE);
         }
         pipe_table.free_if_closed(recv_idx);
-    }
-    if let Some(net_handle) = net_handle {
-        if crate::socket::host_net_handle_close_ref(net_handle) {
-            let _ = host.host_net_close(net_handle);
-        }
     }
     // AF_UNIX datagram writers and readiness waiters are not backed by a
     // targetable pipe. A read-side or write-side shutdown changes whether the
@@ -13469,6 +13481,7 @@ pub fn sys_recv(
             loop {
                 let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(recv_buf_idx) }
                     .ok_or(Errno::EBADF)?;
+                if let Some(error) = pipe.stream_error() { return Err(error); }
                 if waitall {
                     let remaining = buf.len().saturating_sub(total);
                     if pipe.available() < remaining
@@ -13519,13 +13532,19 @@ pub fn sys_getsockopt(proc: &mut Process, fd: i32, level: u32, optname: u32) -> 
             }),
             // Linux semantics: return cached errno and clear it.
             SO_ERROR => {
+                let mut stream_error = 0;
+                for index in [sock.recv_buf_idx, sock.send_buf_idx].into_iter().flatten() {
+                    if let Some(pipe) = unsafe {crate::pipe::global_pipe_table().get_mut(index)} {
+                        stream_error = stream_error.max(pipe.take_stream_error());
+                    }
+                }
                 let err = sock.connect_error;
                 if err != 0 {
                     if let Some(s) = proc.sockets.get_mut(sock_idx) {
                         s.connect_error = 0;
                     }
                 }
-                Ok(err)
+                Ok(if err != 0 {err} else {stream_error})
             }
             SO_ACCEPTCONN => Ok(if sock.state == SocketState::Listening {
                 1
@@ -14437,7 +14456,7 @@ pub fn sys_accept(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<
             accepted.bind_port = bind_port;
             match domain {
                 SocketDomain::Inet => {
-                    accepted.bind_addr = bind_addr;
+                    accepted.bind_addr = if pc.local_addr == [0;4] {bind_addr} else {pc.local_addr};
                     accepted.peer_addr = pc.peer_addr;
                 }
                 SocketDomain::Inet6 => {
@@ -14554,6 +14573,7 @@ pub fn sys_connect(
                 if family == 0 {
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.peer_addr = [0, 0, 0, 0];
+                    sock.udp_source_addr = None;
                     sock.peer_port = 0;
                     sock.connect_error = 0;
                     sock.state = if sock.bind_port == 0 {
@@ -14569,7 +14589,7 @@ pub fn sys_connect(
                 if raw_ip == [0, 0, 0, 0] && port == 0 {
                     return Err(Errno::EADDRNOTAVAIL);
                 }
-                if ip == [255, 255, 255, 255] {
+                if requires_broadcast_permission(ip, host) {
                     use wasm_posix_shared::socket::{SOL_SOCKET, SO_BROADCAST};
 
                     let broadcast_enabled =
@@ -14578,17 +14598,38 @@ pub fn sys_connect(
                         return Err(Errno::EACCES);
                     }
                 }
-                if !is_supported_udp_route_addr(ip) {
-                    return Err(Errno::ENETUNREACH);
-                }
                 if !bind_device_allows_ipv4(sock, ip, false) {
                     return Err(Errno::ENETUNREACH);
                 }
 
+                // Keep the wildcard binding's receive ownership intact while
+                // recording the actual source selected for this association.
+                // The host owns its interface; the kernel must not assume a
+                // demo subnet or invent a routable local address.
+                let routed_source = if is_loopback_addr(ip) {
+                    udp_route_local_addr(ip)
+                } else if is_ipv4_multicast_addr(ip) {
+                    use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_IF};
+                    let selected = sock.get_option(IPPROTO_IP, IP_MULTICAST_IF)
+                        .unwrap_or(0).to_le_bytes();
+                    if is_loopback_addr(selected) {
+                        selected
+                    } else if is_loopback_addr(sock.bind_addr) {
+                        sock.bind_addr
+                    } else if sock.bind_device.as_deref() == Some(b"lo") {
+                        [127, 0, 0, 1]
+                    } else {
+                        host.host_udp_source_address(&ip)?
+                    }
+                } else {
+                    host.host_udp_source_address(&ip)?
+                };
+                let source = if sock.bind_addr != [0; 4] { sock.bind_addr } else { routed_source };
                 udp_ensure_bound(proc, host, sock_idx, udp_route_local_addr(ip))?;
                 {
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.state = SocketState::Connected;
+                    sock.udp_source_addr = Some(source);
                     sock.peer_addr = ip;
                     sock.peer_port = port;
                     sock.connect_error = 0;
@@ -14866,10 +14907,12 @@ pub fn sys_connect(
                 // while it is pending rather than leaking HostIO's internal
                 // EAGAIN retry sentinel. AF_UNIX and local/virtual routes do not
                 // enter this branch.
-                let net_handle = sock_idx as i32;
+                let net_handle = if let Some(handle) = sock.host_net_handle { handle } else { crate::socket::allocate_host_net_handle()? };
                 let was_connecting = sock.state == SocketState::Connecting;
                 if !was_connecting {
-                    host.host_net_connect(net_handle, &ip, port)?;
+                    if sock.bind_port != 0 || sock.bind_addr != [0;4] {
+                        host.host_net_connect_from(net_handle,&ip,port,sock.bind_addr,sock.bind_port)?;
+                    } else {host.host_net_connect(net_handle, &ip, port)?;}
                     let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                     sock.state = SocketState::Connecting;
                     sock.host_net_handle = Some(net_handle);
@@ -14878,6 +14921,7 @@ pub fn sys_connect(
                     Ok(()) => {
                         let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
                         sock.state = SocketState::Connected;
+                        if let Ok((addr,port)) = host.host_net_local_endpoint(net_handle) { sock.bind_addr=addr; sock.bind_port=port; }
                         Ok(())
                     }
                     Err(Errno::EAGAIN) => Err(if was_connecting {
@@ -15018,6 +15062,7 @@ pub fn sys_connect(
 
             if let Some(shared_idx) = shared_idx {
                 let pending = crate::socket::PendingConnection {
+                    local_addr: [0;4],
                     peer_addr: [0; 4],
                     peer_addr6: [0; 16],
                     peer_is_ipv6: false,
@@ -15787,7 +15832,8 @@ fn poll_check_depth(
                     if let Some(recv_idx) = sock.recv_buf_idx {
                         let pipe_ref = unsafe { crate::pipe::global_pipe_table().get(recv_idx) };
                         if let Some(pipe) = pipe_ref {
-                            if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
+                            if pipe.stream_error().is_some() { revents |= POLLERR; }
+                            if pollfd.events & POLLIN != 0 && (pipe.available() > 0 || !pipe.is_write_end_open()) {
                                 revents |= POLLIN;
                             }
                             if !pipe.is_write_end_open() {
@@ -15799,7 +15845,8 @@ fn poll_check_depth(
                     if let Some(send_idx) = sock.send_buf_idx {
                         let pipe_ref = unsafe { crate::pipe::global_pipe_table().get(send_idx) };
                         if let Some(pipe) = pipe_ref {
-                            if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
+                            if pipe.stream_error().is_some() { revents |= POLLERR; }
+                            if pollfd.events & POLLOUT != 0 && pipe.stream_error().is_none() && pipe.is_read_end_open() && pipe.free_space() > 0 {
                                 revents |= POLLOUT;
                             }
                         }
@@ -15855,6 +15902,7 @@ fn poll_check_depth(
                                     Ok(()) => {
                                         if let Some(s) = proc.sockets.get_mut(sock_idx) {
                                             s.state = SocketState::Connected;
+                                                if let Ok((addr,port)) = host.host_net_local_endpoint(net_handle) {s.bind_addr=addr;s.bind_port=port;}
                                         }
                                         match host.host_net_readiness(net_handle) {
                                             Ok(host_facts) => {
@@ -15892,6 +15940,21 @@ fn poll_check_depth(
                                         }
                                     }
                                 }
+                            }
+                            // A host-delegated connect that failed stays
+                            // failed. Report it on every poll, not only the
+                            // one that observed the failure: the error stays
+                            // pending until SO_ERROR consumes it, and reads
+                            // and writes return at once instead of blocking.
+                            // Reporting nothing here left a caller whose first
+                            // wait absorbed the failure (curl's multi loop)
+                            // waiting for a connection that had already
+                            // failed, until its own timeout.
+                            SocketState::Closed => {
+                                if sock.connect_error != 0 {
+                                    revents |= POLLERR;
+                                }
+                                revents |= pollfd.events & (POLLIN | POLLOUT);
                             }
                             _ => {}
                         }
@@ -16752,7 +16815,11 @@ pub fn sys_ioctl(
                 if ofd.host_handle < 0 {
                     let sock_idx = (-(ofd.host_handle + 1)) as usize;
                     if let Some(sock) = proc.sockets.get(sock_idx) {
-                        if let Some(recv_idx) = sock.recv_buf_idx {
+                        if sock.sock_type == crate::socket::SocketType::Dgram {
+                            // A datagram is indivisible: report the next packet,
+                            // not the total queue or the stream pipe's bytes.
+                            sock.dgram_queue.first().map(|packet| packet.data.len() as i32).unwrap_or(0)
+                        } else if let Some(recv_idx) = sock.recv_buf_idx {
                             unsafe { crate::pipe::global_pipe_table().get(recv_idx) }
                                 .map(|p| p.available() as i32)
                                 .unwrap_or(0)
@@ -16949,6 +17016,41 @@ pub fn sys_ioctl(
         buf[ns..].fill(0);
         buf[ns..ns + 2].copy_from_slice(&crate::netif::AF_INET.to_le_bytes());
         buf[ns + 4..ns + 8].copy_from_slice(&addr);
+        return Ok(());
+    }
+    // The address family queries share SIOCGIFADDR's `struct sockaddr_in`
+    // reply. An interface without the address reports EADDRNOTAVAIL.
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFNETMASK
+        || request == wasm_posix_shared::ioctl_contract::SIOCGIFBRDADDR
+    {
+        if buf.len() < crate::netif::IF_NAMESIZE + 8 {
+            return Err(Errno::EINVAL);
+        }
+        let (name_buf, name_len) = crate::netif::read_name_bytes(buf);
+        let iface =
+            crate::netif::find_by_name(&name_buf[..name_len]).ok_or(Errno::ENODEV)?;
+        let addr = if request == wasm_posix_shared::ioctl_contract::SIOCGIFNETMASK {
+            crate::netif::interface_config(iface, host).map(|config| config.netmask)
+        } else {
+            crate::netif::interface_broadcast(iface, host)
+        }
+        .ok_or(Errno::EADDRNOTAVAIL)?;
+        let ns = crate::netif::IF_NAMESIZE;
+        buf[ns..].fill(0);
+        buf[ns..ns + 2].copy_from_slice(&crate::netif::AF_INET.to_le_bytes());
+        buf[ns + 4..ns + 8].copy_from_slice(&addr);
+        return Ok(());
+    }
+    if request == wasm_posix_shared::ioctl_contract::SIOCGIFFLAGS {
+        if buf.len() < crate::netif::IF_NAMESIZE + 2 {
+            return Err(Errno::EINVAL);
+        }
+        let (name_buf, name_len) = crate::netif::read_name_bytes(buf);
+        let iface =
+            crate::netif::find_by_name(&name_buf[..name_len]).ok_or(Errno::ENODEV)?;
+        let ns = crate::netif::IF_NAMESIZE;
+        let flags = crate::netif::interface_flags(iface, host);
+        buf[ns..ns + 2].copy_from_slice(&flags.to_le_bytes());
         return Ok(());
     }
     if request == wasm_posix_shared::ioctl_contract::SIOCGIFINDEX {
@@ -21638,6 +21740,8 @@ mod tests {
         /// returns the same owners host_stat would for the path.
         handle_owners: std::collections::HashMap<i64, (u32, u32)>,
         handle_paths: std::collections::HashMap<i64, Vec<u8>>,
+        /// What `host_network_interface` reports; `None` is no address.
+        network_interface: Option<crate::netif::InterfaceConfig>,
         freeze_exec_handles: bool,
         frozen_handle_stats: std::collections::HashMap<i64, WasmStat>,
         frozen_handle_bytes: std::collections::HashMap<i64, Vec<u8>>,
@@ -21671,8 +21775,11 @@ mod tests {
         gl_submit_rc: i32,
         net_connect_result: Result<(), Errno>,
         net_connect_status_result: Result<(), Errno>,
+        net_shutdown_calls: Vec<(i32,u32)>,
+        net_shutdown_result: Result<(),Errno>,
         net_send_result: Result<usize, Errno>,
         net_connect_calls: Vec<(i32, Vec<u8>, u16)>,
+        udp_source_result: Result<[u8; 4], Errno>,
         net_listen_calls: Vec<(i32, u16, [u8; 4])>,
         /// Which process may take the next connection off a shared accept
         /// queue. `None` is the unreplicated host, which has no opinion.
@@ -21794,6 +21901,7 @@ mod tests {
                 file_times: std::collections::HashMap::new(),
                 handle_owners: std::collections::HashMap::new(),
                 handle_paths: std::collections::HashMap::new(),
+                network_interface: None,
                 freeze_exec_handles: false,
                 frozen_handle_stats: std::collections::HashMap::new(),
                 frozen_handle_bytes: std::collections::HashMap::new(),
@@ -21818,8 +21926,11 @@ mod tests {
                 gl_submit_rc: 0,
                 net_connect_result: Err(Errno::ECONNREFUSED),
                 net_connect_status_result: Err(Errno::ECONNREFUSED),
+                net_shutdown_calls: Vec::new(),
+                net_shutdown_result: Ok(()),
                 net_send_result: Err(Errno::ENOTCONN),
                 net_connect_calls: Vec::new(),
+                udp_source_result: Err(Errno::ENETUNREACH),
                 net_listen_calls: Vec::new(),
                 accept_winner: None,
                 accept_select_calls: Vec::new(),
@@ -22239,6 +22350,13 @@ mod tests {
     }
 
     impl HostIO for MockHostIO {
+        fn host_udp_source_address(&mut self, _dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
+            self.udp_source_result
+        }
+        fn host_network_interface(&mut self) -> Option<crate::netif::InterfaceConfig> {
+            self.network_interface
+        }
+
         fn host_close(&mut self, handle: i64) -> Result<(), Errno> {
             // One import closes both kinds of handle, so this double dispatches
             // on which kind it issued — exactly as `VirtualPlatformIO` and
@@ -22589,6 +22707,10 @@ mod tests {
             _buf: &mut [u8],
         ) -> Result<usize, Errno> {
             Err(Errno::ENOTCONN)
+        }
+        fn host_net_shutdown(&mut self, handle: i32, how: u32) -> Result<(), Errno> {
+            self.net_shutdown_calls.push((handle, how));
+            self.net_shutdown_result
         }
         fn host_net_close(&mut self, _handle: i32) -> Result<(), Errno> {
             Ok(())
@@ -31900,6 +32022,136 @@ mod tests {
     }
 
     #[test]
+    fn host_tcp_shutdown_sends_fin_and_preserves_the_handle() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let addr = [2, 0, 0, 80, 10, 89, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_connect(&mut proc, &mut host, fd, &addr).unwrap();
+        let handle = host.net_connect_calls[0].0;
+        sys_shutdown(&mut proc, &mut host, fd, SHUT_WR).unwrap();
+        sys_shutdown(&mut proc, &mut host, fd, SHUT_WR).unwrap();
+        assert_eq!(host.net_shutdown_calls, vec![(handle, SHUT_WR)]);
+        sys_shutdown(&mut proc, &mut host, fd, SHUT_RDWR).unwrap();
+        let ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+            .unwrap();
+        assert_eq!(
+            proc.sockets
+                .get((-(ofd.host_handle + 1)) as usize)
+                .unwrap()
+                .host_net_handle,
+            Some(handle)
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn unsupported_host_shutdown_does_not_change_kernel_flags() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        host.net_shutdown_result = Err(Errno::EOPNOTSUPP);
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_connect(
+            &mut proc,
+            &mut host,
+            fd,
+            &[2, 0, 0, 80, 10, 89, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+        )
+        .unwrap();
+        assert_eq!(
+            sys_shutdown(&mut proc, &mut host, fd, SHUT_WR),
+            Err(Errno::EOPNOTSUPP)
+        );
+        let ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+            .unwrap();
+        assert!(
+            !proc
+                .sockets
+                .get((-(ofd.host_handle + 1)) as usize)
+                .unwrap()
+                .shut_wr
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn unrelated_process_socket_slots_have_distinct_host_connections() {
+        use wasm_posix_shared::socket::*;
+        let mut first = Process::new(1);
+        let mut second = Process::new(2);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Ok(());
+        let a = sys_socket(&mut first, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let b = sys_socket(&mut second, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let addr = [2, 0, 0, 80, 10, 89, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_connect(&mut first, &mut host, a, &addr).unwrap();
+        sys_connect(&mut second, &mut host, b, &addr).unwrap();
+        assert_ne!(host.net_connect_calls[0].0, host.net_connect_calls[1].0);
+        sys_close(&mut first, &mut host, a).unwrap();
+        sys_close(&mut second, &mut host, b).unwrap();
+    }
+
+    #[test]
+    fn accepted_tcp_reset_is_observable_after_dup_and_clears_only_so_error() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let listener = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        let addr = [2, 0, 0x46, 0xa5, 127, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        sys_bind(&mut proc, &mut host, listener, &addr).unwrap();
+        sys_listen(&mut proc, &mut host, listener, 4).unwrap();
+        let client = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_connect(&mut proc, &mut host, client, &addr).unwrap();
+        let accepted = sys_accept(&mut proc, &mut host, listener).unwrap();
+        let alias = sys_dup(&mut proc, accepted).unwrap();
+        let ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(accepted).unwrap().ofd_ref.0)
+            .unwrap();
+        let sock = proc.sockets.get((-(ofd.host_handle + 1)) as usize).unwrap();
+        let indexes = [sock.recv_buf_idx.unwrap(), sock.send_buf_idx.unwrap()];
+        sys_send(&mut proc, &mut host, client, b"discard", 0).unwrap();
+        for index in indexes {
+            unsafe { crate::pipe::global_pipe_table().get_mut(index).unwrap() }
+                .reset_stream(Errno::ECONNRESET);
+        }
+        assert_eq!(
+            sys_recv(&mut proc, &mut host, alias, &mut [0; 16], 0),
+            Err(Errno::ECONNRESET)
+        );
+        assert_eq!(
+            sys_write(&mut proc, &mut host, accepted, b"reply"),
+            Err(Errno::ECONNRESET)
+        );
+        assert_eq!(
+            sys_getsockopt(&mut proc, alias, SOL_SOCKET, SO_ERROR),
+            Ok(104)
+        );
+        assert_eq!(
+            sys_getsockopt(&mut proc, accepted, SOL_SOCKET, SO_ERROR),
+            Ok(0)
+        );
+        assert_eq!(
+            sys_read(&mut proc, &mut host, accepted, &mut [0; 16]),
+            Err(Errno::ECONNRESET)
+        );
+        for fd in [alias, accepted, client, listener] {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+    }
+
+    #[test]
     fn test_shutdown_read() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -32171,6 +32423,7 @@ mod tests {
 
         sys_setsockopt_bindtodevice(&mut proc, fd, b"\0").unwrap();
         assert!(sys_getsockopt_bindtodevice(&proc, fd).unwrap().is_empty());
+        host.udp_source_result = Ok([10, 88, 0, 1]);
         sys_connect(&mut proc, &mut host, fd, &external).unwrap();
 
         let unix = sys_socket(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
@@ -32784,6 +33037,46 @@ mod tests {
             "SO_ERROR must clear the cached connect failure after it is read",
         );
         assert_eq!(host.net_connect_calls.len(), 1);
+    }
+
+    #[test]
+    fn test_failed_external_connect_stays_reported_on_later_polls() {
+        use wasm_posix_shared::fcntl_cmd::F_SETFL;
+        use wasm_posix_shared::poll::{POLLERR, POLLIN, POLLOUT};
+        use wasm_posix_shared::socket::*;
+        use wasm_posix_shared::WasmPollFd;
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.net_connect_result = Ok(());
+        host.net_connect_status_result = Err(Errno::EAGAIN);
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_STREAM, 0).unwrap();
+        sys_fcntl(&mut proc, fd, F_SETFL, O_NONBLOCK).unwrap();
+        let addr = [2, 0, 0, 80, 203, 0, 113, 6, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &addr).unwrap_err(), Errno::EINPROGRESS);
+
+        host.net_connect_status_result = Err(Errno::ECONNREFUSED);
+        let mut poll_once = |proc: &mut Process, host: &mut MockHostIO, events| {
+            let mut pollfd = WasmPollFd { fd, events, revents: 0 };
+            let ready = sys_poll(proc, host, core::slice::from_mut(&mut pollfd), 0).unwrap();
+            (ready, pollfd.revents)
+        };
+        // The poll that observes the failure and every later one agree.
+        for _ in 0..3 {
+            let (ready, revents) = poll_once(&mut proc, &mut host, POLLOUT);
+            assert_eq!(ready, 1);
+            assert_eq!(revents & (POLLERR | POLLOUT), POLLERR | POLLOUT);
+        }
+        assert_eq!(
+            sys_getsockopt(&mut proc, fd, SOL_SOCKET, SO_ERROR).unwrap(),
+            Errno::ECONNREFUSED as u32,
+        );
+        // Once SO_ERROR consumed the error, the socket is still not waiting
+        // for anything: I/O on it returns at once.
+        let (ready, revents) = poll_once(&mut proc, &mut host, POLLIN | POLLOUT);
+        assert_eq!(ready, 1);
+        assert_eq!(revents & POLLERR, 0);
+        assert_eq!(revents & (POLLIN | POLLOUT), POLLIN | POLLOUT);
     }
 
     #[test]
@@ -34257,6 +34550,103 @@ mod tests {
         sys_ioctl(&mut proc, &mut host, read_fd, 0x541B, &mut buf).unwrap();
         let avail = i32::from_le_bytes(buf);
         assert_eq!(avail, 5);
+    }
+
+    #[test]
+    fn test_udp_fionread_preserves_next_packet_and_empty_datagrams() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9051);
+        let mut host = MockHostIO::new();
+        let (sender, receiver) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+        for payload in [&b"first"[..], &b"second-long"[..], &b""[..], &b"xy"[..]] {
+            sys_send(&mut proc, &mut host, sender, payload, 0).unwrap();
+        }
+        let mut count = [0u8; 4];
+        let mut data = [0u8; 3];
+        for (index, expected) in [5, 11, 0, 2, 0].into_iter().enumerate() {
+            // Repeated observations must neither consume nor sum packets.
+            for _ in 0..2 {
+                sys_ioctl(&mut proc, &mut host, receiver, 0x541B, &mut count).unwrap();
+                assert_eq!(i32::from_le_bytes(count), expected);
+            }
+            if index < 4 {
+                assert_eq!(sys_recv(&mut proc, &mut host, receiver, &mut data, MSG_DONTWAIT).unwrap(), (expected as usize).min(data.len()));
+            }
+        }
+        sys_close(&mut proc, &mut host, sender).unwrap();
+        sys_close(&mut proc, &mut host, receiver).unwrap();
+    }
+
+    #[test]
+    fn test_udp_reconnect_checks_routes_even_after_loopback_auto_bind() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9054);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut destination = [0u8; 16];
+        destination[0] = AF_INET as u8;
+        destination[2..4].copy_from_slice(&9000u16.to_be_bytes());
+        destination[4..8].copy_from_slice(&[127, 0, 0, 1]);
+        sys_connect(&mut proc, &mut host, fd, &destination).unwrap();
+        let mut before = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut before).unwrap();
+        destination[4..8].copy_from_slice(&[8, 8, 8, 8]);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &destination), Err(Errno::ENETUNREACH));
+        let mut after = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut after).unwrap();
+        assert_eq!(before, after);
+        sys_getpeername(&proc, fd, &mut after).unwrap();
+        assert_eq!(&after[4..8], &[127, 0, 0, 1]);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_udp_connected_multicast_uses_the_existing_loopback_interface() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9053);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        sys_setsockopt(&mut proc, fd, IPPROTO_IP, IP_MULTICAST_IF,
+            u32::from_le_bytes([127, 0, 0, 1])).unwrap();
+        let mut destination = [0u8; 16];
+        destination[0] = AF_INET as u8;
+        destination[2..4].copy_from_slice(&9000u16.to_be_bytes());
+        destination[4..8].copy_from_slice(&[239, 1, 2, 3]);
+        sys_connect(&mut proc, &mut host, fd, &destination).unwrap();
+        let mut name = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(&name[4..8], &[127, 0, 0, 1]);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn test_udp_connect_source_is_host_owned_and_disconnect_restores_binding() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(9052);
+        let mut host = MockHostIO::new();
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut wildcard = [0u8; 16];
+        wildcard[0] = AF_INET as u8;
+        sys_bind(&mut proc, &mut host, fd, &wildcard).unwrap();
+        let mut destination = wildcard;
+        destination[2..4].copy_from_slice(&9000u16.to_be_bytes());
+        destination[4..8].copy_from_slice(&[192, 0, 2, 20]);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &destination), Err(Errno::ENETUNREACH));
+        host.udp_source_result = Ok([192, 0, 2, 10]);
+        sys_connect(&mut proc, &mut host, fd, &destination).unwrap();
+        let mut name = [0u8; 16];
+        sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(&name[4..8], &[192, 0, 2, 10]);
+        let port = name[2..4].to_vec();
+        let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        let socket = proc.sockets.get((-(ofd.host_handle + 1)) as usize).unwrap();
+        assert_eq!(socket.bind_addr, [0; 4]);
+        assert_eq!(socket.clone().udp_source_addr, Some([192, 0, 2, 10]));
+        sys_connect(&mut proc, &mut host, fd, &[0u8; 16]).unwrap();
+        sys_getsockname(&proc, fd, &mut name).unwrap();
+        assert_eq!(&name[4..8], &[0; 4]);
+        assert_eq!(name[2..4], port);
+        sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]
@@ -40235,6 +40625,37 @@ impl HostIO for NetMock {
             Errno::EPIPE,
             "write shutdown must precede broadcast permission",
         );
+    }
+
+    #[test]
+    fn test_subnet_broadcast_requires_so_broadcast() {
+        let mut proc = Process::new(9061);
+        let mut host = MockHostIO::new();
+        use wasm_posix_shared::socket::*;
+        host.network_interface = crate::netif::InterfaceConfig::validated([10, 89, 0, 2], [255, 255, 255, 0]);
+
+        let fd = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut dest = [0u8; 16];
+        dest[0] = AF_INET as u8;
+        dest[3] = 9;
+        dest[4..8].copy_from_slice(&[10, 89, 0, 255]);
+        assert_eq!(sys_sendto(&mut proc, &mut host, fd, b"x", 0, &dest).unwrap_err(), Errno::EACCES);
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &dest).unwrap_err(), Errno::EACCES);
+        sys_setsockopt(&mut proc, fd, SOL_SOCKET, SO_BROADCAST, 1).unwrap();
+        assert_eq!(
+            sys_sendto(&mut proc, &mut host, fd, b"x", 0, &dest).unwrap_err(),
+            Errno::ENETUNREACH,
+            "with SO_BROADCAST the subnet broadcast reaches HostIO",
+        );
+
+        // An ordinary member of the subnet is unicast and needs no permission,
+        // and without an assignment the address is no broadcast at all.
+        let plain = sys_socket(&mut proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        let mut member = dest;
+        member[4..8].copy_from_slice(&[10, 89, 0, 3]);
+        assert_eq!(sys_sendto(&mut proc, &mut host, plain, b"x", 0, &member).unwrap_err(), Errno::ENETUNREACH);
+        host.network_interface = None;
+        assert_eq!(sys_sendto(&mut proc, &mut host, plain, b"x", 0, &dest).unwrap_err(), Errno::ENETUNREACH);
     }
 
     #[test]

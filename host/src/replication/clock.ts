@@ -13,13 +13,10 @@ import type {
  * one interface every guest clock read already crosses, `TimeProvider`, so no
  * syscall, kernel path, or host adapter has to know which mode it is in.
  *
- * Only the readings come from the log. `nanosleep` stays a real host effect
- * while the replica is at the log head: its duration is a guest argument,
- * already deterministic. Behind the head the wait is skipped — the primary
- * already served it once, and a replica that waits it out again keeps the
- * gap it joined with forever. Running faster than recorded is what catching
- * up is; the guest cannot see the difference, because every reading it gets
- * still comes from the log.
+ * Only the readings come from the log. A sleep is a kernel-owned wait whose
+ * deadline the kernel measures with these readings, so a replica that runs
+ * behind the log head ends the wait as soon as the primary had; see the kernel
+ * worker's replication-ahead probe.
  */
 
 /**
@@ -62,10 +59,6 @@ export class RecordingTimeProvider implements TimeProvider {
   advanceMonotonicFloor(floorNs: number): void {
     this.#source.advanceMonotonicFloor?.(floorNs);
   }
-
-  nanosleep(sec: number, nsec: number): void {
-    this.#source.nanosleep(sec, nsec);
-  }
 }
 
 /** Serve the recorded clock, and refuse to invent a reading. */
@@ -94,10 +87,5 @@ export class ReplayingTimeProvider implements TimeProvider {
     // captured machine's. A replayed clock never reads its own host, so there
     // is nothing here to raise: the recorded readings already carry the
     // monotonic order the primary observed.
-  }
-
-  nanosleep(sec: number, nsec: number): void {
-    if (this.#reader.entryReady()) return;
-    this.#source.nanosleep(sec, nsec);
   }
 }

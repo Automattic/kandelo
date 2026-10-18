@@ -163,6 +163,13 @@ const EXCLUDED_SURFACE_DIR_NAMES = new Set(["node_modules", "dist", ".vite", "te
  */
 const EXEMPT_MACHINE_ID_DECLARATIONS = [
   {
+    file: "main.ts",
+    name: "PeerNetworkGame",
+    reason:
+      "Peer-network controls select guest applications on an already booted "
+      + "machine, not image profiles or machine boot definitions.",
+  },
+  {
     file: "optional-demo-vfs.ts",
     name: "OptionalDemoVfsImage",
     reason:

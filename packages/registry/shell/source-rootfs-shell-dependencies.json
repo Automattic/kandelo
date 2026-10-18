@@ -77,6 +77,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "php",
+      "version": "8.3.15",
+      "role": "lazy-file"
+    },
+    {
       "name": "gzip",
       "version": "1.13",
       "role": "lazy-file"

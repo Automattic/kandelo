@@ -1,3 +1,4 @@
+import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 /**
  * Node.js kernel worker entry point — general-purpose, message-based.
  *
@@ -73,7 +74,7 @@ import * as rootImage from "./vfs/root-image-facts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
 import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
-import type { FileSystemBackend, MountConfig } from "./vfs/types";
+import type { MountConfig } from "./vfs/types";
 import type { MountSpec } from "./vfs/default-mounts";
 import {
   createClosedLazyAssetFetcherFromOwnedAssets,
@@ -132,7 +133,7 @@ import {
 import { CheckpointFreezeGateCoordinator } from "./checkpoint-freeze-gate";
 import { ProcessExecutionGenerationAllocator } from "./process-execution-generation";
 import {
-  askMountsForCheckpointBytes,
+  rootfsImageSha256,
   captureMachineCheckpoint,
   captureMachineCheckpointSummary,
   machineCheckpointTransferList,
@@ -282,8 +283,10 @@ const baseRandomProvider = new HostRandomProvider();
 let replicationIO: VirtualPlatformIO | null = null;
 let replicationRecorder: ReplicationLogRecorder | null = null;
 let replicationReplay: { reader: ReplicationLogReader } | null = null;
-/** Every mount a checkpoint asks, in mount-spec order with `/` first. */
-let checkpointMounts: { mountPoint: string; backend: FileSystemBackend }[] = [];
+/** The host directories mounted beneath `/`, which a checkpoint leaves behind. */
+let checkpointHostMounts: string[] = [];
+/** SHA-256 of this machine's `/` image; null when it booted without one. */
+let bootImageSha256: string | null = null;
 let initReady = false;
 let kernelFatalReported = false;
 let injectedExecWorkerConstructionFailure = false;
@@ -369,7 +372,8 @@ const checkpointMachine: CheckpointMachine = {
   armUnwindRequests: () => kernelWorker.armCheckpointUnwind(),
   disarmUnwindRequests: () => kernelWorker.disarmCheckpointUnwind(),
   copyKernelMemory: () => kernelWorker.copyKernelMemoryForCheckpoint(),
-  filesystemBuffers: () => askMountsForCheckpointBytes(checkpointMounts),
+  rootfsImageSha256: () => bootImageSha256,
+  hostMounts: () => checkpointHostMounts,
   monotonicNowNs: () => {
     if (!vfsExecIO) {
       throw new Error("this machine has no PlatformIO clock to checkpoint");
@@ -899,6 +903,7 @@ function respondToReplication(
       error: (err as Error)?.message ?? String(err),
     });
   }
+}
 
 /**
  * Say out loud that this replica stopped being the machine it follows.
@@ -1167,7 +1172,6 @@ async function buildVirtualPlatformIO(
   sessionSeedTrees?: InitMessage["sessionSeedTrees"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
   rootfsLazyAssetSources?: InitMessage["rootfsLazyAssetSources"],
-  restoredCheckpoint?: MachineCheckpoint,
 ): Promise<VirtualPlatformIO> {
   const bootSessionDir = mkdtempSync(join(tmpdir(), "wasm-posix-session-"));
   sessionDir = bootSessionDir;
@@ -1216,12 +1220,7 @@ async function buildVirtualPlatformIO(
   // must not claim; hand their prefixes over so they keep resolving through
   // their own backend. (The kernel excludes its own tmpfs prefixes itself.)
   rootfsForeignPrefixes = mounts.map((m) => m.mountPoint);
-  // Every host mount the freeze must ask. The kernel-owned `/` and its
-  // scratch mounts travel inside the kernel memory copy, so they are absent.
-  checkpointMounts = mounts.map((m) => ({
-    mountPoint: m.mountPoint,
-    backend: m.backend,
-  }));
+  checkpointHostMounts = mounts.map((m) => m.mountPoint);
   baseTimeProvider = new NodeTimeProvider();
   return new VirtualPlatformIO(mounts, baseTimeProvider, baseRandomProvider);
 }
@@ -1247,6 +1246,8 @@ function cleanupSessionDir(): void {
   rootfsLazyFetcher = undefined;
   rootfsForeignPrefixes = [];
 }
+
+const remoteSegmentRuntime = new RemoteSegmentRuntime();
 
 async function handleInit(msg: InitMessage) {
   initReady = false;
@@ -1274,13 +1275,14 @@ async function handleInit(msg: InitMessage) {
   let restoredProgramModules:
     | ReadonlyMap<number, WebAssembly.Module>
     | undefined;
+  bootImageSha256 = msg.rootfsImage ? await rootfsImageSha256(msg.rootfsImage) : null;
   if (msg.restoreCheckpoint) {
     if (!msg.rootfsImage) {
       throw new Error("restoreCheckpoint requires rootfsImage");
     }
     restoredProgramModules = await validateMachineCheckpoint(
       msg.restoreCheckpoint,
-      { kernelAbiVersion: ABI_VERSION },
+      { kernelAbiVersion: ABI_VERSION, rootfsImageSha256: bootImageSha256 },
     );
   }
 
@@ -1292,7 +1294,6 @@ async function handleInit(msg: InitMessage) {
       msg.sessionSeedTrees,
       msg.rootfsLazyAssets,
       msg.rootfsLazyAssetSources,
-      msg.restoreCheckpoint,
     )
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;
@@ -1311,6 +1312,12 @@ async function handleInit(msg: InitMessage) {
     // backwards. Advance before anything reads this machine's clock.
     io.advanceMonotonicFloor(msg.restoreCheckpoint.monotonicNs);
   }
+
+  // The session network wraps the configured backend (or none) for the
+  // machine's life, so a session can start or end under running programs.
+  io.network = msg.remoteNetwork
+    ? await remoteSegmentRuntime.initialize(msg.remoteNetwork, io.network)
+    : remoteSegmentRuntime.install(io.network);
 
   kernelWorker = new CentralizedKernelWorker(
     {
@@ -1525,11 +1532,15 @@ async function handleInit(msg: InitMessage) {
   }
 
   if (msg.restoreCheckpoint && restoredProgramModules) {
+    const gaps = describeCheckpointMountGaps(msg.restoreCheckpoint);
+    if (gaps !== null) {
+      reportHostDiagnostic(
+        { pid: 0, source: "checkpoint restore", message: gaps },
+        "warn",
+      );
+    }
     kernelWorker.rebindRestoredHostHandles(
       msg.restoreCheckpoint.processes.map((bucket) => ({ pid: bucket.pid })),
-    );
-    kernelWorker.restoreEpollInterestsFromCheckpoint(
-      msg.restoreCheckpoint.epolls,
     );
     // Before the first restored process resumes: its next GL submit must
     // find a binding, or a machine that was healthy when captured fails
@@ -4356,6 +4367,7 @@ async function performDestroy() {
   }
   await pcmDriver?.close();
   pcmDriver = null;
+  remoteSegmentRuntime.close();
   kernelWorker.shutdownPcmTransport();
   if (gracefulDetachComplete) {
     try {
@@ -4745,10 +4757,12 @@ function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_
 }
 
 port.on("message", (msg: MainToKernelMessage) => {
+  if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
   switch (msg.type) {
     case "init":
       void handleInit(msg).catch((error) => {
         cleanupSessionDir();
+        remoteSegmentRuntime.close();
         initReady = false;
         post({
           type: "init_error",

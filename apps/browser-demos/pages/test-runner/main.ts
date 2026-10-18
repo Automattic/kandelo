@@ -58,7 +58,6 @@ interface MigrationRestoreOptions {
 interface MachineCheckpointThreadsSummary {
   pids: number[];
   threads: { pid: number; tids: number[]; activeCount: number }[];
-  mounts: string[];
   unreadableMounts: string[];
 }
 
@@ -136,7 +135,7 @@ declare global {
         cwd?: string;
         env?: string[];
         ptyInput?: PtyInput;
-        corsProxy?: BrowserCorsProxyConfig;
+        corsProxy?: BrowserCorsProxyConfig | null;
         /** Read the kernel worker's module cache counters before teardown. */
         wasmModuleCacheStats?: boolean;
       },
@@ -437,7 +436,7 @@ async function init() {
       cwd?: string;
       env?: string[];
       ptyInput?: PtyInput;
-      corsProxy?: BrowserCorsProxyConfig;
+      corsProxy?: BrowserCorsProxyConfig | null;
       wasmModuleCacheStats?: boolean;
     },
   ) => {
@@ -481,7 +480,10 @@ async function init() {
 
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      corsProxy: options?.corsProxy ?? corsProxy,
+      // Null exercises an embedder with direct guest fetches. Undefined keeps
+      // this runner's usual explicit proxy, whose requests the service worker
+      // must preserve rather than treating them as unwrapped guest traffic.
+      corsProxy: options?.corsProxy === null ? undefined : options?.corsProxy ?? corsProxy,
       onStdout: (data: Uint8Array) => {
         const text = new TextDecoder().decode(data);
         stdout += text;
@@ -620,7 +622,6 @@ async function init() {
         tids: bucket.threads.map((thread) => thread.tid),
         activeCount: bucket.threadAllocator.activeCount,
       })),
-      mounts: checkpoint.filesystems.map((mount) => mount.mountPoint),
       unreadableMounts: checkpoint.unreadableFilesystems.map(
         (gap) => gap.mountPoint,
       ),

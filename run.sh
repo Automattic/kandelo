@@ -257,6 +257,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_publish_spawn_child
     kernel_reap_exited_child
     kernel_remove_process
+    kernel_reset_tcp_connection
     kernel_set_current_tid
     kernel_set_cwd
     kernel_spawn_exec_commit
@@ -269,6 +270,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_spawn_scratch_pointer
     kernel_spawn_scratch_retained_capacity
     kernel_take_process_timer_cleanup
+    kernel_tcp_connection_id
     kernel_thread_exit
     kernel_thread_has_deliverable
     kernel_transfer_channel_execute
@@ -2802,9 +2804,15 @@ cmd_build_browser() {
     # so it and the group it authenticates live under local-binaries/, never
     # under the output directory.
     step "Building production browser app for $base"
+    # Deployment configuration must cross the isolated shell explicitly.
+    # Leave an unset URL absent so Vite can still load it from .env files.
+    local signalling_env=()
+    if [ "${VITE_KANDELO_SIGNALLING_URL+x}" = x ]; then
+        signalling_env=(env "VITE_KANDELO_SIGNALLING_URL=$VITE_KANDELO_SIGNALLING_URL")
+    fi
     # dev-shell.sh does not forward arbitrary caller environment, so the
     # inner script takes the repo root, base, and output as arguments.
-    bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
+    bash "$REPO_ROOT/scripts/dev-shell.sh" ${signalling_env[@]+"${signalling_env[@]}"} bash -c '
         set -euo pipefail
         cd "$1"
         export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
@@ -2820,11 +2828,14 @@ cmd_build_browser() {
             "$KANDELO_PAGES_VFS_ASSET_GROUP_DIR" "$KANDELO_PAGES_PRODUCT_MAP"
         VITE_BASE="$2" npm --prefix apps/browser-demos run build -- \
             --outDir "$3" --emptyOutDir
+        # Copy after Vite empties the output so the default endpoint ships.
+        mkdir -p "$3/signalling"
+        cp apps/signalling/piplet.php "$3/signalling/piplet.php"
     ' build-browser "$REPO_ROOT" "$base" "$out"
 
     # Fail loudly on an incomplete site rather than letting it be uploaded.
     local missing=0 required
-    for required in index.html service-worker.js vfs-groups; do
+    for required in index.html service-worker.js vfs-groups signalling/piplet.php; do
         if [ ! -e "$out/$required" ]; then
             err "build-browser: $out/$required is missing"
             missing=1
