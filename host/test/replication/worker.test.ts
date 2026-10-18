@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AcceptSelectionTap, GlQueryTap } from "../../src/kernel";
+import type { DispatchOrderTap } from "../../src/kernel-worker";
 import type { HttpExchangeTap } from "../../src/networking/in-kernel-http";
 import type { ReplicationLogEntry } from "../../src/replication/log";
 import {
@@ -17,6 +18,7 @@ function machineSurface() {
     acceptTap: AcceptSelectionTap | null;
     aheadProbe: ((pid: number) => number | null) | null;
     httpTap: HttpExchangeTap | null;
+    dispatchTap: DispatchOrderTap | null;
     pid: number;
   } = {
     provider: null,
@@ -25,6 +27,7 @@ function machineSurface() {
     acceptTap: null,
     aheadProbe: null,
     httpTap: null,
+    dispatchTap: null,
     pid: 102,
   };
   return {
@@ -51,6 +54,9 @@ function machineSurface() {
       },
       setHttpExchangeTap: (tap: HttpExchangeTap | null) => {
         installed.httpTap = tap;
+      },
+      setDispatchOrderTap: (tap: DispatchOrderTap | null) => {
+        installed.dispatchTap = tap;
       },
       currentGuestPid: () => installed.pid,
       currentGuestTid: () => installed.pid,
@@ -88,6 +94,12 @@ describe("beginReplicationStream", () => {
       remotePort: 4242,
       request: new Uint8Array([71]),
     });
+    expect(surface.installed.dispatchTap?.mode).toBe("record");
+    if (surface.installed.dispatchTap?.mode !== "record") return;
+    surface.installed.dispatchTap.record(102, 103);
+    surface.installed.dispatchTap.record(104, 104, {
+      entry: "process deactivation pid=104",
+    });
     await Promise.resolve();
 
     expect(published.map((entry) => entry.decision.kind)).toEqual([
@@ -96,6 +108,17 @@ describe("beginReplicationStream", () => {
       "gl",
       "accept",
       "http",
+      "dispatch",
+      "dispatch",
+    ]);
+    expect(published.slice(5).map((entry) => entry.decision)).toEqual([
+      { kind: "dispatch", pid: 102, tid: 103 },
+      {
+        kind: "dispatch",
+        pid: 104,
+        tid: 104,
+        entry: "process deactivation pid=104",
+      },
     ]);
   });
 });
@@ -110,13 +133,14 @@ describe("beginReplicationReplay", () => {
       },
       {
         seq: 1,
-        decision: { kind: "gl", op: 5, rc: 4, bytes: new Uint8Array([1, 0, 0, 0]) },
+        decision: { kind: "gl", pid: 102, tid: 102, op: 5, rc: 4, bytes: new Uint8Array([1, 0, 0, 0]) },
       },
       { seq: 2, decision: { kind: "accept", listener: 3, pid: 104 } },
       {
         seq: 3,
         decision: { kind: "random", pid: 102, tid: 102, bytes: new Uint8Array([9, 8, 7]) },
       },
+      { seq: 4, decision: { kind: "dispatch", pid: 102, tid: 103 } },
     ];
     beginReplicationReplay(
       surface.io,
@@ -142,6 +166,15 @@ describe("beginReplicationReplay", () => {
     expect(surface.installed.random!.getRandomBytes(3)).toEqual(
       new Uint8Array([9, 8, 7]),
     );
+    expect(surface.installed.dispatchTap?.mode).toBe("replay");
+    if (surface.installed.dispatchTap?.mode !== "replay") return;
+    expect(surface.installed.dispatchTap.next()).toEqual({
+      kind: "dispatch",
+      pid: 102,
+      tid: 103,
+    });
+    surface.installed.dispatchTap.take();
+    expect(surface.installed.dispatchTap.next()).toBe("open");
     expect(surface.installed.aheadProbe?.(0)).toBeNull();
     expect(surface.installed.httpTap?.mode).toBe("replay");
   });

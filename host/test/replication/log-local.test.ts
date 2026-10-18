@@ -1100,7 +1100,7 @@ describe("local replication log promotion", () => {
   const stateHash = (seq: number, fill: string): MachineStateHash => ({
     format: MACHINE_STATE_HASH_FORMAT,
     seq,
-    regions: [{ region: "filesystem:/", bytes: 64, sha256: fill }],
+    regions: [{ region: "kernel", bytes: 64, sha256: fill }],
     sha256: fill,
   });
 
@@ -1111,7 +1111,7 @@ describe("local replication log promotion", () => {
     let released = 0;
     const adopted: MachineStateHash[] = [];
     const stopServing = keeper.servePromotion({
-      seal: async () => ({ seq: 7, hash: stateHash(7, "aa") }),
+      seal: async () => ({ seq: 7, armSeq: 5, hash: stateHash(7, "aa") }),
       adopt: async (hash) => {
         adopted.push(hash);
         released += 1;
@@ -1121,6 +1121,7 @@ describe("local replication log promotion", () => {
     try {
       const sealed = await taker.requestPromotion(5_000);
       expect(sealed.seq).toBe(7);
+      expect(sealed.armSeq).toBe(5);
       expect(sealed.hash.sha256).toBe("aa");
       await taker.requestAdoption(sealed.takeId, stateHash(7, "bb"), 5_000);
       expect(released).toBe(1);
@@ -1141,7 +1142,7 @@ describe("local replication log promotion", () => {
     const sink = fakeSink();
     const stopWatch = taker.watch(sink.sink);
     const stopServing = keeper.servePromotion({
-      seal: async () => ({ seq: 0, hash: stateHash(0, "aa") }),
+      seal: async () => ({ seq: 0, armSeq: 0, hash: stateHash(0, "aa") }),
       adopt: async () => {
         // Releasing the machine stops its recording; the answer follows.
         stopPublish();
@@ -1170,7 +1171,7 @@ describe("local replication log promotion", () => {
     const keeper = new LocalReplicationLog<string>(link);
     const taker = new LocalReplicationLog<string>(link);
     const stopServing = keeper.servePromotion({
-      seal: async () => ({ seq: 3, hash: stateHash(3, "aa") }),
+      seal: async () => ({ seq: 3, armSeq: 3, hash: stateHash(3, "aa") }),
       adopt: async () => false,
     });
     try {
@@ -1194,7 +1195,7 @@ describe("local replication log promotion", () => {
       seal: async () => {
         asked += 1;
         if (asked === 1) return { refused: "this machine is mid-boot" };
-        return { seq: 9, hash: stateHash(9, "dd") };
+        return { seq: 9, armSeq: 9, hash: stateHash(9, "dd") };
       },
       adopt: async () => true,
     });
@@ -1221,7 +1222,7 @@ describe("local replication log promotion", () => {
     const stopServing = keeper.servePromotion({
       seal: () =>
         new Promise((resolve) => {
-          releaseSeal = () => resolve({ seq: 1, hash: stateHash(1, "ee") });
+          releaseSeal = () => resolve({ seq: 1, armSeq: 1, hash: stateHash(1, "ee") });
         }),
       adopt: async () => true,
     });

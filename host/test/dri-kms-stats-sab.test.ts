@@ -9,6 +9,7 @@ import {
 } from "vitest";
 import {
   createCentralizedKernelWorkerTestDouble,
+  type DispatchOrderTap,
 } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
@@ -250,5 +251,69 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     const statsSab = new SharedArrayBuffer(5 * 4);
     kernel.attachKmsStats(0, statsSab);
     expect(() => vi.advanceTimersByTime(17)).not.toThrow();
+  });
+});
+
+describe("CentralizedKernelWorker vblank tick under the replication order", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  type Turn = { pid: number; tid: number; entry?: string };
+
+  function replayTap(turns: Turn[]): DispatchOrderTap {
+    return {
+      mode: "replay",
+      next: () => turns[0] ?? "wait",
+      nextIsRetry: () => null,
+      holdsEntry: () => true,
+      ranAhead: () => {},
+      abandon: () => {},
+      take: () => {
+        turns.shift();
+        return false;
+      },
+      arrival: () => new Promise(() => {}),
+    };
+  }
+
+  it("records every tick of the pump as a host entry", () => {
+    const vblank = vi.fn(() => 0);
+    const kernel = makeKernel({ kernel_vblank: vblank });
+    const record = vi.fn();
+    kernel.setDispatchOrderTap({ mode: "record", record });
+    kernel.attachKmsStats(0, new SharedArrayBuffer(5 * 4));
+
+    vi.advanceTimersByTime(17);
+    expect(vblank).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith(0, 0, { entry: "vblank tick" });
+  });
+
+  it("runs a tick on a replay only where the log names one", () => {
+    const vblank = vi.fn(() => 0);
+    const kernel = makeKernel({ kernel_vblank: vblank });
+    const turns: Turn[] = [{ pid: 5, tid: 5 }];
+    kernel.setDispatchOrderTap(replayTap(turns));
+    kernel.attachKmsStats(0, new SharedArrayBuffer(5 * 4));
+
+    // The pump's own ticks would complete the guests' page flips at a point
+    // the primary did not.
+    vi.advanceTimersByTime(17 * 3);
+    expect(vblank).not.toHaveBeenCalled();
+
+    turns.splice(0, 1, { pid: 0, tid: 0, entry: "vblank tick" }, { pid: 5, tid: 5 });
+    kernel.releaseOrderedDispatches();
+    expect(vblank).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(0);
+    expect(vblank).toHaveBeenCalledTimes(1);
+    expect(turns).toEqual([{ pid: 5, tid: 5 }]);
+
+    vi.advanceTimersByTime(17 * 3);
+    expect(vblank).toHaveBeenCalledTimes(1);
   });
 });

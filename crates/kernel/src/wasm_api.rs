@@ -3818,6 +3818,21 @@ pub extern "C" fn kernel_pty_index_for_pid(pid: u32) -> i32 {
     }
 }
 
+/// Name the session a PTY serves, for restore.
+///
+/// The host spawned the session's first process on the PTY and routes the
+/// PTY's output under that pid; the PTY records it as its session. A restored
+/// machine's other processes on the same PTY route their output there too.
+/// Returns the session id, 0 when no session holds the PTY as its terminal,
+/// and -ENOENT for an unallocated index.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_pty_session_id(pty_idx: u32) -> i32 {
+    match crate::pty::get_pty(pty_idx as usize) {
+        Some(pty) => pty.terminal.session_id,
+        None => -(Errno::ENOENT as i32),
+    }
+}
+
 /// Snapshot the process table for the host (Kandelo Inspector → Procs tab,
 /// and any host that wants a `ps`-equivalent view without spawning a user
 /// process). Walks every active pid and writes a compact, length-prefixed

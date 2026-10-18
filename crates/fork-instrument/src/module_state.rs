@@ -1194,9 +1194,15 @@ fn rewrite_table_mutations(
     }
 
     // Fork call-transport helpers are emitted after module_state::plan, so
-    // they are not in original_functions. Guard them at entry, before their
-    // parameters are reloaded for the one indirect call, and leave that call
-    // in place to avoid reintroducing an operand-stack scratch local.
+    // they are not in original_functions. Guard them after their replay
+    // routing, before their parameters are reloaded for the one indirect
+    // call, and leave that call in place to avoid reintroducing an
+    // operand-stack scratch local.
+    //
+    // WHY after the routing: a replay routed through the resume table never
+    // reads this function table, so it must not reconcile it. A checkpoint
+    // replays while its thread still holds the archive reader, and a peer may
+    // have published a newer archive during the freeze.
     let transport_helpers: Vec<_> = module
         .funcs
         .iter()
@@ -1229,14 +1235,22 @@ fn rewrite_table_mutations(
         };
         let entry = local.entry_block();
         if guard_at_entry {
-            let loc = local
-                .block(entry)
-                .instrs
-                .first()
+            let instrs = &local.block(entry).instrs;
+            let call = instrs
+                .iter()
+                .position(|(instr, _)| matches!(instr, Instr::CallIndirect(_)))
+                .unwrap_or(instrs.len());
+            let after_routing = instrs[..call]
+                .iter()
+                .position(|(instr, _)| matches!(instr, Instr::IfElse(_)))
+                .map_or(0, |routing| routing + 1);
+            let loc = instrs
+                .get(after_routing)
+                .or(instrs.first())
                 .map(|(_, loc)| *loc)
                 .unwrap_or_default();
             local.block_mut(entry).instrs.insert(
-                0,
+                after_routing,
                 (
                     Call {
                         func: reconcile_guard,

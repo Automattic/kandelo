@@ -74,6 +74,16 @@ export function bindForeignTexture(
       GL_TEXTURE_2D, 0, gl.RGBA, dims.w, dims.h, 0,
       gl.RGBA, gl.UNSIGNED_BYTE, entry.scratch,
     );
+    b.textureShapes.set(entry.texId, {
+      levels: new Map([[0, {
+        internalFormat: gl.RGBA,
+        width: dims.w,
+        height: dims.h,
+        format: gl.RGBA,
+        type: gl.UNSIGNED_BYTE,
+      }]]),
+      mipmapped: false,
+    });
   } else {
     gl.texSubImage2D(
       GL_TEXTURE_2D, 0, 0, 0, dims.w, dims.h,

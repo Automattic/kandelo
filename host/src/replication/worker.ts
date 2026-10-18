@@ -8,6 +8,7 @@
  * the other.
  */
 import type { AcceptSelectionTap, GlQueryTap } from "../kernel.js";
+import type { DispatchOrderTap } from "../kernel-worker.js";
 import type { HttpExchangeTap } from "../networking/in-kernel-http.js";
 import type { RandomProvider, TimeProvider } from "../vfs/types.js";
 import { HostRandomProvider } from "../vfs/random.js";
@@ -52,6 +53,11 @@ export interface ReplicationMachineTaps {
   ): void;
   setHttpExchangeTap(tap: HttpExchangeTap | null): void;
   /**
+   * Which task's syscall the kernel serves next is host scheduling too, and
+   * the order shapes the kernel's own memory, so the same hand goes on it.
+   */
+  setDispatchOrderTap(tap: DispatchOrderTap | null): void;
+  /**
    * The process whose syscall this machine is serving, or 0 for work the host
    * does for itself. A clock reading is logged against it, so a replica
    * replays each process's own readings instead of one global order the two
@@ -80,20 +86,34 @@ export interface ReplicationSwappableIO {
 }
 
 /** Record every GL query answer the guest is handed, on the shared log. */
-export function glQueryRecordTap(recorder: ReplicationLogRecorder): GlQueryTap {
+export function glQueryRecordTap(
+  recorder: ReplicationLogRecorder,
+  taps: Pick<ReplicationMachineTaps, "currentGuestPid" | "currentGuestTid">,
+): GlQueryTap {
   return {
     mode: "record",
     record: (op, rc, bytes) => {
-      recorder.record({ kind: "gl", op, rc, bytes });
+      recorder.record({
+        kind: "gl",
+        pid: taps.currentGuestPid(),
+        tid: taps.currentGuestTid(),
+        op,
+        rc,
+        bytes,
+      });
     },
   };
 }
 
 /** Serve the recorded GL answers back, and refuse to invent one. */
-function glQueryReplayTap(reader: ReplicationLogReader): GlQueryTap {
+function glQueryReplayTap(
+  reader: ReplicationLogReader,
+  taps: Pick<ReplicationMachineTaps, "currentGuestPid" | "currentGuestTid">,
+): GlQueryTap {
   return {
     mode: "replay",
-    take: (op) => reader.takeGlQuery(op),
+    take: (op) =>
+      reader.takeGlQuery(op, taps.currentGuestPid(), taps.currentGuestTid()),
   };
 }
 
@@ -127,6 +147,18 @@ export function httpExchangeRecordTap(
     mode: "record",
     record: (injection) => {
       recorder.record({ kind: "http", ...injection });
+    },
+  };
+}
+
+/** Record which task the kernel serves, each time it serves one. */
+export function dispatchOrderRecordTap(
+  recorder: ReplicationLogRecorder,
+): DispatchOrderTap {
+  return {
+    mode: "record",
+    record: (pid, tid, mark) => {
+      recorder.record({ kind: "dispatch", pid, tid, ...mark });
     },
   };
 }
@@ -384,9 +416,10 @@ export function beginReplicationStream(
       () => taps.currentGuestTid(),
     ),
   );
-  taps.setGlQueryTap(glQueryRecordTap(recorder));
+  taps.setGlQueryTap(glQueryRecordTap(recorder, taps));
   taps.setAcceptSelectionTap(acceptSelectionRecordTap(recorder));
   taps.setHttpExchangeTap(httpExchangeRecordTap(recorder));
+  taps.setDispatchOrderTap(dispatchOrderRecordTap(recorder));
   return recorder;
 }
 
@@ -406,13 +439,15 @@ function createQueueExtenders(
   extend?: ReplicationLogExtender;
   extendReady?: ReplicationLogExtender;
   extendWithin?: ReplicationLogBoundedExtender;
+  arrival: () => Promise<void>;
 } {
-  if (queue === undefined) return {};
+  if (queue === undefined) return { arrival: () => Promise.resolve() };
   const reader = new ReplicationLogQueueReader(queue);
   return {
     extend: () => reader.take(),
     extendReady: () => reader.takeReady(),
     extendWithin: (budgetMs) => reader.takeWithin(budgetMs),
+    arrival: () => reader.arrival(),
   };
 }
 
@@ -459,7 +494,7 @@ export function beginReplicationReplay(
   applyPushed?: (decision: ReplicationPushedDecision) => void,
   onDiverged?: (error: ReplicationDivergence) => void,
 ): ReplicationLogReader {
-  const { extend, extendReady, extendWithin } = createQueueExtenders(
+  const { extend, extendReady, extendWithin, arrival } = createQueueExtenders(
     spec.queue,
   );
   const reader = new ReplicationLogReader(
@@ -485,9 +520,19 @@ export function beginReplicationReplay(
       () => taps.currentGuestTid(),
     ),
   );
-  taps.setGlQueryTap(glQueryReplayTap(reader));
+  taps.setGlQueryTap(glQueryReplayTap(reader, taps));
   taps.setAcceptSelectionTap(acceptSelectionReplayTap(reader));
   taps.setReplicationAheadProbe((pid) => reader.aheadMs(pid));
   taps.setHttpExchangeTap({ mode: "replay" });
+  taps.setDispatchOrderTap({
+    mode: "replay",
+    next: () => reader.nextDispatch(),
+    nextIsRetry: (pid, tid) => reader.nextDispatchOfIsRetry(pid, tid),
+    holdsEntry: (entry) => reader.holdsDispatchEntry(entry),
+    ranAhead: (entry) => reader.noteEntryRanAhead(entry),
+    abandon: () => reader.abandonDispatchOrder(),
+    take: () => reader.takeDispatch(),
+    arrival,
+  });
   return reader;
 }

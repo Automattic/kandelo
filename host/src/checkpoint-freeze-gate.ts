@@ -59,6 +59,8 @@ export function waitForCheckpointFreezeResume(
     const state = Atomics.load(gate, 0);
     if (state === CHECKPOINT_FREEZE_RESUMED) {
       Atomics.store(gate, 0, CHECKPOINT_FREEZE_PENDING);
+      // The next freeze waits for exactly this store before it arms.
+      Atomics.notify(gate, 0);
       return;
     }
     if (state !== CHECKPOINT_FREEZE_PENDING) {
@@ -73,6 +75,7 @@ type CheckpointFreezePhase =
   | "armed"
   | "unwound"
   | "resumed"
+  | "ended"
   | "abandoned";
 
 /** Participant key for the process's main thread. */
@@ -141,20 +144,24 @@ export class CheckpointFreezeGateCoordinator {
   }
 
   /**
-   * Drop an exited thread, failing a freeze that was counting on it.
+   * Drop an exited thread.
    *
-   * WHY the attempt fails rather than proceeds without the thread: the thread's
-   * frames are part of the image the keeper reads, and a thread that dies
-   * inside the freeze takes them with it. Releasing the freeze here would
-   * report a whole machine that is already missing one participant. A thread
-   * that exits outside a freeze is an ordinary exit and settles nothing.
+   * A thread the freeze was still waiting for leaves the count: a checkpoint
+   * does not capture a thread on its way out, so its exit paths are not
+   * instrumented to unwind, and the machine the keeper reads is the one
+   * without it. A thread that ends after it unwound takes frames the keeper
+   * counted on, and fails the attempt.
    */
   unregisterThread(tid: number): void {
     if (!this.threadGates.delete(tid)) return;
     const awaiting = this.awaited.delete(tid);
-    const wasParked = this.parked.delete(tid);
-    if (!awaiting && !wasParked) return;
-    this.abandon(`tid=${tid} ended during the checkpoint freeze`);
+    if (this.parked.delete(tid)) {
+      this.abandon(`tid=${tid} ended during the checkpoint freeze`);
+      return;
+    }
+    if (awaiting && this.phase === "armed" && this.awaited.size === 0) {
+      this.settleUnwound();
+    }
   }
 
   private gateFor(tid: number): SharedArrayBuffer {
@@ -169,6 +176,27 @@ export class CheckpointFreezeGateCoordinator {
   private settleUnwound(): void {
     this.phase = "unwound";
     this.resolveUnwound?.();
+  }
+
+  /**
+   * Settle once every gate the last resume opened is pending again.
+   *
+   * Only the woken thread closes its gate again, so a freeze that follows a
+   * resume closely can find a thread that has not run yet. Arming then would
+   * let that thread pass its next park without being read. A thread that
+   * ends meanwhile takes its gate with it and is not waited for.
+   */
+  async untilGatesPending(): Promise<void> {
+    for (const tid of [MAIN_THREAD, ...this.threadGates.keys()]) {
+      for (;;) {
+        if (tid !== MAIN_THREAD && !this.threadGates.has(tid)) break;
+        const gate = gateView(this.gateFor(tid));
+        const state = Atomics.load(gate, 0);
+        if (state === CHECKPOINT_FREEZE_PENDING) break;
+        const waited = Atomics.waitAsync(gate, 0, state, 50);
+        if (waited.async) await waited.value;
+      }
+    }
   }
 
   arm(): void {
@@ -232,6 +260,31 @@ export class CheckpointFreezeGateCoordinator {
     }
     this.parked.clear();
     this.phase = "resumed";
+  }
+
+  /**
+   * The process ended before the freeze read it.
+   *
+   * While the freeze still waits for unwind reports, the process leaves the
+   * machine as any exiting process does: the kernel keeps its exit for the
+   * parent, and the keeper reads the machine without it. Once its threads
+   * have all unwound, the keeper counts on its memory, and the attempt fails.
+   */
+  end(): void {
+    if (this.phase !== "armed") {
+      this.abandon("the process ended during the checkpoint freeze");
+      return;
+    }
+    for (const tid of this.parked) {
+      resumeCheckpointFreezeGate(this.gateFor(tid));
+    }
+    this.parked.clear();
+    this.awaited.clear();
+    this.phase = "ended";
+    this.resolveUnwound?.();
+    this.resolveUnwound = null;
+    this.rejectUnwound = null;
+    this.unwoundPromise = null;
   }
 
   abandon(reason?: unknown): void {

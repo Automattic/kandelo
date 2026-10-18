@@ -248,6 +248,11 @@ export interface CheckpointGlUniformLocationName {
   readonly uniform: string;
 }
 
+export interface CheckpointGlForeignTexture {
+  readonly boId: number;
+  readonly name: number;
+}
+
 /** Everything one GL binding holds, as a checkpoint carries it. */
 export interface CheckpointGlContext {
   readonly pid: number;
@@ -267,6 +272,11 @@ export interface CheckpointGlContext {
   readonly rbos: readonly CheckpointGlRbo[];
   readonly uniformLocationNames: readonly CheckpointGlUniformLocationName[];
   readonly nextUniformLoc: number;
+  /** The texture each DRI bo uploads into (`WPK_BIND_FOREIGN_TEXTURE`), so
+   *  the guest's next upload of a bo refreshes the texture it already
+   *  draws, under the name it already holds. */
+  readonly foreignTextures: readonly CheckpointGlForeignTexture[];
+  readonly nextForeignTexId: number;
   /** Null when the binding never built a context; nothing to rebuild. */
   readonly state: CheckpointGlPipelineState | null;
   /** What the read could not carry, one line each. Travels with the
@@ -359,6 +369,10 @@ export function captureGlContext(
       ([index, { program, uniform }]) => ({ index, program, uniform }),
     ),
     nextUniformLoc: b.nextUniformLoc,
+    foreignTextures: [...b.foreignTextures].map(
+      ([boId, { texId }]) => ({ boId, name: texId }),
+    ),
+    nextForeignTexId: b.nextForeignTexId,
   };
   const gl = b.gl;
   if (!gl) {

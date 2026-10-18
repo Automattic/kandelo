@@ -62,6 +62,23 @@ const LIVE_GUEST = [
   + `while [ $j -lt 2000 ]; do j=$((j+1)); done; i=$((i+1)); done`,
 ];
 
+/**
+ * Wait until none of `pids` runs on `host` any more.
+ *
+ * The log orders a guest's syscalls and its teardown through to the end, so
+ * a replay is read once the replica's copy of the guest has ended, not once
+ * it has printed or reported its exit status.
+ */
+async function untilEnded(host: NodeKernelHost, pids: readonly number[]): Promise<void> {
+  const deadline = Date.now() + FOLLOW_LIMIT_MS;
+  for (const pid of pids) {
+    while (await host.signalProcess(pid, 0)) {
+      if (Date.now() > deadline) throw new Error(`pid ${pid} never ended`);
+      await pause(25);
+    }
+  }
+}
+
 /** Wait until `ready` holds, or give up and say what was true instead. */
 async function until(
   ready: () => boolean,
@@ -146,6 +163,7 @@ describe("live replica join", () => {
 
         await stopStream();
         writer.end();
+        await untilEnded(replica, [(await replicaSpawn).pid]);
         const progress = await replica.stopReplicationReplay();
         expect(progress.consumed).toBeGreaterThan(0);
         expect(progress.consumed).toBe(progress.total);
@@ -461,6 +479,11 @@ describe("live replica join", () => {
         );
         stopWatchingB();
 
+        await untilEnded(
+          replica,
+          joined.capture.checkpoint.processes.map((process) => process.pid),
+        );
+
         expect(divergences).toEqual([]);
         expect(captures).toBe(1);
         const progress = await replica.stopReplicationReplay();
@@ -468,6 +491,7 @@ describe("live replica join", () => {
         expect(progress.borrowedClockReadings).toBe(0);
         expect(progress.borrowedAcceptSelections).toBe(0);
         expect(progress.scannedAheadClockReadings).toBe(0);
+        expect(progress.dispatchOrderAbandoned).toBe(false);
       } finally {
         writer.end();
         userB?.close();

@@ -287,6 +287,24 @@
   padding: 0;
   gap: 0;
 }
+.kmain-arriving {
+  position: relative;
+}
+
+/* The machine view takes part in `.kmain`'s flex column as if unwrapped. While
+   a machine arrives it sits under the arriving pane: out of flow and invisible,
+   but laid out, so its KMS display has a size and a canvas to attach. */
+.kmachine-host {
+  display: contents;
+}
+.kmachine-host.is-arriving {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  visibility: hidden;
+  pointer-events: none;
+}
 .kdocked-app.is-dock-space-reserved .kdocked-main,
 .kdocked-app.is-dock-space-reserved .kdocked-main.kmain-flush {
   padding: 0 0 var(--kdock-height, 0px);

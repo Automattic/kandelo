@@ -212,7 +212,7 @@ describe("machine checkpoint of a running guest", () => {
         expect(response.status).toBe("captured");
         if (response.status !== "captured") return;
         const { checkpoint } = response;
-        expect(checkpoint.format).toBe(8);
+        expect(checkpoint.format).toBe(9);
         expect(checkpoint.kernelAbiVersion).toBe(ABI_VERSION);
         // The kernel memory carries `/` and the scratch mounts, so it is the
         // only filesystem state that travels.

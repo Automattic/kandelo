@@ -195,7 +195,7 @@ describe("machine checkpoint freeze", () => {
     expect(result.checkpoint.processes[0]!.memory.byteLength)
       .toBe(PROCESS_MEMORY_BYTES);
     expect(result.checkpoint.processes[0]!.argv).toEqual(["/bin/program-4"]);
-    expect(result.checkpoint.format).toBe(8);
+    expect(result.checkpoint.format).toBe(9);
     expect(result.checkpoint.kernelAbiVersion).toBe(KERNEL_ABI);
     expect(
       new Uint8Array(result.checkpoint.processes[0]!.programBytes),
@@ -284,6 +284,26 @@ describe("machine checkpoint freeze", () => {
       reason: expect.stringContaining("no swappable guest clock"),
     });
     expect(state.released).toEqual([[4]]);
+  });
+
+  it("reports the arm once, before any process is asked to unwind", async () => {
+    const state = testMachine([processSource(4, 1)]);
+    const freeze = state.sources[0]!.checkpointFreeze;
+    const seen: { phase: string; armed: number[][] }[] = [];
+    const capture = captureMachineCheckpoint(state.machine, {
+      ...options,
+      onArm: () => {
+        seen.push({ phase: freeze.currentPhase, armed: [...state.armed] });
+      },
+    });
+    await flush();
+    freeze.unwound();
+    await capture;
+
+    // A replica repeats the freeze only from this position: what the machine
+    // records after it is the unwind each process makes.
+    expect(seen).toEqual([{ phase: "idle", armed: [] }]);
+    expect(state.armed).toEqual([[4]]);
   });
 
   it("queues a launch behind the freeze, gives the machine back, and retries", async () => {
@@ -495,11 +515,26 @@ describe("machine checkpoint freeze", () => {
     freeze.unwound();
     freeze.unregisterThread(7);
 
-    await expect(capture).resolves.toEqual({
-      status: "failed",
-      reason: "pid=4: tid=7 ended during the checkpoint freeze",
-    });
-    expect(state.held).toEqual([]);
+    const result = await capture;
+    expect(result.status).toBe("captured");
+    expect(state.held).toEqual([[4]]);
+    expect(freeze.currentPhase).toBe("resumed");
+  });
+
+  it("reads the machine without a process that ends during the freeze", async () => {
+    const state = testMachine([processSource(4, 1), processSource(9, 2)]);
+    const capture = captureMachineCheckpoint(state.machine, options);
+    await flush();
+    state.sources[0]!.checkpointFreeze.unwound();
+    state.sources[1]!.checkpointFreeze.end();
+
+    // The kernel keeps the exit for the parent, so the machine is whole
+    // without the process.
+    const result = await capture;
+    expect(result.status).toBe("captured");
+    if (result.status !== "captured") return;
+    expect(result.checkpoint.processes.map((bucket) => bucket.pid)).toEqual([4]);
+    expect(state.sources[0]!.checkpointFreeze.currentPhase).toBe("resumed");
   });
 
   it("fails after reading when a thread dies during the read", async () => {

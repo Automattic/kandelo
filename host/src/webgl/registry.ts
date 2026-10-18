@@ -366,6 +366,7 @@ export class GlContextRegistry {
       if (!entry) continue;
       b.foreignTextures.delete(bo_id);
       b.textures.delete(entry.texId);
+      b.textureShapes.delete(entry.texId);
       b.gl?.deleteTexture(entry.tex);
     }
   }

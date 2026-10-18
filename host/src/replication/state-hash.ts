@@ -230,12 +230,13 @@ export function compareMachineStateHashes(
  * own, which grow the kernel heap and move its bookkeeping
  * (`host/test/migration/restore-fidelity.test.ts` pins this), so a keeper
  * that never restored and a replica that did never match there byte for
- * byte even when they are semantically one machine. Every filesystem and
- * every process memory must match exactly — those regions evolve only under
- * the logged decisions, and they are what the person taking the machine
- * over keeps. Closing the kernel gap means a restore path that leaves
- * kernel memory untouched, which restore-fidelity names as the open
- * question it is.
+ * byte even when they are semantically one machine. Every process memory
+ * must match exactly — those regions evolve only under the logged decisions,
+ * and they are what the person taking the machine over keeps. Since the
+ * kernel owns `/` and the scratch mounts (ABI 49), the exemption also leaves
+ * the machine's files uncompared: a known gap. Closing the kernel gap means a
+ * restore path that leaves kernel memory untouched, which restore-fidelity
+ * names as the open question it is.
  */
 export function comparePromotionStateHashes(
   keeper: MachineStateHash,

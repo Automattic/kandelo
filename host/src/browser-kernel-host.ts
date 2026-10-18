@@ -1227,10 +1227,13 @@ export class BrowserKernel {
    *
    * Refused while the replica has not consumed the log through `seq`; the
    * caller drains and asks again. The position check runs inside the
-   * freeze, so the hash covers the machine exactly at the seal.
+   * freeze, so the hash covers the machine exactly at the seal. A replica
+   * short of `armSeq`, where the seal's freeze began, is refused without a
+   * freeze.
    */
   async hashReplicaAtSeal(
     seq: number,
+    armSeq: number,
     options: { unwindTimeoutMs: number; vforkTimeoutMs: number },
   ): Promise<ReplicationReplicaHashResponse> {
     const requestId = this.nextRequestId++;
@@ -1238,6 +1241,7 @@ export class BrowserKernel {
       type: "replication_hash_replica",
       requestId,
       seq,
+      armSeq,
       unwindTimeoutMs: options.unwindTimeoutMs,
       vforkTimeoutMs: options.vforkTimeoutMs,
     });

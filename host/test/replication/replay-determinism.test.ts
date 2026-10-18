@@ -169,9 +169,17 @@ describe("replay determinism", () => {
     async () => {
       const recorded = await record();
       // The machine's clock reads are the guest's `date` calls plus the
-      // filesystem's inode stamps, which cross the same provider.
-      expect(recorded.log.length).toBeGreaterThanOrEqual(READS);
-      expect(recorded.log.every((e) => e.decision.kind === "clock")).toBe(true);
+      // filesystem's inode stamps, which cross the same provider. The rest of
+      // the log is the order the kernel served the machine's tasks in.
+      const clockReadings = recorded.log.filter(
+        (e) => e.decision.kind === "clock",
+      );
+      expect(clockReadings.length).toBeGreaterThanOrEqual(READS);
+      expect(
+        recorded.log.every(
+          (e) => e.decision.kind === "clock" || e.decision.kind === "dispatch",
+        ),
+      ).toBe(true);
 
       // The replica reads a clock that has moved on. Without the log it would
       // print later seconds, so matching the recording cannot be a coincidence
@@ -201,8 +209,7 @@ describe("replay determinism", () => {
     "reproduces what two replicas of one log print, and names what still differs",
     { timeout: 600_000 },
     async () => {
-      // Replicas must agree with each other at the same log position. They do
-      // not yet, and this is the measurement of how far off they are. The
+      // Replicas must agree with each other at the same log position. The
       // comparison is replica against replica, not replica against the machine
       // the checkpoint came from: completing a restore makes kernel calls of
       // its own, so the two are never equal. See
@@ -225,9 +232,8 @@ describe("replay determinism", () => {
         .toEqual(printedSeconds(recorded.stdout));
 
       // What the machine holds is reproduced too, everywhere it is state.
-      // Every filesystem matches: inode atime, mtime and ctime cross the
-      // machine's `TimeProvider`, so both replicas stamp the recorded
-      // milliseconds.
+      // Every process region matches here; the filesystems live in kernel
+      // memory, which the stack-line bound below covers.
       const position = recorded.log.length;
       const replayedApart = await divergedRegions(
         replica.state!,
@@ -236,23 +242,30 @@ describe("replay determinism", () => {
       );
       expect(replayedApart.filter((region) => region !== "kernel")).toEqual([]);
 
-      // And `kernel` differs only where it is not state. Twelve of thirteen
-      // measured pairs held all 14 MB byte for byte; the one that did not
-      // differed by three bytes at 0xffffc, four below the stack top, which is
-      // scratch from a call that had already returned. Bounding the difference
-      // by the stack line says that without asserting a byte count that a
-      // scheduling accident can move.
+      // And `kernel` differs only where it is not state. That includes every
+      // filesystem: inode atime, mtime and ctime cross the machine's
+      // `TimeProvider`, so both replicas stamp the recorded milliseconds. It
+      // includes the kernel heap too, which the shell and its children share:
+      // the log orders every syscall the kernel served and every exec and
+      // exit step it ran for one of them, so both replicas allocate in the
+      // primary's order. Before the order was logged, every measured pair
+      // differed above the stack line, by 1 to 147 bytes. Below it is scratch
+      // from a call that had already returned, which the bound leaves out.
       expect(
         differingOffsets(replica.state!.kernelMemory, other.state!.kernelMemory)
           .filter((at) => at >= KERNEL_STACK_TOP),
       ).toEqual([]);
 
-      // A replica on its own clock diverges in the filesystem again, which is
-      // what says the log — not luck — is why the pair above agrees on it.
+      // A replica on its own clock and its own schedule diverges again, which
+      // is what says the log — not luck — is why the pair above agrees.
+      // The filesystem lives in kernel memory, so the difference lands above
+      // the stack line the logged pair agreed on.
       const live = await replay(clone(), null, { state: true });
       const otherLive = await replay(clone(), null, { state: true });
-      expect(await divergedRegions(live.state!, otherLive.state!, position))
-        .toContain("filesystem:/");
+      expect(
+        differingOffsets(live.state!.kernelMemory, otherLive.state!.kernelMemory)
+          .filter((at) => at >= KERNEL_STACK_TOP),
+      ).not.toEqual([]);
     },
   );
 

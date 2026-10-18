@@ -26,17 +26,29 @@ const input = (device: string, ...bytes: number[]) =>
 const pointer = (dx: number, dy: number, buttons: number) =>
   ({ kind: "pointer", dx, dy, buttons }) as const;
 
+const keyDown = (code: number) =>
+  ({
+    kind: "evdev",
+    records: [
+      { device: 0, ev_type: 1, code, value: 1 },
+      { device: 0, ev_type: 0, code: 0, value: 0 },
+    ],
+  }) as const;
+
 const resize = (device: string, rows: number, cols: number) =>
   ({ kind: "resize", device, rows, cols }) as const;
 
-const glAnswer = (op: number, rc: number, ...bytes: number[]) =>
-  ({ kind: "gl", op, rc, bytes: new Uint8Array(bytes) }) as const;
+const glAnswer = (pid: number, op: number, rc: number, ...bytes: number[]) =>
+  ({ kind: "gl", pid, tid: pid, op, rc, bytes: new Uint8Array(bytes) }) as const;
 
 const accepted = (listener: number, pid: number) =>
   ({ kind: "accept", listener, pid }) as const;
 
 const drawn = (pid: number, ...bytes: number[]) =>
   ({ kind: "random", pid, tid: pid, bytes: new Uint8Array(bytes) }) as const;
+
+const served = (pid: number, tid = pid) =>
+  ({ kind: "dispatch", pid, tid }) as const;
 
 describe("replication log recorder", () => {
   it("numbers decisions from the position it was given", () => {
@@ -233,43 +245,46 @@ describe("replication log task streams", () => {
 describe("replication log GL query answers", () => {
   it("serves the recorded answers in order, interleaved with the clock", () => {
     const recorder = new ReplicationLogRecorder();
-    recorder.record(glAnswer(5, 4, 1, 0, 0, 0));
+    recorder.record(glAnswer(1, 5, 4, 1, 0, 0, 0));
     recorder.record(reading(1, 7, 0));
-    recorder.record(glAnswer(1, 4, 0, 0, 0, 0));
+    recorder.record(glAnswer(1, 1, 4, 0, 0, 0, 0));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(reader.takeGlQuery(5)).toEqual(glAnswer(5, 4, 1, 0, 0, 0));
+    expect(reader.takeGlQuery(5, 1, 1)).toEqual(glAnswer(1, 5, 4, 1, 0, 0, 0));
     expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0));
-    expect(reader.takeGlQuery(1)).toEqual(glAnswer(1, 4, 0, 0, 0, 0));
+    expect(reader.takeGlQuery(1, 1, 1)).toEqual(glAnswer(1, 1, 4, 0, 0, 0, 0));
+  });
+
+  it("serves each task its own answers, whatever order the tasks ran in", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(reading(1, 7, 0, 2));
+    recorder.record(glAnswer(1, 5, 4, 1, 0, 0, 0));
+    recorder.record(glAnswer(3, 9, 4, 2, 0, 0, 0));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    // A compositor's client queries before the compositor and before another
+    // task's clock read: the replica's workers ran in a different order.
+    expect(reader.takeGlQuery(9, 3, 3)).toEqual(glAnswer(3, 9, 4, 2, 0, 0, 0));
+    expect(reader.takeGlQuery(5, 1, 1)).toEqual(glAnswer(1, 5, 4, 1, 0, 0, 0));
+    expect(reader.takeClock(1, 2, 2)).toEqual(reading(1, 7, 0, 2));
   });
 
   it("reports the position when the replica runs a different query", () => {
     const recorder = new ReplicationLogRecorder(4);
-    recorder.record(glAnswer(5, 4, 1, 0, 0, 0));
+    recorder.record(glAnswer(1, 5, 4, 1, 0, 0, 0));
     const reader = new ReplicationLogReader(recorder.entries);
 
-    expect(() => reader.takeGlQuery(1)).toThrow(ReplicationDivergence);
-    expect(() => reader.takeGlQuery(1)).toThrow(
+    expect(() => reader.takeGlQuery(1, 1, 1)).toThrow(ReplicationDivergence);
+    expect(() => reader.takeGlQuery(1, 1, 1)).toThrow(
       "replication log diverged at 4: the replica ran GL query 1 where the "
         + "primary ran 5",
     );
     expect(reader.nextSeq).toBe(4);
   });
 
-  it("reports the position when the replica runs a query at a clock", () => {
-    const recorder = new ReplicationLogRecorder();
-    recorder.record(reading(1, 7, 0));
-    const reader = new ReplicationLogReader(recorder.entries);
-
-    expect(() => reader.takeGlQuery(5)).toThrow(
-      "the replica ran a GL query where the primary recorded clock",
-    );
-    expect(() => reader.takeClock(1, 1, 1)).not.toThrow();
-  });
-
   it("reports the position when the replica runs a query past the end", () => {
     const reader = new ReplicationLogReader([]);
-    expect(() => reader.takeGlQuery(5)).toThrow(
+    expect(() => reader.takeGlQuery(5, 1, 1)).toThrow(
       "replication log diverged at 0: the replica ran GL query 5 past the "
         + "end of the log",
     );
@@ -277,9 +292,12 @@ describe("replication log GL query answers", () => {
 
   it("refuses an answer whose bytes fall short of its claim", () => {
     const reader = new ReplicationLogReader([
-      { seq: 0, decision: { kind: "gl", op: 5, rc: 8, bytes: new Uint8Array(4) } },
+      {
+        seq: 0,
+        decision: { kind: "gl", pid: 1, tid: 1, op: 5, rc: 8, bytes: new Uint8Array(4) },
+      },
     ]);
-    expect(() => reader.takeGlQuery(5)).toThrow(
+    expect(() => reader.takeGlQuery(5, 1, 1)).toThrow(
       "the log's GL answer claims 8 bytes and carries 4",
     );
   });
@@ -287,14 +305,14 @@ describe("replication log GL query answers", () => {
   it("delivers what the primary pushed before an answer, before it", () => {
     const recorder = new ReplicationLogRecorder();
     recorder.record(input("/dev/pts/0", 13));
-    recorder.record(glAnswer(5, 4, 1, 0, 0, 0));
+    recorder.record(glAnswer(1, 5, 4, 1, 0, 0, 0));
     const delivered: ReplicationPushedDecision[] = [];
     const reader = new ReplicationLogReader(
       recorder.entries,
       (decision) => delivered.push(decision),
     );
 
-    expect(reader.takeGlQuery(5)).toEqual(glAnswer(5, 4, 1, 0, 0, 0));
+    expect(reader.takeGlQuery(5, 1, 1)).toEqual(glAnswer(1, 5, 4, 1, 0, 0, 0));
     expect(delivered).toEqual([input("/dev/pts/0", 13)]);
   });
 });
@@ -392,6 +410,226 @@ describe("replication log random draws", () => {
   });
 });
 
+describe("replication log dispatch order", () => {
+  it("names the tasks in the order the primary served them", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(served(1));
+    recorder.record(served(2, 3));
+    recorder.record(served(1));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(reader.nextDispatch()).toEqual(served(1));
+    // Asking again names the same task: only serving it moves the order on.
+    expect(reader.nextDispatch()).toEqual(served(1));
+    reader.takeDispatch();
+    expect(reader.nextDispatch()).toEqual(served(2, 3));
+    reader.takeDispatch();
+    reader.takeDispatch();
+    expect(reader.consumed).toBe(3);
+  });
+
+  it("opens the order once a finished recording is spent", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(served(1));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    reader.takeDispatch();
+    expect(reader.nextDispatch()).toBe("open");
+  });
+
+  it("names a host entry by its label", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record({ ...served(2), entry: "process deactivation pid=2" });
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(reader.nextDispatch()).toEqual({
+      ...served(2),
+      entry: "process deactivation pid=2",
+    });
+  });
+
+  it("serves clock readings per task across the dispatch order", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(served(1));
+    recorder.record(reading(1, 7, 0, 1));
+    recorder.record(served(2));
+    recorder.record(reading(1, 8, 0, 2));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    reader.takeDispatch();
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 7, 0, 1));
+    expect(reader.nextDispatch()).toEqual(served(2));
+    reader.takeDispatch();
+    expect(reader.takeClock(1, 2, 2)).toEqual(reading(1, 8, 0, 2));
+    expect(reader.consumed).toBe(4);
+  });
+
+  it("delivers what the primary pushed before a dispatch, before it", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(served(1));
+    recorder.record(input("/dev/pts/0", 0x71));
+    recorder.record(served(1));
+    const applied: ReplicationPushedDecision[] = [];
+    const reader = new ReplicationLogReader(recorder.entries, (decision) =>
+      applied.push(decision),
+    );
+
+    expect(reader.takeDispatch()).toBe(false);
+    expect(applied).toEqual([]);
+    reader.nextDispatch();
+    expect(reader.takeDispatch()).toBe(true);
+    expect(applied).toEqual([input("/dev/pts/0", 0x71)]);
+  });
+
+  it("holds pushed input for its dispatch while a task reads ahead", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(served(1));
+    recorder.record(served(2));
+    recorder.record(keyDown(37));
+    recorder.record(served(2));
+    recorder.record(reading(1, 8, 0, 1));
+    const applied: ReplicationPushedDecision[] = [];
+    const reader = new ReplicationLogReader(recorder.entries, (decision) =>
+      applied.push(decision),
+    );
+
+    reader.takeDispatch();
+    // Task 1's next reading lies past the keystroke, which the primary
+    // delivered between task 2's two dispatches.
+    expect(reader.takeClock(1, 1, 1)).toEqual(reading(1, 8, 0, 1));
+    reader.drainPushed();
+    expect(applied).toEqual([]);
+    reader.nextDispatch();
+    reader.takeDispatch();
+    expect(applied).toEqual([]);
+    reader.nextDispatch();
+    reader.takeDispatch();
+    expect(applied).toEqual([keyDown(37)]);
+  });
+
+  it("delivers pushed input through a task's reads once the order is abandoned", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(served(1));
+    recorder.record(keyDown(37));
+    recorder.record(served(2));
+    recorder.record(reading(1, 8, 0, 1));
+    const applied: ReplicationPushedDecision[] = [];
+    const reader = new ReplicationLogReader(recorder.entries, (decision) =>
+      applied.push(decision),
+    );
+
+    reader.takeDispatch();
+    reader.abandonDispatchOrder();
+    reader.takeClock(1, 1, 1);
+    expect(applied).toEqual([keyDown(37)]);
+  });
+
+  it("waits for the primary's next dispatch, and opens when it stopped", () => {
+    const arriving: Array<ReplicationLogEntry | null | "timedout"> = [
+      "timedout",
+      { seq: 0, decision: served(4) },
+      null,
+    ];
+    const reader = new ReplicationLogReader(
+      [],
+      undefined,
+      () => null,
+      () => null,
+      undefined,
+      () => arriving.shift() ?? null,
+    );
+
+    // A live replica must not block the kernel worker on the primary: every
+    // other task it can already serve is waiting behind the same thread.
+    expect(reader.nextDispatch()).toBe("wait");
+    expect(reader.nextDispatch()).toEqual(served(4));
+    reader.takeDispatch();
+    expect(reader.nextDispatch()).toBe("open");
+  });
+
+  it("says whether a task's next dispatch is a retry", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(served(1));
+    recorder.record({ ...served(2), retry: true });
+    recorder.record(served(1));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(reader.nextDispatchOfIsRetry(2, 2)).toBe(true);
+    expect(reader.nextDispatchOfIsRetry(1, 1)).toBe(false);
+    // A task the log names nowhere ahead: nothing is known about it yet.
+    expect(reader.nextDispatchOfIsRetry(3, 3)).toBeNull();
+  });
+
+  it("finds a host entry anywhere ahead, and only ahead", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record({ ...served(2), entry: "process deactivation pid=2" });
+    recorder.record(served(1));
+    recorder.record({ ...served(3), entry: "process deactivation pid=3" });
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(reader.holdsDispatchEntry("process deactivation pid=3")).toBe(true);
+    reader.takeDispatch();
+    expect(reader.holdsDispatchEntry("process deactivation pid=2")).toBe(false);
+    expect(reader.holdsDispatchEntry("process deactivation pid=4")).toBe(false);
+  });
+
+  it("passes over the host work the log ends with, and only that", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record({ ...served(1), retry: true });
+    recorder.record(served(2));
+    recorder.record({ ...served(1), retry: true });
+    recorder.record({ ...served(2), entry: "process deactivation pid=2" });
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    // A syscall the guest must still make keeps the host work before it.
+    reader.passOverTrailingHostWork();
+    expect(reader.consumed).toBe(0);
+    reader.takeDispatch();
+    reader.takeDispatch();
+    reader.passOverTrailingHostWork();
+    expect(reader.consumed).toBe(4);
+    expect(reader.nextDispatch()).toBe("open");
+  });
+
+  it("passes over a host entry the replica already ran", () => {
+    // The entry arrives after the replica ran the work it stands for.
+    const arriving: ReplicationLogEntry[] = [
+      { seq: 1, decision: { ...served(2), entry: "process deactivation pid=2" } },
+      { seq: 2, decision: served(1) },
+    ];
+    const live = new ReplicationLogReader(
+      [],
+      undefined,
+      () => null,
+      () => null,
+      undefined,
+      () => arriving.shift() ?? "timedout",
+    );
+    live.noteEntryRanAhead("process deactivation pid=2");
+    expect(live.nextDispatch()).toEqual(served(1));
+    expect(live.consumed).toBe(1);
+  });
+
+  it("opens the order for good once the replica abandons it", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(served(1));
+    const reader = new ReplicationLogReader(recorder.entries);
+
+    expect(reader.dispatchOrderAbandoned).toBe(false);
+    reader.abandonDispatchOrder();
+    expect(reader.nextDispatch()).toBe("open");
+    expect(reader.dispatchOrderAbandoned).toBe(true);
+  });
+
+  it("refuses to serve a dispatch the log did not name", () => {
+    const reader = new ReplicationLogReader([{ seq: 0, decision: reading(1, 7, 0) }]);
+
+    expect(() => reader.takeDispatch()).toThrow(
+      "takeDispatch without a dispatch nextDispatch named",
+    );
+  });
+});
+
 describe("replication log pushed decisions", () => {
   it("delivers what the primary sent before a reading, before that reading", () => {
     const recorder = new ReplicationLogRecorder();
@@ -444,6 +682,24 @@ describe("replication log pushed decisions", () => {
       pointer(1, 0, 0),
       input("/dev/tty1", 0x41),
       pointer(0, 1, 2),
+    ]);
+  });
+
+  it("delivers a compositor's evdev frame like any other device input", () => {
+    const recorder = new ReplicationLogRecorder();
+    recorder.record(pointer(1, 0, 0));
+    recorder.record(keyDown(37));
+    recorder.record(input("/dev/tty1", 0x41));
+
+    const applied: ReplicationPushedDecision[] = [];
+    new ReplicationLogReader(recorder.entries, (decision) =>
+      applied.push(decision),
+    ).drainPushed();
+
+    expect(applied).toEqual([
+      pointer(1, 0, 0),
+      keyDown(37),
+      input("/dev/tty1", 0x41),
     ]);
   });
 

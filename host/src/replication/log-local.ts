@@ -349,6 +349,7 @@ type LocalReplicationMessage<TMachine> =
       readonly kind: "promotion_sealed";
       readonly takeId: string;
       readonly seq: number;
+      readonly armSeq: number;
       readonly hash: MachineStateHash;
     }
   | {
@@ -859,7 +860,8 @@ export class LocalReplicationLog<TMachine = never> {
    * A taker that already runs a caught-up replica asks to be promoted
    * instead of paying a checkpoint transfer. `seal` freezes the machine,
    * stops the recording at the frozen instant, and answers with the seal
-   * position and the sealed state's hash; `adopt` receives the drained
+   * position, the position its freeze began at, and the sealed state's
+   * hash; `adopt` receives the drained
    * replica's hash and answers whether the machine was released — the
    * keeper releases only on a match, so a mismatch or a refusal sends the
    * taker to the checkpoint path it would have used anyway. One promotion
@@ -867,7 +869,11 @@ export class LocalReplicationLog<TMachine = never> {
    */
   servePromotion(handlers: {
     seal: () => Promise<
-      | { readonly seq: number; readonly hash: MachineStateHash }
+      | {
+        readonly seq: number;
+        readonly armSeq: number;
+        readonly hash: MachineStateHash;
+      }
       | { readonly refused: string }
     >;
     adopt: (hash: MachineStateHash) => Promise<boolean>;
@@ -897,6 +903,7 @@ export class LocalReplicationLog<TMachine = never> {
               kind: "promotion_sealed",
               takeId: message.takeId,
               seq: sealed.seq,
+              armSeq: sealed.armSeq,
               hash: sealed.hash,
             });
           },
@@ -946,13 +953,15 @@ export class LocalReplicationLog<TMachine = never> {
   /**
    * Ask the machine on this channel to seal its recording for a take-over.
    *
-   * Resolves with the seal position, the sealed state's hash, and the take
-   * id `requestAdoption` continues with. Rejects when the machine refused
+   * Resolves with the seal position, the position the seal's freeze began
+   * at, the sealed state's hash, and the take id `requestAdoption`
+   * continues with. Rejects when the machine refused
    * or never answered — the caller falls back to the checkpoint take.
    */
   requestPromotion(timeoutMs: number): Promise<{
     takeId: string;
     seq: number;
+    armSeq: number;
     hash: MachineStateHash;
   }> {
     const takeId = crypto.randomUUID();
@@ -977,7 +986,12 @@ export class LocalReplicationLog<TMachine = never> {
           return;
         }
         finish();
-        resolve({ takeId, seq: message.seq, hash: message.hash });
+        resolve({
+          takeId,
+          seq: message.seq,
+          armSeq: message.armSeq,
+          hash: message.hash,
+        });
       };
       const finish = () => {
         clearTimeout(timer);

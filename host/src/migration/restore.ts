@@ -233,6 +233,7 @@ function validateGlContext(
     context.fbos,
     context.rbos,
     context.uniformLocationNames,
+    context.foreignTextures,
   ]) {
     if (!Array.isArray(list) || list.length > MAX_GL_OBJECTS) {
       refuse(`pid ${pid}'s GL context carries an unusable object list`);
@@ -252,6 +253,12 @@ function validateGlContext(
     || context.nextUniformLoc < 0
   ) {
     refuse(`pid ${pid}'s GL uniform-location counter is unusable`);
+  }
+  if (
+    !Number.isSafeInteger(context.nextForeignTexId)
+    || context.nextForeignTexId < 0
+  ) {
+    refuse(`pid ${pid}'s GL foreign-texture counter is unusable`);
   }
 
   const bufferNames = new Set<number>();
@@ -430,6 +437,19 @@ function validateGlContext(
     ) {
       refuse(`pid ${pid} carries an unusable GL uniform-location entry`);
     }
+  }
+  const foreignBos = new Set<number>();
+  for (const entry of context.foreignTextures) {
+    if (
+      !Number.isSafeInteger(entry.boId)
+      || entry.boId < 0
+      || foreignBos.has(entry.boId)
+      || !textureNames.has(entry.name)
+      || entry.name >= context.nextForeignTexId
+    ) {
+      refuse(`pid ${pid} carries an unusable GL foreign-texture entry`);
+    }
+    foreignBos.add(entry.boId);
   }
   if (context.state === null) return;
   const state = context.state;

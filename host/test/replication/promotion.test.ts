@@ -10,10 +10,10 @@
  *
  * The claim these tests hold is the platform half of that protocol: a seal
  * and a drained replica's hash agree at the promotion boundary — every
- * filesystem and every process region byte for byte, the kernel region
- * exempt at the measured boundary `state-hash.ts` documents — and the
- * replica then carries on as a machine of its own. The wire and the page
- * are the product half, on top of these primitives.
+ * process region byte for byte, the kernel region (which holds the
+ * filesystems) exempt at the measured boundary `state-hash.ts` documents —
+ * and the replica then carries on as a machine of its own. The wire and the
+ * page are the product half, on top of these primitives.
  *
  * The design is `docs/plans/2026-08-23-state-machine-replication-design.md`
  * § "Divergence detection and resync", and doc 026's step 2 shape:
@@ -47,6 +47,13 @@ const GUEST = [
   "-c",
   `i=0; while [ $i -lt ${READS} ]; do date +%s; j=0; `
   + `while [ $j -lt 2000 ]; do j=$((j+1)); done; i=$((i+1)); done`,
+];
+
+/** A guest whose two subshells make syscalls without pause. */
+const BUSY_PAIR = [
+  "sh",
+  "-c",
+  "for k in 1 2; do (while :; do : >/dev/null; done) & done; wait",
 ];
 
 async function until(
@@ -203,7 +210,7 @@ describe("take-over promotion", () => {
         // Drain to the seal. A refusal names the replica's position, or the
         // departure of a guest that has just finished; both pass, and the
         // nudge applies pushed decisions a parked guest would never pull.
-        let hashed = await replica.hashReplicaAtSeal(sealed.seq, TIMEOUTS);
+        let hashed = await replica.hashReplicaAtSeal(sealed.seq, sealed.armSeq, TIMEOUTS);
         const deadline = Date.now() + DRAIN_LIMIT_MS;
         while (hashed.status === "refused") {
           if (Date.now() > deadline) {
@@ -214,19 +221,23 @@ describe("take-over promotion", () => {
           );
           replica.drainReplicationReplay();
           await pause(50);
-          hashed = await replica.hashReplicaAtSeal(sealed.seq, TIMEOUTS);
+          hashed = await replica.hashReplicaAtSeal(sealed.seq, sealed.armSeq, TIMEOUTS);
         }
 
         // A position past the seal is refused with where the replica stands,
         // which is what tells the caller to keep draining or give up.
-        const past = await replica.hashReplicaAtSeal(sealed.seq + 5, TIMEOUTS);
+        const past = await replica.hashReplicaAtSeal(
+          sealed.seq + 5,
+          sealed.armSeq,
+          TIMEOUTS,
+        );
         expect(past.status).toBe("refused");
         if (past.status === "refused") {
           expect(past.reason).toContain("stands at");
         }
 
-        // The promotion gate: every filesystem and every process region of
-        // the drained replica matches the sealed keeper byte for byte.
+        // The promotion gate: every process region of the drained replica
+        // matches the sealed keeper byte for byte.
         const report = comparePromotionStateHashes(sealed.hash, hashed.hash);
         expect(report.diverged, report.summary).toBe(false);
 
@@ -252,6 +263,215 @@ describe("take-over promotion", () => {
           () => `the promoted machine printed `
             + `${JSON.stringify(replicaOut.read())}`,
         );
+      } finally {
+        writer.end();
+        await replica?.destroy();
+        await keeper.destroy();
+      }
+    },
+  );
+
+  it(
+    "refuses a replica short of the seal's freeze without freezing it",
+    { timeout: 300_000 },
+    async () => {
+      const keeperOut = collectStdout();
+      const keeper = new NodeKernelHost({
+        rootfsImage: "default",
+        onStdout: keeperOut.onStdout,
+      });
+      await keeper.init();
+      const replicaOut = collectStdout();
+      let replica: NodeKernelHost | null = null;
+      const queue = createReplicationLogQueue();
+      const writer = new ReplicationLogQueueWriter(queue);
+      // Entries the replica has not been sent yet. Holding them back keeps
+      // the replica mid-guest, short of the place the seal's freeze began.
+      let held: ReplicationLogEntry[] | null = null;
+      try {
+        const guestExit = keeper
+          .spawnFromVfs("/bin/sh", GUEST)
+          .then(({ exit }) => exit);
+        await until(
+          () => printedSeconds(keeperOut.read()).length >= 2,
+          () => `the guest printed ${keeperOut.read().trim().length} bytes`,
+        );
+        const onEntries = (entries: readonly ReplicationLogEntry[]) => {
+          if (held === null) writer.push(entries);
+          else held.push(...entries);
+        };
+        let joined = await keeper.captureAndStreamReplicationLog(
+          TIMEOUTS,
+          onEntries,
+        );
+        for (
+          let attempt = 0;
+          joined.capture.status === "failed"
+          && /ended during the checkpoint freeze/.test(joined.capture.reason)
+          && attempt < 40;
+          attempt++
+        ) {
+          await pause(25);
+          joined = await keeper.captureAndStreamReplicationLog(
+            TIMEOUTS,
+            onEntries,
+          );
+        }
+        expect(
+          joined.capture.status,
+          joined.capture.status === "captured" ? "" : joined.capture.reason,
+        ).toBe("captured");
+        if (joined.capture.status !== "captured") return;
+
+        replica = new NodeKernelHost({
+          rootfsImage: "default",
+          restoreCheckpoint: joined.capture.checkpoint,
+          replicationReplay: { entries: [], queue },
+          onStdout: replicaOut.onStdout,
+        });
+        await replica.init();
+        await until(
+          () => printedSeconds(replicaOut.read()).length >= 1,
+          () => `the replica printed ${JSON.stringify(replicaOut.read())}`,
+        );
+        held = [];
+
+        expect(await guestExit).toBe(0);
+        for (let attempt = 0; attempt < 200; attempt++) {
+          if ((await keeper.enumProcs()).every((proc) => proc.pid <= 1)) break;
+          await pause(25);
+        }
+        let sealed = await keeper.sealReplicationRecording(TIMEOUTS);
+        for (
+          let attempt = 0;
+          sealed.status === "refused"
+          && /ended during the checkpoint freeze/.test(sealed.reason)
+          && attempt < 40;
+          attempt++
+        ) {
+          await pause(25);
+          sealed = await keeper.sealReplicationRecording(TIMEOUTS);
+        }
+        expect(
+          sealed.status,
+          sealed.status === "sealed" ? "" : sealed.reason,
+        ).toBe("sealed");
+        if (sealed.status !== "sealed") return;
+        expect(sealed.armSeq).toBeLessThanOrEqual(sealed.seq);
+
+        // A freeze here would do the seal freeze's work early: the syscalls
+        // the replica's processes unwind at would take the turns of syscalls
+        // the keeper made, and the replica would never reach the seal.
+        const short = await replica.hashReplicaAtSeal(
+          sealed.seq,
+          sealed.armSeq,
+          TIMEOUTS,
+        );
+        expect(short.status).toBe("refused");
+        if (short.status === "refused") {
+          expect(short.reason).toContain("short of the seal's freeze");
+        }
+
+        // So the replica is still the keeper's machine: sent the rest of the
+        // log, it drains to the seal mid-guest and hashes the same state.
+        writer.push(held);
+        let hashed = await replica.hashReplicaAtSeal(
+          sealed.seq,
+          sealed.armSeq,
+          TIMEOUTS,
+        );
+        const deadline = Date.now() + DRAIN_LIMIT_MS;
+        while (hashed.status === "refused") {
+          if (Date.now() > deadline) {
+            throw new Error(`the replica never drained: ${hashed.reason}`);
+          }
+          expect(hashed.reason).toMatch(
+            /short of the seal's freeze|stands at|ended during the checkpoint freeze/,
+          );
+          replica.drainReplicationReplay();
+          await pause(50);
+          hashed = await replica.hashReplicaAtSeal(
+            sealed.seq,
+            sealed.armSeq,
+            TIMEOUTS,
+          );
+        }
+        const report = comparePromotionStateHashes(sealed.hash, hashed.hash);
+        expect(report.diverged, report.summary).toBe(false);
+      } finally {
+        writer.end();
+        await replica?.destroy();
+        await keeper.destroy();
+      }
+    },
+  );
+
+  it(
+    "hashes a replica sealed while two processes make syscalls",
+    { timeout: 300_000 },
+    async () => {
+      const keeper = new NodeKernelHost({ rootfsImage: "default" });
+      await keeper.init();
+      let replica: NodeKernelHost | null = null;
+      const queue = createReplicationLogQueue();
+      const writer = new ReplicationLogQueueWriter(queue);
+      try {
+        void keeper.spawnFromVfs("/bin/sh", BUSY_PAIR);
+        let procs = 0;
+        for (let attempt = 0; attempt < 400 && procs < 4; attempt++) {
+          procs = (await keeper.enumProcs()).length;
+          if (procs < 4) await pause(25);
+        }
+        expect(procs).toBeGreaterThanOrEqual(4);
+
+        const joined = await keeper.captureAndStreamReplicationLog(
+          TIMEOUTS,
+          (entries) => writer.push(entries),
+        );
+        expect(
+          joined.capture.status,
+          joined.capture.status === "captured" ? "" : joined.capture.reason,
+        ).toBe("captured");
+        if (joined.capture.status !== "captured") return;
+        replica = new NodeKernelHost({
+          rootfsImage: "default",
+          restoreCheckpoint: joined.capture.checkpoint,
+          replicationReplay: { entries: [], queue },
+        });
+        await replica.init();
+        await pause(1_000);
+
+        // A live replica reaches the seal's entries before it hears of the
+        // seal. Unheld, its loopers would take the turns of their own unwind
+        // work and never reach the seal.
+        const sealed = await keeper.sealReplicationRecording(TIMEOUTS);
+        expect(
+          sealed.status,
+          sealed.status === "sealed" ? "" : sealed.reason,
+        ).toBe("sealed");
+        if (sealed.status !== "sealed") return;
+
+        let hashed = await replica.hashReplicaAtSeal(
+          sealed.seq,
+          sealed.armSeq,
+          TIMEOUTS,
+        );
+        const deadline = Date.now() + DRAIN_LIMIT_MS;
+        while (hashed.status === "refused") {
+          if (Date.now() > deadline) {
+            throw new Error(`the replica never drained: ${hashed.reason}`);
+          }
+          expect(hashed.reason).toContain("short of the seal's freeze");
+          replica.drainReplicationReplay();
+          await pause(50);
+          hashed = await replica.hashReplicaAtSeal(
+            sealed.seq,
+            sealed.armSeq,
+            TIMEOUTS,
+          );
+        }
+        const report = comparePromotionStateHashes(sealed.hash, hashed.hash);
+        expect(report.diverged, report.summary).toBe(false);
       } finally {
         writer.end();
         await replica?.destroy();

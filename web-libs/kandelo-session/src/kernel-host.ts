@@ -337,17 +337,20 @@ export interface KernelLike {
     | {
         readonly status: "sealed";
         readonly seq: number;
+        readonly armSeq: number;
         readonly hash: MachineStateHashLike;
       }
     | { readonly status: "refused"; readonly reason: string }
   >;
   /**
    * Freeze this replica at the seal and hash its state; refused while it has
-   * not consumed the log through `seq`. Mirrors
+   * not consumed the log through `seq`, and without a freeze while it is
+   * short of `armSeq`. Mirrors
    * `host/src/browser-kernel-host.ts: hashReplicaAtSeal`.
    */
   hashReplicaAtSeal?(
     seq: number,
+    armSeq: number,
     options: { unwindTimeoutMs: number; vforkTimeoutMs: number },
   ): Promise<
     | { readonly status: "hashed"; readonly hash: MachineStateHashLike }
@@ -1263,6 +1266,7 @@ export interface KernelHost {
     | {
         readonly status: "sealed";
         readonly seq: number;
+        readonly armSeq: number;
         readonly hash: MachineStateHashLike;
       }
     | { readonly status: "refused"; readonly reason: string }
@@ -1272,9 +1276,10 @@ export interface KernelHost {
    * Freeze the replica this page runs at the seal, and hash its state.
    *
    * Null on a page holding no replica. Refused while the replica has not
-   * consumed the log through `seq`; the caller drains and asks again.
+   * consumed the log through `seq`, or has not reached `armSeq`, where the
+   * seal's freeze began; the caller drains and asks again.
    */
-  hashReplicaAtSeal(seq: number): Promise<
+  hashReplicaAtSeal(seq: number, armSeq: number): Promise<
     | { readonly status: "hashed"; readonly hash: MachineStateHashLike }
     | { readonly status: "refused"; readonly reason: string }
     | null
@@ -2649,6 +2654,7 @@ export class LiveKernelHost implements KernelHost {
     | {
         readonly status: "sealed";
         readonly seq: number;
+        readonly armSeq: number;
         readonly hash: MachineStateHashLike;
       }
     | { readonly status: "refused"; readonly reason: string }
@@ -2659,14 +2665,14 @@ export class LiveKernelHost implements KernelHost {
     return kernel.sealReplicationRecording(HANDOVER_CAPTURE_TIMEOUTS);
   }
 
-  async hashReplicaAtSeal(seq: number): Promise<
+  async hashReplicaAtSeal(seq: number, armSeq: number): Promise<
     | { readonly status: "hashed"; readonly hash: MachineStateHashLike }
     | { readonly status: "refused"; readonly reason: string }
     | null
   > {
     const kernel = this.kernel;
     if (!this.holdsReplica() || !kernel?.hashReplicaAtSeal) return null;
-    return kernel.hashReplicaAtSeal(seq, HANDOVER_CAPTURE_TIMEOUTS);
+    return kernel.hashReplicaAtSeal(seq, armSeq, HANDOVER_CAPTURE_TIMEOUTS);
   }
 
   async promoteReplicaMachine(): Promise<
@@ -4234,6 +4240,7 @@ export class LiveKernelHost implements KernelHost {
         kernel.injectMouseEvent?.(dx, dy, buttons);
       },
       sendPointerAbs: (x, y, buttons) => {
+        if (this.holdsReplica()) return;
         const inject = kernel.injectInputEvent;
         if (!inject) return;
         const rx = Math.round(x), ry = Math.round(y);

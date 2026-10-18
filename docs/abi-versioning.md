@@ -1603,7 +1603,9 @@ the process explicitly, so no guest task is bound for them. `kernel_rearm_host_t
 re-arms a restored process's armed interval timer with its remaining time
 (POSIX timer slots store no deadline, so their remaining time stays a
 documented gap). `kernel_pty_index_for_pid` lets the receiver re-seed the host
-maps that route terminal input to a restored process's PTY.
+maps that route terminal input to a restored process's PTY, and
+`kernel_pty_session_id` names the session whose pid the PTY's output is
+routed under.
 `kernel_cancel_host_owned_wait` retires the kernel wait state of a task the
 freeze completes, naming the task explicitly. The kernel also imports
 `host_accept_select`, the host's choice of which waiting acceptor takes a
@@ -1625,6 +1627,13 @@ it never instrumented reaches the host, which answers 1. A host built for ABI
 51 provides no such import and cannot instantiate these programs. Host imports
 are not in the structural snapshot, so this is listed by hand. See
 [fork-instrumentation.md](fork-instrumentation.md#checkpoint-coverage).
+
+Three kernel exports joined ABI 52 as backward-compatible additions, for the
+restore. `kernel_get_fd_status_flags` reads the flags a reopened stream needs,
+and `kernel_seek_fd` moves the reopened handle to the recorded position; both
+name the process explicitly, so no guest task is bound for them.
+`kernel_pty_session_id` names the session whose pid a restored PTY's output is
+routed under.
 
 ## The snapshot
 

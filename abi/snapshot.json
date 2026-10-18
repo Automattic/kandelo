@@ -2878,6 +2878,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_pty_session_id",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_pty_set_winsize",
       "signature": "(i32,i32,i32) -> (i32)"
     },

@@ -11,7 +11,7 @@
  * The design is `docs/plans/2026-08-23-state-machine-replication-design.md`
  * § "How a replica joins a GL machine".
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Worker } from "node:worker_threads";
 import {
   ReplicationLogQueueReader,
@@ -168,24 +168,55 @@ describe("replication log queue", () => {
     expect(writer.pending).toBe(0);
   });
 
-  it("stops polling for room once the recording has ended", async () => {
+  it("delivers what was pending at the end before the end itself", () => {
     const queue = createReplicationLogQueue(256);
     const writer = new ReplicationLogQueueWriter(queue);
     const reader = new ReplicationLogQueueReader(queue);
-    writer.push([0, 1, 2, 3, 4, 5].map(clockAt));
-    const stranded = writer.pending;
-    expect(stranded).toBeGreaterThan(0);
+    const recorded = [0, 1, 2, 3, 4, 5].map(clockAt);
+    writer.push(recorded);
+    expect(writer.pending).toBeGreaterThan(0);
     writer.end();
 
-    // Room appears, and a writer still polling for it would take it. A replica
-    // that had not drained the ring before the recording ended is not
-    // following any more, and polling for it would run for as long as the page
-    // is open.
-    reader.take();
-    reader.take();
-    await sleep(50);
+    // A replica behind the primary reads the end only once the ring is empty.
+    // Publishing it while entries were still pending would end that replica
+    // short of the primary, asking for decisions the log then never carries.
+    const taken: (ReplicationLogEntry | null | "timedout")[] = [];
+    for (let at = 0; at <= recorded.length; at++) {
+      if (writer.pending > 0) writer.push([]);
+      taken.push(reader.takeWithin(0));
+    }
 
-    expect(writer.pending).toBe(stranded);
+    expect(taken).toEqual([...recorded, null]);
+    expect(writer.pending).toBe(0);
+  });
+
+  it("stops offering entries to a replica that takes none", () => {
+    vi.useFakeTimers();
+    try {
+      const queue = createReplicationLogQueue(256);
+      const writer = new ReplicationLogQueueWriter(queue);
+      const reader = new ReplicationLogQueueReader(queue);
+      writer.push([0, 1, 2, 3, 4, 5].map(clockAt));
+      const stranded = writer.pending;
+      expect(stranded).toBeGreaterThan(0);
+      writer.end();
+
+      // A replica that took nothing for the whole limit is not following any
+      // more, and a writer that kept polling for room would poll for as long
+      // as the page is open.
+      vi.advanceTimersByTime(30_000 + 100);
+      expect(writer.pending).toBe(stranded);
+
+      // The ring's own frames are still the replica's to read, and then the
+      // end, without the entries that never reached the ring.
+      const held = [0, 1, 2, 3, 4, 5].slice(0, 6 - stranded).map(clockAt);
+      const taken: (ReplicationLogEntry | null | "timedout")[] = [];
+      for (let at = 0; at <= held.length; at++) taken.push(reader.takeWithin(0));
+      expect(taken).toEqual([...held, null]);
+      expect(writer.pending).toBe(stranded);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses a decision no ring of this size could carry", () => {

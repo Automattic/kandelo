@@ -23,11 +23,12 @@
  * `pid` is the process the reading was handed to, and it is what makes the
  * reading replayable. A machine with more than one process has more than one
  * guest reading clocks, and which of them reaches its next read first is the
- * host's scheduling of their workers — a decision no log records today. Two
- * computers therefore pull the same readings in different orders, and a
- * replica that consumed one global sequence would refuse the first reading it
- * asked for. Recording the reader means every process replays its own
- * readings, in its own order, whatever order the processes ran in.
+ * host's scheduling of their workers. The log orders the syscalls themselves
+ * ({@link ReplicationDispatch}), but the reader is still what a reading is
+ * served by: the host takes readings outside any syscall, and a replica that
+ * consumed one global sequence would hand one task's reading to another the
+ * moment the two orders differed. Recording the reader means every process
+ * replays its own readings, in its own order.
  *
  * `tid` closes the same boundary one level down. Threads of one process
  * share a pid, and which of them reaches its next read first is host
@@ -61,9 +62,16 @@ export interface ReplicationClockReading {
  *
  * `rc` is the raw `host_gl_query` return: bytes written when non-negative,
  * a negative errno otherwise. `bytes` carries exactly the written bytes.
+ *
+ * `pid` and `tid` key the answer the way they key a clock reading: a
+ * compositor and its GL clients query between other tasks' clock reads, in
+ * whatever order the host runs their workers, so each task replays its own
+ * answers in its own order.
  */
 export interface ReplicationGlQueryAnswer {
   readonly kind: "gl";
+  readonly pid: number;
+  readonly tid: number;
   readonly op: number;
   readonly rc: number;
   readonly bytes: Uint8Array;
@@ -89,6 +97,42 @@ export interface ReplicationAcceptSelection {
   readonly kind: "accept";
   readonly listener: number;
   readonly pid: number;
+}
+
+/**
+ * One syscall the kernel served, named by the task that made it.
+ *
+ * Which runnable task the kernel serves next is the host's scheduling of its
+ * workers, and the order changes the kernel's own state: two tasks that
+ * allocate in the kernel heap in the opposite order leave it laid out
+ * differently, and every later allocation follows that layout. Recording the
+ * order is what lets a replica serve the same syscalls in the same sequence,
+ * so its kernel memory is the primary's byte for byte.
+ *
+ * A retry of a blocked syscall is a dispatch of its own: it runs the kernel
+ * against the state the tasks served before it left.
+ */
+export interface ReplicationDispatch {
+  readonly kind: "dispatch";
+  readonly pid: number;
+  readonly tid: number;
+  /**
+   * The host entry served, when the kernel ran one for this process on the
+   * host's own schedule rather than for a syscall: an exited process's
+   * deactivation lands between two syscalls of its parent in an order the
+   * host's workers decide, and it changes the kernel heap like any syscall.
+   */
+  readonly entry?: string;
+  /**
+   * A retry of a syscall that was already pending.
+   *
+   * The host retries a blocked syscall on its own timers and wakeups, and on
+   * readiness it does not share with a replica, such as a lazy file arriving.
+   * So a replica's syscall can need fewer retries than the primary's, or
+   * more. A retry the replica has nothing to match is passed over, and a
+   * retry the log holds nothing for runs out of order.
+   */
+  readonly retry?: true;
 }
 
 /**
@@ -171,6 +215,26 @@ export interface ReplicationPointerEvent {
 }
 
 /**
+ * The evdev records the host handed the kernel in one injection.
+ *
+ * A compositor reads its keyboard and pointer from `/dev/input/event0` and
+ * `/dev/input/event1`, so a key the person presses there is a decision
+ * exactly like a keystroke on a terminal. The records are what the host
+ * passed to `kernel_input_event`, not the `struct input_event` the guest
+ * reads: the kernel stamps each record with a monotonic reading, and that
+ * reading travels as the clock decision it is.
+ */
+export interface ReplicationEvdevEvent {
+  readonly kind: "evdev";
+  readonly records: readonly {
+    readonly device: 0 | 1;
+    readonly ev_type: number;
+    readonly code: number;
+    readonly value: number;
+  }[];
+}
+
+/**
  * One terminal size the host set, at the position it set it.
  *
  * A window change is a decision like a keystroke: it delivers `SIGWINCH` and
@@ -214,6 +278,7 @@ export interface ReplicationHttpExchange {
 export type ReplicationPushedDecision =
   | ReplicationInputEvent
   | ReplicationPointerEvent
+  | ReplicationEvdevEvent
   | ReplicationResizeEvent
   | ReplicationHttpExchange;
 
@@ -230,6 +295,7 @@ export type ReplicationDecision =
   | ReplicationGlQueryAnswer
   | ReplicationAcceptSelection
   | ReplicationRandomBytes
+  | ReplicationDispatch
   | ReplicationPushedDecision;
 
 /** Whether `decision` is one the host delivered rather than the guest asked for. */
@@ -239,6 +305,7 @@ function isPushedDecision(
   return (
     decision.kind === "input"
     || decision.kind === "pointer"
+    || decision.kind === "evdev"
     || decision.kind === "resize"
     || decision.kind === "http"
   );
@@ -406,8 +473,17 @@ export class ReplicationLogReader {
   readonly #clockAt = new Map<string, number>();
   /** Where each task's next random draw is looked for, by `pid:tid`. */
   readonly #randomAt = new Map<string, number>();
+  /** Where each task's next GL answer is looked for, by `pid:tid`. */
+  readonly #glAt = new Map<string, number>();
   /** Where each listener's next accept selection is looked for. */
   readonly #acceptAt = new Map<number, number>();
+  /** Where the next dispatch is looked for. Dispatches keep one order. */
+  #dispatchAt = 0;
+  #dispatchOrderAbandoned = false;
+  /** Whether the replica has served a dispatch the log named. */
+  #dispatchesTaken = false;
+  /** Host entries the replica ran before the log named them, by label. */
+  readonly #entriesAhead = new Map<string, number>();
   /** Selections a listener owes, one per accept it took without the log. */
   readonly #acceptDebt = new Map<number, number>();
   #borrowedAcceptSelections = 0;
@@ -569,43 +645,189 @@ export class ReplicationLogReader {
     }
   }
 
-  takeGlQuery(op: number): ReplicationGlQueryAnswer {
-    const entry = this.#awaitEntry();
-    if (entry === undefined) {
-      this.#diverge(
-        this.nextSeq,
-        this.#ended
-          ? `the replica ran GL query ${op} after the primary stopped recording`
-          : `the replica ran GL query ${op} past the end of the log`,
-      );
+  takeGlQuery(op: number, pid: number, tid: number): ReplicationGlQueryAnswer {
+    for (;;) {
+      const at = this.#findOwn("gl", this.#glAt, pid, tid);
+      this.#deliverPushedBefore(at);
+      if (at !== null) {
+        const entry = this.#entries[at]!;
+        const decision = entry.decision as ReplicationGlQueryAnswer;
+        if (decision.op !== op) {
+          this.#diverge(
+            entry.seq,
+            `the replica ran GL query ${op} where the primary ran `
+              + `${decision.op}`,
+          );
+        }
+        if (decision.rc > 0 && decision.bytes.byteLength < decision.rc) {
+          this.#diverge(
+            entry.seq,
+            `the log's GL answer claims ${decision.rc} bytes and carries `
+              + `${decision.bytes.byteLength}`,
+          );
+        }
+        this.#glAt.set(taskKey(pid, tid), at + 1);
+        this.#take(at);
+        this.#passOwnEntry(at);
+        return decision;
+      }
+      if (this.#extend === undefined || this.#ended) {
+        this.#diverge(
+          this.nextSeq,
+          this.#ended
+            ? `the replica ran GL query ${op} after the primary stopped recording`
+            : `the replica ran GL query ${op} past the end of the log`,
+        );
+      }
+      const arrived = this.#extend();
+      if (arrived === null) {
+        this.#ended = true;
+        continue;
+      }
+      this.#append(arrived);
     }
-    if (entry.decision.kind !== "gl") {
-      this.#diverge(
-        entry.seq,
-        `the replica ran a GL query where the primary recorded `
-          + `${entry.decision.kind}`,
-      );
+  }
+
+  /**
+   * The task the primary served next, or what to do when the log names none.
+   *
+   * `"open"` says the recording holds no further dispatch and none is coming:
+   * the replay has passed the part of the machine's life the log orders.
+   * `"wait"` says the primary's next dispatch has not arrived yet. Neither
+   * blocks, because the kernel worker that asks serves every task of the
+   * machine and must keep answering the ones the log already names.
+   */
+  nextDispatch(): ReplicationDispatch | "open" | "wait" {
+    if (this.#dispatchOrderAbandoned) return "open";
+    for (;;) {
+      for (; this.#dispatchAt < this.#entries.length; this.#dispatchAt += 1) {
+        if (this.#taken[this.#dispatchAt] === true) continue;
+        const decision = this.#entries[this.#dispatchAt]!.decision;
+        if (decision.kind !== "dispatch") continue;
+        const ranAhead = decision.entry === undefined
+          ? 0
+          : this.#entriesAhead.get(decision.entry) ?? 0;
+        if (ranAhead === 0) return decision;
+        if (ranAhead === 1) this.#entriesAhead.delete(decision.entry!);
+        else this.#entriesAhead.set(decision.entry!, ranAhead - 1);
+        this.#take(this.#dispatchAt);
+      }
+      if (this.#ended || this.#extendWithin === undefined) return "open";
+      const arrived = this.#extendWithin(0);
+      if (arrived === "timedout") return "wait";
+      if (arrived === null) {
+        this.#ended = true;
+        continue;
+      }
+      this.#append(arrived);
     }
-    if (entry.decision.op !== op) {
-      this.#diverge(
-        entry.seq,
-        `the replica ran GL query ${op} where the primary ran `
-          + `${entry.decision.op}`,
-      );
+  }
+
+  /**
+   * Pass over the host work the log ends with, when the replay stops.
+   *
+   * Retries and host entries are the host's own work: it retries a syscall on
+   * its own timers and wakeups, and tears an exited process down after its
+   * exit is reported. Once the replay stops, the replica does that work
+   * unordered, so the entries after the last syscall a guest made are not
+   * owed. Left untaken they would read as a replay that stopped short.
+   */
+  passOverTrailingHostWork(): void {
+    this.nextDispatch();
+    for (let at = this.#dispatchAt; at < this.#entries.length; at += 1) {
+      if (this.#taken[at] === true) continue;
+      const decision = this.#entries[at]!.decision;
+      if (
+        decision.kind === "dispatch"
+        && decision.retry !== true
+        && decision.entry === undefined
+      ) {
+        return;
+      }
     }
-    if (
-      entry.decision.rc > 0
-      && entry.decision.bytes.byteLength < entry.decision.rc
-    ) {
-      this.#diverge(
-        entry.seq,
-        `the log's GL answer claims ${entry.decision.rc} bytes and carries `
-          + `${entry.decision.bytes.byteLength}`,
-      );
+    for (let at = this.#dispatchAt; at < this.#entries.length; at += 1) {
+      if (this.#taken[at] === true) continue;
+      if (this.#entries[at]!.decision.kind !== "dispatch") continue;
+      this.#take(at);
     }
-    this.#take(this.#index);
-    this.#index += 1;
-    return entry.decision;
+    this.#dispatchAt = this.#entries.length;
+  }
+
+  /**
+   * Stop following the primary's dispatch order for the rest of the replay.
+   *
+   * The kernel worker calls this when the dispatch the log names next never
+   * runs: host work in flight at the capture can leave a restored machine
+   * needing steps the primary took elsewhere, or not at all. Serving every
+   * task as it comes keeps the machine running; the flag keeps that visible.
+   */
+  abandonDispatchOrder(): void {
+    this.#dispatchOrderAbandoned = true;
+  }
+
+  /** Whether {@link abandonDispatchOrder} was called. */
+  get dispatchOrderAbandoned(): boolean {
+    return this.#dispatchOrderAbandoned;
+  }
+
+  /**
+   * Count a host entry the replica ran before the log named it.
+   *
+   * The entry the log names later is then passed over rather than waited for:
+   * the work it stands for has already run.
+   */
+  noteEntryRanAhead(entry: string): void {
+    this.#entriesAhead.set(entry, (this.#entriesAhead.get(entry) ?? 0) + 1);
+  }
+
+  /** Whether the log, as far as it has arrived, still holds this host entry. */
+  holdsDispatchEntry(entry: string): boolean {
+    for (let at = this.#dispatchAt; at < this.#entries.length; at += 1) {
+      if (this.#taken[at] === true) continue;
+      const decision = this.#entries[at]!.decision;
+      if (decision.kind === "dispatch" && decision.entry === entry) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether this task's next dispatch in the log is a retry, or null when the
+   * log holds none for it yet.
+   */
+  nextDispatchOfIsRetry(pid: number, tid: number): boolean | null {
+    for (let at = this.#dispatchAt; at < this.#entries.length; at += 1) {
+      if (this.#taken[at] === true) continue;
+      const decision = this.#entries[at]!.decision;
+      if (
+        decision.kind === "dispatch"
+        && decision.entry === undefined
+        && decision.pid === pid
+        && decision.tid === tid
+      ) {
+        return decision.retry === true;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Serve the dispatch `nextDispatch` named.
+   *
+   * What the primary delivered before it reaches the guest first, so a
+   * keystroke lands between the same two syscalls it did on the primary.
+   * Returns whether it delivered anything.
+   */
+  takeDispatch(): boolean {
+    const at = this.#dispatchAt;
+    if (this.#entries[at]?.decision.kind !== "dispatch" || this.#taken[at]) {
+      throw new Error("takeDispatch without a dispatch nextDispatch named");
+    }
+    const delivered = this.#deliverPushed(at, { over: true });
+    this.#take(at);
+    if (this.#index <= at) this.#index = at + 1;
+    this.#dispatchAt = at + 1;
+    this.#dispatchesTaken = true;
+    return delivered;
   }
 
   /**
@@ -635,14 +857,14 @@ export class ReplicationLogReader {
       // Everything the primary pushed before this reading, first — and over
       // the readings other tasks have not taken, because a task that may
       // never read again must not hold the primary's input.
-      this.#deliverPushed(at ?? this.#entries.length, { over: true });
+      this.#deliverPushedBefore(at);
       if (at !== null) {
         const entry = this.#entries[at]!;
         const decision = entry.decision as ReplicationClockReading;
         if (decision.clockId === clockId) {
           this.#clockAt.set(key, at + 1);
           this.#take(at);
-          if (this.#index <= at) this.#index = at + 1;
+          this.#passOwnEntry(at);
           this.#offStream.delete(key);
           return this.#serve(decision);
         }
@@ -657,9 +879,9 @@ export class ReplicationLogReader {
         if (ahead !== null) {
           const served = this.#entries[ahead]!
             .decision as ReplicationClockReading;
-          this.#deliverPushed(ahead, { over: true });
+          this.#deliverPushedBefore(ahead);
           this.#take(ahead);
-          if (this.#index <= ahead) this.#index = ahead + 1;
+          this.#passOwnEntry(ahead);
           this.#offStream.delete(key);
           this.#scannedAheadClockReadings += 1;
           return this.#serve(served);
@@ -743,11 +965,11 @@ export class ReplicationLogReader {
    */
   takeRandom(pid: number, tid: number, length: number): Uint8Array {
     for (;;) {
-      const at = this.#findRandom(pid, tid);
+      const at = this.#findOwn("random", this.#randomAt, pid, tid);
       // Everything the primary pushed before this draw, first — and over the
       // entries other tasks have not taken, because a task that may never
       // ask again must not hold the primary's input.
-      this.#deliverPushed(at ?? this.#entries.length, { over: true });
+      this.#deliverPushedBefore(at);
       if (at !== null) {
         const entry = this.#entries[at]!;
         const decision = entry.decision as ReplicationRandomBytes;
@@ -760,7 +982,7 @@ export class ReplicationLogReader {
         }
         this.#randomAt.set(taskKey(pid, tid), at + 1);
         this.#take(at);
-        if (this.#index <= at) this.#index = at + 1;
+        this.#passOwnEntry(at);
         return decision.bytes;
       }
       if (this.#extend === undefined || this.#ended) {
@@ -802,7 +1024,7 @@ export class ReplicationLogReader {
       const at = this.#findAccept(listener);
       // Everything the primary pushed before the selection, first: the
       // request that produced this connection is one of those decisions.
-      this.#deliverPushed(at ?? this.#entries.length, { over: true });
+      this.#deliverPushedBefore(at);
       if (at !== null) {
         // A selection the primary recorded for an accept this replica already
         // took without it belongs to nothing, and serving it to the next
@@ -814,7 +1036,7 @@ export class ReplicationLogReader {
         if (decision.pid !== pid) return false;
         this.#acceptAt.set(listener, at + 1);
         this.#take(at);
-        if (this.#index <= at) this.#index = at + 1;
+        this.#passOwnEntry(at);
         return true;
       }
       if (this.#extendWithin === undefined || this.#ended) {
@@ -876,7 +1098,7 @@ export class ReplicationLogReader {
     else this.#acceptDebt.set(listener, owed - 1);
     this.#acceptAt.set(listener, at + 1);
     this.#take(at);
-    if (this.#index <= at) this.#index = at + 1;
+    this.#passOwnEntry(at);
     return true;
   }
 
@@ -975,28 +1197,33 @@ export class ReplicationLogReader {
   }
 
   /**
-   * Where this task's next unserved random draw sits, or null when the log
-   * holds none yet.
+   * Where this task's next unserved random draw or GL answer sits, or null
+   * when the log holds none yet.
    *
    * The search resumes from where the last one stopped, so a task does not
-   * rescan the whole log on every draw.
+   * rescan the whole log on every take.
    */
-  #findRandom(pid: number, tid: number): number | null {
+  #findOwn(
+    kind: "random" | "gl",
+    cursors: Map<string, number>,
+    pid: number,
+    tid: number,
+  ): number | null {
     const key = taskKey(pid, tid);
-    let at = this.#randomAt.get(key) ?? 0;
+    let at = cursors.get(key) ?? 0;
     for (; at < this.#entries.length; at += 1) {
       if (this.#taken[at] === true) continue;
       const decision = this.#entries[at]!.decision;
       if (
-        decision.kind === "random"
+        decision.kind === kind
         && decision.pid === pid
         && decision.tid === tid
       ) {
-        this.#randomAt.set(key, at);
+        cursors.set(key, at);
         return at;
       }
     }
-    this.#randomAt.set(key, at);
+    cursors.set(key, at);
     return null;
   }
 
@@ -1118,11 +1345,42 @@ export class ReplicationLogReader {
    * A drain stops at one instead, so a decision the primary made after that
    * reading is not applied to a replica that has not reached it.
    */
-  #deliverPushed(limit: number, options: { over: boolean }): void {
+  /**
+   * Move the delivery cursor past a task's own entry at `at`.
+   *
+   * While the replica follows the dispatch order the cursor stays with the
+   * dispatches, because a pushed decision between them is delivered there.
+   */
+  #passOwnEntry(at: number): void {
+    if (this.#followsDispatchOrder()) return;
+    if (this.#index <= at) this.#index = at + 1;
+  }
+
+  /** Whether the replica serves the dispatches the log names, in order. */
+  #followsDispatchOrder(): boolean {
+    return this.#dispatchesTaken && !this.#dispatchOrderAbandoned;
+  }
+
+  /**
+   * Deliver what the primary pushed before a task's own entry at `at`, or
+   * before the end of the log when the task has no entry left.
+   *
+   * While the replica follows the dispatch order, `takeDispatch` delivers each
+   * pushed decision between the same two dispatches it fell between on the
+   * primary. A task's own next entry can sit far past that point, so
+   * delivering up to it would hand the guest input the primary gave it later.
+   */
+  #deliverPushedBefore(at: number | null): void {
+    if (this.#followsDispatchOrder()) return;
+    this.#deliverPushed(at ?? this.#entries.length, { over: true });
+  }
+
+  #deliverPushed(limit: number, options: { over: boolean }): boolean {
+    let delivered = false;
     for (let at = this.#index; at < limit; at += 1) {
       const entry = this.#entries[at]!;
       if (!isPushedDecision(entry.decision)) {
-        if (!options.over && this.#taken[at] !== true) return;
+        if (!options.over && this.#taken[at] !== true) return delivered;
         this.#index = at + 1;
         continue;
       }
@@ -1136,13 +1394,16 @@ export class ReplicationLogReader {
       this.#index = at + 1;
       this.#take(at);
       this.#applyPushed(entry.decision);
+      delivered = true;
     }
+    return delivered;
   }
 }
 
 function describePushed(decision: ReplicationPushedDecision): string {
   if (decision.kind === "input") return `input for ${decision.device}`;
   if (decision.kind === "resize") return `a resize of ${decision.device}`;
+  if (decision.kind === "evdev") return "an evdev frame";
   if (decision.kind === "http") {
     return `an HTTP request for port ${decision.port}`;
   }

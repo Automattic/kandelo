@@ -63,6 +63,7 @@ import {
   beginReplicationStream,
   glQueryRecordTap,
   httpExchangeRecordTap,
+  dispatchOrderRecordTap,
   ReplayedHttpExchanges,
   describeReplayedHttp,
 } from "./replication/worker";
@@ -640,10 +641,8 @@ const processGenerationDetaches =
       if (current !== exactGeneration) return;
       vmInterruptTimers.clear(pid, current);
       // A freeze waiting on this generation's unwind will never get one.
-      // Fail it now rather than let it sit until its timeout.
-      current.checkpointFreeze.abandon(
-        "the process ended during the checkpoint freeze",
-      );
+      // Settle it now rather than let it sit until its timeout.
+      current.checkpointFreeze.end();
       processes.delete(pid);
       threadModuleCache.delete(pid);
       ptyByPid.delete(pid);
@@ -664,7 +663,8 @@ async function detachExactProcessGeneration(options: {
     detach: () => {
       if (operation === "none") return true;
       if (operation === "deactivate") {
-        return kernelWorker.deactivateProcess(pid, generation.memory);
+        return retryKernelEntryResult(() =>
+          kernelWorker.deactivateProcess(pid, generation.memory));
       }
       return kernelWorker.unregisterProcess(pid, generation.memory);
     },
@@ -902,6 +902,7 @@ function endStreamAtCapture(): number {
   kernelWorker?.setGlQueryTap(null);
   kernelWorker?.setAcceptSelectionTap(null);
   kernelWorker?.setHttpExchangeTap(null);
+  kernelWorker?.setDispatchOrderTap(null);
   return recorder.nextSeq;
 }
 
@@ -1361,6 +1362,9 @@ async function handleInit(msg: InitMessage) {
         processMemoryAllocator.observeTarget(memory, target);
       },
       onKernelFatal: terminatePoisonedKernelWorker,
+      onInputEventsInjected: (records) => {
+        replicationRecorder?.record({ kind: "evdev", records: [...records] });
+      },
       onFork: ({
         parentPid,
         childPid,
@@ -1594,8 +1598,10 @@ async function handleInit(msg: InitMessage) {
       if (restoredPtyIdx !== undefined) {
         const restoredPid = bucket.pid;
         ptyByPid.set(restoredPid, restoredPtyIdx);
+        const outputPid =
+          kernelWorker.restoredPtySessionFor(restoredPtyIdx) ?? restoredPid;
         kernelWorker.onPtyOutput(restoredPtyIdx, (data: Uint8Array) => {
-          post({ type: "pty_output", pid: restoredPid, data });
+          post({ type: "pty_output", pid: outputPid, data });
         });
       }
     }
@@ -4459,7 +4465,8 @@ function handlePtyWrite(pid: number, data: Uint8Array) {
  * the bytes where the primary's guest read them. A pointer movement replays as
  * the delta the host handed the kernel, so the kernel builds the same PS/2
  * frame; nothing on this host injects one yet, and applying it here is what
- * lets a machine recorded in a browser be replayed by this one.
+ * lets a machine recorded in a browser be replayed by this one. Evdev records
+ * replay as the records the host handed the kernel.
  *
  * A device this host has no way to write to throws rather than being dropped.
  * A dropped decision is a replica that silently stopped being the same machine.
@@ -4467,6 +4474,10 @@ function handlePtyWrite(pid: number, data: Uint8Array) {
 function applyPushedDecision(decision: ReplicationPushedDecision): void {
   if (decision.kind === "pointer") {
     kernelWorker.injectMouseEvent(decision.dx, decision.dy, decision.buttons);
+    return;
+  }
+  if (decision.kind === "evdev") {
+    kernelWorker.injectInputEventBatch(decision.records);
     return;
   }
   if (decision.kind === "http") {
@@ -5070,12 +5081,17 @@ port.on("message", (msg: MainToKernelMessage) => {
             () => kernelWorker.currentGuestTid(),
           ),
         );
-        kernelWorker.setGlQueryTap(glQueryRecordTap(replicationRecorder));
+        kernelWorker.setGlQueryTap(
+          glQueryRecordTap(replicationRecorder, kernelWorker),
+        );
         kernelWorker.setAcceptSelectionTap(
           acceptSelectionRecordTap(replicationRecorder),
         );
         kernelWorker.setHttpExchangeTap(
           httpExchangeRecordTap(replicationRecorder),
+        );
+        kernelWorker.setDispatchOrderTap(
+          dispatchOrderRecordTap(replicationRecorder),
         );
       });
       break;
@@ -5090,6 +5106,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       kernelWorker?.setGlQueryTap(null);
       kernelWorker?.setAcceptSelectionTap(null);
       kernelWorker?.setHttpExchangeTap(null);
+      kernelWorker?.setDispatchOrderTap(null);
       post({
         type: "response",
         requestId: msg.requestId,
@@ -5105,9 +5122,14 @@ port.on("message", (msg: MainToKernelMessage) => {
         result: { status: "refused", reason } satisfies ReplicationSealResponse,
       });
       let sealSeq = -1;
+      let armSeq = -1;
       void captureMachineCheckpoint(checkpointMachine, {
         unwindTimeoutMs,
         vforkTimeoutMs,
+        onArm: () => {
+          armSeq = replicationRecorder?.nextSeq ?? -1;
+          kernelWorker?.recordReplicationSeal();
+        },
         onRead: () => {
           sealSeq = endStreamAtCapture();
         },
@@ -5124,6 +5146,7 @@ port.on("message", (msg: MainToKernelMessage) => {
             result: {
               status: "sealed",
               seq: sealSeq,
+              armSeq,
               hash,
             } satisfies ReplicationSealResponse,
           });
@@ -5133,7 +5156,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     }
     case "replication_hash_replica": {
-      const { requestId, seq, unwindTimeoutMs, vforkTimeoutMs } = msg;
+      const { requestId, seq, armSeq, unwindTimeoutMs, vforkTimeoutMs } = msg;
       const refuse = (reason: string) => post({
         type: "response",
         requestId,
@@ -5142,6 +5165,17 @@ port.on("message", (msg: MainToKernelMessage) => {
           reason,
         } satisfies ReplicationReplicaHashResponse,
       });
+      // Before the freeze, not inside it. A replica short of the place the
+      // seal's freeze began would do that freeze's work early: the syscalls
+      // it unwinds at would take the log turns of syscalls the primary made.
+      const standing = replicationReplay?.reader.nextSeq;
+      if (standing !== undefined && standing < armSeq) {
+        refuse(
+          `this replica stands at ${standing}, short of the seal's freeze at `
+            + `${armSeq}`,
+        );
+        break;
+      }
       void captureMachineCheckpoint(checkpointMachine, {
         unwindTimeoutMs,
         vforkTimeoutMs,
@@ -5197,6 +5231,7 @@ port.on("message", (msg: MainToKernelMessage) => {
     case "replication_replay_stop": {
       const replay = replicationReplay;
       replicationReplay = null;
+      replay?.reader.passOverTrailingHostWork();
       if (replicationIO && baseTimeProvider) {
         replicationIO.setTimeProvider(baseTimeProvider);
       }
@@ -5205,6 +5240,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       kernelWorker?.setAcceptSelectionTap(null);
       kernelWorker?.setReplicationAheadProbe(null);
       kernelWorker?.setHttpExchangeTap(null);
+      kernelWorker?.setDispatchOrderTap(null);
       replayedHttpExchanges.drop();
       post({
         type: "response",
@@ -5217,6 +5253,8 @@ port.on("message", (msg: MainToKernelMessage) => {
             replay?.reader.borrowedAcceptSelections ?? 0,
           scannedAheadClockReadings:
             replay?.reader.scannedAheadClockReadings ?? 0,
+          dispatchOrderAbandoned:
+            replay?.reader.dispatchOrderAbandoned ?? false,
         },
       });
       break;
@@ -5228,6 +5266,7 @@ port.on("message", (msg: MainToKernelMessage) => {
       // takes what is ready and applies it, and never blocks: waiting for the
       // primary belongs to the guest's own clock reads.
       replicationReplay?.reader.drainPushed();
+      kernelWorker?.releaseOrderedDispatches();
       break;
     }
     case "watch_vfs_changes": handleWatchVfsChanges(msg); break;
