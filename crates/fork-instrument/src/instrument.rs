@@ -383,25 +383,15 @@ pub fn instrument_functions_with_targets_and_tail_sites(
         lexical_replay_targets.extend(transport_helpers.values().copied());
     }
 
-    // Analyze every target before rewriting the first body. Stable original
-    // program points are the ownership boundary: synthetic dispatch locals
-    // must never make an otherwise-dead guest reference look live.
-    let reference_analyses: HashMap<FunctionId, FunctionReferenceAnalysis> = targets
-        .iter()
-        .copied()
-        .map(|id| {
-            let analysis = analyze_function_references(module, id, &transformed_call_targets)
-                .unwrap_or_else(|error| panic!("fork reference analysis failed: {error:#}"));
-            (id, analysis)
-        })
-        .collect();
-
     let empty_plain_catches: Vec<(InstrSeqId, Vec<PlainCatchArm>)> = Vec::new();
 
     let mut instrumented = HashSet::new();
     let mut resume_thunks = Vec::with_capacity(targets.len());
     let mut sink_roots: Vec<(u32, FunctionId)> = Vec::new();
     for (ordinal, id) in targets.iter().enumerate() {
+        let reference_analysis =
+            analyze_function_references(module, *id, &transformed_call_targets)
+                .unwrap_or_else(|error| panic!("fork reference analysis failed: {error:#}"));
         let empty_catch_plan: Vec<CatchRegionPlan> = Vec::new();
         let this_catch_plan = catch_plans.get(id).unwrap_or(&empty_catch_plan);
         let this_plain_catches = plain_catch_plan
@@ -417,7 +407,7 @@ pub fn instrument_functions_with_targets_and_tail_sites(
             ordinal as u32,
             this_catch_plan,
             this_plain_catches,
-            &reference_analyses[id],
+            &reference_analysis,
             &mut helpers,
             boundaries.contains(id),
         );

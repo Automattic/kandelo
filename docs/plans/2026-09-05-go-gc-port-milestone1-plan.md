@@ -3992,3 +3992,24 @@ segment policy causes its earlier 10.6 GiB peak. Full fork
 instrumentation, ABI stamping, Node/Chromium boot, and WordPress
 verification remain open. Do not publish or run the raw diagnostic Wasm
 as a Kandelo package.
+
+**2026-10-17 — Bound fork reference-analysis lifetime.** The instrumenter
+used to retain reference-liveness analyses for every activation before
+rewriting any function. Analysis reads one function's original body and
+the fixed fork-target set; each unprocessed function still has its
+original body, so the transform now computes that analysis immediately
+before rewriting the corresponding function and releases it afterwards.
+This is a generic instrumenter memory change, not a Go or PHP package
+patch, and does not change fork metadata or the emitted ABI. The full
+`fork-instrument` crate suite passed 388 tests. Four representative
+WAT fixtures (nested regions, nested direct/indirect calls, and legacy
+catch) emitted byte-identical Wasm with old and new tools. A bounded
+3,000-function/16-call reference fixture also emitted identical Wasm;
+its peak resident size fell from 248 MB to 205 MB. This measurement
+does **not** establish the large FrankenPHP build's new peak: the prior
+full rewrite reached 10.6 GiB and current free memory remains below
+that. `cargo fmt --all --check` reports pre-existing formatting diffs
+outside this change. The ABI snapshot check also fails on unrelated
+existing kernel/export/IOCTL differences; no ABI files or public
+instrumentation layout changed here. Full FrankenPHP instrumentation,
+Node/Chromium boot, and WordPress validation remain open.
