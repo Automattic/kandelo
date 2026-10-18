@@ -6,7 +6,7 @@ set -euo pipefail
 # scripts/build-musl.sh has populated the sysroot with gbm.h from
 # libc/musl-overlay/include/.
 #
-# libdrm is upstream 2.4.120, KMS subset only. The recipe lives at
+# libdrm is upstream 2.4.134, KMS subset only. The recipe lives at
 # packages/registry/libdrm/; the dep-resolver compiles xf86drm.c /
 # xf86drmMode.c / xf86drmHash.c / xf86drmRandom.c into libdrm.a and
 # stages the UAPI + public headers under a cached prefix. We copy both

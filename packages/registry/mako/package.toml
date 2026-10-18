@@ -22,7 +22,7 @@ depends_on = [
   "pcre2@10.44",
   "harfbuzz@10.1.0",
   "fribidi@1.0.16",
-  "pixman@0.42.2",
+  "pixman@0.46.4",
   "fontconfig@2.15.0",
   "freetype@2.13.3",
   "libpng@1.6.43",

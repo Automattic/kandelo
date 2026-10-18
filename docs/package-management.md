@@ -2286,15 +2286,12 @@ packages.
 ### Hand-written stand-ins (replace with the real upstream library)
 
 These carry an upstream library's name and API, but the code is Kandelo's.
-The four that are packages have a placeholder `[source]` in `package.toml`
-(`example.invalid`, zero sha256) because they fetch no upstream archive.
+`libffi` has a placeholder `[source]` in `package.toml` (`example.invalid`,
+zero sha256) because it fetches no upstream archive.
 
 | Package | What it is today | Why it exists | Follow-up |
 |---|---|---|---|
 | `libffi` | Kandelo's own implementation of the libffi API (`packages/registry/libffi/src/ffi_core.c` plus the dispatch tables `gen-dispatch.sh` generates): one `call_indirect` case per call shape and per closure class. It is not upstream libffi. | libwayland, glib and the GTK stack need `ffi_call` and closures, and upstream libffi's wasm32 port targets Emscripten's JavaScript glue, which Kandelo does not use. | Port upstream libffi for Kandelo's wasm target and drop this implementation. |
-| `libudev` | A libinput-scoped shim: libinput's path backend gets `udev_device` objects, and the shim synthesizes the `ID_INPUT_*` properties by probing each device's evdev capability bits. Every other property and all parent lookups return nothing; there is no enumerate or monitor API. | systemd's libudev needs `/sys`, netlink uevents and udevd, none of which Kandelo provides. | This covers a **platform gap**. Expose input and DRM devices through a real `/sys` tree (with the `uevent`/capability attributes udev reads), then build a real upstream libudev such as libudev-zero or eudev's, and drop the shim. The real-Hyprland inventory (`docs/plans/2026-09-30-real-hyprland-port-inventory.md`) needs the same work. |
-| `mtdev` | A link stub: `struct mtdev` plus the entry points libinput links, each of which aborts if called. | libinput links mtdev unconditionally but calls it only for legacy protocol-A multitouch devices, which Kandelo does not expose. | Build real upstream mtdev (a small plain-C library over evdev ioctls); no platform gap is known to block it. |
-| `wayland-protocols` | Upstream protocol XML (`wayland.xml`, `xdg-shell.xml`, `wlr-layer-shell`, `linux-dmabuf` and the rest under `packages/registry/wayland-protocols/xml/`) vendored in-tree behind a placeholder `[source]`. | Chosen to give macOS and Linux identical inputs, but fetching sha256-pinned upstream archives already does that. | Fetch the wayland, wayland-protocols and wlr-protocols release archives, sha256-pinned, and install the XML from them. |
 | `libwayland-egl` (shipped by `libwayland`) | `libc/glue/libwayland-egl.c`: the `wl_egl_window` API plus the buffer allocation and present logic that Mesa's EGL Wayland platform owns on Linux. It sits on the sysroot's `libEGL`/`libGLESv2`/`libgbm` stubs, which forward GL to the host's WebGL2 (see "Sysroot libraries are not packages"). | There is no Mesa on Kandelo; SDL2's Wayland backend and other GL clients need a `wl_egl_window`. | Tied to the GL stack: a real EGL with dmabuf import (the GL section of the real-Hyprland inventory) would let upstream libwayland-egl and a real EGL Wayland platform replace it. |
 
 ### Real upstream source, hand-rolled build (use upstream's build system)
@@ -2304,25 +2301,23 @@ scripts skip upstream's meson build. They compile a hand-picked list of
 source files, and most supply a hand-written `config.h` and generate by hand
 the files meson would generate:
 
-`libwayland`, `libxkbcommon`, `libevdev`, `libinput`, `libdrm`, `glib`, `atk`,
-`basu`, `fcft`, `foot`, `mako`, `gtk-layer-shell`, `waybar`, `harfbuzz`
-(its single-file amalgamation), `utf8proc` and `tllist` (header-only).
+`libwayland`, `libdrm`, `glib`, `atk`, `basu`, `fcft`, `foot`, `mako`,
+`gtk-layer-shell`, `waybar`, `harfbuzz` (its single-file amalgamation),
+`utf8proc` and `tllist` (header-only).
 `hyprland-protocols` is data only — its meson build installs XML and
 writes a `.pc` — and its script reproduces that install without meson.
 
-The stated reasons are that meson's feature probes misreport against the wasm
-sysroot (one example is detecting macOS's `struct xucred`) and that the dev
-shell ships no meson at all (`flake.nix` provides cmake and ninja only).
-Both point at an SDK gap: Kandelo has no meson and no meson cross file, so
-meson would probe the build machine instead of the target. The hand-written
-answers can drift from what the sysroot actually provides, and a source list
-copied from `meson.build` can silently miss a file or an option that a later
-upstream release adds.
+The dev shell has meson and the SDK has a meson cross file, so nothing in the
+platform requires these hand-rolled builds. The hand-written answers can drift
+from what the sysroot actually provides, and a source list copied from
+`meson.build` can silently miss a file or an option that a later upstream
+release adds.
 
-Follow-up: add meson and a meson cross file to the SDK (compiler wrappers,
-sysroot, `host_machine`), then build these packages with upstream meson so
-their feature probes run against the real target. Probes that still misreport
-are SDK or libc defects to fix, not answers to hard-code.
+Follow-up: build these packages with upstream meson and the SDK cross file
+(`sdk/meson/wasm32posix.ini`), as `libxkbcommon`, `libevdev`, `libinput`,
+`pixman`, `wayland-protocols` and the wlroots stack are, so their feature
+probes run against the real target. Probes that still misreport are SDK or
+libc defects to fix, not answers to hard-code.
 
 ### Packages built as if the target were Linux
 
@@ -2349,8 +2344,9 @@ dropped once it lands.
 
 | Package | Patch | Gap | Follow-up |
 |---|---|---|---|
-| `foot`, `mako`, `gtk3`, `qtbase` | `foot/patches/0001-shm-gbm-prime-fd-pools.patch`, `mako/patches/0001-pool-buffer-gbm-prime-fd.patch`, `gtk3/src/wayland-shm-gbm-pool.patch`, `qtbase/src/wayland-shm-gbm-pool.patch`: allocate `wl_shm` pools from DRI buffers instead of `memfd`. | A `MAP_SHARED` mapping of a memfd writes back only on `msync`/`munmap`, so another process mapping the same memory reads stale bytes. | Make shared file mappings coherent across processes in the kernel, then drop all four. |
+| `foot`, `mako`, `gtk3`, `qtbase` | `foot/patches/0001-shm-gbm-prime-fd-pools.patch`, `mako/patches/0001-pool-buffer-gbm-prime-fd.patch`, `gtk3/src/wayland-shm-gbm-pool.patch`, `qtbase/src/wayland-shm-gbm-pool.patch`: allocate `wl_shm` pools from DRI buffers instead of `memfd`. | wlcompositor imports every `wl_shm` pool with `gbm_bo_import`, so it accepts only DRI-buffer pools. memfd mappings themselves converge across processes at syscall boundaries (`docs/posix-status.md`, `mmap()`), and cage maps memfd pools directly. | Drop all four patches once no client runs on wlcompositor. |
 | `foot` | `patches/0002-serial-font-loading.patch`: load fonts one at a time. | Concurrent `FcFontMatch` calls race under Kandelo's thread model. Not root-caused. | Find the cause in the kernel or runtime; drop the patch. |
+| `libevdev`, `libinput` | `libevdev/patches/0001-linux-uapi-headers-off-linux-and-freebsd.patch`, `libinput/patches/0002-linux-uapi-headers-off-linux-and-freebsd.patch`: on a platform that is neither Linux nor FreeBSD, include the bundled Linux UAPI `<linux/input.h>` and `<linux/uinput.h>`. | The sysroot's `<linux/input.h>` lacks `input_event_sec`/`input_event_usec`, and there is no `<linux/types.h>` or `<linux/uinput.h>`, so both packages compile against their own bundled copies. | Add the missing UAPI headers to `libc/musl-overlay/include/linux/` and drop both patches. |
 | `libinput` | `patches/0001-quirks-empty-dmi-identity-without-dmi.patch`: report the empty DMI identity (`"dmi:"`) when the platform has no DMI source, so the identity-independent quirks still load. | Kandelo exposes no SMBIOS/DMI or devicetree firmware identity. | Expose a machine identity (for example `/sys/class/dmi/id/modalias`) and drop the patch, or send the platform-neutral change upstream. |
 | `qtdeclarative` | `src/qv4-stack-bounds-on-wasm.patch`: report the stack bounds from the linker's `__stack_low`/`__stack_high`. | With `__linux__` defined, QV4 reads `/proc/self/maps` (absent) and `pthread_getattr_np`, whose musl implementation probes with `mremap`, which the kernel does not implement. | Implement `mremap` (or make musl's probe truthful on this target); the patch then reduces to the missing `/proc/self/maps`. |
 | `qtbase` | `src/qmutex-honour-qt-linuxbase.patch`, `src/forkfd-generic-on-wasm.patch`: use Qt's generic mutex and `forkfd` paths instead of the Linux futex and `clone`/pidfd ones. | Follows from building as Linux (above) on a kernel without those Linux interfaces. The qmutex change is a real upstream inconsistency and can be sent upstream. | Drop with the `__linux__` define. |
@@ -2372,6 +2368,7 @@ not Kandelo defects. They stay until the engine or the upstream code changes.
 | `sdl2` | `patches/0001-recognize-kandelo-as-unix.patch`: `configure` accepts `wasm32-*-none` as a Unix target. `patches/0002-kmsdrm-display-dpi-from-connector.patch`: the KMSDRM backend answers `SDL_GetDisplayDPI` from the connector's physical size. | SDL's `configure` has a fixed list of host triples. SDL2's KMSDRM backend has no DPI query, unlike its X11 and Wayland backends, so a fullscreen client that scales by DPI (ScummVM) stayed at 1x. | Both are upstreamable: generic-Unix detection, and a missing backend feature that is not Kandelo-specific. |
 | `scummvm` | `patches/0001-kandelo-host-triple.patch`: `configure` maps the `wasm32posix` host to its generic POSIX/SDL backend (every `wasm32-*` triple otherwise selects the Emscripten port). `patches/0002-kandelo-opengl-default-graphics-manager.patch`: default to the OpenGL graphics manager. | ScummVM's hand-written `configure` keys on the triple. Kandelo's SDL2 is built without `SDL_Render`, so the OpenGL manager is the only presentation path. | The first is upstreamable. The second goes away if SDL2 is built with a renderer. |
 | `glib` | `src/wasm-credentials.patch`: declare Linux `ucred` credentials for wasm32. `src/giomodule-no-dbus-builtins.patch`: guard the D-Bus built-in GIO modules behind a build flag. | `gcredentialsprivate.h` has a fixed list of platforms; the kernel provides `SO_PEERCRED`. The second follows from the hand-rolled build, which leaves out the D-Bus-backed GIO sources those registrations point at. | The first needs a generic upstream path for a non-Linux `SO_PEERCRED` platform. The second goes away with an upstream meson build. |
+| `libinput` | `patches/0003-meson-build-libinput-as-a-library.patch`: build the library with `library()` instead of `shared_library()`. | Upstream hard-codes a shared library, which ignores `default_library=static`; Kandelo links statically. | Upstreamable: honour `default_library`. |
 | `glibmm`, `fmt` | `glibmm/src/libcxx-contenttype-string.patch`, `fmt/src/include-cstdlib.patch`. | Upstream defects against current libc++ (a removed `char_traits<unsigned char>`, a missing `<cstdlib>` include). | Drop when the pinned upstream versions carry the fixes. |
 | `librsvg`, `rsvg-convert` | `librsvg/patches/system-deps-7.0.8.patch`: evaluate `cfg(...)`-keyed dependencies from the `CARGO_CFG_*` values Cargo gives build scripts. `librsvg/patches/parking_lot_core-0.9.12.patch`: build `libc::timespec` by field assignment. | Both crates assume a target known to the Rust ecosystem. `system-deps` parses an unknown target name as a `target-lexicon` triple and panics on `kandelo`; `parking_lot_core` uses a struct literal, which `libc`'s private time64 padding on 32-bit musl forbids (as on any 32-bit musl target with `RUST_LIBC_UNSTABLE_MUSL_V1_2_3`). | Upstream both fixes (system-deps, parking_lot); then drop the patches. A second Rust package would want a shared SDK location for crate patches. |
 
