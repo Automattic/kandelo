@@ -10854,22 +10854,21 @@ export class CentralizedKernelWorker {
       }
     }
 
-    const fcntl = this.#kernelInstanceForEntry(entry).exports.kernel_fcntl as
-      ((fd: number, cmd: number, arg: number) => number) | undefined;
-    const lseek = this.#kernelInstanceForEntry(entry).exports.kernel_lseek as
-      | ((fd: number, offsetLo: number, offsetHi: number, whence: number) => bigint)
+    const statusFlags = this.#kernelInstanceForEntry(entry).exports
+      .kernel_get_fd_status_flags as
+      ((pid: number, fd: number) => number) | undefined;
+    const seek = this.#kernelInstanceForEntry(entry).exports.kernel_seek_fd as
+      | ((pid: number, fd: number, offset: bigint, whence: number) => bigint)
       | undefined;
-    if (!fcntl || !lseek) {
+    if (!statusFlags || !seek) {
       throw new Error("Kernel missing host handle rebinding exports");
     }
 
-    const F_GETFL = 3;
     const streams: RestoredStreamPlanEntry[] = [];
     for (const [oldHandle, exemplar] of streamExemplars) {
       const path = this.#restoredHandlePath(exemplar.pid, exemplar.fd, entry);
       if (path === null) continue;
-      this.#bindKernelTid(exemplar.pid, exemplar.pid, entry);
-      const flags = fcntl(exemplar.fd, F_GETFL, 0);
+      const flags = statusFlags(exemplar.pid, exemplar.fd);
       if (flags < 0) {
         throw new Error(
           `restored pid ${exemplar.pid} fd ${exemplar.fd}: F_GETFL failed: ${flags}`,
@@ -10885,8 +10884,7 @@ export class CentralizedKernelWorker {
           `restored pid ${exemplar.pid} fd ${exemplar.fd}: directory iterator has no path`,
         );
       }
-      this.#bindKernelTid(exemplar.pid, exemplar.pid, entry);
-      const position = lseek(exemplar.fd, 0, 0, SEEK_CUR);
+      const position = seek(exemplar.pid, exemplar.fd, 0n, SEEK_CUR);
       if (position < 0n) {
         throw new Error(
           `restored pid ${exemplar.pid} fd ${exemplar.fd}: directory position read failed: ${position}`,
@@ -10921,10 +10919,10 @@ export class CentralizedKernelWorker {
     const remap = this.#kernelInstanceForEntry(entry).exports
       .kernel_remap_host_handles as
       ((kind: number, oldHandle: bigint, newHandle: bigint) => number) | undefined;
-    const lseek = this.#kernelInstanceForEntry(entry).exports.kernel_lseek as
-      | ((fd: number, offsetLo: number, offsetHi: number, whence: number) => bigint)
+    const seek = this.#kernelInstanceForEntry(entry).exports.kernel_seek_fd as
+      | ((pid: number, fd: number, offset: bigint, whence: number) => bigint)
       | undefined;
-    if (!remap || !lseek) {
+    if (!remap || !seek) {
       throw new Error("Kernel missing host handle rebinding exports");
     }
     for (const stream of streamRemaps) {
@@ -10939,8 +10937,7 @@ export class CentralizedKernelWorker {
             + `${stream.oldHandle} -> ${stream.newHandle} failed: ${rewritten}`,
         );
       }
-      this.#bindKernelTid(stream.pid, stream.pid, entry);
-      const sought = lseek(stream.fd, 0, 0, SEEK_CUR);
+      const sought = seek(stream.pid, stream.fd, 0n, SEEK_CUR);
       if (sought < 0n && sought !== BigInt(-ESPIPE)) {
         throw new Error(
           `restored pid ${stream.pid} fd ${stream.fd}: position sync failed: ${sought}`,
@@ -10955,13 +10952,10 @@ export class CentralizedKernelWorker {
             + `${dir.oldHandle} -> ${dir.newHandle} failed: ${rewritten}`,
         );
       }
-      this.#bindKernelTid(dir.pid, dir.pid, entry);
       // A directory's SEEK_CUR position is its guest-visible entry cookie;
       // seeking back to it rebuilds the host iterator from the reopened
       // directory and closes the placeholder the remap installed.
-      const low = Number(dir.position & 0xffff_ffffn);
-      const high = Number(dir.position >> 32n);
-      const sought = lseek(dir.fd, low, high, SEEK_SET);
+      const sought = seek(dir.pid, dir.fd, dir.position, SEEK_SET);
       if (sought !== dir.position) {
         throw new Error(
           `restored pid ${dir.pid} fd ${dir.fd}: directory seek to `
