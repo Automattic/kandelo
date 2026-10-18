@@ -38,6 +38,7 @@ type Probe = {
   cwd?: string;
   executableFiles?: { path: string; file: string }[];
   passedTopLevelTests?: number;
+  expectedExports?: { name: string; kind: "function" | "global" }[];
 };
 
 const probes: Probe[] = [
@@ -568,6 +569,21 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
     stdout: ["CGO STATIC ARCHIVE PASS"],
   });
   probes.push({
+    name: "Go cgo exports archive symbols to a loaded C side module",
+    file: "../go-c-exports/probe-instrumented.wasm",
+    argv: ["go-cgo-exports"],
+    directories: ["/lib"],
+    dataFiles: () => [{
+      path: "/lib/libprobe.so",
+      data: Array.from(readFileSync(resolve(fixtureDir, "../go-c-exports/libprobe.so"))),
+    }],
+    expectedExports: [
+      { name: "export_only_function", kind: "function" },
+      { name: "export_only_data", kind: "global" },
+    ],
+    stdout: ["CGO C EXPORT DLOPEN PASS"],
+  });
+  probes.push({
     name: "standard cgo calls C with scalar, pointer, and per-M TLS state",
     file: "../go-c-abs-instrumented.wasm",
     argv: ["go-cgo-basic"],
@@ -680,7 +696,7 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
   }));
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
 
-  return page.evaluate(async ({ programUrl, kernelUrl, imageUrl, browserKernelUrl, argv, env, cwd, launchFromVfs, selfExecPath, traceOutput }) => {
+  return page.evaluate(async ({ programUrl, kernelUrl, imageUrl, browserKernelUrl, argv, env, cwd, launchFromVfs, selfExecPath, expectedExports, traceOutput }) => {
     const { BrowserKernel } = await import(/* @vite-ignore */ browserKernelUrl);
     const [programResponse, kernelResponse, imageResponse] = await Promise.all([
       fetch(programUrl),
@@ -697,6 +713,14 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     ]);
     if (!WebAssembly.validate(programBytes) || !WebAssembly.validate(kernelWasm)) {
       throw new Error("Go program or kernel is not valid WebAssembly");
+    }
+    if (expectedExports?.length) {
+      const actual = WebAssembly.Module.exports(await WebAssembly.compile(programBytes));
+      for (const expected of expectedExports) {
+        if (!actual.some((entry) => entry.name === expected.name && entry.kind === expected.kind)) {
+          throw new Error(`missing ${expected.kind} export ${expected.name}`);
+        }
+      }
     }
     const decoder = new TextDecoder();
     let stdout = "";
@@ -735,6 +759,7 @@ async function runProbe(page: Page, baseURL: string, probe: Probe): Promise<Prob
     cwd: probe.cwd,
     launchFromVfs: probe.launchFromVfs,
     selfExecPath: probe.selfExecPath,
+    expectedExports: probe.expectedExports,
     traceOutput: process.env.KANDELO_GO_TRACE_TESTS === "1",
   });
 }

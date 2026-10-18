@@ -345,6 +345,24 @@ and Chromium process gates, including a yield, timer wait, repeat callback,
 and second Go M. That is a prerequisite, not a FrankenPHP build. See the
 dated WordPress pivot in the Go implementation progress log.
 
+The `cgo/c-exports` fixture tests the internal linker's explicit C export
+contract. It pulls an otherwise-unused function and data symbol from a
+declared archive, exports both, and loads a fork-instrumented C side module
+that imports them through `dlopen`. It also checks that a requested missing
+symbol fails the link. Run its Node and three-browser gates with:
+
+```sh
+scripts/dev-shell.sh bash tests/go/cgo/c-exports/build.sh
+scripts/dev-shell.sh node --import tsx tests/go/cgo/c-exports/run.ts .context/go-c-exports/probe-instrumented.wasm .context/go-c-exports/libprobe.so "$(scripts/resolve-binary.sh kernel.wasm)"
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_PLAYWRIGHT_PORT=5539 KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit --workers=1 --grep "Go cgo exports archive symbols"'
+```
+
+Declare C archive paths in `#cgo LDFLAGS`; pass requested export names via
+Go's `-ldflags` `-extldflags` value, as the fixture does. Do not put the
+export requests in `CGO_LDFLAGS`: that can select unsupported external
+linking. `-ldl` selects the SDK's real Wasm dynamic-loader glue. This small
+probe does not prove the PHP ZTS OPcache module's much larger import closure.
+
 `cgo/mixed-struct` checks a C struct containing a pointer and a fixed
 pointer array, returned from C and passed back by value. On Kandelo/Wasm,
 generated Go struct fields that hold C addresses are 4-byte `uint32` values,

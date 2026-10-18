@@ -342,17 +342,22 @@ Trace the whole link path before changing flags or package recipes:
   per request; measure the app before making performance claims.
 - Static libraries must be declared through `#cgo LDFLAGS` with
   `-L${SRCDIR}/lib -l...`; environment-only `CGO_LDFLAGS` does not give the
-  internal linker a search path, while `-extldflags` forces unsupported
-  external linking. The internal linker selects archive members recursively
-  for referenced C code, including PHP's dependency archives. The
-  `static-archive` and `php-embed` probes cover this path on both hosts.
+  internal linker a search path and can force unsupported external linking.
+  The internal linker selects archive members recursively for referenced C
+  code, including PHP's dependency archives. The `static-archive` and
+  `php-embed` probes cover this path on both hosts.
 - A linked C archive does not imply its functions are exported from the Go
-  executable. A PHP ZTS OPcache side module can be built, but its Zend/PHP
-  imports are absent from the current FrankenPHP Go/Wasm export table.
-  Implement a general C-symbol retention/export contract in the Go linker,
-  then verify the side module's complete import closure and live `dlopen`
-  on Node.js and Chromium. Do not claim OPcache parity from a successful
-  `libphp.a` link or side-module build alone.
+  executable. The pinned Go linker now accepts explicit
+  `-Wl,--export-dynamic-symbol=<name>` requests through Go's `-ldflags`
+  `-extldflags` value. It selects otherwise-unused archive members, keeps
+  their functions and data live, and exports C functions or immutable data-
+  address globals. `-ldl` also selects the SDK's real Wasm `dlopen` glue,
+  rather than its empty compatibility archive. The `c-exports` probe loads
+  a side module that imports both kinds of symbol on Node.js and all three
+  browsers. This is a general link contract, not OPcache validation: build
+  the PHP ZTS module, enumerate its complete import closure, request and
+  resolve those exports, then test live OPcache loading and WordPress before
+  claiming accelerator or performance parity.
 - A Go cgo executable must be fork-instrumented and carry the exact current
   `kandelo.abi.contract` digest. `install_local_binary` can instrument but
   does not stamp by itself: instrument first, stamp that fresh artifact, then

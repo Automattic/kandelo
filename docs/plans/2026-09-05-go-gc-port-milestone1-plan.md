@@ -3843,3 +3843,31 @@ It reads the edited file through the running host's VFS. The combined
 service/Node host run passed 12/12, and host typecheck passed again.
 No before/after WordPress RSS or browser benchmark was run for this change,
 so its application-level memory benefit is not yet measured.
+
+**2026-10-17 — Export linked C symbols to Go/cgo side modules.** The Go
+fork's Kandelo internal linker now accepts explicit
+`-Wl,--export-dynamic-symbol=<name>` requests through Go's `-extldflags`.
+It selects archive members, roots requested functions through dead-code
+elimination, and emits function exports or immutable data-address globals.
+`-ldl` selects the SDK's real Wasm `dlopen` glue rather than an empty
+compatibility archive. This is a general target feature, not a PHP package
+patch. The fork commit is `b2a32e2878f3c341b8a12b3b93a9cc997c8d5116`;
+all four Go-consuming package recipes now pin it and increment their output
+revisions. The Go toolchain rebuilt, a pure-Go program cross-built for js
+and WASI, and the pre-existing cgo static-archive Node probe still passed.
+The new `cgo/c-exports` fixture rejects a missing requested symbol and
+loads a side module that imports an otherwise-unused C function and data
+symbol. Its ABI-stamped Node process passed with empty stderr/diagnostics,
+and the focused Chromium, Firefox, and WebKit browser process gates passed
+3/3. The `go-hello` SourceOnly package rebuilt from the new pin. These are
+not evidence that OPcache's hundreds of Zend/PHP imports resolve or that
+the WordPress Caddy stack has improved performance. Next rebuild the other
+three pinned packages, then attempt the PHP ZTS OPcache import closure and
+live load without package-specific symbol shims. The standalone Caddy
+SourceOnly package also rebuilt from the new pin; FrankenPHP classic and
+Caddy package rebuilds remain outstanding. The classic package compiled its
+Go/PHP executable, but fork instrumentation reached 10.6 GiB RSS while
+the host reported under 0.1 GiB unused. The instrumenter was terminated
+to avoid exhausting the user's machine; the SourceOnly package did not
+publish, and the Caddy package was not started. This is a resource gate,
+not a compiler or runtime success/failure result.
