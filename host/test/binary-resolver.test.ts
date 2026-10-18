@@ -17,17 +17,19 @@ import {
 import { execFileSync } from "node:child_process";
 import { basename, dirname, join, relative } from "node:path";
 import { tmpdir } from "node:os";
-import { zstdCompressSync } from "node:zlib";
 import {
   binariesDir,
   binaryProgramCacheRoot,
   findRepoRoot,
+  LAZY_BINARIES_URL_PREFIX,
   localBinariesDir,
   programOutputClosureRelPaths,
   programWasmArtifactPolicy,
   resetBinaryResolverManifestCacheForTests,
   resolveBinary,
   resolveDirectProgramPackageArtifact,
+  resolveLazyAssetPath,
+  resolveLazyAssetPaths,
   setBundledProgramPackageIndexPathForTests,
   setProgramIndexContextCheckerForTests,
   sourceOnlyBinaryRoot,
@@ -39,10 +41,6 @@ import {
   ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
 } from "../src/generated/abi";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../src/vfs/memory-fs";
 import {
   resolvePolicyBoundVfsWasmArtifact,
   tryResolveVfsArtifact,
@@ -247,17 +245,6 @@ function kernelWasmWithExports(
   ]));
 
   return new Uint8Array(bytes);
-}
-
-async function vfsImage(
-  metadata: VfsImageMetadata | null | undefined,
-  compressed: boolean,
-): Promise<Uint8Array> {
-  const mfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-  const image = await mfs.saveImage(
-    metadata === undefined ? undefined : { metadata },
-  );
-  return compressed ? new Uint8Array(zstdCompressSync(image)) : image;
 }
 
 function fixtureClosureRelPaths(names: readonly string[]): string[] {
@@ -992,7 +979,7 @@ function fixtureCanonicalRoot(
 ): string {
   const root = join(
     binaryProgramCacheRoot(),
-    `${packageName}-1.0.0-rev1-${arch}-${cacheKey}`,
+    `${packageName}-1.0.0-rev1-${arch}-abi1-${cacheKey}`,
   );
   mkdirSync(root, { recursive: true });
   cleanupDirs.add(root);
@@ -1190,6 +1177,141 @@ describe("binary resolver unified tier", () => {
   });
 });
 
+describe("image-relative lazy asset paths", () => {
+  it("serves a binaries/ lazy URL from the resolver tiers, not only the literal tree", () => {
+    const repo = makeTempRepo();
+    const local = writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/qux.dat",
+      new TextEncoder().encode("qux"),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("binaries/programs/wasm32/qux.dat")).toBe(
+      local,
+    );
+  });
+
+  it("keeps the literal repo path for a binaries/ URL the resolver does not carry", () => {
+    const repo = makeTempRepo();
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("binaries/programs/wasm32/waldo.dat")).toBe(
+      join(repo, "binaries/programs/wasm32/waldo.dat"),
+    );
+  });
+
+  it("keeps the literal repo path for a relative URL outside binaries/", () => {
+    const repo = makeTempRepo();
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("assets/garply.dat")).toBe(
+      join(repo, "assets/garply.dat"),
+    );
+  });
+
+  it("strips leading slashes before the prefix check and the literal join", () => {
+    const repo = makeTempRepo();
+    const local = writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/qux.dat",
+      new TextEncoder().encode("qux"),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("/binaries/programs/wasm32/qux.dat")).toBe(
+      local,
+    );
+    expect(resolveLazyAssetPath("//assets/garply.dat")).toBe(
+      join(repo, "assets/garply.dat"),
+    );
+  });
+
+  it("decodes the percent-encoded segments the image builder produces", () => {
+    const repo = makeTempRepo();
+    const local = writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/qux+qux.dat",
+      new TextEncoder().encode("qux"),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("binaries/programs/wasm32/qux%2Bqux.dat")).toBe(
+      local,
+    );
+  });
+
+  it("keeps the literal repo path for malformed percent-encoding", () => {
+    const repo = makeTempRepo();
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(resolveLazyAssetPath("binaries/programs/wasm32/%zz.dat")).toBe(
+      join(repo, "binaries/programs/wasm32/%zz.dat"),
+    );
+  });
+
+  it("rejects a lazy URL that escapes the repository root", () => {
+    const repo = makeTempRepo();
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(() => resolveLazyAssetPath("binaries/../secrets.dat")).toThrow(
+      /inside the repository root/,
+    );
+    expect(() => resolveLazyAssetPath("assets/../../garply.dat")).toThrow(
+      /inside the repository root/,
+    );
+    expect(() => resolveLazyAssetPath("assets/gar\0ply.dat")).toThrow(
+      /inside the repository root/,
+    );
+  });
+
+  it("surfaces a resolver rejection instead of serving the literal bytes", () => {
+    const repo = makeTempRepo();
+    writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/corge.wasm",
+      new TextEncoder().encode("not a Wasm module"),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    expect(() =>
+      resolveLazyAssetPath("binaries/programs/wasm32/corge.wasm")
+    ).toThrow(/failed to resolve.*rejected by artifact policy/s);
+  });
+
+  it("resolves a URL batch with per-URL outcomes instead of one thrown failure", () => {
+    const repo = makeTempRepo();
+    const local = writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/qux.dat",
+      new TextEncoder().encode("qux"),
+    );
+    writeCandidate(
+      join(repo, "local-binaries"),
+      "programs/wasm32/corge.wasm",
+      new TextEncoder().encode("not a Wasm module"),
+    );
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    const resolutions = resolveLazyAssetPaths([
+      "binaries/programs/wasm32/qux.dat",
+      "binaries/programs/wasm32/corge.wasm",
+      "assets/garply.dat",
+    ]);
+    expect(resolutions.get("binaries/programs/wasm32/qux.dat")).toEqual({
+      path: local,
+    });
+    const rejected = resolutions.get("binaries/programs/wasm32/corge.wasm");
+    expect(rejected && "error" in rejected ? rejected.error.message : "").toMatch(
+      /rejected by artifact policy/,
+    );
+    expect(resolutions.get("assets/garply.dat")).toEqual({
+      path: join(repo, "assets/garply.dat"),
+    });
+  });
+
+  it("matches the image builder's lazy_url_prefix", () => {
+    const packagesToml = readFileSync(
+      new URL("../../images/rootfs/PACKAGES.toml", import.meta.url),
+      "utf8",
+    );
+    expect(packagesToml).toMatch(
+      new RegExp(`^lazy_url_prefix = "${LAZY_BINARIES_URL_PREFIX}"$`, "m"),
+    );
+  });
+});
+
 describe("binary resolver artifact policy", () => {
   it("does not mistake an installed package consumer workspace for Kandelo", () => {
     const consumer = mkdtempSync(join(tmpdir(), "kandelo-consumer-root-"));
@@ -1218,69 +1340,11 @@ describe("binary resolver artifact policy", () => {
     expect(findRepoRoot(installedModule)).toBe(consumer);
   });
 
-  it("skips a stale local .vfs.zst when a fetched ABI-matching candidate exists", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const staleLocal = await vfsImage(
-      { version: 1, kernelAbi: ABI_VERSION - 1 },
-      true,
-    );
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    writeCandidate(localBinariesDir(), relPath, staleLocal);
-    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(fetchedPath);
-  });
-
-  it("skips a stale local .vfs when a fetched ABI-matching candidate exists", async () => {
-    const relPath = fixtureRelPath(".vfs");
-    const staleLocal = await vfsImage(
-      { version: 1, kernelAbi: ABI_VERSION - 1 },
-      false,
-    );
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, false);
-
-    writeCandidate(localBinariesDir(), relPath, staleLocal);
-    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(fetchedPath);
-  });
-
-  it("selects a matching local .vfs.zst before the fetched candidate", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const local = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    const localPath = writeCandidate(localBinariesDir(), relPath, local);
-    writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(localPath);
-  });
-
-  it("accepts a VFS image with metadata but no kernelAbi declaration", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const local = await vfsImage({ version: 1 }, true);
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    const localPath = writeCandidate(localBinariesDir(), relPath, local);
-    writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(localPath);
-  });
-
-  it("skips an uninspectable local VFS image for a valid fetched candidate", async () => {
-    const relPath = fixtureRelPath(".vfs.zst");
-    const fetched = await vfsImage({ version: 1, kernelAbi: ABI_VERSION }, true);
-
-    writeCandidate(
-      localBinariesDir(),
-      relPath,
-      new TextEncoder().encode("not a VFS image"),
-    );
-    const fetchedPath = writeCandidate(binariesDir(), relPath, fetched);
-
-    expect(resolveBinary(relPath)).toBe(fetchedPath);
-  });
+  // No `.vfs`/`.vfs.zst` tier-choice cases: the resolver no longer reads an
+  // image's declared kernel ABI. The kernel refuses an image built for another
+  // ABI when it loads it (`image_policy::check_declared_abi`, reached from
+  // `rootfs::load_image`), which is the layer that owns that contract. Wasm
+  // artifact policy is still the resolver's, so the `.wasm` cases stay.
 
   it("keeps skipping a stale local .wasm when a fetched ABI-matching candidate exists", () => {
     const relPath = fixtureRelPath(".wasm");
@@ -2830,7 +2894,7 @@ exit 2
     chmodSync(xtask, 0o755);
 
     for (const relPath of [
-      "host/wasm/rootfs.vfs",
+      "host/wasm/rootfs.vfs.zst",
       "examples/gencat.wasm",
       "examples/pthread_channel_reuse_test.wasm",
       "examples/wait_lifecycle_test.wasm",
@@ -2879,7 +2943,7 @@ exit 2
     const generation = join(
       sourceCache,
       "programs",
-      `${fixture.name}-1.0.0-rev1-wasm32-${cacheKey}`,
+      `${fixture.name}-1.0.0-rev1-wasm32-abi1-${cacheKey}`,
     );
     const originalTargets: string[] = [];
     for (const member of fixture.members) {
@@ -3306,6 +3370,31 @@ wasm = "bin/${renamedOutput}.zip"
         localBinariesDir(),
         member.relPath,
         new TextEncoder().encode("unidentified-local-copy"),
+      );
+    }
+    const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+    const fetched = fixture.members.map((member) =>
+      linkClosureMember(binariesDir(), member, canonicalRoot)
+    );
+
+    expect(resolveBinary(fixture.members[0]!.relPath)).toBe(
+      realpathSync(fetched[0]!),
+    );
+  });
+
+  it("refuses a source-only generation copy the projection does not own", () => {
+    // `local-binaries/source-only-v1` holds real files, so its identity is
+    // the `.kandelo` projection authority rather than the directory shape.
+    // A closure dropped in by hand is not in that authority and must not be
+    // mistaken for the generation's own bytes.
+    const fixture = createMultiOutputFixture();
+    const sourceOnlyRoot = join(localBinariesDir(), "source-only-v1");
+    for (const member of fixture.members) {
+      cleanupDirs.add(join(sourceOnlyRoot, dirname(member.relPath)));
+      writeCandidate(
+        sourceOnlyRoot,
+        member.relPath,
+        new TextEncoder().encode("unowned-source-only-copy"),
       );
     }
     const canonicalRoot = fixtureCanonicalRoot(fixture.name);

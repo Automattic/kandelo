@@ -7,6 +7,26 @@ export interface BrowserCorsProxyConfig {
   readonly url: string;
   readonly allowedRequestHeaderNames: readonly string[];
   readonly allowAnonymousGetHeaderOmission: boolean;
+  /**
+   * A second request field this proxy reads a byte range from.
+   *
+   * WORKAROUND for a WP Cloud limitation. The WordPress Playground CORS proxy
+   * is a PHP script hosted on WP Cloud, and WP Cloud's front-end web servers
+   * strip the `Range` header before the request reaches PHP. The proxy
+   * therefore also accepts the same value in the custom header
+   * `X-Cors-Proxy-Range`, which WP Cloud passes through, and forwards it to
+   * the target as `Range`. Every proxy dispatch copies an outgoing `Range`
+   * into this field unchanged and keeps `Range` itself, a combination the
+   * proxy documents as safe once `Range` gets through.
+   *
+   * The whole workaround can be removed as soon as WP Cloud relays `Range`
+   * headers to PHP: this field, its value in the default profile, the copies
+   * in `project()`/`fetch()`, the service worker, and the development relay,
+   * and the `no-store` cache mode that exists only because of the alias.
+   * Check with a plain `Range: bytes=0-15` request through the proxy: a
+   * `206` answer means `Range` now reaches PHP.
+   */
+  readonly rangeRequestHeaderAlias?: string;
 }
 
 export class BrowserCorsProxyRequestError extends Error {
@@ -112,10 +132,36 @@ export function validateBrowserCorsProxyConfig(
     },
   );
 
+  const alias = value.rangeRequestHeaderAlias;
+  if (alias !== undefined) {
+    if (typeof alias !== "string" || !HTTP_FIELD_NAME.test(alias)) {
+      throw new TypeError(
+        "browser CORS proxy rangeRequestHeaderAlias must be an HTTP field-name token",
+      );
+    }
+    if (asciiCaseInsensitiveEqual(alias, "range")) {
+      throw new TypeError(
+        "browser CORS proxy rangeRequestHeaderAlias must differ from Range",
+      );
+    }
+    // The alias is written by projection from Range, never taken from the
+    // caller: a guest-supplied value could disagree with the Range it sent.
+    if (
+      allowedRequestHeaderNames.some((name) =>
+        asciiCaseInsensitiveEqual(name, alias)
+      )
+    ) {
+      throw new TypeError(
+        "browser CORS proxy rangeRequestHeaderAlias must not be an allowed request header",
+      );
+    }
+  }
+
   return Object.freeze({
     url: value.url,
     allowedRequestHeaderNames: Object.freeze(allowedRequestHeaderNames),
     allowAnonymousGetHeaderOmission: value.allowAnonymousGetHeaderOmission,
+    ...(alias === undefined ? {} : { rangeRequestHeaderAlias: alias }),
   });
 }
 
@@ -129,6 +175,85 @@ export class BrowserCorsProxy {
 
   urlFor(targetUrl: string): string {
     return corsProxyFetchUrl(this.config.url, targetUrl);
+  }
+
+  /**
+   * Project a request, send it through the proxy, and honor its `If-Range`.
+   *
+   * WHY: a proxy whose profile does not allow `If-Range` cannot carry it, and
+   * dropping it would turn a conditional ranged read into an unconditional
+   * one: after the resource changes, a resuming client would get a slice of
+   * the new version. RFC 9110 section 13.1.5 says a server whose If-Range
+   * condition is false ignores `Range` and sends the whole representation.
+   * Apply that rule here instead: send the range without `If-Range`, and if
+   * the `206` does not carry the matching validator, discard it and fetch
+   * the whole representation. A validator this cannot confirm counts as a
+   * mismatch, so the cost of doubt is one extra full request, never a wrong
+   * slice. Without `Range`, `If-Range` is meaningless and is dropped. A
+   * `416` gets the same treatment: a server whose condition is false would
+   * have ignored the unsatisfiable range and sent the whole representation.
+   * Several `If-Range` occurrences are joined as Fetch joins them, which
+   * never matches a single validator, so the service worker agrees.
+   */
+  async fetch(
+    request: {
+      method: string;
+      headers: readonly HttpHeaderOccurrence[];
+      body?: BodyInit;
+      /** Defaults to `body !== undefined`; a caller that drops a body sent
+       *  with GET/HEAD still reports it so projection judges the real ask. */
+      bodyPresent?: boolean;
+      targetUrl: string;
+    },
+    fetchImpl: (input: string, init: RequestInit) => Promise<Response> =
+      (input, init) => globalThis.fetch(input, init),
+  ): Promise<Response> {
+    const ifRangeValues: string[] = [];
+    const occurrences = this.isAllowed("if-range")
+      ? request.headers
+      : request.headers.filter(([name, value]) => {
+        if (asciiLowercase(name) !== "if-range") return true;
+        ifRangeValues.push(value);
+        return false;
+      });
+    const ifRange = ifRangeValues.length === 0
+      ? undefined
+      : ifRangeValues.join(", ");
+    const headers = this.project({
+      method: request.method,
+      headers: occurrences,
+      bodyPresent: request.bodyPresent ?? request.body !== undefined,
+      targetUrl: request.targetUrl,
+    });
+    const url = this.urlFor(request.targetUrl);
+    const init: RequestInit = { method: request.method, headers, body: request.body };
+    const alias = this.config.rangeRequestHeaderAlias;
+    if (alias !== undefined && headers.has(alias)) {
+      // WORKAROUND, part of the X-Cors-Proxy-Range alias for WP Cloud (see
+      // BrowserCorsProxyConfig.rangeRequestHeaderAlias). The browser's HTTP
+      // cache may shrink Range on the wire to the bytes it has not stored,
+      // but it cannot shrink the alias to match. The proxy then answers the
+      // alias's range and the cache joins a body shorter than its
+      // Content-Range, so keep this request out of the cache. In Chromium
+      // this also skips the CORS preflight cache, so every aliased request
+      // pays a preflight (documented technical debt). Remove this together
+      // with the alias, as soon as WP Cloud relays Range headers to PHP.
+      init.cache = "no-store";
+    }
+    const response = await fetchImpl(url, init);
+    if (
+      ifRange === undefined ||
+      request.method !== "GET" ||
+      (response.status !== 206 && response.status !== 416) ||
+      ifRangeMatches(ifRange, response.headers)
+    ) {
+      return response;
+    }
+    await response.body?.cancel().catch(() => {});
+    headers.delete("range");
+    if (alias !== undefined) headers.delete(alias);
+    const { cache: _cache, ...wholeInit } = init;
+    return fetchImpl(url, { ...wholeInit, headers });
   }
 
   project(input: {
@@ -166,6 +291,7 @@ export class BrowserCorsProxy {
       unsupportedNames.push(lowerName);
     }
 
+    this.mirrorRange(headers);
     if (unsupportedNames.length === 0) return headers;
 
     const origin = new URL(input.targetUrl).origin;
@@ -185,6 +311,15 @@ export class BrowserCorsProxy {
     );
   }
 
+  // WORKAROUND for WP Cloud stripping Range before it reaches the proxy's
+  // PHP (see BrowserCorsProxyConfig.rangeRequestHeaderAlias). Remove as soon
+  // as WP Cloud relays Range headers to PHP.
+  private mirrorRange(headers: Headers): void {
+    const alias = this.config.rangeRequestHeaderAlias;
+    const range = headers.get("range");
+    if (alias !== undefined && range !== null) headers.set(alias, range);
+  }
+
   private isAllowed(name: string): boolean {
     // Preserve the configured list as the proxy's declared capability surface.
     return this.config.allowedRequestHeaderNames.some((allowedName) =>
@@ -200,6 +335,27 @@ export class BrowserCorsProxy {
       `Browser CORS proxy omitted unsupported request headers for ${origin}: ${names.join(", ")}`,
     );
   }
+}
+
+/**
+ * Whether a `206` satisfies an `If-Range` condition (RFC 9110 13.1.5).
+ *
+ * An entity tag must equal the response's strong `ETag`. A date must equal
+ * `Last-Modified` exactly, and that `Last-Modified` must be a strong
+ * validator: at least one second older than the response's `Date`.
+ */
+export function ifRangeMatches(ifRange: string, headers: Headers): boolean {
+  const value = ifRange.trim();
+  if (value.startsWith("W/")) return false;
+  if (value.startsWith('"')) {
+    return headers.get("etag")?.trim() === value;
+  }
+  const lastModified = headers.get("last-modified")?.trim();
+  if (lastModified === undefined || lastModified !== value) return false;
+  const modified = Date.parse(lastModified);
+  const date = Date.parse(headers.get("date") ?? "");
+  return Number.isFinite(modified) && Number.isFinite(date) &&
+    date - modified >= 1000;
 }
 
 function sortedUnique(names: readonly string[]): readonly string[] {

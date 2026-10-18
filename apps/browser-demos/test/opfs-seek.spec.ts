@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { platform, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,16 +19,6 @@ test("OPFS preserves signed 64-bit seek results and failed offsets", async ({
   browserName,
   baseURL,
 }, testInfo) => {
-  // Skip Firefox on macOS only. Playwright cannot launch Firefox on macOS 26+
-  // today: headless fails profile initialization ("Could not find profile
-  // folder") and headed exits before the control pipe connects. This is a
-  // local browser-launch limitation, not an OPFS gap -- Firefox still runs
-  // this test on Linux. Remove once a newer Playwright/Firefox launches on
-  // macOS. (Duplicated across the OPFS specs on purpose; revisit together.)
-  test.skip(
-    browserName === "firefox" && platform() === "darwin",
-    "Playwright cannot launch Firefox on macOS (profile-init failure); Firefox is covered on Linux",
-  );
   expect(baseURL).toBeTruthy();
 
   // Run under a persistent context. WebKit only backs the Origin Private File

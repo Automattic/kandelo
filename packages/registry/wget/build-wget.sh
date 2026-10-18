@@ -1,26 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build GNU wget 1.24.5 for wasm32-posix-kernel.
+# Build GNU wget for wasm32-posix-kernel.
 #
 # Resolves OpenSSL and zlib via `cargo xtask build-deps resolve <name>` —
 # the shared library cache (or builds on miss). See
 # docs/package-management.md.
 # Uses the SDK's wasm32posix-configure wrapper for cross-compilation.
 #
-# Output: packages/registry/wget/bin/wget.wasm
+# Output: bin/wget.wasm under the resolver work root (beside this script
+# when run standalone).
 
-WGET_VERSION="${WGET_VERSION:-1.24.5}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/wget-src"
-BIN_DIR="$SCRIPT_DIR/bin"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
+source "$REPO_ROOT/sdk/activate.sh"
+WGET_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
+# shellcheck source=/dev/null
+# WHY: two resolves of this recipe can run at once in one checkout (two
+# test files missing the cache together). Each keeps its source and build
+# tree under its own resolver work root so neither deletes the other's.
+# A standalone run keeps them beside this script.
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/wget-src"
+BIN_DIR="$KANDELO_PACKAGE_WORK_DIR/bin"
 # Explicit env wins; else the in-tree sysroot. Matches build-curl.sh:49.
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
+# A resolver caller owns the declared work and output roots. Keep the
+# reviewed checkout read-only and suppress the developer-only local mirror.
+if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
+fi
+
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+    echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
     exit 1
 fi
 
@@ -70,19 +90,8 @@ EXTRA_LDFLAGS="-L$OPENSSL_DIR/lib -L$ZLIB_DIR/lib"
 export OPENSSL_CFLAGS="-I$OPENSSL_DIR/include"
 export OPENSSL_LIBS="-L$OPENSSL_DIR/lib -lssl -lcrypto"
 
-# --- Download wget source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading wget $WGET_VERSION..."
-    TARBALL="wget-${WGET_VERSION}.tar.gz"
-    # Use GNU's canonical selector path so exact builds can reach a healthy
-    # mirror without relying on the selector's legacy /gnu compatibility path.
-    URL="https://ftpmirror.gnu.org/wget/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
-    echo "==> Source extracted to $SRC_DIR"
-fi
+# --- Stage verified wget source ---
+kandelo_package_stage_primary_source wget "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 cd "$SRC_DIR"
 
@@ -247,4 +256,4 @@ echo "Binary: $BIN_DIR/wget.wasm"
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-[ -f "$SCRIPT_DIR/bin/wget.wasm" ] && install_local_binary wget "$SCRIPT_DIR/bin/wget.wasm" || true
+install_local_binary wget "$BIN_DIR/wget.wasm"

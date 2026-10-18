@@ -8,14 +8,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
 # shellcheck source=/dev/null
 source "$REPO_ROOT/sdk/activate.sh"
 # shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/package-build-roots.sh"
 
-VERSION="${WASM_POSIX_DEP_VERSION:-$(tr -d '[:space:]' < "$SCRIPT_DIR/VERSION")}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.mozilla.org/pub/firefox/releases/$VERSION/source/firefox-$VERSION.source.tar.xz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
 if [ "$ARCH" != "wasm32" ]; then
@@ -44,25 +45,15 @@ else
     MOZCONFIG_PATH="$SCRIPT_DIR/mozconfig-wasm32"
     MOZBUILD_STATE_PATH="$SCRIPT_DIR/.mozbuild"
 fi
-SRC_DIR="${SPIDERMONKEY_SRC_DIR:-${WASM_POSIX_DEP_SOURCE_DIR:-}}"
-if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" = "source-only-v1" ]; then
-    if [ -z "${WASM_POSIX_DEP_SOURCE_DIR:-}" ]; then
-        echo "ERROR: SpiderMonkey SourceOnly resolver source is empty" >&2
-        exit 2
-    fi
-    if [ -z "${WASM_POSIX_DEP_SOURCE_ARCHIVE:-}" ]; then
-        echo "ERROR: SpiderMonkey SourceOnly resolver archive is empty" >&2
-        exit 2
-    fi
-    if [ ! -f "$WASM_POSIX_DEP_SOURCE_DIR/mach" ]; then
-        echo "ERROR: Formula-owned SpiderMonkey source has no mach entry point: $WASM_POSIX_DEP_SOURCE_DIR" >&2
-        exit 2
-    fi
-    VERIFIED_SRC_DIR="$WASM_POSIX_DEP_SOURCE_DIR"
-    SRC_DIR="$WORK_DIR/spidermonkey-source"
-    echo "==> Staging verified SpiderMonkey source into the build work root..."
-    kandelo_package_stage_verified_source spidermonkey "$SRC_DIR" \
-        "$VERIFIED_SRC_DIR" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+WORK_DIR="${WORK_DIR:-$SCRIPT_DIR}"
+SRC_DIR="$WORK_DIR/spidermonkey-source"
+if [ -n "${SPIDERMONKEY_SRC_DIR:-}" ] && [ -z "${WASM_POSIX_DEP_SOURCE_DIR:-}" ]; then
+    WASM_POSIX_DEP_SOURCE_DIR="$SPIDERMONKEY_SRC_DIR"
+fi
+kandelo_package_stage_primary_source spidermonkey "$SRC_DIR" "$WORK_DIR"
+if [ ! -f "$SRC_DIR/mach" ]; then
+    echo "ERROR: verified SpiderMonkey source has no mach entry point: $SRC_DIR" >&2
+    exit 2
 fi
 HOST_OS="$(uname -s)"
 MACOS_SDK_DIR="${WASM_POSIX_MACOS_SDK_DIR:-}"
@@ -169,14 +160,30 @@ fi
     exit 1
 }
 
+ZSTD_PREFIX="${WASM_POSIX_DEP_LIBZSTD_DIR:-}"
+if [ -z "$ZSTD_PREFIX" ]; then
+    echo "==> Resolving libzstd via cargo xtask build-deps..."
+    ZSTD_PREFIX="$(resolve_dep libzstd)"
+fi
+[ -f "$ZSTD_PREFIX/lib/libzstd.a" ] || {
+    echo "ERROR: libzstd resolve missing libzstd.a at $ZSTD_PREFIX" >&2
+    exit 1
+}
+[ -d "$ZSTD_PREFIX/include" ] || {
+    echo "ERROR: libzstd resolve missing include directory at $ZSTD_PREFIX" >&2
+    exit 1
+}
+export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
+
 if [ "$RESOLVER_BUILD" -eq 1 ]; then
     export WASM_POSIX_DEP_WORK_DIR="$WORK_DIR"
     export WASM_POSIX_DEP_LIBCXX_DIR="$LIBCXX_PREFIX"
     export WASM_POSIX_DEP_OPENSSL_DIR="$OPENSSL_PREFIX"
     export WASM_POSIX_DEP_ZLIB_DIR="$ZLIB_PREFIX"
+    export WASM_POSIX_DEP_LIBZSTD_DIR="$ZSTD_PREFIX"
     SYSROOT="$(
         kandelo_package_prepare_private_sysroot spidermonkey "$SYSROOT" \
-            libcxx openssl zlib
+            libcxx openssl zlib libzstd
     )"
     export WASM_POSIX_SYSROOT="$SYSROOT"
 fi
@@ -190,88 +197,33 @@ ln -sf "$LIBCXX_PREFIX/lib/libc++abi.a" "$SYSROOT/lib/libc++abi.a"
 ln -sf "$OPENSSL_PREFIX/lib/libssl.a" "$SYSROOT/lib/libssl.a"
 ln -sf "$OPENSSL_PREFIX/lib/libcrypto.a" "$SYSROOT/lib/libcrypto.a"
 ln -sf "$ZLIB_PREFIX/lib/libz.a" "$SYSROOT/lib/libz.a"
+ln -sf "$ZSTD_PREFIX/lib/libzstd.a" "$SYSROOT/lib/libzstd.a"
 rm -rf "$SYSROOT/include/c++/v1"
 ln -sfn "$LIBCXX_PREFIX/include/c++/v1" "$SYSROOT/include/c++/v1"
 
 mkdir -p "$BIN_DIR" "$DOWNLOAD_DIR" "$SRC_PARENT"
 
-find_mach_dir() {
-    local mach_path
-    mach_path="$(find "$SRC_PARENT" -mindepth 1 -maxdepth 3 -type f -name mach -print -quit)"
-    if [ -n "$mach_path" ]; then
-        dirname "$mach_path"
-    fi
-}
-
-if [ "${WASM_POSIX_RESOLUTION_POLICY:-}" != "source-only-v1" ]; then
-    if [ -n "${WASM_POSIX_DEP_SOURCE_DIR:-}" ] && [ ! -f "$SRC_DIR/mach" ]; then
-        echo "ERROR: Formula-owned SpiderMonkey source has no mach entry point: $SRC_DIR" >&2
-        exit 1
-    fi
-    if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/mach" ]; then
-        SRC_DIR="$(find_mach_dir || true)"
-    fi
-
-    if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/mach" ]; then
-        archive="$DOWNLOAD_DIR/firefox-$VERSION.source.tar.xz"
-        if [ ! -f "$archive" ]; then
-            echo "==> Downloading Firefox ESR $VERSION source..."
-            curl -fL "$SOURCE_URL" -o "$archive"
-        fi
-        if [ -n "$SOURCE_SHA256" ]; then
-            actual_sha="$(python3 - "$archive" <<'PY'
-import hashlib
-import sys
-
-h = hashlib.sha256()
-with open(sys.argv[1], "rb") as f:
-    for chunk in iter(lambda: f.read(1024 * 1024), b""):
-        h.update(chunk)
-print(h.hexdigest())
-PY
-)"
-            if [ "$actual_sha" != "$SOURCE_SHA256" ]; then
-                echo "ERROR: source SHA256 mismatch for $archive" >&2
-                echo "  expected: $SOURCE_SHA256" >&2
-                echo "  actual:   $actual_sha" >&2
-                exit 1
-            fi
-        fi
-
-        echo "==> Extracting Firefox ESR $VERSION source..."
-        rm -rf "$SRC_PARENT"
-        mkdir -p "$SRC_PARENT"
-        python3 - "$archive" "$SRC_PARENT" <<'PY'
-from pathlib import Path
-import os
-import sys
-import tarfile
-
-archive = sys.argv[1]
-dest = Path(sys.argv[2]).resolve()
-with tarfile.open(archive, "r:xz") as tf:
-    for member in tf.getmembers():
-        target = (dest / member.name).resolve()
-        if os.path.commonpath([str(dest), str(target)]) != str(dest):
-            raise SystemExit(f"archive member escapes destination: {member.name}")
-    tf.extractall(dest)
-PY
-        SRC_DIR="$(find_mach_dir || true)"
-    fi
-fi
-
-if [ -z "$SRC_DIR" ] || [ ! -f "$SRC_DIR/mach" ]; then
-    echo "ERROR: could not locate Mozilla source root with mach under $SRC_PARENT." >&2
-    exit 1
-fi
 
 PATCH_DIR="$SCRIPT_DIR/patches"
 if [ -d "$PATCH_DIR" ]; then
     for patch_file in "$PATCH_DIR"/*.patch; do
         [ -f "$patch_file" ] || continue
+        patch_name="$(basename "$patch_file")"
         if patch -p1 -N --dry-run --silent -d "$SRC_DIR" < "$patch_file" >/dev/null 2>&1; then
-            echo "==> Applying $(basename "$patch_file")..."
+            echo "==> Applying $patch_name..."
             patch -p1 -N -d "$SRC_DIR" < "$patch_file"
+        elif patch -p1 -R --dry-run --silent -d "$SRC_DIR" < "$patch_file" >/dev/null 2>&1; then
+            # Reverse-applies cleanly: this patch is already present in the
+            # source tree (e.g. a re-run against a previously patched
+            # checkout). Nothing to do.
+            echo "==> $patch_name already applied, skipping."
+        else
+            # Neither a forward nor a reverse dry-run succeeded: the patch
+            # does not cleanly apply to this source tree at all. Silently
+            # continuing here would ship a build missing a platform fix
+            # (e.g. 0015/0016/0017) with no signal that it was dropped.
+            echo "ERROR: patch $patch_name does not apply to $SRC_DIR (source may have drifted from what the patch expects). Update the patch or the pinned source version." >&2
+            exit 1
         fi
     done
 fi
@@ -346,6 +298,7 @@ ac_add_options --with-intl-api
 ac_add_options --enable-icu4x
 ac_add_options --disable-shared-js
 ac_add_options --enable-shared-memory
+ac_add_options --enable-explicit-resource-management
 ac_add_options --disable-clang-plugin
 ac_add_options --disable-tests
 ac_add_options --disable-debug-symbols
@@ -431,9 +384,9 @@ PROBE
     fi
     rm -rf "$PREFLIGHT_DIR"
 fi
-export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include"
-export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include"
-export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a -Wl,-z,stack-size=16777216"
+export CFLAGS="${CFLAGS:-} -D_GNU_SOURCE -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
+export CXXFLAGS="${CXXFLAGS:-} -D_GNU_SOURCE -fexceptions -I$OPENSSL_PREFIX/include -I$ZLIB_PREFIX/include -I$ZSTD_PREFIX/include"
+export LDFLAGS="${LDFLAGS:-} -lc++ -lc++abi $OPENSSL_PREFIX/lib/libssl.a $OPENSSL_PREFIX/lib/libcrypto.a $ZLIB_PREFIX/lib/libz.a $ZSTD_PREFIX/lib/libzstd.a -Wl,-z,stack-size=16777216"
 
 if [ -f "$OBJ_DIR/config.status" ] && {
     ! grep -q 'getrandom_backend' "$OBJ_DIR/config.status" ||

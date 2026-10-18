@@ -16,9 +16,8 @@ import type { ProcessMemoryLayout } from "../../src/process-memory";
 import type { CheckpointGlContext } from "../../src/webgl/snapshot";
 
 const KERNEL_MEMORY_BYTES = 64;
-const FILESYSTEM_BYTES = 128;
-const SCRATCH_BYTES = 64;
-const REFUSAL = "a host directory backs this mount and owns no shared buffer";
+const ROOTFS_IMAGE_SHA256 = "ab".repeat(32);
+const HOST_MOUNT_REASON = "a host directory stays with the computer that mounts it";
 // Every fixture pid's channel fits inside its memory, the way a real layout
 // guarantees: the read recalls each channel's checkpoint request word.
 const PROCESS_MEMORY_BYTES = 16 * 1024 + CH_TOTAL_SIZE;
@@ -125,27 +124,11 @@ function testMachine(sources: CheckpointProcessSource[]): TestMachine {
         disarmed.count += 1;
       },
       copyKernelMemory: () => new Uint8Array(KERNEL_MEMORY_BYTES).fill(7),
-      filesystemBuffers: () => [
-        {
-          mountPoint: "/",
-          bytes: {
-            kind: "bytes",
-            buffer: new SharedArrayBuffer(FILESYSTEM_BYTES),
-          },
-        },
-        {
-          mountPoint: "/home/maker",
-          bytes: {
-            kind: "bytes",
-            buffer: new SharedArrayBuffer(SCRATCH_BYTES),
-          },
-        },
-        { mountPoint: "/var/log", bytes: { kind: "none", reason: REFUSAL } },
-      ],
+      rootfsImageSha256: () => ROOTFS_IMAGE_SHA256,
+      hostMounts: () => ["/var/log"],
       framebuffers: () => [],
       kmsState: () => state.kms,
       glContexts: () => state.glContexts,
-      epollInterests: () => [],
       monotonicNowNs: () => 7_000_000_000,
       kernelAbiVersion: () => KERNEL_ABI,
       liveProcesses: () => sources,
@@ -173,6 +156,7 @@ function modesetKms(masterPid: number): CheckpointKmsState {
       w: 32,
       h: 32,
       stride: 128,
+      creatorPid: masterPid,
       pids: [masterPid],
       bindings: [{ pid: masterPid, addr: 0, len: 4096 }],
       pixels: new Uint8Array(4096).fill(0xab),
@@ -196,18 +180,13 @@ describe("machine checkpoint freeze", () => {
     expect(result.status).toBe("captured");
     if (result.status !== "captured") return;
     expect(result.checkpoint.kernelMemory.byteLength).toBe(KERNEL_MEMORY_BYTES);
-    // Every mount travels, not just the root: a machine whose processes resume
-    // over an empty /home/maker has not been moved, only restarted.
-    expect(
-      result.checkpoint.filesystems.map((mount) => [
-        mount.mountPoint,
-        mount.bytes.byteLength,
-      ]),
-    ).toEqual([["/", FILESYSTEM_BYTES], ["/home/maker", SCRATCH_BYTES]]);
-    // A mount that refused leaves the checkpoint able to say so. Dropping it
-    // from both lists would present this machine as whole.
+    // `/` reads unmodified files out of its boot image, so the checkpoint
+    // names the image a restore must boot over.
+    expect(result.checkpoint.rootfsImageSha256).toBe(ROOTFS_IMAGE_SHA256);
+    // A host directory stays behind, and the checkpoint says so. Leaving it
+    // unnamed would present this machine as whole.
     expect(result.checkpoint.unreadableFilesystems).toEqual([
-      { mountPoint: "/var/log", reason: REFUSAL },
+      { mountPoint: "/var/log", reason: HOST_MOUNT_REASON },
     ]);
     expect(result.checkpoint.processes.map((bucket) => bucket.pid)).toEqual([4, 9]);
     expect(
@@ -216,7 +195,7 @@ describe("machine checkpoint freeze", () => {
     expect(result.checkpoint.processes[0]!.memory.byteLength)
       .toBe(PROCESS_MEMORY_BYTES);
     expect(result.checkpoint.processes[0]!.argv).toEqual(["/bin/program-4"]);
-    expect(result.checkpoint.format).toBe(7);
+    expect(result.checkpoint.format).toBe(8);
     expect(result.checkpoint.kernelAbiVersion).toBe(KERNEL_ABI);
     expect(
       new Uint8Array(result.checkpoint.processes[0]!.programBytes),
@@ -507,7 +486,7 @@ describe("machine checkpoint freeze", () => {
     });
   });
 
-  it("fails without freezing when a thread dies before the read", async () => {
+  it("reads the machine without a thread that ends before it unwinds", async () => {
     const state = testMachine([processSource(4, 1)]);
     const freeze = state.sources[0]!.checkpointFreeze;
     freeze.registerThread(7);

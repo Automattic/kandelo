@@ -3,6 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP_DIR="$(mktemp -d)"
+# Vitest reports physical paths; macOS resolves /tmp through /private/tmp.
+TMP_DIR="$(cd "$TMP_DIR" && pwd -P)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 # WHY: ordinary files stay in Vitest's deterministic two-way partition while
@@ -276,7 +278,8 @@ EOF
 
 cat > "$FIXTURE/bin/bun" <<'EOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "x" ] && [ "${2:-}" = "vitest" ] &&
+if [ "${1:-}" = "x" ] && [ "${2:-}" = "--bun" ] &&
+    [ "${3:-}" = "vitest" ] && [ "${KANDELO_VITEST_RUNTIME:-}" = "bun" ] &&
     [ -n "${BUN_CAPTURE:-}" ]; then
     printf '%s\n' "$*" >> "$BUN_CAPTURE"
     exit 0
@@ -518,7 +521,7 @@ resource_path=../packages/registry/ruby/test/posix-spawn.test.ts
 resource_exclude="--exclude=$resource_path"
 # The runner appends the disabled-software exclusions to every ordinary and
 # exact Vitest run. Mirror that exact suffix so the captured command lines match.
-disabled_software_excludes="--exclude=**/*brew* --exclude=../**/*brew* --exclude=**/*bottle* --exclude=../**/*bottle* --exclude=**/*formula* --exclude=../**/*formula* --exclude=**/*tap* --exclude=../**/*tap* --exclude=test/abi-staging-mini-vfs.test.ts --exclude=test/abi-staging-product-builders.test.ts --exclude=test/privileged-projection.test.ts --exclude=test/shell-vfs-build.test.ts --exclude=test/vfs-product-builder-contract.test.ts"
+disabled_software_excludes="--exclude=**/*brew* --exclude=../**/*brew* --exclude=**/*bottle* --exclude=../**/*bottle* --exclude=**/*formula* --exclude=../**/*formula* --exclude=**/*tap* --exclude=../**/*tap* --exclude=../packages/registry/erlang/test/** --exclude=test/abi-staging-mini-vfs.test.ts --exclude=test/abi-staging-product-builders.test.ts --exclude=test/shell-vfs-build.test.ts"
 resource_manifest="$FIXTURE/scripts/ci-vitest-resource-isolated-cases.tsv"
 resource_manifest_valid="$TMP_DIR/vitest-resource-manifest-valid.tsv"
 resource_inventory="$TMP_DIR/vitest-resource-inventory"
@@ -1073,7 +1076,7 @@ rm -rf "$FIXTURE/.ci-test-binary-cache"
 prepared_files=(
     target/fixture-host/release/xtask
     local-binaries/kernel.wasm
-    host/wasm/rootfs.vfs
+    host/wasm/rootfs.vfs.zst
     examples/gencat.wasm
     examples/pthread_channel_reuse_test.wasm
     examples/wait_lifecycle_test.wasm
@@ -1678,179 +1681,9 @@ done
 
 
 
-canonical_state_stub="$TMP_DIR/canonical-index-state-stub.sh"
-canonical_parser_stub="$TMP_DIR/canonical-index-parser-stub.sh"
-cat > "$canonical_state_stub" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-[ "${1:-}" = snapshot ] || exit 2
-shift
-output=""
-head_file=""
-abi=""
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --target-tag) shift 2 ;;
-        --expected-abi) abi="$2"; shift 2 ;;
-        --output) output="$2"; shift 2 ;;
-        --head-file) head_file="$2"; shift 2 ;;
-        *) exit 2 ;;
-    esac
-done
-case "${STATE_MODE:-valid}" in
-    absent) exit 44 ;;
-    uncertain) exit 47 ;;
-    missing-head)
-        printf 'abi_version = %s\ngenerated_at = "now"\ngenerator = "stub"\n' \
-            "$abi" > "$output"
-        ;;
-    malformed)
-        printf 'abi_version = %s\nMALFORMED\n' "$abi" > "$output"
-        printf 'empty\n' > "$head_file"
-        ;;
-    valid)
-        printf 'abi_version = %s\ngenerated_at = "now"\ngenerator = "stub"\n' \
-            "$abi" > "$output"
-        printf 'empty\n' > "$head_file"
-        ;;
-    *) exit 2 ;;
-esac
-EOF
-cat > "$canonical_parser_stub" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-[ "${1:-}" = index-candidate ] && [ "${2:-}" = seed ] || exit 2
-printf '%s\n' "$*" > "$PARSER_CAPTURE"
-shift 2
-input=""
-output=""
-abi=""
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --canonical-index) input="$2"; shift 2 ;;
-        --candidate-index) output="$2"; shift 2 ;;
-        --expected-abi) abi="$2"; shift 2 ;;
-        --canonical-index-url|--generated-at|--generator) shift 2 ;;
-        *) exit 2 ;;
-    esac
-done
-[ -f "$input" ] && [ -n "$output" ] && [ -n "$abi" ] || exit 1
-grep -Fqx "abi_version = $abi" "$input" || exit 1
-grep -Fq 'generated_at = "' "$input" || exit 1
-grep -Fq 'generator = "' "$input" || exit 1
-! grep -Fq MALFORMED "$input" || exit 1
-cp "$input" "$output"
-EOF
-chmod +x "$canonical_state_stub" "$canonical_parser_stub"
-
-canonical_out="$TMP_DIR/materialized-canonical-index.toml"
-parser_capture="$TMP_DIR/canonical-parser.args"
-CANONICAL_INDEX_STATE_SCRIPT="$canonical_state_stub" \
-WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
-PARSER_CAPTURE="$parser_capture" \
-GITHUB_REPOSITORY=Automattic/kandelo \
-STATE_MODE=valid \
-    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
-        binaries-abi-v42 42 "$canonical_out"
-[ -s "$canonical_out" ] || {
-    echo "canonical index materializer omitted its validated snapshot" >&2
-    exit 1
-}
-grep -Fq \
-    'https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml' \
-    "$parser_capture" || {
-    echo "canonical index parser did not receive the release-bound URL" >&2
-    exit 1
-}
-
-authenticated_canonical="$TMP_DIR/authenticated-canonical-index.toml"
-printf '%s\n' \
-    'abi_version = 42' \
-    'generated_at = "trusted"' \
-    'generator = "trusted predecessor"' > "$authenticated_canonical"
-authenticated_out="$TMP_DIR/materialized-authenticated-index.toml"
-STATE_MODE=uncertain \
-CANONICAL_INDEX_STATE_SCRIPT="$canonical_state_stub" \
-WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
-PARSER_CAPTURE="$parser_capture" \
-GITHUB_REPOSITORY=Automattic/kandelo \
-    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
-        binaries-abi-v42 42 "$authenticated_out" \
-        --authenticated-snapshot "$authenticated_canonical"
-cmp "$authenticated_canonical" "$authenticated_out" || {
-    echo "canonical index materializer changed authenticated snapshot bytes" >&2
-    exit 1
-}
-
-ln -s "$authenticated_canonical" \
-    "$TMP_DIR/symlinked-authenticated-canonical-index.toml"
-if WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
-    PARSER_CAPTURE="$parser_capture" \
-    GITHUB_REPOSITORY=Automattic/kandelo \
-    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
-        binaries-abi-v42 42 \
-        "$TMP_DIR/rejected-symlinked-authenticated-index.toml" \
-        --authenticated-snapshot \
-        "$TMP_DIR/symlinked-authenticated-canonical-index.toml" \
-        >"$TMP_DIR/rejected-symlinked-authenticated.out" 2>&1; then
-    echo "canonical index materializer accepted a symlinked snapshot" >&2
-    exit 1
-fi
-
-printf '%s\n' \
-    'abi_version = 43' \
-    'generated_at = "wrong ABI"' \
-    'generator = "trusted predecessor"' \
-    > "$TMP_DIR/wrong-abi-authenticated-index.toml"
-printf 'preserve-on-parser-failure\n' \
-    > "$TMP_DIR/rejected-wrong-abi-authenticated-index.toml"
-if WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
-    PARSER_CAPTURE="$parser_capture" \
-    GITHUB_REPOSITORY=Automattic/kandelo \
-    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
-        binaries-abi-v42 42 \
-        "$TMP_DIR/rejected-wrong-abi-authenticated-index.toml" \
-        --authenticated-snapshot \
-        "$TMP_DIR/wrong-abi-authenticated-index.toml" \
-        >"$TMP_DIR/rejected-wrong-abi-authenticated.out" 2>&1; then
-    echo "canonical index materializer accepted a wrong-ABI snapshot" >&2
-    exit 1
-fi
-grep -Fqx 'preserve-on-parser-failure' \
-    "$TMP_DIR/rejected-wrong-abi-authenticated-index.toml" || {
-    echo "canonical index parser failure replaced the prior output" >&2
-    exit 1
-}
-
-STATE_MODE=absent \
-CANONICAL_INDEX_STATE_SCRIPT="$canonical_state_stub" \
-WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
-PARSER_CAPTURE="$parser_capture" \
-GITHUB_REPOSITORY=Automattic/kandelo \
-    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
-        binaries-abi-v43 43 "$canonical_out"
-grep -Fqx 'abi_version = 43' "$canonical_out" || {
-    echo "confirmed-absent ABI release did not materialize an empty index" >&2
-    exit 1
-}
-
-for rejected_state in uncertain missing-head malformed; do
-    rejected_out="$TMP_DIR/rejected-$rejected_state-index.toml"
-    if STATE_MODE="$rejected_state" \
-        CANONICAL_INDEX_STATE_SCRIPT="$canonical_state_stub" \
-        WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
-        PARSER_CAPTURE="$parser_capture" \
-        GITHUB_REPOSITORY=Automattic/kandelo \
-        bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
-            binaries-abi-v42 42 "$rejected_out" \
-            >"$TMP_DIR/rejected-$rejected_state.out" 2>&1; then
-        echo "canonical index materializer accepted $rejected_state state" >&2
-        exit 1
-    fi
-    [ ! -e "$rejected_out" ] || {
-        echo "canonical index materializer published $rejected_state output" >&2
-        exit 1
-    }
-done
+# WHY: PR #1322 removed the remote binary release channel and its canonical
+# index materializer. The transport, cache identity and checker tests above
+# exercise the retained suite-runner contract; remote-release snapshot cases
+# no longer have a supported implementation to validate.
 
 echo "ci-run-test-suite: conformance group mappings passed"

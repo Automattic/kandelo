@@ -13,8 +13,8 @@
  *   - "mariadb-innodb": MariaDB with InnoDB engine
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs";
-import { restoreVerifiedVfsImage } from "../../../../host/src/vfs/load-image";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs";
+import { restoreVerifiedImageForBuild } from "../../lib/kernel-owned-boot";
 import {
   createEmptyBuildFs,
   finalizeKernelOwnedImage,
@@ -28,6 +28,7 @@ import { collectSpawnScratchEvidence } from "../../../../benchmarks/spawn-scratc
 import pipeWasmUrl from "../../../../benchmarks/wasm/pipe-throughput.wasm?url";
 import fileWasmUrl from "../../../../benchmarks/wasm/file-throughput.wasm?url";
 import syscallWasmUrl from "../../../../benchmarks/wasm/syscall-latency.wasm?url";
+import stdinWasmUrl from "../../../../benchmarks/wasm/stdin-throughput.wasm?url";
 import forkWasmUrl from "../../../../benchmarks/wasm/fork-bench.wasm?url";
 import cloneWasmUrl from "../../../../benchmarks/wasm/clone-bench.wasm?url";
 import spawnBenchWasmUrl from "../../../../benchmarks/wasm/spawn-bench.wasm?url";
@@ -90,12 +91,17 @@ async function fetchWasm(url: string): Promise<ArrayBuffer> {
   return resp.arrayBuffer();
 }
 
-async function readVfsBytes(fs: MemoryFileSystem, path: string): Promise<ArrayBuffer> {
-  await fs.ensureMaterialized(path);
+async function readVfsBytes(fs: KandeloImageFs, path: string): Promise<ArrayBuffer> {
+  // No `ensureMaterialized`. That asked a filesystem to fetch a deferred file
+  // before reading it, which a BUILD-time image has no notion of: it holds what
+  // it was given, and anything deferred is deferred for the kernel to fetch
+  // later, not for this page. `stat` by path rather than `fstat` by descriptor
+  // for the same reason — the path is right here, and the bridge describes an
+  // image rather than a live filesystem with open-file state.
+  const size = fs.stat(path).size;
   const fd = fs.open(path, 0, 0);
   try {
-    const stat = fs.fstat(fd);
-    const buf = new Uint8Array(stat.size);
+    const buf = new Uint8Array(size);
     fs.read(fd, buf, 0, buf.length);
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
   } finally {
@@ -103,7 +109,7 @@ async function readVfsBytes(fs: MemoryFileSystem, path: string): Promise<ArrayBu
   }
 }
 
-async function readVfsText(fs: MemoryFileSystem, path: string): Promise<string> {
+async function readVfsText(fs: KandeloImageFs, path: string): Promise<string> {
   return new TextDecoder().decode(await readVfsBytes(fs, path));
 }
 
@@ -119,9 +125,10 @@ function parseMetrics(stdout: string): Record<string, number> {
 async function runProgram(
   programBytes: ArrayBuffer,
   argv: string[],
+  stdin?: Uint8Array,
 ): Promise<{ exitCode: number; stdout: string }> {
   let stdout = "";
-  const vfsImage = await finalizeKernelOwnedImage(createEmptyBuildFs());
+  const vfsImage = await finalizeKernelOwnedImage(await createEmptyBuildFs());
   const kernel = new BrowserKernel({
     kernelOwnedFs: true,
     maxWorkers: 4,
@@ -131,7 +138,11 @@ async function runProgram(
   try {
     // /tmp and friends are worker-provided scratch mounts in kernel-owned mode.
     await kernel.initFromImage({ vfsImage });
-    const exitCode = await kernel.spawn(programBytes, argv);
+    const exitCode = await kernel.spawn(
+      programBytes,
+      argv,
+      stdin === undefined ? undefined : { stdin },
+    );
     return { exitCode, stdout };
   } finally {
     try { await kernel.destroy(); } catch {}
@@ -157,7 +168,7 @@ async function runProgramWithExecMap(
   let stdout = "";
   // Bake the exec-map entries into the image as lazy files; the worker fetches
   // them on demand when the child execs them.
-  const buildFs = createEmptyBuildFs();
+  const buildFs = await createEmptyBuildFs();
   for (const e of execMap) {
     buildFs.registerLazyFile(e.path, e.url, e.size, 0o755);
   }
@@ -207,6 +218,24 @@ async function runSyscallIo(): Promise<Record<string, number>> {
   Object.assign(results, parseMetrics(syscall.stdout));
 
   return results;
+}
+
+// ─── stdin-throughput ───────────────────────────────────────────────────────
+
+/** Matches benchmarks/suites/stdin-throughput.ts. */
+const STDIN_THROUGHPUT_BYTES = 24 * 1024 * 1024;
+
+async function runStdinThroughput(): Promise<Record<string, number>> {
+  log("  Running stdin-throughput...");
+  const input = new Uint8Array(STDIN_THROUGHPUT_BYTES).map((_, i) => i % 251);
+  const bytes = await fetchWasm(stdinWasmUrl);
+  const run = await runProgram(bytes, ["stdin-throughput"], input);
+  if (run.exitCode !== 0) throw new Error("stdin-throughput failed");
+  const metrics = parseMetrics(run.stdout);
+  if (metrics.stdin_bytes !== STDIN_THROUGHPUT_BYTES) {
+    throw new Error(`stdin-throughput read ${metrics.stdin_bytes} bytes`);
+  }
+  return { stdin_mbps: metrics.stdin_mbps };
 }
 
 // ─── process-lifecycle ──────────────────────────────────────────────────────
@@ -339,7 +368,7 @@ async function runErlangRing(): Promise<Record<string, number>> {
   let lastOutputTime = 0;
   let outputSeen = false;
 
-  const buildFs = await restoreVerifiedVfsImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
     maxByteLength: 256 * 1024 * 1024,
   });
   const vfsImage = await finalizeKernelOwnedImage(buildFs);
@@ -478,7 +507,7 @@ async function runWordPress(): Promise<Record<string, number>> {
   // Assemble the image in a transient build FS: base WP image + config +
   // dynamic wp-config/mu-plugin, minus any stale database. The kernel worker
   // then owns the live VFS (kernelOwnedFs).
-  const buildFs = await restoreVerifiedVfsImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
   writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
@@ -642,7 +671,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
     fetchWasm(kernelWasmUrl),
     vfsResp.arrayBuffer(),
   ]);
-  const buildFs = await restoreVerifiedVfsImage(new Uint8Array(vfsImageBuf), {
+  const buildFs = await restoreVerifiedImageForBuild(new Uint8Array(vfsImageBuf), {
     maxByteLength: 1024 * 1024 * 1024,
   });
   const mariadbBytes = await readVfsBytes(buildFs, "/usr/sbin/mariadbd");
@@ -891,6 +920,7 @@ async function runMariaDbWithEngine(engine: string, arch: MariaDbArch = "wasm32"
 
 const SUITES: Record<string, () => Promise<Record<string, number>>> = {
   "syscall-io": runSyscallIo,
+  "stdin-throughput": runStdinThroughput,
   "process-lifecycle": runProcessLifecycle,
   "spawn-scratch": runSpawnScratch,
   "wordpress": runWordPress,

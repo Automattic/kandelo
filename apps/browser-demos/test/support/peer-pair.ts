@@ -2,10 +2,11 @@
  * Two Kandelo computers, connected in one browser.
  *
  * Two isolated contexts share no `BroadcastChannel`, so everything that
- * crosses between them travels the manually signalled WebRTC link exactly as
- * it would between two real computers. Connecting them is the same three
- * steps in every spec that needs a pair — the humans carry the invite and the
- * answer — so the steps live here rather than in each spec.
+ * crosses between them travels a real WebRTC link exactly as it would between
+ * two real computers. Connecting them is the same network session in every
+ * spec that needs a pair — one hosts, the other opens the invite link and
+ * joins — so the steps live here rather than in each spec. The dev server
+ * relays the real piplet, so this needs PHP (see vite/dev-signalling.ts).
  *
  * Chromium only: only headless Chromium forms a loopback ICE pair.
  */
@@ -16,128 +17,99 @@ export const appUrl = (path: string): string => {
   return baseUrl ? new URL(path, baseUrl).href : path;
 };
 
-/** The Network dock button, which reports the link whether or not it is open. */
+/** The dock's network session button, which names the session's phase. */
 export function networkButton(page: Page): Locator {
-  return page.getByRole("button", { name: "Network", exact: true });
+  return page.getByRole("button", { name: /^Network session: / });
 }
 
-async function linkStatus(page: Page): Promise<string> {
-  const status = page.locator(".knetwork-status");
-  if ((await status.count()) === 0) return "";
-  return status.innerText({ timeout: 5_000 });
+/** The network session panel, a dialog over the page while it is open. */
+function networkPanel(page: Page): Locator {
+  return page.getByRole("dialog", { name: "Network session" });
 }
 
-/**
- * Show the Network popover, whatever state it is in.
- *
- * Adopting a machine closes it — the page reacts to the boot descriptor it is
- * now running — so a test that reads the popup after a handover cannot assume
- * the popover it opened earlier is still there.
- */
-export async function openNetworkPopover(page: Page): Promise<void> {
-  const button = networkButton(page);
-  if ((await button.getAttribute("aria-expanded")) !== "true") {
-    await button.click();
-  }
-  await expect(button).toHaveAttribute("aria-expanded", "true");
+/** Show the network session panel, whatever state it is in. */
+export async function openNetworkPanel(page: Page): Promise<void> {
+  if (await networkPanel(page).isVisible()) return;
+  await networkButton(page).click();
+  await expect(networkPanel(page)).toBeVisible();
 }
 
-async function freshCode(page: Page, previous: string): Promise<string> {
-  await page.waitForFunction(
-    (before) => {
-      const field = document.getElementById(
-        "knetwork-local",
-      ) as HTMLTextAreaElement | null;
-      const value = field?.value ?? "";
-      return value.startsWith("kandelo1:") && value !== before;
-    },
-    previous,
-    { timeout: 30_000 },
-  );
-  return page.inputValue("#knetwork-local");
+/** What the panel says about the machine shared with the partner. */
+function sharingStatus(page: Page): Locator {
+  return page.locator(".ksharing-status");
 }
+
+const ICE_BOUNDARY = "no direct route";
 
 /**
- * Carry the invite and the answer between the two pages, as the humans do.
+ * Host a session on `sharer`, join it from `viewer`, and leave `viewer`
+ * watching the sharer's machine, as an empty viewer did before sessions.
  *
- * The sharer initiates, the viewer answers, the sharer completes. The retry
- * is the one a human makes when the page reports a failed attempt. Skips the
- * test at the ICE boundary — no direct route between two local contexts is a
- * network limit, not a transport defect — and fails on anything else.
- *
- * Both popups are gone by the time this returns: the popup exists to buy a
- * connection, and it closes itself once there is one. The link is therefore
- * read from the dock button, which stays whether or not anything is open, and
- * a test that wants the status text opens the popup again for it.
+ * The invite link boots the session's machine on the viewer, so "Watch" gives
+ * that copy up. Skips the test at the ICE boundary — no direct route between
+ * two local contexts is a network limit, not a transport defect — and fails
+ * on anything else.
  */
 export async function connectPeers(
   sharer: Page,
   viewer: Page,
   skip: (reason: string) => void,
+  { watch = true }: { watch?: boolean } = {},
 ): Promise<void> {
-  await openNetworkPopover(sharer);
-  await openNetworkPopover(viewer);
+  await expect(sharer.locator(".kdock-status-text"))
+    .toHaveAttribute("data-status", "running", { timeout: 300_000 });
+  await openNetworkPanel(sharer);
+  await sharer.getByLabel("Session name").fill("Pair");
+  await sharer.getByRole("button", { name: "Create session", exact: true }).click();
+  await expect(networkButton(sharer)).toHaveAccessibleName("Network session: connected", { timeout: 30_000 });
+  const link = await sharer.locator("[data-network-link]").getAttribute("data-network-link");
+  expect(link).toBeTruthy();
 
-  // An idle popup reports nothing: the status line exists only while an
-  // attempt is in progress or has failed. One report is a valid start all
-  // the same — a lost link is exactly the state a reconnect begins from.
-  for (const page of [sharer, viewer]) {
-    const status = page.locator(".knetwork-status");
-    if ((await status.count()) > 0) {
-      await expect(status).toContainText("Connection lost.");
-    }
-  }
-
-  let invite = "";
-  let answer = "";
-  let linked = false;
-  for (let attempt = 0; attempt < 3 && !linked; attempt++) {
-    // The computer holding the machine invites; the empty one accepts, because
-    // only a computer with a machine has anything to invite someone to. Which
-    // of them can take the machine over is decided separately and keeps
-    // changing: it follows the machine, not the invite.
-    await openNetworkPopover(sharer);
-    await openNetworkPopover(viewer);
-    await sharer.getByRole("button", { name: "Create invite code" }).click();
-    invite = await freshCode(sharer, invite);
-    await viewer.fill("#knetwork-remote", invite);
-    await viewer.getByRole("button", { name: "Answer invite" }).click();
-    answer = await freshCode(viewer, answer);
-    await sharer.fill("#knetwork-remote", answer);
-    await sharer.getByRole("button", { name: "Complete connection" }).click();
-    const settled = await Promise.all(
-      [viewer, sharer].map((page) =>
-        expect(networkButton(page))
-          .toHaveClass(/is-connected/, { timeout: 30_000 })
-          .then(() => true, () => false),
-      ),
+  await viewer.goto(link!, { waitUntil: "domcontentloaded" });
+  await expect(viewer.locator(".kdock-status-text"))
+    .toHaveAttribute("data-status", "running", { timeout: 300_000 });
+  await openNetworkPanel(viewer);
+  await viewer.getByRole("button", { name: "Join session", exact: true }).click();
+  const joined = await Promise.race([
+    sharingStatus(viewer).waitFor({ timeout: 90_000 }).then(() => "joined"),
+    viewer.locator(".knetwork-error").waitFor({ timeout: 90_000 }).then(() => "failed"),
+  ]);
+  if (joined === "failed") {
+    const failure = await viewer.locator(".knetwork-error").innerText();
+    expect(failure, `the session failed outside the ICE boundary: ${failure}`)
+      .toContain(ICE_BOUNDARY);
+    skip(
+      "no ICE route between two local contexts — on macOS, grant the "
+      + "Playwright browser Local Network permission to run this spec",
     );
-    linked = settled.every(Boolean);
+    return;
   }
-  if (linked) return;
+  await openNetworkPanel(sharer);
+  await expect(sharingStatus(sharer)).toBeVisible({ timeout: 30_000 });
+  if (watch) await watchSharer(viewer);
+  await closeNetworkPanels([sharer, viewer]);
+}
 
-  await openNetworkPopover(sharer);
-  await openNetworkPopover(viewer);
-  const states = await Promise.all([viewer, sharer].map(linkStatus));
-  // Two shapes of the same ICE boundary, neither a transport defect: the
-  // "no direct route" report, and the silent hang where both sides sit in a
-  // progress message forever — headless Chromium refuses a second loopback
-  // pair this way after any pair was torn down. Every signalling or codec
-  // bug fails differently, with "failed:" and its own reason.
-  const failures = states.filter((state) => state.includes("failed"));
-  expect(
-    failures.length === 0
-      || failures.every((state) => state.includes("no direct route")),
-    `the link failed outside the ICE boundary: ${states.join(" | ")}`,
-  ).toBe(true);
-  skip(
-    "no ICE route between two local contexts — on macOS, grant the "
-    + "Playwright browser Local Network permission to run this spec",
-  );
+/** Give the viewer's copy of the session's machine up to watch the host's. */
+export async function watchSharer(viewer: Page): Promise<void> {
+  await openNetworkPanel(viewer);
+  await viewer.getByRole("button", { name: "Watch host's machine", exact: true }).click();
+  await expect(viewer.locator(".kdock-status-text"))
+    .toHaveAttribute("data-status", "idle", { timeout: 60_000 });
+}
+
+/** Close the network session panel, which covers the page while open. */
+async function closeNetworkPanels(pages: Page[]): Promise<void> {
+  for (const page of pages) {
+    if (!(await networkPanel(page).isVisible())) continue;
+    await networkPanel(page).getByRole("button", { name: "Close", exact: true }).first().click();
+    await expect(networkPanel(page)).toHaveCount(0);
+  }
 }
 
 /**
- * Hide every dock popover that would swallow a click meant for a terminal.
+ * Hide everything that would swallow a click meant for a terminal: the
+ * network session panel, and the dock's guide popover.
  *
  * An open popover lays a dismiss layer across the page (`Dock.tsx`,
  * `kdock-popover-dismiss-layer`), and that layer takes the pointer-down: the
@@ -145,24 +117,23 @@ export async function connectPeers(
  * clicks again and gets on with it; a test clicks once, so it has to clear the
  * popovers first.
  *
- * The guide is here and not only the network popup because adopting a machine
- * opens it: the taker is running a demo it did not launch, so the page shows
- * that demo's guide over the terminal the machine arrived with.
+ * The guide is here because adopting a machine opens it: the taker is running
+ * a demo it did not launch, so the page shows that demo's guide over the
+ * terminal the machine arrived with.
  *
- * Neither popover is tied to the link, so closing them changes nothing about
- * what is shared.
+ * Neither is tied to the link, so closing them changes nothing about what is
+ * shared.
  */
 export async function closeDockPopovers(pages: Page[]): Promise<void> {
+  await closeNetworkPanels(pages);
   for (const page of pages) {
-    for (const name of ["Network", "Guide"]) {
-      const button = page.getByRole("button", { name, exact: true });
-      // The guide button is absent on a machine with no guide at all.
-      if ((await button.count()) === 0) continue;
-      if ((await button.getAttribute("aria-expanded")) === "true") {
-        await button.click();
-      }
-      await expect(button).toHaveAttribute("aria-expanded", "false");
+    const button = page.getByRole("button", { name: "Guide", exact: true });
+    // The guide button is absent on a machine with no guide at all.
+    if ((await button.count()) === 0) continue;
+    if ((await button.getAttribute("aria-expanded")) === "true") {
+      await button.click();
     }
+    await expect(button).toHaveAttribute("aria-expanded", "false");
   }
 }
 

@@ -14,9 +14,6 @@ describe("Playwright server reuse policy", () => {
       KANDELO_CANONICAL_FLAT_SHELL_STRICT: "1",
     })).toBe(false);
     expect(shouldReuseExistingPlaywrightServer({
-      KANDELO_NODE_VFS_STRICT: "1",
-    })).toBe(false);
-    expect(shouldReuseExistingPlaywrightServer({
       KANDELO_PLAYWRIGHT_SERVE_DIST: "1",
     })).toBe(false);
     expect(shouldReuseExistingPlaywrightServer({

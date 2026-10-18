@@ -4,8 +4,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import * as browserEntry from "../src/browser";
 import * as nodeEntry from "../src/index";
-import * as privilegedProjectionModule from
-  "../src/vfs/privileged-projection";
 import {
   CentralizedKernelWorker,
   createCentralizedKernelWorkerTestDouble,
@@ -27,7 +25,6 @@ const hiddenKernelNames = [
   "writeKernelBytes",
   "hostFstat",
   "hostReaddir",
-  "hostClosedir",
   "hostClose",
   "testAuthority",
 ] as const;
@@ -69,10 +66,8 @@ const hiddenWorkerNames = [
   "cancelLargeTransferScratch",
   "executeReservedScratchTransfer",
   "handleFlattenedTransfer",
-  "handleWritev",
   "handleLargeWrite",
   "handleLargeRead",
-  "handleReadv",
   "handleSpawn",
   "cancelLargeSpawnScratch",
   "handleSpawnAfterResolve",
@@ -90,15 +85,6 @@ const hiddenPackageSymbols = [
   "kernelEntryInvokerForInstance",
   "kernelEntryGateForInstance",
   "KernelEntryGate",
-  "createReviewedPrivilegedProgramPolicy",
-  "readReviewedPrivilegedProgramPolicy",
-  "attachReviewedPrivilegedProgramPolicy",
-  "reviewedPrivilegedProgramPolicyForPlan",
-  "publishPrivilegedProgramProduct",
-  "snapshotPublishedPrivilegedProgramBrowserMount",
-  "admitPrivilegedProgramProductCandidate",
-  "admitPrivilegedProgramProductCandidateForTest",
-  "validatePrivilegedProgramProductCandidate",
 ] as const;
 
 describe("kernel authority boundary", () => {
@@ -156,16 +142,17 @@ describe("kernel authority boundary", () => {
     ).toThrow(/subclass|exact CentralizedKernelWorker/i);
   });
 
-  it("limits kernel test authority to one frozen seven-method companion", () => {
+  it("limits kernel test authority to one frozen six-method companion", () => {
     const production = new WasmPosixKernel({}, {});
     const harness = createWasmPosixKernelTestHarness({});
     const authority = harness.testAuthority;
+    // Six, not seven: `hostOpendir`/`hostClosedir` retired when a directory
+    // became an ordinary handle, and `hostOpenat` replaced the pair.
     const expectedNames = [
       "buildImportObject",
       "hostClose",
-      "hostClosedir",
       "hostFstat",
-      "hostOpendir",
+      "hostOpenat",
       "hostReaddir",
       "writeKernelBytes",
     ];
@@ -304,19 +291,6 @@ describe("kernel authority boundary", () => {
     expect(packageJson.exports).not.toHaveProperty("./kernel");
     expect(packageJson.exports).not.toHaveProperty("./kernel-worker");
     expect(packageJson.exports).not.toHaveProperty("./kernel-entry-gate");
-    expect(packageJson.exports).not.toHaveProperty("./vfs/privileged-projection");
   });
 
-  it("exposes no arbitrary-candidate privileged publication path", () => {
-    expect(Reflect.has(
-      privilegedProjectionModule,
-      "admitPrivilegedProgramProductCandidate",
-    )).toBe(false);
-    expect(Reflect.has(
-      privilegedProjectionModule,
-      "admitPrivilegedProgramProductCandidateForTest",
-    )).toBe(false);
-    expect(typeof privilegedProjectionModule.validatePrivilegedProgramProductCandidate)
-      .toBe("function");
-  });
 });

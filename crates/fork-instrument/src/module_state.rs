@@ -89,7 +89,6 @@ struct GlobalState {
 struct ImportedGlobalState {
     module: String,
     name: String,
-    import_ordinal: u32,
     owner: u32,
     ty: ValType,
     mutable: bool,
@@ -100,7 +99,6 @@ struct ImportedGlobalState {
 struct ImportedTableState {
     module: String,
     name: String,
-    import_ordinal: u32,
     owner: u32,
     table64: bool,
     ty: RefType,
@@ -178,17 +176,6 @@ pub struct ModuleStateImports {
 
 /// Plan all state whose owner is a WebAssembly module activation.
 pub fn plan(module: &mut Module) -> ModuleStatePlan {
-    let import_ordinals: HashMap<_, _> = module
-        .imports
-        .iter()
-        .enumerate()
-        .map(|(ordinal, import)| {
-            (
-                import.id(),
-                u32::try_from(ordinal).expect("import ordinal fits u32"),
-            )
-        })
-        .collect();
     let mut original_functions: Vec<_> = module
         .funcs
         .iter()
@@ -238,7 +225,6 @@ pub fn plan(module: &mut Module) -> ModuleStatePlan {
             imported_globals.push(ImportedGlobalState {
                 module: import.module.to_owned(),
                 name: import.name.to_owned(),
-                import_ordinal: import_ordinals[&import.id()],
                 owner,
                 ty: global.ty,
                 mutable: global.mutable,
@@ -369,8 +355,7 @@ pub fn plan(module: &mut Module) -> ModuleStatePlan {
                 imported_tables.push(ImportedTableState {
                     module: import.module.to_owned(),
                     name: import.name.to_owned(),
-                    import_ordinal: import_ordinals[&import.id()],
-                    owner,
+                        owner,
                     table64: table.table64,
                     ty: table.element_ty,
                 });
@@ -723,7 +708,10 @@ fn replace_imported_globals_section(module: &mut Module, globals: &[ImportedGlob
         data.extend_from_slice(&0u16.to_le_bytes());
         data.extend_from_slice(&module_len.to_le_bytes());
         data.extend_from_slice(&name_len.to_le_bytes());
-        data.extend_from_slice(&global.import_ordinal.to_le_bytes());
+        // Format 2: reserved, zero. Hosts resolve the import by kind, module
+        // and name, so the record survives tools (wasm-opt) that remove or
+        // reorder imports after instrumentation.
+        data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(global.module.as_bytes());
         data.extend_from_slice(global.name.as_bytes());
     }
@@ -787,7 +775,8 @@ fn replace_imported_tables_section(module: &mut Module, tables: &[ImportedTableS
         data.extend_from_slice(&0u16.to_le_bytes());
         data.extend_from_slice(&module_len.to_le_bytes());
         data.extend_from_slice(&name_len.to_le_bytes());
-        data.extend_from_slice(&table.import_ordinal.to_le_bytes());
+        // Format 2: reserved, zero (see the imported-globals encoder).
+        data.extend_from_slice(&0u32.to_le_bytes());
         data.extend_from_slice(table.module.as_bytes());
         data.extend_from_slice(table.name.as_bytes());
     }

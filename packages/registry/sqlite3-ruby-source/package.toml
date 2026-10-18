@@ -1,0 +1,12 @@
+kind = "source"
+name = "sqlite3-ruby-source"
+version = "2.9.6"
+
+[source]
+provider = "archive"
+url = "https://rubygems.org/downloads/sqlite3-2.9.6.gem"
+sha256 = "956fe606956420d04ac7157d3ace620c8caba2135b2e05c76e483493da24d08e"
+
+[license]
+spdx = "BSD-3-Clause"
+url = "https://github.com/sparklemotion/sqlite3-ruby/blob/master/LICENSE"

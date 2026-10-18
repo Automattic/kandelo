@@ -75,9 +75,9 @@ describe("SDL OSS package recipes", () => {
     expect(sdl3).toContain("-DSDL_UNIX_CONSOLE_BUILD=ON");
     expect(sdl3).toContain("-DSDL_ALSA=OFF");
     expect(sdl3).toContain("-DSDL_PULSEAUDIO=OFF");
-    const sdl3Toolchain = source(
-      "packages/registry/sdl3/cmake/kandelo-toolchain.cmake",
-    );
+    // The Kandelo CMake identity is shared SDK platform, not SDL3's own.
+    expect(sdl3).toContain('-DCMAKE_TOOLCHAIN_FILE="$REPO_ROOT/sdk/cmake/kandelo-toolchain.cmake"');
+    const sdl3Toolchain = source("sdk/cmake/kandelo-toolchain.cmake");
     expect(sdl3Toolchain).toContain("set(CMAKE_NM wasm32posix-nm)");
     expect(sdl3Toolchain).toContain("set(CMAKE_STRIP wasm32posix-strip)");
   });
@@ -86,7 +86,11 @@ describe("SDL OSS package recipes", () => {
 describe("SDL /dev/dsp integration fixture", () => {
   it("declares both upstream-version test executables", () => {
     const manifest = source("packages/registry/sdl-dsp-test/package.toml");
-    expect(manifest).toContain('depends_on = ["sdl2@2.32.10", "sdl3@3.4.10"]');
+    // libSDL2.a is static and carries SDL's Wayland backend, so its
+    // consumers link that backend's libraries themselves.
+    expect(manifest).toContain(
+      'depends_on = ["sdl2@2.32.10", "sdl3@3.4.10", "libwayland@1.24.0", "libxkbcommon@1.7.0", "libffi@0.1.0"]',
+    );
     expect(manifest).toContain('wasm = "sdl2-dsp-test.wasm"');
     expect(manifest).toContain('wasm = "sdl3-dsp-test.wasm"');
   });
@@ -126,7 +130,9 @@ describe("SDL_mixer playwave /dev/dsp integration fixture", () => {
     expect(manifest).toContain(
       'sha256 = "938dff531d00ace2296557a6599abe6f34599e2f34f0a4a08a397e2ccac8b8f7"',
     );
-    expect(manifest).toContain('depends_on = ["sdl2@2.32.10"]');
+    expect(manifest).toContain(
+      'depends_on = ["sdl2@2.32.10", "libwayland@1.24.0", "libxkbcommon@1.7.0", "libffi@0.1.0"]',
+    );
     expect(manifest).toContain('name = "playwave"');
     expect(manifest).toContain('wasm = "playwave.wasm"');
   });

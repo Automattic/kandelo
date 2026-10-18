@@ -7,7 +7,6 @@ import {
 } from "../../src/replication/state-hash";
 import {
   MACHINE_CHECKPOINT_FORMAT,
-  type CheckpointMount,
   type MachineCheckpoint,
   type CheckpointProcessBucket,
 } from "../../src/migration/checkpoint";
@@ -20,15 +19,12 @@ function bucket(pid: number, fill: number): CheckpointProcessBucket {
     channelOffset: 0,
     layout: { stackTop: 0, heapBase: 0, channelBase: 0 } as never,
     argv: ["foo"],
+    env: [],
     memory: new Uint8Array(64).fill(fill),
     programBytes: new ArrayBuffer(0),
     threadAllocator: {} as never,
     threads: [],
   };
-}
-
-function mount(mountPoint: string, fill: number): CheckpointMount {
-  return { mountPoint, bytes: new Uint8Array(256).fill(fill) };
 }
 
 function machine(
@@ -38,11 +34,11 @@ function machine(
     format: MACHINE_CHECKPOINT_FORMAT,
     kernelAbiVersion: 45,
     kernelMemory: new Uint8Array(128).fill(1),
-    filesystems: [mount("/", 2), mount("/home/maker", 3)],
+    rootfsImageSha256: "0".repeat(64),
     unreadableFilesystems: [],
     framebuffers: [],
     kms: { fbs: [], crtcs: [], masterPid: null, buffers: [] },
-    epolls: [],
+    gl: [],
     monotonicNs: 0,
     processes: [bucket(41, 3)],
     ...overrides,
@@ -57,8 +53,6 @@ describe("machine state hash", () => {
     expect(hash.seq).toBe(7);
     expect(hash.regions.map((region) => region.region)).toEqual([
       "kernel",
-      "filesystem:/",
-      "filesystem:/home/maker",
       "process:41",
     ]);
     expect(hash.regions[0]).toMatchObject({ bytes: 128 });
@@ -78,8 +72,6 @@ describe("machine state hash", () => {
     expect(ascending.sha256).toBe(descending.sha256);
     expect(ascending.regions.map((region) => region.region)).toEqual([
       "kernel",
-      "filesystem:/",
-      "filesystem:/home/maker",
       "process:7",
       "process:41",
     ]);
@@ -120,18 +112,21 @@ describe("machine divergence report", () => {
     expect(report.summary).toContain("process:41");
   });
 
-  it("names the mount whose files differ, not the machine's files", async () => {
+  it("names the kernel when files differ, since the kernel holds them", async () => {
+    // `/` and the scratch mounts live in kernel linear memory, so a file that
+    // differs between two machines surfaces as the kernel region, and no
+    // process region is blamed for it.
     const report = compareMachineStateHashes(
       await hashMachineCheckpoint(machine(), 5),
       await hashMachineCheckpoint(
-        machine({ filesystems: [mount("/", 2), mount("/home/maker", 9)] }),
+        machine({ kernelMemory: new Uint8Array(128).fill(9) }),
         5,
       ),
     );
 
     expect(report.diverged).toBe(true);
     expect(report.regions.map((region) => region.region))
-      .toEqual(["filesystem:/home/maker"]);
+      .toEqual(["kernel"]);
   });
 
   it("treats a region present on one side only as divergence", async () => {

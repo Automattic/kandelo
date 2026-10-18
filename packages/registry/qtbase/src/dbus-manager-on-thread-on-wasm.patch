@@ -1,0 +1,213 @@
+Run QtDBus on the thread that opens the connection, not on a manager thread.
+
+Every guest thread is a Web Worker on this wasm port, and the host compiles
+the whole program module a second time for the first one a process starts
+(docs/browser-support.md#firefox-executable-code-limit) — on Firefox that
+second copy of a Qt client does not fit SpiderMonkey's 2 GiB code region.
+QDBusConnectionManager is a QDaemonThread that owns every connection and
+answers the application through BlockingQueuedConnection calls, so opening
+the session bus started a thread. On wasm the manager never starts: the
+connections live on the calling thread, the cross-thread calls become
+direct calls, the destroyed-object hooks use the same-thread connection
+type, and a blocking wait on a pending call lets libdbus read the reply
+(the connection's socket notifier cannot run while this thread blocks).
+Everything else — watches, timeouts, dispatch, object activation — already
+runs through the thread the connection lives in.
+
+diff --git a/src/dbus/qdbusconnectionmanager.cpp b/src/dbus/qdbusconnectionmanager.cpp
+index ef96231..0f29c7b 100644
+--- a/src/dbus/qdbusconnectionmanager.cpp
++++ b/src/dbus/qdbusconnectionmanager.cpp
+@@ -102,20 +102,38 @@ QDBusConnectionManager::QDBusConnectionManager()
+     // destructurs for global statics.
+     QDBusMetaTypeId::init();
+ 
++#ifndef __wasm__
+     moveToThread(this);         // ugly, don't do this in other projects
++#endif
+ 
+ #ifdef Q_OS_WIN
+     // prevent the library from being unloaded on Windows. See comments in the function.
+     preventDllUnload();
+ #endif
+     defaultBuses[0] = defaultBuses[1] = nullptr;
++#ifndef __wasm__
+     start();
++#endif
+ }
+ 
+ QDBusConnectionManager::~QDBusConnectionManager()
+ {
++#ifdef __wasm__
++    // The manager never ran as a thread: the connections live on the thread
++    // that opened them (the application's), so close them here instead of
++    // in run()'s epilogue.
++    const auto locker = qt_scoped_lock(mutex);
++    for (QDBusConnectionPrivate *d : std::as_const(connectionHash)) {
++        if (!d->ref.deref())
++            delete d;
++        else
++            d->closeConnection();
++    }
++    connectionHash.clear();
++#else
+     quit();
+     wait();
++#endif
+ }
+ 
+ QDBusConnectionManager* QDBusConnectionManager::instance()
+@@ -165,9 +183,13 @@ QDBusConnectionPrivate *QDBusConnectionManager::connectToBus(QDBusConnection::Bu
+ {
+     QDBusConnectionPrivate *result = nullptr;
+ 
++#ifdef __wasm__
++    result = doConnectToStandardBus(type, name, suspendedDelivery);
++#else
+     QMetaObject::invokeMethod(this, &QDBusConnectionManager::doConnectToStandardBus,
+                               Qt::BlockingQueuedConnection, qReturnArg(result), type, name,
+                               suspendedDelivery);
++#endif
+ 
+     if (suspendedDelivery && result && result->connection)
+         result->enableDispatchDelayed(qApp); // qApp was checked in the caller
+@@ -179,8 +201,12 @@ QDBusConnectionPrivate *QDBusConnectionManager::connectToBus(const QString &addr
+ {
+     QDBusConnectionPrivate *result = nullptr;
+ 
++#ifdef __wasm__
++    result = doConnectToBus(address, name);
++#else
+     QMetaObject::invokeMethod(this, &QDBusConnectionManager::doConnectToBus,
+                               Qt::BlockingQueuedConnection, qReturnArg(result), address, name);
++#endif
+ 
+     return result;
+ }
+@@ -189,8 +215,12 @@ QDBusConnectionPrivate *QDBusConnectionManager::connectToPeer(const QString &add
+ {
+     QDBusConnectionPrivate *result = nullptr;
+ 
++#ifdef __wasm__
++    result = doConnectToPeer(address, name);
++#else
+     QMetaObject::invokeMethod(this, &QDBusConnectionManager::doConnectToPeer,
+                               Qt::BlockingQueuedConnection, qReturnArg(result), address, name);
++#endif
+ 
+     return result;
+ }
+@@ -290,6 +320,11 @@ QDBusConnectionPrivate *QDBusConnectionManager::doConnectToPeer(const QString &a
+ 
+ void QDBusConnectionManager::createServer(const QString &address, QDBusServer *server)
+ {
++#ifdef __wasm__
++    QDBusErrorInternal error;
++    QDBusConnectionPrivate *d = new QDBusConnectionPrivate;
++    d->setServer(server, q_dbus_server_listen(address.toUtf8().constData(), error), error);
++#else
+     QMetaObject::invokeMethod(
+             this,
+             [&address, server] {
+@@ -299,6 +334,7 @@ void QDBusConnectionManager::createServer(const QString &address, QDBusServer *s
+                              error);
+             },
+             Qt::BlockingQueuedConnection);
++#endif
+ }
+ 
+ QT_END_NAMESPACE
+diff --git a/src/dbus/qdbusintegrator.cpp b/src/dbus/qdbusintegrator.cpp
+index f45a7c3..31c1276 100644
+--- a/src/dbus/qdbusintegrator.cpp
++++ b/src/dbus/qdbusintegrator.cpp
+@@ -43,6 +43,16 @@
+ 
+ QT_BEGIN_NAMESPACE
+ 
++// A connection that lives on the emitting object's thread must not block on
++// its own event loop: on wasm the connection manager runs no thread of its
++// own (qdbusconnectionmanager.cpp), so the same-thread form is used.
++#ifdef __wasm__
++#  define QDBUS_OBJECT_DESTROYED_CONNECTION Qt::UniqueConnection
++#else
++#  define QDBUS_OBJECT_DESTROYED_CONNECTION \
++    Qt::ConnectionType(Qt::BlockingQueuedConnection | Qt::UniqueConnection)
++#endif
++
+ using namespace Qt::StringLiterals;
+ 
+ QT_IMPL_METATYPE_EXTERN(QDBusSlotCache)
+@@ -2249,8 +2259,12 @@ bool QDBusConnectionPrivate::addSignalHook(const QString &key, const SignalHook
+ {
+     bool result = false;
+ 
++#ifdef __wasm__
++    result = addSignalHookImpl(key, hook);
++#else
+     QMetaObject::invokeMethod(this, &QDBusConnectionPrivate::addSignalHookImpl,
+                               Qt::BlockingQueuedConnection, qReturnArg(result), key, hook);
++#endif
+ 
+     return result;
+ }
+@@ -2277,7 +2291,7 @@ bool QDBusConnectionPrivate::addSignalHookImpl(const QString &key, const SignalH
+ 
+     signalHooks.insert(key, hook);
+     connect(hook.obj, &QObject::destroyed, this, &QDBusConnectionPrivate::objectDestroyed,
+-            Qt::ConnectionType(Qt::BlockingQueuedConnection | Qt::UniqueConnection));
++            QDBUS_OBJECT_DESTROYED_CONNECTION);
+ 
+     MatchRefCountHash::iterator mit = matchRefCounts.find(hook.matchRule);
+ 
+@@ -2354,8 +2368,12 @@ bool QDBusConnectionPrivate::removeSignalHook(const QString &key, const SignalHo
+ {
+     bool result = false;
+ 
++#ifdef __wasm__
++    result = removeSignalHookImpl(key, hook);
++#else
+     QMetaObject::invokeMethod(this, &QDBusConnectionPrivate::removeSignalHookImpl,
+                               Qt::BlockingQueuedConnection, qReturnArg(result), key, hook);
++#endif
+ 
+     return result;
+ }
+@@ -2435,7 +2453,7 @@ QDBusConnectionPrivate::removeSignalHookNoLock(SignalHookHash::Iterator it)
+ void QDBusConnectionPrivate::registerObject(const ObjectTreeNode *node)
+ {
+     connect(node->obj, &QObject::destroyed, this, &QDBusConnectionPrivate::objectDestroyed,
+-            Qt::ConnectionType(Qt::BlockingQueuedConnection | Qt::UniqueConnection));
++            QDBUS_OBJECT_DESTROYED_CONNECTION);
+ 
+     if (node->flags & (QDBusConnection::ExportAdaptors
+                        | QDBusConnection::ExportScriptableSignals
+diff --git a/src/dbus/qdbuspendingcall.cpp b/src/dbus/qdbuspendingcall.cpp
+index c0b382c..c1454c2 100644
+--- a/src/dbus/qdbuspendingcall.cpp
++++ b/src/dbus/qdbuspendingcall.cpp
+@@ -8,6 +8,10 @@
+ 
+ #include "qdbusconnection_p.h"
+ #include "qdbusmetatype_p.h"
++#ifdef __wasm__
++#include "qdbus_symbols_p.h"
++#include "qthread.h"
++#endif
+ #include "qdbusutil_p.h"
+ #include "qcoreapplication.h"
+ #include "qcoreevent.h"
+@@ -199,6 +203,13 @@ void QDBusPendingCallPrivate::checkReceivedSignature()
+ 
+ void QDBusPendingCallPrivate::waitForFinished()
+ {
++#ifdef __wasm__
++    // The connection lives on the caller's thread (qdbusconnectionmanager.cpp
++    // runs no thread on wasm), so its socket notifier cannot deliver the
++    // reply while this thread blocks; let libdbus read it here instead.
++    if (pending && connection->thread() == QThread::currentThread())
++        q_dbus_pending_call_block(pending);
++#endif
+     const auto locker = qt_scoped_lock(mutex);
+ 
+     if (replyMessage.type() != QDBusMessage::InvalidMessage)

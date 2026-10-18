@@ -65,6 +65,9 @@ pub struct InFlightFd {
     /// For kernel-backed pipe FDs: the exact reference transferred to the
     /// receiver. Non-pipe descriptors leave this as `None`.
     pub pipe_ref_kind: Option<InFlightPipeRefKind>,
+    /// For DRM prime-bo FDs: the bo sidecar, without which the fd arrives as a
+    /// plain CharDevice and the receiver's `PRIME_FD_TO_HANDLE` import fails.
+    pub prime_bo: Option<crate::ofd::PrimeBoState>,
     /// True after this queued payload has acquired its one machine-wide
     /// backing and OfdId reference. Ownership transfers to the receiver or is
     /// released through the deferred queue on drop.
@@ -114,6 +117,7 @@ impl InFlightFd {
             shared_state,
             path,
             pipe_ref_kind: None,
+            prime_bo: None,
             owns_reference: false,
         }
     }
@@ -124,6 +128,7 @@ impl InFlightFd {
             file_type: self.file_type,
             host_handle: self.host_handle,
             pipe_ref_kind: self.pipe_ref_kind,
+            prime_bo_id: self.prime_bo.as_ref().map(|pb| pb.bo_id),
         }
     }
 
@@ -147,6 +152,13 @@ impl InFlightFd {
             cancel_deferred_in_flight_release();
             return Err(err);
         }
+        // SCM_RIGHTS lets the sender close its fd the instant sendmsg
+        // returns, so the queued entry cannot borrow the sender's reference.
+        // Take one of its own; `transfer_reference` hands it to the receiver
+        // and `Drop` returns it through the deferred release queue.
+        if let Some(pb) = self.prime_bo.as_ref() {
+            crate::dri::with_registry(|r| r.incref(pb.bo_id));
+        }
         self.owns_reference = true;
         Ok(())
     }
@@ -157,6 +169,12 @@ impl InFlightFd {
         debug_assert!(self.owns_reference);
         if self.owns_reference {
             transfer_in_flight_resource(self.release_metadata());
+            // The receiver increfs before this call, so dropping the queued
+            // entry's reference here can never reach zero — no host is
+            // needed to destroy backing.
+            if let Some(pb) = self.prime_bo.as_ref() {
+                crate::dri::with_registry(|r| r.decref(pb.bo_id));
+            }
             self.owns_reference = false;
             crate::ofd::release_in_flight_ofd(self.ofd_id);
             cancel_deferred_in_flight_release();
@@ -185,6 +203,7 @@ impl InFlightFd {
             shared_state: self.shared_state.clone(),
             path,
             pipe_ref_kind: self.pipe_ref_kind,
+            prime_bo: self.prime_bo.clone(),
             owns_reference: false,
         };
         if self.owns_reference {
@@ -222,6 +241,10 @@ pub struct DeferredInFlightFdRelease {
     file_type: FileType,
     host_handle: i64,
     pipe_ref_kind: Option<InFlightPipeRefKind>,
+    /// Bo whose in-flight reference this release drops. Carried here because
+    /// the queued entry owns a bo reference from `retain_reference` onward,
+    /// so a message discarded before recvmsg must give it back.
+    pub prime_bo_id: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,6 +252,8 @@ pub struct ReleasedInFlightFd {
     pub ofd_id: OfdId,
     pub final_ofd_reference: bool,
     pub host_close: Option<i64>,
+    /// Bo reference the caller must drop, destroying host backing at zero.
+    pub prime_bo_id: Option<u32>,
 }
 
 /// One SCM_RIGHTS batch attached to an exact byte range in a stream pipe.
@@ -436,6 +461,7 @@ pub fn release_deferred_in_flight_resource(
         ofd_id: release.ofd_id,
         final_ofd_reference,
         host_close,
+        prime_bo_id: release.prime_bo_id,
     }
 }
 
@@ -466,6 +492,10 @@ pub struct PipeBuffer {
     /// TCP's simplex FIN without inventing a fixed number of successful writes
     /// after EOF.
     orphaned_read: bool,
+    /// Sticky transport failure shared by inherited socket pipe endpoints.
+    stream_error: u32,
+    tcp_connection_id: u32,
+    stream_error_pending: bool,
     /// Index of this pipe in the PipeTable (for wakeup events).
     pipe_idx: u32,
     /// True if this pipe backs a named FIFO (see `crate::fifo`). FIFO pipes
@@ -504,6 +534,37 @@ pub struct PipeBuffer {
 }
 
 impl PipeBuffer {
+    /// Reset stream data without releasing endpoint references. Ordinary pipes
+    /// never set this state; the host invokes it for an actual socket reset.
+    pub fn reset_stream(&mut self, error: Errno) {
+        if self.stream_error != 0 {
+            return;
+        }
+        self.stream_error = error as u32;
+        self.stream_error_pending = true;
+        self.head = 0;
+        self.tail = 0;
+        self.len = 0;
+        self.ancillary_fds.clear();
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
+    }
+    pub fn tcp_connection_id(&self) -> u32 {
+        self.tcp_connection_id
+    }
+    pub fn stream_error(&self) -> Option<Errno> {
+        Errno::from_u32(self.stream_error)
+    }
+    pub fn take_stream_error(&mut self) -> u32 {
+        let error = if self.stream_error_pending {
+            self.stream_error
+        } else {
+            0
+        };
+        self.stream_error_pending = false;
+        error
+    }
+
     /// Create a new pipe buffer with the given capacity.
     pub fn new(capacity: usize) -> Self {
         let mut buf = Vec::new();
@@ -519,6 +580,9 @@ impl PipeBuffer {
             in_flight_read_count: 0,
             in_flight_write_count: 0,
             orphaned_read: false,
+            stream_error: 0,
+            tcp_connection_id: 0,
+            stream_error_pending: false,
             pipe_idx: 0,
             is_fifo: false,
             fifo_read_only_count: 0,
@@ -1304,6 +1368,37 @@ impl PipeTable {
         i
     }
 
+    /// Mint an identity that survives closing either endpoint but never
+    /// follows a freed index into an unrelated pipe allocation.
+    pub fn alloc_tcp_pair(&mut self, capacity: usize) -> Result<(usize, usize), Errno> {
+        let token = crate::socket::allocate_host_net_handle()? as u32;
+        let mut recv = PipeBuffer::new(capacity);
+        let mut send = PipeBuffer::new(capacity);
+        recv.tcp_connection_id = token;
+        send.tcp_connection_id = token;
+        Ok(self.alloc_pair(recv, send))
+    }
+    pub fn reset_tcp_connection(
+        &mut self,
+        recv: usize,
+        send: usize,
+        token: u32,
+    ) -> Result<(), Errno> {
+        if recv.checked_add(1) != Some(send) || token == 0 {
+            return Err(Errno::EINVAL);
+        }
+        let mut found = false;
+        for index in [recv, send] {
+            if let Some(pipe) = self.get_mut(index) {
+                if pipe.tcp_connection_id == token {
+                    pipe.reset_stream(Errno::ECONNRESET);
+                    found = true;
+                }
+            }
+        }
+        if found { Ok(()) } else { Err(Errno::ENOTCONN) }
+    }
+
     /// Allocate two pipe buffers with adjacent indices (`second_idx == first_idx + 1`).
     /// The host TCP-bridge code assumes the recv and send pipes for an injected
     /// connection are consecutive (`sendPipeIdx = recvPipeIdx + 1`); this helper
@@ -1654,7 +1749,34 @@ mod tests {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         }
+    }
+
+    #[test]
+    fn tcp_reset_does_not_target_a_reused_receive_pipe() {
+        let mut table = PipeTable::new();
+        let (recv, send) = table.alloc_tcp_pair(8).unwrap();
+        let token = table.get(recv).unwrap().tcp_connection_id();
+        table.get_mut(recv).unwrap().close_read_end();
+        table.get_mut(recv).unwrap().close_write_end();
+        table.free_if_closed(recv);
+        let replacement = table.alloc(PipeBuffer::new(8));
+        assert_eq!(replacement, recv);
+        table.get_mut(replacement).unwrap().write(b"new");
+        table.reset_tcp_connection(recv, send, token).unwrap();
+        assert_eq!(
+            table.get(send).unwrap().stream_error(),
+            Some(Errno::ECONNRESET)
+        );
+        assert_eq!(table.get(replacement).unwrap().stream_error(), None);
+        let mut bytes = [0; 3];
+        assert_eq!(table.get_mut(replacement).unwrap().read(&mut bytes), 3);
+        assert_eq!(&bytes, b"new");
+        assert_eq!(
+            table.reset_tcp_connection(recv, send, token + 1),
+            Err(Errno::ENOTCONN)
+        );
     }
 
     #[test]

@@ -1,13 +1,11 @@
 import * as net from "net";
-import type { NetworkIO } from "../types";
+import type { NetworkAddress, NetworkIO, UdpReceiveTarget } from "../types";
+import { EgressLink } from "./egress-link";
 import { lookup } from "dns";
 import { EagainError } from "./fetch-backend";
 import { parseNumericIpv4Hostname, validateDnsHostname } from "./hostname";
+import { NET_READINESS } from "../generated/abi";
 
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 /**
@@ -55,6 +53,7 @@ interface Connection {
   recvBuf: Buffer;
   closed: boolean;
   readEnded: boolean;
+  readShutdown: boolean;
   /** True once net.Socket has emitted 'connect' (TCP handshake done). */
   connected: boolean;
   error: Error | null;
@@ -68,8 +67,19 @@ interface DnsEntry {
 export class TcpNetworkBackend implements NetworkIO {
   private connections = new Map<number, Connection>();
   private dns = new Map<string, DnsEntry>();
+  // The guest sees the host's sockets as a NAT gateway on its own link
+  // (egress-link.ts); it never sees the host's real addresses.
+  private readonly egress = new EgressLink();
 
-  connect(handle: number, addr: Uint8Array, port: number): void {
+  get localAddress(): Uint8Array { return this.egress.localAddress; }
+  get localNetmask(): Uint8Array { return this.egress.localNetmask; }
+  udpSourceAddress(destination: Uint8Array): Uint8Array { return this.egress.udpSourceAddress(destination); }
+  bindUdp(id: string, addr: Uint8Array, port: number, target: UdpReceiveTarget): number { return this.egress.bindUdp(id, addr, port, target); }
+  unbindUdp(id: string): void { this.egress.unbindUdp(id); }
+  sendDatagram(): number { return this.egress.sendDatagram(); }
+
+  connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void {
+    if (!this.egress.ownsSource(source)) throw Object.assign(new Error("EADDRNOTAVAIL"), { errno: 99 });
     const ip = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`;
     const socket = new net.Socket({ allowHalfOpen: true });
     const conn: Connection = {
@@ -77,6 +87,7 @@ export class TcpNetworkBackend implements NetworkIO {
       recvBuf: Buffer.alloc(0),
       closed: false,
       readEnded: false,
+      readShutdown: false,
       connected: false,
       error: null,
     };
@@ -85,7 +96,7 @@ export class TcpNetworkBackend implements NetworkIO {
       conn.connected = true;
     });
     socket.on("data", (data: Buffer) => {
-      conn.recvBuf = Buffer.concat([conn.recvBuf, data]);
+      if (!conn.readShutdown) conn.recvBuf = Buffer.concat([conn.recvBuf, data]);
     });
     socket.on("end", () => {
       conn.readEnded = true;
@@ -98,7 +109,9 @@ export class TcpNetworkBackend implements NetworkIO {
       conn.readEnded = true;
     });
 
-    socket.connect(port, ip);
+    // A bound guest port is kept on the host side of the NAT; the guest's
+    // address is its own, so the host chooses its real source address.
+    socket.connect({port,host:ip,...(source?.port ? {localPort:source.port} : {})});
     this.connections.set(handle, conn);
   }
 
@@ -122,7 +135,7 @@ export class TcpNetworkBackend implements NetworkIO {
   send(handle: number, data: Uint8Array, _flags: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
-    if (conn.error) throw conn.error;
+    if (conn.error) throw Object.assign(conn.error,{errno:mapNetErrnoCode((conn.error as NodeJS.ErrnoException).code)});
     if (
       conn.closed ||
       conn.socket.destroyed ||
@@ -142,7 +155,7 @@ export class TcpNetworkBackend implements NetworkIO {
   recv(handle: number, maxLen: number, flags: number): Uint8Array {
     const conn = this.connections.get(handle);
     if (!conn) throw new Error("ENOTCONN");
-    if (conn.error) throw conn.error;
+    if (conn.error) throw Object.assign(conn.error,{errno:mapNetErrnoCode((conn.error as NodeJS.ErrnoException).code)});
 
     if (conn.recvBuf.length > 0) {
       const len = Math.min(maxLen, conn.recvBuf.length);
@@ -162,30 +175,49 @@ export class TcpNetworkBackend implements NetworkIO {
     throw new EagainError();
   }
 
-  poll(handle: number, events: number): number {
+  /**
+   * Report the OS-level facts `net.Socket` exposes. No POSIX readiness
+   * decision is made here — `runtime_core::net_readiness` makes it.
+   */
+  readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
 
-    if (conn.error) return POLLERR;
-
-    let revents = 0;
-    if ((events & POLLIN) !== 0 && (conn.recvBuf.length > 0 || conn.readEnded || conn.closed)) {
-      revents |= POLLIN;
+    let facts = 0;
+    if (conn.error) {
+      facts |= NET_READINESS.ERROR
+        | (mapNetErrnoCode((conn.error as NodeJS.ErrnoException).code)
+          << NET_READINESS.ERRNO_SHIFT);
     }
-    if (conn.closed) {
-      revents |= POLLHUP;
-    }
+    if (conn.recvBuf.length > 0) facts |= NET_READINESS.RECV_READY;
+    if (conn.readEnded || conn.closed) facts |= NET_READINESS.RECV_EOF;
+    if (conn.closed) facts |= NET_READINESS.HANGUP;
     if (
-      (events & POLLOUT) !== 0 &&
-      conn.connected &&
-      !conn.closed &&
-      !conn.socket.destroyed &&
-      !conn.socket.writableEnded &&
-      conn.socket.writable
+      conn.closed ||
+      conn.socket.destroyed ||
+      conn.socket.writableEnded ||
+      !conn.socket.writable
     ) {
-      revents |= POLLOUT;
+      facts |= NET_READINESS.SEND_CLOSED;
+    } else if (conn.connected) {
+      facts |= NET_READINESS.SEND_READY;
     }
-    return revents;
+    return facts;
+  }
+
+  localEndpoint(handle: number): NetworkAddress {
+    const value = this.connections.get(handle)?.socket.address();
+    if (!value || typeof value === "string" || !("family" in value) || value.family !== "IPv4") throw Object.assign(new Error("ENOTCONN"),{errno:107});
+    // This machine's side of the NAT: its own address, the host's port.
+    return {addr:this.egress.localAddress,port:value.port};
+  }
+
+  shutdown(handle: number, how: number): void {
+    const conn = this.connections.get(handle);
+    if (!conn) throw Object.assign(new Error("ENOTCONN"), {errno:107});
+    if (!Number.isInteger(how) || how < 0 || how > 2) throw Object.assign(new Error("EINVAL"),{errno:22});
+    if (how === 0 || how === 2) {conn.readShutdown=true; conn.readEnded=true; conn.recvBuf=Buffer.alloc(0);}
+    if ((how === 1 || how === 2) && !conn.socket.writableEnded) conn.socket.end();
   }
 
   close(handle: number): void {

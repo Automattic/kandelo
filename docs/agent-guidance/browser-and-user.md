@@ -9,11 +9,49 @@ implement alternate runtime behavior.
 metadata, and sharing behavior. App-specific React wiring and page fixtures
 belong under `apps/browser-demos`.
 
+The main thread must never own a VFS `SharedArrayBuffer` — live or staging.
+The kernel worker owns the live filesystem (`kernelOwnedFs`), and boot-time
+image composition runs in a disposable worker
+(`apps/browser-demos/pages/kandelo/kernel-host/image-composer.ts`) whose
+staging buffer dies with its realm. `Worker.terminate()` is the only mechanism
+that reclaims a shared buffer deterministically on WebKit — a buffer the
+persistent main thread merely dropped is released only if a garbage collection
+happens to run, and reserved shared memory creates almost no heap pressure to
+trigger one, so main-thread VFS buffers accumulate across machine boots until
+Safari throws `Out of memory` (#863). Treat any new main-thread
+`SharedArrayBuffer` or long-lived image buffer in a boot path as a defect:
+compose in a worker and hand the main thread plain, transferable bytes (an
+image composed with `KandeloImageFs` lives in that module's memory, which is
+why the composer runs in a worker). A GC nudge
+(`settleWebKitReclaim` in `apps/browser-demos/lib/kernel-owned-boot.ts`, still
+used by the benchmark page's main-thread build path) is best-effort with a
+deadline and does not count as reclamation.
+
 `KernelHost` is a compatibility surface. UI surfaces should consume machine
 state through that contract: status, boot descriptor, dmesg, process events,
 PTY, VFS reads, proc/memory inspection, syscall trace, framebuffer, web
 preview, presentation preferences, demo guide, and snapshots. Avoid reaching
 around it unless the behavior is truly app-local.
+
+Agent tools must use that same surface. Run guest commands and file writes
+as the configured guest account, collect output from owned command families,
+and keep agent commands separate from the user's interactive input. A signal
+being sent is not proof that a job finished: require authoritative process
+exit, exact worker detachment, and process-record cleanup. Refresh image tools
+from notifications emitted by the filesystem owner; a host-side file cache
+cannot know what a guest changed. See `docs/webmcp.md` for the tool contract.
+
+Use the same precedence rules for initial tool loading, a full refresh, and
+a single-file update. Choose the definition that owns a name before parsing
+it. A malformed user override must remain disabled rather than unexpectedly
+restoring a different shipped command; removal can restore the fallback.
+
+Distinguish guest account permissions from browser origin authority. The
+native WebMCP API lets same-origin frames discover and invoke tools.
+Registering only in the app document and limiting a service worker's scope
+do not isolate guest preview scripts from that origin. Keep this browser
+trust boundary explicit; do not claim preview isolation without testing an
+actual origin boundary.
 
 Boot descriptors and shared URLs are untrusted input. They need explicit
 versioning, size caps, mount limits, path validation, allowed source kinds, and

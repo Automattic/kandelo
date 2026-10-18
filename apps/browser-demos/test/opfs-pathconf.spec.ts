@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { platform, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -14,20 +14,11 @@ const clientWorkerPath = resolve(
   "fixtures/opfs-pathconf-client-worker.ts",
 );
 
-test("OPFS reports path configuration from live paths and handles", async ({
+test("OPFS answers only its own path configuration, from live paths and handles", async ({
   playwright,
   browserName,
   baseURL,
 }, testInfo) => {
-  // Skip Firefox on macOS only: today Playwright cannot launch Firefox on
-  // macOS 26+ (headless fails profile init with "Could not find profile
-  // folder"; headed exits before the control pipe connects). This is a local
-  // launch limitation, not an OPFS gap, so Firefox still runs this on Linux.
-  // Remove once a newer Playwright/Firefox launches on macOS.
-  test.skip(
-    browserName === "firefox" && platform() === "darwin",
-    "Playwright cannot launch Firefox on macOS (profile-init failure); Firefox is covered on Linux",
-  );
   expect(baseURL).toBeTruthy();
 
   // Run under a persistent context. WebKit only backs the Origin Private File
@@ -107,9 +98,9 @@ test("OPFS reports path configuration from live paths and handles", async ({
 
             const pending = receive<{
               type: "result";
-              nameMax: number;
-              pathMax: number;
-              asyncIo: number;
+              nameMax: string | null;
+              pathMax: string | null;
+              asyncIo: string | null;
               symlinks: null;
               timestampResolution: null;
               closedHandleError: string;
@@ -130,9 +121,9 @@ test("OPFS reports path configuration from live paths and handles", async ({
 
       expect(result).toEqual({
         type: "result",
-        nameMax: 255,
-        pathMax: 4096,
-        asyncIo: 1,
+        nameMax: "ENOSYS: pathconf name 3 is not a value this host can source",
+        pathMax: "ENOSYS: pathconf name 4 is not a value this host can source",
+        asyncIo: "ENOSYS: pathconf name 10 is not a value this host can source",
         symlinks: null,
         timestampResolution: null,
         closedHandleError: "EBADF",

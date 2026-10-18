@@ -21,11 +21,19 @@ export function browserRepositoryAliases(repoRoot) {
  */
 export const browserKernelModuleSpecifier = "@kernel-wasm";
 export const browserRootfsModuleSpecifier = "@rootfs-vfs";
+/**
+ * The wasm32 image-writer module (`crates/kandelo-image-module`) that
+ * `KandeloImageFs` instantiates. The browser BUILDS its boot images with it
+ * (`apps/browser-demos/lib/kernel-owned-boot.ts` installs its bytes once per
+ * page), so a build that cannot supply it cannot boot a machine.
+ */
+export const browserImageModule32ModuleSpecifier = "@kandelo-image-module32-wasm";
 export const browserPagesVfsProductsModuleSpecifier =
   "virtual:kandelo-pages-vfs-products";
 
 export const browserVirtualModuleCapabilities = Object.freeze({
   [browserKernelModuleSpecifier]: "kernel-wasm",
+  [browserImageModule32ModuleSpecifier]: "kandelo-image-module32-wasm",
   [browserPagesVfsProductsModuleSpecifier]: "pages-vfs-products",
   [browserRootfsModuleSpecifier]: "rootfs-vfs",
 });

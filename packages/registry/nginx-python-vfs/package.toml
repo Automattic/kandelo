@@ -1,0 +1,36 @@
+kind = "program"
+name = "nginx-python-vfs"
+version = "0.1.0"
+kernel_abi = 43
+depends_on = [
+  "shell@0.1.0",
+  "nginx@1.24.0",
+  "cpython@3.13.3",
+  "dinit@0.19.4",
+  "kernel@0.1.0",
+]
+
+# The builder boots the declared kernel to prewarm CPython bytecode (compile
+# the stdlib to .pyc before saving the image), so the kernel is an explicit
+# build dependency rather than an ambient checkout artifact — the same pattern
+# nginx-php-vfs uses for its opcache prewarm.
+
+# Composite VFS image for the nginx + Python (wsgiref) browser demo. nginx
+# reverse-proxies /api/ to a standard-library Python WSGI app backed by SQLite.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "images/vfs/scripts/build-nginx-python-vfs-image.sh"
+
+[[outputs]]
+name = "nginx-python-vfs"
+wasm = "nginx-python-vfs.vfs.zst"
+# This output is a VFS image, not a Wasm executable.
+fork_instrumentation = "disabled"

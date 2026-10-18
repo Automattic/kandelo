@@ -3,11 +3,20 @@
  * Verifies that the host runtime correctly handles wasm64 binaries
  * with 64-bit pointers and memory64.
  */
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, vi } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { detectPtrWidth } from "../src/constants";
 import { resolveBinary } from "../src/binary-resolver";
 import { readFileSync } from "node:fs";
+
+
+// This file hands each guest a 10s budget via runCentralizedProgram's
+// `timeout`. Vitest's 5s default wall budget is smaller than that, so on any
+// machine slower than a quiet CI runner the wall clock fires first and reports
+// "Test timed out in 5000ms" instead of the guest timeout the test declared.
+// Give the wall budget room to contain the guest budget; the guest timeout
+// still fails the test with its own stdout/stderr diagnostics.
+vi.setConfig({ testTimeout: 30_000 });
 
 function loadWasm(relPath: string): ArrayBuffer {
   const buf = readFileSync(resolveBinary(relPath));

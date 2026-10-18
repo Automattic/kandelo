@@ -19,29 +19,28 @@ import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { MemoryFileSystem } from "../host/src/vfs/memory-fs.ts";
+import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
 import { validateVfsAssetGroupManifest } from "../web-libs/kandelo-session/src/vfs-asset-group.ts";
 import {
   buildLocalVfsAssetGroup,
   publishGeneratedTargets,
 } from "./build-local-vfs-asset-group.ts";
 import {
+  projectedArtifact,
+  readGeneratedPagesRegistry,
+} from "./check-pages-vfs-product-registry.mjs";
+import { loadVfsProductCatalog } from "./vfs-product-catalog.mjs";
+import {
   createVfsProductDeploymentPlugin,
   loadVfsProductDeploymentMap,
 } from "./vfs-product-deployment.ts";
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const PRODUCTS = [
-  ["browser-lamp", "lazy", "lamp.vfs.zst", "lamp.vfs.zst"],
-  ["browser-main-shell", "eager", "shell.vfs.zst", "shell.vfs.zst"],
-  ["browser-nginx", "lazy", "nginx-vfs.vfs.zst", "nginx-vfs.vfs.zst"],
-  ["browser-nginx-php", "lazy", "nginx-php-vfs.vfs.zst", "nginx-php-vfs.vfs.zst"],
-  ["browser-node", "lazy", "node-vfs.vfs.zst", "node-vfs.vfs.zst"],
-  ["browser-wordpress", "lazy", "wordpress.vfs.zst", "wordpress.vfs.zst"],
-  ["platform-rootfs", "eager", "rootfs.vfs", "rootfs.vfs"],
-] as const;
+// The fixture ships exactly the images the real Pages registry names, so
+// adding a demo product needs no edit here.
+const PRODUCTS = pagesProducts();
 
-test("produces the exact seven-image and 80-body closure from all legacy reference forms", async () => {
+test("produces every registered image and the 80-body closure from all legacy reference forms", async () => {
   const fixture = await createFixture();
   try {
     await withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
@@ -120,6 +119,61 @@ test("produces the exact seven-image and 80-body closure from all legacy referen
       ),
       fixture.members.get("programs/wasm32/lazy/file-000.bin"),
     );
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("stages a complete deployment larger than its bounded capture budget", async () => {
+  const fixture = await createFixture();
+  try {
+    const bodies = [...fixture.members.values()];
+    const budget = Math.max(...bodies.map((body) => body.byteLength));
+    assert.ok(bodies.reduce((total, body) => total + body.byteLength, 0) > budget);
+    await withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+      buildLocalVfsAssetGroup({
+        assetGroupDirectory: fixture.outputDirectory,
+        productMapPath: fixture.productMapPath,
+        sourceRoot,
+        maxCaptureBytes: budget,
+      }),
+    );
+    for (const [_id, _load, sourceName, output] of PRODUCTS) {
+      assert.deepEqual(
+        readFileSync(join(fixture.outputDirectory, "images", output)),
+        fixture.members.get(`programs/wasm32/${sourceName}`),
+      );
+    }
+    const manifest = validateVfsAssetGroupManifest(JSON.parse(
+      readFileSync(join(fixture.outputDirectory, "manifest.json"), "utf8"),
+    ));
+    for (const asset of manifest.assets) {
+      const bytes = readFileSync(join(fixture.outputDirectory, asset.path));
+      assert.equal(bytes.byteLength, asset.bytes);
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), asset.sha256);
+    }
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("rejects a body above the capture budget and removes unpublished staging", async () => {
+  const fixture = await createFixture();
+  try {
+    await assert.rejects(
+      withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+        buildLocalVfsAssetGroup({
+          assetGroupDirectory: fixture.outputDirectory,
+          productMapPath: fixture.productMapPath,
+          sourceRoot,
+          maxCaptureBytes: 1,
+        }),
+      ),
+      /total retained-byte limit/,
+    );
+    assert.equal(existsSync(fixture.outputDirectory), false);
+    assert.equal(existsSync(fixture.productMapPath), false);
+    assert.deepEqual(readdirSync(dirname(fixture.outputDirectory)), []);
   } finally {
     fixture.dispose();
   }
@@ -423,7 +477,7 @@ test("replaces generated output when the existing group has an extra file", asyn
           ),
         ),
       ).products.length,
-      7,
+      PRODUCTS.length,
     );
   } finally {
     fixture.dispose();
@@ -721,6 +775,16 @@ interface Fixture {
   sourceOnlyRoot: string;
 }
 
+test("publication checks the verified aggregate byte budget before replacing outputs", () => {
+  const fixture = publicationFixture();
+  try {
+    assert.throws(() => publishGeneratedTargets({ ...fixture, stagedGroupBytes: 1 }),
+      /staged asset group exceeds the reuse byte ceiling/);
+    assert.equal(readFileSync(join(fixture.assetGroupDirectory, "value"), "utf8"), "old group\n");
+    assert.equal(readFileSync(fixture.productMapPath, "utf8"), "old map\n");
+  } finally { fixture.dispose(); }
+});
+
 function publicationFixture() {
   const root = realpathSync(
     mkdtempSync(join(tmpdir(), "kandelo-vfs-publication-")),
@@ -741,9 +805,35 @@ function publicationFixture() {
     productMapPath,
     root,
     stagedFileCount: 1,
+    stagedGroupBytes: Buffer.byteLength("new group\n"),
     stagedGroup,
     stagedMap,
   };
+}
+
+function pagesProducts(): ReadonlyArray<
+  readonly [id: string, load: "eager" | "lazy", sourceName: string, output: string]
+> {
+  const registry = readGeneratedPagesRegistry(
+    join(
+      sourceRoot,
+      "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.generated.json",
+    ),
+  );
+  const catalog = loadVfsProductCatalog(
+    join(sourceRoot, "images/vfs/products/generated/catalog.json"),
+  );
+  return registry.products
+    .map((entry: { id: string; load: "eager" | "lazy" }) => {
+      const product = catalog.productById(entry.id);
+      return [
+        entry.id,
+        entry.load,
+        projectedArtifact(product).filename,
+        product.output,
+      ] as const;
+    })
+    .sort((left, right) => (left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0));
 }
 
 async function createFixture(
@@ -773,7 +863,11 @@ async function createFixture(
 
   const images = new Map<string, Buffer>();
   for (const [id, _load, sourceName] of PRODUCTS) {
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    // The producer that writes every shipped image. These fixtures stand in
+    // for product images the Pages closure stages, so they must be the kind of
+    // image it will actually meet: the closure reads them through the module
+    // rather than through host-side JSON sections.
+    const fs = KandeloImageFs.create();
     if (id === "browser-main-shell") {
       const registeredLazyFileCount = options.collidingImageMember
         ? lazyFileCount - 1
@@ -792,29 +886,26 @@ async function createFixture(
       }
       for (const name of ["vim.zip", "nethack.zip"] as const) {
         const body = assetBodies.get(name)!;
-        fs.registerLazyTree(
-          {
-            bytes: body.byteLength,
-            decoder: "zip-v1",
-            expandedBytes: 1,
-            mediaType: "application/zip",
-            sha256: sha256(body),
-            sourceEntryCount: 1,
-            transports: [name],
-          },
-          [
-            {
-              inodeGroup: name,
-              mode: 0o755,
-              size: 1,
-              sourcePath: `bin/${name}`,
-              type: "file",
-              vfsPath: `/opt/${name}`,
-            },
-          ],
-        );
+        fs.registerLazyArchive({
+          url: name,
+          entries: [{
+            fileName: `bin/${name}`,
+            fileNameBytes: new TextEncoder().encode(`bin/${name}`),
+            compressedSize: 1,
+            uncompressedSize: 1,
+            compressionMethod: 0,
+            localHeaderOffset: 0,
+            mode: 0o755,
+            isDirectory: false,
+            isSymlink: false,
+            externalAttrs: 0,
+            creatorOS: 3,
+          }],
+          mountPrefix: "/opt",
+          integrity: { sha256: sha256(body), bytes: body.byteLength },
+        });
       }
-    } else if (id === "browser-node" && options.collidingImageMember) {
+    } else if (id === "browser-nginx" && options.collidingImageMember) {
       const body = images.get("browser-lamp")!;
       fs.registerLazyFile(
         `/opt/${id}`,

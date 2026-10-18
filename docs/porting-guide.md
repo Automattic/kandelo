@@ -22,6 +22,42 @@ wasm32posix-configure [--enable-static] [other flags]
 make
 ```
 
+Executable links allow unresolved symbols only from the generated host
+import list (`-Wl,--allow-undefined-file=...`). Since ABI 46, ordinary
+Autoconf link probes reject missing functions; they no longer succeed for
+every symbol. Shared-library side modules still allow unresolved symbols
+because the dynamic loader resolves them against the main program.
+See [SDK Guide](sdk-guide.md) for the linking contract.
+
+The configure wrappers load `sdk/config.site` for target cache answers.
+If a cached result disagrees with the target, inspect the actual sysroot:
+
+```bash
+wasm32posix-nm "$WASM_POSIX_SYSROOT/lib/libc.a" | grep -E ' [TW] function_name$'
+```
+
+`T` and `W` identify defined functions, including weak definitions; `U`
+is an unresolved reference. A function that links may still report
+`ENOSYS` at runtime, so symbol presence is not proof of syscall support.
+For a function supplied by a dependency, inspect that dependency's target
+archive and include its required libraries in `LIBS`.
+
+Inspect upstream's `configure.ac`, macros, or generated `configure` before
+seeding cache answers. Custom probes may use different keys or meanings
+from `ac_cv_func_<name>`. For example, jq's `AC_FIND_FUNC` macros also read
+`ac_cv_funclib_<name>`; a cached `ac_cv_func_<name>=yes` can skip populating
+that key and leave the custom result empty. Its math probes use
+`ac_cv_lib_m_<name>`. Seed the keys the macro actually consumes from target
+evidence, preserving each macro's expected answer format, rather than
+forcing features off to make the build pass.
+
+Cross-compilation still prevents configure from running target programs.
+Use verified target answers, and investigate a failed probe's actual
+compile/link diagnostic before adding a cache override. Check
+[POSIX status](posix-status.md) for runtime semantics, and declare required
+libraries explicitly in `LIBS` rather than forcing library searches to
+report success.
+
 **CMake projects** (MariaDB, PCRE2):
 ```bash
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=wasm32-posix-toolchain.cmake [flags]
@@ -35,18 +71,18 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib [flags]
 
 ### Step 2: Handle common issues
 
-**Missing features**: Check [wasm-limitations.md](wasm-limitations.md) for what cannot be implemented (mprotect, raw server sockets in browser, guest-initiated pthread_create). Most software has graceful fallbacks for these.
+**Missing features**: Check [wasm-limitations.md](wasm-limitations.md) for what cannot be implemented (mprotect, raw server sockets in browser, `PTHREAD_CANCEL_ASYNCHRONOUS`). Most software has graceful fallbacks for these.
 
 **fork() support**: If the program uses `fork()` or fork-like behavior, run
-`wasm-fork-instrument` as the final step of the wasm pipeline (after any
-`wasm-opt -O2`). Fork-like behavior includes `vfork()`, `_Fork()`, shell
+`wasm-fork-instrument` after linking and after any `wasm-opt` pass of your
+own. The tool runs `wasm-opt -O2` over its output itself. Fork-like behavior includes `vfork()`, `_Fork()`, shell
 pipelines, command substitution, `system()`, `popen()`, and helper processes
 implemented through fork.
 ```bash
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm
 ```
 
-The tool auto-discovers the fork-call closure via call-graph analysis (direct + indirect calls). No onlylist file is needed, and no manual tracing of fork paths. It must run last — it hardcodes mutable-global offsets at instrument time, and any later pass that reorders globals will corrupt the fork save buffer.
+The tool auto-discovers the fork-call closure via call-graph analysis (direct + indirect calls). No onlylist file is needed, and no manual tracing of fork paths. Optimize before instrumenting (the SDK's `-O` link already runs `wasm-opt`): wasm-opt's inlining shrinks the call graph the tool has to instrument, and the tool's own post-pass then cleans up the code it added. See "Optimization around instrumentation" in [fork-instrumentation.md](fork-instrumentation.md).
 
 Instrumentation is mandatory for fork-using programs. Do not treat it as an
 optional optimization, and do not use Binaryen Asyncify as a fallback. The host
@@ -57,11 +93,75 @@ for the full transform and ABI.
 **Thread support**: Programs that create threads (MariaDB, Redis) work via the kernel's `clone()` syscall. No special compilation flags needed, but the host runner must implement the `onClone` callback.
 
 **C++ and libc++**: For C++ programs, depend on the `libcxx` package and
-compile against its resolved headers and libraries, normally symlinked into
-the Kandelo sysroot by the consuming package build script. Do not copy libc++
+compile against its resolved headers and libraries. Package builds overlay
+them onto a private copy of the SDK sysroot with
+`kandelo_package_prepare_private_sysroot` (`scripts/package-build-roots.sh`);
+never copy them into the shared worktree sysroot, whose contents would then
+depend on build order. Do not copy libc++
 headers from an arbitrary host LLVM install; the libcxx package generates and
 ships a version-matched header tree with its `libc++.a` and `libc++abi.a`.
 See `packages/registry/mariadb/build-mariadb.sh` for a complete example.
+
+**Host code generators**: Some build systems run their own generators on the
+build machine and compile the output for the target — `moc`/`rcc`/`uic` for Qt,
+the same role `wayland-scanner` fills for Wayland. Declare the generator as a
+`[[host_tools]]` entry and take it from `flake.nix`, not from an ambient host
+install. When the generator ships as part of the same project being
+cross-compiled, its version is usually locked to the target version: Qt's CMake
+reads the host tools through `QT_HOST_PATH` and refuses a host/target mismatch,
+so `flake.nix`'s pinned Qt fixes the version the recipe may declare. The
+resolver understands only `>=` constraints, so a recipe needing an exact match
+must check it itself and fail loudly. See
+`packages/registry/qtbase/build-qtbase.sh`.
+
+**A generator the pinned host package does not ship**: A host package built for
+the build machine carries only the generators that machine's platform enables,
+which is not always the set a cross-build needs. nixpkgs' darwin `qtbase` has no
+`qtwaylandscanner`, because qtbase looks for the `Wayland::Scanner` it depends
+on only `if(LINUX)`; a Qt Wayland cross-build on a Mac therefore stops at
+`Failed to find the host tool "Qt6::qtwaylandscanner"`. Build the missing
+generator in `flake.nix` from the same source and version the host package
+pins, and publish the CMake package the cross-build looks for. Gate it on the
+same condition the host package uses, so the platform that already ships the
+generator does not receive a second copy. Keep it out of the recipe's own
+output: a package archive is content-hashed and published, so a host binary
+inside one makes an arm64 Mac and an x86\_64 runner produce different archives
+for the same source. See `nix/qtwaylandscanner/` and
+`host/test/qtwaylandscanner-host-tool.test.ts`.
+
+Write that package's version file by hand, or clear `CMAKE_SIZEOF_VOID_P`
+before `write_basic_package_version_file`. CMake's helper bakes the pointer
+width of the machine that built the tool into a bitness check, and a wasm32
+consumer then rejects the package it just found — reported as
+`version: 6.10.2 (64bit)` under "configuration files were considered but not
+accepted". A test project written in `LANGUAGES NONE` has no pointer width and
+will not reproduce it; set `CMAKE_SIZEOF_VOID_P` to 4 so it does.
+
+**OS detection in headers**: `CMAKE_SYSTEM_NAME=Linux` settles the build
+system only. Source that branches on preprocessor macros still sees a
+toolchain defining `__unix__` and `__wasm32__` but not `__linux__`, which the
+SDK withholds on purpose — Kandelo has no Linux kernel (`sdk/config.site`).
+A port whose headers demand a known OS needs `-D__linux__=1` in its own recipe,
+as `basu`, `erlang`, `spidermonkey` and `qtbase` do. Expect the consequence:
+the source then takes Linux paths, and each one must be backed. Qt needed its
+futex path disabled and an empty `<linux/fs.h>` supplied from the package's own
+include directory.
+
+Every consumer of that library needs the same defines. They are not recorded in
+the archive: a program including `<QGuiApplication>` without `-D__linux__=1`
+stops at the same `qsystemdetection.h` error the recipe hit, and one without
+`-DQT_LINUXBASE` compiles against headers that disagree with the archives about
+the futex. Carry the recipe's target defines into the consumer's compile line —
+see `packages/registry/qtbase/test/build-gui-smoke.sh`.
+
+**Baked install prefixes**: A library that records its configure-time
+`CMAKE_INSTALL_PREFIX` writes the resolver's staging directory — whose name
+carries the builder's PID — into the shipped artifact, so two builds of the
+same source differ. Configure against the guest path the code will run under
+and relocate at install time with `cmake --install --prefix`, then assert the
+staging path is absent before the recipe exits. Qt does this through
+`qt_prfxpath` in `libQt6Core.a`; fontconfig and gdk-pixbuf did it through
+`--with-templatedir` and `--localedir`.
 
 ### OSS playback with `/dev/dsp`
 
@@ -149,25 +249,15 @@ Any time a ported program needs more than a handful of runtime files that togeth
 
 ### How it works
 
-`MemoryFileSystem.registerLazyArchiveFromEntries(url, zipEntries, mountPrefix)` walks the central directory of a zip, creates inode stubs for every file under `mountPrefix`, and remembers the archive URL. On first access to any stub in the group, the worker fetches the full zip, materializes every entry into memory, and future reads are served from memory. Materialization happens once per VFS instance.
+At image-build time, `KandeloImageFs.registerLazyArchive({ url, entries, mountPrefix })` (`images/vfs/lib/kandelo-image-fs.ts`) validates every member path of a zip's central directory, then creates deferred inodes for each file under `mountPrefix` and records the archive URL in the image. At runtime the kernel owns those inodes: on first read of any member it asks the host for the archive through `host_fetch_deferred`, keeps the archive and the members it extracts in kernel memory, and serves later reads from there. `stat` alone never downloads content. The fetch happens once per booted machine; nothing is evicted while the machine runs, which is why large archives count against the kernel's memory budget (see `docs/agent-guidance/host-runtime.md`).
 
-The legacy ZIP API remains supported for existing browser bundles. New
-package-layer infrastructure may instead use `registerLazyTree`, whose closed
-content descriptor separates the immutable bytes and decoder from a complete
-filesystem inventory. It supports deterministic ZIP as a compatibility
-scaffold and bounded gzip-compressed POSIX/PAX TAR, preserves declared hard
-links as one inode, and verifies the whole tree before an atomic regular-file
-commit. Ordinary first open/read and executable resolution use the same
-preparation path; `stat` alone never downloads content. A failed preparation
-does not expose partial or zero-byte success and may be retried.
-
-At runtime the URL stored in the group is bare — a plain filename like
-`vim.zip`. The browser runtime first awaits `restoreVerifiedVfsImage(...)`,
-then calls `memfs.rewriteLazyArchiveUrls(url => BASE_URL + url)` once, so the
-archive resolves against the deployment's base URL instead of the build-time
-one. Do not inspect, mutate, rewrite, or boot a restored image before the
-verified restore returns: imported atomic lazy-tree seals are an untrusted
-cryptographic boundary.
+At runtime the URL stored in the image is usually bare — a plain filename
+like `vim.zip`. The host resolves it when the kernel asks for it: a URL in
+`lazyUrlMap` uses the mapped address, and any other relative URL resolves
+against `lazyUrlBase` (the deployment's base URL by default). The image itself
+is never rewritten. When the image records a digest for the fetched bytes, the
+kernel checks it before the bytes become file contents, and a failed fetch surfaces as an I/O error on the read that needed
+it rather than as a zero-byte file.
 
 ### Build-side contract
 
@@ -323,7 +413,12 @@ kernelWorker.registerProcess(pid, memory, channelOffsets, options?)
 // Set process working directory
 kernelWorker.setCwd(pid, path)
 
-// Provide stdin data
+// Give a spawned (non-PTY) process host-supplied stdin: fd 0 becomes the
+// read end of a kernel pipe whose write end the host owns
+kernelWorker.installHostStdinPipe(pid)
+
+// Write into that pipe: setStdinData closes it after the bytes, so readers
+// see EOF; appendStdinData leaves it open for more
 kernelWorker.setStdinData(pid, data: Uint8Array)
 kernelWorker.appendStdinData(pid, data: Uint8Array)
 
@@ -424,7 +519,8 @@ runBtn.addEventListener("click", async () => {
     onStderr: (data) => appendOutput(decoder.decode(data), "stderr"),
   });
 
-  await kernel.init(); // fetches kernel wasm automatically
+  // Fetches the kernel wasm and the canonical rootfs image automatically.
+  await kernel.initFromImage({ vfsImage: "default" });
 
   const exitCode = await kernel.spawn(programBytes, ["my-program", "--arg"]);
   appendOutput(`\nExited with code ${exitCode}\n`);
@@ -437,7 +533,6 @@ runBtn.addEventListener("click", async () => {
 ```typescript
 const kernel = new BrowserKernel({
   maxWorkers?: number,         // Max concurrent workers (default: 4)
-  fsSize?: number,             // MemoryFileSystem size in bytes (default: 16MB)
   maxMemoryPages?: number,     // Max Wasm pages per process (default: 16384 = 1GB)
   env?: string[],              // Environment variables
   onStdout?: (data: Uint8Array) => void,
@@ -446,14 +541,14 @@ const kernel = new BrowserKernel({
   threadModule?: WebAssembly.Module,       // Pre-compiled module for threads
 });
 
-// Initialize (fetches kernel wasm if not provided)
-await kernel.init(kernelWasmBytes?: ArrayBuffer)
+// Boot the kernel from a VFS image (fetches kernel wasm if not provided).
+// The kernel owns the filesystem from here on.
+await kernel.initFromImage({ kernelWasm?: ArrayBuffer, vfsImage: Uint8Array | "default" })
 
-// Access filesystem for pre-populating files
-kernel.fs.mkdir("/data", 0o755)
-kernel.fs.open("/data/config.txt", 0x241, 0o644)  // O_WRONLY|O_CREAT|O_TRUNC
-kernel.fs.write(fd, data, data.length, -1)
-kernel.fs.close(fd)
+// Change files between process spawns (served by the kernel's filesystem)
+await kernel.writeFileToVfs("/data/config.txt", data, 0o644)
+await kernel.readFileFromVfs("/data/config.txt")
+await kernel.unlinkFileFromVfs("/data/config.txt")
 
 // Spawn a process
 const exitCode = await kernel.spawn(programBytes, argv, {
@@ -463,9 +558,10 @@ const exitCode = await kernel.spawn(programBytes, argv, {
   pty?: boolean,          // Allocate a PTY for this process
 })
 
-// Stdin operations
-kernel.setStdinData(pid, data)       // Set complete stdin (implies EOF)
-kernel.appendStdinData(pid, data)    // Append to stdin buffer (interactive)
+// Stdin operations. Host stdin is a kernel pipe on fd 0, so children that
+// inherit fd 0 share the stream and its read offset, as on Unix.
+kernel.setStdinData(pid, data)       // Write the bytes, then close (EOF)
+kernel.appendStdinData(pid, data)    // Write the bytes, keep open (interactive)
 
 // PTY operations (for terminal demos)
 kernel.ptyWrite(pid, data)           // Write to PTY master
@@ -490,11 +586,11 @@ await kernel.destroy()
 
 ### Filesystem pre-population
 
-The kernel reads files from the shared `MemoryFileSystem`. For demos with many files, use a **VFS image** — a pre-built binary snapshot of the filesystem:
+The kernel owns the filesystem: it boots from a **VFS image** — a pre-built
+binary snapshot of the filesystem — and serves `/` from it:
 
 ```typescript
 import { BrowserKernel } from "@host/browser-kernel-host";
-import { restoreVerifiedVfsImage } from "@host/vfs/load-image";
 
 // Fetch kernel wasm and VFS image in parallel
 const [kernelBuf, vfsImageBuf] = await Promise.all([
@@ -502,41 +598,34 @@ const [kernelBuf, vfsImageBuf] = await Promise.all([
   fetch(vfsImageUrl).then(r => r.arrayBuffer()),
 ]);
 
-// Restore the filesystem and authenticate imported atomic lazy-tree seals
-// before inspecting, mutating, or giving the image to the kernel.
-const memfs = await restoreVerifiedVfsImage(
-  new Uint8Array(vfsImageBuf),
-  { maxByteLength: 512 * 1024 * 1024 },  // allow growth up to the image's filesystem max
-);
-
-// Create kernel with pre-populated filesystem
-const kernel = await BrowserKernel.create({ kernelWasm: kernelBuf, memfs });
+// The main thread decodes the image and transfers the bytes; the kernel
+// verifies and loads it. The page keeps no filesystem of its own.
+const kernel = new BrowserKernel({ onStdout, onStderr });
+await kernel.initFromImage({
+  kernelWasm: kernelBuf,
+  vfsImage: new Uint8Array(vfsImageBuf),
+});
 ```
 
 See [docs/browser-support.md](browser-support.md#vfs-images) for how to create VFS image build scripts.
 
-For simple demos with few files, you can also write files directly:
+For simple demos with few files, boot the canonical image and write the
+files you need between spawns:
 
 ```typescript
-const kernel = new BrowserKernel({ fsSize: 32 * 1024 * 1024 }); // 32MB
-await kernel.init();
+const kernel = new BrowserKernel();
+await kernel.initFromImage({ vfsImage: "default" });
 
 // Write a config file
-const config = new TextEncoder().encode("key=value\n");
-const fd = kernel.fs.open("/etc/my.conf", 0x241, 0o644); // O_WRONLY|O_CREAT|O_TRUNC
-kernel.fs.write(fd, config, config.length, -1);
-kernel.fs.close(fd);
+await kernel.writeFileToVfs("/etc/my.conf", new TextEncoder().encode("key=value\n"));
 
 // Load a wasm binary into the filesystem (for exec)
-const dashBytes = await fetch(dashWasmUrl).then(r => r.arrayBuffer());
-const binFd = kernel.fs.open("/bin/sh", 0x241, 0o755);
-kernel.fs.write(binFd, new Uint8Array(dashBytes), dashBytes.byteLength, -1);
-kernel.fs.close(binFd);
-
-// Create symlinks for multicall binaries
-kernel.fs.symlink("/bin/coreutils", "/bin/ls");
-kernel.fs.symlink("/bin/coreutils", "/bin/cat");
+const toolBytes = await fetch(toolWasmUrl).then(r => r.arrayBuffer());
+await kernel.writeFileToVfs("/usr/local/bin/my-tool", new Uint8Array(toolBytes), 0o755);
 ```
+
+Symlinks, ownership and directory trees belong in the image: build them with
+`KandeloImageFs` at image-build time rather than at page load.
 
 ### HTTP bridge demos (nginx, WordPress)
 
@@ -682,7 +771,7 @@ library dep) for canonical references; the schema reference is in
 kind = "program"           # or "library" or "source"
 name = "myprog"
 version = "1.2.3"
-kernel_abi = 43            # current ABI_VERSION; required for packages with a [build] block
+kernel_abi = 47            # current ABI_VERSION; required for packages with a [build] block
 depends_on = ["zlib@1.3.1"]   # transitive deps the resolver will pull first
 
 [source]
@@ -824,31 +913,31 @@ source_roles = []
 That dependency entry does not itself make a product selectable. A product
 also needs a VFS-producing package whose declared output filename equals the
 product manifest's `output`, plus a `[[products]]` binding in
-`packages/sets/local-supported.toml`. The checked-in Node product is the
+`packages/sets/local-supported.toml`. The checked-in Ruby todo product is the
 executable example:
 
 ```toml
-# images/vfs/products/browser-node.toml
-id = "browser-node"
-output = "node-vfs.vfs.zst"
+# images/vfs/products/browser-ruby-todo.toml
+id = "browser-ruby-todo"
+output = "ruby-todo-vfs.vfs.zst"
 ```
 
 ```toml
-# packages/registry/node-vfs/package.toml
-name = "node-vfs"
+# packages/registry/ruby-todo-vfs/package.toml
+name = "ruby-todo-vfs"
 
 [[outputs]]
-name = "node-vfs"
-wasm = "node-vfs.vfs.zst"
+name = "ruby-todo-vfs"
+wasm = "ruby-todo-vfs.vfs.zst"
 fork_instrumentation = "disabled"
 ```
 
 ```toml
 # packages/sets/local-supported.toml
 [[products]]
-id = "browser-node"
-package = "node-vfs"
-manifest = "images/vfs/products/browser-node.toml"
+id = "browser-ruby-todo"
+package = "ruby-todo-vfs"
+manifest = "images/vfs/products/browser-ruby-todo.toml"
 ```
 
 Exercise that registered product through the same local DAG used by other
@@ -862,7 +951,7 @@ scripts/dev-shell.sh bash -lc '
     --set packages/sets/local-supported.toml \
     --source-cache-root "$HOME/.cache/kandelo/source-only" \
     --output-root "$PWD/local-binaries/source-only-v1" \
-    --product browser-node \
+    --product browser-ruby-todo \
     --jobs 16
 '
 ```
@@ -936,6 +1025,143 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | zlib | `packages/registry/zlib/build-zlib.sh` | custom configure | Dependency for PHP |
 | libxml2 | `packages/registry/libxml2/build-libxml2.sh` | CMake | Dependency for PHP |
 | OpenSSL | `packages/registry/openssl/build-openssl.sh` | custom Configure | Dependency for PHP |
+| pixman | `packages/registry/pixman/build-pixman.sh` | autoconf | 0.42.2 (last autotools release), all SIMD disabled |
+| utf8proc | `packages/registry/utf8proc/build-utf8proc.sh` | direct compile | Single TU, no upstream build system |
+| freetype | `packages/registry/freetype/build-freetype.sh` | autoconf | png/harfbuzz/brotli/bzip2 disabled |
+| fontconfig | `packages/registry/fontconfig/build-fontconfig.sh` | autoconf | libxml2 backend, gperf host tool, `ac_cv_*` RNG/statfs overrides |
+| tllist | `packages/registry/tllist/build-tllist.sh` | header-only | Staged, nothing compiles |
+| fcft | `packages/registry/fcft/build-fcft.sh` | meson bypass | Two TUs + three generated headers, no harfbuzz/SVG |
+| foot | `packages/registry/foot/build-foot.sh` | meson bypass | First stock upstream Wayland client; two patches: gbm prime-fd shm pools, serial font loading |
+| libffi | `packages/registry/libffi/build-libffi.sh` | in-tree | Full port, no upstream source: gen-dispatch.sh generates the ffi_call call_indirect switch + the static closure trampoline pool (wasm32 cannot JIT) |
+| glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio incl. the gdbus client core and the GApplication/GAction/GMenu family (GtkApplication's parent types), hand-curated config.h + glibconfig.h, three patches (no dbus built-ins, wasm callback signatures, wasm credentials backend); GRegex is in, compiled against the pcre2 package — glibmm's `Glib::Error::register_init()` calls `g_regex_error_quark` at startup, so every glibmm consumer needs it |
+| pcre2 | `packages/registry/pcre2/build-pcre2.sh` | cmake | 10.44, 8-bit code unit width only, static, no JIT (wasm cannot generate code at runtime), no pcre2grep/pcre2test; backs glib's GRegex. Separate from the `pcre2-source` package, which stages the unbuilt tree MariaDB configures itself |
+| expat | `packages/registry/expat/build-expat.sh` | autoconf | dbus config-parser dependency; entropy from kernel getrandom() |
+| dbus | `packages/registry/dbus/build-dbus.sh` | autoconf | 1.14.10 (last autotools series): dbus-daemon/dbus-send/dbus-monitor, session bus only, EXTERNAL auth over SO_PEERCRED, package-specific cross-probe cache answers |
+| harfbuzz | `packages/registry/harfbuzz/build-harfbuzz.sh` | meson bypass | Single-TU amalgam (src/harfbuzz.cc) with the freetype + glib backends; hand-installed headers and .pc; C++, so harfbuzz.pc carries `-lc++ -lc++abi` from the resolved libcxx (a C consumer's link driver does not add them) |
+| fribidi | `packages/registry/fribidi/build-fribidi.sh` | autoconf | pango's bidi dependency, plain cross-compile |
+| cairo | `packages/registry/cairo/build-cairo.sh` | meson | 1.18.6 via upstream meson and `sdk/meson/wasm32posix.ini`: image surfaces + ft/fc fonts + png, pdf/ps/svg (GTK3 needs cairo-pdf.h; meson ties them and the script surface to zlib), cairo-gobject; upstream 1.18 already passes typed spline callbacks, so no arity patch; the `LD_PRELOAD`-based cairo-trace tool is not published (Kandelo programs are static) |
+| pango | `packages/registry/pango/build-pango.sh` | meson | 1.56.4 via upstream meson and `sdk/meson/wasm32posix.ini` (newest series whose glib/harfbuzz/fontconfig floors the registry meets): pango/pangoft2/pangocairo, no Xft/libthai/introspection; upstream's pango-view/pango-list/pango-segmentation tools are not published from this library package; `src/wasm-callback-arity.patch` wraps 1-argument free/copy functions cast to `GFunc` (`g_list_foreach` / `g_slist_foreach`) or `GCopyFunc` (`g_ptr_array_copy`) (see the arity section below) |
+| librsvg | `packages/registry/librsvg/build-librsvg.sh` | meson + cargo-c | 2.63.2, the first package with a Rust core: upstream meson builds the C side and runs `cargo cbuild` for `wasm32-unknown-kandelo-std` against a private Rust sysroot the script assembles in its work root; `libc` is pinned to the Kandelo fork, crates are vendored from the tarball's `Cargo.lock` (checksum-verified), and two crates are patched at the custom-target boundary (`patches/`, see docs/package-management.md "Patches"); pixbuf API on, no pixbuf loader/introspection/avif; the converter is the separate rsvg-convert package |
+| rsvg-convert | `packages/registry/rsvg-convert/build-rsvg-convert.sh` | cargo | 2.63.2, librsvg's converter (a Rust program): same source and Rust setup as librsvg (`packages/registry/librsvg/rust-build-env.sh`), built with `cargo build -p rsvg_convert` because upstream's meson rule copies an unsuffixed `rsvg-convert` from the cargo target dir and a Kandelo executable is `rsvg-convert.wasm` |
+| gdk-pixbuf | `packages/registry/gdk-pixbuf/build-gdk-pixbuf.sh` | autoconf | 2.36.12 (last autotools release): png loader compiled in statically, no dynamic loader modules; `gio_can_sniff=no` forces builtin signature sniffing — the default `GDK_PIXBUF_USE_GIO_MIME` path selects loaders via `g_content_type_guess`, which returns `application/octet-stream` without a shared-mime-info database and rejects every image as "Unrecognized image file format" |
+| atk | `packages/registry/atk/build-atk.sh` | meson bypass | 2.36.0 (final release; GTK 3.24.34 needs >= 2.32, last autotools 2.28 is too old): hand config.h, glib-mkenums + glib-genmarshal generation, upstream TU list; `src/wasm-callback-arity.patch` adds `gpointer class_data` to 1-argument `class_init` functions and routes atkhyperlink's action interface through `g_wasm_iface_init_thunk` |
+| libepoxy | `packages/registry/libepoxy/build-libepoxy.sh` | autoconf | 1.5.4 via autoreconf (tarball ships no configure; xorg-macros from flake.nix): EGL dispatch only, vendored EGL/KHR platform headers + headers-only egl.pc stub; GL symbols resolve by dlopen at first call, so no GL library exists until a context is created |
+| gtk3 | `packages/registry/gtk3/build-gtk3.sh` | autoconf | 3.24.34 (last GTK 3): Wayland backend only, no X11/cups/cloudprint; host `glib-compile-resources` via env override (the wasm gio-2.0.pc carries no `glib_compile_resources` variable); libffi/zlib LDFLAGS for the build's own executables (glib's pc files say bare `-lffi`/`-lz`); `src/wasm-callback-arity.patch` fixes arity-changing callback casts (see the arity section below); `src/wayland-shm-gbm-pool.patch` allocates gdk-wayland's `wl_shm` pools as gbm prime-fd dumb bos (foot's shm contract — a memfd is private to the process that made it, so the compositor's `gbm_bo_import` rejects it and the window shows no pixels) |
+| basu | `packages/registry/basu/build-basu.sh` | meson bypass | 0.2.1 (standalone sd-bus, extracted from systemd by mako's author): hand config.h, errno gperf tables generated with the wasm cpp, no libcap/audit; built with `-D__linux__` — the kernel emulates the Linux ABI (SO_PEERCRED, SCM_CREDENTIALS) and without it bus-socket.c hits "#error auth not implemented for this OS" |
+| mako | `packages/registry/mako/build-mako.sh` | meson bypass | 1.10.0: mako + makoctl on basu's sd-bus (mako speaks `sd_bus_*`, not gdbus); two patches: gbm prime-fd pool buffers (foot's shm contract), and a `parse_boolean` rename — basu exports a same-named 1-argument function and both land in one wasm symbol namespace, so basu-internal calls would bind to mako's 2-argument definition and trap; no icons (add gdk-pixbuf + `HAVE_ICONS` when a demo needs images) |
+| libsigcxx | `packages/registry/libsigcxx/build-libsigcxx.sh` | autoconf | 2.10.3 (last release shipping configure): the gtkmm stack's signal library. Package name avoids `+` — the resolver's per-dep env var (`WASM_POSIX_DEP_<NAME>_DIR`) must be a valid shell identifier |
+| glibmm / cairomm / pangomm / atkmm / gtkmm3 | `packages/registry/{glibmm,cairomm,pangomm,atkmm,gtkmm3}/build-*.sh` | autoconf | The last autotools release of each `-2.4`/`-1.0`/`-1.4`/`-1.6`/`-3.0` ABI series (2.62.0, 1.12.2, 2.42.0, 2.28.0, 3.24.2); every later point release is meson-only. All C++ TUs need `-fwasm-exceptions`. Each builds only its library subdir and installs via the top-level `install-data-am` (umbrella headers + generated config headers + .pc, without recursing into tools/tests/examples). glibmm carries one patch: libc++ dropped the non-standard `char_traits<unsigned char>`, so `contenttype.cc`'s orphaned `basic_string<guchar>` overload is deleted. cairomm/pangomm/gtkmm3 pass the freetype/fontconfig includes explicitly — the host pkg-config does not reliably traverse `cairo.pc`'s `Requires.private` for `--cflags` |
+| gtk-layer-shell | `packages/registry/gtk-layer-shell/build-gtk-layer-shell.sh` | meson bypass | 0.9.2: layer-shell for GTK3 windows; wayland-scanner glue for wlr-layer-shell + xdg-shell, version macros passed as `-D` (no version-header template in this release) |
+| libxkbregistry | `packages/registry/libxkbregistry/build-libxkbregistry.sh` | meson bypass | The `rxkb_*` half of libxkbcommon 1.7.0 (one TU against libxml2), split into its own package so adding it does not re-key libxkbcommon and cascade a rebuild through gtk3 and every compositor consumer. Waybar's `hyprland/language` module links it |
+| fmt / spdlog / jsoncpp | `packages/registry/{fmt,spdlog,jsoncpp}/build-*.sh` | cmake | Waybar's C++ base: fmt 11.2.0, spdlog 1.15.3 (`SPDLOG_FMT_EXTERNAL`), jsoncpp 1.9.6. No toolchain file — each passes `-DCMAKE_SYSTEM_NAME=Linux`, the `wasm32posix-{cc,c++}` wrappers, `-fwasm-exceptions`, and `CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY` so cmake's compiler probe never links an executable. fmt carries one patch: `format.h` calls `malloc`/`free` without including `<cstdlib>`, which glibc provides transitively and libc++-on-musl does not |
+| waybar | `packages/registry/waybar/build-waybar.sh` | meson bypass | 0.14.0, the O2 gate's bar: core + the dependency-free compositor module families (hyprland, sway, river, dwl, niri, wayfire, wlr-taskbar) + `simpleclock`. The `is_linux` modules (battery, cpu, memory, systemd units) stay out — their headers are guarded on `__linux__`, which wasm32-unknown-unknown does not define, and nothing here serves `/proc`, `/sys` or logind. `src/glib-static-init.c` forces glib's initializer ahead of gobject's with a priority-101 constructor: upstream relies on shared-library load order for that, which a static link does not have |
+| FFmpeg | `packages/registry/ffmpeg/build-ffmpeg.sh` | custom configure | n9.0, unpatched: `--arch=wasm --target-os=none` (upstream knows wasm and its simd128 extension; `--target-os=none` makes configure probe everything instead of assuming the build machine's OS). Never `--disable-asm`, which also turns off simd128. `--disable-autodetect` keeps the dependency set equal to `depends_on`, and then needs `--enable-pthreads`, since threads are autodetected. The configure arguments compiled into the binaries name dependency prefixes symbolically (`ffmpeg_normalize_configuration`), so the build is the same on every machine. ffplay draws through SDL2's GLES2 renderer, so it needs GL: browser only |
+
+## Callback casts that change arity trap on wasm
+
+Wasm checks the exact type of every `call_indirect`. A C idiom that
+casts a function pointer to a type with a different argument count (or
+a different return type) compiles fine, works on every native ABI, and
+traps at runtime on wasm with `null function or function signature
+mismatch`.
+
+glib is built on this idiom. The port carries
+`packages/registry/glib/src/wasm-callback-signatures.patch`, which
+routes every arity-changing cast through a typed thunk:
+
+- `g_list_free_full` / `g_slist_free_full` / `g_queue_free_full` call
+  the `GDestroyNotify` (1 argument) through `GFunc` (2 arguments).
+- `g_list_sort` / `g_slist_sort` / `g_array_sort` / `g_tree_new` store
+  a `GCompareFunc` (2 arguments) and invoke it as `GCompareDataFunc`
+  (3 arguments).
+- The `G_DEFINE_TYPE` / `G_DEFINE_INTERFACE` /
+  `G_DEFINE_DYNAMIC_TYPE_EXTENDED` macros in `gtype.h` /
+  `gtypemodule.h` register 1-argument `class_init` / `instance_init` /
+  `iface_init` functions through 2-argument `GTypeInfo` slots. The
+  patched macros generate matching `*_intern_*` wrappers, so code that
+  uses the macros (all of gio, GTK later) is fixed at compile time.
+- `G_IMPLEMENT_INTERFACE` routes the conventional 1-argument interface
+  init through `g_wasm_iface_init_thunk`, carried in
+  `GInterfaceInfo.interface_data`. The thunk skips a NULL init, so the
+  common `G_IMPLEMENT_INTERFACE (TYPE, NULL)` idiom (GtkBox's
+  GtkOrientable, GtkTextView's GtkScrollable) stays valid.
+- `g_object_add_weak_pointer` / `g_object_remove_weak_pointer` cast
+  the 1-argument `g_nullify_pointer` to `GWeakNotify` (2 arguments) —
+  routed through a matching 2-argument wrapper. Every
+  `GtkEventController` registers a weak pointer on its widget, so any
+  widget with a gesture trapped on dispose.
+- Class and interface vtable handlers: for an n-parameter signal the
+  per-type marshal calls `callback (instance, p1..pn, user_data)`, but
+  a class closure's callback is the vtable slot,
+  `handler (instance, p1..pn)` — one argument short on every
+  class-closure emission (GTK's `display::opened`, `widget::destroy`,
+  every default handler). The patched
+  `g_type_class_meta_marshal{,v}` / `g_type_iface_meta_marshal{,v}` in
+  `gobject/gclosure.c` skip the per-type marshal and invoke the vtable
+  slot through libffi at exact arity
+  (`g_wasm_vtable_meta_marshal{,_va}`, modeled on
+  `g_cclosure_marshal_generic` minus the trailing data argument).
+  Still unpatched by design: user handlers connected with fewer
+  arguments than the signal (`g_signal_connect (win, "destroy",
+  G_CALLBACK (gtk_main_quit), NULL)`) ride the per-type c-closure
+  marshal and still trap — connect with a wrapper of exact arity.
+- GTest: `g_test_add_func` / `g_test_add_data_func{,_full}` store the
+  0- or 1-argument test function (and the `GDestroyNotify`) cast to
+  the 2-argument `GTestFixtureFunc` and call it through that type, so
+  every GTest case trapped before it ran. The patched `gtestutils.c`
+  keeps the typed callbacks on the test case and calls each through
+  its own type, with upstream's teardown/free ordering unchanged.
+
+GTK 3 carries the same idiom in its own code. The port's
+`packages/registry/gtk3/src/wasm-callback-arity.patch` fixes the
+instances the smoke test hits, in seven shapes:
+
+- Handlers connected with fewer arguments than the signal
+  (`default_display_notify_cb`, `display_opened_cb`,
+  `display_closed_cb`) get the full marshal arity.
+- Hand-written `get_type` functions that cast a 1-argument
+  `class_init` to `GClassInitFunc` (2 arguments) or a 1-argument
+  instance init to `GInstanceInitFunc` (2 arguments) — the
+  `G_DEFINE_TYPE` macro thunks from the glib patch do not cover
+  `g_type_register_static` call sites (GtkWidget, GtkContainer,
+  GtkCellRenderer, GtkToolButton, GtkStyleProvider,
+  GtkFileChooserEmbed).
+- Hand-written `GInterfaceInfo` literals that cast a 1-argument
+  interface init to `GInterfaceInitFunc` — rerouted through glib's
+  `g_wasm_iface_init_thunk` with the init function in
+  `interface_data`.
+- `g_signal_connect_swapped` of a 1-argument function to a signal
+  whose swapped closure calls at 2 arguments
+  (`_gtk_style_provider_private_changed` in `gtkstylecascade.c`) —
+  replaced by a 2-argument wrapper at connect and disconnect.
+- `(GtkCallback)` casts of 1-argument functions
+  (`gtk_widget_destroy`, `gtk_widget_show_all`, and static helpers)
+  passed to `gtk_container_foreach` / `forall`, which call at
+  2 arguments — each cast site gets a `*_wasm_cb` wrapper of exact
+  arity.
+- `(GWeakNotify)` casts of 1-argument functions
+  (`gail_focus_object_destroyed` in `gtk/a11y/gtkaccessibility.c`) —
+  the function gains the `GObject *where_the_object_was` argument.
+  The atk patch fixes the same shape in `atkgobjectaccessible.c`.
+- Function-pointer registration casts: `gtk_main_do_event` (1
+  argument) cast to `GdkEventFunc` (2 arguments) at
+  `gdk_event_handler_set` in `gtkmain.c` — every event dispatch goes
+  through `_gdk_event_emit`, so this traps on the first event.
+  Replaced by a 2-argument `gtk_main_do_event_wasm_cb` wrapper.
+
+When a new GTK code path traps with this signature, symbolize the
+stack (rebuild with a no-op `wasm-opt` shim on PATH so the name
+section survives) and extend the patch with the same shapes.
+
+When porting a GObject-based library, watch for the same pattern in
+the library's own code: any `(SomeFunc)` cast where the target has a
+different argument count needs a thunk. The failure mode is a trap at
+first use, not a build error. Current executable links reject missing
+symbols outside the declared host import list. Shared-library side modules
+resolve imports dynamically, so inspect their unresolved symbols with
+`wasm32posix-nm` when a port traps before `main`.
+Also inspect function signatures and dynamic-linking diagnostics rather
+than assuming the executable linker silently accepted a missing function.
 
 CPython's source recipe takes its source, work directory, output directory,
 sysroot, zlib prefix, and guest prefix from the package-resolver contract. It
@@ -1002,8 +1228,58 @@ through `scripts/run-wasm-fork-instrument.sh`. Fork-using programs must export
 the complete `wpk_fork_*` set. Legacy Asyncify artifacts are intentionally not
 accepted. See [fork-instrumentation.md](fork-instrumentation.md).
 
-**"Maximum call stack size exceeded" in browser**: The program's fork-path closure (as discovered by `wasm-fork-instrument --discover-only`) is large. This is rare — the tool instruments only fork-reachable functions, not the whole module. If it happens, check whether `call_indirect` is pulling in a much broader closure than expected. Literal table indexes are checked against active element slots, but dynamic indexes, passive `table.init`, and dynamic table writes remain conservative.
+**"Maximum call stack size exceeded" in browser**: Identify the trapped
+functions first. Deep guest recursion can exhaust the engine's native
+Wasm call stack independently of fork instrumentation or the linear-memory
+shadow stack. If the trace points to fork continuation code, inspect the
+fork-path closure with `wasm-fork-instrument --discover-only` and check
+whether `call_indirect` broadens it. Literal table indexes are checked
+against active element slots, but dynamic indexes, passive `table.init`,
+and dynamic table writes remain conservative. See the large-compiler
+diagnostics below for other resource boundaries.
+
+**Deterministic heap corruption / `memory access out of bounds` in malloc**:
+Check the linked shadow-stack size before suspecting the allocator. A
+frame larger than the remaining stack can silently overwrite globals.
+The SDK defaults to 8 MiB only when no stack size was requested; explicit
+requests are honored, and repeated requests use the last linker operand.
+A script invoking Clang directly must choose its own stack size or get
+wasm-ld's roughly 64 KiB default. `wasm-objdump -x prog.wasm` shows
+`__stack_pointer`; subtract the linked stack size to find its bottom.
+See [SDK stack policy](sdk-guide.md#why-an-8-mib-main-thread-stack).
 
 **Process hangs on read**: The fd might be in blocking mode waiting for data. Check that writers are properly closing their end of the pipe.
 
 **Browser SharedArrayBuffer unavailable**: Ensure COOP/COEP headers are set. In production, the service worker handles this. In dev, Vite's config sets them.
+
+### Large compiler builds and runtime limits
+
+Large toolchains can fail at several independent layers. Capture the
+first diagnostic and a symbolized trace before changing resource limits.
+
+- **Native LLVM linker crash with very large custom sections:** Inspect
+  object and archive section sizes, including compiler-facts metadata,
+  rather than only code size. LLVM toolchain builds have produced several
+  GiB of facts, exceeding native linker's signed section-offset capacity.
+  Preserve the facts required for fork analysis; do not remove metadata
+  or skip instrumentation/admission to make the link finish. Consult
+  [compiler-facts format](fork-instrumentation.md) and the [SDK guide](sdk-guide.md)
+  for the supported representation.
+- **Native Binaryen crash during optimization:** A trace in recursive
+  `StackIRGenerator` on a small macOS worker stack indicates a host-tool
+  stack boundary. For that diagnosed case, `BINARYEN_CORES=1` runs the
+  normal optimization on the main thread. Keep the full optimization and
+  admission path; this is not a default requirement for all packages.
+- **Browser executable-memory allocation failure:** Record the engine
+  diagnostic and compare a fresh machine with repeated tool invocations.
+  Compiled code consumes an engine-managed arena separate from guest
+  linear memory. See the documented
+  [Firefox executable-code limit](browser-support.md#firefox-executable-code-limit).
+- **Browser native call-stack exhaustion:** Deep compiler recursion can
+  hit an engine's call-stack limit even when the guest shadow stack has
+  room. A larger `-z stack-size` or memory maximum does not fix it. Compare
+  engines and preserve the real failing trace as a documented boundary.
+
+Report successful compiler cases separately from diagnosed engine
+failures. A test that asserts the boundary proves the diagnostic, not
+successful compilation of the failed case.

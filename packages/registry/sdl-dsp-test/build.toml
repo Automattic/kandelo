@@ -4,6 +4,12 @@ inputs = [
   "packages/registry/sdl-dsp-test/src/sdl2-dsp-test.c",
   "packages/registry/sdl-dsp-test/src/sdl3-dsp-test.c",
   "scripts/run-wasm-fork-instrument.sh",
+  "libc/glue/libgbm_stub.c",
+  "libc/glue/libegl_stub.c",
+  "libc/glue/libglesv2_stub.c",
+  "libc/glue/gl_abi.h",
+  "scripts/build-dri-stubs.sh",
+  "scripts/build-gles-stubs.sh",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"

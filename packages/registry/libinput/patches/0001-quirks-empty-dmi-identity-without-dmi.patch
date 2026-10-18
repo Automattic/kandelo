@@ -1,0 +1,30 @@
+Report an empty DMI identity where the platform has no DMI source.
+
+init_dmi() knows how to read a machine identity on Linux (udev/sysfs,
+falling back to "dmi:*") and FreeBSD (kenv), and returns NULL anywhere
+else. init_dt() then looks for a devicetree; with neither,
+quirks_init_subsystem() fails and libinput loads no quirks at all -- not
+even the generic, identity-independent ones.
+
+Kandelo is neither Linux nor FreeBSD and exposes no SMBIOS/DMI or
+devicetree firmware identity (docs/posix-status.md, the
+/dev/input/event0 row). Returning the
+empty identity -- what libinput's own test suite uses -- keeps that
+boundary truthful: DMI-matched sections never match, everything else
+applies. Upstream-shaped: it names no platform.
+
+--- a/src/quirks.c
++++ b/src/quirks.c
+@@ -458,7 +458,11 @@
+ #elif defined(__FreeBSD__)
+ 	return init_dmi_freebsd();
+ #else
+-	return NULL;
++	/* No DMI source on this platform. Report the empty identity, as the
++	 * test suite does above, so DMI-matched sections never match and the
++	 * rest of the quirks database still loads. Returning NULL here (with
++	 * no devicetree either) made quirks_init_subsystem() fail outright. */
++	return safe_strdup("dmi:");
+ #endif
+ }
+ 

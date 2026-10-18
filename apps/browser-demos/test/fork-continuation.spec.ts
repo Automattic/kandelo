@@ -1,13 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
+import { buildProgramsFixture, requireBuiltFixtures } from "./support/program-fixtures";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveBinary } from "../../../host/src/binary-resolver";
-import { ABI_VERSION } from "../../../host/src/generated/abi";
-import { buildAbiStampedFixture } from "../../../host/test/fixtures/abi-stamped-wat";
 import {
-  rawGcReferenceStateFreshWorkerBytes,
+  RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX,
 } from "../../../host/test/fixtures/gc-reference-state-fresh-worker-bytes";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -15,9 +13,16 @@ const browserKernelModulePath = resolve(
   __dirname,
   "../../../host/src/browser-kernel-host.ts",
 );
-const memoryFsModulePath = resolve(
+// The Rust image writer. Its wasm arrives as bytes from Node, the shape the
+// program fixtures already use, because `KandeloImageFs.create()` is
+// synchronous and a page cannot read the module off disk.
+const imageFsModulePath = resolve(
   __dirname,
-  "../../../host/src/vfs/memory-fs.ts",
+  "../../../images/vfs/lib/kandelo-image-fs.ts",
+);
+const imageModuleWasmPath = resolve(
+  __dirname,
+  "../../../local-binaries/kandelo_image_module32.wasm",
 );
 const catchRefFixtureSource = resolve(
   __dirname,
@@ -53,19 +58,20 @@ async function runBrowserFixture(
   return page.evaluate(
     async ({
       browserKernelModuleUrl,
-      memoryFsModuleUrl,
+      imageFsModuleUrl,
+      imageModuleBytes,
       fixtureUrl,
       argv0,
       maxMemoryPages,
     }) => {
-      // WHY: BrowserKernel already imports MemoryFileSystem. Loading the host
+      // WHY: BrowserKernel already imports the VFS modules. Loading the host
       // entry first avoids asking a cold Vite server to optimize the same
       // dependency graph through two concurrent dynamic imports.
       const { BrowserKernel } = await import(
         /* @vite-ignore */ browserKernelModuleUrl
       );
-      const { MemoryFileSystem } = await import(
-        /* @vite-ignore */ memoryFsModuleUrl
+      const { KandeloImageFs } = await import(
+        /* @vite-ignore */ imageFsModuleUrl
       );
       const decoder = new TextDecoder();
       let stdout = "";
@@ -93,9 +99,7 @@ async function runBrowserFixture(
         // WHY: these fixtures do not use files. A minimal image keeps this a
         // BrowserKernel integration proof without coupling it to the much
         // larger shell image or its package publication state.
-        const imageOwner = MemoryFileSystem.create(
-          new SharedArrayBuffer(1024 * 1024),
-        );
+        const imageOwner = KandeloImageFs.create(new Uint8Array(imageModuleBytes));
         const vfsImage = await imageOwner.saveImage();
         await kernel.initFromImage({ vfsImage });
         initialized = true;
@@ -117,13 +121,19 @@ async function runBrowserFixture(
     },
     {
       browserKernelModuleUrl: asViteFsUrl(browserKernelModulePath),
-      memoryFsModuleUrl: asViteFsUrl(memoryFsModulePath),
+      imageFsModuleUrl: asViteFsUrl(imageFsModulePath),
+      imageModuleBytes: Array.from(readFileSync(imageModuleWasmPath)),
       fixtureUrl: asViteFsUrl(fixturePath),
       argv0,
       maxMemoryPages,
     },
   );
 }
+
+const p10Path = buildProgramsFixture("programs/wasm32/p_10_deep_linked_continuation.wasm");
+const p11Path = buildProgramsFixture("programs/wasm32/p_11_fork_continuation_enomem.wasm");
+
+test.beforeAll(() => requireBuiltFixtures([p10Path, p11Path]));
 
 test("Chromium grows and replays a continuation beyond ABI 41's fixed reserve", async ({
   page,
@@ -137,7 +147,7 @@ test("Chromium grows and replays a continuation beyond ABI 41's fixed reserve", 
   const result = await runBrowserFixture(
     page,
     baseURL!,
-    resolveBinary("programs/p_10_deep_linked_continuation.wasm"),
+    p10Path,
     "p_10_deep_linked_continuation",
   );
 
@@ -162,7 +172,7 @@ test("Chromium preserves the parent across root and later continuation ENOMEM", 
   const result = await runBrowserFixture(
     page,
     baseURL!,
-    resolveBinary("programs/p_11_fork_continuation_enomem.wasm"),
+    p11Path,
     "p_11_fork_continuation_enomem",
     // Keep the exhaustion loop bounded while leaving enough initial pages for
     // the program and BrowserKernel-owned channel/control memory.
@@ -199,12 +209,16 @@ test("Chromium reconstructs CatchRef state in a fresh child worker", async ({
     resolve(__dirname, ".catch-ref-fresh-worker-"),
   );
   try {
-    const programPath = buildAbiStampedFixture(
+    const rawPath = resolve(workDir, "catch-ref-fresh-worker.raw.wasm");
+    const programPath = resolve(workDir, "catch-ref-fresh-worker.wasm");
+    execFileSync("wat2wasm", [
+      "--enable-exceptions",
+      "--enable-threads",
       catchRefFixtureSource,
-      workDir,
-      "catch-ref-fresh-worker",
-      ABI_VERSION,
-    );
+      "-o",
+      rawPath,
+    ]);
+    execFileSync(forkInstrumenterPath, [rawPath, "-o", programPath]);
 
     // The parent waits for the child, whose exit 91 means CatchRef payload
     // reconstruction failed after the browser worker instantiated a fresh
@@ -236,12 +250,22 @@ test("Chromium reconstructs reference-bearing catches in fresh child workers", a
     resolve(__dirname, ".reference-catch-payload-fresh-worker-"),
   );
   try {
-    const programPath = buildAbiStampedFixture(
-      referenceCatchPayloadFixtureSource,
+    const rawPath = resolve(
       workDir,
-      "reference-catch-payload-fresh-worker",
-      ABI_VERSION,
+      "reference-catch-payload-fresh-worker.raw.wasm",
     );
+    const programPath = resolve(
+      workDir,
+      "reference-catch-payload-fresh-worker.wasm",
+    );
+    execFileSync("wat2wasm", [
+      "--enable-exceptions",
+      "--enable-threads",
+      referenceCatchPayloadFixtureSource,
+      "-o",
+      rawPath,
+    ]);
+    execFileSync(forkInstrumenterPath, [rawPath, "-o", programPath]);
 
     // One fresh child calls the reconstructed non-null funcref; a second
     // verifies the nullable externref path. Either child exits nonzero if its
@@ -275,7 +299,10 @@ test("Chromium reconstructs aliased Wasm GC state in a fresh child worker", asyn
   try {
     const rawPath = resolve(workDir, "gc-reference-state.raw.wasm");
     const programPath = resolve(workDir, "gc-reference-state.wasm");
-    writeFileSync(rawPath, rawGcReferenceStateFreshWorkerBytes(ABI_VERSION));
+    writeFileSync(
+      rawPath,
+      Buffer.from(RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX, "hex"),
+    );
     execFileSync(forkInstrumenterPath, [rawPath, "-o", programPath]);
 
     // The child verifies one cyclic identity through a live parameter,

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   captureProgramFixtureBuildContract,
   programFixtureNeedsRebuild,
+  sdkProgramBuildInputs,
   stampProgramFixture,
   type ProgramFixtureBuildContract,
 } from "./program-fixture-freshness";
@@ -37,13 +38,7 @@ function fixtureBuildContract(
   const contract = captureProgramFixtureBuildContract(
     repoRoot,
     `${arch}\nfork=false\nflags=${buildFlags.join(" ")}\n${compilerVersion}`,
-    [
-      join(repoRoot, "sdk/bin"),
-      join(repoRoot, "sdk/src"),
-      join(repoRoot, "sdk/package.json"),
-      join(repoRoot, "sdk/package-lock.json"),
-      join(repoRoot, arch === "wasm64" ? "sysroot64" : "sysroot"),
-    ],
+    sdkProgramBuildInputs(repoRoot, arch),
   );
   contracts.set(arch, contract);
   return contract;

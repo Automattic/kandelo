@@ -1,0 +1,46 @@
+# Per-program manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "program"
+
+# rsvg-convert: librsvg's command-line SVG converter (PNG, PDF, PS, SVG
+# output). A Rust program built from the librsvg source with the same
+# Rust toolchain setup as the librsvg library package
+# (packages/registry/librsvg/rust-build-env.sh); it links librsvg's crates
+# directly, not the librsvg C library, and the C stack below through
+# the gtk-rs -sys crates.
+name = "rsvg-convert"
+version = "2.63.2"
+kernel_abi = 45
+arches = ["wasm32"]
+depends_on = [
+  "cairo@1.18.6",
+  "pango@1.56.4",
+  "glib@2.84.4",
+  "gdk-pixbuf@2.36.12",
+  "harfbuzz@10.1.0",
+  "freetype@2.13.3",
+  "libxml2@2.13.8",
+]
+
+# librsvg's Cargo.toml requires cargo >= its MSRV (1.92.0).
+[[host_tools]]
+name = "cargo"
+version_constraint = ">=1.92.0"
+install_hints = { darwin = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh", linux = "pinned by rust-toolchain.toml; enter scripts/dev-shell.sh" }
+
+[source]
+url = "https://download.gnome.org/sources/librsvg/2.63/librsvg-2.63.2.tar.xz"
+sha256 = "852b18e1a00b8605528825a27dc7748bff2a5dd254028f59dc22a34ea57e81b6"
+provider = "archive"
+
+[license]
+spdx = "LGPL-2.1-or-later"
+url = "https://gitlab.gnome.org/GNOME/librsvg/-/blob/2.63.2/COPYING.LIB"
+
+[build]
+script_path = "packages/registry/rsvg-convert/build-rsvg-convert.sh"
+
+[[outputs]]
+name = "rsvg-convert"
+wasm = "rsvg-convert.wasm"

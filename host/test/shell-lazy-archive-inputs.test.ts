@@ -8,6 +8,7 @@ import {
   lutimesSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   rmSync,
@@ -27,7 +28,7 @@ import {
   type ShellLazyArchiveSpec,
 } from "../../images/vfs/scripts/shell-lazy-archives";
 import { resolveVfsArtifact } from "../../images/vfs/scripts/shell-vfs-build";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { extractZipEntry, parseZipCentralDirectory } from "../src/vfs/zip";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -306,6 +307,34 @@ function zipEntryMetadata(
   return metadata;
 }
 
+/**
+ * "Which archives did this image record, and under what prefix?"
+ *
+ * The bridge answers it through `lazyEntries()`, whose archives carry `uri`
+ * and a sealed DESCRIPTOR.
+ *
+ * The descriptor is unwrapped the way `module-base-image.ts` unwraps it —
+ * `u32 version | u32 descriptor_len | descriptor | u8 has_seal | [seal]`,
+ * `seal::encode` in `crates/kandelo-image-module/src/seal.rs` — because a test
+ * that parsed the raw payload would assert against something no consumer sees.
+ */
+function recordedArchives(
+  fs: KandeloImageFs,
+): Array<{ url: string; mountPrefix: unknown }> {
+  return fs.lazyEntries().archives.map((archive) => {
+    const view = new DataView(
+      archive.descriptor.buffer,
+      archive.descriptor.byteOffset,
+      archive.descriptor.byteLength,
+    );
+    const length = view.getUint32(4, true);
+    const described = JSON.parse(
+      new TextDecoder().decode(archive.descriptor.subarray(8, 8 + length)),
+    ) as { mountPrefix?: unknown };
+    return { url: archive.uri, mountPrefix: described.mountPrefix };
+  });
+}
+
 describe("declared shell lazy-archive inputs", () => {
   it("creates byte-identical lazy ZIPs across source order and mtime changes", () => {
     const firstRoot = tempDir();
@@ -416,8 +445,8 @@ describe("declared shell lazy-archive inputs", () => {
       "deterministic payload\n".length * 512,
     );
 
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-    const vim = SHELL_LAZY_ARCHIVE_SPECS[0];
+    const fs = KandeloImageFs.create();
+    const vim = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "vim-browser-bundle")!;
     const archive = registerDeclaredShellLazyArchive(
       fs,
       vim,
@@ -428,41 +457,93 @@ describe("declared shell lazy-archive inputs", () => {
     expect(fs.stat("/usr/bin/vim").size).toBe("fixture executable\n".length);
   });
 
-  it("fails loudly when neither stat spelling returns an octal mode", () => {
+  it("treats any execute bit, including group- or other-only, as executable", () => {
     const sourceRoot = tempDir();
     const outputRoot = tempDir();
-    const fakeBin = tempDir();
-    writeDeterministicZipFixture(
-      sourceRoot,
-      false,
-      new Date("2020-01-02T03:04:05Z"),
-    );
-    const fakeStat = join(fakeBin, "stat");
-    writeFileSync(fakeStat, "#!/bin/sh\nprintf 'not-an-octal-mode\\n'\n");
-    chmodSync(fakeStat, 0o755);
+    const output = join(outputRoot, "modes.zip");
+    const modes: Array<[string, number, number]> = [
+      ["group-exec", 0o610, 0o755],
+      ["other-exec", 0o601, 0o755],
+      ["owner-exec", 0o500, 0o755],
+      ["read-only", 0o444, 0o644],
+      ["setuid-no-exec", 0o4600, 0o644],
+    ];
+    for (const [name, mode] of modes) {
+      const path = join(sourceRoot, name);
+      writeFileSync(path, `${name}\n`);
+      chmodSync(path, mode);
+    }
 
     const helper = join(
       repoRoot,
       "images/vfs/scripts/create-deterministic-zip.sh",
     );
-    const result = spawnSync(
-      "bash",
-      [helper, sourceRoot, join(outputRoot, "invalid.zip")],
-      {
-        cwd: repoRoot,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
-        },
-      },
-    );
+    execFileSync("bash", [helper, sourceRoot, output], { cwd: repoRoot });
 
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain(
-      "create-deterministic-zip: could not read mode: ./bin/vim",
+    for (const [name, mode] of modes) {
+      expect(lstatSync(join(sourceRoot, name)).mode & 0o7777).toBe(mode);
+    }
+    const entries = parseZipCentralDirectory(
+      new Uint8Array(readFileSync(output)),
     );
+    expect(
+      entries.map((entry) => [entry.fileName, entry.mode & 0o7777]),
+    ).toEqual(modes.map(([name, , expected]) => [name, expected]));
   });
+
+  it("rejects special files rather than archiving them", () => {
+    const sourceRoot = tempDir();
+    const outputRoot = tempDir();
+    const output = join(outputRoot, "invalid.zip");
+    mkdirSync(join(sourceRoot, "run"));
+    writeFileSync(join(sourceRoot, "run", "regular"), "regular\n");
+    execFileSync("mkfifo", [join(sourceRoot, "run", "fifo")]);
+
+    const helper = join(
+      repoRoot,
+      "images/vfs/scripts/create-deterministic-zip.sh",
+    );
+    const result = spawnSync("bash", [helper, sourceRoot, output], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      "create-deterministic-zip: unsupported special file: run/fifo",
+    );
+    expect(existsSync(output)).toBe(false);
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "removes its private mirror when copying from a read-only directory fails",
+    () => {
+      const sourceRoot = tempDir();
+      const outputRoot = tempDir();
+      const readOnly = join(sourceRoot, "read-only");
+      mkdirSync(readOnly);
+      writeFileSync(join(readOnly, "readable"), "readable\n");
+      writeFileSync(join(readOnly, "unreadable"), "unreadable\n");
+      chmodSync(join(readOnly, "unreadable"), 0o000);
+      chmodSync(readOnly, 0o555);
+
+      const helper = join(
+        repoRoot,
+        "images/vfs/scripts/create-deterministic-zip.sh",
+      );
+      try {
+        const result = spawnSync(
+          "bash",
+          [helper, sourceRoot, join(outputRoot, "invalid.zip")],
+          { cwd: repoRoot, encoding: "utf8" },
+        );
+        expect(result.status).not.toBe(0);
+        expect(readdirSync(outputRoot)).toEqual([]);
+      } finally {
+        chmodSync(readOnly, 0o755);
+      }
+    },
+  );
 
   it("rejects names that cannot be represented by the ZIP entry list", () => {
     const sourceRoot = tempDir();
@@ -496,9 +577,7 @@ describe("declared shell lazy-archive inputs", () => {
         calls.push([resolverPath, dependency]);
         return path;
       };
-      const fs = MemoryFileSystem.create(
-        new SharedArrayBuffer(4 * 1024 * 1024),
-      );
+      const fs = KandeloImageFs.create();
 
       const archive = registerDeclaredShellLazyArchive(fs, spec, resolve);
 
@@ -515,11 +594,11 @@ describe("declared shell lazy-archive inputs", () => {
       expect(
         fs.stat(`${spec.mountPrefix}${spec.requiredMember}`).size,
       ).toBe(`${spec.id} executable`.length);
-      expect(fs.exportLazyArchiveEntries()).toEqual([
-        expect.objectContaining({
-          url: spec.archiveUrl,
-          mountPrefix: spec.mountPrefix.replace(/\/$/, ""),
-        }),
+      // The prefix is compared WITHOUT stripping a trailing slash. Both
+      // producers normalize it now (`f20d51f4e`); the strip that used to be
+      // here was papering over a difference between them.
+      expect(recordedArchives(fs)).toEqual([
+        { url: spec.archiveUrl, mountPrefix: "/usr" },
       ]);
     },
   );
@@ -532,7 +611,7 @@ describe("declared shell lazy-archive inputs", () => {
       [spec.requiredMember]: new TextEncoder().encode(".TH LSOF 8\n"),
     });
     const path = writeArchive(spec.archiveUrl, bytes);
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
 
     const archive = registerDeclaredShellLazyArchive(fs, spec, () => path);
 
@@ -544,9 +623,7 @@ describe("declared shell lazy-archive inputs", () => {
       fs.stat(`${spec.mountPrefix}${spec.requiredMember}`).size,
     ).toBeGreaterThan(0);
     expect(
-      fs
-        .exportLazyArchiveEntries()
-        .filter((entry) => entry.url === spec.archiveUrl),
+      recordedArchives(fs).filter((entry) => entry.url === spec.archiveUrl),
     ).toHaveLength(1);
   });
 
@@ -558,18 +635,18 @@ describe("declared shell lazy-archive inputs", () => {
       "share/man/man8/other.8": new TextEncoder().encode(".TH OTHER 8\n"),
     });
     const path = writeArchive(spec.archiveUrl, bytes);
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
 
     expect(() =>
       registerDeclaredShellLazyArchive(fs, spec, () => path)
     ).toThrow(
       /lsof-docs output .* must contain exactly one regular member share\/man\/man8\/lsof\.8; found 0/,
     );
-    expect(fs.exportLazyArchiveEntries()).toEqual([]);
+    expect(recordedArchives(fs)).toEqual([]);
   });
 
   it("propagates a missing declared dependency output instead of falling back", () => {
-    const spec = SHELL_LAZY_ARCHIVE_SPECS[0];
+    const spec = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "vim-browser-bundle")!;
     expect(() =>
       loadDeclaredShellLazyArchive(spec, () => {
         throw new Error(
@@ -582,10 +659,10 @@ describe("declared shell lazy-archive inputs", () => {
   });
 
   it("rejects a valid ZIP from the wrong bundle before changing the VFS", () => {
-    const vim = SHELL_LAZY_ARCHIVE_SPECS[0];
-    const nethack = SHELL_LAZY_ARCHIVE_SPECS[1];
+    const vim = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "vim-browser-bundle")!;
+    const nethack = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "nethack-browser-bundle")!;
     const wrongPath = writeArchive(nethack.archiveUrl, archiveFor(nethack));
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+    const fs = KandeloImageFs.create();
 
     expect(() =>
       registerDeclaredShellLazyArchive(fs, vim, () => wrongPath),
@@ -593,11 +670,11 @@ describe("declared shell lazy-archive inputs", () => {
       /vim-browser-bundle output .* must contain exactly one regular member bin\/vim; found 0/,
     );
     expect(() => fs.stat("/usr/bin/vim")).toThrow();
-    expect(fs.exportLazyArchiveEntries()).toEqual([]);
+    expect(recordedArchives(fs)).toEqual([]);
   });
 
   it("reports a corrupt declared output as an invalid lazy ZIP", () => {
-    const spec = SHELL_LAZY_ARCHIVE_SPECS[0];
+    const spec = SHELL_LAZY_ARCHIVE_SPECS.find(spec => spec.dependency === "vim-browser-bundle")!;
     const corruptPath = writeArchive(
       spec.archiveUrl,
       new Uint8Array([1, 2, 3]),

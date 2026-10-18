@@ -14,8 +14,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-# shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/bc-src"
@@ -23,9 +24,9 @@ HOST_BUILD_DIR="$WORK_DIR/bc-host-build"
 BIN_DIR="$WORK_DIR/bin"
 LIBMATH_HEADER="$WORK_DIR/libmath.h"
 SYSROOT="$REPO_ROOT/sysroot"
-BC_VERSION="${WASM_POSIX_DEP_VERSION:-${BC_VERSION:-1.07.1}}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftpmirror.gnu.org/gnu/bc/bc-${BC_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-62adfca89b0a1c0164c2cdca59ca210c1d44c3ffc46daf9931cf4942664cb02a}"
+BC_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-bc-source"
 

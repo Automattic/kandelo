@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kandelo — Python Notes API</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
+    code { background: #f0f0f3; padding: 0.1rem 0.3rem; border-radius: 3px; }
+    pre { background: #1e1e2e; color: #e6e6f0; padding: 1rem; border-radius: 6px; overflow-x: auto; }
+    button { font: inherit; padding: 0.4rem 0.8rem; cursor: pointer; }
+    li { margin: 0.25rem 0; }
+  </style>
+</head>
+<body>
+  <h1>Python Notes API on Kandelo</h1>
+  <p>
+    This page is served by <strong>nginx</strong>. The
+    <code>/api/</code> routes below are reverse-proxied to a
+    standard-library <strong>Python <code>wsgiref</code></strong> app
+    backed by <strong>SQLite</strong> — all running in WebAssembly.
+  </p>
+  <ul>
+    <li><code>GET /api/health</code> — liveness</li>
+    <li><code>GET /api/notes</code> — list notes</li>
+    <li><code>POST /api/notes</code> — create <code>{title, body}</code></li>
+    <li><code>GET|PUT|DELETE /api/notes/{id}</code></li>
+  </ul>
+  <p>
+    <button id="load">GET /api/notes</button>
+    <button id="add">POST a note</button>
+  </p>
+  <pre id="out">Click a button to call the live API…</pre>
+  <script>
+    const out = document.getElementById("out");
+    const show = (v) => { out.textContent = JSON.stringify(v, null, 2); };
+    const fail = (e) => { out.textContent = "Error: " + e; };
+    document.getElementById("load").onclick = () =>
+      fetch("/api/notes").then((r) => r.json()).then(show).catch(fail);
+    document.getElementById("add").onclick = () =>
+      fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "From the browser", body: "Created at " + new Date().toISOString() }),
+      }).then((r) => r.json()).then(show).catch(fail);
+  </script>
+</body>
+</html>

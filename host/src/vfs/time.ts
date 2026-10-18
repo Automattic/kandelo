@@ -44,14 +44,6 @@ export class NodeTimeProvider implements TimeProvider {
     const floor = BigInt(Math.trunc(floorNs));
     if (now < floor) this._monotonicAdvanceNs += floor - now;
   }
-
-  nanosleep(sec: number, nsec: number): void {
-    const ms = sec * 1000 + Math.floor(nsec / 1_000_000);
-    if (ms > 0) {
-      const sab = new SharedArrayBuffer(4);
-      Atomics.wait(new Int32Array(sab), 0, 0, ms);
-    }
-  }
 }
 
 export class BrowserTimeProvider implements TimeProvider {
@@ -75,13 +67,5 @@ export class BrowserTimeProvider implements TimeProvider {
     const nowMs = performance.now() + this._monotonicAdvanceMs;
     const floorMs = floorNs / 1_000_000;
     if (nowMs < floorMs) this._monotonicAdvanceMs += floorMs - nowMs;
-  }
-
-  nanosleep(sec: number, nsec: number): void {
-    const ms = sec * 1000 + Math.floor(nsec / 1_000_000);
-    if (ms > 0) {
-      const sab = new SharedArrayBuffer(4);
-      Atomics.wait(new Int32Array(sab), 0, 0, ms);
-    }
   }
 }

@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -12,6 +12,7 @@ import {
 import { findRepoRoot, tryResolveBinary } from "../../../host/src/binary-resolver";
 import {
   exactVfsImageMetadata,
+  installBashAsPosixShell,
   saveImage,
   type ExactVfsImageAbi,
   walkAndWrite,
@@ -26,6 +27,8 @@ const COREUTILS_SYMLINK_NAMES = [
 export interface SqliteTestVfsInputs {
   sqlite3: Uint8Array;
   testfixture: Uint8Array;
+  /** Required: bash is /bin/sh, which the test harness execs. */
+  bash: Uint8Array;
   dash?: Uint8Array;
   coreutils?: Uint8Array;
   sqliteSourceDirectory: string;
@@ -50,10 +53,11 @@ export async function buildSqliteTestVfsImage(
     if (bytes.byteLength === 0) throw new Error(`SQLite staged ${label} is empty`);
   }
 
-  const fs = MemoryFileSystem.create(
-    new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 512 * 1024 * 1024 }),
-    512 * 1024 * 1024,
-  );
+  const fs = KandeloImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. The SharedArrayBuffer it used to come from was never anything but
+  // the old constructor's first argument.
+  fs.setImageCapacity(512 * 1024 * 1024);
   for (const dir of [
     "/tmp", "/home", "/root", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
     "/usr/lib", "/sqlite",
@@ -64,11 +68,14 @@ export async function buildSqliteTestVfsImage(
   symlink(fs, "/usr/bin/testfixture", "/bin/testfixture");
   writeVfsBinary(fs, "/usr/bin/sqlite3", inputs.sqlite3);
   symlink(fs, "/usr/bin/sqlite3", "/bin/sqlite3");
+  // bash is /bin/sh in every Kandelo image; dash, when present, stays an
+  // ordinary command at its own name and does not claim /bin/sh. An image
+  // without bash would have no /bin/sh at all, so bash is required.
+  if (inputs.bash.byteLength === 0) throw new Error("SQLite staged bash is empty");
+  installBashAsPosixShell(fs, inputs.bash);
   if (inputs.dash !== undefined) {
     if (inputs.dash.byteLength === 0) throw new Error("SQLite staged dash is empty");
     writeVfsBinary(fs, "/bin/dash", inputs.dash);
-    symlink(fs, "/bin/dash", "/bin/sh");
-    symlink(fs, "/bin/dash", "/usr/bin/sh");
   }
   if (inputs.coreutils !== undefined) {
     if (inputs.coreutils.byteLength === 0) {
@@ -108,6 +115,7 @@ async function main(): Promise<void> {
   const tclLibrary = join(repositoryRoot, "packages/registry/tcl/tcl-install/lib/tcl8.6");
   const testfixture = join(sqliteDirectory, "bin/testfixture.wasm");
   const sqlite3 = join(sqliteDirectory, "sqlite-install/bin/sqlite3.wasm");
+  const bash = tryResolveBinary("programs/bash.wasm");
   const dash = tryResolveBinary("programs/dash.wasm");
   const coreutils = tryResolveBinary("programs/coreutils.wasm");
   const missing = [
@@ -116,10 +124,13 @@ async function main(): Promise<void> {
     join(sqliteDirectory, "sqlite-full-src"),
     tclLibrary,
   ].filter((path) => !existsSync(path));
+  // bash backs /bin/sh; building without it would ship an image with no shell.
+  if (bash === null) missing.push("programs/bash.wasm (the image's /bin/sh)");
   if (missing.length > 0) throw new Error(`SQLite test VFS inputs missing:\n${missing.join("\n")}`);
   await buildSqliteTestVfsImage({
     sqlite3: new Uint8Array(readFileSync(sqlite3)),
     testfixture: new Uint8Array(readFileSync(testfixture)),
+    bash: new Uint8Array(readFileSync(bash!)),
     ...(dash === null ? {} : { dash: new Uint8Array(readFileSync(dash!)) }),
     ...(coreutils === null
       ? {}

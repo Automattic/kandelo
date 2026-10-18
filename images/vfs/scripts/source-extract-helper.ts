@@ -120,16 +120,20 @@ export function ensureExtract(opts: ExtractOptions): string {
   const archivePath = join(downloadDir, archiveName);
 
   if (!existsSync(archivePath) || sha256OfFile(archivePath) !== sha256) {
+    // The partial name is per process: two package builds can miss this
+    // shared cache at once, and a shared name lets one curl truncate the
+    // file the other is verifying.
+    const partial = `${archivePath}.partial-${process.pid}`;
     console.log(`==> Downloading ${url}`);
-    execSync(`curl -fsSL -o "${archivePath}.partial" "${url}"`, { stdio: "inherit" });
-    const got = sha256OfFile(`${archivePath}.partial`);
+    execSync(`curl -fsSL -o "${partial}" "${url}"`, { stdio: "inherit" });
+    const got = sha256OfFile(partial);
     if (got !== sha256) {
-      rmSync(`${archivePath}.partial`, { force: true });
+      rmSync(partial, { force: true });
       throw new Error(
         `sha256 mismatch for ${archiveName}: expected ${sha256}, got ${got}`,
       );
     }
-    renameSync(`${archivePath}.partial`, archivePath);
+    renameSync(partial, archivePath);
   }
 
   // Extract atomically: into a tmp dir, then rename. A reader (parallel
@@ -229,15 +233,17 @@ export function ensureFile(opts: FetchFileOptions): string {
   }
 
   mkdirSync(destDir, { recursive: true });
+  // Per-process partial name; see ensureExtract.
+  const partial = `${destPath}.partial-${process.pid}`;
   console.log(`==> Downloading ${url}`);
-  execSync(`curl -fsSL -o "${destPath}.partial" "${url}"`, { stdio: "inherit" });
-  const got = sha256OfFile(`${destPath}.partial`);
+  execSync(`curl -fsSL -o "${partial}" "${url}"`, { stdio: "inherit" });
+  const got = sha256OfFile(partial);
   if (got !== sha256) {
-    rmSync(`${destPath}.partial`, { force: true });
+    rmSync(partial, { force: true });
     throw new Error(
       `sha256 mismatch for ${fileName}: expected ${sha256}, got ${got}`,
     );
   }
-  renameSync(`${destPath}.partial`, destPath);
+  renameSync(partial, destPath);
   return destPath;
 }

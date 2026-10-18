@@ -1,0 +1,13 @@
+script_path = "packages/registry/pango/build-pango.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "b87f313b3"
+revision    = 1
+
+# The fetched `pango-src/` tree lives under the build's work root; the
+# resolver hashes these tracked inputs on a clean checkout.
+inputs = [
+  "packages/registry/pango/build-pango.sh",
+  "packages/registry/pango/src/wasm-callback-arity.patch",
+  "sdk/meson/wasm32posix.ini",
+  "scripts/package-build-roots.sh",
+]

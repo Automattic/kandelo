@@ -23,7 +23,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { MemoryFileSystem } from "../../../../host/src/vfs/memory-fs.ts";
+import { constants as zlibConstants, zstdCompressSync } from "node:zlib";
+import { KandeloImageFs } from "../../../../images/vfs/lib/kandelo-image-fs.ts";
+import { describeImageLoadFailure } from "./image-load-failure.ts";
 
 const SUBCOMMAND_USAGE = `Usage: mkrootfs add <image> <vfs-path> [options]
 
@@ -205,7 +207,7 @@ function typeChar(mode: number): "f" | "d" | "l" | "?" {
   }
 }
 
-function lookupExisting(mfs: MemoryFileSystem, path: string): "f" | "d" | "l" | "?" | null {
+function lookupExisting(mfs: KandeloImageFs, path: string): "f" | "d" | "l" | "?" | null {
   try {
     const st = mfs.lstat(path);
     return typeChar(st.mode);
@@ -256,15 +258,17 @@ export async function runAdd(args: string[]): Promise<number> {
     return 1;
   }
 
-  let mfs: MemoryFileSystem;
+  let mfs: KandeloImageFs;
   try {
-    mfs = MemoryFileSystem.fromImage(imageBytes);
-    // WHY: authenticate before source reads, namespace mutation, or image writes.
-    await mfs.verifyImportedLazyAtomicGroupSeals();
+    // Read with the kernel's own image reader: this verb SAVES the image back,
+    // so a reader blind to `SDEF` would write out a rootfs with its lazy
+    // binaries dropped. `loadImage` authenticates the cohort seals before any
+    // source read or namespace mutation.
+    mfs = KandeloImageFs.create();
+    mfs.loadImage(imageBytes);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(
-      `mkrootfs add: not a valid VFS image (${parsed.image}): ${msg}\n`,
+      `mkrootfs add: ${describeImageLoadFailure(e, parsed.image)}\n`,
     );
     return 1;
   }
@@ -361,6 +365,10 @@ export async function runAdd(args: string[]): Promise<number> {
 
   let updated: Uint8Array;
   try {
+    // No free-capacity trim option is needed: the kernel's export sizes the
+    // image body to the tree it holds (`build_export_image` in
+    // crates/runtime-core/src/rootfs.rs) and records the growth ceiling as a
+    // number, so rewriting a product artifact cannot reintroduce a free tail.
     updated = await mfs.saveImage();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -368,8 +376,17 @@ export async function runAdd(args: string[]): Promise<number> {
     return 1;
   }
 
+  // WHY: preserve the artifact's encoding. A `.vfs.zst` image that `add`
+  // rewrote as raw bytes would still load (`loadImage` detects the zstd magic) while
+  // silently becoming many times larger than the name promises.
+  const encoded = parsed.image.endsWith(".zst")
+    ? zstdCompressSync(updated, {
+        params: { [zlibConstants.ZSTD_c_compressionLevel]: 19 },
+      })
+    : updated;
+
   try {
-    await writeAtomic(parsed.image, updated);
+    await writeAtomic(parsed.image, encoded);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     process.stderr.write(`mkrootfs add: failed to write ${parsed.image}: ${msg}\n`);

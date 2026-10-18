@@ -3,6 +3,12 @@
 Repo-local build/release utilities. Subcommands:
 
 - `dump-abi` — regenerate `abi/snapshot.json` from authoritative sources.
+- `check-package-imports [--require-startup] <wasm>...` — audit process
+  imports against shared host declarations and the current SDK's typed
+  libc/startup imports. The startup option requires memory and syscall
+  channel imports for executable smoke links.
+- `build-deps toolchain-inputs` — print the authoritative compiled-package
+  toolchain input list as JSON, including shared source and audit helpers.
 - `bundle-program` — zip-bundle one program's binary + runtime + LICENSE.
 - `build-deps` — wasm library dep-graph resolver
   (see [`docs/dependency-management.md`](../docs/dependency-management.md)).

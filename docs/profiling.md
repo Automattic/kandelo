@@ -142,8 +142,8 @@ excludes runtime-owned `wp-content/database` state and `wp-content/debug.log`.
 Resolver-selected paths are retained alongside the logical artifact names;
 browser VFS evidence reflects the public asset that the benchmark page selects
 first. Kernel fingerprints use the same policy-aware binary resolver as each
-host. Node rootfs evidence records which of the runtime's `rootfs.vfs` then
-`programs/rootfs.vfs` fallback requests won, and is required for the
+host. Node rootfs evidence records which of the runtime's `rootfs.vfs.zst` then
+`programs/rootfs.vfs.zst` fallback requests won, and is required for the
 `syscall-io` and established `process-lifecycle` suites that boot that default
 image. The Node `spawn-scratch` suite supplies both of its executables and
 explicitly uses an empty VFS, so it neither resolves nor records a rootfs.
@@ -173,8 +173,10 @@ manager operations. The lock workload uses OFD locks so an independently opened
 descriptor can perform a real conflicting lookup without including a fork in
 the timed region. One shape holds one to three separated records on each of 64
 files (127 total records); the other holds 256 separated ranges on one file.
-The 64-file shape retains 128 OFDs, below the browser SharedFS backend's
-160-handle ceiling while still exercising file-index selection at scale.
+The 64-file shape retains 128 OFDs, which still exercises file-index
+selection at scale. (The counts were chosen to fit the former browser
+filesystem's 160-handle ceiling; the in-kernel filesystems that replaced it
+have no fixed handle table.)
 These counts fit both sides of a before/after comparison with the former fixed
 table. They are performance workloads, not substitutes for the 4096-record
 capacity tests.
@@ -207,6 +209,41 @@ scripts/dev-shell.sh npx tsx benchmarks/run.ts --host=browser --suite=syscall-io
 The complete Node and browser suite is still required before making a broad
 performance or no-regression claim. Adding these cases does not itself establish
 that the lock-manager migration is faster, slower, or neutral.
+
+The current lock benchmark runs each phase once per fresh guest. Its
+`gettimeofday()` timer uses the browser's millisecond-resolution realtime
+clock: one millisecond changes a 256-operation result by 3.90625
+microseconds per operation. More fresh-machine rounds do not measure
+sustained locking in one machine. Garbage collection can also move
+between phases when preceding file creation and teardown change.
+
+To investigate a phase regression, retain the original first-pass result
+and compare it with a separate repeated-cycle diagnostic using
+`CLOCK_MONOTONIC`. Report the iteration counts and warm-up exclusion
+explicitly; inspect worker CPU profiles for collection and scheduling
+costs before attributing the difference to the Rust lock manager.
+
+For a cold timing-resolution check, a separate diagnostic can change only
+the clock while retaining the original one-pass guest workload. Keep those
+results separate from sustained cycles and the original realtime results.
+Alternate baseline/candidate order across fresh workers, and disclose any
+shared parent or browser process instead of treating workers as independent
+parent-process launches.
+
+Do not directly align Node monotonic timestamps with V8 CPU-profile
+timestamps: their clock origins can differ. Calibrate each worker profile
+with a marker visible in both clocks before attributing samples to guest
+phases. Profiling overhead and collection samples are diagnostic evidence;
+fewer constructed objects alone do not prove shorter collection pauses.
+Inspect weak-table entry lifetime as well as allocation volume: unreachable
+pointer registrations can leave private lease graphs for later collection.
+Remove synchronous authority promptly when its lease ends, preserving all
+range and revocation checks. When sampling JavaScript allocations, verify
+whether the profiler retains collected objects in its samples; a default
+live-object profile cannot measure short-lived allocation traffic. Report
+sampled allocation separately from exact byte counts and timed benchmarks.
+Before accepting a full-suite result, verify the actual suite count and
+nonempty metrics; omit `--suite` to select all suites.
 
 #### process-lifecycle
 
@@ -278,16 +315,21 @@ Runs PHP 8.4 with a full WordPress 6.7 installation. Two measurements: cold CLI 
 | `cli_require_ms` | ms | `php -r "require 'wp-load.php'"` — process start to exit |
 | `http_first_response_ms` | ms | Start PHP built-in server, time to first HTTP response |
 
+Each suite round first copies the WordPress tree and the router script into a
+fresh scratch directory under the OS temp directory, following symlinks (see
+[Checkout location](#checkout-location-does-not-change-the-numbers)). The
+measurements run against that copy; the checkout's tree is only the source.
 Each Node measurement starts from the WordPress setup state: the benchmark
 removes and recreates `wp-content/database`, removes `wp-content/debug.log`, and
 does the same cleanup after the measurement. When the OPcache side module is
 available and `NO_OPCACHE` is not `1`, the measurement uses
 `opcache.file_cache_only=1` with timestamp validation disabled. Each suite
-round creates a private cache root under `benchmarks/results/`, and the CLI and
+round creates a private cache root inside its scratch copy, and the CLI and
 HTTP measurements each receive a separate empty cache directory that is reset
-before and after timing. The run-owned cache root is removed when the round
-finishes, so compiled scripts cannot carry across metrics, rounds, concurrent
-benchmark processes, or worktrees.
+before and after timing. The scratch copy is removed when the round finishes,
+so compiled scripts cannot carry across metrics, rounds, concurrent benchmark
+processes, or worktrees. The HTTP measurement fails if the first response
+carries a PHP warning or fatal error, rather than timing an error page.
 
 **Prerequisites:**
 
@@ -322,6 +364,14 @@ Four suite variants are registered so wasm32 and wasm64 builds can be compared s
 
 Set `MARIADB_BENCH_VERBOSE=1` to forward mariadbd stdout/stderr to the shell (useful for debugging hangs or slow bootstraps).
 
+Each query metric times one `mysqltest` session: process start, connect, the
+SQL, and exit. `mariadbd`, `mysqltest`, and the bootstrap SQL are resolved and
+read once before any timing. Resolving a program runs the binary resolver, which
+checks the program index (about 0.9 s, growing with the number of packages); it
+used to run inside every timed query and made up about 90% of each query number.
+The data directory is a fresh scratch directory under the OS temp directory,
+removed after the run.
+
 **Prerequisites:**
 
 | Component | Path | Build command |
@@ -337,6 +387,19 @@ cross-compilation (host build for code generators, then wasm cross-compile).
 The wasm64 build uses `-O1` instead of `-O2` to avoid an LLVM 21 wasm64 backend
 miscompilation in table-lookup sign-extension. A missing declared tool is a
 reported environment block, not permission to use an undeclared host binary.
+
+#### Checkout location does not change the numbers
+
+On Node the application suites run guest programs directly on the host
+filesystem, so the paths a guest touches are real host paths, and work that
+walks or mirrors a path grows with the checkout's depth on disk. PHP's opcache
+file cache, for example, recreates each script's absolute path inside the cache
+one directory at a time: a checkout one directory deeper cost WordPress about
+560 extra `mkdir` calls per run. The WordPress and MariaDB suites therefore stage
+their path-sensitive data under the OS temp directory, which has the same path
+for every checkout in one environment. Run before/after comparisons in the same
+environment (for example, both under `scripts/dev-shell.sh`, which sets its own
+`TMPDIR`).
 
 ### Building All Suite Prerequisites
 

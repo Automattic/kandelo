@@ -20,7 +20,7 @@ import type {
   KernelHost,
   SharedFramebufferHandle,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import type { PeerLink } from "../../../lib/peer-link";
+import type { PeerLink } from "../../../lib/sharing-peer";
 
 export interface FramebufferSharing {
   /** True while this machine's screen is offered to the peer. */

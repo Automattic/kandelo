@@ -7,12 +7,33 @@ import {
   CH_DATA_SIZE,
   MAX_REPORTABLE_TRANSFER_BYTES,
 } from "./generated/abi";
+import { waitForDeferredFetch } from "./vfs/rootfs-lazy-archives";
+import { KernelReentrantEntryError } from "./kernel-entry-gate";
+import { retryKernelEntryResult } from "./kernel-entry-retry";
 
+const EAGAIN = 11;
 const EFBIG = 27;
 const EIO = 5;
 const ENOEXEC = 8;
 const ENOMEM = 12;
 const EOVERFLOW = 75;
+const ETIMEDOUT = 110;
+
+// An exec target the image only names (a lazy file, or a lazy-archive member)
+// is fetched by the host on first read through `host_fetch_deferred`, and the
+// kernel's read returns EAGAIN until that fetch settles, then either bytes or
+// a terminal error. So EAGAIN here is transient and retrying is safe: the
+// kernel's exec-target read records nothing before it fails, making a
+// same-offset retry idempotent. The retry waits for the fetch to settle
+// (`waitForDeferredFetch`), which also yields the worker's event loop so the
+// in-flight fetch can run; waiting a fixed timer instead added the rest of a
+// timer period to every first exec of a lazy file. Only an EAGAIN with no
+// fetch in flight falls back to this plain delay between retries.
+const EXEC_TARGET_EAGAIN_RETRY_DELAY_MS = 10;
+// Backstop only: a fetch normally settles long before this. It exists so a
+// stuck fetch fails exec with a truthful timeout instead of hanging it.
+const EXEC_TARGET_EAGAIN_MAX_WAIT_MS = 30_000;
+
 const MAX_SHEBANG_LINE_BYTES = 4096;
 
 export interface PreparedExecKernel {
@@ -24,6 +45,10 @@ export interface PreparedExecKernel {
     destination: Uint8Array,
   ): number;
   execTargetCancel(ownerPid: number, target: number): number;
+  /** The next settlement of a deferred fetch in flight, or `null` when none
+   *  is; see `CentralizedKernelWorker.deferredFetchSettled`. Optional: a
+   *  kernel without a deferred pipe never returns EAGAIN for one. */
+  deferredFetchSettled?(): Promise<void> | null;
 }
 
 export class PreparedExecTargetError extends Error {
@@ -52,18 +77,19 @@ function errnoFromNegativeResult(result: number | bigint): number {
   return EIO;
 }
 
-function cancelPreparedTarget(
+async function cancelPreparedTarget(
   kernel: PreparedExecKernel,
   ownerPid: number,
   target: number,
   error: PreparedExecTargetError,
-): PreparedExecTargetError {
+): Promise<PreparedExecTargetError> {
   if (error.targetCancelled) return error;
-  // One attempt consumes this host-side cancellation obligation even when a
-  // corrupt kernel reports an error. Retrying could consume a reused token.
+  // Only pre-entry contention is retried. An actual cancellation attempt
+  // consumes this obligation even when a corrupt kernel reports an error;
+  // repeating that attempt could consume a reused token.
   error.targetCancelled = true;
   try {
-    kernel.execTargetCancel(ownerPid, target);
+    await retryKernelEntryResult(() => kernel.execTargetCancel(ownerPid, target));
   } catch {
     // Preserve the original precommit failure. The kernel entry/fatal boundary
     // owns any exception raised while trying to release its retained target.
@@ -77,7 +103,7 @@ export async function readPreparedExecTarget(
   target: number,
 ): Promise<Uint8Array> {
   try {
-    const size = kernel.execTargetSize(ownerPid, target);
+    const size = await retryKernelEntryResult(() => kernel.execTargetSize(ownerPid, target));
     if (size < 0n) {
       throw new PreparedExecTargetError(
         "prepared exec target size failed",
@@ -112,6 +138,7 @@ export async function readPreparedExecTarget(
     }
 
     let offset = 0n;
+    let eagainSince: number | undefined;
     while (offset < size) {
       const start = Number(offset);
       const capacity = Math.min(
@@ -119,12 +146,38 @@ export async function readPreparedExecTarget(
         output.byteLength - start,
       );
       const destination = output.subarray(start, start + capacity);
-      const read = kernel.execTargetRead(
-        ownerPid,
-        target,
-        offset,
-        destination,
-      );
+      let read: number;
+      try {
+        // Keep ordinary reads synchronous, without a promise for every chunk.
+        // A lazy fetch can yield, so the next read may encounter queued ingress.
+        read = kernel.execTargetRead(ownerPid, target, offset, destination);
+      } catch (cause) {
+        if (!(cause instanceof KernelReentrantEntryError)) throw cause;
+        read = await retryKernelEntryResult(() =>
+          kernel.execTargetRead(ownerPid, target, offset, destination));
+      }
+      if (read === -EAGAIN) {
+        // The deferred bytes are still being fetched: retry the same offset
+        // once the fetch has settled.
+        eagainSince ??= Date.now();
+        const eagainWaitedMs = Date.now() - eagainSince;
+        if (eagainWaitedMs >= EXEC_TARGET_EAGAIN_MAX_WAIT_MS) {
+          throw new PreparedExecTargetError(
+            "prepared exec target read did not become available after "
+              + `${EXEC_TARGET_EAGAIN_MAX_WAIT_MS}ms of retrying a transient `
+              + "EAGAIN",
+            ETIMEDOUT,
+          );
+        }
+        const inFlight = kernel.deferredFetchSettled?.() ?? null;
+        await waitForDeferredFetch(
+          inFlight,
+          inFlight === null
+            ? EXEC_TARGET_EAGAIN_RETRY_DELAY_MS
+            : EXEC_TARGET_EAGAIN_MAX_WAIT_MS - eagainWaitedMs,
+        );
+        continue;
+      }
       if (read < 0) {
         throw new PreparedExecTargetError(
           "prepared exec target read failed",
@@ -141,7 +194,7 @@ export async function readPreparedExecTarget(
     }
     return output;
   } catch (cause) {
-    throw cancelPreparedTarget(
+    throw await cancelPreparedTarget(
       kernel,
       ownerPid,
       target,
@@ -188,12 +241,25 @@ export interface PreparedExecLaunchOptions {
     expectedSize: number,
     markTargetConsumed: () => void,
   ) => number;
-  /** Side-effect-free candidate that may be reused only on exact byte identity. */
-  readonly preflightCandidate?: Readonly<{
-    targetBytes: ArrayBuffer;
-    targetModule: WebAssembly.Module;
-  }>;
+  /**
+   * Compile, or reuse the module already compiled for, exactly these bytes.
+   * The kernel worker's content-addressed cache keys on a digest of the
+   * bytes, so a spawn's preflight module is reused only when the final
+   * target is byte-identical to the candidate.
+   */
+  readonly compileModule: CompileWasmModule;
+  /**
+   * A spawn's preflight module. Never executed or compared here: it only
+   * stays reachable through these options until the final target compiles,
+   * so the weakly held cache entry for byte-identical bytes cannot be
+   * collected in between.
+   */
+  readonly preflightModule?: WebAssembly.Module;
 }
+
+export type CompileWasmModule = (
+  bytes: ArrayBuffer,
+) => Promise<WebAssembly.Module>;
 
 function parseShebang(bytes: Uint8Array): {
   interpreter: string;
@@ -231,27 +297,17 @@ function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer as ArrayBuffer;
 }
 
-function exactlyMatchesPreflightCandidate(
-  bytes: Uint8Array,
-  candidate: ArrayBuffer,
-): boolean {
-  if (bytes.byteLength !== candidate.byteLength) return false;
-  const candidateBytes = new Uint8Array(candidate);
-  for (let index = 0; index < bytes.byteLength; index += 1) {
-    if (bytes[index] !== candidateBytes[index]) return false;
-  }
-  return true;
-}
-
 /**
  * Snapshot and compile one side-effect-free spawn candidate before the child
  * exists. The resolver's separately supplied module is intentionally absent:
- * only a module compiled here from this isolated byte snapshot may be reused
- * when the authoritative final target has exact byte identity.
+ * only a module compiled here from this isolated byte snapshot may be reused,
+ * and the content-addressed `compileModule` reuses it for the authoritative
+ * final target only when that target has the same bytes.
  */
 export async function compileSpawnCandidateSnapshot(
   programBytes: ArrayBuffer,
   expectedAbi: number,
+  compileModule: CompileWasmModule,
 ): Promise<Readonly<{
   targetBytes: ArrayBuffer;
   targetModule: WebAssembly.Module;
@@ -296,7 +352,7 @@ export async function compileSpawnCandidateSnapshot(
 
   let targetModule: WebAssembly.Module;
   try {
-    targetModule = await WebAssembly.compile(targetBytes);
+    targetModule = await compileModule(targetBytes);
   } catch (cause) {
     if (cause instanceof WebAssembly.CompileError) {
       throw new PreparedExecTargetError(
@@ -314,7 +370,7 @@ export async function launchPreparedExecTarget(
   callback: ExecLaunchCallback,
 ): Promise<number> {
   await options.materializePath(options.diagnosticPath);
-  let target = preparedTargetToken(options.prepareInitialTarget());
+  let target = preparedTargetToken(await retryKernelEntryResult(options.prepareInitialTarget));
   let bytes = await readPreparedExecTarget(
     options.kernel,
     options.ownerPid,
@@ -329,10 +385,8 @@ export async function launchPreparedExecTarget(
     // Script set-ID state is deliberately never committed. Consume the script
     // token before preparing the interpreter as the sole final authority.
     targetLive = false;
-    const cancelResult = options.kernel.execTargetCancel(
-      options.ownerPid,
-      target,
-    );
+    const cancelResult = await retryKernelEntryResult(() =>
+      options.kernel.execTargetCancel(options.ownerPid, target));
     if (cancelResult < 0) {
       throw new PreparedExecTargetError(
         "unable to cancel prepared script target",
@@ -349,7 +403,7 @@ export async function launchPreparedExecTarget(
     finalDiagnosticPath = script.interpreter;
     await options.materializePath(script.interpreter);
     target = preparedTargetToken(
-      options.prepareInterpreterTarget(script.interpreter),
+      await retryKernelEntryResult(() => options.prepareInterpreterTarget(script.interpreter)),
     );
     bytes = await readPreparedExecTarget(
       options.kernel,
@@ -358,7 +412,7 @@ export async function launchPreparedExecTarget(
     );
     targetLive = true;
     if (parseShebang(bytes) !== null) {
-      throw cancelPreparedTarget(
+      throw await cancelPreparedTarget(
         options.kernel,
         options.ownerPid,
         target,
@@ -391,25 +445,19 @@ export async function launchPreparedExecTarget(
       );
     }
 
-    let targetModule = options.preflightCandidate
-      && exactlyMatchesPreflightCandidate(
-        bytes,
-        options.preflightCandidate.targetBytes,
-      )
-      ? options.preflightCandidate.targetModule
-      : undefined;
-    if (targetModule === undefined) {
-      try {
-        targetModule = await WebAssembly.compile(targetBytes);
-      } catch (cause) {
-        if (cause instanceof WebAssembly.CompileError) {
-          throw new PreparedExecTargetError(
-            "prepared exec target failed WebAssembly compilation",
-            ENOEXEC,
-          );
-        }
-        throw cause;
+    // Every admission check above ran on these exact bytes; the cache only
+    // replaces the compile step, never the checks.
+    let targetModule: WebAssembly.Module;
+    try {
+      targetModule = await options.compileModule(targetBytes);
+    } catch (cause) {
+      if (cause instanceof WebAssembly.CompileError) {
+        throw new PreparedExecTargetError(
+          "prepared exec target failed WebAssembly compilation",
+          ENOEXEC,
+        );
       }
+      throw cause;
     }
 
     const request: PreparedExecLaunchRequest = {
@@ -423,7 +471,7 @@ export async function launchPreparedExecTarget(
     const decision = await callback(request);
     if (typeof decision === "number") {
       targetLive = false;
-      options.kernel.execTargetCancel(options.ownerPid, target);
+      await retryKernelEntryResult(() => options.kernel.execTargetCancel(options.ownerPid, target));
       return decision < 0 ? decision : -EIO;
     }
 
@@ -431,25 +479,35 @@ export async function launchPreparedExecTarget(
     // alone owns this no-yield commit edge and invokes the postcommit action
     // immediately after Rust consumes the token.
     let commitResult: number;
-    try {
-      commitResult = options.commitTarget(
-        target,
-        targetBytes.byteLength,
-        () => {
-          // The production wrapper calls this immediately before the raw
-          // commit/cancel export. A throw before that edge leaves the token
-          // cancellable; a host-import throw after it has uncertain/consumed
-          // Rust ownership and must never retry the token.
-          targetLive = false;
-        },
-      );
-      // Every numeric kernel result has settled the exact token, including a
-      // rejected commit. Test doubles may omit the marker because they cannot
-      // throw from inside Rust after taking the target.
-      targetLive = false;
-    } catch (cause) {
-      decision.onCommitFailure();
-      throw cause;
+    for (;;) {
+      try {
+        commitResult = options.commitTarget(
+          target,
+          targetBytes.byteLength,
+          () => {
+            // The production wrapper calls this immediately before the raw
+            // commit/cancel export. A throw before that edge leaves the token
+            // cancellable; a host-import throw after it has uncertain/consumed
+            // Rust ownership and must never retry the token.
+            targetLive = false;
+          },
+        );
+        // Every numeric kernel result has settled the exact token, including a
+        // rejected commit. Test doubles may omit the marker because they cannot
+        // throw from inside Rust after taking the target.
+        targetLive = false;
+        break;
+      } catch (cause) {
+        if (targetLive && cause instanceof KernelReentrantEntryError) {
+          // Retry only a refusal before consuming the token. Keep a successful
+          // commit and start below on one stack; awaiting a generic retry
+          // promise after commit would expose a half-installed replacement.
+          await new Promise<void>(resolve => setTimeout(resolve, 0));
+          continue;
+        }
+        decision.onCommitFailure();
+        throw cause;
+      }
     }
     if (commitResult < 0) {
       decision.onCommitFailure(commitResult);
@@ -460,7 +518,7 @@ export async function launchPreparedExecTarget(
     if (targetLive) {
       targetLive = false;
       const error = targetError(cause, "prepared exec launch failed");
-      throw cancelPreparedTarget(
+      throw await cancelPreparedTarget(
         options.kernel,
         options.ownerPid,
         target,

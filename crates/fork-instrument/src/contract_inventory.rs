@@ -19,12 +19,42 @@ use wasmparser::{
     TypeRef, ValType,
 };
 
-/// One import from Kandelo's libc/host-reserved `env.__wasm_posix_*`
-/// namespace.
+/// One import from a namespace Kandelo reserves for itself: the
+/// libc/host-reserved `env.__wasm_posix_*` helpers, or an entry point that
+/// belongs to a sysroot platform library (`libdrm`, `libgbm`, `libEGL`,
+/// `libGLESv2`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReservedEnvImport {
     pub kind: &'static str,
     pub identity: String,
+}
+
+/// True for an `env` import name Kandelo owns and the host never provides.
+///
+/// Two families, both of which can only reach the import section by escaping
+/// a static archive that should have defined them:
+///
+/// * `__wasm_posix_*` — private libc/glue helpers.
+/// * `drmFoo` / `gbm_foo` / `eglFoo` / `glFoo` — the sysroot platform
+///   libraries `scripts/build-dri-stubs.sh` and `scripts/build-gles-stubs.sh`
+///   install. The host implements none of these by name; guests reach the
+///   real implementations through `/dev/dri/*` ioctls, so an import here is
+///   always an unresolved symbol.
+///
+/// The library families match on an uppercase letter (or `_` for GBM) after
+/// the prefix, which is how their upstream naming works and which keeps
+/// ordinary lowercase symbols such as `glob` or `drmgetenv`-shaped names out
+/// of the set.
+fn is_reserved_env_import_name(name: &str) -> bool {
+    fn tail_starts_upper(name: &str, prefix: &str) -> bool {
+        name.strip_prefix(prefix)
+            .is_some_and(|tail| tail.starts_with(|c: char| c.is_ascii_uppercase()))
+    }
+    name.starts_with("__wasm_posix_")
+        || name.starts_with("gbm_")
+        || tail_starts_upper(name, "drm")
+        || tail_starts_upper(name, "egl")
+        || tail_starts_upper(name, "gl")
 }
 
 /// The exact tab-separated inventory consumed by `wasm-artifact-guards.sh`.
@@ -346,13 +376,14 @@ pub fn artifact_identity(bytes: &[u8]) -> Result<ArtifactIdentity> {
     })
 }
 
-/// Inventory imports from Kandelo's reserved libc/host namespace without
-/// decoding function bodies.
+/// Inventory imports from the namespaces Kandelo reserves, without decoding
+/// function bodies.
 ///
 /// WHY: compiler-generated ABI 43 reference types are newer than the WABT
 /// decoder available on package builders. Publication still has to reject a
-/// private libc helper that escaped as an import, so the same wasmparser
-/// boundary used for artifact identity owns this structural check as well.
+/// private libc helper — or a sysroot platform-library entry point — that
+/// escaped as an import, so the same wasmparser boundary used for artifact
+/// identity owns this structural check as well.
 pub fn reserved_env_imports(bytes: &[u8]) -> Result<Vec<ReservedEnvImport>> {
     let mut reserved = Vec::new();
     for payload in Parser::new(0).parse_all(bytes) {
@@ -365,7 +396,7 @@ pub fn reserved_env_imports(bytes: &[u8]) -> Result<Vec<ReservedEnvImport>> {
             Payload::ImportSection(imports) => {
                 for import in imports.into_imports() {
                     let import = import.context("parsing reserved import section")?;
-                    if import.module != "env" || !import.name.starts_with("__wasm_posix_") {
+                    if import.module != "env" || !is_reserved_env_import_name(import.name) {
                         continue;
                     }
                     if import.name.bytes().any(|byte| matches!(byte, b'\t' | b'\n' | b'\r')) {

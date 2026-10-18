@@ -5,7 +5,19 @@ inputs = [
   "host/test/centralized-test-helper.ts",
   "images/vfs/scripts/create-deterministic-zip.sh",
   "scripts/package-build-roots.sh",
+  # The capture boots a kernel host through centralized-test-helper.ts, so the
+  # host runtime it reaches (including vfs-image-transport.ts, which
+  # generate-coreutils-man.ts imports to read the rootfs) is part of the
+  # output's identity.
+  "host/src",
+  "images/vfs/lib/kandelo-image-fs.ts",
+  # The image writer that boot path reaches (images/vfs/lib/kandelo-image-fs.ts
+  # loads local-binaries/kandelo_image_module32.wasm): its cargo closure and
+  # recipe.
+  "cargo:kandelo-image-module",
+  "cargo:runtime-core",
+  "crates/kandelo-image-module/build-wasm.sh",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 1
+revision    = 2

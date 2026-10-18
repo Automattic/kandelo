@@ -2,6 +2,10 @@
 
 This document describes the internal architecture of Kandelo. It is written for both human developers and AI agents working on the codebase.
 
+[Architecture reflections](architecture-reflections.md) explain the design
+lessons behind ownership boundaries, host bookkeeping, filesystem migrations
+and validation. This document remains the reference for implemented behavior.
+
 ## Overview
 
 Kandelo is a shared, multi-process POSIX kernel that runs as WebAssembly. A single kernel Wasm instance manages all processes. The kernel **must** run in a dedicated worker thread (Web Worker in browsers, `worker_thread` in Node.js) — never on the main thread. Each process also runs in its own worker and communicates with the kernel via a SharedArrayBuffer-based channel.
@@ -113,10 +117,6 @@ kernel_spawn_scratch_capacity(reservation_token) → reservation_capacity | 0
 kernel_spawn_scratch_retained_capacity() → retained_capacity
 kernel_spawn_scratch_cancel(reservation_token) → 0 | -errno
 kernel_spawn_reserved_process(parent_pid, caller_tid, reservation_token, blob_len) → assigned_child_pid | -errno
-kernel_msqid_ds_bytes(process_pointer_width) → bytes | -errno
-kernel_semctl_array_bytes(pid, tid, semid, command) → bytes | -errno
-kernel_semid_ds_bytes(process_pointer_width) → bytes | -errno
-kernel_shmid_ds_bytes(process_pointer_width) → bytes | -errno
 kernel_get_cwd(pid, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_fd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
 kernel_get_dirfd_path(pid, fd, buf, capacity) → required_or_written_bytes | -errno
@@ -128,8 +128,24 @@ kernel_process_metadata_cancel(pid, transaction_token) → 0 | -errno
 kernel_set_max_addr(pid, addr) → 0
 kernel_set_brk_base(pid, addr) → 0
 kernel_set_mmap_base(pid, addr) → 0
+kernel_set_process_pointer_width(pid, width) → 0 | -errno
 kernel_is_fd_nonblock(pid, fd) → 1 | 0 | -1
+kernel_epoll_wake_indices(pid, epfd, kind, out_ptr, out_capacity) → count | -errno
+kernel_set_wait_queue_enabled(enabled) → previous | -errno
+kernel_wait_deadline_open(pid, tid, kind, timeout_ms) → wait_handle | -errno
+kernel_wait_deadline_remaining_ns(wait_handle) → nanoseconds | NO_DEADLINE | -errno
+kernel_wait_deadline_close(wait_handle) → 1 | 0 | -errno
+kernel_wait_retire_process(pid) → dropped_waits
 ```
+
+The host-facing export list is deliberately small. Ordinary syscalls are not
+exported one by one: the guest reaches them through `kernel_handle_channel`,
+which dispatches to the Rust handlers as plain function calls. A
+`#[unsafe(no_mangle)] pub extern "C"` on a dispatch-only handler would publish
+a symbol with no consumer, so those handlers carry no export attribute, and
+`abi/snapshot.json` records only the exports something outside the kernel
+actually calls. `docs/abi-versioning.md` ("ABI 48") lists what that cut
+removed.
 
 Normal guest exit closes descriptors before the process becomes reapable.
 When the host instead removes a live process after explicit termination or a
@@ -144,16 +160,35 @@ Host imports (provided by TypeScript):
 ```
 host_read(fd, buf, len) → bytes_read
 host_write(fd, buf, len) → bytes_written
-host_open(path, flags, mode) → handle
+host_openat(dir_handle, name, flags, mode) → handle
 host_close(handle) → 0
-host_stat(path, buf) → 0
+host_fstatat(dir_handle, name, flags, buf) → 0
 host_fstat(handle, buf) → 0
+host_image_read(buf, len, offset) → bytes      (the boot image the host holds)
+host_fetch_deferred(uri, buf, len, offset, …) → bytes | -errno (a file the image only names)
 host_getrandom(buf, len) → bytes
 host_connect(addr, port) → handle
 host_send(handle, buf, len) → bytes_sent
 host_recv(handle, buf, len) → bytes_received
+host_net_readiness(handle) → net_readiness fact word
+host_proc_read_bytes(pid, guest_addr_u64, dst, len) → 0 | -errno
+host_proc_write_bytes(pid, guest_addr_u64, src, len) → 0 | -errno
 host_getaddrinfo(host, port, buf, len) → count
 ```
+
+The filesystem imports are handle-only: each `*at` call resolves one path
+component relative to a directory handle the host issued, and the kernel uses
+them only for host directories mounted beneath its own `/`
+(`crates/runtime-core/src/hostdir.rs`). The listing above is abridged;
+`crates/shared/src/lib.rs` and `abi/snapshot.json` hold the full import set.
+
+`host_proc_read_bytes` / `host_proc_write_bytes` take a 64-bit guest address,
+so a wasm64 process's pointer above 4 GiB reaches the kernel intact. They are
+how the kernel reads the arguments it dereferences itself (see "Opaque syscall
+records" below). The kernel imports no host primitive that blocks its own
+thread: there is no host sleep, signal-wait, or futex-wait import, because the
+single kernel thread multiplexes every process in the machine and a blocking
+import would stall all of them.
 
 ### 2. Host Runtime (TypeScript)
 
@@ -171,12 +206,11 @@ Key host components:
 |-----------|------|---------|
 | CentralizedKernelWorker | `kernel-worker.ts` | Manages kernel instance, process channels, blocking retry |
 | SyscallChannel | `channel.ts` | Typed view into SharedArrayBuffer channel region |
-| NodePlatformIO | `platform/node.ts` | Direct Node.js filesystem, networking, random (legacy host-fs path) |
-| VirtualPlatformIO | `vfs/vfs.ts` | Mount-table router — used by both Node and browser hosts |
-| MemoryFileSystem | `vfs/memory-fs.ts` | SharedArrayBuffer-backed in-memory filesystem |
+| NodePlatformIO | `platform/node.ts` | Node.js handle-only `*at` filesystem calls, networking, clocks, random |
+| VirtualPlatformIO | `vfs/vfs.ts` | Host-mount router for directories mounted beneath the kernel's `/` — used by both Node and browser hosts |
 | HostFileSystem | `vfs/host-fs.ts` | Backend that proxies to a Node host directory |
-| DeviceFileSystem | `vfs/device-fs.ts` | /dev/null, /dev/zero, /dev/urandom, /dev/ptmx |
 | OpfsFileSystem | `vfs/opfs.ts` | Origin Private File System (browser persistence) |
+| Image transport | `vfs/vfs-image-transport.ts`, `vfs/rootfs-lazy-archives.ts` | zstd decode of the boot image; host fetch of deferred files the image names |
 | NetworkIO backends | `networking/*.ts` | Host-side external TCP/HTTP bridges and local virtual UDP/TCP networking |
 | Default mount spec | `vfs/default-mounts.ts` (+ `default-mounts-node.ts`) | Canonical mount layout + per-host resolvers |
 | SharedPipeBuffer | `shared-pipe-buffer.ts` | Cross-worker pipe ring buffers via SharedArrayBuffer |
@@ -260,6 +294,18 @@ Each genuine buffer identity is brand-checked once against captured native
 `ArrayBuffer`/`SharedArrayBuffer` getters. The successful getter—not its
 result—is cached, so repeated shared-memory proofs avoid an exception while
 every proof still observes the live post-growth byte length.
+Captured native memory and byte-length getters are bound once, so each live
+proof avoids constructing an argument array. Export arguments and borrowed
+ranges use private records with null prototypes; inherited numeric setters
+cannot intercept them. Validation messages are assembled only on failure.
+
+Opaque export-pointer tokens remain registered only for their synchronous
+lease. The lease links its existing private pointer records and deletes their
+weak-table registrations when it ends, along with its one-shot invalidator.
+An expired token is rejected before any export call. Prompt deletion matters
+because weak tables otherwise leave dead lease graphs for a later garbage
+collection pass; fewer allocations alone do not guarantee a shorter pause.
+The lifecycle cleanup changes no syscall wire or kernel ABI.
 Async syscall preparation detaches caller data into host-owned arrays; the
 final stage, Rust call, and output snapshot happen in one lease without an
 `await`. Retry, timeout, stopped-process, and signal completion state carries
@@ -338,14 +384,24 @@ limit: pathname consumers still apply the generated `PATH_MAX`, while generic
 C-string consumers may validly use more than `PATH_MAX` when the complete
 string fits channel scratch.
 
-Vector-message syscalls add a width-translation boundary. Musl's native
-`iovec`, `msghdr`, and `cmsghdr` layouts differ between wasm32 and wasm64, so
-their sizes, offsets, and alignments are generated from the shared Rust ABI
-source into TypeScript and a musl contract header. The kernel scratch wire is
-deliberately fixed: an eight-byte `KernelIovecWire`, a 28-byte
-`KernelMsghdrWire`, and a 12-byte-aligned `KernelCmsghdrWire`. These are
-separate contracts; copying a native wasm64 header and hoping the fixed parser
-interprets it is invalid even when the bytes fit in linear memory.
+Vector-message syscalls cross a width boundary. Musl's native `iovec`,
+`msghdr`, and `cmsghdr` layouts differ between wasm32 and wasm64, so their
+sizes, offsets, and alignments are generated from the shared Rust ABI source.
+`msg_iovlen` and `msg_controllen` are the traps worth naming: musl keeps both
+32-bit on wasm64 and pads after each, so reading either as a `size_t` folds
+unrelated padding into the high half of a count.
+
+**The kernel reads those structures in the caller's memory itself.**
+`sendmsg`/`recvmsg` declare their `msghdr` argument
+`SyscallArgSize::KernelDereferenced`, so the host copies nothing and passes
+the raw guest address; the kernel takes the caller's pointer width from the
+process's registration, and `crates/runtime-core/`
+`src/msghdr.rs` walks the header, the `msg_iov` table and the CMSG chain
+through `host_proc_read_bytes` / `host_proc_write_bytes`. The fixed
+kernel-scratch `KernelIovecWire` / `KernelMsghdrWire` / `KernelCmsghdrWire`
+records that the host used to stage are retired and no longer appear in
+`abi/snapshot.json`; the scatter/gather syscalls walk the caller's own iovec
+table the same way.
 Socket-address sizing is likewise generated as two distinct contracts.
 The 128-byte `sockaddr_storage` bounds every generic input and output staging
 region; the 110-byte `sockaddr_un` bounds family-specific AF_UNIX parsing.
@@ -359,29 +415,33 @@ An exact 108-byte non-NUL pathname can make Linux-compatible `getsockname()`
 report 111 bytes after accounting for its appended terminator, which still
 fits the generic 128-byte output region.
 
-For `sendmsg`, the host validates the complete native header and iovec table,
-every nested caller range, `IOV_MAX`, and the complete fixed-wire footprint.
-It translates each ancillary record, flattens all caller iovecs in order into
-one capacity-owned payload, and invokes Rust with a zero-or-one-iovec wire
-inside one synchronous lease. Rust validates the complete aligned ancillary
-stream and the receiver-reconstructibility of every requested `SCM_RIGHTS`
-description before retaining any reference or publishing carrier bytes. Socket
+For `sendmsg`, the kernel decodes the caller's header, enforces `IOV_MAX`
+before reading the table, and gathers every iovec in order into one
+contiguous kernel-owned buffer bounded by `SSIZE_MAX` — a datagram must go
+out in one piece, and the bound is the operation's own limit rather than a
+transport's capacity. It then validates the aligned ancillary stream and the
+receiver-reconstructibility of every requested `SCM_RIGHTS` description
+before retaining any reference or publishing carrier bytes. Socket
 descriptions are not reconstructible from a process-local socket snapshot, so
 an ancillary batch containing one fails atomically with `EOPNOTSUPP`; Kandelo
-does not pretend that a copied socket record is the original endpoint. The
-exact flattened-iovec count is generated from the shared protocol contract,
-and a Rust compile-time guard makes changing that count fail until the fixed
-parser changes with it.
+does not pretend that a copied socket record is the original endpoint.
+
 Nested `sendmsg.msg_name` accepts exactly the same 128-byte input maximum as
-`sendto`; it cannot bypass that check by living inside `msghdr`. For
-`recvmsg`, the host proves and reserves at most 128 name bytes even when the
-caller advertises a larger buffer, derives fixed-wire control capacity from
-the caller-native data capacity,
-snapshots the result, validates the entire returned record, expands it with
-zeroed native padding, and scatters payload bytes across every caller iovec.
-A retry or malformed kernel result publishes none of those detached outputs.
-This flatten/scatter design preserves the public multi-iovec behavior while
-keeping the ordinary transport allocation fixed and cheap.
+`sendto`; it cannot bypass that check by living inside `msghdr`.
+
+For `recvmsg`, the kernel reserves at most 128 name bytes even when the
+caller advertises a larger buffer, derives `SCM_RIGHTS` capacity from the
+CALLER's `cmsghdr` size — 32 control bytes hold five descriptors for a wasm32
+receiver and four for a wasm64 one — receives into one contiguous buffer, and
+scatters the result across the caller's iovecs. It publishes `msg_namelen`,
+`msg_controllen` and `msg_flags` only for a delivered message, including a
+zero-length one: on EAGAIN the host parks a retry and calls again with the
+same header, so zeroing `msg_controllen` would leave that retry with no
+control capacity.
+
+Both retain what a retry must not re-read. A blocked `sendmsg` keeps its
+in-flight descriptors in `BlockingRetryTarget::Sendmsg` and a retry uses
+those, never a control buffer a peer thread may have changed meanwhile.
 
 Guest process memory is a separate owner, not another spelling for kernel
 scratch. `CentralizedKernelWorker.registerProcess` rejects the active kernel
@@ -451,6 +511,21 @@ revalidate the exact host process generation before each PID-only kernel
 operation, so an `exec` that reuses the PID cannot receive a stale
 continuation's address-space or thread mutation. Child-launch paths use
 monotonic task IDs or the expected process memory as their equivalent guard.
+
+A prepared exec rechecks the old worker's exact memory registration and
+still-pending exec syscall channel inside the commit entry. A cooperative
+teardown can complete the channel while the registration still exists.
+If that image was removed, replaced, or interrupted during asynchronous
+preparation, the host cancels its target and returns `ESRCH` before Rust
+commits. It preserves any transition already belonging to a successor.
+Once replacement is registered, the discarded image's lease retires through
+the same exact-generation ledger used by exit, termination, and destroy.
+Overlapping cleanup paths therefore consume the lease once without removing
+or reaping the replacement's persistent process ID.
+
+The login program disables password echo and flushes earlier input before
+showing its password prompt. Input sent in response to that prompt therefore
+is not discarded by a later terminal-mode change.
 
 Positioned host-backed I/O uses required `host_pread` and `host_pwrite`
 imports. Signed 64-bit offsets remain exact across TypeScript routing and are
@@ -578,20 +653,34 @@ select musl's target structure from the process pointer width:
 | `semid_ds` | 72 bytes | 88 bytes |
 | `shmid_ds` | 88 bytes | 112 bytes |
 
-The host stages `msgctl`/`shmctl` `IPC_STAT` and `IPC_SET` according to the
-command and passes that process pointer width in the otherwise host-private
-sixth dispatch slot. The kernel Wasm's own width is not a valid substitute
-because one kernel may serve both guest widths.
-`kernel_semctl_array_bytes(pid, tid, semid, command)` separately performs the
-permission-aware GETALL/SETALL size preflight. All four sizing exports are
-required in ABI 43. There is no `IPC_STAT` sizing fallback for semaphore
-arrays: a process may have permission to write a semaphore set without
-permission to read its metadata.
+The kernel reads and writes these structures in the caller's memory itself,
+through `host_proc_read_bytes` / `host_proc_write_bytes`, and takes the caller's
+pointer width from the process's registered width (see "Opaque syscall
+records"). The kernel Wasm's own width is not a valid substitute because one
+kernel may serve both guest widths.
+
+The arguments are declared `SyscallArgSize::KernelDereferenced`, which is what
+makes that possible: the host copies nothing and passes the raw guest address
+through. No static size rule could describe them, because `msgctl`'s buffer is
+an input for `IPC_SET` and an output for `IPC_STAT`, and `semctl`'s fourth
+argument is a `union semun` whose GETALL/SETALL form is an `unsigned short`
+array sized by the set's own `nsems` — a fact that appears nowhere in the
+syscall arguments.
+
+There is still no `IPC_STAT` sizing fallback for semaphore arrays, and the
+reason is unchanged: a process may have permission to write a semaphore set
+without permission to read its metadata, so sizing the array through IPC_STAT
+would impose a read permission POSIX does not require. The kernel
+sizes the array from the set's own `nsems` under the requested command's own
+permission check instead. The four ABI 43 sizing exports
+(`kernel_msqid_ds_bytes`, `kernel_semid_ds_bytes`, `kernel_shmid_ds_bytes`,
+`kernel_semctl_array_bytes`) answered a question the host no longer asks and
+are gone, as is `kernel_mq_descriptor_msgsize`.
 
 Other caller-native records use the generated
-`SyscallArgSize::ProcessLayout` descriptor. Encountering that descriptor makes
-the host select the exact size from the process width and carry the same width
-in the private sixth dispatch slot:
+`SyscallArgSize::ProcessLayout` descriptor. The guest's record encoder copies
+exactly the size its own data model selects from that descriptor, and the
+kernel parses it using the process's registered pointer width:
 
 | Record | wasm32 | wasm64 |
 |---|---:|---:|
@@ -609,16 +698,15 @@ Rust parses or serializes each complete caller-native record into a
 capacity-bounded scratch slice and initializes padding and reserved bytes.
 The kernel Wasm's own pointer width is never used to infer the process layout.
 The generated fixed-size descriptors separately carry `stat` (112 bytes) and
-`sched_param` (48 bytes); those two records do not use width selection or the
-private process-width dispatch slot.
+`sched_param` (48 bytes); those two records do not use width selection.
 
 `setsockopt` carries the same independent caller-width fact for native IPv4
 multicast group records. `group_req` is 132 bytes with its group at offset 4
 on wasm32 and 136 bytes with the group at offset 8 on wasm64.
 `group_source_req` is 260/264 bytes with its source address at offset 132/136.
-The syscall has five public arguments, so the host writes the process width to
-the otherwise private sixth channel slot before dispatch. Rust accepts only 4
-or 8 and selects these generated layouts from that value. `optlen` is merely a
+The kernel selects these generated layouts from the calling process's
+registered pointer width, which is only ever 4 or 8; the sixth channel slot
+is the caller's (always-zero) argument and is not read as a width. `optlen` is merely a
 caller byte extent, and padding is caller data; neither may be used to guess
 the process data model. The public five-argument `kernel_setsockopt` export
 keeps its signature and uses the kernel's native width for direct calls, while
@@ -742,6 +830,19 @@ embedders must not register or manipulate lock storage. The unchanged guest
 directly, which also lets a native Wasm host use the same implementation
 without a lock-specific JavaScript binding.
 
+Host advisory-lock marshalling retains an owned 32-byte request snapshot:
+blocking retries must not observe later guest writes or memory growth. Only
+successful `F_GETLK`, `F_GETLK64` and `F_OFD_GETLK` calls copy a result back;
+setters consume input only. Signal termination and caught-signal dequeue
+precede result publication and retry scheduling.
+
+One lease-bound scratch view writes the request and reads its result. The
+wrapper checks lease ownership on every access and refreshes its private
+native view after kernel memory growth. It is created within each request's
+lease and revoked with that lease; it is never cached on a channel or shared
+between requests. A second result wrapper would duplicate allocation without
+adding a memory-growth or lifetime check.
+
 ### Cooperative process-runtime interrupts
 
 A process module may import
@@ -836,15 +937,35 @@ continuation allocation/cleanup, and staged-loader VFS/memory requests set the
 bit and clear it before returning control to guest code. Libc then uses an
 ordinary side-effect-free `getpid` syscall as the signal-delivery checkpoint
 after the owning import returns. Ordinary guest syscalls clear the flags word.
+Bit 3, `REQUEST_FLAG_OPAQUE_RECORD`, says the data buffer begins with a
+self-describing syscall record (next section) rather than raw scratch.
+
+The flags word is guest-written, so the host validates it as untrusted input.
+An unknown bit, the cancellation-wake bit without the cancellation-point bit,
+or bit 3 on a syscall that must keep raw arguments
+(`crates/shared/src/host_raw_syscalls.rs`) is a malformed request: the host
+completes that one request with `EINVAL` and dispatches nothing. It is never a
+reason to stop the kernel worker, because every process shares it.
 
 ### Status Values
 
 | Value | Name | Meaning |
 |-------|------|---------|
 | 0 | IDLE | Channel is idle |
-| 1 | SYSCALL_READY | Process has written a syscall, kernel should handle it |
-| 2 | RESULT_READY | Kernel has written the result, process can read it |
-| 3 | RETRY | Kernel needs the host to retry (blocking I/O not ready yet) |
+| 1 | PENDING | Process has written a syscall, kernel should handle it |
+| 2 | COMPLETE | Kernel has written the result, process can read it |
+| 3 | ERROR | Kernel has written an error result |
+| 4 | TEARDOWN | The thread's image is being abandoned; the glue traps instead of returning |
+
+`TEARDOWN` is not a syscall outcome. The host publishes it, with an
+`Atomics.notify`, to unwind a guest thread parked in the channel wait without
+letting it resume an image that is being replaced or rolled back (an
+abandoned `execve`, a fork-replay teardown, a `posix_spawn` rollback). The glue
+traps as soon as it observes the value and never reads `return_value` or
+`errno_value`.
+
+A blocked syscall is not a status value either: the kernel answers it with
+`EAGAIN` and the host parks the channel (see "Blocking Syscalls and Retry").
 
 ### Syscall Flow
 
@@ -862,6 +983,9 @@ Process Worker                          Kernel Worker (host)
                                         7. Call kernel_handle_channel(offset,
                                                                       capacity, pid,
                                                                       retry_token=0)
+                                           (kernel_handle_channel_record(offset,
+                                           capacity, pid) for a request with
+                                           REQUEST_FLAG_OPAQUE_RECORD)
                                         8. Kernel reads args from process memory
                                         9. Kernel executes syscall logic
                                        10. Kernel writes return_value + errno
@@ -878,6 +1002,75 @@ omits that publication because JavaScript owns its completion and has no
 signal-handler trampoline. The next explicit guest checkpoint performs the
 same delivery only after the host import has returned; this avoids both signal
 loss and a reentrant host-to-Wasm callback.
+
+### Opaque syscall records
+
+The host does not interpret a syscall's pointer arguments. For every
+non-blocking syscall, the guest's own libc glue (`libc/glue/channel_syscall.c`)
+marshals the call into one bounded, self-describing record at the start of the
+data buffer and sets `REQUEST_FLAG_OPAQUE_RECORD`. The record format is defined
+once, in `crates/shared/src/channel_record.rs` (record ABI v1): a fixed header
+(magic, record ABI, syscall number, span count, the record's total length, the
+six scalar argument words) followed by span descriptors, each naming an
+argument index, a direction (in, out, in/out) and a byte range inside the
+record. The length is the one field the host reads: it copies exactly that
+many bytes into kernel scratch and back, because moving the whole 64 KiB data
+buffer each way made every record syscall several times its own cost. The
+kernel decodes only those bytes and validates every rewritten argument against
+the record (plus zeroed fixed `select` slots), never the whole scratch
+allocation, since the bytes past the record belong to earlier requests. The glue learns each
+syscall's pointer layout from `bits/kandelo_syscall_marshal.h`, which
+`cargo xtask dump-abi` generates from
+`wasm_posix_shared::host_abi::SYSCALL_ARG_DESCRIPTORS` and the ioctl contract,
+so C and Rust read one table. Bespoke families whose layout depends on another
+argument (`ioctl` by request, `fcntl` locks, `prctl` names, `epoll_wait`'s
+event array, `select`/`pselect6`) are marshalled by small hand-written cases
+in the same file.
+
+The host hands a flagged request to `kernel_handle_channel_record` instead of
+`kernel_handle_channel`. Both run `handle_owned_channel_allocation`; the entry
+point tells it which transport the guest chose, and only the record transport
+decodes a record, with the bounds-checked decoder in
+`crates/runtime-core/src/channel_record_decode.rs`. It lays each span back
+into the scratch layout the existing validators accept, dispatches, and copies
+out/in-out spans back to the caller's addresses. Nothing falls back to
+guessing: a missing record, a record that does not decode, a record whose
+syscall number differs from the header's, and a record for a host-raw syscall
+each complete the request with `EINVAL` without dispatching anything. The raw
+transport never looks for a record. Its data buffer holds whatever the host
+staged (a `write` payload, a path) or whatever an earlier request left in the
+reused kernel scratch, and either can begin with the record magic; deciding
+from those bytes would let ordinary user data choose which syscall runs.
+
+Two classes of call stay on the raw-argument path, and
+`crates/shared/src/host_raw_syscalls.rs` is the authoritative list:
+syscalls the host itself intercepts (fork, exec, thread creation, and similar
+lifecycle calls) and syscalls that can block and are retried by the host
+(`read`, `poll`, `sigsuspend`, `pause`, `getaddrinfo` while a backend's
+asynchronous DNS lookup is pending, ...), whose retry snapshot is built from
+the raw arguments.
+
+Some arguments cannot be described by a static size rule at all: a
+`struct msghdr` that leads to an iovec table and a CMSG chain, the
+scatter/gather iovec table of `writev`/`readv`/`preadv`/`pwritev`, and the
+SysV IPC and POSIX message-queue buffers whose direction and size depend on
+the command. Those arguments are declared
+`SyscallArgSize::KernelDereferenced`. The record carries only the caller's raw
+guest address in its scalar slot, and the kernel reads and writes the caller's
+memory itself through `host_proc_read_bytes` / `host_proc_write_bytes`
+(`crates/runtime-core/src/guest_ptr.rs`, `msghdr.rs`, `ipc_wire.rs`), in the
+caller's data model.
+
+**The caller's data model is per-process kernel state.** One kernel instance
+serves wasm32 and wasm64 processes at once, so the kernel cannot use its own
+compilation target to size a caller-native structure. `Process` carries
+`pointer_width`. The host sets it with `kernel_set_process_pointer_width`
+whenever it registers an address space it instantiated (process creation and
+the image an `exec` installs), a `fork` child inherits it through the fork
+state record, and the dispatcher reads it once per syscall. No channel
+argument slot carries it: slot 5 belongs to the caller, which is what gives
+`preadv2`/`pwritev2` their `flags` argument (`RWF_NOWAIT` is implemented;
+every other `RWF_*` bit is refused with `EOPNOTSUPP`).
 
 ### Blocking Syscalls and Retry
 
@@ -900,6 +1093,22 @@ makes implementation-defined. Other timeout-bearing operations remain out
 when a new submission would reset their deadline. The shared
 `CentralizedKernelWorker` state machine provides the same behavior in Node.js
 and browser hosts.
+
+A syscall can also end its own process. When a write raises `SIGPIPE` or
+`SIGXFSZ`, Rust applies the signal's default action before the syscall
+returns. That includes a blocked pipe write retried after the last reader
+closed. The process is then already an `Exited` zombie when the host reads
+the result. Every host path that runs such a syscall checks for that signal
+death first and finishes the termination before it enters the kernel again:
+the generic channel path and its retry replay, vectored and large transfers,
+and `sendmsg`. `kernel_dequeue_signal` is defined only for live tasks and
+rejects an exited one with `ESRCH`, and the host treats that rejection as a
+fatal protocol failure. A path that skips the check therefore turns one
+process's `SIGPIPE` into the death of the whole kernel instance. A pending
+signal that a wait's mask unblocks (`ppoll`, `pselect`, `epoll_pwait`) takes
+a different route: the host's dequeue applies the default action itself and
+returns 0, and the check that follows every dequeue finishes the
+termination.
 
 For a signal-mask-swapping `ppoll` or `pselect`, each TID owns a LIFO stack of
 wait contexts. Each context records both the caller's saved mask and the
@@ -974,6 +1183,10 @@ the host only reschedules parked `F_SETLKW` channels and never reads lock state.
 A short retry timer remains a scheduling safety net. `ENOLCK` is a completed
 guest-visible failure, not a retry result. Native runtimes can consume the same
 generic wake event without implementing advisory-lock storage.
+
+**Finite-timeout waits keep one kernel-owned deadline across retries.** Each retry re-enters the handler (`handleBlockingRetry`, `handleSelect`, `handlePselect6`, `handleEpollPwait`) from scratch, so a handler that recomputed `deadline = now + timeout` on every wake would never time out on a busy system — broad wakes arrive every ~10 ms and each one used to push the deadline out again. The deadline is kernel state on `CLOCK_MONOTONIC` (`crates/runtime-core/src/wait_queue.rs`): the first time a call is known to block, the host opens a wait with `kernel_wait_deadline_open(pid, tid, kind, timeout_ms)` and keeps only the returned handle on the channel (`ChannelInfo.waitHandle`); every re-entry asks `kernel_wait_deadline_remaining_ns`, and `clearReadinessWait` closes the handle when the call completes or is abandoned. A handle is an execution generation and is never reused, so a timer armed before an `exec` cannot complete a request issued after it. Because the clock is monotonic, a wall-clock step (an NTP correction, a DST change, a user setting the date) no longer moves pending timeouts. A call that finds its descriptor ready, fails, or is non-blocking never opens a deadline. The host still owns the park itself — the timer and the wake routing — and refuses to boot a kernel that lacks the deadline exports rather than falling back to wall-clock arithmetic.
+
+**epoll interest lists live in the kernel, on the epoll open file description.** An epoll instance is a kernel-global backing keyed by the open file description `epoll_create1` returned, beside eventfd, timerfd and signalfd, so `dup`, `fork` and a non-CLOEXEC `exec` all reach the same instance and either process's `epoll_ctl` is visible to the other. Each interest is keyed on (registered descriptor number, open file description), as Linux keys it on `(struct file *, fd)`. The host keeps no copy of any interest list: `epoll_ctl` travels as an ordinary opaque record, and a parked `epoll_pwait` asks `kernel_epoll_wake_indices(pid, epfd, kind, ...)` for the pipe and accept wake tokens its interests resolve to, so targeted readiness wakeups still reach it.
 
 ## Multi-Process Model
 
@@ -1115,9 +1328,16 @@ instance, loader, and continuation controller. Only the calling parent thread
 stays parked in the asynchronous fork import; sibling pthreads continue to
 run.
 
-The kernel marks the vfork child's independent Process record. Nested fork,
-vfork, spawn, and pthread clone fail with `EAGAIN`; failed exec preserves the
-marker and returns to the child. Successful exec commit, `_exit()`, and exact
+The kernel marks the vfork child's independent Process record. A nested
+vfork and pthread clone fail with `EAGAIN`: a second borrower of the parked
+parent's memory would need stacked lifetimes the host does not provide.
+Ordinary fork and spawn are allowed. A vfork child's fork copies the borrowed
+memory like any fork. The child captures its continuation with its own
+mappings and publishes the root in its borrowed control slot, below its own
+channel, because the process anchor still belongs to the parked parent. It
+takes no archive lock, since the parent's reader already pins the snapshot.
+The grandchild adopts that root as a thread fork does. Failed exec preserves
+the marker and returns to the child. Successful exec commit, `_exit()`, and exact
 signal/trap teardown quiesce the borrowing Worker, release its alias and
 workspace, and resume the exact parked caller once. An ambiguous forced Worker
 termination cannot prove that shared-memory access stopped, so the host
@@ -1269,7 +1489,29 @@ objects additionally retain their kernel-global backings: eventfd counters,
 timerfd timers, signalfd masks, memfd contents and cursors, procfs snapshots,
 pipes, sockets, PTYs, terminal devices, and listener queues.
 
+PTY readiness is kernel-owned. Master input becoming readable (including
+canonical EOF), slave output becoming available, canonical/raw mode changes,
+and final endpoint closes set a coalesced notification.
+`kernel_take_pty_readiness_changed()` consumes that notification under the
+kernel entry gate when retry queues contain parked waiters. Otherwise the
+kernel retains it, avoiding an extra export call on syscalls with no waiter.
+The shared host drains it alongside the packed wake stream
+and reschedules blocked read, poll, select, and epoll retries. PTY queues have
+no pipe slot identity, so this notification uses the existing broad readiness
+retry path without impersonating a pipe event. Ordinary waiters retry as soon
+as the entry scope is revoked, even if an unrelated signal-masked wait is
+parked. Signal-mask wait deferral and finite deadlines remain owned by the
+normal retry implementation. Host PTY
+input schedules its reader wake independently of output callback attachment.
+
 ### exec()
+
+Every result-bearing target operation runs immediately or refuses a busy
+kernel gate without queueing work. After an asynchronous fetch, compilation,
+or memory allocation, the shared Node/browser launcher retries this temporary
+contention on a later worker turn. A refusal does not allocate or consume a
+token and does not retain a read destination. Successful commit and replacement
+start still run on the same stack; a consumed token is never retried.
 
 1. A process calls `execve()` or `execveat()`. The centralized kernel worker
    reads the pathname arguments and derives a `diagnosticPath`. For
@@ -1290,7 +1532,10 @@ pipes, sockets, PTYs, terminal devices, and listener queues.
    rewritten once, and a separately prepared interpreter becomes the sole
    final target; script set-ID state is never applied.
 4. The host validates the exact bytes' ABI marker and fork-artifact policy,
-   compiles those same bytes, validates the 4 MiB combined argv/environment
+   obtains the module for those same bytes from the kernel worker's
+   content-addressed cache (see
+   [Compiled module sharing](#compiled-module-sharing)), validates the 4 MiB
+   combined argv/environment
    representation and generated vector caps, and completes replacement
    `WebAssembly.Memory` allocation/layout preflight before the irreversible
    transition. Each metadata string must also fit the current 64 KiB transfer.
@@ -1359,8 +1604,9 @@ caller now take.
    caller memory, validates argv + envp against the same 4 MiB `ARG_MAX`
    contract as `execve`, and performs a side-effect-free candidate lookup and
    compilation. Shared trusted code immediately snapshots the resolver bytes
-   and compiles the candidate module from that exact isolated snapshot; a
-   separately callback-supplied module is ignored. That preflight prevents
+   and obtains the candidate module for that exact isolated snapshot from the
+   content-addressed module cache; a separately callback-supplied module is
+   ignored. That preflight prevents
    failed PATH probes from creating a child, but it is never executable
    authority. The host then copies the blob to bounded kernel-owned scratch.
    Each argv/environment entry also has the separate 64 KiB
@@ -1422,9 +1668,11 @@ caller now take.
    forward order. Failure on any action rolls back via `remove_process`.
 5. In the resulting child CWD, descriptor, and credential state, the host asks
    Rust to prepare an exact executable target. The host reads those retained
-   bytes and reuses only the module compiled from the isolated preflight
-   snapshot, and only when every byte is identical; otherwise it recompiles
-   the final bytes. The opaque child-bound token is
+   bytes, runs the same ABI and artifact checks on them, and asks the module
+   cache for their module: the preflight module is reused only when the final
+   bytes have the same SHA-256 digest and length, and otherwise the final
+   bytes are compiled. The preflight module stays reachable until that lookup
+   completes. The opaque child-bound token is
    committed with `kernel_spawn_exec_commit`, which evaluates set-ID and
    trusted-mount/nosuid policy and closes remaining `FD_CLOEXEC` descriptors.
    Any prepare, read, policy, compile, or commit failure cancels the exact
@@ -1493,6 +1741,12 @@ completed top-level process after consuming its exit status.
 
 ### Host-owned top-level process lifecycle
 
+Top-level launches yield during program compilation and memory setup. Each
+operation that needs an immediate kernel result retries temporary entry
+contention, including process creation, initial working-directory setup,
+and terminal setup. A refused operation queues no work. Real errors, such
+as a missing working directory, still fail the launch before its guest runs.
+
 Processes launched directly by the Node or browser host, rather than by a guest
 parent, are registered as children of the host-parent `ppid=0` sentinel. Their
 exit status is consumed by the host's spawn result or exit promise, so there is
@@ -1514,6 +1768,38 @@ reparent a guest descendant when its parent exits, so such a descendant can
 still become an unreapable zombie after it exits. That existing process-
 lifecycle gap is separate from reaping direct host-owned launches.
 
+### Owned command families (jobs)
+
+A host can launch a top-level process as an *owned job*: one identifier that
+names that process and every descendant it creates. `host/src/owned-jobs.ts`
+holds the record, and both kernel workers wire it the same way. `fork`,
+`vfork` and `posix_spawn` add the child to the family before the child's
+worker launches, so ownership cannot be lost in the gap. `exec`, reparenting
+and `setsid` do not remove it.
+
+The record carries a bounded tail of the family's combined stdout and stderr
+(256 KiB), the root's exit status, and 64 jobs per kernel at most. Cancelling a
+job sends `SIGKILL` to every live member and retries across launch and exec
+gaps. `terminationObserved` turns true only after every member has exited, its
+process worker has detached, and the remaining family records have been reaped
+through the host-owned reap path above. A guest parent inside the family keeps
+normal `wait()`/`waitpid()` semantics while the job runs.
+
+A record outlives its family so the host can still read the tail and the exit
+status after the command ends. A spawn that fails before its root launches
+keeps no record: the start is refused, and the identifier stays free.
+Releasing a job forgets the record and frees both the slot and the identifier.
+A release is refused while any member is still live, because forgetting a
+running family would discard the guarantee that every member really
+terminated. The 64-job limit therefore bounds the families a host holds at
+once, not the families it may run over a session: a host that runs thousands
+of commands releases each one when it is done reading it.
+
+Owned jobs are a host primitive, not a browser feature. `BrowserKernel` and
+`NodeKernelHost` both accept `spawnFromVfs(..., { ownedJob })` and both expose
+`readOwnedJob(id, offset, limit, cancel)` and `releaseOwnedJob(id)`. The WebMCP
+`kandelo_run_command` tool is one consumer; see `docs/webmcp.md`.
+
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
@@ -1524,6 +1810,87 @@ lifecycle gap is separate from reaping direct host-owned launches.
 6. Thread starts executing the given function pointer with the given argument
 
 Threads share memory with the parent (CLONE_VM) but have their own channel, fork-save scratch page, and TLS/control page.
+
+### Compiled module sharing
+
+Every program a process runs is a `WebAssembly.Module` compiled by the
+dedicated kernel worker and posted to the process worker (and, for threads,
+to each thread worker). V8 and JavaScriptCore keep one copy of a module's
+machine code however many workers it is posted to, while each separate
+compilation of the same bytes makes another copy (measurements below;
+SpiderMonkey was not measured). Compiled code is the dominant browser
+cost for large guests — SpiderMonkey caps all JIT and Wasm code at 2 GiB per
+content process — so the kernel worker compiles a given program once while a
+compiled copy is still alive.
+
+`WasmModuleCache` (`host/src/wasm-module-cache.ts`) is that compiler. One
+instance belongs to each `CentralizedKernelWorker` (`kernelWorker.wasmModules`)
+on both hosts:
+
+| Launch | Module source |
+|---|---|
+| Host `spawn`/`spawnFromVfs` (top-level) | `programModule(bytes)`; a `CompileError` answers the request with `ENOEXEC` |
+| `posix_spawn` preflight and final target | `programModule(bytes)` |
+| `execve`/`execveat` | `programModule(bytes)` |
+| `fork`/`vfork` | the parent's module; a fork never compiles |
+| `clone` | `threadModule(programBytes, patchWasmForThread)` |
+
+**Identity is the exact bytes.** The key is the SHA-256 digest and byte
+length of the bytes being launched, plus the variant (`program` or `thread`),
+never a path. Exec and spawn read the target's current bytes from the kernel
+for every launch, so a file rewritten in place hashes differently at its next
+exec and can never run a module compiled from older contents. The thread
+variant is keyed on the *program's* digest; `patchWasmForThread` is a pure
+function of those bytes. When the patch leaves the bytes unchanged (a module
+without a start section), the thread module is the program module itself.
+
+**Admission is never skipped.** The cache replaces only the compile step.
+The ABI marker and artifact-policy checks still run on every launch's bytes
+before the lookup, exec permission and set-ID policy are still decided by the
+kernel's prepared target, and the process worker still re-runs the artifact
+policy and fork-instrumentation validation on the module it is given. A
+compile failure is reported to every caller waiting on it and is never
+cached.
+
+**Lifetime.** The cache's own index holds each module through a `WeakRef`.
+Strong references belong to the users: each process record's
+`programModule`, the per-process thread module, and launch continuations in
+flight (a spawn's preflight module stays reachable until its final target is
+looked up). A module is therefore shareable exactly while some live process
+or pending launch holds it and becomes collectable with its last user. Two
+launches of the same bytes that overlap share one in-flight compilation.
+
+On top of that a bounded retention window keeps recently launched modules
+strongly referenced: at most 16 MiB of Wasm bytes in total, each for 30
+seconds after its most recent launch, least recently launched evicted first.
+Modules larger than the bound (Quickshell at 75 MB, Waybar at 51 MB,
+qtgallery at 23 MB) are never retained past their last user. The window exists
+because weak references alone lose short-lived programs to the garbage
+collector between runs: a shell running coreutils `ls` 20 times compiled
+coreutils 10–13 times with weak references only, and once with the window
+(Node 24, measured). The bound keeps the retained code small next to the
+2 GiB SpiderMonkey arena; the timer never keeps a Node kernel worker alive.
+
+**Cost.** Each spawn or exec hashes its target bytes with WebCrypto SHA-256
+in the kernel worker (twice for `posix_spawn`: the preflight snapshot and
+the final target). A thread lookup reuses the digest recorded for the
+process's own bytes buffer. Hashing 78 MB took 33–42 ms on Node 24, and
+34 ms in Chromium and 53 ms in WebKit inside a dedicated worker. That is less
+than the JavaScript byte-by-byte comparison it replaced on the spawn path
+(67–294 ms, 68 ms and 59 ms for the same bytes).
+
+An 11 MB synthetic module posted to 8 workers that each instantiated it
+and ran every function grew the process by about 140 MB on Node 24, 365 MB
+in Chromium and 820–906 MB in WebKit; when each worker compiled the same
+bytes itself, the growth was about 335 MB, 540 MB and 1,070 MB.
+
+`NodeKernelHost.getWasmModuleCacheStats()` and
+`BrowserKernel.getWasmModuleCacheStats()` return the cache's counters
+(compilations, reuse, digest time, retained bytes, and the thread-module
+compilations and reuse counted separately) for diagnostics.
+`apps/browser-demos/test/wasm-module-cache-threads.spec.ts` uses them to check
+in a real browser that three processes running the same threaded program
+compile one thread module between them.
 
 ## Memory Layout
 
@@ -1565,13 +1932,28 @@ Different processes have different WebAssembly memories, so a pointer store in
 one process cannot immediately mutate another process's linear memory. Kandelo
 coordinates anonymous `MAP_SHARED`, SysV SHM attachments, and regular-file
 `MAP_SHARED` mappings at guest-to-kernel syscall boundaries. For each mapping,
-the host compares process memory with the snapshot that process last observed,
-merges only changed byte runs into one authoritative backing, and then imports
-peer updates into every stale alias in the calling process. Fork force-publishes
-the parent before the child inherits the same backing; `exec`, exit, crash,
-`munmap`, `mremap`, and `MAP_FIXED` update backing ownership explicitly.
+the owner of the bytes compares process memory with the snapshot that process
+last observed, merges only changed byte runs into one authoritative backing,
+and then imports peer updates into every stale alias in the calling process.
+Fork force-publishes the parent before the child inherits the same backing;
+`exec`, exit, crash, `munmap`, `mremap`, and `MAP_FIXED` update backing
+ownership explicitly.
 
-Regular-file mappings add a backend-qualified stable identity and retain the
+Who keeps a mapping coherent follows who owns its bytes. The host keeps
+anonymous regions and files on host-mounted directories
+(`host/src/kernel-worker.ts`). The kernel keeps SysV segments and every file
+it owns — the rootfs, the tmpfs scratch mounts including `/dev/shm`, and
+memfds — in `SharedMappingTable` (`crates/runtime-core/src/memory.rs`),
+which the host drives through `kernel_shared_mapping_*` entry points at the
+same points it publishes its own mappings: after `mmap`, at `msync`,
+`munmap`, `mremap` and `mprotect`, at the syscall boundaries of a process
+that holds such a mapping, across `fork`, and at `exec` and teardown. A
+kernel-owned file needs neither a retained host handle nor a per-syscall
+cache policy: the kernel pins the inode for its mappings, observes
+descriptor writes through a content generation its filesystem advances on
+every write and truncation, and writes each publication through to the file.
+
+Host-file mappings add a backend-qualified stable identity and retain the
 original fd's host handle for the mapping lifetime. Identity is derived and
 revalidated through that live handle, never by reopening its remembered path.
 Node uses native device/inode identity; VFS backends scope device/inode identity
@@ -1652,12 +2034,19 @@ cannot wait asynchronously at that point: a sibling thread could mutate the
 parent memory while the caller yielded, changing the purported syscall-time
 snapshot.
 
-Once admitted, the host synchronously acquires an exactly sized fresh backing
-and copies the parent's current memory length before the first asynchronous
-host operation. This preserves the syscall-time snapshot even if a sibling
-thread execs while the child Worker is prepared. The child copies the current
-length, not the configured maximum, because `memory.size()` and the accessible
-address-space boundary are part of the state fork duplicates. Pthread workers
+Once admitted, the host captures the parent's current memory length before the
+first asynchronous host operation. Node, Chromium and Firefox acquire and
+populate a fresh shared backing directly. WebKit captures plain snapshot bytes
+first, then constructs the child's shared memory in a disposable worker realm
+to avoid synchronous garbage collection stalling the kernel realm. The
+allocator charges both the temporary snapshot and the pending child backing
+against its sampled byte budget, including concurrent pending allocations.
+It rechecks guest growth before publishing a constructed memory. Machine
+shutdown cancels pending construction workers before draining process creators.
+This preserves the syscall-time snapshot even if a sibling thread execs while
+the child Worker is prepared. The child copies the current length, not the
+configured maximum, because `memory.size()` and the accessible address-space
+boundary are part of the state fork duplicates. Pthread workers
 share the owning process memory plus that process's thread allocator. A fork
 child does not inherit dead parent pthread slot reservations. Correctness must
 not depend on page reloads, context resets, periodic kernel resets, or garbage
@@ -1687,94 +2076,224 @@ The kernel's hardcoded `INITIAL_BRK` (16MB) is a fallback for binaries that don'
 
 ## Filesystem
 
-### Mount table model
+### Who owns what
 
-`VirtualPlatformIO` (`host/src/vfs/vfs.ts`) is the kernel's filesystem router
-on both hosts. It is configured with a list of
-`MountConfig { mountPoint, backend, readonly?, nosuid? }` entries and
-dispatches every path-based syscall to the backend whose mount prefix is the
-longest match. Cross-mount operations (`rename`, `link`) are rejected with
-`EXDEV`. A path that matches no mount returns `ENOENT`.
+The kernel owns the machine's filesystem namespace. Every path a guest names
+is resolved by the kernel (`resolve_namespace_path_from` in
+`crates/runtime-core/src/syscalls.rs`, which follows symlinks and `..` against
+the kernel's own metadata) and then dispatched to the authority that serves
+it:
 
-Set-ID follows the ordinary POSIX mount model. A mount honors set-user-ID and
-set-group-ID mode bits unless `nosuid: true` is explicit. `VirtualPlatformIO`
-authoritatively clears or sets `ST_NOSUID` in `statfs()` and `fstatfs()` from
-that resolved mount option instead of trusting a backend's raw flags. VFS image
-origin, mutability, and first-party status do not grant or remove authority:
-root ownership, inode mode, and the mount flag are authoritative. A custom
-image's guest root can therefore install, replace, or create set-ID programs
-without acquiring any host privilege.
+| Prefix | Authority | Module |
+|--------|-----------|--------|
+| `/` (everything not listed below) | in-kernel root filesystem built from the VFS image | `crates/runtime-core/src/rootfs.rs` |
+| `/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`, `/dev/shm` | in-kernel tmpfs | `crates/runtime-core/src/tmpfs.rs` |
+| `/dev` (except `/dev/shm`) | kernel devfs and virtual devices | `crates/runtime-core/src/devfs.rs` |
+| `/proc` | kernel procfs | `crates/runtime-core/src/procfs.rs` |
+| a host directory mounted beneath `/` | the host, one path component at a time | `crates/runtime-core/src/hostdir.rs` |
 
-`FileSystemBackend` (`host/src/vfs/types.ts`) is the per-mount interface (open/read/write/stat/readdir/symlink/...). Two backends are in use today:
+Node.js and the browser behave the same: both hosts hand the kernel the boot
+image and neither keeps a filesystem of its own for `/` or the scratch
+prefixes. The only host-backed mounts left are on Node: `extraMounts` (host
+directories), session seed trees, and a scratch mount at a path the tmpfs does
+not own; each becomes a `HostFileSystem` routed by `VirtualPlatformIO`
+(`host/src/vfs/vfs.ts`). The browser has none. Cross-mount operations
+(`rename`, `link`) fail with `EXDEV`.
+
+Because every authority is in the kernel or reached through it, permission
+checks, `nosuid`, sticky directories, `O_EXCL`, FIFOs and AF_UNIX socket nodes
+behave the same on all of them. Creating, removing, linking or renaming an
+entry requires write and search permission on its parent, and a sticky
+directory limits removal and rename to the entry's or directory's owner. On
+the in-kernel filesystems `fsync` succeeds without host work: they have no
+separate durable backing.
+
+Set-ID follows the ordinary POSIX mount model. `/` honours set-user-ID and
+set-group-ID bits unless the boot spec declares it `nosuid`; the scratch
+mounts are `nosuid`. Image origin, mutability, and first-party status do not
+grant or remove authority: root ownership, inode mode, and the mount flag are
+authoritative. A custom image's guest root can therefore install, replace, or
+create set-ID programs without acquiring any host privilege. One rule is
+about the bytes rather than the mount: a deferred file whose bytes arrive
+without a digest to check them against loses its set-ID bits when it is
+materialized, so a fetched binary can never become root on the strength of
+its length alone.
 
 Guest-visible VFS numbers come from `crates/shared` and are recorded under
 `vfs_metadata` in `abi/snapshot.json`. The generated
 `host/src/generated/abi.ts` bindings supply open and `*at` flags, descriptor
 and `fcntl` values, access modes, statfs flags, file modes, directory-entry
-types, and seek constants to shared Node/browser host adapters. This records Kandelo's existing
-guest ABI; it does not establish a general Linux-compatibility contract. The
-standalone OPFS worker and the vendored SharedFS implementation retain local
-copies at their explicit entry-point and vendor boundaries.
+types, seek constants and errno values to the host.
 
-- **`MemoryFileSystem`** (`vfs/memory-fs.ts`) — SAB-backed in-memory FS. Used for the rootfs image mount and for browser scratch mounts. Honours uid/gid/mode stored on each inode.
-- **`HostFileSystem`** (`vfs/host-fs.ts`) — proxies a Node host directory. Used for Node scratch mounts. Normalises stat uid/gid to `0/0` so the user's macOS/Linux uid does not leak into the kernel. Native creation receives the requested file/directory mode, but later guest `chmod`/`chown` updates are held in VFS metadata only; the Node host never applies native ownership changes.
-- **`OpfsFileSystem`** (`vfs/opfs.ts`) — browser-persistent Origin Private File
-  System storage. Its dedicated worker assigns exact session-scoped regular-file
-  inode tokens and preserves open-file identity through supported moves and
-  unlink. Browsers without `FileSystemHandle.isSameEntry()` cannot prove this
-  identity and report the unsupported boundary instead of substituting a path.
+### The in-kernel root filesystem
+
+At boot the worker entry hands the kernel worker the decoded image bytes
+(`configureRootfsOverlay`), and `init` calls `kernel_rootfs_load_image`. The
+kernel parses the image itself: it mounts the image's KIFS filesystem
+(`crates/runtime-core/src/kandelo_image_fs.rs`), walks it, and reads the
+image's own description of its deferred files (the in-body `SDEF` section,
+`sdef.rs`, or the container's `KLZY` section, `klzy.rs`). An image without
+either description, or whose metadata declares a different `kernelAbi`, is
+refused (`EINVAL` / `EPROTO`), and the boot fails at that cause; there is no
+host-side fallback.
+
+The kernel keeps the tree's metadata, every guest change, and every file the
+guest creates in its own memory. Unmodified file content stays in the image:
+the kernel reads it on demand through `host_image_read`, a positioned window
+onto the bytes the worker entry holds (`imageReadFromContainer` in
+`host/src/vfs/rootfs-lazy-archives.ts`). Writing to an image-backed file
+copies it into kernel memory first.
+
+A deferred file is one the image names but does not carry: a URL-backed lazy
+file, or a member of a lazy ZIP archive. The image records its real size, the
+URI its bytes live at, and the SHA-256 digest they must hash to. `stat` and
+directory listing never fetch. The first read or exec asks the host for the
+bytes with `host_fetch_deferred(uri, ...)`; the host fetches the URI through
+its lazy transport (`buildRootfsLazyWiring`), answers `EAGAIN` while the fetch
+is in flight, and the guest's ordinary retry finishes the read once the bytes
+land. The kernel checks an archive's digest before caching any of it, keeps
+the archive and each extracted member in kernel memory, and never evicts
+them. Archives may be sealed into atomic activation cohorts (`seal.rs`); the
+kernel verifies the cohort digests when it loads the image.
+
+Relative URIs are resolved against the deployment at fetch time: the browser
+uses `BrowserKernel`'s `lazyUrlBase`, Node the peer
+`NodeKernelHost.rootfsLazyUrlBase`. The image itself is never rewritten.
+Closed/offline acceptance can bind resolved URLs to exact caller-owned bytes
+through the closed-lazy-asset transport
+(`host/src/vfs/closed-lazy-assets.ts`), which verifies each declared byte
+count and SHA-256 before boot.
+
+The host stages and reads kernel-owned files only through kernel exports
+(`kernel_rootfs_read_file`, `kernel_rootfs_write_file`,
+`kernel_rootfs_stat_mode`, `kernel_rootfs_unlink_file`,
+`kernel_rootfs_mkdir_parents`). Writes, unlink, spawn preflight reads and the
+browser's TLS root certificate use these methods. Worker inspection uses
+the namespace methods below, including foreign mounts and cross-mount links.
+
+Lazy archive materialization currently supports ZIP. The former TypeScript
+filesystem also supported gzip-compressed TAR (`tar-gzip-v1`) deferred
+trees, including OCI image layers. That decoder is not implemented by the
+native archive reader; unsupported formats fail. Standalone gzip and
+zstd were not separate lazy archive decoders. Zstd boot-image decoding
+remains supported and is separate from lazy archive activation.
+
+### Filesystem change notifications
+
+`subscribeVfsChanges(prefix, callback)` observes native rootfs and scratch
+storage on both hosts. Rust queues a changed canonical path when a writable
+file description closes, a name is renamed or unlinked, or the host stages
+file bytes. Read-only closes produce no event. With no watchers, this path
+allocates no notification records and takes no notification lock.
+
+The kernel retains at most 16 canonical directory prefixes and 256 distinct
+pending paths. Repeated changes to one path coalesce into its latest hint.
+Overflow invalidates every watched directory so consumers can read its
+current state again. The host schedules a fresh gated kernel call on the
+next worker turn, copies the records through a scratch lease, and invokes
+observers only after that call ends. A pending drain coalesces requests. Observers cannot borrow kernel memory or interrupt a native mutation.
+Image tool registration handles both file hints and directory refreshes.
+
+A file description retains the path used to open it. Renaming that file or
+replacing its old name can make the stored path stale while the descriptor
+still refers to the original inode (the file's identity). On its final
+writable close, native storage compares the descriptor's inode with the
+inode now named by that path. If a linked file no longer has that name,
+the kernel refreshes all watched directories instead of reporting a stale
+file path. Closing an inode with no remaining names needs no further hint;
+its unlink already reported the directory change. These metadata checks
+run only while subscriptions are active.
+
+These hints are not a durable change log. Mapped writes and external changes
+to Node foreign mounts are not reported, and an inode modified through a
+hard-link name is not reported under every alias. See [WebMCP](webmcp.md)
+for the consumer-facing contract.
+
+### Inspection of the live filesystem
+
+Both host workers answer `read_vfs_file`, `read_vfs_dir` and
+`stat_vfs_path` through Rust. The native inspection methods use the same
+namespace walker as guest syscalls, including symlink resolution across
+rootfs, tmpfs and foreign mounts. They use the reserved init record's
+root credentials for privileged host inspection; init stays immutable
+and acquires no descriptors. A directory snapshot includes each entry's
+current mode, size, uid/gid and symlink target. Copied snapshots stream
+through allocator-owned scratch within one kernel entry and are freed
+at EOF. The main thread receives plain metadata and transferable bytes.
+Root listings include the kernel's virtual mounts even when the image omits
+them. Procfs/devfs listings share the guest directory enumerators. Numeric
+`/proc/<pid>/fd` and `fdinfo` use that process's live descriptors; a fresh
+listing reflects descriptor close and process reaping. Exited children remain
+visible until their parent reaps them. `/dev/pts` uses live
+PTY state, and device aliases report their guest-visible symlink targets.
+Guest-owned PTY masters disappear on their final close. Host-created
+terminal masters currently stay retained until machine destruction;
+process exit closes the guest slave descriptors but not that host master.
+`/proc/self`, `/proc/thread-self` and `/dev/fd` refer to the reserved init
+inspection record, whose descriptor table stays empty. `/dev/shm` remains
+served by tmpfs. This connects directory metadata; it does not add a host
+API for reading generated procfs file contents.
+The existing `/dev/mqueue` directory provider returns an empty listing.
+
+Node takes the validated rootfs's deduplicated lazy URI cohort after
+kernel initialization and gives it to `NodeLazyAssetResolver`. The first
+use starts one off-thread freshness checkpoint; successful paths and
+per-resource failures stay pinned, and destruction cancels pending work.
+Unused resources never start a resolver worker or abort boot. Both
+hosts retain bounded retries (three attempts, delays capped at five
+seconds) for transient network and HTTP failures; exhausted, permanent
+and aborted transfers stay failed. Rust verifies content sizes and
+digests after transport and never retries invalid content as a network
+failure. The native resource inventory supplies transfer byte bounds: both
+hosts reject oversized response headers and stop a stream before retaining
+excess chunks. The isolated example runner reads standalone transport sizes
+through the zero-import Rust image module without allocating a shared
+filesystem buffer.
+
+Lazy progress events identify the resolved transport URL on both hosts,
+including deployment mappings and relative URL bases. Their stable transfer
+ID retains the image URI; neither progress nor URL mapping mutates the image.
+
+When native length or digest validation rejects a completed download,
+`host_discard_deferred` evicts only those transport bytes. The failed read
+returns `EIO` without changing the inode or automatically fetching again;
+a later explicit read can fetch a fresh response. Stream progress remains
+a host transfer observation, independent of native materialization.
 
 ### Default mount layout
 
 The canonical layout lives in `host/src/vfs/default-mounts.ts` as
-`DEFAULT_MOUNT_SPEC: MountSpec[]`. `resolveForBrowser` and `resolveForNode`
-(the latter in `default-mounts-node.ts` so `node:fs`/`node:path` stay out of
-browser bundles) validate the spec synchronously, then return
-`Promise<MountConfig[]>`. Before either promise resolves, the shared resolver
-restores every image-backed mount and asynchronously authenticates all imported
-atomic lazy-tree seals. Only after every image passes does it normalize legacy
-image state and allocate browser scratch filesystems or create Node scratch
-directories. A forged later image therefore cannot leave an earlier mount
-normalized or a host scratch directory published as a partial boot.
+`DEFAULT_MOUNT_SPEC: MountSpec[]`: `/` is the writable image, and `/tmp`,
+`/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root` and `/srv` are
+scratch mounts. `resolveForBrowser` and `resolveForNode` validate a spec and
+return only the host-backed mounts that remain after the kernel's share is
+removed. The only image mount a spec may name is `/`. The tmpfs's prefixes,
+their root modes and owners (`/tmp` and `/var/tmp` `1777`, `/home/maker`
+owned by uid/gid 1000, `/root` `0700`, `/dev/shm` `1777`) and their `nosuid`
+come from `SCRATCH_MOUNTS` in `crates/runtime-core/src/tmpfs.rs`, not from the
+spec; the spec keeps them for the host side
+(`KERNEL_TMPFS_OWNED_PREFIXES` must match that table).
 
-Node may also seed a strict descendant of an existing scratch mount through
-`NodeKernelHost.sessionSeedTrees`. The worker authenticates the complete root
-image first, copies every quiescent source tree into opaque staging paths using
-new regular-file inodes, and renames all completed trees into the private
-session before constructing any session-owned `HostFileSystem` backend or
-publishing `ready`. Symlinks, special files, overlapping destinations, image
-destinations, and destinations shadowed by another mount are rejected. Guest
-changes are never written back to the source. This copy boundary matters
-because access to a path somewhere inside a Node process is not proof that
-Kandelo exclusively owns the inode; exact append and related stateful
-operations require a lifecycle-owned backing, not merely a reachable one.
-
-| Mount point | Source | Browser backend | Node backend |
-|-------------|--------|-----------------|--------------|
-| `/`         | writable image | awaited verified `MemoryFileSystem` restore | awaited verified `MemoryFileSystem` restore |
-| `/tmp`      | scratch (ephemeral) | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
-| `/var/tmp`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
-| `/var/log`  | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
-| `/var/run`  | scratch (ephemeral) | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
-| `/home/maker` | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
-| `/root`     | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
-| `/srv`      | scratch | empty `MemoryFileSystem` SAB | `HostFileSystem` under sessionDir |
-
-The writable root image honors set-ID on both hosts. Default scratch mounts,
-`/dev`, and `/dev/shm` explicitly use `nosuid`; this is an ordinary mount
-choice, not a trust classification for the image. Custom mount specifications
-may make the same choice. The browser and Node hosts apply the same rules.
-
-The browser host layers two additional, host-specific mounts on top: `/dev/shm` (the POSIX-semaphore SAB shared with main-thread surfaces) and `/dev` (`DeviceFileSystem` for `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/ptmx`, `/dev/pts/N`). Sticky bits, the uid 1000 owner on `/home/maker`, mode `0700` on `/root`, etc. are baked into the rootfs image at build time per the canonical `MANIFEST` and reflected honestly through the `MemoryFileSystem` inode metadata. Scratch mounts on Node start owned by uid/gid 0 because `HostFileSystem` synthesises them.
+Node may also seed a strict descendant of a host-backed scratch mount through
+`NodeKernelHost.sessionSeedTrees`. The worker copies every quiescent source
+tree into opaque staging paths using new regular-file inodes and renames the
+completed trees into the private session before constructing any
+session-owned `HostFileSystem` backend or publishing `ready`. Symlinks,
+special files, overlapping destinations, image destinations, and destinations
+shadowed by another mount are rejected, and guest changes are never written
+back to the source. The kernel learns each host mount's prefix
+(`kernel_rootfs_set_foreign_prefixes`) so the rootfs does not claim it, and a
+directory handle for its root (`kernel_rootfs_set_foreign_mount_roots`) to
+walk from.
 
 ### rootfs image as the source of truth
 
 `/etc/passwd`, `/etc/group`, `/etc/hosts`, `/etc/nsswitch.conf`,
 `/etc/resolv.conf`, and static OpenSSL policy/trust files under `/etc/ssl` are
-real files inside `host/wasm/rootfs.vfs`, served through the `/` mount. Any
-program that calls `getpwnam`, `gethostbyname`, `getservbyname`, or OpenSSL's
-default configuration/trust lookup reads the same image bytes that `cat` would.
-The kernel synthesizes `/etc/mtab` because it reports live mount state; it does
+real files inside `host/wasm/rootfs.vfs.zst`, served through `/`. Any program
+that calls `getpwnam`, `gethostbyname`, `getservbyname`, or OpenSSL's default
+configuration/trust lookup reads the same image bytes that `cat` would. The
+kernel synthesizes `/etc/mtab` because it reports live mount state; it does
 not synthesize static `/etc` policy or trust data.
 
 The rootfs data defines the canonical interactive image account as
@@ -1783,9 +2302,11 @@ membership, sudoers policy, and login messages are ordinary rootfs files.
 The package-built `login`, `sudo-lite`, and `sudo` executables are ordinary
 root-owned files in that same image. `login` is embedded because terminal boot
 requires it immediately; the two sudo implementations remain lazy and are
-materialized on first execution. Their mode is `04755`, so execution on the
-root image applies the normal set-user-ID transition. Guest root may replace
-those files, just as it may replace any other system executable.
+materialized on first execution, and the image records their digests so the
+set-user-ID transition survives materialization. Their mode is `04755`, so
+execution on the root image applies the normal set-user-ID transition. Guest
+root may replace those files, just as it may replace any other system
+executable.
 
 The reusable browser session layer owns one lifecycle record per logical PTY.
 Its program selection comes from the image's strict experimental
@@ -1804,16 +2325,21 @@ survives two seconds resets the delay, and a replacement launch failure remains
 visible in the terminal without automatic retry. Password authentication stays
 in the guest program and final VFS credentials rather than React.
 
-VFS images can also carry image-level metadata outside the guest file tree. The first declaration is `kernelAbi`, an exact `ABI_VERSION` requirement for images that carry ABI-bound Wasm programs. `MemoryFileSystem.readImageMetadata(image)` reads this declaration without materialising the filesystem, and `MemoryFileSystem.assertImageKernelAbi(image, abi)` validates it for callers that already know the running kernel ABI. Legacy/data-only images may omit the field.
+VFS images also carry image-level metadata outside the guest file tree. The
+first declaration is `kernelAbi`, an exact `ABI_VERSION` requirement for
+images that carry ABI-bound Wasm programs; the kernel refuses a mismatched
+image when it loads it (`image_policy::check_declared_abi`). Legacy/data-only
+images may omit the field.
 
 ### Node host
 
 `NodeKernelHost` accepts
 `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With
-`"default"` (the path used by the vitest suite), the worker reads
-`host/wasm/rootfs.vfs`, applies `DEFAULT_MOUNT_SPEC` via the private-session
-Node resolver, and constructs a `VirtualPlatformIO` for the kernel. The image
-supplies both `/etc/ssl/cert.pem` and
+`"default"` (the path used by the vitest suite), the host reads
+`host/wasm/rootfs.vfs.zst`. Whatever the caller supplies, the host zstd-decodes
+it (`maybeDecompressImage`, `host/src/vfs/vfs-image-transport.ts`, which bounds
+the decompressed size before decoding) and the worker hands the decoded bytes
+to the kernel. The image supplies both `/etc/ssl/cert.pem` and
 `/etc/ssl/certs/ca-certificates.crt`; Node does not silently add them to
 caller-supplied images. Optional `sessionSeedTrees` require a rootfs image and
 absolute host source paths; each source must remain quiescent until `init()`
@@ -1822,282 +2348,122 @@ attempt to remove the complete session tree; abrupt process termination
 cannot run that best-effort hook, so cleanup is not the ownership proof. New
 private inodes and publication-before-`ready` establish ownership.
 
+`imageBuildDeterminism: { seed, epochSeconds }` boots a kernel for an image
+builder: `CLOCK_REALTIME` counts up from `epochSeconds`, the guest-visible
+monotonic clocks are per-task logical clocks, and `getrandom` and
+`/dev/urandom` draw from a stream seeded by `seed`
+(`crates/runtime-core/src/image_build_determinism.rs`). Software an image
+builder runs then writes the same bytes every time. Seeded entropy is public,
+so an image built this way must replace every secret on each machine's first
+boot (the WordPress images do, `images/vfs/scripts/wordpress-first-boot.ts`).
+The browser host has no way to set it.
+
 `execPrograms` and `execProgramBytes` are spawn-preflight inputs only. They
 cannot authorize `execve` or `execveat`, whose executable bytes and metadata
 come exclusively from the exact retained target prepared through the calling
 process's kernel VFS state. Tests that name an exec fixture stage it into an
 explicit test rootfs before boot. A virtual spawn-preflight path cannot use
 both mapping sources. Without a rootfs image, the worker falls back to raw
-`NodePlatformIO` (every host path reachable) — kept for legacy callers that
-have not migrated.
+`NodePlatformIO` (the host's `/` published as one host mount) — kept for
+legacy callers that have not migrated.
+
+The CLI runner's `KANDELO_RUNNER_VFS=isolated` mode snapshots the canonical
+rootfs and binds every standalone lazy-file URL to its locally resolved
+package artifact. It reads transport hints without constructing a VFS
+`SharedArrayBuffer` on the main thread. The worker still restores the image
+and validates its inode identities normally; byte bindings supply transport,
+not executable authority. The closed transport verifies size and SHA-256 and
+rejects unbound URLs instead of fetching from the network. Missing artifacts
+or an image/artifact size mismatch fail before boot with a provisioning
+diagnostic. This keeps libc, POSIX, and Sortix runs on the same VFS-backed
+shell and utility paths as the canonical image, including lazy `/bin/sh`.
+The libc harness sets `KANDELO_RUNNER_BUILTINS=explicit`: its helper files
+are staged in owned scratch, and its system tools come from the rootfs.
+Unrelated optional convenience packages are not probed before each case.
+Unexpected test timeouts fail the libc harness command, just as unexpected
+exits and build failures do. Expected and classified flaky timeouts retain
+their separate result categories.
 
 ### Browser host
 
-`BrowserKernel.boot({ vfsImage, ... })` is the kernel-owned VFS path. The worker restores the supplied image (per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base layer) into a `MemoryFileSystem`, applies `DEFAULT_MOUNT_SPEC` via `resolveForBrowser` (the image becomes the `/` mount; the seven scratch mounts come up empty), and layers `/dev/shm` + `/dev` on top. Browser networking then replaces `/etc/ssl/certs/ca-certificates.crt` with its generated per-session MITM root; the image-owned OpenSSL configuration and compiled-in `/etc/ssl/cert.pem` trust path remain unchanged.
+`BrowserKernel.boot({ vfsImage, ... })` and `initFromImage` take a VFS image
+(per-demo `.vfs.zst`, typically built on top of the canonical rootfs as a base
+layer). The main thread zstd-decodes it and transfers the bytes to the kernel
+worker, which hands them to the kernel; the main thread holds no filesystem.
+Once the kernel exists and before any guest process launches, browser
+networking writes its generated per-session MITM root to
+`/etc/ssl/certs/ca-certificates.crt` through the kernel
+(`kernel_rootfs_mkdir_parents` + `kernel_rootfs_write_file`); the image-owned
+OpenSSL configuration and compiled-in `/etc/ssl/cert.pem` trust path remain
+unchanged. POSIX shared memory (`/dev/shm`) is tmpfs, so the browser host
+allocates no shared-memory buffer for it.
 
-The browser test runner and Git test assemble small kernel-owned VFS images with
-`createBuildFsWithEtc` in `apps/browser-demos/lib/kernel-owned-boot.ts`, then
-serialize them with `finalizeKernelOwnedImage` and boot them through
-`BrowserKernel.boot`. Before serialization, the shared host helper
-`overlayEtcFromRootfs` in `host/src/vfs/rootfs-overlay.ts` recursively merges
-`/etc/**` from the canonical `rootfs.vfs`. Existing leaves and directory
-metadata remain caller-owned, while missing canonical descendants such as
-`/etc/ssl/openssl.cnf` retain their source modes and ownership. Missing
-canonical `/etc` state, short reads, and target capacity failures abort image
-assembly instead of producing an incomplete filesystem.
+### Building images
 
-### Lazy Files
+Images are written by the Rust image writer
+(`crates/runtime-core/src/kandelo_image_write.rs`), the same code that defines
+the format the kernel reads. TypeScript builders reach it through
+`KandeloImageFs` (`images/vfs/lib/kandelo-image-fs.ts`), a wrapper over
+`crates/kandelo-image-module`: a zero-import wasm module (it has no import
+section at all, which its build script verifies) staged as
+`local-binaries/kandelo_image_module32.wasm` by the local build. Node reads it
+from there; the browser fetches it once and installs it with
+`KandeloImageFs.installModuleBytes`. `VfsImageFilesystem`
+(`host/src/vfs/vfs-image-filesystem.ts`) is the interface builders and the
+image helpers in `host/src/vfs/image-helpers.ts` are written against.
 
-`MemoryFileSystem` supports **lazy files** — files registered with a URL and declared size that are only fetched on first access. This enables loading large binaries (e.g., nginx, PHP-FPM, coreutils) without fetching everything upfront — they are only fetched when a process exec's them.
+A builder creates a tree (`KandeloImageFs.create()`), writes files,
+directories, symlinks and ownership into it, registers lazy files and lazy
+archives with their URIs and digests, and calls `saveImage()`, which returns
+a VFSI container the image builder wraps in one zstd frame for `.vfs.zst`
+artifacts. `KandeloImageFs.load(image)` reads an image back for derivation.
+Publication checks run beside the writer (`crates/runtime-core/src/image_policy.rs`):
+an image must keep the runtime headroom its product profile declares, record
+the growth ceiling the profile declares, and every Wasm program it carries
+must declare the kernel ABI. (The fork-artifact contract for fork-instrumented
+programs is still checked by the TypeScript artifact reader in
+`host/src/constants.ts`.)
 
-```typescript
-// Register a lazy file (creates empty stub, fetches on demand)
-const ino = mfs.registerLazyFile("/usr/bin/php", "https://cdn.example.com/php.wasm", 8_500_000);
+Image builds are reproducible. Files a builder stages without a time are
+stamped with Kandelo's reference instant, and builds that run software inside
+the image boot their kernel with `imageBuildDeterminism`.
 
-// Later, materialize before sync access (avoids sync XHR deadlock with service workers)
-await mfs.ensureMaterialized("/usr/bin/php");
-```
+**Kandelo's reference instant.** Whenever a build needs a fixed time, it uses
+`KANDELO_REFERENCE_EPOCH_SECONDS` (`crates/shared/src/lib.rs`, mirrored into
+`host/src/generated/abi.ts`): 1772944691, the commit time of the first
+Kandelo commit (`b44d42a0d7ff`, 2026-03-07T23:38:11-05:00). The image writer
+stamps files a builder stages with it unless the caller supplies a time, and
+`mkrootfs build` uses `SOURCE_DATE_EPOCH` when set and this value otherwise.
+It is not 0 because software reads a timestamp of 0 as "no timestamp": PHP's
+opcache refuses to cache a file whose mtime is 0, which silently emptied the
+build-time opcache warm-up of the PHP images. Images stay byte-deterministic
+because the value never moves. It is a build convention, not part of the
+kernel ABI.
 
-Lazy file metadata (`path`, hard-link aliases, `url`, `size`, `ino`, inode
-generation, and data-mutation sequence) can be transferred between instances
-via `exportLazyEntries()` / `importLazyEntries()` — used when workers share the
-same SharedArrayBuffer. The generation prevents an unlinked lazy inode from
-transferring its URL or declared size to a later file that reuses the same
-guest-visible inode number. The data sequence prevents an asynchronous fetch
-from overwriting guest data written through another worker while the request
-was in flight. Live cross-worker imports require both identity fields; only a
-legacy image whose filesystem bytes and lazy JSON form one trusted artifact can
-adopt older metadata, and only for an untouched empty stub. Filesystem rebasing
-preserves hard-link identity for lazy and
-concrete files rather than copying aliases into independent inodes. A rebase
-walks one quiescent source snapshot, so a peer rename cannot mix lazy paths
-from one namespace state with bytes from another.
+Kernel-owned machines expose a durable export through
+`NodeKernelHost.exportRootfsImage()` and `BrowserKernel.exportRootfsImage()`.
+Export is available only after a VFS-backed kernel has initialized and every
+guest process and worker teardown has completed. The owning worker closes a
+snapshot gate before its first asynchronous wait, drains host-side mutations
+that started earlier, and rejects later spawns, materializing reads, writes,
+unlinks, and concurrent exports until serialization settles. The kernel
+streams the finished image of its live `/` (`kernel_rootfs_export_container_read`):
+the base tree with every guest change reconciled into it, sized to its
+contents with the growth ceiling recorded as a number. Scratch mounts are
+recreated on the next boot. Deferred files that were never read stay deferred
+after export, with their URIs and digests. Callers must await the export
+before destroying the host.
 
-`registerLazyTree` is the format-neutral grouped form used by package layers
-and other archive-backed consumers. Its serialized metadata adds a closed
-decoder/media type, immutable
-digest and byte count, transport locations, activation policy, complete source
-and guest inventory, and regular-inode groups. Existing
-`registerLazyArchiveFromEntries` ZIP consumers remain supported. Registration
-and `stat` expose declared logical sizes without fetching content. The first
-ordinary open/read or executable resolution starts one asynchronous preparation
-for the group; guest syscall retries keep its internal `EAGAIN` sentinel out of
-the POSIX result. Every member is decoded and checked before an
-identity-guarded batch replacement, so failure leaves all pending regular
-inodes unchanged. Hard-link aliases use one SharedFS inode and retain that
-identity when the lazy metadata is transferred or saved in an image.
-
-Generic TAR+gzip trees use the closed `tar-gzip-v1` decoder. A tree may carry
-a bounded `archive-byte-transforms-v1` plan containing exact source-byte
-assertions, ordered literal byte-replacement recipes, and declared input and
-output SHA-256/length identities. The VFS interprets no producer callbacks,
-regular expressions, scripts, or package policy. It applies the same plan to
-eager and lazy decoding, verifies both identities, and publishes only after
-the complete transformed tree passes validation. Plan fields participate in
-atomic-tree identity and survive image restore and filesystem rebase.
-
-Several first-use trees can opt into one fail-closed activation cohort. Each
-tree registers a producer-stable member name, and the producer must explicitly
-seal the exact expected member set before the cohort can activate or serialize.
-Sealing hashes each member's transport-independent content, mount, activation,
-and complete guest/source inventory, then hashes the canonical member set.
-Every serialized member carries its descriptor digest, expected cohort count,
-and cohort digest, so omitting one tree record or one regular alias makes image
-restore fail rather than turning an unbacked zero-byte stub into a concrete
-file. Deployment URLs are deliberately outside this identity because an image
-may rewrite byte-identical mirrors.
-
-Activation snapshots every declared directory, symlink, regular name, and
-hard-link alias before I/O. At most four cohort archives fetch/decode at once;
-after the first failure no new work starts, and all already-running workers are
-awaited before the attempt rejects, so an immediate retry cannot overlap
-abandoned downloads or retain duplicate decoded trees. One SharedFS commit
-revalidates the complete namespace while holding its namespace and target-inode
-locks. Capacity failure restores every touched stub's empty data, sequence, and
-timestamps; directory, symlink, ownership, mode, or alias races reject the
-whole cohort. All allocating and potentially throwing publication bookkeeping
-is prepared before that commit; afterward one bounded linear pass only retires
-the proven lazy identities.
-
-For each declared transport, materialization permits three total GET attempts:
-only HTTP 408, 429, and 5xx responses or recognized fetch/body network
-interruptions repeat the same URL. The two retry waits default to 250 and 500
-milliseconds; a valid `Retry-After` value replaces that wait up to a five-second
-cap. A lazy fetcher may register an optional `AbortSignal`; the VFS passes it
-to each fetch, aborts a pending retry wait, and checks its exact `reason`
-before mirror fallback and namespace commit. That explicit signal preserves
-arbitrary `Error` and `TypeError` reasons. Standard `AbortError` and
-`ABORT_ERR` shapes remain a compatibility fallback for existing one-argument
-fetchers. Permanent HTTP responses and size, digest, decode, inventory, and
-commit failures remain truthful failures rather than retry signals.
-
-The generic-tree schema is revalidated through one closed, bounded path at
-live registration, cross-worker import, image restore, and filesystem rebase.
-Content, activation, mount prefix, inventory, and pending inode metadata reject
-unknown fields, unsafe or oversized strings, count/size disagreement, and
-missing, cyclic, or cross-inode hard-link targets before a group is installed.
-Serialized groups carry an explicit `kandelo-deferred-tree-v1` (derived ZIP),
-`kandelo-deferred-tree-v2` (complete source inventory), or
-`kandelo-legacy-zip-v1` kind. A sealed multi-tree cohort uses
-`kandelo-deferred-tree-v3`, regardless of decoder, because its atomic membership
-is an additional closed wire contract; v1/v2 records cannot quietly acquire
-those fields. Sealing or importing v3 retains a private immutable snapshot of
-the byte identity, decoder bounds, source truth, complete inventory, runtime
-inode mapping, integrity, and activation policy. Fetch, decode, preflight,
-commit, export, save, and rebase consume that snapshot; the caller-reachable
-group remains a compatibility view that may invalidate an operation but cannot
-redirect it. Mirror locations remain outside the descriptor digest so image
-composition may rewrite them, but that explicit rewrite replaces the private
-transport snapshot without changing the sealed byte hash or mapping.
-
-An imported seal claim is structurally valid but untrusted until an asynchronous
-SHA-256 pass during save, activation, explicit resealing, or
-`verifyImportedLazyAtomicGroupSeals()` verifies every member and the cohort
-digest. Synchronous export, pending-resource inspection, and rebase reject a
-pending imported cohort before that proof. Image consumers that need those
-synchronous operations can await the explicit verifier without fetching or
-materializing a tree, snapshotting the filesystem, exporting metadata, or
-rebasing storage. Repeated verification is safe; a rejected digest leaves the
-cohort untrusted and therefore blocked. This strengthens the existing v3
-behavior without changing its serialized fields or digest schema. Concurrent
-explicit verification, image save, resealing, and first-use activation join one
-per-cohort seal-validation flight instead of hashing the same descriptors
-independently. Seal verification remains separate from transport and decode:
-once the seal proof linearizes successfully, a later download failure can leave
-inspection authenticated while activation stays deferred and retryable.
-
-Newly saved images declare that every group is typed. A deferred tree therefore
-cannot enter the less expressive legacy ZIP path by dropping its inventory or
-activation fields. Untyped legacy ZIP groups remain a restore-only migration
-path for historical images that predate the typed-image flag; restoration
-normalizes them to the explicit legacy kind.
-Cross-worker imports stage and identity-check the complete batch before
-publishing any group, so rejection of a later group cannot leave earlier lazy
-metadata active.
-Hard-link chains are resolved once with cycle state and path compression, so
-validation is linear in the inventory size. VFS lazy-file and lazy-archive JSON
-sections are each capped at 16 MiB and checked for truncation before JSON
-decoding; deferred-tree imports additionally allow at most 512 groups and
-100,000 entries per group. A pending metadata-only tree remains valid and must
-still verify its immutable payload through its activation policy.
-
-Build tooling can derive a package-owned deferred ZIP tree from one exact
-declared package output. The reviewable spec names the output, its distribution
-role (`source-tree` or `runtime-tree`), mount prefix, owner, and first-use
-activation roots. The builder reads the exact ZIP once and derives a canonical
-typed-tree descriptor containing its digest, byte counts, decoder, and complete
-inventory. A lazy image registers that descriptor and keeps the relative
-package-output URL; an eager derivative directly materializes the same
-descriptor from the same bytes. The eager path is therefore a consumption
-choice, not a second package recipe or artifact identity.
-
-Package ZIP trees declare the closed `portable-posix-v1` mode policy. It
-normalizes directories to `0755`, symbolic links to `0777`, and regular files
-to `0755` when the ZIP member carries any execute bit or `0644` otherwise.
-This prevents host-specific archive modes from changing the installed tree,
-and the lazy and eager paths validate and install the same normalized modes.
-`host/test/package-deferred-tree.test.ts`, in “derives one canonical descriptor
-from the exact package output,” covers the policy with deliberately
-non-portable input modes.
-
-Relative lazy asset URLs are resolved inside the dedicated kernel worker on
-both hosts. Browser boots use `BrowserKernel`'s `lazyUrlBase`; Node boots use
-the peer `NodeKernelHost.rootfsLazyUrlBase` option. Closed/offline acceptance
-can bind the resolved URL to exact caller-owned bytes through the existing
-closed-lazy-asset transport. Before kernel boot, that acceptance-only loader
-eagerly fetches bounded source URLs, verifies each complete decoded response
-against its declared byte count and SHA-256, and only then associates the
-bytes with the separate immutable HTTPS URL stored in the deferred tree. A
-source URL is transport input, never VFS authority: absolute cleartext HTTP is
-limited to loopback acceptance servers, requests omit credentials and
-referrers and reject redirects, and source URLs must not contain bearer
-secrets. This eager pre-publication proof is not the product tree's first-use
-transport. Metadata inspection and directory enumeration do not fetch a
-deferred tree. The first prepared open or executable resolution fetches the
-whole declared archive once, verifies it, and atomically materializes the
-complete group; later accesses do not fetch it again.
-
-### VFS Images
-
-A `MemoryFileSystem` can be serialized to a portable binary image and restored later to boot a new kernel with a pre-populated filesystem. This enables snapshotting an initialized VFS (with all files, directories, symlinks, and permissions) and restoring it without repeating the setup work.
-
-**Save an image:**
-
-```typescript
-// Preserve lazy files as URL references (smaller image, requires URLs at restore time)
-const image: Uint8Array = await mfs.saveImage();
-
-// Or materialize all lazy files first (self-contained image, no URL dependencies)
-const fullImage: Uint8Array = await mfs.saveImage({ materializeAll: true });
-```
-
-Image creation is a quiescent filesystem operation. `saveImage()` rejects a
-filesystem with live file or directory descriptors rather than serializing FD
-tables, inode open-reference counts, or lock words as durable state. The
-resulting bytes contain only filesystem state. Restore also clears those
-runtime-only fields in legacy images, so a new machine never inherits handles
-or locks from the image builder. Lazy-file and lazy-archive paths are collected
-under the same namespace transaction as the filesystem bytes, including names
-changed by another worker. `materializeAll: true` resolves both standalone and
-archive-backed entries and fails instead of emitting an image that still
-depends on a deferred URL.
-
-Kernel-owned machines expose that same durable boundary through
-`NodeKernelHost.exportRootfsImage()` and
-`BrowserKernel.exportRootfsImage()`. Export is available only after a
-VFS-backed kernel has initialized and every guest process and worker teardown
-has completed. The owning worker closes a snapshot gate before its first
-asynchronous wait, drains host-side mutations that started earlier, and rejects
-later spawns, lazy registration, materializing reads, writes, unlinks, and
-concurrent exports until serialization settles. The returned image contains
-only the `/` image backend; boot-scoped scratch, device, and shared-memory
-mounts are recreated on the next boot. Lazy descriptors and image metadata
-remain part of the root image, so a deferred package that was never opened
-stays deferred after export and restore. Callers must await the export before
-destroying the host.
-
-**Restore from an image:**
-
-```typescript
-// Creates an independent filesystem and authenticates imported atomic seals
-// before the caller may inspect, mutate, rewrite, or boot it.
-const restored = await restoreVerifiedVfsImage(image);
-```
-
-The restored filesystem is fully independent — modifications to the original or restored instance don't affect each other. Multiple independent instances can be created from the same image.
-
-When restoring for use in a browser, pass `maxByteLength` to create a growable `SharedArrayBuffer` so the filesystem can expand beyond the image's original size:
-
-```typescript
-const restored = await restoreVerifiedVfsImage(image, {
-  maxByteLength: 1024 * 1024 * 1024,
-});
-```
-
-The image must also have been built with a large enough filesystem maximum, for example `MemoryFileSystem.create(sab, 1024 * 1024 * 1024)`. `restoreVerifiedVfsImage(..., { maxByteLength })` only controls the restored buffer's runtime growth ceiling; `statfs`/`df` and allocation remain capped by the image superblock maximum.
-Call `MemoryFileSystem.readImageCapacity(image)` when build tooling needs the
-serialized buffer length and superblock ceiling without restoring the image.
-Await `restoreVerifiedVfsImagePreservingCapacity(image)` to restore and
-authenticate a growable buffer with the same ceiling the image builder
-recorded.
-
-A consumer that must stage files larger than the image's recorded allocation
-ceiling first calls `rebaseToNewFileSystem(requiredMaxBytes)`. Shared image
-helpers never treat a partial file as complete: `writeVfsBinary` advances over
-positive short writes and throws on zero/negative progress or an underlying
-filesystem error, while still closing the descriptor.
-
-Kandelo browser UI presets use this approach. Each image builder pre-populates a VFS with runtime files, directory structure, configs, and symlinks, then saves it as a `.vfs.zst` file (zstd-compressed; `saveImage()` compresses on write). At runtime, the UI fetches the file and `restoreVerifiedVfsImage` decompresses it transparently and authenticates imported atomic lazy-tree seals before returning it. Restoring the image replaces thousands of individual file writes with a single buffer copy. The empty regions of the SharedFS allocator compress to almost nothing, so a 32 MB filesystem with a few MB of real content typically ships as a 1-3 MB download.
-
-There are two consumption patterns for VFS images, depending on whether the demo wants the kernel worker to fully own the filesystem:
-
-**Kernel-owned VFS (`kernelOwnedFs: true` + `kernel.boot()`).** The main thread never instantiates the `MemoryFileSystem`. Instead, the demo fetches the `.vfs.zst` bytes and hands them to `BrowserKernel.boot({ kernelWasm, vfsImage, argv, env })`. The kernel worker restores the filesystem internally (auto-detecting zstd magic), exec()s `argv[0]` as the first user process, and the main thread becomes a thin client — only routing stdin/stdout, network backend messages, framebuffer events, and HTTP-bridge messages. Service-supervised demos run dinit (`/sbin/dinit --container`) as that service supervisor; dinit reads `/etc/dinit.d/*` from the image and brings up the service tree. Single-program demos (python, perl, php, ruby) exec the language interpreter directly. This is the path new demos should use.
-
-**Legacy main-thread-owned VFS (`memfs:` constructor option + `kernel.spawn()`).** The main thread restores the image into its own `MemoryFileSystem`, hands the SAB to a fresh `BrowserKernel`, and then calls `kernel.spawn(programBytes, argv)` to launch transient binaries. Useful for demos that fetch additional binaries at runtime (test runners, REPLs that load arbitrary code), but the main thread is in the syscall hot path for FS operations. Still used by `benchmark`, `erlang`, and `shell`.
+The browser demos consume images through `BrowserKernel.boot`; service
+demos run dinit (`/sbin/dinit --container`), which reads `/etc/dinit.d/*`
+from the image and brings up the service tree, and single-program demos exec
+the language interpreter directly. Small test images (the browser test runner,
+the Git test) are assembled in a disposable worker with `createBuildFsWithEtc`
+in `apps/browser-demos/lib/kernel-owned-boot.ts`, which also merges `/etc/**`
+from the canonical rootfs (`images/vfs/lib/rootfs-etc-overlay.ts`).
 
 | Demo | VFS Image | Build Script | Boot pattern |
 |------|-----------|-------------|--------------|
-| Python (legacy opt-in) | `python-vfs.vfs.zst` | `packages/registry/python-vfs/build-python-vfs.sh` | `kernel.boot` → `python3` |
 | Perl | `perl.vfs.zst` | `build-perl-vfs-image.sh` | `kernel.boot` → `perl` |
 | PHP | `php.vfs.zst` | `build-php-vfs-image.sh` | `kernel.boot` → `php` |
 | Ruby | `ruby.vfs.zst` | `build-ruby-vfs-image.sh` | `kernel.boot` → `ruby` |
@@ -2108,52 +2474,78 @@ There are two consumption patterns for VFS images, depending on whether the demo
 | WordPress | `wordpress.vfs.zst` | `build-wp-vfs-image.sh` | `kernel.boot` → dinit → php-fpm + nginx (SQLite WP) |
 | LAMP | `lamp.vfs.zst` | `build-lamp-vfs-image.sh` | `kernel.boot` → dinit → mariadb + php-fpm + nginx |
 | MariaDB test | `mariadb-test.vfs.zst` | `build-mariadb-test-vfs-image.sh` | `kernel.boot` → dinit → mariadb; mysqltest via `kernel.spawn` |
-| Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `packages/registry/erlang-vfs/build-erlang-vfs.sh` | legacy `kernel.spawn` → BEAM |
 | Shell | `shell.vfs.zst` | resolver-owned `packages/registry/shell/build-shell.sh` from the reviewed package closure | `kernel.spawnFromVfs` → image-owned Bash |
-| Benchmark | (multiple) | (per-suite) | legacy `kernel.spawn` |
 
-Build scripts are in `images/vfs/scripts/` and share common helpers (`vfs-image-helpers.ts` for VFS write primitives, `dinit-image-helpers.ts` for the dinit binary + standard rootfs files + service-file rendering). To build all VFS images, use the per-demo scripts above or the convenience targets in `run.sh` (e.g., `./run.sh build python-vfs`). The repaired Python and Erlang recipes remain disabled legacy compatibility paths: staging does not publish them.
+Build scripts are in `images/vfs/scripts/` and share common helpers
+(`vfs-image-helpers.ts` for write primitives and publication checks,
+`dinit-image-helpers.ts` for the dinit binary, standard rootfs files and
+service files). The Node counterparts of the service demos consume these same
+images: they write transient runtime configuration into a private copy of the
+image, give it to `NodeKernelHost`, and start `/sbin/dinit` with
+`spawnFromVfs()`.
 
-The Node counterparts for the service-supervised demos consume these same
-images. They authenticate imported lazy-tree seals, apply transient runtime
-configuration to a private restored image, give the resulting root filesystem
-to `NodeKernelHost`, and start `/sbin/dinit` with `spawnFromVfs()`. They do not
-reconstruct the browser service graph by launching loose package binaries from
-the host filesystem.
-
-**Binary format:**
-
-`MemoryFileSystem.saveImage()` returns the raw VFS image below. The image
-builder helper wraps it in one zstd frame for `.vfs.zst` artifacts;
-The low-level `MemoryFileSystem.fromImage()` parser accepts either form and
-auto-detects the zstd magic (`28 B5 2F FD`) at offset 0. Imported consumers use
-`restoreVerifiedVfsImage()` (or its capacity-preserving peer) so parsing is
-followed by cryptographic authentication before the filesystem is published.
-
-Runtime snapshots preserve the filesystem's POSIX atime, mtime, and ctime by
-default. Reproducible image builders may request a fixed timestamp in the
-detached snapshot copy without mutating the live filesystem. `mkrootfs build`
-uses this facility for every allocated inode, taking whole Unix seconds from
-`SOURCE_DATE_EPOCH` and defaulting to epoch zero when it is unset.
-
-Decompressed layout:
+**Binary format.** A `.vfs.zst` file is one zstd frame around a VFSI
+container (`crates/runtime-core/src/vfsi_container.rs`). Decompressed:
 
 ```
 Offset   Size   Field
 0        4      Magic: 0x56465349 ("VFSI")
 4        4      Version: 1
-8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata
-12       4      SharedArrayBuffer data length (N)
-16       N      Raw SharedArrayBuffer bytes (block filesystem)
-16+N     4      Lazy entries JSON length (M)
-20+N     M      Lazy-file JSON (identity, aliases, URL, declared size)
-...      4+L    Optional lazy-archive/deferred-tree JSON length and bytes (when bit 1 is set)
-...      4+P    Optional image-metadata JSON length and bytes (when bit 2 is set)
+8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata,
+                bit 3 = typed lazy archives, bit 4 = kernel lazy linkage (KLZY)
+12       4      Filesystem body length (N)
+16       N      KIFS filesystem body (superblock magic "KIFS"); deferred-file
+                records live inside it in the SDEF section
+16+N     ...    Optional trailing sections, each a 4-byte length and bytes:
+                lazy-file JSON (bit 0), lazy-archive JSON (bit 1), image-metadata
+                JSON (bit 2), and the KLZY section (bit 4)
 ```
 
 ## Networking
 
 User-visible networking is POSIX-first. Guest programs call normal AF_UNIX, AF_INET, and partial AF_INET6 socket syscalls (`socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `poll`, and `select`). The Rust kernel owns the socket file descriptors, datagram queues, stream listener state, loopback routing, and errno behavior. Host transports plug in below that layer through `NetworkIO`; they are backends, not the userspace-visible abstraction.
+
+### Readiness is a kernel decision; backends report facts
+
+A `NetworkIO` backend never decides whether a socket is readable or
+writable. It answers `readiness(handle)` with a
+`wasm_posix_shared::net_readiness` fact word — bytes buffered, end of
+stream observed, the engine will accept a write, the write half is gone,
+the connection is torn down, a sticky error and the errno the engine
+observed. `runtime_core::net_readiness::stream_revents` turns those facts
+plus the caller's `events` into `poll` `revents`, in one place, for every
+backend on both hosts.
+
+The split is deliberate: what an engine alone can see (a socket's
+OS-level state, a `fetch` promise's settlement) is a fact; which POLL
+bits follow from it is POSIX policy. The rule previously lived in eight
+places — the kernel, the `HostIO` default method, four backends, and two
+"no `poll` implementation" fallbacks — and the copies disagreed with
+POSIX and each other about whether `POLLHUP` is gated by `events`,
+whether it may accompany `POLLOUT`, and whether end-of-file is
+`POLLIN`.
+
+A backend that cannot observe readiness reports
+`NET_READINESS.UNOBSERVABLE` rather than a readiness claim. The kernel's
+response is wake-every-round: report the requested `POLLIN`/`POLLOUT` and
+let `recv`/`send` answer `EAGAIN`.
+
+The fact vocabulary is generated into `host/src/generated/abi.ts` by
+`cargo xtask dump-abi`, so the two sides share one definition.
+
+Backend failures on `send` and `recv` reach the guest as the errno the
+backend determined — a Node socket error's `code`, or an explicit POSIX
+`errno` — via `negErrno`, with `EIO` for a failure nothing classified.
+The transport does not choose an errno on a backend's behalf.
+
+Known divergence, not yet closed: the kernel's own pipe-backed socket
+path (AF_UNIX and loopback AF_INET) still raises `POLLHUP` when a peer
+closes its write end and never reports end-of-file as `POLLIN`, so
+`POLLHUP` doubles as the reader's EOF wakeup and can accompany
+`POLLOUT`. Linux treats that state as `RCV_SHUTDOWN` —
+`EPOLLIN | EPOLLRDHUP` with `EPOLLOUT` intact — and reserves `EPOLLHUP`
+for both directions down. Correcting it changes wakeups for every
+AF_UNIX and loopback socket and needs conformance-suite validation.
 
 AF_INET and AF_INET6 receive queues are currently bounded at 128 datagrams per
 socket. Once that fixed internal queue is full, a newly arriving UDP datagram
@@ -2223,7 +2615,68 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
 
 `TcpNetworkBackend`, `FetchNetworkBackend`, `TlsNetworkBackend`, and `LocalVirtualNetwork` share one numeric-address and hostname validator. It accepts decimal one-, two-, three-, and four-component IPv4 forms within their component widths, rejects malformed or overflowing numeric forms, enforces ASCII host-label syntax and DNS length limits, and preserves one trailing root dot. The Node TCP backend resolves validated names through the host resolver. The browser HTTP fetch/TLS bridges synthesize IPv4 mappings for syntactically acceptable DNS names; `LocalVirtualNetwork` resolves only aliases registered by attached machines. None of the browser paths adds browser DNS resolution or AF_INET6 transport.
 
+Each of these internet backends presents itself to the guest as a NAT link of its own, the shape QEMU's user-mode networking gives a guest (`host/src/networking/egress-link.ts`). The guest owns `10.0.2.15/24` on it; every off-link destination is behind the host, and `getsockname` on an internet stream reports `10.0.2.15` with the stream's port, never the host's real address. The browser bridges hand out made-up addresses from `198.18.0.0/15`, the range reserved for benchmarking networks: it is never routed on the internet and cannot overlap a session's `10.89.0.0/24` or a virtual link's subnet, and addresses are assigned in order, so two names never share one. The gateway carries TCP only. A UDP datagram for anywhere beyond the machine fails with `EHOSTUNREACH`, POSIX's "the destination host cannot be reached (... a remote router cannot reach it)": the route exists, and the router on it cannot deliver UDP. It is neither dropped silently nor reported as `ENETUNREACH`, which would deny the route TCP uses. A program that sends UDP beyond the machine sees that error; a Doom LAN server, for example, must run with `-privateserver`, because its internet master-server registration fails and fbdoom stops with a fatal error on a failed send.
+
 WebRTC or proxy-based external transports should attach as additional `NetworkIO` backends behind the same POSIX socket layer rather than adding host-specific socket APIs visible to guest programs.
+
+`RemoteVirtualNetwork` extends the local backend with a worker-owned IPv4
+star segment: one `10.89.0.0/24` link whose hosting computer is `10.89.0.1` and
+forwards every packet between the computers that join it. A session starts and
+ends while machines run. Each kernel worker installs a `SessionNetwork` for the
+machine's whole life; without a session it behaves exactly like the backend it
+wraps (or like an absent network), and `RemoteSegmentRuntime` attaches and
+detaches segments through worker messages. Hosting assigns `10.89.0.1`; joining
+waits for the host's directory to assign the next free address. Wildcard UDP
+sockets and TCP listeners opened before a session are replayed into it, so a
+program that was already listening hears the session. Leaving removes the
+address, resets streams that used it, and keeps wildcard sockets for the next
+session; when a host leaves, its joiners observe the session ending and why.
+Both `NodeKernelHost` and `BrowserKernel` expose `hostRemoteNetwork`,
+`joinRemoteNetwork`, `attachRemotePeer`, `leaveRemoteNetwork` and
+`remoteNetworkSnapshot`, and transfer native MessagePorts to their dedicated
+kernel workers. Address ownership, forwarding, bindings and error decisions stay
+in the worker. Paired Node MessagePorts exercise the same segment. Node has no
+built-in WebRTC implementation; the RTC adapter is a browser transport boundary.
+
+The browser adapter carries raw unreliable UDP frames and reliable directory
+messages through bounded port bridges. Each direction admits at most 128 frames
+and one MiB of pending bytes. UDP payloads are bounded by 65,507 bytes and the
+negotiated SCTP ceiling minus a 16-byte header. Excess payloads return EMSGSIZE;
+full worker-side admission returns EAGAIN. RTC send-buffer pressure may drop
+admitted UDP frames. Control congestion closes the connection rather than
+silently losing address or binding state. Host forwarding checks ingress source
+ownership and the destination link's payload ceiling. Membership is capped at
+32 computers, the host included, and 16 UDP bindings and TCP listeners per
+computer, which keeps the directory within one 64 KiB control message.
+
+A broadcast to `255.255.255.255` or to the session's `10.89.0.255` reaches
+every computer with a wildcard UDP socket on its port, the sender included; a
+socket bound to a unicast address does not hear it. A joiner delivers its own
+copy and sends one to the host, which delivers to every other member and never
+back to the sender. Because the host copies each broadcast up to 31 times, it
+meters what each member may originate (a burst of 64, refilled at 64 per
+second); excess broadcasts are dropped and counted in the snapshot. The kernel
+requires `SO_BROADCAST` for both addresses. Multicast and external raw UDP
+delivery are outside this segment's contract.
+
+The interface the kernel reports follows the host's assignment. A `NetworkIO`
+that reports `localAddress` also reports `localNetmask`, and every
+`LocalVirtualNetwork` declares the subnet its link carries. The kernel serves
+`SIOCGIFFLAGS`, `SIOCGIFNETMASK` and `SIOCGIFBRDADDR` from that pair, and libc's
+`getifaddrs` is built on those ioctls, so a program that enumerates interfaces
+sees `eth0` as, for example, `10.89.0.2/24` with broadcast `10.89.0.255` while
+joined. Outside a session `eth0` is the internet egress link, `10.0.2.15/24`,
+when the host provides one (always in the browser; on Node with
+`enableTcpNetwork`), and down with no address when it does not.
+
+ABI 50 adds host-selected UDP source addresses and correct next-datagram
+FIONREAD observations, and preserves host EHOSTUNREACH/ENOBUFS errors.
+The kernel no longer assumes one demo's IPv4 subnet:
+non-loopback binds delegate address ownership to HostIO, and wildcard UDP connect
+records the host's real source address for getsockname. AF_UNSPEC disconnect
+restores the wildcard observation. Hosts without a routed interface return
+ENETUNREACH. Programs and images from earlier ABI epochs must be rebuilt; there
+is no stale-artifact compatibility shim.
 
 ## Framebuffer (`/dev/fb0`)
 
@@ -2288,6 +2741,126 @@ The kernel exposes a Linux `mousedev` PS/2 surface so unmodified fbdev software 
 The kernel buffers raw 3-byte packets — there is no userspace queue until the process allocates one and tells us about it, and a kernel-side queue lets `read()` complete synchronously without a host round-trip. The buffer is bounded at 4096 packets with whole-packet drop on overflow (≈10s at 400Hz). `poll()` returns `POLLIN` only when bytes are queued; `O_NONBLOCK` reads return `EAGAIN` when empty.
 
 Single-open semantics match real Linux mousedev exclusive-grab. The host inverts browser `deltaY` (browser positive-down → PS/2 positive-up) before injecting, so the kernel queue holds canonical PS/2 sign convention. ABI version bumped 6 → 7 to register the new `kernel_inject_mouse_event(i32, i32, u32) -> ()` export.
+
+## Host clipboard (`/dev/kandelo/clipboard`)
+
+Text the user pastes over a machine reaches the guest the way a VM guest agent
+(SPICE's `spice-vdagent`) gets it: the host feeds a device, and an agent in the
+guest turns it into the desktop's own clipboard. Three layers, each usable
+without the next. Copy-out, the reverse direction, runs through the same
+device and agent (below).
+
+```text
+ browser `paste` event          BrowserInputSource (clipboard feature)
+        │  text                   holds the chord + later keys
+        ▼
+ offerClipboardText(text)      BrowserKernel / NodeKernelHost (same API)
+        │                       CRLF → LF, ≤ 1 MiB, never truncated
+        ▼
+ kernel_clipboard_stage ×N     kernel worker: scratch-sized chunks,
+ kernel_clipboard_offer()        one kernel entry, then wake parked readers
+        │
+        ▼
+ /dev/kandelo/clipboard  ──►  kclipd (read one record, block when empty)
+        ▲                          │ ext_data_control_v1 set_selection
+        │ {seq, status}            ▼
+ kernel_clipboard_ack(seq) ◄── write(ack)   wlcompositor selection → foot
+   (host timer, only while pending)
+```
+
+- **The device** (`crates/runtime-core/src/clipboard.rs`) holds at most one
+  unread offer; a newer one replaces it, and a record already being read is
+  finished first. Each offer reads as one record — a 16-byte header and the
+  UTF-8 text — and a `read()` never crosses into the next record. An empty
+  device returns `EAGAIN`, which parks a blocking reader until the next
+  offer's wake, as `/dev/dri/card0` does. One process may hold it open, and
+  last close or exit drops whatever it had not read. The state is machine-wide
+  rather than per open file description, so `fork` carries nothing new. See
+  `docs/posix-status.md` for the exact semantics.
+- **The host API** (`offerClipboardText`, `host/src/clipboard.ts`) is the same
+  on Node and in the browser. It resolves once the agent has acknowledged
+  the offer, or with the reason it could not: no agent, over the cap, invalid
+  text, the agent's own errno, superseded, or a 2 s timeout. The worker polls
+  `kernel_clipboard_ack` every 16 ms while an offer is pending and not
+  otherwise, which keeps the syscall completion path untouched. Only the
+  paste gesture is browser-only: Node has no DOM `paste` event, the same
+  boundary `NodeInputSource` documents.
+- **kclipd** (`programs/kclipd.c`, started by `omarchydesktop`) speaks
+  `ext_data_control_v1` rather than reading the device inside the compositor,
+  so it keeps working when a real Hyprland replaces `wlcompositor`. It serves
+  pastes by writing into the pasting client's pipe without blocking, and logs
+  sequence numbers and lengths, never the text.
+- **The gesture** (`BrowserInputSource`, images that declare the `clipboard`
+  runtime feature): a Cmd/Ctrl+V keydown is not cancelled, so the browser's
+  own paste binding decides whether it was a paste. If `paste` fires within
+  500 ms, its `text/plain` is offered (unless it is empty or the text the guest
+  already accepted) and the chord, with every key typed meanwhile, is
+  delivered only after the agent's acknowledgement — so "paste, Enter" cannot
+  run the line before the text lands. If no `paste` follows, the chord is
+  ordinary keys (and Internals logs that). The window is not "until the
+  next task": on macOS the page sees the Cmd+V keydown first, and the
+  browser fires `paste` from its Edit menu only after the page leaves the
+  key unhandled, a task or more later. Playwright's synthetic chord fires
+  `paste` in the same task, so automated tests cannot catch a window that
+  is too short. Internals also logs each paste's length and outcome. On failure the chord and held keys are dropped (modifier
+  transitions still go through) and the KMS pane shows the cause.
+
+The text exists in kernel memory only between the offer and the agent's read;
+it is never a file, so it cannot reach a persisted mount or a shared snapshot.
+
+### Copy-out (guest → host)
+
+```text
+ copy chord keydown              BrowserInputSource (clipboard feature)
+        │  before the chord's keys are emitted
+        ▼
+ startHostClipboardCopyOut      navigator.clipboard.write(ClipboardItem
+        │                         whose text is a pending promise)
+        ▼
+ waitForGuestClipboardText()    BrowserKernel / NodeKernelHost (same API)
+        │                         sample kernel_clipboard_guest_generation,
+        │                         poll it every 16 ms for up to 2 s
+        ▼
+ foot copies → wlcompositor selection → kclipd (ext_data_control_v1)
+        │  reads the offer through a pipe, whole, ≤ 1 MiB
+        ▼
+ write(KIND_GUEST_TEXT record) ─► /dev/kandelo/clipboard: guest text,
+                                   generation + 1
+        ▼
+ kernel_clipboard_guest_read ×N  → UTF-8 text → resolves the promise
+```
+
+- **kclipd reports every selection it did not set.** Its own selections
+  (host text it installed) are recognised by the source it still holds: the
+  compositor cancels that source before announcing any replacement, so a
+  selection that arrives while kclipd holds one is its own echo. The rest
+  are read as text (`text/plain;charset=utf-8`, then `text/plain`, then
+  `UTF8_STRING`) and written as one `KIND_GUEST_TEXT` record in one
+  `write()`. A selection over 1 MiB, or with no text type, is not reported:
+  never a truncated copy.
+- **The device keeps only the latest report** and a generation counter
+  that changes with each one. Neither is readable by the guest; the host
+  reads them through `kernel_clipboard_guest_generation` and
+  `kernel_clipboard_guest_read`, which copies the text out in scratch-sized
+  chunks within one kernel entry. Release drops the text, so a copy
+  gesture that sees the counter move after the agent has exited reports
+  `no-agent` rather than putting an empty string on the host clipboard.
+- **The host copies out only after a copy gesture**, never on every
+  selection change: a selection made in the desktop is not the user asking
+  for their own clipboard to change. The wait samples the generation before
+  the chord reaches the guest, so the guest's copy cannot land before the
+  host starts watching; a chord that copies nothing (`Ctrl+C` in a
+  terminal is SIGINT) times out after 2 s, and the host clipboard is left
+  as it was.
+- **Why the clipboard write starts at keydown.** Safari and Firefox let a
+  page write the clipboard only inside a user gesture, and the guest's text
+  arrives well after the keydown handler returns. A `ClipboardItem` whose
+  data is a promise is created in the gesture and filled when the text
+  arrives; a rejected promise writes nothing. Without `ClipboardItem` the
+  text is written with `writeText` once it arrives.
+- **Latest copy wins for keyboard copies.** A successful copy-out records
+  the text as the one the guest already holds, so the next host paste of
+  anything else is offered and the same text is not re-offered.
 
 ## Audio output (`/dev/dsp`)
 
@@ -2439,6 +3012,236 @@ the default 256-frame (5.333 ms) fragment cadence against the same 21.333 ms
 bounded queue. These are footprint and configured-buffer measurements, not a
 throughput or performance claim.
 
+## DRM/KMS (`/dev/dri/card0`, `/dev/dri/renderD128`)
+
+This section is the implementation walk-through; [Linux-compatible graphics devices](#linux-compatible-graphics-devices) states the device-level contract.
+
+`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (only `DUMB_BUFFER` and `PRIME` report support; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. There is no plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same surface unmodified. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the pane's aspect ratio at a fixed 1080 logical height — `round(1080 × aspect) × 1080`, width clamped to [1440, 3840] — so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The mode is sampled per GETCONNECTOR call but effectively fixed once a client boots; resizing the pane afterwards reintroduces letterboxing rather than switching modes. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+
+`DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
+
+`DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) is the fully GPU-backed tier: the bo is a host `WebGLTexture` plus a color-attachment FBO — no SAB, unmappable on the CPU. WebGL textures are not shareable across contexts, so all GPU-tier bos and every GL client that touches them live on **one** shared multiplexer context: the DRM-master compositor's scanout WebGL2 context. A non-master GL client (which has no display canvas of its own) is routed onto that shared context at `host_gl_create_context`; the existing `GlMuxer` (keyed by the WebGL2 context) multiplexes the compositor and its clients by replaying each binding's shadow state on `switchTo`. A client renders into the bo by targeting its FBO: the bo handle reaches the next `eglCreateWindowSurface`'s `GLIO_CREATE_SURFACE` either explicitly (`libEGL`'s `wpkEglSetWindowSurfaceTarget(handle)`) or, for a libwayland-egl `wl_egl_window`, from the bo that window allocated; the kernel translates the per-fd handle to a global bo id and the host redirects the client's "bind default framebuffer 0" to the bo's FBO (sizing the viewport to the bo). Because a toolkit may create the window surface *before* the GL context, the redirect target is captured at surface creation and (re)applied at whichever of context-creation or surface-creation runs last, since it needs both `b.gl` and the resolved bo. A `wl_egl_window_resize` (a tiling compositor resizes every window it maps) gives the window a new bo at the new size and has `libEGL` destroy and re-create the window surface against it, flushing first so commands already queued land in the old bo; the old buffer is destroyed only after the next `eglSwapBuffers` has attached and committed its successor. As in Mesa, the resize takes effect from the next frame. `eglSwapBuffers` flushes the shared context as the buffer-ready fence before `wl_surface.commit`; command order through the one submit queue gives render-before-sample ordering for free (no explicit sync object in v1). `BIND_FOREIGN_TEXTURE` on a GPU-tier bo then degenerates to returning the texture id — true zero-copy, no upload. Allocation degrades to a CPU-tier dumb bo whenever no shared context exists — headless Node has no WebGL2, and in the browser the compositor must have created its context first — so `libgbm` only requests the GPU tier for render-only bos (RENDERING set, none of SCANOUT/CURSOR/WRITE/LINEAR) and falls back to CREATE_DUMB on any error. This producer path is browser-only. Each GPU-tier bo's FBO has color, 24-bit depth, and 8-bit stencil storage, so default-framebuffer depth testing and stencil clipping work for Wayland clients as well as canvas-backed sessions.
+
+`MODE_PAGE_FLIP` latches the new framebuffer as the host-side scanout immediately (`host_kms_set_fb`, same call `MODE_SETCRTC` makes) and queues a flip-complete event that `kernel_vblank` — driven by the host's 60 Hz vblank pump — retires into the fd's event ring at the next tick. Two consequences: libdrm's `drmModePageFlip → poll → drmHandleEvent` loop runs at refresh rate rather than ioctl rate, and any host-side consumer of the current scanout (the vblank pump's WebGL2 scanout presenter or the legacy 2D canvas blit used by CPU-rendered demos) always reads the most recently flipped buffer, never a double-buffered client's back buffer. The immediate latch is race-free because a well-behaved client fully paints a bo before flipping to it and only reuses the old bo after the flip-complete event.
+
+## Wayland compositor (`wlcompositor`, `wlterm`)
+
+On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.25.0 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). Buffer sharing is zero-copy: clients allocate `wl_shm` pools backed by `gbm` dumb BOs and pass the prime-fd to the compositor via `SCM_RIGHTS`. The same prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888`/`XBGR8888`/`ABGR8888` + `LINEAR` only, no feedback; a GL client's buffer from `libwayland-egl` is `XBGR8888`, because a WebGL RGBA texture stores `[R,G,B,A]` bytes, and the compositor samples it without the red/blue swizzle it applies to `XRGB8888` `[B,G,R,X]` buffers): `zwp_linux_buffer_params_v1.add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to importing with `gbm_bo_import` and CPU-blitting into the scanout buffer. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-EIO` when the canvas context reports `isContextLost()`, `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails, and the compositor's repaint falls through to the CPU path and terminates EGL — no guest-side context-loss API is needed. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
+
+Kandelo-authored clients build on `libkwl` (`examples/libs/libkwl/`), a small toolkit over `libwayland-client` that wraps registry bind, an `xdg` CSD toplevel, double-buffered `wl_shm` back buffers, xkb keysym/UTF-8 translation, and a `kwl_dispatch` event loop; it exposes `kwl_display_fd()` so an app can `poll` the Wayland connection alongside its own fds. Drawing goes through `libwpkdraw` (`examples/libs/wpkdraw/`), a CPU rasterizer (alpha-blended clear/pixel/rect + an `stb_truetype` font engine over a bundled Inconsolata) that renders into a caller-owned ARGB buffer. `programs/wlterm/` is the first real client: a terminal that `forkpty()`s `sh` (bash, which every Kandelo image binds to `/bin/sh`), runs an in-tree VT100 core (`vt100.c`), and multiplexes the Wayland display fd and the PTY master fd in one `poll` loop — Wayland key events become PTY writes, PTY output feeds the VT100 grid and is rendered back into the libkwl window. Because `wlterm` forks, its wasm is mandatorily processed by `wasm-fork-instrument` (see [fork-instrumentation.md](fork-instrumentation.md)).
+
+The terminal core honors VT100 scrolling margins (`CSI top;bottom r`),
+including line feeds, delayed wraps, index, next line, and reverse index.
+Only the selected region moves; fixed rows such as an editor's status line
+remain intact. Valid margin changes home the cursor, invalid bounds are
+ignored, and resizing restores full-screen margins. This is terminal behavior,
+independent of the child program or package. The existing limited terminal
+subset (including no alternate screen or VT100 line-drawing set) is unchanged.
+
+The stack is dual-host: the Node smoke gates (`host/test/{wpkdraw,libkwl,wlcompositor,wlterm,wldesktop,wldesktop-liveness}-smoke.test.ts`) drive compositor+client harnesses (two-process for the single-client gates, compositor + wlclock + wlpaint for the desktop gates), and the browser demo (the `wayland` machine in the shell image, declared in `packages/registry/shell/source-rootfs-shell-demo.json`, listed in `apps/browser-demos/pages/kandelo/gallery-roster.json`, and gated by `apps/browser-demos/test/kandelo-wayland.spec.ts`) boots the compositor plus three clients — `wlclock` (animated clock), `wlpaint` (pointer painting), and `wlterm` — against `card0` mirrored to an `OffscreenCanvas`, with DOM keyboard input injected as evdev events and the pane's pointer bridge feeding `event1`. This is the same KMS-to-canvas + `BrowserInputSource` path the `modeset` and `sdl2` demos use. The pane opts into the vblank pump's WebGL2 scanout presenter (`mode: "webgl2-scanout"`: scanout-to-texture upload with shader-side XRGB→RGB swizzle, change-driven presents gated on the kernel commit count plus a ~15 Hz content-probe backstop, and GPU scaling at the pane's device-pixel resolution); in the browser the compositor's own GLES context then claims the canvas for GPU compositing (`markKmsCanvasGlOwned` — the presenter stands down, stats slot 7 flips to 3/`webgl2-gl`), while headless/Node runs stay on the CPU-composite + presenter pipeline. A legacy `mode: "2d"` putImageData blit remains available. See [browser-support.md](browser-support.md#wayland-desktop-demo).
+
+### Tiling window manager (`WLC_LAYOUT`, workspaces, `kwlctl`, keybinds)
+
+The same `wlcompositor` binary is also a Hyprland-class tiling WM (PR14); the floating desktop above is simply its default layout, so `/?demo=wayland` is unchanged. `WLC_LAYOUT=dwindle` selects the tiler.
+
+- **Layout engine.** `compute_tiling(area, n)` is a pure function: it partitions the output among `n` windows by recursively splitting the remaining region along its longer side (Hyprland's dwindle default — near half to window *i*, remainder carried forward), insetting an outer gap from the screen edge and an inner gap between windows. `retile()` runs it over the mapped windows on the active workspace (in map order = z-order) and pushes each dictated size through the `xdg_toplevel.configure` path; `FLOATING` mode keeps the app_id placement rules and makes `retile()` a no-op. Because the tiler is pure, the Node gate predicts the exact partition and compares it against the emitted `TILE` markers. A surface enters that list only once it carries the `xdg_toplevel` role: a client's cursor surface (`wl_pointer.set_cursor` is accepted and ignored, since the host pointer already draws the sprite) commits a buffer under no role, and would otherwise map, take the keyboard, and claim a tile of its own. Waybar's cursor theme is the case that reaches it.
+- **Workspaces.** Nine 1-based workspaces on the single output. Each surface carries a workspace id (assigned at first map); `surface_visible()` (mapped AND on the active workspace) gates compositing, input hit-testing, and tiling. `switch_workspace()` restores focus to the target's top window (z-order doubles as per-workspace focus memory); `move_focus_to_workspace()` sends the focused window away and re-tiles the remainder.
+- **`kwlctl` IPC.** A control + event socket at `/tmp/kwlctl-0` (the hyprctl analog), polled in the compositor's `wl_event_loop` alongside the wayland + libinput fds. Verbs: `clients` / `workspaces` / `activeworkspace` / `activewindow` / `monitors` / `workspacerules` / `theme` (JSON queries, each also accepted behind hyprctl's `j/` prefix), `dispatch <workspace N|focusworkspaceoncurrentmonitor N|movetoworkspace N|close|exec <path…>|theme <name|next|prev>|sendshortcut MODS, KEY|kandelo:sendshortcutiftag TAG, MODS, KEY, MODS, KEY>`, and `--listen` (a newline-delimited `event>>data` stream in Hyprland's socket2 format). `dispatch exec` uses the non-forking `posix_spawnp` (`SYS_SPAWN`) — a `fork()` from inside an event-loop callback would wedge the server — and accepted control fds are `CLOEXEC` so they don't leak into spawned children. The CLI client is `programs/wlcompositor/kwlctl.c` (`KWLCTL_SOCKET` overrides the path).
+- **Hyprland IPC compatibility.** The same command table and event bus are also served on Hyprland's own socket pair, where an unmodified Waybar looks for them: `/tmp/hypr/wlcompositor/.socket.sock` (request/reply) and `.socket2.sock` (the event stream, which needs no handshake — a client that connects is a listener). `main()` exports `HYPRLAND_INSTANCE_SIGNATURE=wlcompositor` and defaults `XDG_RUNTIME_DIR=/tmp`, so anything the compositor execs finds the directory. The query replies carry the `hyprctl -j` field set Waybar's `hyprland/*` modules read — window `class`/`title`/`workspace`/`floating`/`mapped`, workspace `id`/`name`/`monitor`/`windows`, and a single `virtual-0` monitor — and the events it subscribes to: `workspace`/`workspacev2`, `createworkspace`/`destroyworkspace` (+`v2`), `focusedmon`(`v2`), `activewindow`/`activewindowv2`, `openwindow`/`closewindow`, `movewindow`(`v2`), `windowtitle`(`v2`), in Hyprland's order: a new window's workspace is created, the window opens, then it takes focus. Window titles exist only for this: `xdg_toplevel.set_title` is stored on the surface and relayed, never drawn (clients keep their own CSD titlebars).
+- **Keybinds.** A config-driven bind table parsed from `WLC_CONFIG` / `/etc/kandelo/wlcompositor.conf` (a hyprland.conf-shaped subset: `bind = MODS, KEY, DISPATCHER[, ARGS]`); absent config installs generic SUPER-based defaults, not demo-specific ones. Keys are intercepted in the compositor's keyboard path before the focused client: a bind matches on the pressed key's shift-independent base keysym plus an exact modifier mask. Modifiers: `SUPER` (Mod4), `SHIFT`, `CTRL`, `ALT` (Mod1) — the self-contained xkb keymap carries `Super_L`, both Shifts, `Control_L`, `Alt_L`, the four arrow keys, `F1`–`F12`, and the nav cluster (Home/End/PgUp/PgDn/Insert/Delete). `CTRL` exists because a browser reserves the Cmd/Win (`SUPER`) key, so the in-browser demo mirrors every `SUPER` bind onto `CTRL`. Dispatchers: `exec`, `workspace`, `movetoworkspace`, `killactive`, `cyclenext`/`cycleprev` (focus cycling without z-order reordering, so a tiled layout keeps its geometry). The `exec` dispatcher is how new panes are opened Hyprland-style — a per-app launch bind rather than a launcher UI: the `/?demo=hyprland` config binds `Return`→`wlterm`, `K`→`wlclock`, `P`→`wlpaint` (each on both `SUPER` and `CTRL`), and on the keypress the compositor runs `kwlctl_exec` → `posix_spawnp` of the `/usr/local/bin` binary, which connects as a new tiled client. Because bound combos are grabbed before the focused client, a `CTRL`-letter launch bind shadows the terminal's like-named control key in-browser; the clock is deliberately on `K` (not `C`) so `Ctrl+C` SIGINT still reaches `wlterm`. A real Hyprland session drives these on `SUPER` and avoids the clash entirely. `killactive` sends `xdg_toplevel.close` to the focused window; the client is responsible for tearing its surface down (the compositor retiles once the surface is destroyed). `wlterm` closes its window immediately and sends `SIGHUP` to hang its shell up. The platform also wakes blocked PTY reads and readiness waits when the final endpoint closes, so peer hangup is observable without waiting for a retry timer. The `ARGS` field is the rest of the line, commas included, as in Hyprland.
+- **`sendshortcut` and window tags.** `sendshortcut, MODS, KEY` (Hyprland's dispatcher) delivers a chord to the focused surface as `wl_keyboard` events: a `modifiers` event carrying exactly the chord's modifiers, the key's press and release, then a `modifiers` event restoring the real state. The chord's modifiers replace the held ones rather than merging with them, so `SUPER+V` bound to `sendshortcut, CTRL SHIFT, V` reaches the client as Ctrl+Shift+V while SUPER is still physically down (the problem Omarchy's `clipboard.lua` works around). Hyprland's optional third argument, a target window, is not supported and must be empty. `windowrule = tag +NAME, class:REGEX` tags every window whose `app_id` the POSIX extended regex matches in full; `kwlctl clients`/`activewindow` report the tags. `kandelo:sendshortcutiftag, TAG, MODS, KEY, MODS, KEY` sends the first chord when the focused window carries `TAG` and the second otherwise. It has no Hyprland equivalent: Omarchy chooses the chord in a Lua function (`universal_clipboard_shortcut`), and `wlcompositor` has no Lua, so this dispatcher is a Kandelo stand-in for that one function, and its `kandelo:` prefix (the namespace style of Hyprland plugin dispatchers) says so in the config. Rules support only `tag +NAME` and only the `class:` matcher; anything else is refused with a message on stderr.
+- **Clipboard (the selection).** `wl_data_device_manager` v3 and `zwlr_data_control_manager_v1` v2 share one selection per seat. A client sets it with `wl_data_device.set_selection` (a serial older than the current selection's is dropped, as wlroots does) or, with no window and no serial, through data-control (a clipboard tool or agent). Setting it sends `cancelled` to the source it replaces. The compositor offers the selection — a fresh `wl_data_offer`, one `offer` event per MIME type, then `selection` — to a client just before that client receives keyboard focus, again when the selection changes while it is focused, and when it creates its data device while focused; data-control devices receive every change regardless of focus. A paste is `wl_data_offer.receive(mime, fd)`: the compositor forwards the fd to the source client as `send(mime, fd)` and closes its own copy, so the two clients exchange the bytes over the pipe directly (the pipe's write end crosses the Wayland socket twice by `SCM_RIGHTS`) and the compositor never reads them. An offer whose source is no longer the selection gets its fd closed at once, so the reader sees EOF. Drag-and-drop (`start_drag` is a no-op; an offer's `accept`/`finish`/`set_actions` are accepted for v3 clients) and the primary selection (neither `zwp_primary_selection` nor data-control's `set_primary_selection`) are not implemented. Gated by `host/test/wlcompositor-clipboard-smoke.test.ts` with the `programs/wlcompositor/wlclip-test.c` client.
+- **Server-side decoration.** The compositor advertises `zxdg_decoration_manager_v1` and negotiates the mode by layout: `dwindle` → `SERVER_SIDE` (a tiled window has no titlebar), `floating` → `CLIENT_SIDE` (the client keeps its CSD titlebar). A libkwl client honors the negotiated mode (`decoration_configure`): under SSD it sets its titlebar height to 0 and treats all pointer events as content, so the tiled desktop looks like Hyprland.
+- **Client-side resize.** The compositor composites each surface at its **native** buffer size (`blit_surface` does not scale to the tile; the one exception is an explicit `wp_viewport` destination, which scales that surface's committed source rect), so tiling requires the *client* to resize into the size the compositor dictates. `retile()` sends `xdg_toplevel.configure(w,h)`; libkwl records it and, on the `xdg_surface.configure` ack barrier, rebuilds both `wl_shm` buffers at the new size and pushes a `KWL_RESIZE` event (new content w/h). Clients react: `wlclock` recomputes its dial geometry, `wlterm` reflows its VT100 grid (`vt100_resize` + `TIOCSWINSZ` + `SIGWINCH`), `wlpaint` reallocates its canvas (preserving the painting) so the toolbar + drawing area fill the whole tile rather than a fixed 640×420 corner. The initial `get_toplevel` `configure(0,0)` ("you decide") is ignored, so a floating client (`/?demo=wayland`) never resizes and is byte-identical to before.
+
+These are entirely in-kernel (client↔compositor over the wayland + `/tmp/kwlctl-0` sockets) — no host-runtime change — and gated by `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration,clipboard}-smoke.test.ts`. The browser's Hyprland machine (the shell image's `hyprland` profile, whose `/usr/local/bin/hyprdesktop` launcher sets `WLC_LAYOUT=dwindle` and `WLC_CONFIG=/usr/share/kandelo/hyprland/wlcompositor.conf`; gated by `apps/browser-demos/test/kandelo-hyprland.spec.ts`) boots the same compositor plus a `wlclock` and two `wlterm` terminals, which tile into gapped borderless frames and resize into their tiles — the first end-to-end Hyprland-class desktop. `wlpaint` is in the image but not started, so the `Ctrl+P` launch bind summons it on demand. See [browser-support.md](browser-support.md#hyprland-tiling-demo).
+
+### Desktop shell (`zwlr_layer_shell_v1`, `kbar`, `klauncher`, themes)
+
+A tiling WM is not yet a desktop: a desktop also has a bar, a launcher, and a
+theme. Those are ordinary Wayland clients, but they need a protocol that lets a
+surface anchor to an output edge and reserve space from the windows — which is
+what `zwlr_layer_shell_v1` is, and what Quickshell, Waybar, mako and every
+other shell component speak. The compositor implements it (protocol XML
+vendored at
+`packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml`),
+and the in-tree clients below consume it. This is the **O1** milestone of
+[docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md](plans/2026-07-14-build-hyprland-class-compositor-plan.md).
+The Omarchy machine runs Quickshell in every one of these slots instead
+(see [browser-support.md](browser-support.md#omarchy-desktop-demo)); the
+in-tree clients stay as the dependency-free shell the layer-shell and theme
+smokes gate on.
+
+Three more protocols carry what a Quickshell shell needs from its
+compositor beyond layer-shell, each served the way Hyprland serves it:
+
+- **`hyprland_global_shortcuts_v1`** — a client registers a shortcut by
+  `app_id` and `id`, and a `bind = MODS, KEY, global, app_id:id` config
+  line makes the compositor send `pressed` on the key's press and
+  `released` on its release (to the shortcut the press went to, whatever
+  the modifiers are by then). The key never reaches the focused client. A
+  bind naming a shortcut nobody registered prints `SHORTCUT_UNBOUND`.
+- **`ext_idle_notifier_v1`** (v2) — one timer per notification, restarted
+  by every keyboard or pointer event; `idled` after the timeout, `resumed`
+  on the next input. No idle inhibitor exists here, so both request kinds
+  behave the same.
+- **`ext_session_lock_v1`** — `lock` blanks the output: every frame is
+  opaque black under the lock surface alone, the keyboard and pointer reach
+  nothing else, and keybinds stay off. `locked` is sent from the flip
+  handler, once a blanked frame is on screen. The lock surface is
+  configured to the whole logical output and must commit exactly that size
+  after acking (protocol errors otherwise). `unlock_and_destroy` restores
+  focus; a lock client that dies leaves the session locked
+  (`SESSION_LOCK_CLIENT_GONE`) until another client takes it over, and a
+  second lock request while one is held gets `finished`.
+
+- **Layer shell.** A `wl_surface` given the layer role carries a layer
+  (background/bottom/top/overlay), an anchor mask, margins, an exclusive zone
+  and a keyboard-interactivity mode; the surface joins `g.layers` at role
+  creation, because the protocol's initial commit carries no buffer and exists
+  only to fetch the configure that tells the client its size.
+  `layers_arrange()` walks the layers background→overlay, anchors each surface
+  inside the area left by the ones before it, and sends
+  `zwlr_layer_surface_v1.configure` when the box changes. What remains after
+  every **mapped** surface's exclusive zone is `g.usable`, the work area
+  `retile()` partitions — so a bar shrinks the tiling area rather than covering
+  a window. A surface with a role but no buffer reserves nothing, so a client
+  that dies mid-handshake cannot strand a strip of the desktop. Compositing and
+  hit-testing put background/bottom under the windows and top/overlay over
+  them, on both the GPU and CPU paths; a layer surface shows on every workspace.
+  `EXCLUSIVE` keyboard interactivity takes the keyboard for as long as the
+  surface lives, and focus falls back to the topmost window when it goes away.
+- **`kbar`** (`programs/kbar.c`) — the Tier-1 status bar: a
+  30 px top-anchored layer surface with a matching exclusive zone, rendering
+  workspace pills, the focused window's app id, the kernel's monotonic uptime,
+  and a clock. Its state comes
+  from `kwlctl`. It subscribes to `--listen` and waits for the server's
+  acknowledgment before querying `workspaces`, `activewindow`, and `theme`.
+  Changes during those queries or the first frame commit remain queued on
+  the event stream, so startup cannot lose a theme switch. The stream is
+  polled alongside the Wayland fd, which is
+  the same feed Quickshell's Hyprland module takes from the Hyprland IPC pair
+  (see the Hyprland IPC compatibility bullet above).
+- **`knotify`** (`programs/knotify.c`) — the notification toast, the
+  notify-send slot: one toast per process, a corner-anchored overlay surface
+  (margins via `zwlr_layer_surface_v1.set_margin`) that shows
+  `knotify <title> <body…>` for a moment and exits — the surface teardown is
+  the dismissal. The compositor's `notify = <path>` config key spawns it on
+  every theme switch. The omarchy browser demo points that key at
+  `notify-send` (`programs/notify-send.c`) — a gdbus client that
+  calls `org.freedesktop.Notifications.Notify` over the `dbus-daemon`
+  session bus, where the Quickshell shell's notification server owns the
+  name and renders the card as its own layer-shell surface.
+- **`klauncher`** (`programs/klauncher.c`) — the Tier-1 launcher: a
+  centred overlay-layer surface with exclusive keyboard interactivity, filtering
+  a registry of `KLAUNCHER_APPS_DIR/*.conf` entries (`name` + `exec`) as
+  you type. Enter hands the command to the compositor over `kwlctl dispatch
+  exec` and dismisses; the launcher itself never forks. `klauncher --menu`
+  opens a menu instead: a root level (Apps, Theme) that descends
+  into the app list or the installed-theme list (read from `kwlctl theme`,
+  switched with `dispatch theme`); ESC in a submenu returns to the root.
+  The Omarchy machine's launcher is the Quickshell shell's, reading
+  `.desktop` entries.
+- **Themes.** A theme is a directory holding one `theme.conf` under
+  `/usr/share/kandelo/themes` (`WLC_THEME_DIR` / `KANDELO_THEME_DIR` override
+  the root) — the same file-based design Omarchy uses. The compositor reads the
+  border colour, gaps and wallpaper; the shell clients read the bar,
+  foreground, muted and accent colours; unknown keys are skipped, so one file
+  serves both sides. A theme's wallpaper is either the two gradient colours or
+  a `wallpaper = <file>` image in the KWLP raw-pixel format (`"KWLP"`, u32le
+  width/height, XRGB pixels) that the compositor bilinear-scales to the
+  output — raw pixels because nothing in the compositor decodes PNG/JPEG;
+  whoever builds the theme renders the image. The themes in the shell image
+  ship gradients only for now (see
+  [browser-support.md](browser-support.md#omarchy-desktop-demo)). `theme = <name>` in the
+  compositor config selects the
+  startup theme, and `kwlctl dispatch theme <name|next|prev>` (or a `theme`
+  bind) switches live: gaps re-tile, the wallpaper is re-rendered and
+  re-uploaded to its GL texture, and `theme>>name` on the event stream tells
+  every shell client to reload its own palette. `kwlctl theme` reports the live
+  name plus the installed set, so a client that starts later still matches.
+
+Gated by `host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts` and, in the
+browser, by `apps/browser-demos/test/kandelo-omarchy.spec.ts` (the Omarchy
+machine).
+See [browser-support.md](browser-support.md#omarchy-desktop-demo).
+
+### Stock upstream clients (`foot` + the font stack)
+
+Every client above is Kandelo-authored on `libkwl`. `foot` 1.17.2
+(`packages/registry/foot/`) is the first **unmodified upstream** Wayland
+client: stock `wl_display_connect()` (via `XDG_RUNTIME_DIR`), stock
+xdg-shell/SSD negotiation, and a real font pipeline. Two declared patches are
+the entire delta, both kernel-model boundaries rather than feature edits:
+`0001` allocates its `wl_shm` pools as `gbm` prime-fd dumb-bos instead of
+memfds (written when a memfd `MAP_SHARED` mapping never converged across
+processes, so the compositor would have composited stale bytes; the kernel
+now keeps memfd mappings coherent at syscall boundaries, so this patch is a
+candidate for removal), and `0002` serializes
+its font loading (concurrent `FcFontMatch` garbles pattern doubles under the
+kernel's thread model — any future threaded font consumer hits the same wall).
+foot forks its shell (`slave.c`), so its wasm is mandatorily
+fork-instrumented; it runs with `--term=vt100` because no foot terminfo is
+staged in any VFS image.
+
+What it took, on each side of the protocol:
+
+- **Compositor surface for stock clients.** `wl_subcompositor` (subsurfaces
+  composited glued to their parent — foot's URL/search overlays),
+  `wl_data_device_manager` v3 (foot binds it unconditionally; it carries
+  the clipboard between windows, see the tiling section's clipboard
+  paragraph), `wl_seat` at v5 (`repeat_info` + pointer `frame` events),
+  `wl_surface.enter` at map, and `wl_output` `scale`+`done` with a physical
+  size of 0×0 — sending pixels as millimetres made foot derive a 25.4 DPI and
+  garble its font reload. `wp_presentation` (above) is its frame clock.
+- **The font stack.** Four library packages feed it: `freetype` 2.13.3
+  (rasterizer), `fontconfig` 2.15.0 (font discovery — reads the config
+  `FONTCONFIG_FILE` names and scans the font dirs it lists), `fcft` 3.1.9 (the
+  glyph-cache layer foot draws with) and `tllist` 1.1.0, over `pixman` 0.42.2
+  and `utf8proc` 2.9.0. Gates: `host/test/fontstack-smoke.test.ts` and the
+  per-package `host/test/{pixman,utf8proc}-smoke.test.ts`.
+- **Kernel: signals interrupt host-converted epoll waits.** foot's SIGCHLD
+  reaper parks in `epoll_pwait` with the signal unblocked only inside the
+  wait. The host runs epoll_pwait itself as poll retries
+  (`handleEpollPwait` in `host/src/kernel-worker.ts`), so it swaps the
+  thread's signal mask through the kernel exports
+  `kernel_swap_poll_sigmask` / `kernel_restore_poll_sigmask` for the whole
+  wait, and the wait ends with EINTR once a signal the mask allows is
+  deliverable. A kernel without those exports is refused, not run with the
+  mask silently ignored.
+
+Gated end-to-end by `host/test/foot-smoke.test.ts` (foot on wlcompositor:
+connect, fontconfig+fcft startup, first composited frame through the gbm pool
+path, keys typed into its forked `dash`, clean exit). In the browser, foot is
+a launcher entry of the Omarchy machine — a lazy binary at
+`/usr/local/bin/foot`, with the desktop's `fonts.conf` and Inconsolata under
+`/usr/share/kandelo/fonts` — gated by
+`apps/browser-demos/test/kandelo-omarchy.spec.ts`.
+
+### Full libffi (generated dispatch + static closure trampolines)
+
+The glib/gobject tier needs real `ffi_call` (doubles, i64, by-value structs)
+and `ffi_closure` — which on native targets JIT-writes trampolines. wasm32
+cannot generate code at runtime, so `packages/registry/libffi/` is a
+from-scratch port built on two facts of clang's wasm32 C ABI lowering: a
+struct whose only member (recursively) is one scalar travels as that scalar,
+and every other by-value struct is a pointer at the wasm level (`byval`
+argument copies, hidden leading `sret` return pointer) — so every signature
+collapses to word classes {i32, i64, f32, f64}. `gen-dispatch.sh` enumerates
+signature families into two generated TUs: a `switch` of `call_indirect`
+shapes for `ffi_call` (every arity ≤ 8 with at most two non-i32 args, plus
+all-i32 up to the Wayland ceiling of 22, times five return classes) and a
+static trampoline pool for closures (N real C functions per signature class,
+baked into the function table; `ffi_prep_closure_loc` binds a free slot and
+pool exhaustion aborts naming the class). A signature outside the generated
+families aborts printing its key — coverage is a one-line bound change in the
+generator. `ffi_cif` deliberately gained no fields across the rewrite:
+libwayland embeds it by value, so its cached archive stays ABI-compatible.
+Gated by `host/test/libffi-full-unit.test.ts` (native + wasm-under-kernel
+matrix over arities × types × call/closure via `programs/libffi_full_test.c`)
+and `host/test/libffi-shim-unit.test.ts` (the PR1 Wayland arity gate, kept
+green through the rewrite).
+
 ## Signal Subsystem
 
 Signals are delivered at syscall boundaries. When a process has a pending signal:
@@ -2540,7 +3343,7 @@ In the browser, an additional layer wraps the kernel:
 ```
 Main Thread                              Kernel Worker
 ├── BrowserKernel (thin proxy)           ├── CentralizedKernelWorker
-├── UI code (HTML/JS)                    ├── MemoryFileSystem (kernel-owned)
+├── UI code (HTML/JS)                    ├── Kernel-owned `/` (rootfs + tmpfs)
 ├── App clients (MySQL, Redis)           ├── Kernel Wasm instance
 ├── HTTP bridge / TCP injection          ├── Process sub-workers
 ├── Local virtual network                ├── POSIX socket routing
@@ -2549,7 +3352,7 @@ Main Thread                              Kernel Worker
 
 **`BrowserKernel`** (`host/src/browser-kernel-host.ts`): Main-thread proxy that communicates with the browser kernel worker via `postMessage`. This is host/runtime code, maintained beside the Node.js host (`host/src/node-kernel-host.ts`). Browser apps and demos consume it; they do not own it. The current API has two boot paths:
 
-- `kernel.boot({ kernelWasm, vfsImage, argv, env, ... })` — preferred. Combined with `kernelOwnedFs: true`, the main thread never holds a `MemoryFileSystem` reference. The kernel worker restores the image and exec()s `argv[0]` as the first user process. All FS operations stay inside the worker, off the syscall hot path.
+- `kernel.boot({ kernelWasm, vfsImage, argv, env, ... })` — preferred. The main thread zstd-decodes the image and transfers the bytes; the kernel parses it and serves `/` itself, and the worker exec()s `argv[0]` as the first user process. The main thread keeps no filesystem state, and all FS operations stay inside the kernel.
 - `kernel.spawn(programBytes, argv, opts)` — legacy. Posts the wasm bytes to the kernel worker; the Rust `ProcessTable` allocates the PID, then the worker attaches host state, starts the process worker, and returns the assigned PID. Kept for transient binary launches (REPLs, test runners, benchmarks) that the kernel can't currently load via fork+exec from a baked binary.
 
 The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY routing, framebuffer registry mirroring, HTTP bridge handoff) are pid-addressed and work the same in both boot paths.
@@ -2587,6 +3390,32 @@ TLV commands, the kernel validates the submitted range, and the host decodes
 the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
+The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
+adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
+accepts versions 1 and 2, and rejects zero or newer versions with `ENOSYS`.
+Its version and extension strings describe that API. Extension queries carry
+an optional operation-table version: legacy requests retain their empty list,
+while version 2 advertises bridged capabilities. Optional float rendering and
+filtering extensions appear only when the host enables them. Uniform
+reflection, vector/matrix uploads, indexed draws, texture updates and
+depth/stencil operations use the same command/query path as other programs.
+Texture uploads copy shared and
+possibly unaligned guest bytes into the typed views WebGL requires. GLES2's
+unsized float, red/green and depth formats map to equivalent sized WebGL2
+formats. New opcodes occupy unused slots; existing opcode numbers and record layouts are
+preserved. Buffer allocation also accepts a data-free record carrying its size.
+
+Canvas-backed default framebuffers render into an offscreen color buffer with
+24-bit depth and 8-bit stencil, then blit the color buffer at presentation.
+GPU-backed Wayland window buffers also own 24-bit depth and 8-bit stencil
+attachments. Allocation checks framebuffer completeness and restores the
+shared context's texture, renderbuffer, and separate read/draw framebuffer
+bindings. Destroying the buffer releases all three GL objects.
+The multiplexer restores masks, stencil operations, clear values, constant
+vertex attributes and texture bindings when switching guest contexts. Node
+hosts without WebGL2 cannot render these sessions; no software simulation
+stands in for the native LÖVE renderer.
+
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package
 into `sysroot/lib/libdrm.a`, and builds `libgbm.a`, `libEGL.a`, and
@@ -2596,8 +3425,9 @@ upstream 2.4.120, KMS subset only — the kernel implements enough of the
 Packages that depend on these APIs link through `wasm32posix-pkg-config` and
 declare their resulting program artifacts as packages. The `modeset` demo is
 one such package: its VFS image installs `/usr/local/bin/modeset`, and
-`/etc/kandelo/demo.json` selects the KMS surface and `autoCommand` that starts
-it. The browser loader stays generic; it does not special-case `modeset.wasm`.
+`/etc/kandelo/demo.json` selects the KMS surface and the `init.shellCommand`
+that starts it. The browser loader stays generic; it does not special-case
+`modeset.wasm`.
 
 ## Performance Architecture
 
@@ -2646,7 +3476,7 @@ order:
 3. `sysroot64` — provisions the wasm64 musl sysroot the same way
 4. `sdk` — verifies the `wasm32posix-cc` toolchain wrappers resolve against `sysroot`
 5. `engine` — builds every package in the local-build graph, including the kernel: `cargo build` with `-Z build-std=core,alloc` targeting `wasm32-unknown-unknown`, then copies `kandelo-kernel.wasm` to `host/wasm/`
-6. `rootfs` — builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs`
+6. `rootfs` — builds the canonical rootfs image via `scripts/build-rootfs.sh`, which invokes the `mkrootfs` CLI (`tools/mkrootfs/`) against the top-level `MANIFEST` + `images/rootfs/` source tree, stamps the current `ABI_VERSION` into image metadata, and writes `host/wasm/rootfs.vfs.zst`
 7. `host-dist` — builds the TypeScript host via `npm run build` (tsup → ESM + CJS)
 
 ```bash
@@ -2660,7 +3490,7 @@ step that `./run.sh setup` does not run: use `./run.sh build programs`
 (`scripts/build-programs.sh`) when you need them, e.g. for the wasm64
 Vitest cases or benchmark suites.
 
-`host/wasm/` is gitignored — `rootfs.vfs`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
+`host/wasm/` is gitignored — `rootfs.vfs.zst`, `kernel.wasm`, and the rest are built artifacts. `tools/mkrootfs/` is the source of the image-builder CLI; the canonical owners/modes/sticky-bits live in `MANIFEST`, the file content under `images/rootfs/`.
 
 Manifest node paths and archive mount points use canonical absolute POSIX
 paths. ZIP archives ingested by `mkrootfs` require byte-exact UTF-8 canonical
@@ -2680,8 +3510,9 @@ The SDK (`sdk/`) provides `wasm32posix-cc` which wraps clang with:
 
 For programs that use `fork()` or fork-like helpers, the in-tree
 `wasm-fork-instrument` tool (see
-[fork-instrumentation.md](fork-instrumentation.md)) must be the **last**
-post-link pass — after any `wasm-opt -O2`. Build scripts call
+[fork-instrumentation.md](fork-instrumentation.md)) runs after linking and
+after any `wasm-opt` pass, and then runs `wasm-opt -O2` over its own output.
+Build scripts call
 `scripts/run-wasm-fork-instrument.sh`, which builds the tool on demand if the
 prebuilt `tools/bin/wasm-fork-instrument` is absent. The tool auto-discovers
 fork-path functions via call-graph analysis from the `kernel.kernel_fork`
@@ -2700,7 +3531,7 @@ Package resolution is **local-first**: every package is source-built through the
 
 1. Read `packages/registry/<name>/package.toml` for the recipe and `packages/registry/<name>/build.toml` for the project view (`revision`, build inputs).
 2. Return a hand-patched override under `local-libs/<name>/build/` (libraries) or `local-binaries/programs/<arch>/...` (programs) if present.
-3. Otherwise return the canonical content-addressed cache entry `<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-<cache-key-sha>/` if it exists.
+3. Otherwise return the canonical content-addressed cache entry `<cache_root>/libs/<name>-<ver>-rev<N>-<arch>-abi<ABI>-<cache-key-sha>/` if it exists.
 4. On a cache miss, **build from source**: fetch the upstream source archive from `[source].url`, verify it against `[source].sha256`, run `build-<name>.sh` via the SDK, validate the declared outputs, and atomically install the result into the canonical cache.
 
 The cache key is computed over the recipe identity, `revision`, source pin, target arch, `ABI_VERSION`, declared outputs, declared build inputs, `[[git_inputs]]`, the global toolchain/sysroot fingerprint, and the transitive dependency cache keys. Any change to those inputs invalidates the entry and triggers a source rebuild of that package and its dependents.
@@ -2720,3 +3551,17 @@ generated-file/snapshot checks for ABI-adjacent work and real Chromium
 evidence for shared browser runtime changes. Report exact commands, counts,
 unexpected failures, skipped suites, and environmental blocks rather than
 using a narrow passing suite as a broad readiness claim.
+
+### Filesystem notification readiness
+
+The host checks `kernel_fs_changes_pending` after each operation with active
+watches, in the same entry. It schedules a separate drain only when records
+are pending. Actual record copies and observer callbacks retain their
+existing ownership and worker-turn boundaries on Node and browser.
+
+An operation helper receives the live entry explicitly for this scalar
+read. The entry-construction function creates the context and orders its
+effects; it does not call kernel exports. Gateways forward only the
+original operation and the gate callback's exact scope and effect
+registrar. Notification callbacks and their captured state are created
+only on the active-watch path.

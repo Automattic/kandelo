@@ -59,16 +59,15 @@ function importedGlobalsSection(
   records: ReadonlyArray<{
     module: string;
     name: string;
-    importOrdinal?: number;
+    reservedWord?: number;
     ownerId: number;
     typeCode: number;
     mutable?: boolean;
   }>,
 ): Uint8Array {
   const encoder = new TextEncoder();
-  const encoded = records.map((record, importOrdinal) => ({
+  const encoded = records.map((record) => ({
     ...record,
-    importOrdinal: record.importOrdinal ?? importOrdinal,
     moduleBytes: encoder.encode(record.module),
     nameBytes: encoder.encode(record.name),
   }));
@@ -98,7 +97,7 @@ function importedGlobalsSection(
     );
     view.setUint32(offset + 12, record.moduleBytes.byteLength, true);
     view.setUint32(offset + 16, record.nameBytes.byteLength, true);
-    view.setUint32(offset + 20, record.importOrdinal, true);
+    view.setUint32(offset + 20, record.reservedWord ?? 0, true);
     bytes.set(
       record.moduleBytes,
       offset + WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE,
@@ -117,16 +116,15 @@ function importedTablesSection(
   records: ReadonlyArray<{
     module: string;
     name: string;
-    importOrdinal?: number;
+    reservedWord?: number;
     ownerId: number;
     typeCode: number;
     table64?: boolean;
   }>,
 ): Uint8Array {
   const encoder = new TextEncoder();
-  const encoded = records.map((record, importOrdinal) => ({
+  const encoded = records.map((record) => ({
     ...record,
-    importOrdinal: record.importOrdinal ?? importOrdinal,
     moduleBytes: encoder.encode(record.module),
     nameBytes: encoder.encode(record.name),
   }));
@@ -153,7 +151,7 @@ function importedTablesSection(
     view.setUint8(offset + 9, record.table64 ? 1 : 0);
     view.setUint32(offset + 12, record.moduleBytes.byteLength, true);
     view.setUint32(offset + 16, record.nameBytes.byteLength, true);
-    view.setUint32(offset + 20, record.importOrdinal, true);
+    view.setUint32(offset + 20, record.reservedWord ?? 0, true);
     bytes.set(
       record.moduleBytes,
       offset + WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE,
@@ -629,7 +627,6 @@ describe("fork imported-global provider planning", () => {
       importedTablesSection([{
         module: "provider",
         name: "dispatch",
-        importOrdinal: 0,
         ownerId: 1,
         typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
       }]),
@@ -722,7 +719,6 @@ describe("fork imported-global provider planning", () => {
       importedTablesSection([{
         module: "host",
         name: "dispatch",
-        importOrdinal: 0,
         ownerId: 1,
         typeCode: WPK_FORK_MODULE_STATE_GLOBAL_TYPE_FUNCREF,
       }]),

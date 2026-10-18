@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "defaultProfile": "nginx-php",
+  "profiles": {
+    "nginx-php": {
+      "identity": {
+        "title": "nginx + PHP",
+        "summary": "Adminer database manager: nginx → FastCGI → PHP-FPM, backed by SQLite.",
+        "accent": "#6b63a6",
+        "glyph": "php",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "php-fpm@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "maxWorkers": 12
+        }
+      },
+      "init": {
+        "target": "nginx"
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "nginx + PHP demo",
+        "summary": "The web preview is Adminer, auto-connected to a SQLite database that PHP-FPM seeds on first load. These actions inspect the same live FastCGI stack from a shell.",
+        "groups": [
+          {
+            "title": "Service",
+            "actions": [
+              {
+                "id": "curl-info",
+                "label": "Status page",
+                "description": "Fetch the PHP-FPM status page at /info.php.",
+                "kind": "terminal.run",
+                "payload": "curl -s http://127.0.0.1:8080/info.php | sed -n '1,40p'"
+              },
+              {
+                "id": "show-db",
+                "label": "SQLite file",
+                "description": "Show the demo database PHP-FPM created (SQLite header included).",
+                "kind": "terminal.run",
+                "payload": "ls -l /var/www/data && echo '--- header ---' && head -c 16 /var/www/data/demo.db; echo"
+              },
+              {
+                "id": "php-version",
+                "label": "PHP",
+                "description": "Print the PHP-FPM version.",
+                "kind": "terminal.run",
+                "payload": "/usr/sbin/php-fpm -v"
+              },
+              {
+                "id": "php-procs",
+                "label": "Workers",
+                "description": "Show nginx and PHP-FPM processes.",
+                "kind": "terminal.run",
+                "payload": "lsof | grep -E 'nginx|php-fpm' | head -60 || true"
+              }
+            ]
+          }
+        ],
+        "script": {
+          "title": "Service check",
+          "language": "sh",
+          "initialText": "curl -s http://127.0.0.1:8080/info.php | sed -n '1,40p'\necho \"--- SQLite database (seeded by PHP-FPM on first load) ---\"\nls -l /var/www/data && head -c 16 /var/www/data/demo.db; echo\necho \"--- service processes ---\"\nlsof | grep -E 'nginx|php-fpm' | head -60 || true"
+        }
+      }
+    }
+  }
+}

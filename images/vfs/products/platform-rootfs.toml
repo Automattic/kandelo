@@ -1,7 +1,7 @@
 schema = 1
 id = "platform-rootfs"
 architecture = "wasm32"
-output = "rootfs.vfs"
+output = "rootfs.vfs.zst"
 builder = "packages/registry/rootfs/build-rootfs-package.sh"
 
 [[software.package]]

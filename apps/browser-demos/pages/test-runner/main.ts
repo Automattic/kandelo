@@ -7,6 +7,7 @@
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
 import type { HostDiagnostic } from "@host/host-diagnostic";
+import type { WasmModuleCacheStats } from "@host/wasm-module-cache";
 import type { BrowserCorsProxyConfig } from "@host/networking/browser-cors-proxy";
 import pcmAudioWorkletUrl from "@host/audio/pcm-audio-worklet.js?url";
 import {
@@ -57,7 +58,6 @@ interface MigrationRestoreOptions {
 interface MachineCheckpointThreadsSummary {
   pids: number[];
   threads: { pid: number; tids: number[]; activeCount: number }[];
-  mounts: string[];
   unreadableMounts: string[];
 }
 
@@ -135,7 +135,9 @@ declare global {
         cwd?: string;
         env?: string[];
         ptyInput?: PtyInput;
-        corsProxy?: BrowserCorsProxyConfig;
+        corsProxy?: BrowserCorsProxyConfig | null;
+        /** Read the kernel worker's module cache counters before teardown. */
+        wasmModuleCacheStats?: boolean;
       },
     ) => Promise<{
       exitCode: number;
@@ -143,6 +145,7 @@ declare global {
       stderr: string;
       combined: string;
       hostDiagnostics: HostDiagnostic[];
+      wasmModuleCacheStats?: WasmModuleCacheStats;
     }>;
     __testCount: number;
     /**
@@ -433,7 +436,8 @@ async function init() {
       cwd?: string;
       env?: string[];
       ptyInput?: PtyInput;
-      corsProxy?: BrowserCorsProxyConfig;
+      corsProxy?: BrowserCorsProxyConfig | null;
+      wasmModuleCacheStats?: boolean;
     },
   ) => {
     let stdout = "";
@@ -476,7 +480,10 @@ async function init() {
 
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
-      corsProxy: options?.corsProxy ?? corsProxy,
+      // Null exercises an embedder with direct guest fetches. Undefined keeps
+      // this runner's usual explicit proxy, whose requests the service worker
+      // must preserve rather than treating them as unwrapped guest traffic.
+      corsProxy: options?.corsProxy === null ? undefined : options?.corsProxy ?? corsProxy,
       onStdout: (data: Uint8Array) => {
         const text = new TextDecoder().decode(data);
         stdout += text;
@@ -544,6 +551,16 @@ async function init() {
         ),
       ]);
 
+      if (options?.wasmModuleCacheStats) {
+        return {
+          exitCode,
+          stdout,
+          stderr,
+          combined,
+          hostDiagnostics,
+          wasmModuleCacheStats: await kernel.getWasmModuleCacheStats(),
+        };
+      }
       return { exitCode, stdout, stderr, combined, hostDiagnostics };
     } finally {
       // Clean up to free memory for the next test
@@ -605,7 +622,6 @@ async function init() {
         tids: bucket.threads.map((thread) => thread.tid),
         activeCount: bucket.threadAllocator.activeCount,
       })),
-      mounts: checkpoint.filesystems.map((mount) => mount.mountPoint),
       unreadableMounts: checkpoint.unreadableFilesystems.map(
         (gap) => gap.mountPoint,
       ),

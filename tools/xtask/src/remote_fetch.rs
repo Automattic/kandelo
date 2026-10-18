@@ -404,7 +404,78 @@ fn fetch_http_archive_to_file_with_limit(
     max_bytes: u64,
 ) -> Result<(), FetchError> {
     let agent = build_http_archive_agent();
-    fetch_http_archive_to_file_with_agent_and_limit(url, file, label, &agent, max_bytes)
+    fetch_http_archive_to_file_from_candidates(
+        &archive_url_candidates(url),
+        file,
+        label,
+        &agent,
+        max_bytes,
+    )
+}
+
+/// Try each candidate origin in order, exhausting one origin's retry budget
+/// before moving to the next. A later candidate starts from an empty file.
+fn fetch_http_archive_to_file_from_candidates(
+    candidates: &[String],
+    file: &mut File,
+    label: &str,
+    agent: &ureq::Agent,
+    max_bytes: u64,
+) -> Result<(), FetchError> {
+    for (index, candidate) in candidates.iter().enumerate() {
+        if index > 0 {
+            restart_temp_file(file, &mut 0, &mut None)?;
+        }
+        let error = match fetch_http_archive_to_file_with_agent_and_limit(
+            candidate, file, label, agent, max_bytes,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        match candidates.get(index + 1) {
+            Some(next) => eprintln!(
+                "remote_fetch: WARN {label}: {error}; retrying from the canonical origin {next}"
+            ),
+            None => return Err(error),
+        }
+    }
+    Err(FetchError::Http(
+        "no archive URL candidates to download".to_string(),
+    ))
+}
+
+/// The origins to try, in order, for one declared archive URL: the URL
+/// itself, then the canonical GNU origin when the URL uses `ftpmirror.gnu.org`.
+pub(crate) fn archive_url_candidates(url: &str) -> Vec<String> {
+    let mut candidates = vec![url.to_string()];
+    if let Some(origin) = canonical_gnu_origin_url(url) {
+        candidates.push(origin);
+    }
+    candidates
+}
+
+/// The canonical `ftp.gnu.org` URL behind a `ftpmirror.gnu.org` URL.
+///
+/// WHY this is an upstream-service boundary, not a package quirk:
+/// `ftpmirror.gnu.org` is a redirector. It answers every request with a 302
+/// to one mirror it picks for the client, and it keeps picking the same
+/// mirror even when that mirror is down. Retries cannot escape a dead mirror:
+/// curl restarts from the declared URL and is redirected to the same mirror
+/// again, and this fetcher keeps the resolved mirror URL so it can resume a
+/// partial transfer. `ftp.gnu.org` is the
+/// authoritative origin the redirector fronts, so it is the one fallback that
+/// is guaranteed to publish the same release bytes; the SHA-256 check still
+/// governs what is accepted. The redirector strips one leading `gnu/` path
+/// segment before forwarding, so the canonical path does the same.
+fn canonical_gnu_origin_url(url: &str) -> Option<String> {
+    let path = url
+        .strip_prefix("https://ftpmirror.gnu.org/")
+        .or_else(|| url.strip_prefix("http://ftpmirror.gnu.org/"))?;
+    let path = path.strip_prefix("gnu/").unwrap_or(path);
+    if path.is_empty() {
+        return None;
+    }
+    Some(format!("https://ftp.gnu.org/gnu/{path}"))
 }
 
 #[cfg(test)]
@@ -1115,6 +1186,34 @@ fn format_duration(duration: Duration) -> String {
 }
 
 fn fetch_http_url(url: &str, attempts: usize, backoff: Duration) -> Result<Vec<u8>, FetchError> {
+    fetch_http_url_from_candidates(&archive_url_candidates(url), attempts, backoff)
+}
+
+fn fetch_http_url_from_candidates(
+    candidates: &[String],
+    attempts: usize,
+    backoff: Duration,
+) -> Result<Vec<u8>, FetchError> {
+    for (index, candidate) in candidates.iter().enumerate() {
+        let error = match fetch_http_url_single_origin(candidate, attempts, backoff) {
+            Ok(bytes) => return Ok(bytes),
+            Err(error) => error,
+        };
+        match candidates.get(index + 1) {
+            Some(next) => {
+                eprintln!("fetch_url: WARN {error}; retrying from the canonical origin {next}")
+            }
+            None => return Err(error),
+        }
+    }
+    Err(FetchError::Http("no URL candidates to fetch".to_string()))
+}
+
+fn fetch_http_url_single_origin(
+    url: &str,
+    attempts: usize,
+    backoff: Duration,
+) -> Result<Vec<u8>, FetchError> {
     let attempts = attempts.max(1);
     // Always set timeouts and a UA so a misbehaving registry can't hang
     // the resolver indefinitely and so server logs can attribute the
@@ -1287,6 +1386,117 @@ l/XQs2Jqii5ft7iIbA3k5ceMu9NknwzTFhLdbMfUZDeyBN3/mmBSyx0K
         let url = format!("file://{}", p.display());
         let got = fetch_url(&url).unwrap();
         assert_eq!(got, payload);
+    }
+
+    #[test]
+    fn canonical_gnu_origin_maps_redirector_paths() {
+        assert_eq!(
+            canonical_gnu_origin_url("https://ftpmirror.gnu.org/bash/bash-5.2.37.tar.gz")
+                .as_deref(),
+            Some("https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz")
+        );
+        // The redirector strips one leading `gnu/` segment before forwarding.
+        assert_eq!(
+            canonical_gnu_origin_url("https://ftpmirror.gnu.org/gnu/bc/bc-1.07.1.tar.gz")
+                .as_deref(),
+            Some("https://ftp.gnu.org/gnu/bc/bc-1.07.1.tar.gz")
+        );
+        assert_eq!(
+            canonical_gnu_origin_url("http://ftpmirror.gnu.org/m4/m4-1.4.19.tar.xz").as_deref(),
+            Some("https://ftp.gnu.org/gnu/m4/m4-1.4.19.tar.xz")
+        );
+        assert_eq!(canonical_gnu_origin_url("https://ftpmirror.gnu.org/"), None);
+        assert_eq!(
+            canonical_gnu_origin_url("https://ftpmirror.gnu.org/gnu/"),
+            None
+        );
+        assert_eq!(
+            canonical_gnu_origin_url("https://ftp.gnu.org/gnu/bash/bash-5.2.37.tar.gz"),
+            None
+        );
+        assert_eq!(
+            canonical_gnu_origin_url(
+                "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+            ),
+            None
+        );
+        assert_eq!(
+            canonical_gnu_origin_url(
+                "https://notftpmirror.gnu.org.example/bash/bash-5.2.37.tar.gz"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn archive_url_candidates_add_canonical_gnu_origin_only_for_the_redirector() {
+        assert_eq!(
+            archive_url_candidates("https://ftpmirror.gnu.org/sed/sed-4.9.tar.xz"),
+            vec![
+                "https://ftpmirror.gnu.org/sed/sed-4.9.tar.xz".to_string(),
+                "https://ftp.gnu.org/gnu/sed/sed-4.9.tar.xz".to_string(),
+            ]
+        );
+        assert_eq!(
+            archive_url_candidates("https://example.com/sed-4.9.tar.xz"),
+            vec!["https://example.com/sed-4.9.tar.xz".to_string()]
+        );
+    }
+
+    #[test]
+    fn fetch_http_url_falls_back_to_the_next_candidate_after_a_dead_origin() {
+        // A 404 is not retryable, so the first origin is abandoned at once.
+        let dead = serve_http_responses(vec![(404, b"gone".to_vec())]);
+        let live = serve_http_responses(vec![(200, b"archive bytes".to_vec())]);
+
+        let got = fetch_http_url_from_candidates(&[dead, live], 3, Duration::ZERO).unwrap();
+        assert_eq!(got, b"archive bytes");
+    }
+
+    #[test]
+    fn fetch_http_url_reports_the_last_candidate_when_all_origins_fail() {
+        let dead = serve_http_responses(vec![(404, b"gone".to_vec())]);
+        let also_dead = serve_http_responses(vec![(404, b"gone too".to_vec())]);
+
+        let err = fetch_http_url_from_candidates(&[dead, also_dead.clone()], 1, Duration::ZERO)
+            .unwrap_err();
+        assert!(err.to_string().contains(&also_dead), "{err}");
+    }
+
+    #[test]
+    fn fetch_archive_falls_back_to_the_next_candidate_from_an_empty_file() {
+        let payload = b"canonical origin bytes".repeat(1024);
+        let expected = payload.clone();
+        let served = payload.clone();
+        let sha = sha256_hex(&payload);
+        // A 404 is not retryable, so the dead origin is abandoned at once.
+        let dead = serve_http_responses(vec![(404, b"gone".to_vec())]);
+        let live = serve_http_handler(1, move |_, request| {
+            assert!(request_header(&request, "Range").is_none());
+            TestHttpResponse::new(200)
+                .header("Accept-Ranges", "bytes")
+                .header("Content-Length", served.len().to_string())
+                .body(served.clone())
+        });
+
+        let dir = tempdir("archive-candidate-fallback");
+        let (tmp, mut file) = create_temp_archive_file(&dir, "candidate-fallback").unwrap();
+        // Leftover bytes from an abandoned origin must not survive into the
+        // bytes fetched from the next one.
+        file.write_all(b"stale mirror bytes").unwrap();
+        let agent = build_http_archive_agent();
+        fetch_http_archive_to_file_from_candidates(
+            &[dead, live],
+            &mut file,
+            "candidate-fallback",
+            &agent,
+            MAX_RESPONSE_BYTES,
+        )
+        .unwrap();
+        file.flush().unwrap();
+        drop(file);
+        assert_eq!(fs::read(tmp.path()).unwrap(), expected);
+        verify_sha_file(tmp.path(), &sha).unwrap();
     }
 
     #[test]

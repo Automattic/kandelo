@@ -1,7 +1,7 @@
 kind = "program"
 name = "posix-utils-lite"
 version = "0.1.0"
-kernel_abi = 7
+kernel_abi = 47
 depends_on = []
 
 [source]

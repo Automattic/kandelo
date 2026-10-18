@@ -16,10 +16,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
-import {
-  MemoryFileSystem,
-  type VfsImageMetadata,
-} from "../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import type { VfsImageMetadata } from "../../host/src/vfs/vfs-image-filesystem";
 import { ABI_VERSION } from "../../host/src/generated/abi";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -85,23 +83,14 @@ function executableWasmWithAbi(abi: number): Uint8Array {
   return new Uint8Array(bytes);
 }
 
-function vfsWithMalformedMetadata(): Uint8Array {
-  const image = Buffer.alloc(25);
-  image.writeUInt32LE(0x56465349, 0); // VFSI
-  image.writeUInt32LE(1, 4); // image version
-  image.writeUInt32LE(1 << 2, 8); // metadata present
-  image.writeUInt32LE(0, 12); // empty filesystem snapshot
-  image.writeUInt32LE(0, 16); // empty lazy-file section
-  image.writeUInt32LE(1, 20); // one byte of metadata
-  image[24] = "{".charCodeAt(0); // invalid JSON
-  return image;
-}
-
 async function vfsImage(
   metadata: VfsImageMetadata | null | undefined,
   compressed: boolean,
 ): Promise<Uint8Array> {
-  const mfs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  // Written by the producer that writes every shipped image: these cases are
+  // about what the RESOLVER does with an image's declared metadata, so the
+  // fixture must be the kind of image a resolver will meet.
+  const mfs = KandeloImageFs.create();
   const image = await mfs.saveImage(
     metadata === undefined ? undefined : { metadata },
   );
@@ -820,22 +809,9 @@ printf '%s\\n' "$WASM_POSIX_XTASK_BIN"
     expect(result.stdout.trim()).toBe(localPath);
   });
 
-  it.each([
-    [
-      "corrupt zstd compression",
-      new Uint8Array([0x28, 0xb5, 0x2f, 0xfd, 0x00]),
-    ],
-    ["malformed metadata", vfsWithMalformedMetadata()],
-  ])("keeps a VFS image with %s fail-closed", (_description, bytes) => {
-    const relPath = "programs/wasm32/__resolve_binary_test__/broken.vfs.zst";
-    writeCandidate("local-binaries", relPath, bytes);
-
-    const result = resolveBinary(relPath);
-
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("exists but was rejected by artifact policy");
-  });
-
+  // No malformed-VFS-image cases: the resolver chooses files and no longer
+  // parses image headers. A mismatched or malformed image is refused by the
+  // kernel when it loads the image (EPROTO for a different declared ABI).
   it("keeps an uninspectable .wasm artifact fail-closed", () => {
     const relPath = "programs/wasm32/__resolve_binary_test__/broken.wasm";
     writeCandidate(

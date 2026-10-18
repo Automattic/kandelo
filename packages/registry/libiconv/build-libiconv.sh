@@ -14,19 +14,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-libiconv.XXXXXX")"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+LIBICONV_VERSION="$WASM_POSIX_DEP_VERSION"
+# shellcheck source=/dev/null
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$(kandelo_package_make_work_dir libiconv)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 SRC_DIR="$WORK_DIR/source"
 STAGE_DIR="$WORK_DIR/stage"
 
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
-LIBICONV_VERSION="${WASM_POSIX_DEP_VERSION:-${LIBICONV_VERSION:-1.17}}"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libiconv-install}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://ftp.gnu.org/pub/gnu/libiconv/libiconv-${LIBICONV_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 
 if [ "$TARGET_ARCH" != "wasm32" ]; then
@@ -42,13 +46,10 @@ fi
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-echo "==> Downloading GNU libiconv $LIBICONV_VERSION..."
-TARBALL="$WORK_DIR/libiconv.tar.gz"
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "==> Verifying source sha256..."
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR"
-tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+echo "==> Staging verified GNU libiconv $LIBICONV_VERSION source..."
+# WHY: the resolver already verifies and supplies this source; downloading
+# it again makes a cached source build depend on upstream availability.
+kandelo_package_stage_primary_source libiconv "$SRC_DIR" "$WORK_DIR"
 
 cd "$SRC_DIR"
 

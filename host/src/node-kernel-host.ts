@@ -1,3 +1,7 @@
+import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
+import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
+import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
+import type { VfsChangeEvent } from "./vfs/types";
 /**
  * NodeKernelHost — Main-thread proxy that communicates with a dedicated
  * kernel worker_thread via messages. The kernel worker owns the Wasm
@@ -12,6 +16,8 @@
  *   const exitCode = await host.spawn(programBytes, ["hello"], { env: [...] });
  *   await host.destroy();
  */
+import type { ImageBuildDeterminism } from "./types";
+import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +28,7 @@ import {
   type Transferable,
 } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
+import { maybeDecompressImage } from "./vfs/vfs-image-transport";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -30,19 +37,22 @@ import type {
   ReplicationReplicaHashResponse,
   ReplicationSealResponse,
   ResolveExecRequestMessage,
+  DestroyProgressEvent,
 } from "./node-kernel-protocol";
-import type { ReplicationLogEntry } from "./replication/log";
-import type { ReplicationReplaySpec } from "./replication/worker";
-import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import {
   machineCheckpointTransferList,
   type CheckpointCaptureResponse,
   type CheckpointFreezeResult,
   type MachineCheckpoint,
 } from "./migration/checkpoint";
+import type { ReplicationLogEntry } from "./replication/log";
+import type { ReplicationReplaySpec } from "./replication/worker";
+import type { OwnedJobRead } from "./owned-jobs";
+import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
-import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
+import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import {
   snapshotClosedLazyAssets,
   snapshotClosedLazyAssetSources,
@@ -55,8 +65,14 @@ import {
   WASM_PAGE_SIZE,
 } from "./constants";
 import type { MountSpec } from "./vfs/default-mounts";
+import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
+import {
+  encodeClipboardText,
+  type ClipboardOfferResult,
+  type GuestClipboardResult,
+} from "./clipboard";
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 import type { InputEvent, InputSource } from "./input/input-source";
 import { batchBySynReport } from "./input/input-batch";
@@ -78,6 +94,8 @@ const DEFAULT_SSL_ENV = [
 ] as const;
 
 export interface NodeKernelHostOptions {
+  /** Worker-owned remote UDP segment; a joiner transfers its native peer port. */
+  remoteNetwork?: RemoteSegmentInit;
   /** Maximum concurrent workers (default: 4) */
   maxWorkers?: number;
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
@@ -122,6 +140,16 @@ export interface NodeKernelHostOptions {
   /** Attach a real-TCP backend in the worker so wasm programs can dial
    *  external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
+  /**
+   * Boot the kernel in deterministic image-build mode: `CLOCK_REALTIME`
+   * counts up from `epochSeconds` and every entropy read (`getrandom`,
+   * `/dev/urandom`) draws from a stream seeded by `seed`. For image builders
+   * only -- the kernels that run an installer inside an image being built --
+   * so the image is a function of its inputs. Seeded entropy is public: an
+   * image built this way must replace every secret on each machine's first
+   * boot. See `crates/runtime-core/src/image_build_determinism.rs`.
+   */
+  imageBuildDeterminism?: ImageBuildDeterminism;
   /** Called when a process writes to stdout */
   onStdout?: (pid: number, data: Uint8Array) => void;
   /** Called when a process writes to stderr */
@@ -145,16 +173,17 @@ export interface NodeKernelHostOptions {
   /**
    * Opt in to mount-based VFS for this kernel boot.
    *
-   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs`, falling back
-   *     to the resolver-managed `programs/rootfs.vfs` artifact, and apply
-   *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The worker constructs
-   *     a `VirtualPlatformIO` (rootfs at `/`, host-fs scratch dirs at
-   *     `/tmp` etc.).
+   *   - `"default"` — load `<repoRoot>/host/wasm/rootfs.vfs.zst`, falling back
+   *     to the resolver-managed `programs/rootfs.vfs.zst` artifact, and apply
+   *     `DEFAULT_MOUNT_SPEC` via `resolveForNode`. The kernel parses the
+   *     image and serves `/` and the scratch mounts (`/tmp` etc.) itself;
+   *     the worker's `VirtualPlatformIO` holds only host-backed mounts
+   *     beneath `/`, if any.
    *   - `ArrayBuffer | Uint8Array` — use the supplied image bytes
    *     instead of reading from disk. Same mount spec applied.
    *   - `undefined` (default) — use raw `NodePlatformIO` (every host
-   *     path reachable). Preserves the pre-cutover behaviour for the
-   *     direct-host-fs callers (demos, scripts) that haven't migrated
+   *     path reachable). Preserves the behaviour from before mount-based
+   *     VFS for the direct-host-fs callers (demos, scripts) that haven't migrated
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
@@ -224,6 +253,8 @@ export interface NodeKernelHostOptions {
 }
 
 export interface SpawnOptions {
+  /** Own this process and its descendants as one cancellable command family. */
+  ownedJob?: { id: string; timeoutMs: number };
   env?: string[];
   cwd?: string;
   /** Initial real/effective user ID for the process. */
@@ -233,7 +264,10 @@ export interface SpawnOptions {
   /** Finite stdin buffer. If omitted for a non-PTY spawn without onStarted,
    * stdin defaults to an immediate EOF. */
   stdin?: Uint8Array;
-  /** Optional pre-compiled module for the supplied program bytes. */
+  /**
+   * Accepted for compatibility and ignored: the kernel worker compiles every
+   * program through its own content-addressed module cache.
+   */
   programModule?: WebAssembly.Module;
   pty?: boolean;
   /** Initial PTY winsize. Applied before the wasm program starts so the
@@ -267,6 +301,8 @@ export class NodeKernelHost {
   private replicationListeners = new Set<
     (entries: readonly ReplicationLogEntry[]) => void
   >();
+  private destroyProgress = createDestroyProgressFanout();
+  private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
 
   constructor(options?: NodeKernelHostOptions) {
     this.options = options ?? {};
@@ -443,6 +479,7 @@ export class NodeKernelHost {
           ?? maxWorkers * maxPages * WASM_PAGE_SIZE;
         const initMsg: MainToKernelMessage = {
           type: "init",
+          remoteNetwork: this.options.remoteNetwork,
           kernelWasmBytes: wasmBytes,
           config: {
             maxWorkers,
@@ -451,6 +488,9 @@ export class NodeKernelHost {
             defaultThreadSlots: this.options.defaultThreadSlots,
             dataBufferSize: this.options.dataBufferSize ?? 65536,
             useSharedMemory: true,
+            imageBuildDeterminism: validImageBuildDeterminism(
+              this.options.imageBuildDeterminism,
+            ),
           },
           execPrograms: this.options.execPrograms,
           execProgramBytes,
@@ -467,7 +507,10 @@ export class NodeKernelHost {
           sessionSeedTrees,
           enableTcpNetwork: this.options.enableTcpNetwork,
         };
-        const transfer = [
+        const transfer: Transferable[] = [
+          ...(this.options.remoteNetwork?.role === "joiner"
+            ? [this.options.remoteNetwork.peer.port as import("node:worker_threads").MessagePort]
+            : []),
           ...(rootfsLazyAssets ?? []).map(
             (asset) => asset.bytes.buffer as ArrayBuffer,
           ),
@@ -528,14 +571,16 @@ export class NodeKernelHost {
 
     const pid = await this.request(requestId, {
       type: "spawn",
+      ownedJob: options?.ownedJob,
       requestId,
       ...program,
       // Avoid forwarding externally compiled WebAssembly.Module objects through
       // the main thread -> kernel worker -> process worker chain. Reusing that
       // two-hop clone with SpiderMonkey's shared-memory worker runtime can leave
       // later process workers stuck before exit. The option remains an API hint;
-      // Node's dedicated kernel worker compiles/caches fork and pthread modules
-      // internally where it can pass them across a single worker boundary.
+      // the dedicated kernel worker compiles every program through its own
+      // content-addressed cache and passes modules across a single worker
+      // boundary.
       argv,
       env: mergeEnv(options?.env ?? []),
       cwd: options?.cwd,
@@ -696,9 +741,25 @@ export class NodeKernelHost {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
   ): void {
     this.sendToWorker({ type: "kms_attach_canvas", crtcId, canvas, stats, opts });
+  }
+
+  /**
+   * Report the CRTC canvas's current display size in device pixels.
+   * Mirrors `BrowserKernel.kmsSetDisplaySize`. Feeds the virtual
+   * connector's PREFERRED mode (so mode-picking clients see it) and, when
+   * an OffscreenCanvas polyfill provides a real canvas, the
+   * `webgl2-scanout` presenter's drawing-buffer size.
+   */
+  kmsSetDisplaySize(
+    crtcId: number,
+    width: number,
+    height: number,
+    physicalMm?: { width: number; height: number },
+  ): void {
+    this.sendToWorker({ type: "kms_set_display_size", crtcId, width, height, physicalMm });
   }
 
   /**
@@ -836,6 +897,19 @@ export class NodeKernelHost {
       throw new Error(`kernel worker returned an invalid memory-page count: ${String(result)}`);
     }
     return result;
+  }
+
+  /**
+   * Counters of the kernel worker's content-addressed compiled-module cache:
+   * compilations, reuse, digest cost, and what the retention window holds.
+   * Diagnostics only. Mirrors `BrowserKernel.getWasmModuleCacheStats`.
+   */
+  async getWasmModuleCacheStats(): Promise<WasmModuleCacheStats> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: "get_wasm_module_cache_stats",
+      requestId,
+    }) as WasmModuleCacheStats;
   }
 
   /**
@@ -1215,6 +1289,36 @@ export class NodeKernelHost {
     };
   }
 
+  /** Subscribe to teardown progress while `destroy()` reaps processes. */
+  subscribeDestroyProgress(
+    cb: (event: DestroyProgressEvent) => void,
+  ): () => void {
+    return this.destroyProgress.subscribe(cb);
+  }
+
+  /**
+   * Subscribe to changes of paths under `prefix` in the worker-owned VFS. The
+   * worker forwards events only while a prefix is watched, so nothing crosses
+   * the worker boundary when nobody's listening.
+   */
+  subscribeVfsChanges(prefix: string, cb: (event: VfsChangeEvent) => void): () => void {
+    assertVfsWatchPrefix(prefix);
+    let listeners = this.vfsChangeListeners.get(prefix);
+    if (!listeners) {
+      if (this.vfsChangeListeners.size >= MAX_VFS_WATCH_PREFIXES) throw new Error("Filesystem watch capacity reached (16 prefixes)");
+      listeners = new Set();
+      this.vfsChangeListeners.set(prefix, listeners);
+      this.sendToWorker({ type: "watch_vfs_changes", prefix, enabled: true });
+    }
+    listeners.add(cb);
+    return () => {
+      const current = this.vfsChangeListeners.get(prefix);
+      if (!current?.delete(cb) || current.size > 0) return;
+      this.vfsChangeListeners.delete(prefix);
+      this.sendToWorker({ type: "watch_vfs_changes", prefix, enabled: false });
+    };
+  }
+
   /**
    * Read a regular file from the existing worker-owned VFS. This is the Node
    * peer of BrowserKernel.readFileFromVfs(); it never falls back to an ambient
@@ -1235,6 +1339,67 @@ export class NodeKernelHost {
       throw new Error("kernel worker returned invalid VFS file bytes");
     }
     return result;
+  }
+
+  /**
+   * List a directory in the worker-owned VFS. The Node peer of
+   * BrowserKernel.readDirFromVfs(); `null` means the path does not exist.
+   */
+  async readDirFromVfs(path: string): Promise<VfsDirEntrySnapshot[] | null> {
+    if (!this.initialized) {
+      throw new Error("VFS directory listing requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "read_vfs_dir",
+      requestId,
+      path,
+    });
+    return (result as VfsDirEntrySnapshot[] | null) ?? null;
+  }
+
+  /**
+   * Describe a path in the worker-owned VFS, following symlinks. The Node
+   * peer of BrowserKernel.statVfsPath(); `null` means the path does not exist.
+   */
+  async statVfsPath(path: string): Promise<VfsPathStat | null> {
+    if (!this.initialized) {
+      throw new Error("VFS stat requires an initialized kernel");
+    }
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "stat_vfs_path",
+      requestId,
+      path,
+    });
+    return (result as VfsPathStat | null) ?? null;
+  }
+
+  /** Read bounded output and observed termination of a worker-owned command family. */
+  async readOwnedJob(
+    jobId: string,
+    offset?: number,
+    limit?: number,
+    cancel = false,
+  ): Promise<OwnedJobRead> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: cancel ? "cancel_owned_job" : "read_owned_job",
+      requestId,
+      jobId,
+      offset,
+      limit,
+    }) as OwnedJobRead;
+  }
+
+  /** Forget a finished job's record and free its slot. Rejects while the family is live. */
+  async releaseOwnedJob(jobId: string): Promise<void> {
+    const requestId = this._nextRequestId++;
+    await this.request(requestId, {
+      type: "release_owned_job",
+      requestId,
+      jobId,
+    });
   }
 
   /**
@@ -1266,6 +1431,51 @@ export class NodeKernelHost {
   }
 
   /**
+   * Offer `text` as the host clipboard to the guest's clipboard agent
+   * (`/dev/kandelo/clipboard`, read by kclipd on the Omarchy desktop).
+   * Resolves once the agent has installed it as the desktop's selection, or
+   * with the reason it could not — no agent running, over the 1 MiB cap,
+   * an agent error, or no answer within the timeout. CRLF line endings
+   * become LF; the text is never truncated.
+   */
+  async offerClipboardText(
+    text: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<ClipboardOfferResult> {
+    const bytes = encodeClipboardText(text);
+    if (bytes === null) return { ok: false, reason: "too-large" };
+    const requestId = this._nextRequestId++;
+    const result = await this.request(
+      requestId,
+      {
+        type: "clipboard_offer",
+        requestId,
+        text: bytes,
+        timeoutMs: options.timeoutMs,
+      },
+      [bytes.buffer as ArrayBuffer],
+    );
+    return result as ClipboardOfferResult;
+  }
+
+  /**
+   * Copy-out: resolve with the next selection the guest desktop reports
+   * (through its clipboard agent), or `timeout`. Call it before delivering
+   * the copy chord, so the guest's copy is the change it waits for.
+   */
+  async waitForGuestClipboardText(
+    options: { timeoutMs?: number } = {},
+  ): Promise<GuestClipboardResult> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "clipboard_guest_wait",
+      requestId,
+      timeoutMs: options.timeoutMs,
+    });
+    return result as GuestClipboardResult;
+  }
+
+  /**
    * Serialize the quiescent worker-owned root filesystem for a later boot.
    * The root image is durable; boot-scoped scratch and device mounts are not.
    * Callers must wait for every guest process to exit before invoking this.
@@ -1283,6 +1493,48 @@ export class NodeKernelHost {
       throw new Error("kernel worker returned an invalid rootfs image");
     }
     return result;
+  }
+
+  /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
+  async attachRemotePeer(peer: RemoteSegmentPeer): Promise<number> {
+    const requestId = this._nextRequestId++;
+    try {
+      return await this.request(requestId, { type: "remote_network_attach", requestId, peer }, [peer.port as import("node:worker_threads").MessagePort]);
+    } catch (error) {
+      this.pendingRequests.delete(requestId);
+      throw error;
+    }
+  }
+
+  /** Inspect the worker-owned session: state, membership and endpoints. */
+  remoteNetworkSnapshot(): Promise<RemoteSessionSnapshot> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, { type: "remote_network_snapshot", requestId });
+  }
+
+  /** Start a network session hosted by this running machine; resolves with
+   *  its session address. */
+  hostRemoteNetwork(): Promise<string> {
+    const requestId = this._nextRequestId++;
+    return this.request(requestId, { type: "remote_network_host", requestId });
+  }
+
+  /** Join a session over a connected peer's byte bridge to its host;
+   *  resolves with the address the host assigned. */
+  async joinRemoteNetwork(peer: RemoteSegmentPeer): Promise<string> {
+    const requestId = this._nextRequestId++;
+    try {
+      return await this.request(requestId, { type: "remote_network_join", requestId, peer }, [peer.port as import("node:worker_threads").MessagePort]);
+    } catch (error) {
+      this.pendingRequests.delete(requestId);
+      throw error;
+    }
+  }
+
+  /** Leave the session. Its address disappears and its streams reset. */
+  async leaveRemoteNetwork(): Promise<void> {
+    const requestId = this._nextRequestId++;
+    await this.request(requestId, { type: "remote_network_leave", requestId });
   }
 
   /** Destroy the kernel and release all resources */
@@ -1315,6 +1567,8 @@ export class NodeKernelHost {
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
+    this.destroyProgress.clear();
+    this.vfsChangeListeners.clear();
     if (gracefulDetachFailure || realmTerminationFailure) {
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -1471,6 +1725,12 @@ export class NodeKernelHost {
       case "lazy_download":
         this.emitLazyDownload(msg.event);
         break;
+      case "destroy_progress":
+        this.destroyProgress.emit(msg.event);
+        break;
+      case "vfs_change":
+        this.emitVfsChange(msg.event);
+        break;
       case "replication_recorded":
         for (const listener of [...this.replicationListeners]) {
           listener(msg.entries);
@@ -1501,6 +1761,19 @@ export class NodeKernelHost {
         listener(event);
       } catch {
         // One observer must not starve the remaining listeners.
+      }
+    }
+  }
+
+  private emitVfsChange(event: VfsChangeEvent): void {
+    for (const [prefix, listeners] of this.vfsChangeListeners) {
+      if (!vfsPathIsWithin(prefix, event.path)) continue;
+      for (const listener of listeners) {
+        try {
+          listener(event);
+        } catch {
+          // One observer must not starve the remaining listeners.
+        }
       }
     }
   }
@@ -1575,23 +1848,26 @@ function resolveRootfsImage(
   override: "default" | ArrayBuffer | Uint8Array | undefined,
 ): ArrayBuffer | null {
   if (override === undefined) return null;
-  if (override === "default") {
-    const artifact = resolveRootfsArtifact();
-    const buf = readFileSync(artifact.selectedPath);
-    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-  }
-  if (override instanceof Uint8Array) {
-    // Copy into a fresh ArrayBuffer — the source might live in a
-    // SharedArrayBuffer, which the worker init protocol doesn't accept.
-    const out = new ArrayBuffer(override.byteLength);
-    new Uint8Array(out).set(override);
-    return out;
-  }
-  return override;
+  // Shipped images are zstd-compressed (`rootfs.vfs.zst`, `*.vfs.zst`), and
+  // the kernel's image reader takes decoded bytes: zstd is a host-side
+  // transport codec. Decode here, once, for every way a caller can hand an
+  // image over, so no caller has to know which encoding it read.
+  const bytes = override === "default"
+    ? new Uint8Array(readFileSync(resolveRootfsArtifact().selectedPath))
+    : override instanceof Uint8Array
+      ? override
+      : new Uint8Array(override);
+  const decoded = maybeDecompressImage(bytes);
+  if (decoded === bytes && override instanceof ArrayBuffer) return override;
+  // Copy into a fresh ArrayBuffer — the source might live in a
+  // SharedArrayBuffer, which the worker init protocol doesn't accept.
+  const out = new ArrayBuffer(decoded.byteLength);
+  new Uint8Array(out).set(decoded);
+  return out;
 }
 
 export interface ResolvedRootfsArtifact {
-  resolverRequest: "rootfs.vfs" | "programs/rootfs.vfs";
+  resolverRequest: "rootfs.vfs.zst" | "programs/rootfs.vfs.zst";
   selectedPath: string;
 }
 
@@ -1600,22 +1876,22 @@ export function resolveRootfsArtifact(
 ): ResolvedRootfsArtifact {
   try {
     return {
-      resolverRequest: "rootfs.vfs",
-      selectedPath: resolver("rootfs.vfs"),
+      resolverRequest: "rootfs.vfs.zst",
+      selectedPath: resolver("rootfs.vfs.zst"),
     };
   } catch (rootfsError) {
     try {
       return {
-        resolverRequest: "programs/rootfs.vfs",
-        selectedPath: resolver("programs/rootfs.vfs"),
+        resolverRequest: "programs/rootfs.vfs.zst",
+        selectedPath: resolver("programs/rootfs.vfs.zst"),
       };
     } catch (programsError) {
       const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
       const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);
       throw new Error(
         `rootfsImage:"default" requested but no rootfs image was available.\n` +
-          `Tried rootfs.vfs:\n${rootfsMessage}\n` +
-          `Tried programs/rootfs.vfs:\n${programsMessage}\n` +
+          `Tried rootfs.vfs.zst:\n${rootfsMessage}\n` +
+          `Tried programs/rootfs.vfs.zst:\n${programsMessage}\n` +
           `Run scripts/build-rootfs.sh, fetch/build the rootfs package, or pass explicit bytes.`,
       );
     }
@@ -1647,4 +1923,19 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
     `await import('${entryUrl}');`,
   ].join("\n");
   return new NodeThreadWorker(bootstrap, { eval: true });
+}
+
+/** Copy the option, refusing values the kernel's 64-bit words cannot carry. */
+function validImageBuildDeterminism(
+  determinism: ImageBuildDeterminism | undefined,
+): ImageBuildDeterminism | undefined {
+  if (determinism === undefined) return undefined;
+  const { seed, epochSeconds } = determinism;
+  if (!Number.isSafeInteger(seed) || seed < 0) {
+    throw new Error(`imageBuildDeterminism.seed must be a non-negative safe integer, got ${seed}`);
+  }
+  if (!Number.isSafeInteger(epochSeconds) || epochSeconds < 0) {
+    throw new Error(`imageBuildDeterminism.epochSeconds must be a non-negative safe integer, got ${epochSeconds}`);
+  }
+  return { seed, epochSeconds };
 }

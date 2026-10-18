@@ -15,18 +15,26 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
      See the README's "Using Nix" section.
 2. **musl sysroot**. If you installed `wasm-posix-sdk` from npm, the
    package already contains the published sysroot and glue files. If
-   you are working from a source checkout, initialize the submodule
+   you are working from a source checkout, initialize the submodules
    and let `./run.sh setup` (step 3) build the sysroot for you:
    ```bash
-   git submodule update --init libc/musl
+   git submodule update --init libc/musl sdk/rust/libc-upstream
    ```
-   `./run.sh setup` builds the sysroot from scratch when it is
-   missing, but only re-syncs overlay headers when it already exists.
-   If you edit `libc/musl-overlay/` or `libc/glue/channel_syscall.c`
-   after the sysroot has already been built, rebuild it explicitly:
+   The full setup also builds Rust packages, which need the pinned Rust
+   libc source under `sdk/rust/libc-upstream`.
+   `./run.sh setup` checks both architecture sysroots against their musl,
+   overlay, glue, build-script, compiler, and compiler-plugin inputs.
+   It also verifies recorded installed bytes and required core outputs.
+   Missing, unstamped, stale, or altered core outputs trigger a rebuild in
+   a private source tree; current outputs are reused. Package builds check
+   core freshness before computing cache identities. For an explicit check:
    ```bash
-   bash scripts/build-musl.sh
+   scripts/dev-shell.sh bash scripts/build-musl.sh --ensure
    ```
+   `--arch wasm64posix` selects the other architecture. `--core-only`
+   omits graphics refresh during dependency resolution to avoid recursion.
+   Without `--ensure`, the command always rebuilds musl. This automation
+   applies to repository builds, not to an installed npm SDK artifact.
 3. **Kernel built**:
    ```bash
    ./run.sh setup
@@ -217,6 +225,87 @@ The musl objects in the SDK sysroot are compiled with the same Wasm exception
 handling and SjLj lowering flags, so libc calls to `setjmp`/`longjmp` do not
 leave unresolved host imports in linked programs.
 
+### Compiler facts for fork instrumentation
+
+Every C/C++ compile also loads the SDK's KandeloCallTypes compiler plugin
+(`sdk/src/plugin/`):
+
+```
+-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall
+-Xclang -flto-unit -Xclang -fwhole-program-vtables
+-Xclang -load -Xclang <plugin> -Xclang -add-plugin -Xclang kandelo-fncasts
+-fpass-plugin=<plugin>
+```
+
+It records facts that the binary alone cannot show and that fork analysis
+needs to bound which functions a fork can be on the stack of: the C/C++
+function type of every indirect call and every function (clang's CFI type
+ids), vtable slots, direct calls and constant arguments, where each
+function's address flows, function-pointer casts and untyped-pointer flows
+seen in the source, and callbacks registered with standard APIs (`atexit`,
+`pthread_create`, `sigaction`, ...). The format is described at the top of
+`KandeloCallTypes.cpp`.
+
+The facts travel inside each object as a Wasm custom section named
+`kandelo.calltypes`, so they follow the object through static archives and
+caches. wasm-ld concatenates the sections of every linked object in input
+order, so a linked module holds the facts of exactly the code it contains.
+Chunks of at least 1 MiB are stored losslessly in zlib frames. Repeating
+long C++ names across many records otherwise makes LLVM-sized programs
+exceed the linker's signed 32-bit custom-section offsets. The instrumenter
+decodes one object chunk at a time and parses the same format-5 records;
+plain and compressed objects may appear together in one link. A frame is
+the eight bytes `KCTZ\0\0\0\x01`, little-endian 64-bit decoded and
+compressed byte counts, then the zlib bytes. The reader rejects malformed
+frames, trailing bytes, size mismatches, invalid text, chunks expanding
+beyond 512 MiB, and sections expanding beyond 16 GiB. This is storage for
+compile-time facts; it changes no guest instructions or runtime ABI.
+
+The CFI flags only produce type information: the plugin records clang's
+type tests and deletes them before optimization, so the generated code is
+the code of an ordinary build. One known exception: when an indirect call
+comes before the first use of a string equal to the file's unmapped name
+(typically `__FILE__` or `assert()` in a file compiled by a relative path),
+the string shares the CFI check's copy, which changes the order and names
+of that object's string data and drops the string's DWARF variable.
+
+The facts carry no build paths when the compile maps them away with
+`-ffile-prefix-map` or `-fmacro-prefix-map`: file names are remapped the
+way `__FILE__` is. Anonymous structs and unions are named by the scope and
+declarator that use them (`src::<union u>`), not by their source location.
+Records are matched across objects by name, and one header reaches
+different objects through different paths, so a location in the name would
+split one record into several and break that matching.
+
+The SDK builds the plugin on first use, inside `scripts/dev-shell.sh`,
+against the LLVM/Clang headers `flake.nix` exports (`KANDELO_LLVM_DEV` and
+related variables), and caches it under `sdk/.build/calltypes-plugin/` keyed
+by its sources and the compiler. Outside the dev shell, set
+`WASM_POSIX_CALLTYPES_PLUGIN` to a plugin built for the same compiler. musl
+(`scripts/build-musl.sh`) and the SDK's link-time glue are compiled with the
+plugin too. A compile that requests a CFI sanitizer itself is left without
+the plugin, which would otherwise delete the checks it asked for.
+
+**Links.** clang runs Binaryen's `wasm-opt` after wasm-ld when it finds it
+and an optimization level is set. Binaryen inlines and merges functions,
+which would move call sites to other functions and make per-function facts
+describe the wrong code. So the SDK holds that step back and inspects the
+linked module:
+
+- A module that imports `kernel.kernel_fork` (it can fork) keeps its
+  `kandelo.calltypes` section and is left as wasm-ld wrote it. It must be
+  fork-instrumented next; the instrumenter runs `wasm-opt -O2` itself after
+  instrumenting.
+- Any other module loses the section and then gets exactly the `wasm-opt`
+  command clang scheduled.
+
+Facts never ship. `install_local_binary` removes `kandelo.calltypes` and
+`kandelo.calltypes.code-sha256` from every artifact it installs, because a
+module can reach installation without passing through the instrumenter: a
+recipe's own `wasm-opt` can delete an unused `kernel.kernel_fork` import
+while keeping the section, and a recipe that links with clang or `wasm-ld`
+directly bypasses the SDK driver.
+
 ### Linker flags injected automatically
 
 ```
@@ -229,7 +318,7 @@ leave unresolved host imports in linked programs.
 -Wl,-z,stack-size=8388608          # 8 MiB main-thread shadow stack (see below)
 -Wl,--global-base=1114112          # Data segment start
 -Wl,--no-stack-first               # LLVM 22+: preserve stack-after-data layout
--Wl,--allow-undefined              # Host imports are resolved at load time
+-Wl,--allow-undefined-file=<glue>/kandelo-host-imports.txt  # Only the host's own imports may stay undefined
 -Wl,--export-table                 # Export function table (for dlopen)
 -Wl,--export=__stack_pointer       # Required for fork/thread support
 -Wl,--export=__tls_base            # Required for TLS
@@ -241,12 +330,35 @@ Kandelo deliberately uses reactor link mode while retaining the exported
 ahead of libc startup; musl runs constructors only after it has installed the
 process environment and secure-execution state.
 
-`--allow-undefined` is not permission for arbitrary Kandelo-private symbols to
-escape into a package. `install_local_binary` rejects unresolved imports in the
-reserved `env.__wasm_posix_*` namespace unless they are explicitly implemented
-host APIs. If that guard reports a private libc helper, rebuild the worktree's
-musl sysroot before rebuilding the program rather than teaching the host to
-stub it.
+Programs link with an explicit allowance, not `--allow-undefined`. The file
+`libc/glue/kandelo-host-imports.txt` is generated by `xtask dump-abi` from
+`HOST_ENV_IMPORTS` in `crates/shared/src/lib.rs`, the same table the host uses
+to build its import object, so it names exactly the imports the host supplies
+(memory, the syscall channel base, exception tags, the dlopen bridge). Any other
+undefined symbol is a link error naming that symbol, which is how a missing libc
+function shows up: at build time, in the package's build log, instead of as an
+`Unimplemented import` trap the first time the code path runs. Side modules
+(`-shared`) keep `--allow-undefined`, because their undefined symbols are
+resolved against the main program at `dlopen` time.
+
+### Opt-in libraries for unsupported APIs
+
+Some software references an unsupported API on a path it never takes. The SDK
+sysroot ships stand-ins for those cases that are **not** linked by default; a
+package that accepts the boundary names them explicitly.
+
+| Library | Provides | Behavior |
+|---|---|---|
+| `-lkandelo-ucontext-unsupported` | `getcontext`, `setcontext`, `makecontext`, `swapcontext` | Writes `<function>: ucontext is not supported on Kandelo` to stderr and aborts (`SIGABRT`). |
+
+ucontext is unsupported (see `docs/posix-status.md`), so by default a program
+that calls it fails to link. PHP opts in because Zend always compiles Fibers on
+`<ucontext.h>` when the target has no Fiber assembly: PHP code that never starts
+a Fiber runs normally, and starting one stops with the diagnostic above. The
+stand-ins abort instead of returning `-1`/`ENOSYS` because PHP ignores those
+return values, so an error return would let a Fiber run on an uninitialized
+context. Do not link these libraries to make a link error go away unless the
+program is known not to depend on the API.
 
 #### Why an 8 MiB main-thread stack
 
@@ -281,12 +393,18 @@ Scope and cost:
 - The engine's native Wasm call stack (operand stack / call frames) is separate
   and host/engine-managed; it is not part of this linear-memory reservation.
 
-The SDK treats 8 MiB as a floor. It appends the larger of that floor and every
-valid user stack request after the other linker arguments, where lld gives it
-final precedence. The Node-hosted driver first asks pinned Clang for a `-###`
-job trace without injecting executable glue. Compiler-only traces, including
-`-fsyntax-only`, dependency generation, and analyzer jobs hidden in response
-files, continue without link preparation. Confirmed executable links get a
+The SDK applies 8 MiB only as a **default**, when the caller made no explicit
+request. An explicit request — larger or smaller — is honoured verbatim; a
+request below 8 MiB additionally prints a warning naming the hazard (no stack
+guard page; an overflow corrupts `.bss` silently instead of trapping), since
+the 8 MiB default, not the warning, is what actually protects a program that
+does not deliberately choose otherwise. When more than one `-z stack-size=`
+operand is present, the SDK resolves them the same way `wasm-ld` itself does:
+the last occurrence wins, not the largest. The Node-hosted driver first asks
+pinned Clang for a `-###` job trace without injecting executable glue.
+Compiler-only traces, including `-fsyntax-only`, dependency generation, and
+analyzer jobs hidden in response files, continue without link preparation.
+Confirmed executable links get a
 second `-###` trace with the complete SDK link inputs, and the SDK scans the
 exact `wasm-ld` argument vector Clang emits. This leaves option classification
 and ordering in Clang: positional inputs, `-Wl,`, `-Xlinker`, and direct `-z`
@@ -331,9 +449,10 @@ retain UTF-16's embedded NUL bytes, and the packaged SDK does not declare a
 transcoding tool. Generate UTF-8 response files when building inside Kandelo.
 Invalid spellings stay visible to LLVM so it can reject them; a valid stack
 larger than the SDK's fixed 1 GiB executable-memory maximum fails in the driver
-instead of being silently replaced by the floor. Smaller legacy requests
-therefore still receive 8 MiB, while programs such as SpiderMonkey that
-explicitly need 16 MiB retain that larger reservation. Changing the platform
+instead of being silently replaced by the floor. An explicit request below
+8 MiB is honoured verbatim rather than silently raised, with a warning on
+stderr naming the hazard; programs such as SpiderMonkey that explicitly need
+16 MiB retain that larger reservation the same way. Changing the platform
 floor or scanner requires updating both `sdk/kandelo/bin/wasm32posix-cc` and
 `sdk/src/lib/flags.ts`.
 
@@ -401,6 +520,9 @@ These flags are common in build systems but irrelevant for Wasm:
 - `-lrt`, `-lresolv`, `-lm`, `-lcrypt`, `-lutil` (all in musl libc.a)
 - `-rdynamic`, `-Wl,-Bsymbolic`
 - `-Wl,-rpath,*`, `-Wl,-soname,*`, `-Wl,--version-script*`
+- `-Wl,--start-group`, `-Wl,--end-group` (wasm-ld rejects them; like ELF lld it
+  resolves archive members regardless of command-line order)
+- `-lgcc_s` (no shared libgcc; intrinsics come from the compiler runtime)
 
 ## Autoconf Projects
 
@@ -506,6 +628,47 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib \
 
 See `packages/registry/redis/build-redis.sh` for the complete build script.
 
+## Meson Projects
+
+The dev shell provides `meson`, and the SDK ships a cross file that points
+Meson at the target instead of the build machine:
+
+```bash
+source sdk/activate.sh   # or run inside scripts/dev-shell.sh
+PKG_CONFIG_PATH=<dep-prefix>/lib/pkgconfig \
+  meson setup --cross-file sdk/meson/wasm32posix.ini build
+ninja -C build
+```
+
+`sdk/meson/wasm32posix.ini` uses the SDK wrappers as its `[binaries]`, so the
+compile and link contract is the same as every other build path. It declares
+`system = 'linux'` / `cpu_family = 'wasm32'` (the same musl/POSIX identity
+`sdk/config.site` and the CMake toolchains use; it does not define
+`__linux__`), sets `needs_exe_wrapper = true`, builds static libraries, and
+disables `b_lundef`/`b_asneeded`/`b_pie`. It deliberately does not set
+`sys_root`: Meson would export `PKG_CONFIG_SYSROOT_DIR`, which corrupts the
+absolute-prefix `.pc` files.
+
+Two options keep dependency resolution on the package path:
+
+- `prefer_static = true` — Kandelo has no shared libraries, so every
+  `dependency()` lookup is static and pkg-config runs with `--static`. That
+  pulls each package's `Requires.private`/`Libs.private` (cairo needs pixman,
+  fontconfig needs libxml2), so `PKG_CONFIG_PATH` must cover the full
+  transitive dependency closure, not just the direct dependencies. A
+  package recipe gets that closure from the resolver as
+  `WASM_POSIX_DEP_PKG_CONFIG_PATH` (see `packages/registry/cairo` and
+  `packages/registry/pango`), and declares `meson`/`ninja` as
+  `[[host_tools]]`.
+- `wrap_mode = 'nofallback'` — a `dependency()` that misses fails the
+  configure instead of silently downloading and building an upstream
+  subproject (Meson "wrap") in place of the resolver-provided package.
+
+Meson's feature probes are link tests. They report missing functions as
+missing because every executable link is strict: the SDK leaves undefined only
+the imports the host provides (`libc/glue/kandelo-host-imports.txt`), so a bare
+`cc.has_function()` is truthful.
+
 ## Fork instrumentation (`wasm-fork-instrument`)
 
 Programs that call `fork()` or fork-like APIs need the in-tree
@@ -522,13 +685,14 @@ export legacy `asyncify_*` symbols.
 # Compile normally
 wasm32posix-cc program.c -o program.wasm
 
-# (Optional) shrink with wasm-opt -O2 first; must run BEFORE the instrument
-# step since fork-instrument hardcodes mutable-global offsets.
-wasm-opt -O2 program.wasm -o program.wasm
+# Do not run wasm-opt here. The SDK leaves a fork-capable link unoptimized
+# on purpose: its kandelo.calltypes facts describe the functions as linked
+# (see "Compiler facts for fork instrumentation").
 
 # Apply fork instrumentation. Auto-discovers fork-path functions via
 # call-graph analysis from the kernel.kernel_fork import — no onlylist
-# file needed. The wrapper builds the tool on demand if tools/bin is absent.
+# file needed — then runs wasm-opt -O2 over the result. The wrapper builds
+# the tool on demand if tools/bin is absent.
 "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm.instr
 mv program.wasm.instr program.wasm
 ```
@@ -548,6 +712,7 @@ exported ABI, save-buffer format, and the dispatch-scheme decisions.
 | `WASM_POSIX_LLVM_DIR` | Path to LLVM bin directory |
 | `WASM_POSIX_SYSROOT` | Override sysroot path (default: `<repo>/sysroot`) |
 | `WASM_POSIX_GLUE_DIR` | Override glue directory (default: `<repo>/libc/glue`) |
+| `WASM_POSIX_CALLTYPES_PLUGIN` | Use this prebuilt KandeloCallTypes plugin instead of building one; it must be built for the same compiler |
 
 ## Running Programs
 
@@ -578,5 +743,93 @@ See the [Porting Guide](porting-guide.md) for preparing browser-facing package i
 - **For DRM/KMS/EGL/GLES programs**: Rebuild the wasm32 sysroot with
   `scripts/dev-shell.sh bash scripts/build-musl.sh` if `libdrm`, `libgbm`,
   `libEGL`, or `libGLESv2` is missing. `./run.sh setup` (and the deprecated
-  `build.sh` delegator) does not rebuild musl or these sysroot libraries.
+  `build.sh` delegator) checks musl freshness and refreshes these graphics
+  libraries through their own build stamps.
 - **Memory limit**: Default max memory is 1GB (16384 pages). Processes start with a smaller computed shared memory and grow on demand up to `maxMemoryPages`.
+
+## Compile inside the base shell
+
+The `browser-main-shell` product registers the compiler tools as lazy
+references in `shell.vfs.zst`. Opening a compiler or SDK file fetches
+`kandelo-sdk.zip` once and materializes the complete toolchain under
+`/usr`. Shell startup does not fetch the ZIP. Its compressed byte count
+and SHA-256 are recorded in the shell image and verified on download.
+
+The ZIP is the declared output of `kandelo-sdk-browser-bundle@21.1.7`.
+It contains the source-built `clang@21.1.7` tools, matching Clang resource
+headers, musl and libc++ sysroot, syscall glue, and guest shell wrappers.
+The five tools live in `/usr/lib/llvm/bin`; wrappers and the `cc` and
+`c++` aliases live in `/usr/bin`. This delivery uses the base shell's
+existing lazy archive mechanism and requires no separate compiler image.
+
+In a shell session:
+
+```sh
+cat > /tmp/hello.c <<'C'
+#include <stdio.h>
+int main(void) { puts("Hello, Kandelo!"); return 0; }
+C
+cc /tmp/hello.c -o /tmp/hello
+/tmp/hello
+```
+
+Use `c++ hello.cpp -o hello` for C++. The guest wrapper runs clang's
+integrated compiler and then `wasm-ld` as separate processes. It supplies
+the Kandelo target, sysroot, host import allowlist, memory layout, and
+libc/glue inputs. Invoke `cc` or `c++` for the supported compilation and
+linking path. The LLVM tools receive the normal host-side continuation
+instrumentation before packaging: their linked code imports `fork`, so
+untransformed tools fail the runtime's executable admission checks.
+The recipe runs Binaryen's full post-instrumentation optimization on one
+core, avoiding the small native worker stacks on macOS.
+
+The `clang` recipe uses the Kandelo CMake platform, a private sysroot,
+and verified LLVM sources in resolver-owned work directories. Its
+patches select the WebAssembly linker driver and conservatively handle
+LLVM's BSD-specific filesystem locality probe. It uses normal libc++
+`std::random_device` backed by `/dev/urandom` and normal LLVM file output;
+it does not replace entropy with fixed seeds or patch out mmap writeback.
+
+This is an in-guest compiler for ordinary programs that do not require
+fork continuation instrumentation. A fully native SDK remains future
+work: the guest pipeline does not yet run the host SDK's compiler fact
+plugin, Binaryen transforms, or `wasm-fork-instrument`. Porting those
+components is required before programs compiled here that call `fork`
+can run through the normal continuation path. See
+[the saved self-hosting work items](superpowers/specs/2026-08-26-in-kandelo-clang-toolchain-design.md#future-work-recorded-explicitly).
+
+Guest-linked outputs also lack the `kandelo.abi.contract` digest stamp
+added by package admission. The current host accepts an absent stamp
+with a warning during the digest rollout; a present mismatched digest
+still fails. Adding digest stamping to guest compilation is remaining
+native SDK work.
+
+Node and Chromium pass the full sequential compiler acceptance. Firefox
+passes the C++ containers/entropy case in a fresh shell, but repeated LLVM
+launches in one session can exhaust its executable-code arena. Its engine
+reports `failed to allocate executable memory for module`, and the shell
+reports an I/O error before the compiler starts. This is compiled native
+code, separate from the guest linear-memory budget. The browser test records
+this exact failure as a boundary and separately tests fresh-session C++.
+The cache currently retains only 16 MiB of modules briefly; the LLVM tools
+are larger, so sharing/reclamation for repeated large tool launches remains
+follow-up work. See [Firefox executable-code limit](browser-support.md#firefox-executable-code-limit).
+
+The bundled WebKit engine passes the C cases and small C++ programs,
+but reports native Wasm call-stack exhaustion while Clang instantiates
+the templates used by `<random>`. Compilation then exits with SIGSEGV;
+the worker diagnostic says `Maximum call stack size exceeded` inside
+`clang::Sema`. This engine stack is separate from the linear-memory C
+stack. Use Node, Chromium, or Firefox for this template-heavy case. The
+browser test checks the exact WebKit failure rather than accepting any
+compiler error or claiming that case compiled.
+
+Compiler acceptance boots the actual base shell on Node and in a browser.
+`host/test/clang-in-guest.test.ts` checks deferred image entries and one
+SDK download, then compiles/runs `int main(void)`, argc/argv main,
+nonstandard `void main`, mmap writeback, small C++, and C++ containers/entropy.
+An archive case compiles an object, exercises `llvm-ar`, `llvm-ranlib`,
+and `llvm-nm` through the guest wrappers, then links and runs its caller.
+`apps/browser-demos/test/kandelo-compiler.spec.ts` runs the same guest
+programs and checks browser ZIP requests. The `void main` adapter is a
+compatibility extension; portable C programs should return `int`.

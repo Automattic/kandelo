@@ -13,12 +13,14 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { statSync, existsSync, mkdirSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
+import { readBrowserMemory64FixtureSources } from "../../scripts/check-browser-memory64-example-fixtures";
 import {
   captureProgramFixtureBuildContract,
   programFixtureNeedsRebuild,
+  sdkProgramBuildInputs,
   stampProgramFixture,
   type ProgramFixtureBuildContract,
 } from "./program-fixture-freshness";
@@ -29,6 +31,21 @@ const examplesDir = join(repoRoot, "examples");
 const fixturesDir = join(__dirname, "fixtures");
 
 const C_TEST_FIXTURES = [
+  {src:join(fixturesDir,"tcp-state-observation.c"),out:join(fixturesDir,"tcp-state-observation.wasm")},
+  {
+    src: join(fixturesDir, "udp-state-observation.c"),
+    out: join(fixturesDir, "udp-state-observation.wasm"),
+    // The probe forks to check that a connected UDP source survives fork.
+    forkInstrument: true,
+  },
+  {
+    src: join(fixturesDir, "interface-observation.c"),
+    out: join(fixturesDir, "interface-observation.wasm"),
+  },
+  {
+    src: join(fixturesDir, "udp-broadcast-observation.c"),
+    out: join(fixturesDir, "udp-broadcast-observation.wasm"),
+  },
   {
     src: join(fixturesDir, "process-memory-reclamation-churn.c"),
     out: join(fixturesDir, "process-memory-reclamation-churn.wasm"),
@@ -69,6 +86,17 @@ const RESOLVED_PROGRAM_FIXTURES = [
     ),
   },
   {
+    // Recompiled from source so the no-grow and close-after-mmap writeback
+    // checks of kernel-owned file mappings always run against the current
+    // source, not a stale prebuilt binary.
+    arch: "wasm32",
+    src: join(repoRoot, "programs/mmap_shared_test.c"),
+    out: join(
+      repoRoot,
+      "local-binaries/programs/wasm32/mmap_shared_test.wasm",
+    ),
+  },
+  {
     arch: "wasm64",
     src: join(repoRoot, "programs/scm-rights-semantics.c"),
     out: join(
@@ -85,6 +113,7 @@ const TEST_PROGRAMS = [
   "select_signal_test.c",
   "dsp_signal_test.c",
   "lseek_invalid_test.c",
+  "int128_division_test.c",
   "environment_lifecycle_test.c",
   "chown_sentinel_test.c",
   "fstatat_empty_path_test.c",
@@ -93,7 +122,9 @@ const TEST_PROGRAMS = [
   "pathconf_test.c",
   "getdents_boundary_test.c",
   "terminal_attributes_api_test.c",
+  "pty_readiness_test.c",
   "rlimit_fsize_test.c",
+  "rlimit_as_test.c",
   "kernel_scratch_browser_test.c",
   "socket_timeout_options_test.c",
   "unix_listener_exec_test.c",
@@ -102,6 +133,8 @@ const TEST_PROGRAMS = [
   "process_native_layout_test.c",
   "timerfd_signalfd_scratch_test.c",
   "sysv_ipc_test.c",
+  "sysv_shm_departed_peer_test.c",
+  "shm_mapping_coherence_test.c",
   "wasm_trap_test.c",
   "oob_trap_test.c",
   "divzero_trap_test.c",
@@ -139,7 +172,11 @@ const TEST_PROGRAM_FLAGS: Record<string, readonly string[]> = {
 };
 
 /** Memory64 counterparts needed to prove pointer-width-neutral syscall input. */
-const WASM64_TEST_PROGRAMS = ["lseek_invalid_test.c"];
+const WASM64_TEST_PROGRAMS = [...new Set([
+  "lseek_invalid_test.c",
+  "int128_division_test.c",
+  ...readBrowserMemory64FixtureSources().map(source => basename(source)),
+])];
 
 /** WAT fixtures used by host runtime tests. */
 const WAT_FIXTURES = [
@@ -149,11 +186,36 @@ const WAT_FIXTURES = [
   "wasi-scalar-abi.wat",
 ];
 
+/**
+ * Toolchain inputs whose change must force every compiled fixture to rebuild.
+ * The syscall glue and the built libc are compiled into (or linked with) every
+ * program, so a glue/libc edit that does not touch the test source would
+ * otherwise leave stale `.wasm` fixtures behind an mtime-only cache.
+ */
+const FIXTURE_TOOLCHAIN_INPUTS = [
+  join(repoRoot, "libc/glue/channel_syscall.c"),
+  join(repoRoot, "sysroot/lib/libc.a"),
+  join(repoRoot, "sysroot64/lib/libc.a"),
+];
+
+function newestToolchainMtimeMs(): number {
+  let newest = 0;
+  for (const input of FIXTURE_TOOLCHAIN_INPUTS) {
+    if (existsSync(input)) {
+      newest = Math.max(newest, statSync(input).mtimeMs);
+    }
+  }
+  return newest;
+}
+
 function needsRebuild(srcFile: string, outFile: string): boolean {
   if (!existsSync(outFile)) return true;
   const srcStat = statSync(srcFile);
   const outStat = statSync(outFile);
-  return srcStat.mtimeMs > outStat.mtimeMs;
+  if (srcStat.mtimeMs > outStat.mtimeMs) return true;
+  // Rebuild when the syscall glue or libc is newer than the artifact: those
+  // are compiled/linked into every program but are not the test source.
+  return newestToolchainMtimeMs() > outStat.mtimeMs;
 }
 
 /**
@@ -213,13 +275,7 @@ function fixtureBuildContract(
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const inputs = [
-    join(repoRoot, "sdk/bin"),
-    join(repoRoot, "sdk/src"),
-    join(repoRoot, "sdk/package.json"),
-    join(repoRoot, "sdk/package-lock.json"),
-    join(repoRoot, arch === "wasm64" ? "sysroot64" : "sysroot"),
-  ];
+  const inputs = sdkProgramBuildInputs(repoRoot, arch);
   if (forkInstrumented) {
     const configuredTool = process.env.WASM_POSIX_FORK_INSTRUMENT;
     const instrumenter = configuredTool
@@ -390,6 +446,43 @@ export async function setup() {
       cwd: repoRoot,
       stdio: "pipe",
     });
+  }
+
+  // WHY: the package build engine stamps every wasm it installs with this
+  // checkout's kandelo.abi.contract digest. These fixtures are compiled here
+  // instead, so without this step the host reports a fixture built seconds ago
+  // as a "legacy binary [that] predates the ABI-contract-digest rollout"
+  // (host/src/constants.ts) and writes that to stderr — which breaks the tests
+  // asserting the host stays quiet on an ordinary guest exit. The stamp is
+  // additive and lives outside the freshness fingerprint above, so restamping
+  // an already-current fixture is a no-op rather than a rebuild trigger.
+  const abiContractStampTargets = [
+    ...C_TEST_FIXTURES.map(({ out }) => out),
+    ...RESOLVED_PROGRAM_FIXTURES.map(({ out }) => out),
+    ...TEST_PROGRAMS.map((cFile) =>
+      join(examplesDir, cFile).replace(/\.c$/, ".wasm")
+    ),
+    ...WASM64_TEST_PROGRAMS.map((cFile) =>
+      join(examplesDir, cFile).replace(/\.c$/, ".wasm64.wasm")
+    ),
+  ].filter((out) => existsSync(out));
+  if (abiContractStampTargets.length > 0) {
+    console.log("[global-setup] Stamping ABI contract digest on fixtures...");
+    execFileSync(
+      "cargo",
+      [
+        "run",
+        "-p",
+        "xtask",
+        "--target",
+        hostTarget,
+        "--quiet",
+        "--",
+        "stamp-abi-contract",
+        ...abiContractStampTargets,
+      ],
+      { cwd: repoRoot, stdio: "pipe" },
+    );
   }
 
   // packages/registry/wordpress/test/wordpress-site-editor.test.ts calls

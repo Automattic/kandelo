@@ -41,7 +41,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { LocalTerminalMirror } from "@host/migration/terminal-local";
 import type { TerminalScreen } from "../app/shared-terminal";
-import type { PeerLink } from "../../../lib/peer-link";
+import type { PeerLink } from "../../../lib/sharing-peer";
 import { readShellTheme } from "./Shell";
 
 /** RIS — reset to initial state: screen, scrollback and modes. */

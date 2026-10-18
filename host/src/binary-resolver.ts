@@ -44,7 +44,6 @@ import {
   ABI_VERSION,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
 } from "./generated/abi";
-import { MemoryFileSystem } from "./vfs/memory-fs";
 
 const EXECUTABLE_PROGRAM_REQUIRED_EXPORTS = ["__abi_version", "_start"] as const;
 
@@ -172,20 +171,23 @@ function isWellFormedUnicode(value: string): boolean {
  * could bypass package-level identity checks before `node:path.join` collapses
  * it back onto a declared member.
  */
+function isPortableResolverPath(relPath: string): boolean {
+  return isWellFormedUnicode(relPath)
+    && relPath.length > 0
+    && !relPath.startsWith("/")
+    && !/^[A-Za-z]:/.test(relPath)
+    && !relPath.includes("\\")
+    && !relPath.includes("\0")
+    && relPath.split("/").every((part) => part && part !== "." && part !== "..");
+}
+
 function requirePortableResolverPath(relPath: string): string {
   if (!isWellFormedUnicode(relPath)) {
     throw new Error(
       `Binary resolver path must be well-formed Unicode: ${JSON.stringify(relPath)}`,
     );
   }
-  if (
-    relPath.length === 0
-    || relPath.startsWith("/")
-    || /^[A-Za-z]:/.test(relPath)
-    || relPath.includes("\\")
-    || relPath.includes("\0")
-    || relPath.split("/").some((part) => !part || part === "." || part === "..")
-  ) {
+  if (!isPortableResolverPath(relPath)) {
     throw new Error(
       `Binary resolver path must be a normalized portable relative path: ${JSON.stringify(relPath)}`,
     );
@@ -229,8 +231,8 @@ function packagedBinaryCandidates(
 ): string[] {
   const adjusted = applyDefaultArch(relPath);
   const candidates = [join(root, adjusted)];
-  if (relPath === "rootfs.vfs") {
-    candidates.push(join(root, "rootfs.vfs"));
+  if (relPath === "rootfs.vfs.zst") {
+    candidates.push(join(root, "rootfs.vfs.zst"));
   }
   return candidates;
 }
@@ -294,7 +296,14 @@ function binaryCandidateTiers(): BinaryCandidateTier[] {
         label: "source-only-v1",
         root: sourceOnlyRoot,
         identity: "source-only-generation",
-        allowRegularFileClosure: false,
+        // The engine writes real files here, not links into a shared cache,
+        // so this tier would otherwise be refused for every multi-artifact
+        // package the moment `pinPackageClosureIdentity` saw regular files.
+        // Its identity is not the directory shape: it is the projection
+        // authority in `.kandelo/`, which binds each member to a package,
+        // cache key and sha256. `pinPackageClosureIdentity` checks exactly
+        // that for this tier — see its `source-only-generation` branch.
+        allowRegularFileClosure: true,
         candidatesFor(relPath: string): string[] {
           return [join(sourceOnlyRoot, applyDefaultArch(relPath))];
         },
@@ -708,6 +717,17 @@ function requireRegularXtask(path: string): string {
   throw new Error(`Prepared xtask is not a regular file: ${path}`);
 }
 
+/** Compiler variables a caller may set for its own C builds (see below). */
+const CHECKER_BUILD_SCRUBBED_ENV = [
+  "CC",
+  "CXX",
+  "AR",
+  "CFLAGS",
+  "CXXFLAGS",
+  "CPPFLAGS",
+  "LDFLAGS",
+] as const;
+
 function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   const explicit = process.env.WASM_POSIX_XTASK_BIN;
   if (explicit !== undefined) {
@@ -721,9 +741,17 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   }
 
   const host = rustHostTarget(sourceRepoRoot);
+  // WHY a private target directory and a scrubbed compiler environment: the
+  // checker's dependency graph includes C build scripts (ring) whose
+  // fingerprints depend on CC and friends. Callers inherit different values
+  // (the dev shell sets CC=clang; conformance runners export an absolute
+  // clang path), and every change invalidates the whole release build, which
+  // takes about 100 s. Building into a directory nothing else writes, with
+  // those variables removed, keeps its inputs identical across callers, so
+  // after the first build every preparation is Cargo's no-op.
+  const checkerTargetDir = join(sourceRepoRoot, "target", "program-index-checker");
   const xtaskPath = join(
-    sourceRepoRoot,
-    "target",
+    checkerTargetDir,
     host,
     "release",
     process.platform === "win32" ? "xtask.exe" : "xtask",
@@ -739,6 +767,8 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
     "xtask",
     "--target",
     host,
+    "--target-dir",
+    checkerTargetDir,
     "--quiet",
   ];
   const inDevShell = process.env.KANDELO_DEV_SHELL_TOOL_PATH !== undefined;
@@ -746,9 +776,12 @@ function prepareProgramIndexChecker(sourceRepoRoot: string): string {
   const args = inDevShell
     ? cargoArgs
     : [join(sourceRepoRoot, "scripts", "dev-shell.sh"), "cargo", ...cargoArgs];
+  const env = { ...process.env };
+  for (const name of CHECKER_BUILD_SCRUBBED_ENV) delete env[name];
   const result = spawnSync(command, args, {
     cwd: sourceRepoRoot,
     encoding: "utf8",
+    env,
   });
   if (result.status !== 0) {
     throw new Error(commandFailure(command, args, result));
@@ -800,6 +833,17 @@ function ensureProgramIndexesInSourceContext(): void {
       }`,
     );
   }
+}
+
+/**
+ * Run `operation` inside one program-index freshness boundary: the index is
+ * checked (and regenerated if stale) once, and resolver calls nested inside
+ * reuse that check. Exported for batch callers such as
+ * scripts/check-artifact-closures.ts, which resolves every package and would
+ * otherwise pay the multi-second freshness check once per package.
+ */
+export function withProgramIndexFreshness<T>(operation: () => T): T {
+  return withFreshProgramIndexes(["programs/"], operation);
 }
 
 function withFreshProgramIndexes<T>(
@@ -1461,6 +1505,22 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
   if (root === null) {
     throw new Error("Source-only projection requested outside source-only-v1");
   }
+  return readSourceOnlyProjectionAt(root);
+}
+
+/**
+ * Parse the SourceOnly projection authority that lives inside `root`.
+ *
+ * Split out from `readSourceOnlyProjection` so the ambient
+ * `source-only-generation` candidate tier can authenticate a package closure
+ * out of the generation it is already offering, without asserting the
+ * `WASM_POSIX_RESOLUTION_POLICY=source-only-v1` *policy*. Those are different
+ * claims: the policy says "serve nothing that is not in this projection",
+ * which is the browser build's hermetic contract; the tier only needs "these
+ * exact bytes belong to this package generation", which the same authority
+ * answers. `root` must already be the canonical generation root.
+ */
+function readSourceOnlyProjectionAt(root: string): LoadedSourceOnlyProjection {
   const metadataRoot = join(root, ".kandelo");
   try {
     const metadata = lstatSync(metadataRoot);
@@ -1722,7 +1782,33 @@ function readSourceOnlyProjection(): LoadedSourceOnlyProjection {
       && packageName === "kernel"
       && members.length === 1
       && !members[0]!.mirrorPath.includes("/");
-    if (!isExactProgramNode && !isRootMirrorNode) {
+    // Modules the local-build engine projects at the root but the package
+    // resolver does not model: today only the standalone VFS image writer,
+    // which `crates/kandelo-image-module/build-wasm.sh` builds out-of-band and
+    // which carries no `packages/registry/<name>/build.toml`, so it never
+    // appears in the v2 `projection.packages` map. Admit it as its own
+    // single root-level member node so every host resolves it through the
+    // same pinned projection as `kernel.wasm`.
+    //
+    // This must list every module in `CORESIDENT_SIDE_MODULES`
+    // (`tools/xtask/src/local_build.rs`; a cargo test checks the two agree).
+    // A module the engine projects but this table omits makes the WHOLE
+    // manifest unreadable, because the parse throws before any binary
+    // resolves.
+    //
+    // An explicit allowlist rather than "any single root-level member": this
+    // check is what stops an arbitrary node in an untrusted projection from
+    // claiming a root path, so it must enumerate what is permitted.
+    const standaloneModuleArtifacts: Record<string, readonly string[]> = {
+      "kandelo-image-module": ["kandelo_image_module32.wasm"],
+    };
+    const isStandaloneModuleNode =
+      !projection.packages.has(packageName)
+      && members.length === 1
+      && (standaloneModuleArtifacts[packageName]?.includes(
+        members[0]!.mirrorPath,
+      ) ?? false);
+    if (!isExactProgramNode && !isRootMirrorNode && !isStandaloneModuleNode) {
       throw sourceOnlyProjectionError(
         projectionPath,
         `node ${JSON.stringify(packageName)} (${targetArch}) is neither an exact v2 program node nor a root-mirror package`,
@@ -2884,35 +2970,15 @@ function hasWasmArtifactPolicyFailuresForBytes(
   }
 }
 
-function hasVfsArtifactPolicyFailures(path: string, relPath = path): boolean {
-  if (!relPath.endsWith(".vfs") && !relPath.endsWith(".vfs.zst")) {
-    return false;
-  }
-  try {
-    return hasVfsArtifactPolicyFailuresForBytes(readFileSync(path), relPath);
-  } catch {
-    return true;
-  }
-}
-
-function hasVfsArtifactPolicyFailuresForBytes(
-  bytes: Uint8Array,
-  relPath: string,
-): boolean {
-  if (!relPath.endsWith(".vfs") && !relPath.endsWith(".vfs.zst")) {
-    return false;
-  }
-  try {
-    const metadata = MemoryFileSystem.readImageMetadata(bytes);
-    const declaredAbi = metadata?.kernelAbi;
-    return declaredAbi !== undefined && declaredAbi !== ABI_VERSION;
-  } catch {
-    // A path declared as a VFS image must remain fail-closed when its header,
-    // compression, or metadata cannot be inspected. This also keeps the
-    // TypeScript and shell resolvers aligned.
-    return true;
-  }
-}
+// An image's declared kernel ABI is not judged here. This resolver chooses
+// files; it used to parse a VFS image header to refuse a mismatched
+// `kernelAbi`, which needed a filesystem implementation on the host. The
+// kernel now performs that refusal when it loads the image
+// (`image_policy::check_declared_abi`, reached from `rootfs::load_image`) and
+// answers `EPROTO`, because the image is not malformed: it speaks a different
+// version of the contract. What the resolver gives up is choosing a different
+// tier's image when a local one is stale; no image is published to a second
+// tier today, so that choice has nothing to choose between.
 
 function hasBinaryArtifactPolicyFailures(
   path: string,
@@ -2923,8 +2989,7 @@ function hasBinaryArtifactPolicyFailures(
     path,
     relPath,
     capturedForkInstrumentation,
-  ) ||
-    hasVfsArtifactPolicyFailures(path, relPath);
+  );
 }
 
 function hasBinaryArtifactPolicyFailuresForBytes(
@@ -2936,7 +3001,7 @@ function hasBinaryArtifactPolicyFailuresForBytes(
     bytes,
     relPath,
     capturedForkInstrumentation,
-  ) || hasVfsArtifactPolicyFailuresForBytes(bytes, relPath);
+  );
 }
 
 function chooseBinaryCandidate(
@@ -3088,8 +3153,9 @@ function mutableGenerationIdentityFailure(
     }
     const expectedParent = realpathSync(expectedParentPath);
     const generationName = basename(sharedRoot);
+    // `xtask`'s `canonical_path`: `<name>-<version>-rev<N>-<arch>-abi<N>-<key>`.
     const hasCanonicalName = generationName.startsWith(`${packageName}-`)
-      && new RegExp(`-rev[0-9]+-${arch}-${cacheKey}$`).test(generationName);
+      && new RegExp(`-rev[0-9]+-${arch}-abi[0-9]+-${cacheKey}$`).test(generationName);
     return dirname(sharedRoot) === expectedParent && hasCanonicalName
       ? null
       : "fetched mirror targets are not one canonical program-cache generation";
@@ -3112,6 +3178,88 @@ interface RejectedPackageClosure {
  * can be atomically replaced after validation, changing what those strings
  * name before a caller reads them.
  */
+/**
+ * Pin a package closure inside the local SourceOnly generation.
+ *
+ * The generation holds regular files, so the directory shape proves nothing.
+ * Its authority is `.kandelo/source-only-program-projection-v1.json`, which
+ * names each member's owning package, that package's cache key, and the
+ * member's sha256. Validating through it is the same check
+ * `resolveSourceOnlyBinary` performs under the hermetic browser policy — one
+ * owning node for the whole closure, then per-member digest and
+ * artifact-policy verification — so the tier is accepted on the strength of
+ * the producer's receipt rather than on the file being where it was expected.
+ */
+function pinSourceOnlyGenerationClosure(
+  tier: BinaryCandidateTier,
+  selected: readonly string[],
+  members: readonly ProgramPackageClosureMember[],
+): PinnedPackageClosure | RejectedPackageClosure {
+  let loaded: LoadedSourceOnlyProjection;
+  try {
+    loaded = readSourceOnlyProjectionAt(tier.root);
+  } catch (error) {
+    return {
+      failure: `source-only projection is unusable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  const owner = loaded.ownerByMirrorPath.get(members[0]!.relPath);
+  if (!owner) {
+    return {
+      failure: `source-only projection does not own ${members[0]!.relPath}`,
+    };
+  }
+  // One projection node owns the whole closure, exactly as one canonical
+  // generation owns a symlink closure. A member the projection attributes to
+  // a different package would mix two generations' bytes under one identity.
+  for (const member of members) {
+    if (loaded.ownerByMirrorPath.get(member.relPath) !== owner) {
+      return {
+        failure:
+          "declared members are not one source-only package projection node",
+      };
+    }
+  }
+  if (owner.packageName !== members[0]!.packageName) {
+    return {
+      failure: `source-only projection attributes ${members[0]!.relPath} to ${
+        JSON.stringify(owner.packageName)
+      }, not ${JSON.stringify(members[0]!.packageName)}`,
+    };
+  }
+  let validated: Map<string, string>;
+  try {
+    validated = validateSourceOnlyNode(loaded, owner);
+  } catch (error) {
+    return {
+      failure: `source-only package member is invalid: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+  const pinnedPaths: string[] = [];
+  for (let index = 0; index < members.length; index++) {
+    const resolved = validated.get(members[index]!.relPath);
+    if (resolved === undefined) {
+      return {
+        failure: `source-only package closure omitted ${members[index]!.relPath}`,
+      };
+    }
+    // The tier offered `selected[index]`; the projection validated its own
+    // mirror path. They must be the same file, or the closure that was
+    // checked is not the closure the caller would read.
+    if (realpathSync(resolved) !== realpathSync(selected[index]!)) {
+      return {
+        failure: `source-only projection validated a different file for ${members[index]!.relPath}`,
+      };
+    }
+    pinnedPaths.push(resolved);
+  }
+  return { paths: pinnedPaths };
+}
+
 function pinPackageClosureIdentity(
   tier: BinaryCandidateTier,
   selected: readonly string[],
@@ -3146,6 +3294,9 @@ function pinPackageClosureIdentity(
         return {
           failure: "a mutable source-checkout wasm tree is not an installed package identity",
         };
+      }
+      if (tier.identity === "source-only-generation") {
+        return pinSourceOnlyGenerationClosure(tier, selected, members);
       }
       const packageName = members[0]!.packageName;
       const projectionIdentity = members[0]!.projectionIdentity;
@@ -3350,6 +3501,129 @@ export function tryResolveBinary(relPath: string): string | null {
     if (error instanceof BinaryNotFoundError) return null;
     throw error;
   }
+}
+
+/**
+ * The image builder's `lazy_url_prefix` for resolver-served lazy assets
+ * (`images/rootfs/PACKAGES.toml`). The prefix drift test in
+ * `host/test/binary-resolver.test.ts` keeps producer and consumer aligned.
+ */
+export const LAZY_BINARIES_URL_PREFIX = "binaries/";
+
+/**
+ * The resolver relPath a lazy asset URL names, or `null` when the URL is not
+ * resolver-eligible. The image builder percent-encodes each path segment
+ * (`encodeBinaryUrlPath` in `scripts/generate-rootfs-package-manifest.mjs`),
+ * so segments decode before the portable-path check. A URL whose decoded
+ * remainder is not a portable resolver path (aliases such as `..`, `.`, empty
+ * segments, malformed encoding) never reaches the resolver.
+ */
+function decodedLazyAssetRelPath(url: string): string | null {
+  const relative = url.replace(/^\/+/, "");
+  if (!relative.startsWith(LAZY_BINARIES_URL_PREFIX)) return null;
+  let decoded: string;
+  try {
+    decoded = relative
+      .slice(LAZY_BINARIES_URL_PREFIX.length)
+      .split("/")
+      .map(decodeURIComponent)
+      .join("/");
+  } catch {
+    return null;
+  }
+  return isPortableResolverPath(decoded) ? decoded : null;
+}
+
+/**
+ * Lazy asset URLs come from VFS images, which are untrusted input: a `..`
+ * segment could name any host file for the Node fetcher to read into the
+ * guest. Reject the escape loudly instead of serving it.
+ */
+function literalLazyAssetPath(url: string): string {
+  const relative = url.replace(/^\/+/, "");
+  if (
+    relative.includes("\0")
+    || relative.split(/[/\\]/).some((part) => part === "..")
+  ) {
+    throw new Error(
+      `Lazy asset URL must name a path inside the repository root: ${
+        JSON.stringify(url)
+      }`,
+    );
+  }
+  return join(resolverRepoRoot(), relative);
+}
+
+/**
+ * Absolute path serving an image-relative lazy asset URL on this host.
+ *
+ * VFS images name lazy assets by their deployment URL — `binaries/<relPath>`,
+ * from the image builder's `lazy_url_prefix` (`images/rootfs/PACKAGES.toml`).
+ * A deployed site really serves that path; a source checkout serves it
+ * through the resolver tiers, the same ordered
+ * `source-only-v1` → `local-binaries` → `binaries` lookup that selected the
+ * image itself.
+ *
+ * Error contract: a genuine absence (`BinaryNotFoundError`) falls back to the
+ * literal repo path, so a relative URL the resolver does not carry keeps its
+ * historical meaning and a missing artifact surfaces as the fetcher's 404 —
+ * under the default policy that literal path is a candidate the resolver
+ * already checked and found absent. Every other resolver failure (artifact
+ * policy rejection, an incomplete package closure, projection validation) is
+ * rethrown with the URL attached: serving the literal bytes instead would
+ * bypass the identity checks the resolver refused on.
+ *
+ * Boundary: resolution reads the tier state at call time, and plain lazy
+ * files carry no content hash, so a tier rebuilt after the image was built
+ * can serve bytes the image never recorded. Lazy archives and trees carry
+ * SHA-256 and fail loudly on that divergence in `MemoryFileSystem`.
+ */
+export function resolveLazyAssetPath(url: string): string {
+  const relPath = decodedLazyAssetRelPath(url);
+  if (relPath === null) return literalLazyAssetPath(url);
+  try {
+    return resolveBinary(relPath);
+  } catch (error) {
+    if (error instanceof BinaryNotFoundError) return literalLazyAssetPath(url);
+    throw new Error(
+      `Lazy asset ${JSON.stringify(url)} failed to resolve: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+export type LazyAssetResolution = { path: string } | { error: Error };
+
+/**
+ * Resolve every image lazy asset URL after one source-projection freshness
+ * check, capturing per-URL failures instead of throwing.
+ *
+ * The Node host starts this on the first lazy read in a resolver worker:
+ * `resolveBinary` can shell out to the canonical Rust freshness checker,
+ * so the syscall worker must not run this blocking checkpoint. A lazy read
+ * awaits the completed checkpoint. A captured error is rethrown by the fetcher
+ * only when its URL is actually fetched, so a latent bad artifact does not
+ * abort boot.
+ */
+export function resolveLazyAssetPaths(
+  urls: readonly string[],
+): Map<string, LazyAssetResolution> {
+  const relPaths = urls.flatMap((url) => decodedLazyAssetRelPath(url) ?? []);
+  const resolutions = new Map<string, LazyAssetResolution>();
+  withFreshProgramIndexes(relPaths, () => {
+    for (const url of urls) {
+      if (resolutions.has(url)) continue;
+      try {
+        resolutions.set(url, { path: resolveLazyAssetPath(url) });
+      } catch (error) {
+        resolutions.set(url, {
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
+      }
+    }
+  });
+  return resolutions;
 }
 
 /**

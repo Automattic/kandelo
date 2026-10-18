@@ -14,25 +14,17 @@ import type { TimeProvider } from "../../src/vfs/types";
 const GUEST = () => 102;
 
 /** A host clock that never repeats a reading, the way a real one does not. */
-function tickingClock(): TimeProvider & {
-  readonly floors: number[];
-  readonly sleeps: Array<[number, number]>;
-} {
+function tickingClock(): TimeProvider & { readonly floors: number[] } {
   let nsec = 0;
   const floors: number[] = [];
-  const sleeps: Array<[number, number]> = [];
   return {
     floors,
-    sleeps,
     clockGettime: (clockId) => {
       nsec += 1;
       return { sec: clockId, nsec };
     },
     advanceMonotonicFloor: (floorNs) => {
       floors.push(floorNs);
-    },
-    nanosleep: (sec, nsec) => {
-      sleeps.push([sec, nsec]);
     },
   };
 }
@@ -51,7 +43,7 @@ describe("recording time provider", () => {
     ]);
   });
 
-  it("passes the monotonic floor and the sleep through to the host", () => {
+  it("passes the monotonic floor through to the host", () => {
     const source = tickingClock();
     const provider = new RecordingTimeProvider(
       source,
@@ -61,9 +53,7 @@ describe("recording time provider", () => {
     );
 
     provider.advanceMonotonicFloor(1_700);
-    provider.nanosleep(2, 5);
     expect(source.floors).toEqual([1_700]);
-    expect(source.sleeps).toEqual([[2, 5]]);
   });
 });
 
@@ -98,40 +88,6 @@ describe("replaying time provider", () => {
     replica.clockGettime(1);
 
     expect(() => replica.clockGettime(1)).toThrow(ReplicationDivergence);
-  });
-
-  it("still sleeps on the host, because the duration is the guest's", () => {
-    const source = tickingClock();
-    const replica = new ReplayingTimeProvider(
-      source,
-      new ReplicationLogReader([]),
-      GUEST,
-      GUEST,
-    );
-
-    replica.nanosleep(0, 250);
-    expect(source.sleeps).toEqual([[0, 250]]);
-  });
-
-  it("skips the sleep while the primary's next reading is already here", () => {
-    const recorder = new ReplicationLogRecorder();
-    new RecordingTimeProvider(tickingClock(), recorder, GUEST, GUEST).clockGettime(1);
-    const source = tickingClock();
-    const replica = new ReplayingTimeProvider(
-      source,
-      new ReplicationLogReader(recorder.entries),
-      GUEST,
-      GUEST,
-    );
-
-    // Behind the head: the primary already served this wait once.
-    replica.nanosleep(0, 250);
-    expect(source.sleeps).toEqual([]);
-
-    // At the head, the wait is real again.
-    replica.clockGettime(1);
-    replica.nanosleep(0, 250);
-    expect(source.sleeps).toEqual([[0, 250]]);
   });
 
   it("does not raise a monotonic floor it does not own", () => {

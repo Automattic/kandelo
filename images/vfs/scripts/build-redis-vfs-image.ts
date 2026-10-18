@@ -2,14 +2,15 @@
  * Build a fully-bootable VFS image for the Redis demo. dinit, the first user process,
  * brings up redis-server on port 6379 with persistence disabled.
  *
- * Produces: apps/browser-demos/public/redis.vfs
+ * Produces: apps/browser-demos/public/redis.vfs.zst, or the path given as
+ * the first argument (a resolver build passes one under its work root).
  *
- * Usage: npx tsx images/vfs/scripts/build-redis-vfs-image.ts
+ * Usage: npx tsx images/vfs/scripts/build-redis-vfs-image.ts [output]
  */
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import {
   ensureDir,
   ensureDirRecursive,
@@ -37,8 +38,11 @@ export interface RedisVfsImageBuildInputs {
 export async function buildRedisVfsImage(
   inputs: RedisVfsImageBuildInputs,
 ): Promise<void> {
-  const sab = new SharedArrayBuffer(32 * 1024 * 1024, { maxByteLength: 128 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 128 * 1024 * 1024);
+  const fs = KandeloImageFs.create();
+  // The declared capacity the product's publication gate checks the artifact
+  // against. It was the SharedArrayBuffer's `maxByteLength`; the buffer itself
+  // was never anything but the old constructor's first argument.
+  fs.setImageCapacity(128 * 1024 * 1024);
 
   for (const dir of ["/tmp", "/home", "/dev", "/etc", "/run", "/var", "/data"]) {
     ensureDir(fs, dir);
@@ -82,13 +86,15 @@ async function main(): Promise<void> {
     redis: new Uint8Array(
       readFileSync(resolveBinary("programs/redis/redis-server.wasm")),
     ),
-    outputPath: join(
-      repositoryRoot,
-      "apps",
-      "browser-demos",
-      "public",
-      "redis.vfs.zst",
-    ),
+    outputPath: process.argv[2]
+      ? resolve(process.argv[2])
+      : join(
+        repositoryRoot,
+        "apps",
+        "browser-demos",
+        "public",
+        "redis.vfs.zst",
+      ),
   });
 }
 

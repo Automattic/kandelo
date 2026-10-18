@@ -4,18 +4,18 @@
 The VFS binary format, image metadata, and helper APIs are experimental. Images should declare their intended kernel ABI, and maintainers should expect to rebuild images after ABI or tooling changes.
 :::
 
-A Kandelo VFS image is a serialized `MemoryFileSystem`. It stores directories, files, symlinks, mode bits, ownership, lazy-file metadata, lazy-archive metadata, and optional image metadata. Browser apps fetch the image and restore it in a worker instead of recreating thousands of filesystem entries at runtime.
+A Kandelo VFS image is a serialized filesystem tree. It stores directories, files, symlinks, mode bits, ownership, lazy-file metadata, lazy-archive metadata, and optional image metadata. The kernel parses the image itself and serves it as `/`, so a machine boots without recreating thousands of filesystem entries at runtime. The format is read and written only by Rust: the kernel reads it, and image builders write it through `KandeloImageFs` (`images/vfs/lib/kandelo-image-fs.ts`), a wrapper over the import-free `crates/kandelo-image-module` Wasm module.
 
 Kandelo accepts:
 
 - `.vfs` - uncompressed image bytes;
 - `.vfs.zst` - zstd-compressed image bytes.
 
-`restoreVerifiedVfsImage()` auto-detects zstd-compressed images and
-authenticates imported atomic lazy-tree seals before returning a filesystem.
-Use the low-level synchronous `MemoryFileSystem.fromImage()` parser only for
-private format work that does not inspect, mutate, or boot imported state
-before separately completing that verification.
+The host detects zstd-compressed images and decodes them before handing the
+bytes to the kernel; the kernel refuses an image whose ABI, seals or
+deferred-file sections it cannot verify. To inspect an image offline, use
+`node tools/mkrootfs/bin/mkrootfs.mjs inspect` or
+`cargo run -p xtask -- vfs-image describe <image>`.
 
 ## When To Use A VFS Image
 
@@ -28,7 +28,7 @@ Use a VFS image when a browser machine needs:
 - reproducible launch behavior;
 - direct launch from the Kandelo UI with `?vfs=...`.
 
-For a single tiny Wasm program and no filesystem tree, a custom lab can still write files into a temporary `MemoryFileSystem`, but that is not the preferred path for user-facing demos.
+For a single tiny Wasm program and no filesystem tree, a custom lab can boot the canonical rootfs image and write its files with `writeFileToVfs()`, but that is not the preferred path for user-facing demos.
 
 ## Build From A Manifest
 
@@ -38,8 +38,8 @@ From the repo root:
 
 ```bash
 node tools/mkrootfs/bin/mkrootfs.mjs build MANIFEST images/rootfs \
-  -o host/wasm/rootfs.vfs \
-  --kernel-abi 11
+  -o host/wasm/rootfs.vfs.zst \
+  --kernel-abi 49
 ```
 
 The canonical rootfs build is wrapped by:
@@ -53,7 +53,7 @@ For custom images, use your own source tree and manifest:
 ```bash
 node tools/mkrootfs/bin/mkrootfs.mjs build ./MY-MANIFEST ./rootfs \
   -o ./dist/my-machine.vfs \
-  --kernel-abi 11
+  --kernel-abi 49
 ```
 
 ## Manifest Grammar
@@ -153,49 +153,95 @@ Images consumed by the Kandelo UI can include:
 ```
 
 This file lets the image declare presentation preferences, guide actions,
-companion HTML, assets, automatic commands, an optional fixed-path file
-ingest, and whether the demo wants an on-screen touch control overlay on
-coarse-pointer devices (`presentation.touchControls`). Build scripts in
-this repo write it with:
+companion HTML, assets, what the machine runs (`init`), an optional
+fixed-path file ingest, and whether the demo wants an on-screen touch
+control overlay on coarse-pointer devices (`presentation.touchControls`).
+
+The file is not generated at build time. Commit the JSON next to the
+package that owns the image, list it in `TRACKED_DEMO_CONFIG_SOURCES`
+(`images/vfs/scripts/tracked-demo-config.ts`), and have the build script
+copy it in verbatim:
 
 ```ts
-writeKandeloDemoConfig(fs, {
-  version: 1,
-  profiles: {
-    "my-demo": {
-      presentation: {
-        bootPrimary: "syslog",
-        runningPrimary: ["terminal", "syslog"],
-        terminalAccess: "primary",
-        internalsAccess: "drawer",
-      },
-      guide: {
-        title: "My demo",
-        groups: [
-          {
-            title: "Try it",
-            actions: [
-              {
-                id: "run-version",
-                label: "Show version",
-                kind: "terminal.run",
-                payload: "my-program --version",
-              },
-            ],
-          },
-        ],
-      },
-      ingest: {
-        accept: [".rom"],
-        targetPath: "/inputs/game.rom",
-        maxBytes: 8 * 1024 * 1024,
-        label: "Load ROM",
-        onLoad: { restart: "emulator /inputs/game.rom" },
-      },
-    },
-  },
-});
+writeTrackedDemoConfig(fs, "packages/registry/my-image/my-demo.json");
 ```
+
+`writeTrackedDemoConfig` writes the reviewed file byte-for-byte, so the
+bytes you review are the bytes that ship. The tracked file looks like this:
+
+```json
+{
+  "version": 1,
+  "defaultProfile": "my-demo",
+  "profiles": {
+    "my-demo": {
+      "identity": {
+        "title": "My demo",
+        "summary": "What this machine is, in one line.",
+        "accent": "#3858e9",
+        "glyph": "my"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": ["terminal", "syslog"],
+        "terminalAccess": "primary",
+        "internalsAccess": "drawer"
+      },
+      "guide": {
+        "title": "My demo",
+        "groups": [
+          {
+            "title": "Try it",
+            "actions": [
+              {
+                "id": "run-version",
+                "label": "Show version",
+                "kind": "terminal.run",
+                "payload": "my-program --version"
+              }
+            ]
+          }
+        ]
+      },
+      "ingest": {
+        "accept": [".rom"],
+        "targetPath": "/inputs/game.rom",
+        "maxBytes": 8388608,
+        "label": "Load ROM",
+        "onLoad": { "restart": "emulator /inputs/game.rom" }
+      }
+    }
+  }
+}
+```
+
+Every block below belongs to a profile. Only `version`, `defaultProfile`,
+and `profiles` may appear at the top level; a machine block declared there
+is rejected.
+
+A profile may also declare:
+
+- `identity` — `title`, `summary`, `accent` (`#rrggbb`), `glyph` (1–4
+  characters), and optionally `packages`.
+- `runtime` — `features` (`framebuffer`, `kms`, `kms-gl-scanout`,
+  `evdev-input`) and `requests` (`memoryPages`, `maxWorkers`), which the
+  host clamps to its own policy. `kms-gl-scanout` presents the KMS display
+  through a WebGL2 scanout presenter, so it requires `kms`; an image that
+  declares it without `kms` is rejected.
+- `init` — what this machine runs, in exactly one of three shapes:
+  `{ "target": "<dinit service>" }` for a bare service name matching
+  `/etc/dinit.d/<name>`; `{ "program", "args", "cwd"?, "uid", "gid" }` to
+  exec a program in the image directly as pid 1 (`uid` and `gid` are
+  required, so the privilege pid 1 gets is stated, not defaulted); or
+  `{ "shellCommand": "..." }` for a command run in the machine's login
+  shell after boot.
+- `web` — `requiredPorts`, `probeHttp` (defaults to true), and an optional
+  plain absolute `probePath`.
+- `display` — `minWidth`/`minHeight`, the smallest usable surface.
+- `defaultProfile`, at the top level — which profile a bare `?vfs=` URL boots.
+
+These blocks are validated and carried in the image today; the Kandelo
+browser app does not read them yet.
 
 If metadata changes for a package-backed image, bump that package's `build.toml` `revision` so published archives rebuild.
 

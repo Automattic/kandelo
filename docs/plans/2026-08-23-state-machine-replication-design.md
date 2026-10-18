@@ -209,7 +209,7 @@ recover from divergence even before it is good at avoiding it.
 | Wire | `migration/channel-chunked.ts` | Unchanged; carries the log |
 | Log transport | `replication/log-local.ts` | Carries the join and the log |
 | Log into a replica | `replication/log-queue.ts` | Shared ring a parked replica waits on |
-| Link | `apps/browser-demos/lib/peer-link.ts` | Moves to `web-libs/kandelo-session` |
+| Link | `apps/browser-demos/lib/sharing-peer.ts` on `web-libs/kandelo-session/src/peer-connection.ts` | A `sharing` link inside a network session |
 | Roles | `apps/browser-demos/pages/kandelo/app/machine-replication.ts` | User publishes, viewer replicates |
 | Screen | `migration/mirror-local.ts` | Fallback mode only |
 | Ownership | `migration/transport-local.ts` | Becomes primary election |
@@ -221,15 +221,15 @@ publishes a running `ReplicationLogRecorder` and delivers its entries to a
 peer's sink, in order and without a hole, over the same
 `MessageChannelLike` contract the migration transports speak. A peer that
 joins after the recording started is sent the backlog, which is what the
-boot-and-replay join needs. The peer link opens a fourth data channel,
+boot-and-replay join needs. The sharing link declares a fourth channel,
 `kandelo-replication-log`, and gives it the handover's deep-queue defaults
 rather than the mirror's shallow ones: a mirror frame may be skipped, a
 decision may not.
 
 Both ends are driven by `useMachineReplication`
 (`apps/browser-demos/pages/kandelo/app/machine-replication.ts`), which starts
-as soon as the peer link opens and needs nothing pressed: the computer holding
-a machine serves, the computer holding none joins. A viewer holds a machine
+as soon as the sharing link opens and needs nothing pressed: the computer
+holding a machine serves, the computer holding none joins. A viewer holds a machine
 while it replicates and is still the viewer — it announces `holding: false` on
 the handover channel, so take-over goes on meaning the user's machine, and a
 take-over swaps the two roles with replication starting again the other way
@@ -240,7 +240,24 @@ A join that is refused is retried rather than reported as final. Most refusals
 name a condition that passes: a machine is read by freezing it, and a process
 that makes no syscall reaches no freeze hook, so a shell sitting at a prompt
 refuses to be read until something wakes it. The failure stays visible in the
-network popup while the viewer keeps asking.
+network session panel while the viewer keeps asking.
+
+**Sharing rides network sessions (2026-10-18).** Computers find each other
+through the network session main added: one hosts a session, the others open
+its invite link and join, through the piplet's rooms. The link boots the
+session's machine on the joiner, as it does for any session. Machine sharing
+is a second peer connection per joiner, `purpose: "sharing"`, with the four
+migration channels; the joiner offers it right after its network join, under
+the same join token plus `sharing`, and the host routes each join by the
+purpose its connect code declares. A session is a star, so a joiner shares
+with the host, and the host picks one joiner at a time in the panel. A
+joiner gives its copy of the session's machine up to watch the host's ("Watch
+host's machine"), which makes it the empty viewer the roles above expect.
+Membership is separate from the guest network: a machine switch detaches
+only the network, and the session and its sharing links stay. A host that
+switched machines no longer admits network joins, because its new machine
+hosts no segment; that boundary is open. The invite-code popup and its
+`peer-link.ts` are gone.
 
 ### What a replica does when it drains the log
 

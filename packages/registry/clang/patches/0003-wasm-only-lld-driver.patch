@@ -1,0 +1,93 @@
+# Kandelo compatibility boundary: wasm-only lld driver
+#
+# Kandelo only ever needs lld's WebAssembly linker driver; the COFF, ELF,
+# MachO, and MinGW drivers (plus their docs/tests subdirectories) are dead
+# weight for an in-Kandelo toolchain and needlessly enlarge the host-tool
+# build surface and binary size. This patch restricts the lld build and the
+# `lld` tool's driver dispatch table to the wasm driver only, and restricts
+# the installed symlink to `wasm-ld`.
+#
+# Upstream: llvm-project, tag llvmorg-21.1.7 (LLVM 21.1.7).
+--- a/lld/CMakeLists.txt	2025-12-01 07:58:50
++++ b/lld/CMakeLists.txt	2026-08-27 13:49:18
+@@ -188,24 +188,10 @@
+   )
+ 
+ add_subdirectory(Common)
++add_subdirectory(wasm)
+ add_subdirectory(tools/lld)
++# Kandelo wasm-only lld: skip COFF/ELF/MachO/MinGW/docs/tests.
+ 
+-if (LLVM_INCLUDE_TESTS)
+-  add_custom_target(LLDUnitTests)
+-  set_target_properties(LLDUnitTests PROPERTIES FOLDER "LLD/Tests")
+-  if (TARGET llvm_gtest)
+-    add_subdirectory(unittests)
+-  endif()
+-  add_subdirectory(test)
+-endif()
+-
+-add_subdirectory(docs)
+-add_subdirectory(COFF)
+-add_subdirectory(ELF)
+-add_subdirectory(MachO)
+-add_subdirectory(MinGW)
+-add_subdirectory(wasm)
+-
+ add_custom_target(lld-headers)
+ set_target_properties(lld-headers PROPERTIES FOLDER "Misc")
+ if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
+--- a/lld/tools/lld/CMakeLists.txt	2025-12-01 07:58:50
++++ b/lld/tools/lld/CMakeLists.txt	2026-08-27 13:49:18
+@@ -27,16 +27,12 @@
+ lld_target_link_libraries(lld
+   PRIVATE
+   lldCommon
+-  lldCOFF
+-  lldELF
+-  lldMachO
+-  lldMinGW
+   lldWasm
+   )
+ 
+ if(NOT LLD_SYMLINKS_TO_CREATE)
+   set(LLD_SYMLINKS_TO_CREATE
+-      lld-link ld.lld ld64.lld wasm-ld)
++      wasm-ld)
+ endif()
+ 
+ foreach(link ${LLD_SYMLINKS_TO_CREATE})
+--- a/lld/tools/lld/lld.cpp	2025-12-01 07:58:50
++++ b/lld/tools/lld/lld.cpp	2026-08-27 13:49:18
+@@ -66,11 +66,9 @@
+   return v;
+ }
+ 
+-LLD_HAS_DRIVER(coff)
+-LLD_HAS_DRIVER(elf)
+-LLD_HAS_DRIVER(mingw)
+-LLD_HAS_DRIVER(macho)
+ LLD_HAS_DRIVER(wasm)
++#define KANDELO_WASM_LLD_DRIVERS                                               \
++  { { lld::Wasm, &lld::wasm::link } }
+ 
+ int lld_main(int argc, char **argv, const llvm::ToolContext &) {
+   sys::Process::UseANSIEscapeCodes(true);
+@@ -87,7 +85,7 @@
+   // exception handling and no memory cleanup on exit.
+   if (!inTestVerbosity()) {
+     int r =
+-        lld::unsafeLldMain(args, llvm::outs(), llvm::errs(), LLD_ALL_DRIVERS,
++        lld::unsafeLldMain(args, llvm::outs(), llvm::errs(), KANDELO_WASM_LLD_DRIVERS,
+                            /*exitEarly=*/true);
+     return r;
+   }
+@@ -100,7 +98,7 @@
+     inTestOutputDisabled = (i != 1);
+ 
+     // Execute one iteration.
+-    auto r = lldMain(args, llvm::outs(), llvm::errs(), LLD_ALL_DRIVERS);
++    auto r = lldMain(args, llvm::outs(), llvm::errs(), KANDELO_WASM_LLD_DRIVERS);
+     if (!r.canRunAgain)
+       exitLld(r.retCode); // Exit now, can't re-execute again.
+ 

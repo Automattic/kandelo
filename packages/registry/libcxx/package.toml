@@ -19,7 +19,7 @@ name = "libcxx"
 # Exact LLVM version from flake.nix's llvmPackages_21. The build script
 # refuses to run if this drifts from LLVM_VERSION or clang --version.
 version = "21.1.7"
-kernel_abi = 7
+kernel_abi = 47
 depends_on = []
 # Both wasm32 (everyone) and wasm64 (MariaDB, PHP) currently
 # need libcxx, so we opt into both.

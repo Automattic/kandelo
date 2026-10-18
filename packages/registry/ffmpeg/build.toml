@@ -1,0 +1,9 @@
+script_path = "packages/registry/ffmpeg/build-ffmpeg.sh"
+inputs = [
+  "packages/registry/ffmpeg/build-ffmpeg.sh",
+  "packages/registry/ffmpeg/configure-flags.sh",
+  "packages/registry/ffmpeg/audit-configure.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1

@@ -23,10 +23,6 @@ const ABI_43_RESERVATION_EXPORTS = [
   "kernel_transfer_scratch_capacity",
   "kernel_transfer_scratch_pointer",
 ] as const;
-const ABI_43_CAPACITY_PREFLIGHT_EXPORTS = [
-  "kernel_mq_descriptor_msgsize",
-] as const;
-
 function continuedShellWords(source: string, firstLine: string): string[] {
   const lines = source.split("\n");
   const start = lines.indexOf(firstLine);
@@ -79,14 +75,12 @@ describe("kernel reservation export contract", () => {
       expect(guardedExports).toContain(exportName);
       expect(runtimeGuardedExports).toContain(exportName);
     }
-    for (const exportName of ABI_43_CAPACITY_PREFLIGHT_EXPORTS) {
-      // WHY: POSIX MQ must resolve the queue-owned message ceiling before a
-      // host reservation. A packaged kernel lacking this query could otherwise
-      // change EMSGSIZE into ENOMEM or reserve the caller's unbounded capacity.
-      expect(HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS).toContain(exportName);
-      expect(guardedExports).toContain(exportName);
-      expect(runtimeGuardedExports).toContain(exportName);
-    }
+    // WHY there is no longer a capacity-preflight export to require: POSIX MQ
+    // must resolve the queue-owned message ceiling before anything reserves
+    // space for the caller's bytes, or EMSGSIZE becomes ENOMEM. That ordering
+    // now lives inside the kernel's own dispatch, which reads the caller's
+    // buffer through the cross-memory primitives after checking `mq_msgsize`,
+    // so no host-visible query can be missing from a packaged kernel.
 
     // WHY: startup and package installation are two entrances to the same host
     // adapter. Comparing the complete generated ABI list prevents a future

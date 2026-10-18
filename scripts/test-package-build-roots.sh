@@ -3,6 +3,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+bash "$REPO_ROOT/scripts/test-package-source-metadata.sh"
+bash "$REPO_ROOT/scripts/test-musl-build-state.sh"
+bash "$REPO_ROOT/scripts/test-package-import-audit-environment.sh"
 fail() {
     echo "test-package-build-roots.sh: $*" >&2
     exit 1
@@ -747,6 +750,75 @@ kandelo_package_stage_verified_source fixture "$archive_dest" "" \
 grep -Fx "archive-selected source" "$archive_dest/archive.txt" >/dev/null ||
     fail "source URL/hash archive was not selected and extracted"
 
+# ftpmirror.gnu.org is a redirector that keeps returning the same mirror, so
+# retrying it cannot escape a dead mirror. The helper must fall back to the
+# canonical ftp.gnu.org origin (stripping the redirector's optional leading
+# "gnu/" segment), and it must not invent a fallback for any other host.
+gnu_fake_bin="$TMP_ROOT/fake-gnu-bin"
+gnu_curl_log="$TMP_ROOT/fake-gnu-curl.log"
+mkdir -p "$gnu_fake_bin"
+cat >"$gnu_fake_bin/curl" <<'FAKE_GNU_CURL'
+#!/usr/bin/env bash
+url=""
+out=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        --retry|--retry-delay|--retry-max-time) shift 2 ;;
+        -*) shift ;;
+        *) url="$1"; shift ;;
+    esac
+done
+printf '%s\n' "$url" >>"$KANDELO_FAKE_CURL_LOG"
+case "$url" in
+    https://ftp.gnu.org/gnu/*)
+        cp "$KANDELO_FAKE_CURL_PAYLOAD" "$out"
+        exit 0
+        ;;
+    *)
+        exit 7
+        ;;
+esac
+FAKE_GNU_CURL
+chmod +x "$gnu_fake_bin/curl"
+gnu_dest="$TMP_ROOT/gnu-fallback-dest"
+err="$TMP_ROOT/gnu-fallback.err"
+(
+    PATH="$gnu_fake_bin:$PATH"
+    KANDELO_FAKE_CURL_LOG="$gnu_curl_log"
+    KANDELO_FAKE_CURL_PAYLOAD="$archive"
+    export PATH KANDELO_FAKE_CURL_LOG KANDELO_FAKE_CURL_PAYLOAD
+    kandelo_package_stage_verified_source gnu-fallback "$gnu_dest" "" \
+        "https://ftpmirror.gnu.org/gnu/upstream/upstream-1.0.tar.gz" \
+        "$archive_sha" "$work_root"
+) 2>"$err" || fail "ftpmirror.gnu.org dead-mirror staging did not fall back: $(cat "$err")"
+grep -Fx "archive-selected source" "$gnu_dest/archive.txt" >/dev/null ||
+    fail "GNU canonical-origin fallback did not stage the verified archive"
+[ "$(cat "$gnu_curl_log")" = "$(printf '%s\n%s' \
+    "https://ftpmirror.gnu.org/gnu/upstream/upstream-1.0.tar.gz" \
+    "https://ftp.gnu.org/gnu/upstream/upstream-1.0.tar.gz")" ] ||
+    fail "unexpected GNU download sequence: $(tr '\n' ' ' <"$gnu_curl_log")"
+grep -F "retrying from the canonical GNU origin" "$err" >/dev/null ||
+    fail "GNU canonical-origin fallback was not announced"
+
+: >"$gnu_curl_log"
+no_fallback_dest="$TMP_ROOT/no-fallback-dest"
+if (
+    PATH="$gnu_fake_bin:$PATH"
+    KANDELO_FAKE_CURL_LOG="$gnu_curl_log"
+    KANDELO_FAKE_CURL_PAYLOAD="$archive"
+    export PATH KANDELO_FAKE_CURL_LOG KANDELO_FAKE_CURL_PAYLOAD
+    kandelo_package_stage_verified_source no-fallback "$no_fallback_dest" "" \
+        "https://invalid.example/upstream/upstream-1.0.tar.gz" \
+        "$archive_sha" "$work_root"
+) 2>/dev/null; then
+    fail "non-GNU dead origin was rescued by an invented fallback"
+fi
+[ "$(wc -l <"$gnu_curl_log" | tr -d ' ')" = 1 ] ||
+    fail "non-GNU dead origin was downloaded more than once: $(tr '\n' ' ' <"$gnu_curl_log")"
+[ ! -e "$no_fallback_dest" ] ||
+    fail "failed non-GNU download left a staged source tree"
+
 # The rootfs closure contains both gzip and xz upstreams. One shared staging
 # helper must select decompression from the verified bytes, not a fake suffix.
 xz_parent="$TMP_ROOT/xz-parent"
@@ -929,6 +1001,10 @@ grep -F "artifact must be a portable relative path" "$err" >/dev/null ||
     fail "unsafe caller-owned runtime artifact escaped its output root"
 
 bash "$REPO_ROOT/scripts/test-graphics-pkgconfig.sh"
+bash "$REPO_ROOT/scripts/test-install-local-binary-noninteractive.sh"
+bash "$REPO_ROOT/scripts/test-build-programs-abi-stamp.sh"
+bash "$REPO_ROOT/scripts/test-gnu-recipe-source-handoff.sh"
+bash "$REPO_ROOT/scripts/test-local-build-prerequisites.sh"
 bash "$REPO_ROOT/scripts/test-install-local-generation.sh"
 
 # Every exact-shell registry recipe must enter through this tested root
@@ -1028,7 +1104,7 @@ grep -F -- "--with-baseruby=\"\$BASERUBY_COMMAND\"" "$ruby_script" >/dev/null ||
 grep -F "CPPFLAGS=\"-DRUBY_KANDELO_POSIX=1 -I\$ZLIB_PREFIX/include\"" \
     "$ruby_script" >/dev/null ||
     fail "Ruby configure CPPFLAGS reintroduced its private sysroot path"
-grep -F "LDFLAGS=\"-L\$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576\"" \
+grep -F "LDFLAGS=\"-L\$ZLIB_PREFIX/lib\"" \
     "$ruby_script" >/dev/null ||
     fail "Ruby configure LDFLAGS reintroduced its private sysroot path"
 grep -F 'GUEST_PREFIX="${WASM_POSIX_DEP_GUEST_PREFIX-/usr}"' "$ruby_script" >/dev/null ||
@@ -1086,6 +1162,7 @@ invalid_ruby_prefixes=(
     $'/opt/ruby\npath'
 )
 for invalid_prefix in "${invalid_ruby_prefixes[@]}"; do
+    mkdir -p "$TMP_ROOT/ruby-invalid-work" "$TMP_ROOT/ruby-invalid-out"
     err="$TMP_ROOT/ruby-guest-prefix.err"
     if WASM_POSIX_DEP_WORK_DIR="$TMP_ROOT/ruby-invalid-work" \
         WASM_POSIX_DEP_OUT_DIR="$TMP_ROOT/ruby-invalid-out" \
@@ -1101,6 +1178,7 @@ done
 # dependency work.
 nethack_work="$TMP_ROOT/nethack-invalid-work"
 nethack_out="$TMP_ROOT/nethack-invalid-out"
+mkdir -p "$nethack_work" "$nethack_out"
 err="$TMP_ROOT/nethack-path.err"
 if WASM_POSIX_DEP_WORK_DIR="$nethack_work" \
     WASM_POSIX_DEP_OUT_DIR="$nethack_out" \
@@ -1115,6 +1193,7 @@ grep -F "NETHACK_HACKDIR must be an absolute guest path" "$err" >/dev/null ||
 
 # Invalid architectures likewise fail before package-specific compilers run.
 for package in bc posix-utils-lite lsof nethack fbdoom modeset; do
+    mkdir -p "$TMP_ROOT/$package-invalid-work" "$TMP_ROOT/$package-invalid-out"
     err="$TMP_ROOT/$package-arch.err"
     if WASM_POSIX_DEP_WORK_DIR="$TMP_ROOT/$package-invalid-work" \
         WASM_POSIX_DEP_OUT_DIR="$TMP_ROOT/$package-invalid-out" \

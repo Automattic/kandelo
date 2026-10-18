@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import * as net from "node:net";
 import { TcpNetworkBackend } from "../src/networking/tcp-backend";
+import { NET_READINESS } from "../src/generated/abi";
 
 const LOOPBACK = new Uint8Array([127, 0, 0, 1]);
-const POLLIN = 0x0001;
+// The backend reports observable facts, not `poll` revents: the POSIX
+// readiness decision belongs to the kernel (`runtime_core::net_readiness`).
+const RECV_READY = NET_READINESS.RECV_READY;
+const NET_ERROR = NET_READINESS.ERROR;
 const MSG_PEEK = 0x0002;
 
 async function listenLoopback(): Promise<{
@@ -53,7 +57,7 @@ async function waitForConnected(backend: TcpNetworkBackend, handle: number): Pro
 async function waitForReadable(backend: TcpNetworkBackend, handle: number): Promise<void> {
   const deadline = Date.now() + 2_000;
   while (Date.now() < deadline) {
-    if ((backend.poll(handle, POLLIN) & POLLIN) !== 0) return;
+    if ((backend.readiness(handle) & RECV_READY) !== 0) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error("readable data timed out");
@@ -209,13 +213,34 @@ describe("TcpNetworkBackend", () => {
     acceptedSocket.resetAndDestroy();
 
     const deadline = Date.now() + 2_000;
-    while ((backend.poll(9, 0x0008) & 0x0008) === 0) {
+    while ((backend.readiness(9) & NET_ERROR) === 0) {
       if (Date.now() > deadline) throw new Error("reset observation timed out");
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
+
+    // The errno the engine actually observed rides along with the error fact,
+    // so SO_ERROR reports ECONNRESET because the socket was reset — not
+    // because a transport layer picked ECONNRESET as its generic failure.
+    expect(backend.readiness(9) >>> NET_READINESS.ERRNO_SHIFT).toBe(104);
 
     expect(() => backend.send(9, new TextEncoder().encode("after-reset"), 0))
       .toThrowError(/ECONNRESET/);
     backend.close(9);
   });
+});
+
+describe('Node TCP host shutdown',()=>{
+ it('sends FIN while preserving reads and exposes its NAT-side local endpoint',async()=>{
+  const server=net.createServer({allowHalfOpen:true},socket=>{socket.on('data',()=>{});socket.on('end',()=>socket.end('reply'));});
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const backend=new TcpNetworkBackend();
+  try {
+   backend.connect(41,LOOPBACK,(server.address() as net.AddressInfo).port);await waitForConnected(backend,41);
+   // This machine's side of the NAT: the guest's own address, never the host's.
+   expect(Array.from(backend.localEndpoint(41).addr)).toEqual([10,0,2,15]);expect(backend.localEndpoint(41).port).toBeGreaterThan(0);
+   backend.send(41,new TextEncoder().encode('request'),0);backend.shutdown(41,1);await waitForReadable(backend,41);
+   expect(new TextDecoder().decode(backend.recv(41,99,0))).toBe('reply');
+   expect(()=>backend.send(41,new Uint8Array([1]),0)).toThrowError(expect.objectContaining({errno:32}));
+  }finally{backend.close(41);await new Promise<void>(resolve=>server.close(()=>resolve()));}
+ });
 });

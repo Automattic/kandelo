@@ -2,19 +2,38 @@
 
 Kandelo aims to run existing systems software on WebAssembly with minimal changes (see [posix-status.md](posix-status.md) for project vision). The limitations below are inherent to the WebAssembly platform, not design choices — they represent the boundaries of what Wasm can express today.
 
-## 1. No Guest-Initiated Thread Creation
+## 1. No Native Thread-Creation Instruction
 
-WebAssembly has no native `pthread_create` equivalent. Wasm threads require SharedArrayBuffer + Web Workers, orchestrated entirely by the host.
+WebAssembly has no instruction that starts a thread. Every Kandelo thread exists because the host created a worker (a Web Worker in the browser, a `worker_threads` worker under Node) that instantiates the program module against the *same* `WebAssembly.Memory` as its parent. SharedArrayBuffer and that host orchestration are structural requirements, not a stage the platform will grow out of.
 
-**Kernel infrastructure exists:** `sys_clone` with `CLONE_VM|CLONE_THREAD` creates threads via the host `onClone` callback. Thread workers run `centralizedThreadWorkerMain` with dedicated channel + TLS. MariaDB successfully runs 5 threads. The `pthread_create` musl entry point is not wired up — thread creation is only available via the kernel's clone syscall.
+**Guest `pthread_create` does work — this is not a missing API.** The full path is wired end to end:
 
-**Affected libc-tests:** `pthread_cancel`, `pthread_cond_wait-cancel_ignored`, `pthread_create-oom`, `raise-race`
+- musl's `pthread_create` calls `__clone`, which `libc/musl-overlay/src/thread/wasm32posix/clone.c` routes to the `kernel_clone` wasm import (16-byte-realigning the child stack pointer, because wasm codegen assumes that alignment at function entry).
+- `libc/musl-overlay/src/thread/wasm32posix/__set_thread_area.c` returns 0, which is what makes `__init_tp()` set `libc.can_do_threads = 1`.
+- `kernel_clone` reaches the kernel's `sys_clone` (`CLONE_VM|CLONE_THREAD`), which allocates the TID from the global PID/TID sequence; the host `onClone` callback — wired in both `host/src/node-kernel-worker-entry.ts` and `host/src/browser-kernel-worker-entry.ts` — spawns the thread worker (`centralizedThreadWorkerMain` in `host/src/worker-main.ts`, with its own syscall channel and TLS block), which calls the program's exported `__wasm_thread_init` to install the thread pointer before invoking the thread function through `__indirect_function_table`.
 
-## 2. No `__syscall_cp_asm` — Cancellation Points
+Repository programs call `pthread_create` directly (`programs/fork-from-thread.c`, `programs/posix-timer-thread.c`, `examples/pthread-normal-exit.c`), musl's own `timer_create` overlay uses it internally, MariaDB runs 5 threads, and the sortix `basic/pthread/pthread_create` conformance test passes on Node.
 
-musl's pthread cancellation uses architecture-specific assembly (`__syscall_cp_asm`) to atomically check for cancellation and enter a syscall. No Wasm equivalent exists — Wasm has no way to interrupt execution mid-function.
+**What the limitation costs in practice:** thread creation is a host round trip that must start a worker and reserve a per-thread control slot, so it is far more expensive than a native `clone`, and the number of live threads per process is bounded by the slot budget the executable declares through `__wasm_posix_thread_slots` (see [sdk-guide.md](sdk-guide.md)) rather than by memory alone.
 
-**Affected libc-tests:** `pthread_cancel`, `pthread_cond_wait-cancel_ignored`
+**Affected libc-tests:** none. `pthread_create-oom`, which checks that `pthread_create` fails with `EAGAIN` once memory is exhausted, passes.
+
+## 2. No Preemption — Asynchronous Thread Cancellation
+
+Stock musl implements `pthread_cancel` with `SIGCANCEL` plus an architecture-specific assembly trampoline (`__syscall_cp_asm` / `__cp_begin` / `__cp_end` / `__cp_cancel`): the signal handler interrupts a blocked syscall and rewrites the instruction pointer to the cancel path. Wasm has neither signal-based preemption nor instruction-pointer rewrite.
+
+**That mechanism was replaced, not left absent.** Kandelo implements *deferred* cancellation — cancellation delivered at cancellation points — and it works:
+
+- `libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c` provides `pthread_cancel`, `__cancel`, `__testcancel`, `__syscall_cp_cancel_preflight`, `__syscall_cp_check`, and `__syscall_cp_cancel_wake_allowed`. It reuses musl's existing atomic per-thread `pthread_t->cancel` field as the pending-cancel flag.
+- `libc/musl-overlay/src/thread/wasm32posix/pthread_testcancel.c` drops stock musl's weak `__testcancel` dummy, which wasm-ld could otherwise pull out of the archive ahead of the strong definition — that archive-ordering accident silently disabled cancellation before it was fixed.
+- `libc/glue/channel_syscall.c::__syscall_cp` calls the preflight before the blocking dispatch and `__syscall_cp_check(r)` after it, handling all three cancel states the way the stock assembly does: ENABLE exits through `pthread_exit(PTHREAD_CANCELED)`, MASKED synthesizes `-ECANCELED` so a condition wait can reacquire its mutex first, DISABLE leaves the operation live.
+- `SYS_THREAD_CANCEL` (415, `crates/shared/src/lib.rs` → `host/src/generated/abi.ts`) is a host-intercepted syscall that wakes a target already blocked in a cancellation point, but only when that exact request advertised `REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED` — so a target in `PTHREAD_CANCEL_DISABLE` keeps its operation and its deadline intact while the cancel stays pending.
+
+Cleanup handlers, `pthread_setcancelstate`, and the `pthread_cond_wait` cancellation handoff all work on top of that.
+
+**The residual limit is preemption.** `PTHREAD_CANCEL_ASYNCHRONOUS` promises that a thread can be cancelled at an arbitrary point in its own computation. Wasm cannot interrupt a running thread mid-function, so a target that never reaches a cancellation point cannot be cancelled at all. `pthread_cancel` still records the pending flag for such a thread, and it will be cancelled if it later enters a cancellation-point syscall — but an async cancel of a pure-CPU loop never takes effect.
+
+**Affected libc-tests:** functional `pthread_cancel` — its first subcase async-cancels a thread parked in `for (;;)`, so that thread never exits, `pthread_join` never returns, and the per-test timeout kills the run. Splitting the test confirms the boundary: a build carrying only its two cleanup-handler subcases (which block in `sleep(3)`, a real cancellation point) passes in under a second, while a build carrying only the async subcase hangs. `pthread_cancel-points` and `pthread_cond_wait-cancel_ignored` both pass.
 
 ## 3. No FP Exception Flags or Alternate Rounding Modes
 
@@ -24,9 +43,9 @@ Wasm floating-point is non-trapping IEEE 754 with a fixed round-to-nearest mode.
 
 ## 4. OOM / Resource Exhaustion
 
-Tests that deliberately exhaust resources behave differently in Wasm's linear memory model. Memory limits are enforced (RLIMIT_AS), and most OOM tests pass.
+Memory limits are enforced (`RLIMIT_AS`), and the libc-test out-of-memory checks for `malloc`, `setenv`, and `pthread_create` (`malloc-oom`, `setenv-oom`, `pthread_create-oom`) pass. Until 2026-09-25 all three were listed here as Wasm limits; they had been XFAIL because the libc-test harness compiled `t_memfill()` to return -1 unconditionally, so they failed in setup with "memfill failed" before testing anything (fixed 2026-09-25 with `-fno-builtin-malloc`).
 
-**Affected libc-tests:** `malloc-brk-fail`, `malloc-oom`, `setenv-oom`
+**Affected libc-tests:** `malloc-brk-fail`, because of page size rather than out-of-memory behavior. The test fills memory, unmaps a fixed 64 KiB hole, and expects `malloc(10000)` to fit in it. On the 4 KiB-page systems it was written for that hole is 16 pages; here it is one, because Kandelo's page size is WebAssembly's 64 KiB page. With `brk` unavailable, musl's allocator needs three pages for a first small allocation — measured: holes of one or two pages fail, three or more succeed, and a direct `mmap` reuses the hole correctly in every case. At the test's intended 16-page geometry it passes. POSIX does not promise that 64 KiB is many pages.
 
 ## 5. No dlopen for TLS
 
@@ -89,8 +108,8 @@ changes made by an external host writer do not invalidate Kandelo's page cache.
 | `getrusage()` with real data | No CPU/memory tracking available in Wasm runtime |
 | Immediate cross-process `MAP_SHARED` + futex | Distinct process memories cannot directly address or wake on one another's bytes; Kandelo provides syscall-boundary data coherence instead |
 | Raw server sockets (browser) | Web sandbox prevents listening on ports |
-| Guest-initiated `pthread_create` | Wasm threads require host orchestration via Web Workers |
-| `pthread_cancel` | No architecture-specific `__syscall_cp_asm` for Wasm |
+| Native thread creation | No wasm instruction starts a thread; guest `pthread_create` works, but only because the host spawns a worker per thread — see §1 |
+| `PTHREAD_CANCEL_ASYNCHRONOUS` | Wasm cannot preempt a running thread, so a target that never reaches a cancellation point cannot be cancelled. Deferred cancellation at cancellation points does work — see §2 |
 
 ## What IS Implemented (previously listed as impossible)
 
@@ -107,14 +126,14 @@ changes made by an external host writer do not invalidate Kandelo's page cache.
 | POSIX timers | setitimer/getitimer (PR #148) |
 | `sem_open` | Implemented |
 | PTY / terminal | Full pseudoterminal with line discipline (PR #181) |
-| Threads via `clone()` | Host-managed Web Workers, MariaDB runs 5 threads (PR #88) |
+| Threads via `pthread_create` / `clone()` | Host-managed workers sharing the parent `Memory`, MariaDB runs 5 threads (PR #88) |
+| Deferred `pthread_cancel` | Cancellation at cancellation points, cleanup handlers, `pthread_setcancelstate`, and the `pthread_cond_wait` handoff — see §2 |
 | OPFS filesystem | Browser persistence includes exact `u64` stat identity, session-scoped inode tokens, simultaneous-open unification, and live-handle identity across supported rename/unlink operations; browsers missing the required identity or move primitives fail at that explicit boundary |
 
-## Current libc-test Results (2026-04-05)
+## Current libc-test Results (2026-09-25, Node)
 
-0 unexpected failures, 20 expected failures (XFAIL):
+306 pass, 0 unexpected failures, 17 expected failures (XFAIL), out of 324:
 - 14 math precision (musl ULP issues)
-- 3 OOM behavior (malloc-brk-fail, malloc-oom, setenv-oom)
-- 1 threading (pthread_create-oom)
-- 1 cancellation (pthread_cancel)
+- 1 page-size geometry (malloc-brk-fail — assumes 4 KiB pages; see §4)
+- 1 asynchronous cancellation (pthread_cancel — deferred cancellation passes; see §2)
 - 1 dynamic TLS (tls_get_new-dtv)

@@ -48,6 +48,8 @@ function makeTarget(): BrowserImmediatePolyfillTarget {
   ManualMessageChannel.instances = [];
   return {
     MessageChannel: ManualMessageChannel as unknown as typeof MessageChannel,
+    performance: { now: () => 0 },
+    setTimeout: (callback, delay) => setTimeout(callback, delay),
   };
 }
 
@@ -81,6 +83,109 @@ describe("browser setImmediate polyfill", () => {
     expect(order).toEqual(["first", "second", "nested"]);
     expect(state.pendingCount()).toBe(0);
     expect(state.queueLength()).toBe(0);
+  });
+
+  it("yields a continuous immediate chain through the timer queue", () => {
+    const target = makeTarget();
+    let now = 0;
+    const timers: Array<() => void> = [];
+    target.performance = { now: () => now };
+    target.setTimeout = callback => { timers.push(callback); };
+    const state = installBrowserSetImmediatePolyfill(target)!;
+    let calls = 0;
+    const tick = () => {
+      calls++;
+      now += 2;
+      (target.setImmediate as any)(tick);
+    };
+    (target.setImmediate as any)(tick);
+    const channel = installedChannel();
+    channel.flushNext();
+    channel.flushNext();
+    expect(calls).toBe(2);
+    expect(channel.pendingTurns()).toBe(0);
+    expect(timers).toHaveLength(1);
+    expect(state.pendingCount()).toBe(1);
+    timers.shift()!();
+    channel.flushNext();
+    expect(calls).toBe(3);
+    expect(channel.pendingTurns()).toBe(1);
+  });
+
+  it("retains the yield budget when callbacks arrive between flushes", () => {
+    const target = makeTarget();
+    let now = 0;
+    const timers: Array<() => void> = [];
+    target.performance = { now: () => now };
+    target.setTimeout = callback => { timers.push(callback); };
+    installBrowserSetImmediatePolyfill(target);
+    const callback = vi.fn();
+    const channel = installedChannel();
+    (target.setImmediate as any)(callback);
+    channel.flushNext();
+    now = 2;
+    (target.setImmediate as any)(callback);
+    channel.flushNext();
+    now = 4;
+    (target.setImmediate as any)(callback);
+    expect(channel.pendingTurns()).toBe(0);
+    expect(timers).toHaveLength(1);
+    expect(callback).toHaveBeenCalledTimes(2);
+    timers.shift()!();
+    channel.flushNext();
+    expect(callback).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps pending callbacks cancellable during a native scheduler yield", async () => {
+    const target = makeTarget();
+    let now = 0;
+    let resume!: () => void;
+    target.performance = { now: () => now };
+    target.scheduler = { yield: vi.fn(() => new Promise<void>(resolve => { resume = resolve; })) };
+    target.setTimeout = vi.fn();
+    const state = installBrowserSetImmediatePolyfill(target)!;
+    const kept = vi.fn();
+    const cancelled = vi.fn();
+    now = 4;
+    (target.setImmediate as any)(kept);
+    const handle = (target.setImmediate as any)(cancelled);
+    (target.clearImmediate as any)(handle);
+    const channel = installedChannel();
+    expect(target.scheduler.yield).toHaveBeenCalledTimes(1);
+    expect(target.setTimeout).not.toHaveBeenCalled();
+    expect(channel.pendingTurns()).toBe(0);
+    expect(state.pendingCount()).toBe(1);
+    now = 10;
+    resume();
+    await Promise.resolve();
+    channel.flushNext();
+    expect(kept).toHaveBeenCalledTimes(1);
+    expect(cancelled).not.toHaveBeenCalled();
+    (target.setImmediate as any)(kept);
+    expect(target.scheduler.yield).toHaveBeenCalledTimes(1);
+    channel.flushNext();
+    expect(kept).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to a timer when the scheduler yield rejects", async () => {
+    const target = makeTarget();
+    let now = 0;
+    const timers: Array<() => void> = [];
+    target.performance = { now: () => now };
+    target.scheduler = { yield: () => Promise.reject(new Error("scheduler unavailable")) };
+    target.setTimeout = callback => { timers.push(callback); };
+    const state = installBrowserSetImmediatePolyfill(target)!;
+    now = 4;
+    const callback = vi.fn();
+    (target.setImmediate as any)(callback);
+    await Promise.resolve();
+    expect(timers).toHaveLength(1);
+    expect(state.pendingCount()).toBe(1);
+    expect(installedChannel().pendingTurns()).toBe(0);
+    timers.shift()!();
+    installedChannel().flushNext();
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(state.pendingCount()).toBe(0);
   });
 
   it("cancels only a matching pending immediate", () => {
@@ -123,10 +228,7 @@ describe("browser setImmediate polyfill", () => {
 
   it("does not replace a host-provided setImmediate", () => {
     const setImmediate = vi.fn();
-    const target = {
-      MessageChannel: ManualMessageChannel as unknown as typeof MessageChannel,
-      setImmediate,
-    };
+    const target = { ...makeTarget(), setImmediate };
 
     expect(installBrowserSetImmediatePolyfill(target)).toBeNull();
     expect(target.setImmediate).toBe(setImmediate);

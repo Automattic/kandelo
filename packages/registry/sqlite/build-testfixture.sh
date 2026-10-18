@@ -194,12 +194,6 @@ CFLAGS=(
     -I"$ZLIB_INSTALL/include"
 )
 
-# SQLite's recursive test cases need more than wasm-ld's default 64 KiB shadow
-# stack. Use 1 MiB without reviving the old 2 GiB maximum-memory workaround.
-TESTFIXTURE_LDFLAGS=(
-    -Wl,-z,stack-size=1048576
-)
-
 # TESTSRC — test C files (excluding test_thread.c)
 TESTSRC_FILES=(
     "$SQLITE_FULL/src/test1.c"
@@ -332,7 +326,6 @@ wasm32posix-cc "${CFLAGS[@]}" \
     "${OBJ_FILES[@]}" \
     -L"$TCL_INSTALL/lib" -ltcl8.6 \
     -L"$ZLIB_INSTALL/lib" -lz \
-    "${TESTFIXTURE_LDFLAGS[@]}" \
     -o testfixture
 
 if [ ! -f testfixture ]; then
@@ -343,8 +336,7 @@ fi
 # --- Fork instrumentation ---
 # TCL's exec command uses fork(). Many SQLite tests use exec.
 # wasm-fork-instrument auto-discovers fork paths via call-graph analysis —
-# no onlylist needed. Must run last — it hardcodes mutable-global offsets
-# and any later pass reordering globals would corrupt the fork buffer.
+# no onlylist needed. The tool also runs wasm-opt over the code it adds.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "==> Applying fork instrumentation..."
 "$FORK_INSTRUMENT" testfixture -o testfixture.instr

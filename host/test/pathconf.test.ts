@@ -1,50 +1,43 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  PATHCONF_NAMES,
-  POSIX_PATH_MAX_BYTES,
-} from "../src/generated/abi";
-import { filesystemPathconf } from "../src/pathconf";
-import { DeviceFileSystem } from "../src/vfs/device-fs";
+import { OPEN_FLAGS, PATHCONF_NAMES } from "../src/generated/abi";
+import { backendPathconf } from "../src/pathconf";
 import { HostFileSystem } from "../src/vfs/host-fs";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
-import {
-  ENOENT,
-  O_CREAT,
-  O_RDONLY,
-  O_RDWR,
-  SFSError,
-} from "../src/vfs/sharedfs-vendor";
-import type { StatResult } from "../src/types";
+import { ENOENT } from "../src/vfs/vfs-errors";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { ensureWasm64ExampleFixture } from "./wasm64-example-fixture";
 
+const { O_CREAT, O_RDONLY, O_RDWR } = OPEN_FLAGS;
+
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
-function memoryFileSystem(): MemoryFileSystem {
-  return MemoryFileSystem.create(new SharedArrayBuffer(2 * 1024 * 1024));
+/**
+ * A backend for the ROUTING cases below, which assert which mount
+ * `VirtualPlatformIO` consulted and not what any filesystem answered — one of
+ * them spies `pathconf` and returns a literal for exactly that reason.
+ *
+ * `HostFileSystem` is the `FileSystemBackend` the platform ships for real
+ * host directories, and the profile cases below already use it.
+ */
+const routingRoots: string[] = [];
+function routingBackend(): HostFileSystem {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-pathconf-routing-"));
+  routingRoots.push(root);
+  return new HostFileSystem(root);
 }
 
+afterAll(() => {
+  while (routingRoots.length > 0) {
+    rmSync(routingRoots.pop()!, { recursive: true, force: true });
+  }
+});
+
 describe("pathconf capability values", () => {
-  const regularStat: StatResult = {
-    dev: 1,
-    ino: 1,
-    mode: 0o100644,
-    nlink: 1,
-    uid: 0,
-    gid: 0,
-    size: 0,
-    atimeMs: 0,
-    mtimeMs: 0,
-    ctimeMs: 0,
-  };
-  const fifoStat = { ...regularStat, mode: 0o010644 };
-  const directoryStat = { ...regularStat, mode: 0o040755 };
   const memoryProfile = {
     supportsSymlinks: true,
     timestampResolutionNs: 1_000_000,
@@ -61,90 +54,46 @@ describe("pathconf capability values", () => {
     expect(Math.max(...Object.values(PATHCONF_NAMES))).toBe(23);
   });
 
-  it("reports enforced namespace limits and backend capabilities", () => {
-    expect(
-      filesystemPathconf(regularStat, PATHCONF_NAMES.NAME_MAX, memoryProfile),
-    ).toBe(255);
-    expect(
-      filesystemPathconf(regularStat, PATHCONF_NAMES.PATH_MAX, memoryProfile),
-    ).toBe(POSIX_PATH_MAX_BYTES);
-    expect(
-      filesystemPathconf(regularStat, PATHCONF_NAMES.NO_TRUNC, memoryProfile),
-    ).toBe(1);
-    expect(
-      filesystemPathconf(
-        regularStat,
-        PATHCONF_NAMES.CHOWN_RESTRICTED,
-        opfsProfile,
-      ),
-    ).toBe(1);
-    expect(
-      filesystemPathconf(
-        regularStat,
-        PATHCONF_NAMES.POSIX2_SYMLINKS,
-        memoryProfile,
-      ),
-    ).toBe(1);
-    expect(
-      filesystemPathconf(
-        regularStat,
-        PATHCONF_NAMES.POSIX2_SYMLINKS,
-        opfsProfile,
-      ),
-    ).toBeNull();
-    expect(
-      filesystemPathconf(regularStat, PATHCONF_NAMES.ASYNC_IO, memoryProfile),
-    ).toBe(1);
-    expect(
-      filesystemPathconf(
-        regularStat,
-        PATHCONF_NAMES.TIMESTAMP_RESOLUTION,
-        memoryProfile,
-      ),
-    ).toBe(1_000_000);
-    expect(
-      filesystemPathconf(
-        regularStat,
-        PATHCONF_NAMES.TIMESTAMP_RESOLUTION,
-        opfsProfile,
-      ),
-    ).toBeNull();
+  it("answers only the two names a JavaScript backend can source", () => {
+    // Everything else is the kernel's: `filesystem_pathconf_value` in
+    // crates/runtime-core/src/syscalls.rs is the single authority, and a host
+    // that answered those names here would be a second one.
+    expect(backendPathconf(PATHCONF_NAMES.POSIX2_SYMLINKS, memoryProfile))
+      .toBe(1);
+    expect(backendPathconf(PATHCONF_NAMES.POSIX2_SYMLINKS, opfsProfile))
+      .toBeNull();
+    expect(backendPathconf(PATHCONF_NAMES.TIMESTAMP_RESOLUTION, memoryProfile))
+      .toBe(1_000_000);
+    expect(backendPathconf(PATHCONF_NAMES.TIMESTAMP_RESOLUTION, opfsProfile))
+      .toBeNull();
   });
 
-  it("distinguishes indeterminate values from invalid associations", () => {
-    expect(
-      filesystemPathconf(regularStat, PATHCONF_NAMES.LINK_MAX, memoryProfile),
-    ).toBeNull();
-    expect(
-      filesystemPathconf(
-        regularStat,
+  it("refuses every kernel-owned name with ENOSYS rather than restating it", () => {
+    for (
+      const name of [
+        PATHCONF_NAMES.NAME_MAX,
+        PATHCONF_NAMES.PATH_MAX,
+        PATHCONF_NAMES.NO_TRUNC,
+        PATHCONF_NAMES.CHOWN_RESTRICTED,
+        PATHCONF_NAMES.LINK_MAX,
         PATHCONF_NAMES.FILESIZEBITS,
-        memoryProfile,
-      ),
-    ).toBeNull();
-    expect(() =>
-      filesystemPathconf(regularStat, PATHCONF_NAMES.PIPE_BUF, memoryProfile),
-    ).toThrow(/EINVAL/);
-    expect(
-      filesystemPathconf(fifoStat, PATHCONF_NAMES.PIPE_BUF, memoryProfile),
-    ).toBeNull();
-    expect(
-      filesystemPathconf(
-        directoryStat,
         PATHCONF_NAMES.PIPE_BUF,
-        memoryProfile,
-      ),
-    ).toBeNull();
-    expect(() => filesystemPathconf(regularStat, 999, memoryProfile)).toThrow(
-      /EINVAL/,
-    );
+        PATHCONF_NAMES.ASYNC_IO,
+        PATHCONF_NAMES.MAX_CANON,
+        PATHCONF_NAMES.VDISABLE,
+        999,
+      ]
+    ) {
+      expect(() => backendPathconf(name, memoryProfile), String(name))
+        .toThrow(/ENOSYS/);
+    }
   });
 });
 
 describe("pathconf VFS routing", () => {
   it("uses the longest-prefix mount for pathname queries", () => {
-    const root = memoryFileSystem();
-    const mounted = memoryFileSystem();
+    const root = routingBackend();
+    const mounted = routingBackend();
     const rootQuery = vi.spyOn(root, "pathconf").mockReturnValue(111);
     const mountedQuery = vi.spyOn(mounted, "pathconf").mockReturnValue(222);
     const io = new VirtualPlatformIO(
@@ -157,12 +106,13 @@ describe("pathconf VFS routing", () => {
 
     expect(io.pathconf("/mnt/file", PATHCONF_NAMES.PATH_MAX)).toBe(222);
     expect(mountedQuery).toHaveBeenCalledWith("/file", PATHCONF_NAMES.PATH_MAX);
+    // Routing is what this asserts; the value is the mock's.
     expect(rootQuery).not.toHaveBeenCalled();
   });
 
   it("keeps fpathconf on the open handle's backend after unlink", () => {
-    const root = memoryFileSystem();
-    const mounted = memoryFileSystem();
+    const root = routingBackend();
+    const mounted = routingBackend();
     root.mkdir("/mnt", 0o755);
     const io = new VirtualPlatformIO(
       [
@@ -174,25 +124,25 @@ describe("pathconf VFS routing", () => {
     const fd = io.open("/mnt/file", O_CREAT | O_RDWR, 0o644);
     io.unlink("/mnt/file");
 
-    expect(io.fpathconf(fd, PATHCONF_NAMES.NAME_MAX)).toBe(255);
+    expect(io.fpathconf(fd, PATHCONF_NAMES.TIMESTAMP_RESOLUTION))
+      .toBe(1_000_000);
     try {
-      io.pathconf("/mnt/file", PATHCONF_NAMES.NAME_MAX);
+      io.pathconf("/mnt/file", PATHCONF_NAMES.TIMESTAMP_RESOLUTION);
       throw new Error("pathconf unexpectedly accepted an unlinked path");
     } catch (error) {
-      expect(error).toBeInstanceOf(SFSError);
-      expect((error as SFSError).code).toBe(ENOENT);
+      // ENOENT, whichever backend spells it. The claim is that an unlinked
+      // path stops answering `pathconf` while the OPEN HANDLE keeps answering
+      // `fpathconf` — not that a particular filesystem's error class reached
+      // the caller.
+      const errno = (error as { errno?: number; code?: number });
+      expect(
+        Math.abs(errno.errno ?? errno.code ?? 0),
+        `expected ENOENT, got ${String(error)}`,
+      ).toBe(Math.abs(ENOENT));
     }
     io.close(fd);
   });
 
-  it("validates device paths and live device handles", () => {
-    const device = new DeviceFileSystem();
-    expect(device.pathconf("/null", PATHCONF_NAMES.NAME_MAX)).toBe(255);
-    const fd = device.open("/null", O_RDONLY, 0);
-    expect(device.fpathconf(fd, PATHCONF_NAMES.CHOWN_RESTRICTED)).toBe(1);
-    device.close(fd);
-    expect(() => device.fpathconf(fd, PATHCONF_NAMES.NAME_MAX)).toThrow(/EBADF/);
-  });
 });
 
 describe("HostFileSystem fpathconf", () => {
@@ -210,9 +160,10 @@ describe("HostFileSystem fpathconf", () => {
     const fd = fs.open("/file", O_RDONLY, 0);
     fs.unlink("/file");
 
-    expect(fs.fpathconf(fd, PATHCONF_NAMES.PATH_MAX))
-      .toBe(POSIX_PATH_MAX_BYTES);
-    expect(() => fs.pathconf("/file", PATHCONF_NAMES.PATH_MAX)).toThrow(/ENOENT/);
+    expect(fs.fpathconf(fd, PATHCONF_NAMES.TIMESTAMP_RESOLUTION))
+      .toBe(1_000_000);
+    expect(() => fs.pathconf("/file", PATHCONF_NAMES.TIMESTAMP_RESOLUTION))
+      .toThrow(/ENOENT/);
     fs.close(fd);
   });
 });

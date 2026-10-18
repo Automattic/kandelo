@@ -1,0 +1,25 @@
+kind = "program"
+name = "lhasa"
+version = "0.4.0"
+# lhasa (Simon Howard): a small, dependency-free LHA/LZH archive tool. Kandelo
+# uses it to extract the LZH `lh5`-compressed `resource.1` inside id's original
+# Quake shareware archive (quake106.zip), producing id1/pak0.pak entirely on
+# the user's machine through the normal platform path.
+kernel_abi = 43
+depends_on = []
+
+[source]
+url = "https://github.com/fragglet/lhasa/releases/download/v0.4.0/lhasa-0.4.0.tar.gz"
+sha256 = "a7fc883c304c508562fb93fa307a4c342b0c886fcc265f28b92dc0c39220c5b3"
+provider = "archive"
+
+[license]
+spdx = "ISC"
+url = "https://github.com/fragglet/lhasa/blob/master/COPYING"
+
+[build]
+script_path = "packages/registry/lhasa/build-lhasa.sh"
+
+[[outputs]]
+name = "lha"
+wasm = "lha.wasm"

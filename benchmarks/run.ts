@@ -607,6 +607,7 @@ function logArtifacts(artifacts: BenchmarkArtifacts) {
 /** Suite name → module path. Loaded lazily so missing suites don't block others. */
 const SUITE_MODULES: Record<string, string> = {
   "syscall-io": "./suites/syscall-io.js",
+  "stdin-throughput": "./suites/stdin-throughput.js",
   "process-lifecycle": "./suites/process-lifecycle.js",
   "spawn-scratch": "./suites/spawn-scratch.js",
   "erlang-ring": "./suites/erlang-ring.js",

@@ -7,32 +7,50 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodePlatformIO } from "../src/platform/node";
+import { tryResolveBinary } from "../src/binary-resolver";
 import {
   FORK_CAP_DYLINK_MAIN,
   FORK_CAP_SIDE_ENTRY,
   parseDylinkSection,
   readForkInstrumentCapabilities,
 } from "../src/dylink";
-import { runCentralizedProgram } from "./centralized-test-helper";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "./centralized-test-helper";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
 const sysroot = join(repoRoot, "sysroot");
 const glueDir = join(repoRoot, "libc", "glue");
-const clangDriver = process.env.CLANG ?? "clang";
+// Every artifact in this file is built by the SDK driver. The SDK owns both
+// link contracts involved: linkFlags() for the main program and
+// SHARED_LINK_FLAGS for the side modules. This file used to carry its own
+// copy of each, and the main-program copy had drifted -- no
+// -z stack-size=8388608, so the program ran on wasm-ld's ~64 KiB default
+// shadow stack instead of the SDK's 8 MiB.
+//
+// Absolute path, never a bare `wasm32posix-cc`: a bare name resolves through
+// PATH and can pick up a different worktree's SDK.
+const cc = join(repoRoot, "sdk", "bin", "wasm32posix-cc");
 const instrument = join(repoRoot, "scripts", "run-wasm-fork-instrument.sh");
-const buildDir = join(tmpdir(), "kandelo-fork-from-side-module");
+// Stage the built `.so` under `<repoRoot>/target` (never an in-kernel tmpfs
+// scratch prefix) so the guest reaches the real host file through
+// NodePlatformIO. `os.tmpdir()` can resolve under `/tmp` (the nix dev shell on
+// Linux sets `TMPDIR=/tmp/nix-shell.*`), where the in-kernel tmpfs would serve
+// the path instead and the guest dlopen would fail with "cannot stat library".
+const buildDir = makeHostScratchTempRoot("kandelo-fork-from-side-module-");
 const hasPrerequisites =
   existsSync(join(sysroot, "lib", "libc.a"))
   && (
-    existsSync(join(repoRoot, "binaries", "kernel.wasm"))
-    || existsSync(join(repoRoot, "local-binaries", "kernel.wasm"))
+    // The resolver runCentralizedProgram boots from; legacy-path checks
+    // skipped this suite in source-only checkouts.
+    tryResolveBinary("kernel.wasm") !== null
   );
 
 if (process.env.KANDELO_REQUIRE_SIDE_MODULE_FORK_E2E === "1" && !hasPrerequisites) {
@@ -41,60 +59,61 @@ if (process.env.KANDELO_REQUIRE_SIDE_MODULE_FORK_E2E === "1" && !hasPrerequisite
   );
 }
 
-function llvmTool(name: "clang" | "wasm-ld"): string {
-  if (name === "wasm-ld" && process.env.WASM_LD) return process.env.WASM_LD;
-  // Nix's native clang wrapper injects Darwin hardening flags that are invalid
-  // for wasm32. Ask the driver for its underlying LLVM tools so this fixture
-  // follows the same cross-target path as the repository build scripts. Keep
-  // discovery lazy so a deliberately skipped fixture needs no compiler.
-  return execFileSync(clangDriver, [`-print-prog-name=${name}`], {
-    encoding: "utf8",
-  }).trim() || name;
-}
-
 function instrumentInPlace(wasmPath: string, entry?: string): void {
   const output = `${wasmPath}.instrumented`;
   const args = [wasmPath, "-o", output];
-  if (entry) args.push("--entry", entry);
+  if (entry) {
+    args.push("--entry", entry);
+  } else {
+    // These executables deliberately load arbitrary fork-returning plugins.
+    // The default traced-entries contract correctly refuses such imports.
+    args.push("--side-modules", "assume-all-entries-fork-returning");
+  }
   execFileSync(instrument, args, { stdio: "pipe" });
   renameSync(output, wasmPath);
 }
 
+/**
+ * Build a side module.
+ *
+ * `-shared -fPIC` selects the SDK's side-module link (SHARED_LINK_FLAGS:
+ * -nostdlib, --experimental-pic, --shared, --shared-memory, --export-all,
+ * --allow-undefined), straight from the .c with no intermediate object.
+ *
+ * `--Bdynamic` and its dependency list are caller inputs: for a shared link
+ * buildClangArgsInternal() in sdk/src/bin/cc.ts leaves
+ * `deferExecutableInputs` false, so it pushes the caller's arguments verbatim
+ * and appends SHARED_LINK_FLAGS after them. That
+ * ordering is what puts a `needed_dynlibs` entry in the consumer's dylink.0
+ * section for the DT_NEEDED closure test below.
+ *
+ * The dependencies are passed as plain positional arguments rather than
+ * folded into the `-Wl,` list. clang splits a `-Wl,` operand on COMMAS, so
+ * `-Wl,--Bdynamic,<path>` would corrupt any path containing one; a bare path
+ * with a known-unknown extension is forwarded to the linker untouched and in
+ * position.
+ */
 function buildSharedLibrary(
   source: string,
   name = "libforkinside",
   dependencies: readonly string[] = [],
 ): string {
   const sourcePath = join(buildDir, `${name}.c`);
-  const objectPath = join(buildDir, `${name}.o`);
   const libraryPath = join(buildDir, `${name}.so`);
   writeFileSync(sourcePath, `${source}
     #include "abi_constants.h"
     __attribute__((export_name("__abi_version")))
     unsigned __abi_version(void) { return WASM_POSIX_ABI_VERSION; }
   `);
-  execFileSync(llvmTool("clang"), [
-    "--target=wasm32-unknown-unknown",
+  execFileSync(cc, [
+    "-shared",
     "-fPIC",
     "-O2",
-    "-matomics",
-    "-mbulk-memory",
     `-I${glueDir}`,
-    "-c",
     sourcePath,
-    "-o",
-    objectPath,
-  ], { stdio: "pipe" });
-  execFileSync(llvmTool("wasm-ld"), [
-    "--experimental-pic",
-    "--shared",
-    "--shared-memory",
-    "--export-all",
-    "--allow-undefined",
+    ...(dependencies.length === 0 ? [] : ["-Wl,--Bdynamic", ...dependencies]),
     "-o",
     libraryPath,
-    objectPath,
-    ...(dependencies.length === 0 ? [] : ["--Bdynamic", ...dependencies]),
   ], { stdio: "pipe" });
   instrumentInPlace(libraryPath, "env.fork");
   return libraryPath;
@@ -104,37 +123,15 @@ function buildMainProgram(source: string): string {
   const sourcePath = join(buildDir, "fork-from-side-main.c");
   const wasmPath = join(buildDir, "fork-from-side-main.wasm");
   writeFileSync(sourcePath, source);
-  execFileSync(llvmTool("clang"), [
-    "--target=wasm32-unknown-unknown",
-    `--sysroot=${sysroot}`,
-    "-nostdlib",
+  // The driver supplies the target, the sysroot, -nostdlib, the codegen
+  // flags, the syscall glue, compiler_rt.c, cxxrt.c, crt1.o, libc.a and every
+  // -Wl, flag. `-ldl` is how it spells the dlopen glue this program needs
+  // (parseArgs/linkDl, sdk/src/bin/cc.ts). `-Wl,--export-all` stays: it is
+  // this fixture's own requirement, not part of the platform contract.
+  execFileSync(cc, [
     "-O2",
-    "-matomics",
-    "-mbulk-memory",
-    "-fno-trapping-math",
+    "-ldl",
     sourcePath,
-    join(glueDir, "channel_syscall.c"),
-    join(glueDir, "compiler_rt.c"),
-    join(glueDir, "dlopen.c"),
-    join(sysroot, "lib", "crt1.o"),
-    join(sysroot, "lib", "libc.a"),
-    "-Wl,--no-entry",
-    "-Wl,--export=_start",
-    "-Wl,--export=__heap_base",
-    "-Wl,--import-memory",
-    "-Wl,--shared-memory",
-    "-Wl,--max-memory=1073741824",
-    "-Wl,--allow-undefined",
-    "-Wl,--global-base=1114112",
-    "-Wl,--table-base=3",
-    "-Wl,--export-table",
-    "-Wl,--growable-table",
-    "-Wl,--export=__wasm_init_tls",
-    "-Wl,--export=__tls_base",
-    "-Wl,--export=__tls_size",
-    "-Wl,--export=__tls_align",
-    "-Wl,--export=__stack_pointer",
-    "-Wl,--export=__wasm_thread_init",
     "-Wl,--export-all",
     "-o",
     wasmPath,
@@ -219,9 +216,7 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     const fixture = buildVforkSideModuleFixture();
     try {
       const libraryBytes = new Uint8Array(readFileSync(fixture.libraryPath));
-      const imageOwner = MemoryFileSystem.create(
-        new SharedArrayBuffer(Math.max(2 * 1024 * 1024, libraryBytes.length * 4)),
-      );
+      const imageOwner = KandeloImageFs.create();
       imageOwner.mkdir("/lib", 0o755);
       imageOwner.createFileWithOwner(
         "/lib/libvforkinside.so",

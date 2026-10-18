@@ -1,11 +1,20 @@
 import * as React from "react";
 import markUrl from "../assets/kandelo-mark.png";
 import type { MachineStatus } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import type { SessionPhase } from "../../../lib/network-session";
 
 export type DockPaneId = "gallery";
 export type DockViewId = "demo" | "terminal";
 
 const REPOSITORY_URL = "https://github.com/Automattic/kandelo";
+
+export const NETWORK_PHASE_LABEL: Record<SessionPhase, string> = {
+  offline: "not connected",
+  hosting: "starting",
+  joining: "joining",
+  connected: "connected",
+  error: "failed",
+};
 
 interface DockItem<T extends string> {
   id: T;
@@ -32,7 +41,7 @@ const VIEW_ITEMS: DockItem<DockViewId>[] = [
 const SHARE_ITEM: DockItem<"share"> = {
   id: "share",
   label: "Share",
-  title: "Share this machine as a link",
+  title: "Share this computer as a link",
   icon: <svg width="16" height="16" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="5.5" cy="11" r="2.4" /><circle cx="16" cy="5" r="2.4" /><circle cx="16" cy="17" r="2.4" /><path d="M7.6 10l6.4-3.6M7.6 12l6.4 3.6" /></svg>,
 };
 
@@ -50,13 +59,6 @@ const GUIDE_ITEM: DockItem<"guide"> = {
   icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M4 2.5h6.5L13 5v8.5H4z" /><path d="M10.5 2.5V5H13" /><path d="M6 7h5M6 9.5h5M6 12h3" /></svg>,
 };
 
-const NETWORK_ITEM: DockItem<"network"> = {
-  id: "network",
-  label: "Network",
-  title: "Share this machine with another computer",
-  icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="3.6" cy="4" r="1.8" /><circle cx="12.4" cy="4" r="1.8" /><circle cx="8" cy="12.4" r="1.8" /><path d="M5.4 4h5.2M4.5 5.6 7 10.8M11.5 5.6 9 10.8" /></svg>,
-};
-
 const THEME_ITEM: DockItem<"theme"> = {
   id: "theme",
   label: "Theme",
@@ -68,7 +70,7 @@ const PANE_ITEMS: DockItem<DockPaneId>[] = [
   {
     id: "gallery",
     label: "New",
-    title: "Launch new machine",
+    title: "Launch new computer",
     icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M8 3v10M3 8h10" /></svg>,
   },
 ];
@@ -99,19 +101,18 @@ export type DockLayoutState = {
 };
 
 export const Dock: React.FC<{
+  networkPhase?: SessionPhase;
+  onOpenNetwork?: () => void;
   activePane: DockPaneId | null;
   activeView: DockViewId | null;
   viewControls?: React.ReactNode;
   guidePopup?: React.ReactNode;
   internalsPopup?: React.ReactNode;
-  networkPopup?: React.ReactNode;
   themePopup?: React.ReactNode;
   guideAvailable: boolean;
   guideOpen: boolean;
   internalsAvailable: boolean;
   internalsOpen: boolean;
-  networkOpen: boolean;
-  networkConnected: boolean;
   themeOpen: boolean;
   shareAvailable: boolean;
   status: MachineStatus;
@@ -141,46 +142,41 @@ export const Dock: React.FC<{
   onSelectView: (view: DockViewId) => void;
   onToggleGuide: () => void;
   onToggleInternals: () => void;
-  onToggleNetwork: () => void;
   onToggleTheme: () => void;
   onOpenShare: () => void;
   onCloseGuide: () => void;
   onCloseInternals: () => void;
-  onCloseNetwork: () => void;
   onCloseTheme: () => void;
   onHeightChange: (height: number) => void;
   onLayoutChange?: (layout: DockLayoutState) => void;
 }> = ({
+  networkPhase = "offline",
+  onOpenNetwork,
   activePane,
   activeView,
   viewControls,
   guidePopup,
   internalsPopup,
-  networkPopup,
   themePopup,
   guideAvailable,
   guideOpen,
   internalsAvailable,
   internalsOpen,
-  networkOpen,
-  networkConnected,
-  role,
-  roleName,
   themeOpen,
   shareAvailable,
   status,
+  role,
+  roleName,
   machineTitle,
   viewDisabled = {},
   onSelectPane,
   onSelectView,
   onToggleGuide,
   onToggleInternals,
-  onToggleNetwork,
   onToggleTheme,
   onOpenShare,
   onCloseGuide,
   onCloseInternals,
-  onCloseNetwork,
   onCloseTheme,
   onHeightChange,
   onLayoutChange,
@@ -190,11 +186,9 @@ export const Dock: React.FC<{
   const rowRef = React.useRef<HTMLDivElement | null>(null);
   const guideButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const internalsButtonRef = React.useRef<HTMLButtonElement | null>(null);
-  const networkButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const themeButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const guidePopoverRef = React.useRef<HTMLDivElement | null>(null);
   const internalsPopoverRef = React.useRef<HTMLDivElement | null>(null);
-  const networkPopoverRef = React.useRef<HTMLDivElement | null>(null);
   const themePopoverRef = React.useRef<HTMLDivElement | null>(null);
   const compactClampPausedUntilRef = React.useRef(0);
   const dragRef = React.useRef<{
@@ -212,10 +206,9 @@ export const Dock: React.FC<{
   const [viewportWidth, setViewportWidth] = React.useState(() => window.innerWidth);
   const guideAnchor = useDockPopoverAnchor(guideOpen, guidePopup, shellRef, guideButtonRef, 380);
   const internalsAnchor = useDockPopoverAnchor(internalsOpen, internalsPopup, shellRef, internalsButtonRef, 980);
-  const networkAnchor = useDockPopoverAnchor(networkOpen, networkPopup, shellRef, networkButtonRef, 460);
   const themeAnchor = useDockPopoverAnchor(themeOpen, themePopup, shellRef, themeButtonRef, 360);
   const statusLabel = formatMachineStatus(status);
-  const title = machineTitle || "Kandelo machine";
+  const title = machineTitle || "Kandelo computer";
 
   const clampDockCenter = React.useCallback((center: number, width?: number): number => {
     const viewportWidth = window.innerWidth;
@@ -283,12 +276,11 @@ export const Dock: React.FC<{
     if (!collapsed) return;
     onCloseGuide();
     onCloseInternals();
-    onCloseNetwork();
     onCloseTheme();
-  }, [collapsed, onCloseGuide, onCloseInternals, onCloseNetwork, onCloseTheme]);
+  }, [collapsed, onCloseGuide, onCloseInternals, onCloseTheme]);
 
   React.useEffect(() => {
-    if (!guideOpen && !internalsOpen && !networkOpen && !themeOpen) return;
+    if (!guideOpen && !internalsOpen && !themeOpen) return;
 
     const handleOutsidePointerDown = (event: PointerEvent) => {
       const target = event.target;
@@ -306,12 +298,6 @@ export const Dock: React.FC<{
         }
       }
 
-      if (networkOpen) {
-        if (!networkPopoverRef.current?.contains(target) && !networkButtonRef.current?.contains(target)) {
-          onCloseNetwork();
-        }
-      }
-
       if (themeOpen) {
         if (!themePopoverRef.current?.contains(target) && !themeButtonRef.current?.contains(target)) {
           onCloseTheme();
@@ -321,20 +307,10 @@ export const Dock: React.FC<{
 
     document.addEventListener("pointerdown", handleOutsidePointerDown, true);
     return () => document.removeEventListener("pointerdown", handleOutsidePointerDown, true);
-  }, [
-    guideOpen,
-    internalsOpen,
-    networkOpen,
-    themeOpen,
-    onCloseGuide,
-    onCloseInternals,
-    onCloseNetwork,
-    onCloseTheme,
-  ]);
+  }, [guideOpen, internalsOpen, themeOpen, onCloseGuide, onCloseInternals, onCloseTheme]);
 
   const guidePopoverStyle = popoverStyle(guideAnchor, 380);
   const internalsPopoverStyle = popoverStyle(internalsAnchor, 980);
-  const networkPopoverStyle = popoverStyle(networkAnchor, 460);
   const themePopoverStyle = popoverStyle(themeAnchor, 360);
   const expandedDockWidth = dockCenter !== null
     ? Math.ceil(2 * Math.max(dockCenter, viewportWidth - dockCenter))
@@ -460,6 +436,21 @@ export const Dock: React.FC<{
               {viewControls}
             </div>
             <div className="kdock-toggle-pill" aria-label="Dock layout controls">
+              {onOpenNetwork && (
+                <button
+                  type="button"
+                  className="kdock-header-btn knetwork-button"
+                  data-state={networkPhase}
+                  aria-label={`Network session: ${NETWORK_PHASE_LABEL[networkPhase]}`}
+                  title={`Network session: ${NETWORK_PHASE_LABEL[networkPhase]}`}
+                  onClick={onOpenNetwork}
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <circle cx="8" cy="4" r="2" /><circle cx="3" cy="12" r="2" /><circle cx="13" cy="12" r="2" />
+                    <path d="M7 6l-3 4m5-4 3 4M5 12h6" />
+                  </svg>
+                </button>
+              )}
               <a
                 className="kdock-header-btn kdock-github-link"
                 href={REPOSITORY_URL}
@@ -508,7 +499,7 @@ export const Dock: React.FC<{
               data-named={role !== null && roleName !== null ? "" : undefined}
               onClick={() => onSelectPane(null)}
               title={`${title}: ${statusLabel}`}
-              aria-label={`Current machine: ${title}, ${statusLabel}${role === null ? "" : `${role === "user" ? ", User" : ", Viewer"}${roleName === null ? "" : ` (${roleName})`}`}`}
+              aria-label={`Current computer: ${title}, ${statusLabel}${role === null ? "" : `${role === "user" ? ", User" : ", Viewer"}${roleName === null ? "" : ` (${roleName})`}`}`}
             >
               <img src={markUrl} alt="" />
               <span className="kdock-status-copy">
@@ -525,7 +516,7 @@ export const Dock: React.FC<{
               )}
             </button>
             <div className="kdock">
-              <div className="kdock-section" aria-label="Machine tools">
+              <div className="kdock-section" aria-label="Computer tools">
                 {PANE_ITEMS.map((item) => (
                   <button
                     key={item.id}
@@ -541,7 +532,7 @@ export const Dock: React.FC<{
                 ))}
               </div>
               <div className="kdock-separator" aria-hidden="true" />
-              <div className="kdock-section" aria-label="Machine views">
+              <div className="kdock-section" aria-label="Computer views">
                 {VIEW_ITEMS.map((item) => {
                   const disabled = viewDisabled[item.id] === true;
                   return (
@@ -561,7 +552,7 @@ export const Dock: React.FC<{
                 })}
               </div>
               <div className="kdock-separator" aria-hidden="true" />
-              <div className="kdock-section kdock-section-actions" aria-label="Machine overlays">
+              <div className="kdock-section kdock-section-actions" aria-label="Computer overlays">
                 <button
                   ref={internalsButtonRef}
                   type="button"
@@ -574,18 +565,6 @@ export const Dock: React.FC<{
                 >
                   <span className="kdock-icon">{INTERNALS_ITEM.icon}</span>
                   <span className="kdock-label">{INTERNALS_ITEM.label}</span>
-                </button>
-                <button
-                  ref={networkButtonRef}
-                  type="button"
-                  className={networkConnected ? "kdock-item is-connected" : "kdock-item"}
-                  aria-pressed={networkOpen}
-                  aria-expanded={networkOpen}
-                  title={NETWORK_ITEM.title}
-                  onClick={onToggleNetwork}
-                >
-                  <span className="kdock-icon">{NETWORK_ITEM.icon}</span>
-                  <span className="kdock-label">{NETWORK_ITEM.label}</span>
                 </button>
                 <button
                   ref={themeButtonRef}
@@ -651,31 +630,6 @@ export const Dock: React.FC<{
             onClick={(event) => event.stopPropagation()}
           >
             {internalsPopup}
-          </div>
-        </>
-      )}
-
-      {networkOpen && networkPopup && networkPopoverStyle && (
-        <>
-          <div
-            className="kdock-popover-dismiss-layer"
-            aria-hidden="true"
-            onPointerDown={(event) => {
-              event.stopPropagation();
-              onCloseNetwork();
-            }}
-          />
-          <div
-            ref={networkPopoverRef}
-            className="kdock-popover kdock-network-popover"
-            role="dialog"
-            aria-label="Network"
-            style={networkPopoverStyle}
-            onPointerDown={(event) => event.stopPropagation()}
-            onPointerUp={(event) => event.stopPropagation()}
-            onClick={(event) => event.stopPropagation()}
-          >
-            {networkPopup}
           </div>
         </>
       )}
@@ -800,7 +754,7 @@ function popoverStyle(anchor: DockPopoverAnchor | null, width: number): DockPopo
 function formatMachineStatus(status: MachineStatus): string {
   switch (status) {
     case "idle":
-      return "No machine";
+      return "No computer";
     case "booting":
       return "Booting";
     case "running":

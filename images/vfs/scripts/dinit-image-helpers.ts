@@ -1,3 +1,9 @@
+import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
+import {
+  ENOENT,
+  SFSError,
+} from "../../../host/src/vfs/vfs-errors";
+import { FILE_MODES } from "../../../host/src/generated/abi";
 /**
  * Helpers for adding a dinit-based init system to a VFS image. Used by
  * service-demo build scripts to bake `/sbin/dinit`, `/etc/dinit.d/boot`,
@@ -14,8 +20,8 @@
  */
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
+  hasVfsErrorCode,
   writeVfsBinary,
   writeVfsFile,
   ensureDirRecursive,
@@ -24,12 +30,6 @@ import {
   tryResolveBinary,
   findRepoRoot,
 } from "../../../host/src/binary-resolver";
-import {
-  ENOENT,
-  SFSError,
-  S_IFMT,
-  S_IFREG,
-} from "../../../host/src/vfs/sharedfs-vendor";
 
 const REPO_ROOT = findRepoRoot();
 
@@ -60,7 +60,7 @@ function resolveDinitBinaries(): { dinit: string; dinitctl: string } {
 const DINIT_GUEST_BINARIES = ["/sbin/dinit", "/sbin/dinitctl"] as const;
 
 function residentRegularFile(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: string,
 ): "missing" | "resident" {
   if (fs.getLazyEntry(path) !== null || fs.isPathDeferred(path)) {
@@ -70,17 +70,21 @@ function residentRegularFile(
   try {
     stat = fs.stat(path);
   } catch (error) {
-    if (error instanceof SFSError && error.code === ENOENT) return "missing";
+    // The shared predicate, not an `instanceof` on one implementation's error
+    // class: the image writer throws `KandeloImageError` with a POSITIVE
+    // `errno` while host VFS code throws `SFSError` with a NEGATIVE `code`, and
+    // "missing" is a documented outcome of this function under either.
+    if (hasVfsErrorCode(error, ENOENT)) return "missing";
     throw error;
   }
-  if ((stat.mode & S_IFMT) !== S_IFREG) {
+  if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
     throw new Error(`${path} exists but is not a regular file`);
   }
   return "resident";
 }
 
 function residentDinitBinaryState(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   path: (typeof DINIT_GUEST_BINARIES)[number],
 ): "missing" | "resident" {
   if (fs.getLazyEntry(path) !== null) {
@@ -97,10 +101,14 @@ function residentDinitBinaryState(
   try {
     stat = fs.stat(path);
   } catch (error) {
-    if (error instanceof SFSError && error.code === ENOENT) return "missing";
+    // The shared predicate, not an `instanceof` on one implementation's error
+    // class: the image writer throws `KandeloImageError` with a POSITIVE
+    // `errno` while host VFS code throws `SFSError` with a NEGATIVE `code`, and
+    // "missing" is a documented outcome of this function under either.
+    if (hasVfsErrorCode(error, ENOENT)) return "missing";
     throw error;
   }
-  if ((stat.mode & S_IFMT) !== S_IFREG || (stat.mode & 0o111) === 0) {
+  if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG || (stat.mode & 0o111) === 0) {
     throw new Error(
       `${path} exists in the shell base but is not a regular executable`,
     );
@@ -114,7 +122,7 @@ export interface DinitBinaryInputs {
 }
 
 function installDinitBinariesUnlessInherited(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   binaries?: DinitBinaryInputs,
 ): void {
   const states = DINIT_GUEST_BINARIES.map((path) =>
@@ -182,6 +190,46 @@ export interface DinitService {
   /** Extra raw lines, appended verbatim. Use for fields this helper
    *  hasn't grown a typed setter for yet. */
   extra?: string[];
+  /**
+   * Opt this service out of the shared baseline `env-file` (see
+   * {@link DINIT_SERVICE_ENV_PATH}) that {@link renderService} attaches to
+   * every non-internal service by default. Set when a service supplies its
+   * own complete environment and the shared baseline would be redundant or
+   * wrong for it.
+   */
+  noDefaultEnvFile?: boolean;
+}
+
+/**
+ * Path to the env file every dinit-managed process service reads by
+ * default (see {@link renderService}). One shared file, rather than one
+ * per service, because every service demo's processes today want the same
+ * baseline identity: root's HOME, a sane PATH, and the TLS trust anchors
+ * curl/wget-alikes expect. dinit's `env-file` directive ADDS to (and can
+ * override) the process's inherited environment — it does not replace it —
+ * so this coexists with whatever env the browser host still passes to
+ * dinit's own pid1 spawn (e.g. WordPress's host-supplied WP_APP_PATH).
+ */
+export const DINIT_SERVICE_ENV_PATH = "/etc/dinit.d/env";
+
+/** The baseline env every dinit service gets via {@link DINIT_SERVICE_ENV_PATH}. */
+export const DINIT_SERVICE_ENV: Readonly<Record<string, string>> = {
+  HOME: "/root",
+  TMPDIR: "/tmp",
+  TERM: "xterm-256color",
+  USER: "root",
+  LOGNAME: "root",
+  PATH: "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin",
+  SSL_CERT_FILE: "/etc/ssl/certs/ca-certificates.crt",
+  SSL_CERT_DIR: "/etc/ssl/certs",
+};
+
+function renderDinitEnvFile(env: Readonly<Record<string, string>>): string {
+  return (
+    Object.entries(env)
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n") + "\n"
+  );
 }
 
 /**
@@ -194,6 +242,12 @@ function renderService(svc: DinitService): string {
   lines.push(`type = ${svc.type ?? "process"}`);
   if (svc.command) lines.push(`command = ${svc.command}`);
   if (svc.workingDir) lines.push(`working-dir = ${svc.workingDir}`);
+  // Internal (dependency-only) services run no command, so an env-file
+  // would be meaningless for them. Every real process/bgprocess/scripted
+  // service gets the shared baseline unless it opts out.
+  if (svc.type !== "internal" && !svc.noDefaultEnvFile) {
+    lines.push(`env-file = ${DINIT_SERVICE_ENV_PATH}`);
+  }
   for (const dep of svc.dependsOn ?? []) lines.push(`depends-on = ${dep}`);
   for (const dep of svc.waitsFor ?? []) lines.push(`waits-for = ${dep}`);
   // Always emit restart explicitly. dinit's compiled-in default is
@@ -226,13 +280,13 @@ function renderService(svc: DinitService): string {
  * they fail with [emerg] before doing anything useful.
  */
 const ETC_PASSWD = [
-  "root:x:0:0:root:/root:/bin/sh",
+  "root:x:0:0:root:/root:/bin/bash",
   "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin",
   "nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin",
   "www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin",
   "redis:x:100:100:redis:/var/lib/redis:/usr/sbin/nologin",
   "mysql:x:101:101:mysql:/var/lib/mysql:/usr/sbin/nologin",
-  "maker:x:1000:1000:maker:/home/maker:/bin/sh",
+  "maker:x:1000:1000:maker:/home/maker:/bin/bash",
   "",
 ].join("\n");
 
@@ -256,7 +310,7 @@ const ETC_HOSTS = ["127.0.0.1\tlocalhost", "::1\tlocalhost", ""].join("\n");
  * into a second, smaller service-name contract.
  */
 export function addDinitBaseSystemFiles(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   preserveExistingServices = false,
   exactServices?: Uint8Array,
 ): void {
@@ -330,7 +384,7 @@ export interface PathReadinessServiceOptions {
 }
 
 export function addPathReadinessService(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   options: PathReadinessServiceOptions,
 ): DinitService {
   const scriptPath = options.scriptPath ?? `/usr/local/bin/${options.name}`;
@@ -396,7 +450,7 @@ function shellSingleQuote(value: string): string {
  * With boot=false, demos must pass the target service name explicitly.
  */
 export function addDinitInit(
-  fs: MemoryFileSystem,
+  fs: VfsImageFilesystem,
   services: DinitService[],
   opts: AddDinitInitOptions = {},
 ): void {
@@ -421,6 +475,11 @@ export function addDinitInit(
 
   // Service tree
   ensureDirRecursive(fs, "/etc/dinit.d");
+
+  // Shared baseline env-file every non-internal service reads by default
+  // (see renderService). Written unconditionally: harmless when unused,
+  // and every current service demo wants it.
+  writeVfsFile(fs, DINIT_SERVICE_ENV_PATH, renderDinitEnvFile(DINIT_SERVICE_ENV));
 
   const bootOpt = opts.boot ?? true;
   if (bootOpt !== false) {

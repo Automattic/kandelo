@@ -74,7 +74,7 @@ describe("posix_spawn credential/action/target order", () => {
     });
 
     harness.dispatch(preflight, "relative-child");
-    await drainSpawnTransaction();
+    await harness.completed;
 
     expect(spawnProcess).toHaveBeenCalledOnce();
     expect(prepareTarget).toHaveBeenCalledOnce();
@@ -111,7 +111,7 @@ describe("posix_spawn credential/action/target order", () => {
     });
 
     harness.dispatch(resolvedProgram(candidateA, ["relative-child"]), "relative-child");
-    await drainSpawnTransaction();
+    await harness.completed;
 
     expect(cancelTarget).toHaveBeenCalledExactlyOnceWith(100, 41);
     expect(removeProcess).toHaveBeenCalledExactlyOnceWith(100);
@@ -198,7 +198,14 @@ describe("posix_spawn credential/action/target order", () => {
       "relative-script",
       ["relative-script", "argument"],
     );
-    await drainSpawnTransaction();
+    // This path compiles the interpreter's divergent bytes with the host's
+    // asynchronous Wasm compiler, so how many event-loop turns it needs
+    // depends on the machine's load. Wait for the launch it ends in, then
+    // settle the transaction, instead of counting turns.
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalled(), {
+      timeout: 10_000,
+    });
+    await harness.completed;
 
     expect(prepareTarget).toHaveBeenCalledTimes(2);
     expect(cancelTarget).toHaveBeenCalledExactlyOnceWith(100, 31);
@@ -242,7 +249,7 @@ describe("posix_spawn credential/action/target order", () => {
     });
 
     harness.dispatch(resolvedProgram(candidateA, ["relative-child"]), "relative-child");
-    await drainSpawnTransaction();
+    await harness.completed;
 
     expect(onSpawn).not.toHaveBeenCalled();
     expect(commitTarget).not.toHaveBeenCalled();
@@ -328,8 +335,7 @@ describe("posix_spawn credential/action/target order", () => {
       resolvedProgram(candidateA, ["relative-child"]),
       "relative-child",
     );
-    await drainSpawnTransaction();
-    expect(onSpawn).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
 
     childSignal = 15;
     harness.dispatchSiblingWait();
@@ -337,7 +343,7 @@ describe("posix_spawn credential/action/target order", () => {
     expect(harness.completeChannel).not.toHaveBeenCalled();
 
     finishLaunch(0);
-    await drainSpawnTransaction();
+    await harness.completed;
 
     expect(publishSpawnChild).toHaveBeenCalledExactlyOnceWith(7, 100);
     expect(waitChildPoll).toHaveBeenCalledTimes(2);
@@ -392,13 +398,13 @@ describe("posix_spawn credential/action/target order", () => {
       resolvedProgram(candidateA, ["relative-child"]),
       "relative-child",
     );
-    await drainSpawnTransaction();
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
     harness.dispatchSiblingWait();
     expect(waitChildPoll).toHaveBeenCalledOnce();
     expect(harness.completeChannel).not.toHaveBeenCalled();
 
     finishLaunch(-5);
-    await drainSpawnTransaction();
+    await harness.completed;
 
     expect(removeProcess).toHaveBeenCalledExactlyOnceWith(100);
     expect(waitChildPoll).toHaveBeenCalledTimes(2);
@@ -446,7 +452,7 @@ describe("posix_spawn credential/action/target order", () => {
       resolvedProgram(candidateA, ["relative-child"]),
       "relative-child",
     );
-    await drainSpawnTransaction();
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
     harness.dispatchSiblingWait(WAIT_WNOHANG);
 
     expect(waitChildPoll).toHaveBeenCalledOnce();
@@ -460,7 +466,7 @@ describe("posix_spawn credential/action/target order", () => {
     );
 
     finishLaunch(0);
-    await drainSpawnTransaction();
+    await harness.completed;
     expect(exports.kernel_publish_spawn_child).toHaveBeenCalledExactlyOnceWith(
       7,
       100,
@@ -489,7 +495,9 @@ describe("posix_spawn credential/action/target order", () => {
     });
 
     harness.dispatch(resolvedProgram(candidateA, ["relative-child"]), "relative-child");
-    await drainSpawnTransaction();
+    // Compilation runs asynchronously; completion, not a guessed number of
+    // event-loop turns, proves that commit failure and rollback have finished.
+    await harness.completed;
 
     expect(onSpawn).not.toHaveBeenCalled();
     expect(onExit).not.toHaveBeenCalled();
@@ -528,7 +536,9 @@ describe("posix_spawn credential/action/target order", () => {
       resolvedProgram(candidateA, ["relative-child"]),
       "relative-child",
     );
-    await drainSpawnTransaction();
+    // Observe completion, not a guessed number of event-loop turns: the real
+    // detached Wasm compiler may settle later when the full suite is busy.
+    await harness.completed;
 
     expect(onSpawn).not.toHaveBeenCalled();
     expect(exports.kernel_publish_spawn_child).toHaveBeenCalledExactlyOnceWith(
@@ -576,13 +586,13 @@ describe("posix_spawn credential/action/target order", () => {
       resolvedProgram(candidateA, ["relative-child"]),
       "relative-child",
     );
-    await drainSpawnTransaction();
-    expect(onSpawn).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
 
     childSignal = -3;
     harness.retireParentChannel();
+    getProcessExitSignal.mockClear();
     finishLaunch(0);
-    await drainSpawnTransaction();
+    await vi.waitFor(() => expect(getProcessExitSignal).toHaveBeenCalledWith(100));
 
     expect(exports.kernel_publish_spawn_child).not.toHaveBeenCalled();
     expect(getProcessExitSignal).toHaveBeenCalledWith(100);
@@ -614,12 +624,11 @@ describe("posix_spawn credential/action/target order", () => {
       resolvedProgram(candidateA, ["relative-child"]),
       "relative-child",
     );
-    await drainSpawnTransaction();
-    expect(onSpawn).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
 
     harness.retireParentChannel();
     finishLaunch(0);
-    await drainSpawnTransaction();
+    await vi.waitFor(() => expect(removeProcess).toHaveBeenCalledExactlyOnceWith(100));
 
     expect(exports.kernel_publish_spawn_child).not.toHaveBeenCalled();
     expect(removeProcess).toHaveBeenCalledExactlyOnceWith(100);
@@ -649,7 +658,7 @@ describe("posix_spawn credential/action/target order", () => {
       resolvedProgram(candidateA, ["relative-child"]),
       "relative-child",
     );
-    await drainSpawnTransaction();
+    await harness.completed;
 
     expect(onSpawn).not.toHaveBeenCalled();
     expect(exports.kernel_publish_spawn_child).toHaveBeenCalledExactlyOnceWith(
@@ -718,6 +727,7 @@ function preparedSpawnExports(options: {
       return cwd.byteLength;
     }),
     kernel_remove_process: vi.fn(() => 0),
+    kernel_process_secure_exec: vi.fn(() => 0),
   };
 }
 
@@ -731,7 +741,15 @@ function createSpawnHarness(options: {
     maximum: 4,
     shared: true,
   });
-  const completeChannel = vi.fn();
+  let resolveCompleted!: () => void;
+  const completed = new Promise<void>((resolve) => { resolveCompleted = resolve; });
+  // A sibling wait can complete while spawn is still unpublished. Only the
+  // parent's spawn result is a completion barrier for that transaction.
+  const completeChannel = vi.fn((...args: unknown[]) => {
+    if (args[0] === channel && args[1] === HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN) {
+      resolveCompleted();
+    }
+  });
   const worker = createCentralizedKernelWorkerTestDouble({
     callbacks: options.callbacks,
   });
@@ -772,6 +790,7 @@ function createSpawnHarness(options: {
   return {
     channel,
     completeChannel,
+    completed,
     origArgs,
     siblingWaitChannel,
     retireParentChannel(): void {
@@ -825,16 +844,4 @@ function createSpawnHarness(options: {
       );
     },
   };
-}
-
-async function drainSpawnTransaction(): Promise<void> {
-  // Compiling divergent authoritative bytes uses the host's async Wasm
-  // compiler. Give concurrent Vitest files enough event-loop turns for that
-  // real detached phase and its fresh completion ingress to settle.
-  for (let turn = 0; turn < 12; turn++) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    for (let microtask = 0; microtask < 12; microtask++) {
-      await Promise.resolve();
-    }
-  }
 }

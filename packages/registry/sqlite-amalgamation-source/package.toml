@@ -1,0 +1,12 @@
+kind = "source"
+name = "sqlite-amalgamation-source"
+version = "3.49.1"
+
+[source]
+provider = "archive"
+url = "https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip"
+sha256 = "6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3"
+
+[license]
+spdx = "blessing"
+url = "https://www.sqlite.org/copyright.html"

@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
+import { devServerAssetUrl } from "./support/dev-server-assets";
 import { mkdtemp, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { platform, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { resolveBinary } from "../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const proxyWorkerPath = resolve(
@@ -21,15 +21,6 @@ test("Rust advisory locks use exact OPFS identity, wake events, and bounded capa
   browserName,
   baseURL,
 }, testInfo) => {
-  // Skip Firefox on macOS only: today Playwright cannot launch Firefox on
-  // macOS 26+ (headless fails profile init with "Could not find profile
-  // folder"; headed exits before the control pipe connects). This is a local
-  // launch limitation, not an OPFS gap, so Firefox still runs this on Linux.
-  // Remove once a newer Playwright/Firefox launches on macOS.
-  test.skip(
-    browserName === "firefox" && platform() === "darwin",
-    "Playwright cannot launch Firefox on macOS (profile-init failure); Firefox is covered on Linux",
-  );
   test.slow();
   expect(baseURL).toBeTruthy();
 
@@ -59,11 +50,8 @@ test("Rust advisory locks use exact OPFS identity, wake events, and bounded capa
       const page = context.pages()[0] ?? (await context.newPage());
       const proxyWorkerUrl = new URL(`/@fs/${proxyWorkerPath}`, baseURL).href;
       const clientWorkerUrl = new URL(`/@fs/${clientWorkerPath}`, baseURL).href;
-      const kernelWasmUrl = new URL(
-        `/@fs/${resolveBinary("kernel.wasm")}`,
-        baseURL,
-      ).href;
       await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+      const kernelWasmUrl = await devServerAssetUrl(page, "@kernel-wasm");
 
       const result = await page.evaluate(
         async ({ proxyWorkerUrl, clientWorkerUrl, kernelWasmUrl }) => {

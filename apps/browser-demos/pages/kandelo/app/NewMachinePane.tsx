@@ -44,7 +44,7 @@ export const NewMachinePane: React.FC<{
 
   return (
     <div className="knew">
-      <div className="knew-tabs" role="tablist" aria-label="New machine sources">
+      <div className="knew-tabs" role="tablist" aria-label="New computer sources">
         {SOURCE_TABS.map((tab) => (
           <button
             key={tab.id}

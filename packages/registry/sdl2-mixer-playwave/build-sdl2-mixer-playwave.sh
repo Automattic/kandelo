@@ -5,15 +5,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-sdl2-mixer-playwave.XXXXXX")"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+source "$REPO_ROOT/sdk/activate.sh"
+MIXER_VERSION="$WASM_POSIX_DEP_VERSION"
+WORK_DIR="$(kandelo_package_make_work_dir sdl2-mixer-playwave)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # shellcheck source=/dev/null
-source "$REPO_ROOT/sdk/activate.sh"
 
-MIXER_VERSION="${WASM_POSIX_DEP_VERSION:-2.8.2}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/libsdl-org/SDL_mixer/releases/download/release-${MIXER_VERSION}/SDL2_mixer-${MIXER_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-938dff531d00ace2296557a6599abe6f34599e2f34f0a4a08a397e2ccac8b8f7}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:?WASM_POSIX_DEP_OUT_DIR must name the resolver staging directory}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
 SDL2_PREFIX="${WASM_POSIX_DEP_SDL2_DIR:?resolver did not provide the direct sdl2 dependency}"
@@ -47,12 +49,14 @@ SRC_DIR="$WORK_DIR/source"
 BUILD_DIR="$WORK_DIR/build"
 REPRO_FLAGS="-ffile-prefix-map=$WORK_DIR=/usr/src/sdl2-mixer -fdebug-prefix-map=$WORK_DIR=/usr/src/sdl2-mixer -fmacro-prefix-map=$WORK_DIR=/usr/src/sdl2-mixer"
 
-echo "==> Downloading SDL_mixer $MIXER_VERSION..."
-curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
-    -fsSL "$SOURCE_URL" -o "$TARBALL"
-echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-mkdir -p "$SRC_DIR" "$BUILD_DIR" "$INSTALL_DIR"
-tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
+kandelo_package_stage_primary_source sdl2-mixer-playwave "$SRC_DIR" "$WORK_DIR"
+
+mkdir -p "$BUILD_DIR" "$INSTALL_DIR"
+
+# sdl2.pc names -lwayland-{client,egl,cursor}, -lxkbcommon and -lffi for
+# libSDL2.a's Wayland video backend; those archives live in the libwayland,
+# libxkbcommon and libffi packages, so give the link their search paths.
+SDL2_DEP_LDFLAGS="-L${WASM_POSIX_DEP_LIBWAYLAND_DIR:?resolver did not provide the direct libwayland dependency}/lib -L${WASM_POSIX_DEP_LIBXKBCOMMON_DIR:?resolver did not provide the direct libxkbcommon dependency}/lib -L${WASM_POSIX_DEP_LIBFFI_DIR:?resolver did not provide the direct libffi dependency}/lib"
 
 echo "==> Configuring upstream playwave with only built-in WAVE support..."
 (
@@ -77,7 +81,8 @@ echo "==> Configuring upstream playwave with only built-in WAVE support..."
         --disable-music-wavpack \
         CC="$CC" CXX="$CXX" AR="$AR" RANLIB="$RANLIB" \
         NM="$NM" STRIP="$STRIP" \
-        CFLAGS="-O2 -DSDL_MAIN_HANDLED $REPRO_FLAGS"
+        CFLAGS="-O2 -DSDL_MAIN_HANDLED $REPRO_FLAGS" \
+        LDFLAGS="$SDL2_DEP_LDFLAGS"
 
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" build/playwave
 )

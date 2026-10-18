@@ -18,10 +18,9 @@ import { initServiceWorkerBridge } from "./service-worker-bridge";
 interface ServiceWorkerFetchBridgeOptions {
   timeoutMs?: number;
   debugLog?: (line: string) => void;
+  onRequestStart?: (request: HttpRequest) => ((status: number | null, error?: string) => void) | undefined;
   onPendingRequests?: (count: number) => void;
 }
-
-let activeNeedBridgeListener: ((event: MessageEvent) => void) | null = null;
 
 /** Hook a single bridge instance up to fetchInKernel. */
 export function attachBridgeToKernel(
@@ -37,15 +36,18 @@ export function attachBridgeToKernel(
   };
 
   bridge.onRequest(async (requestId, request: HttpRequest) => {
+    const completed = options?.onRequestStart?.(request);
     updatePendingRequests(1);
     try {
       const response = await kernel.fetchInKernel(port, request, {
         timeoutMs: options?.timeoutMs,
       });
+      completed?.(response.status);
       bridge.respond(requestId, response);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       options?.debugLog?.(`bridge fetch failed: ${request.method} ${request.url}: ${msg}`);
+      completed?.(null, msg);
       bridge.error(requestId, msg);
     } finally {
       updatePendingRequests(-1);
@@ -73,50 +75,50 @@ export function attachBridgeToKernel(
 export async function setupServiceWorkerFetchBridge(
   swUrl: string,
   scopePath: string,
-  appPrefix: string,
   kernel: BrowserKernel,
   port: number,
   sessionId: string,
   options?: ServiceWorkerFetchBridgeOptions,
-): Promise<HttpBridgeHost> {
-  const bridge = await initServiceWorkerBridge(
-    swUrl,
-    scopePath,
-    appPrefix,
-    sessionId,
-  );
-  if (!bridge) {
+): Promise<{ bridge: HttpBridgeHost; name: string; appPrefix: string }> {
+  const created = await initServiceWorkerBridge(swUrl, scopePath, sessionId);
+  if (!created) {
     throw new Error("Service workers unavailable — HTTP bridge not initialized");
   }
+  const { bridge, name, appPrefix } = created;
   attachBridgeToKernel(bridge, kernel, port, options);
 
   if ("serviceWorker" in navigator) {
-    // One listener per page, wired to the newest machine. A page boots one
-    // machine at a time but boots more than one over its lifetime (a demo
-    // relaunch, a takeover), and a listener left behind by a retired machine
-    // would answer the restart handshake with a port wired to a destroyed
-    // kernel.
-    if (activeNeedBridgeListener) {
-      navigator.serviceWorker.removeEventListener(
-        "message",
-        activeNeedBridgeListener,
-      );
-    }
-    const listener = (event: MessageEvent) => {
+    navigator.serviceWorker.addEventListener("message", (event) => {
       if (event.data?.type !== "need-bridge") return;
       const replyPort = event.ports[0];
       if (!replyPort) return;
       const fresh = new HttpBridgeHost();
       attachBridgeToKernel(fresh, kernel, port, options);
+      // Re-assert this machine's SW-minted name so only its hosting tab answers
+      // the SW's restart handshake for that name.
       replyPort.postMessage(
-        { type: "bridge-restored", appPrefix, sessionId },
+        { type: "bridge-restored", name, appPrefix, sessionId },
         [fresh.getSwPort()],
       );
       options?.debugLog?.("Bridge restored after service worker restart");
-    };
-    activeNeedBridgeListener = listener;
-    navigator.serviceWorker.addEventListener("message", listener);
+    });
+
+    // Announce this machine's departure when the hosting tab goes away, so the
+    // SW can immediately mark it offline and push machine-offline to any viewer
+    // tabs instead of waiting for lazy owner reconciliation on a later request.
+    // pagehide (not unload) fires reliably on bfcache and mobile tab teardown.
+    // Only announce when the page is truly being discarded: a bfcache
+    // suspension fires pagehide with event.persisted === true and the tab is
+    // still alive (it can be restored), so offlining + GC'ing the machine then
+    // would kill a live tab's machine on every back/forward navigation.
+    window.addEventListener("pagehide", (event) => {
+      if (event.persisted) return;
+      navigator.serviceWorker.controller?.postMessage({
+        type: "instance-closing",
+        name,
+      });
+    });
   }
 
-  return bridge;
+  return { bridge, name, appPrefix };
 }

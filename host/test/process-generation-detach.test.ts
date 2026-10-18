@@ -3,6 +3,8 @@ import {
   ExactProcessGenerationDetachLedger,
   type ExactProcessGenerationDetach,
 } from "../src/process-generation-detach";
+import { retireSupersededExecGeneration, type ProcessGenerationOwnership } from "../src/process-lifecycle";
+import type { ProcessMemoryLease } from "../src/process-memory";
 
 interface Generation {
   readonly name: string;
@@ -46,6 +48,84 @@ function transaction(
 }
 
 describe("exact process-generation detach ledger", () => {
+  it.each([true, false])("shares exec retirement with a termination that captured the old image (quiescent=%s)", async quiescent => {
+    const oldMemory = generation("old").memory;
+    let consumed = false;
+    const consume = vi.fn(() => {
+      if (consumed) throw new Error("Process memory lease was already consumed");
+      consumed = true;
+    });
+    const old: ProcessGenerationOwnership = {
+      memory: oldMemory,
+      memoryLease: {
+        memory: oldMemory, ptrWidth: 4, maximumPages: 1,
+        retainAlias: () => { throw new Error("not used"); },
+        release: consume, releaseAfterForcedTermination: consume,
+      } satisfies ProcessMemoryLease,
+    };
+    const successorMemory = generation("successor").memory;
+    const successor = { memory: successorMemory, memoryLease: {
+      ...old.memoryLease, memory: successorMemory,
+      release: vi.fn(), releaseAfterForcedTermination: vi.fn(),
+    } };
+    const current = new Map([[19, old]]);
+    const ledger = new ExactProcessGenerationDetachLedger<ProcessGenerationOwnership>(
+      pid => current.get(pid),
+      pid => { current.delete(pid); },
+    );
+    let settle!: () => void;
+    const settleGate = new Promise<void>(resolve => { settle = resolve; });
+    const termination = ledger.detach({
+      pid: 19, generation: old, memory: oldMemory,
+      detach: () => false, settle: () => settleGate,
+      retire: commit => { old.memoryLease.releaseAfterForcedTermination(); commit(); },
+    });
+    current.set(19, successor);
+    const exec = retireSupersededExecGeneration(ledger, 19, old, quiescent);
+    settle();
+    await Promise.all([termination, exec]);
+    // A second late termination must also observe the completion tombstone.
+    await retireSupersededExecGeneration(ledger, 19, old, quiescent);
+    expect(consume).toHaveBeenCalledOnce();
+    expect(current.get(19)).toBe(successor);
+    expect(successor.memoryLease.release).not.toHaveBeenCalled();
+    expect(successor.memoryLease.releaseAfterForcedTermination).not.toHaveBeenCalled();
+    expect(ledger.pendingCount).toBe(0);
+  });
+
+  it.each([true, false])("an exec retirement cannot authorize termination of its successor (quiescent=%s)", async quiescent => {
+    const memory = generation("old").memory;
+    const release = vi.fn();
+    const forced = vi.fn();
+    const old: ProcessGenerationOwnership = { memory, memoryLease: {
+      memory, ptrWidth: 4, maximumPages: 1,
+      retainAlias: () => { throw new Error("not used"); },
+      release, releaseAfterForcedTermination: forced,
+    } };
+    const successorMemory = generation("successor").memory;
+    const successor = { memory: successorMemory, memoryLease: {
+      ...old.memoryLease, memory: successorMemory,
+      release: vi.fn(), releaseAfterForcedTermination: vi.fn(),
+    } };
+    const current = new Map([[20, successor]]);
+    const ledger = new ExactProcessGenerationDetachLedger<ProcessGenerationOwnership>(
+      pid => current.get(pid), pid => { current.delete(pid); },
+    );
+    await retireSupersededExecGeneration(ledger, 20, old, quiescent);
+    const laterRetire = vi.fn();
+    const result = await ledger.detach({
+      pid: 20, generation: old, memory,
+      detach: () => true, settle: () => {}, retire: laterRetire,
+    });
+    expect(result).toMatchObject({ status: "released", mayReapPid: false, removedCurrent: false, detachDisposition: "superseded" });
+    expect(laterRetire).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(quiescent ? 1 : 0);
+    expect(forced).toHaveBeenCalledTimes(quiescent ? 0 : 1);
+    expect(current.get(20)).toBe(successor);
+    expect(successor.memoryLease.release).not.toHaveBeenCalled();
+    expect(successor.memoryLease.releaseAfterForcedTermination).not.toHaveBeenCalled();
+  });
+
   it("retires a superseded generation without waiting for its live successor", async () => {
     const { current, removed, ledger } = harness();
     const old = generation("old");

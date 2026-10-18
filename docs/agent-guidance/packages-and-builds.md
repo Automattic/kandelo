@@ -43,6 +43,24 @@ that owns those direct dependencies, including an archive-stage override. A
 build script that relies on ambient host tools, global SDK links, undeclared
 transitive deps, or files outside its contract is not cache-safe.
 
+Build scripts configure, fetch, patch, generate, and compile only under
+`WASM_POSIX_DEP_WORK_DIR`, and install only into `WASM_POSIX_DEP_OUT_DIR`.
+The checkout is reviewed input, not scratch. Two resolves of one recipe in
+one worktree do run at once: two Vitest files that miss the same cache, a
+`local-build` beside a test, or the wasm32 and wasm64 builds of one recipe.
+A build tree at a fixed checkout path such as `$SCRIPT_DIR/<name>-build` is
+shared between them, and one build's `rm -rf` deletes the other's tree
+mid-build. Fixed `/tmp/<name>-<version>.tar.*` download paths collide the
+same way. Derive every write path from `kandelo_package_prepare_build_roots`
+(`$KANDELO_PACKAGE_WORK_DIR`) or `"${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"`,
+read primary identity with `kandelo_package_load_source_metadata` and stage
+sources with the shared verified-source helpers, and export
+`WASM_POSIX_INSTALL_LOCAL_MIRROR=0` before `install_local_binary` when the
+resolver owns the roots. Standalone runs may keep package-local defaults.
+The resolver enforces the recipe-directory part of this rule: it records the
+package directory and the build script's directory before the script runs,
+and fails the build, publishing nothing, if anything in them changed.
+
 The persistent SourceOnly build cache lives at
 `$HOME/.cache/kandelo/source-only` and is **shared across every worktree on
 the machine** by default. This is deliberate: the cache is content-addressed,
@@ -56,12 +74,13 @@ it and must agree — the Rust default (`default_source_cache_root` in
 change alters the *bytes* a cache key maps to — e.g. a change to the
 build-stamp or artifact format — so that a worktree on the new format does not
 contend with worktrees on the old one at the same content-addressed key.
-Concurrency itself is already safe (the store stages into a per-pid temp
-directory and publishes with an atomic, non-replacing `rename(2)`), so the
-shared default never risks corruption; the override is about avoiding churn,
-not preventing races. Do not reach for it as a routine default — a
-per-worktree cache discards the cross-worktree reuse the shared cache exists
-to provide.
+Concurrency itself is safe: each build compiles in its own resolver work
+root (see the build-script rule above), and the store stages into a per-pid
+temp directory and publishes with an atomic, non-replacing `rename(2)`. The
+shared default therefore never risks corruption; the override is about
+avoiding churn, not preventing races. Do not reach for it as a routine
+default — a per-worktree cache discards the cross-worktree reuse the shared
+cache exists to provide.
 
 Because the cache is shared, per-checkout maintenance must stay scoped to the
 checkout's own keys. `xtask clean <target>` (behind `./run.sh clean` and
@@ -77,8 +96,8 @@ Stale generations are reclaimed only by cache garbage collection, never by a
 per-checkout command: `./run.sh cache-gc` (a dry run unless `--apply`) and
 the automatic collection a successful local build runs at most once a day.
 It removes a generation only when no live checkout root names its key and it
-has gone unused past the age limit, and it skips while any build holds the
-cache lock. Do not hand-delete cache entries or add another sweeper: every
+has gone unused past the age limit (or, with `--below-abi N`, was built for an
+ABI below `N`), and it skips while any build holds the cache lock. Do not hand-delete cache entries or add another sweeper: every
 build that uses the cache must hold `cache_gc::CacheUseLock` for as long as it
 can read a generation, or collection can remove an entry underneath it. Run
 destructive collection against the shared cache only when the user asks;
@@ -121,6 +140,41 @@ Cross-compilation probes are part of the platform contract. Configure scripts
 must be told the wasm target truth. If upstream `configure` detects host-only
 functions, override the relevant `ac_cv_*` values. Do not let host feature
 detection define what the wasm sysroot claims to support.
+
+## Platform identity: Kandelo is not Linux
+
+Kandelo's compiler describes the target as WebAssembly with a Unix source
+environment (`__wasm__`, `__unix__`). It does not define `__linux__`, and it
+must not. Kandelo is a POSIX platform whose libc is musl. It implements some
+interfaces that originated on Linux (`epoll`, `eventfd`, `/proc`), but it has
+no Linux compatibility target. Defining `__linux__` in the SDK would tell
+every package, and every agent reading the build, that it does.
+
+Portable code often selects its musl or glibc path with `__linux__` (gnulib's
+locale-name lookup, LLVM's choice of `<endian.h>`, Linux UAPI headers), and
+without it falls into a BSD branch or an `#error`. When a package hits that:
+
+1. **Never define `__linux__` in the SDK**, its compiler or linker flags,
+   `sdk/config.site`, or the sysroot.
+2. **Ask: is there another way than defining `__linux__`?** Look in this
+   order:
+   - A feature macro or configure cache variable the upstream code already
+     consults. For example, LLVM's `llvm/ADT/bit.h` includes the BSD
+     `<machine/endian.h>` only when `BYTE_ORDER` is undefined, so
+     pre-including musl's `<endian.h>` answers it truthfully.
+   - The capability the branch actually needs, expressed as a feature test.
+     For example, gnulib's musl locale-name code is guarded by
+     `defined __linux__ && defined NL_LOCALE_NAME`, where `NL_LOCALE_NAME`
+     alone is the capability. Report that upstream, and carry the proposed or
+     accepted upstream change as a documented package patch meanwhile.
+   - A package-local patch or define that selects the portable path by
+     feature, documented in the package.
+3. **Only if none of these works**, a per-package `-D__linux__` in that
+   package's build script is a last resort, and only after a conversation
+   with the maintainer. Put a comment beside it that says it is a last
+   resort, names what the upstream keys on, explains why each alternative
+   above did not work, and states that it does not make Kandelo a Linux
+   target.
 
 Fork-using packages must be instrumented with
 `scripts/run-wasm-fork-instrument.sh` after linking and after optimization.
@@ -208,3 +262,13 @@ Multi-output paths are resolver-owned. Do not hardcode
 `binaries/programs/<arch>/...`; ask
 `cargo xtask build-deps output-path <pkg> <wasm-basename>` or use the existing
 helper in `run.sh`.
+
+## Image recipes outside the default build
+
+The default local-build set and browser deployment projection do not exercise
+every registered image recipe. When changing shared SDK, ABI, resolver or image
+builder contracts, identify affected recipes outside that set and validate them
+through the normal package resolver for their declared architectures. A passing
+default build does not establish that those recipes still work. Dormant status
+controls product exposure; retain it while checking build compatibility. Do not
+add a dormant product to the shipped projection just to validate its recipe.

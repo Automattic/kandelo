@@ -43,7 +43,7 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onClose, onOpenTerminal, o
         setMessage(`Sent ${action.label}`);
       } else if (action.kind === "terminal.write") {
         onOpenTerminal();
-        const pty = await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+        const pty = await host.attachPty("/dev/pts/0");
         pty.write(action.payload);
         pty.close();
         setMessage(`Sent ${action.label}`);
@@ -182,7 +182,7 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onClose, onOpenTerminal, o
 
       <div className="kdemo-status" role="status">
         {status !== "running"
-          ? "Waiting for the machine to finish booting."
+          ? "Waiting for the computer to finish booting."
           : waitingForWeb
             ? webPreview.message ?? "Waiting for web preview."
             : message ?? "Ready"}

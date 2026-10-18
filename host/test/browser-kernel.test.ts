@@ -24,8 +24,10 @@ vi.mock("../src/browser-kernel-default-artifacts", () => {
   return {
     browserKernelDefaultArtifactUrls: {
       kernelWasm: "stub://default-kernel",
-      rootfsVfs: "stub://default-rootfs",
     },
+    // WHY a function, not a URL constant: the canonical rootfs is resolved on
+    // demand so it stays out of every entry point's eager dependency graph.
+    browserDefaultRootfsVfsUrl: async () => "stub://default-rootfs",
   };
 });
 
@@ -160,6 +162,11 @@ function browserAudioGlobals() {
 
 describe("BrowserKernel", () => {
   beforeEach(() => {
+    // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] browser-pcm-driver.ts holds one
+    // page-wide AudioContext in module scope and deliberately never closes it,
+    // so without this reset a later test's driver reuses an earlier test's
+    // mock context and its own suspend/close spies are never called.
+    vi.resetModules();
     MockWorker.instances = [];
     MockWorker.detachTransfers = false;
     vi.stubGlobal("Worker", MockWorker as any);
@@ -234,6 +241,7 @@ describe("BrowserKernel", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
       expect(url).toBe("stub://default-rootfs");
       return {
+        ok: true,
         arrayBuffer: async () => defaultRootfs.buffer.slice(0),
       };
     }));
@@ -245,7 +253,11 @@ describe("BrowserKernel", () => {
       vfsImage: "default",
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The rootfs URL is resolved on demand, so boot waits on a dynamic module
+    // load and one extra await before the worker is constructed.
+    while (MockWorker.instances.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
     const worker = MockWorker.instances[0]!;
     const init = worker.lastMessage("init");
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
@@ -792,6 +804,57 @@ describe("BrowserKernel", () => {
     const bytes = new Uint8Array([1, 2, 3]);
     w.simulateMessage({ type: "response", requestId: read.requestId, result: bytes });
     expect(await readPromise).toEqual(bytes);
+  });
+
+  it("readDirFromVfs round-trips a path to the worker and back", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    void kernel.boot({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0), argv: ["/init"] });
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    w.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const listPromise = kernel.readDirFromVfs("/home/maker/mcp");
+    await new Promise((r) => setTimeout(r, 0));
+    const list = w.lastMessage("read_vfs_dir");
+    expect(list).toBeDefined();
+    expect(list.path).toBe("/home/maker/mcp");
+    const entries = [
+      { name: "run_command.json", type: 8, mode: 0o100644, size: 12, uid: 0, gid: 0 },
+    ];
+    w.simulateMessage({ type: "response", requestId: list.requestId, result: entries });
+    expect(await listPromise).toEqual(entries);
+  });
+
+  it("subscribeVfsChanges watches a prefix in the worker and fans out matching events", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    void kernel.boot({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0), argv: ["/init"] });
+    await new Promise((r) => setTimeout(r, 0));
+    const w = MockWorker.instances[0]!;
+    w.simulateMessage({ type: "ready" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const seen: unknown[] = [];
+    const off = kernel.subscribeVfsChanges("/home/maker/mcp", (event) => seen.push(event));
+    const offOther = kernel.subscribeVfsChanges("/home/maker/mcp", () => {});
+    expect(w.sent.filter(({ data }) => (data as any).type === "watch_vfs_changes").map(({ data }) => data)).toEqual([
+      { type: "watch_vfs_changes", prefix: "/home/maker/mcp", enabled: true },
+    ]);
+
+    const inside = { kind: "modify", path: "/home/maker/mcp/foo.json", t: 1 };
+    const outside = { kind: "delete", path: "/home/maker/foo.json", t: 2 };
+    w.simulateMessage({ type: "vfs_change", event: inside });
+    w.simulateMessage({ type: "vfs_change", event: outside });
+    expect(seen).toEqual([inside]);
+
+    off();
+    expect(w.lastMessage("watch_vfs_changes").enabled).toBe(true);
+    offOther();
+    expect(w.lastMessage("watch_vfs_changes")).toEqual({ type: "watch_vfs_changes", prefix: "/home/maker/mcp", enabled: false });
+    w.simulateMessage({ type: "vfs_change", event: inside });
+    expect(seen).toEqual([inside]);
   });
 
   it("signalProcess round-trips through the browser kernel worker", async () => {
@@ -1612,7 +1675,7 @@ describe("BrowserKernel", () => {
     expect(audio.node.connect).toHaveBeenCalledWith(audio.context.destination);
   });
 
-  it("settles and closes browser PCM before terminating the kernel worker", async () => {
+  it("settles browser PCM before terminating the worker and leaves the shared context open", async () => {
     const audio = browserAudioGlobals();
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
@@ -1663,19 +1726,29 @@ describe("BrowserKernel", () => {
       requestId: destroy.requestId,
       result: { gracefulDetachComplete: true },
     });
+    // Wait on a monotone observable. settleOutputPipeline bounds its own wait
+    // at MAX_OUTPUT_PIPELINE_SETTLE_MS, so polling for exact array equality
+    // raced that bound: teardown could advance past the settle step between
+    // two polls and the array would never equal the single-element snapshot.
     await vi.waitFor(() => {
-      expect(teardownOrder).toEqual(["pcm-pipeline-settle"]);
+      expect(audio.context.suspend).toHaveBeenCalled();
     });
+    expect(teardownOrder[0]).toBe("pcm-pipeline-settle");
     expect(audio.context.close).not.toHaveBeenCalled();
-    expect(worker.terminated).toBe(false);
     finishPcmSettlement();
     await destroyPromise;
 
+    // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] The AudioContext is page-wide (PR
+    // #1410): closing one per machine leaves a WebCore AudioWorklet rendering
+    // thread parked forever on WebKit. Teardown suspends the pipeline and
+    // unhooks this machine's worklet node, then leaves the context open and
+    // suspended for the next machine to reuse.
     expect(teardownOrder).toEqual([
       "pcm-pipeline-settle",
-      "pcm-context-close",
       "kernel-worker-terminate",
     ]);
+    expect(audio.context.close).not.toHaveBeenCalled();
+    expect(audio.context.state).toBe("suspended");
     expect(audio.node.disconnect).toHaveBeenCalledOnce();
     expect(audio.node.port.close).toHaveBeenCalledOnce();
     expect(kernel.getAudioState()).toBe("unavailable");

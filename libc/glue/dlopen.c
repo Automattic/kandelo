@@ -25,6 +25,15 @@
 #include <stdlib.h>
 #include <stdint.h>
 
+/* wasm32posix-c++ hands this file to clang++, which compiles a .c input as
+ * C++. Without C linkage, dlopen and friends would be defined under mangled
+ * C++ names, and a C++ program's dlopen() would bind to musl's weak stub,
+ * which only reports "Dynamic loading not supported". The host imports below
+ * would be mangled the same way. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Host imports — implemented in worker-main.ts */
 extern int __wasm_dlopen_main(void);
 extern int __wasm_dlopen_prepare(const void *bytes, int len,
@@ -244,3 +253,7 @@ int dladdr(const void *addr, Dl_info *info) {
     info->dli_saddr = NULL;
     return 1;
 }
+
+#ifdef __cplusplus
+}
+#endif

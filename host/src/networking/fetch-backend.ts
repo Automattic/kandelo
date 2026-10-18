@@ -1,4 +1,6 @@
-import type { NetworkIO } from "../types";
+import type { NetworkAddress, NetworkIO, UdpReceiveTarget } from "../types";
+import { EgressLink, SyntheticHostAddresses } from "./egress-link";
+import { NET_READINESS } from "../generated/abi";
 import {
   parseNumericIpv4Hostname,
   validateSyntheticDnsHostname,
@@ -16,10 +18,6 @@ export class EagainError extends Error {
   constructor() { super("EAGAIN"); }
 }
 
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 interface ConnectionState {
@@ -41,7 +39,9 @@ export interface FetchBackendOptions {
 
 export class FetchNetworkBackend implements NetworkIO {
   private connections = new Map<number, ConnectionState>();
-  private hostnameMap = new Map<string, string>(); // ip string → hostname
+  // The guest sees fetch as a NAT gateway on its own link (egress-link.ts).
+  private readonly egress = new EgressLink();
+  private readonly addresses = new SyntheticHostAddresses();
   private options: FetchBackendOptions;
   private corsProxy: BrowserCorsProxy | undefined;
 
@@ -53,9 +53,21 @@ export class FetchNetworkBackend implements NetworkIO {
       : new BrowserCorsProxy(corsProxyConfig, options?.onCorsProxyDiagnostic);
   }
 
-  connect(handle: number, addr: Uint8Array, port: number): void {
-    const ipStr = `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`;
-    const hostname = this.hostnameMap.get(ipStr) || ipStr;
+  get localAddress(): Uint8Array { return this.egress.localAddress; }
+  get localNetmask(): Uint8Array { return this.egress.localNetmask; }
+  udpSourceAddress(destination: Uint8Array): Uint8Array { return this.egress.udpSourceAddress(destination); }
+  bindUdp(id: string, addr: Uint8Array, port: number, target: UdpReceiveTarget): number { return this.egress.bindUdp(id, addr, port, target); }
+  unbindUdp(id: string): void { this.egress.unbindUdp(id); }
+  sendDatagram(): number { return this.egress.sendDatagram(); }
+
+  localEndpoint(handle: number): NetworkAddress {
+    if (!this.connections.has(handle)) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
+    return this.egress.streamEndpoint(handle);
+  }
+
+  connect(handle: number, addr: Uint8Array, port: number, source?: NetworkAddress): void {
+    this.egress.openStream(handle, source);
+    const hostname = this.addresses.hostname(addr) ?? Array.from(addr).join(".");
     this.connections.set(handle, {
       hostname,
       ip: new Uint8Array(addr),
@@ -135,19 +147,12 @@ export class FetchNetworkBackend implements NetworkIO {
           });
         } catch (e) {
           if (this.corsProxy) {
-            response = await fetch(
-              this.corsProxy.urlFor(url),
-              {
-                method,
-                headers: this.corsProxy.project({
-                  method,
-                  headers: browserHeaders,
-                  bodyPresent: fetchBody !== undefined,
-                  targetUrl: url,
-                }),
-                body: fetchBody,
-              },
-            );
+            response = await this.corsProxy.fetch({
+              method,
+              headers: browserHeaders,
+              body: fetchBody,
+              targetUrl: url,
+            });
           } else {
             throw e;
           }
@@ -202,34 +207,34 @@ export class FetchNetworkBackend implements NetworkIO {
     return result;
   }
 
-  poll(handle: number, events: number): number {
+  /**
+   * Report what a `fetch` promise's settlement makes observable. No POSIX
+   * readiness decision is made here — `runtime_core::net_readiness` makes it.
+   */
+  readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });
-    if (conn.fetchError) return POLLERR;
 
-    let revents = 0;
-    if ((events & POLLOUT) !== 0) {
-      revents |= POLLOUT;
+    let facts = 0;
+    if (conn.fetchError) facts |= NET_READINESS.ERROR;
+    if (conn.responseBuf && conn.responseOffset < conn.responseBuf.length) {
+      facts |= NET_READINESS.RECV_READY;
     }
-    if (
-      (events & POLLIN) !== 0 &&
-      conn.responseBuf &&
-      conn.responseOffset < conn.responseBuf.length
-    ) {
-      revents |= POLLIN;
+    if (conn.fetchDone && !conn.fetchError) {
+      // The response is complete: every byte beyond `responseBuf` is EOF.
+      if (!conn.responseBuf || conn.responseOffset >= conn.responseBuf.length) {
+        facts |= NET_READINESS.RECV_EOF;
+      }
     }
-    if (
-      conn.fetchDone &&
-      conn.responseBuf &&
-      conn.responseOffset >= conn.responseBuf.length
-    ) {
-      revents |= POLLHUP;
-    }
-    return revents;
+    // `send` appends to a buffer and dispatches when the request is complete,
+    // so this engine always accepts a write.
+    facts |= NET_READINESS.SEND_READY;
+    return facts;
   }
 
   close(handle: number): void {
     this.connections.delete(handle);
+    this.egress.closeStream(handle);
   }
 
   getaddrinfo(hostname: string): Uint8Array {
@@ -237,20 +242,7 @@ export class FetchNetworkBackend implements NetworkIO {
     if (literalIp) return literalIp;
     validateSyntheticDnsHostname(hostname, this.options.hostAliases);
 
-    // In the browser, return a synthetic IP.
-    // The actual connection uses the Host header, not this IP.
-    // Use a deterministic hash to generate a fake IP in the 10.x.x.x range.
-    let hash = 0;
-    for (let i = 0; i < hostname.length; i++) {
-      hash = ((hash << 5) - hash + hostname.charCodeAt(i)) | 0;
-    }
-    const ip = new Uint8Array([10, (hash >> 16) & 0xff, (hash >> 8) & 0xff, hash & 0xff]);
-    // Store hostname→IP mapping so connect() can recover the hostname
-    // (needed when program connects to port 443 where Host header may not be present
-    // before TLS handshake, or for constructing proper URLs)
-    const ipStr = `${ip[0]}.${ip[1]}.${ip[2]}.${ip[3]}`;
-    this.hostnameMap.set(ipStr, hostname);
-    return ip;
+    return this.addresses.resolve(hostname);
   }
 }
 

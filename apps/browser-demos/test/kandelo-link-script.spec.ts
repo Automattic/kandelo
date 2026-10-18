@@ -2,11 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { encodeBootDescriptor } from "../../../web-libs/kandelo-session/src/boot-descriptor";
 import { createInlineBootInput } from "../../../web-libs/kandelo-session/src/boot-inputs";
 import type { BootDescriptor } from "../../../web-libs/kandelo-session/src/kernel-host";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
+import { gotoMachine } from "./support/kandelo-machine";
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate(
@@ -60,9 +56,7 @@ test("a #k1= boot link runs its script in the initial shell @slow", async ({ pag
   const fragment = await scriptFragment(
     'echo "link-script:$((6 * 7))"\ncat /run/kandelo/boot-input.json\n',
   );
-  await page.goto(appUrl(`/?demo=shell#${fragment}`), {
-    waitUntil: "domcontentloaded",
-  });
+  await gotoMachine(page, "shell", { hash: fragment });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 180_000,
   });
@@ -73,10 +67,38 @@ test("a #k1= boot link runs its script in the initial shell @slow", async ({ pag
   await text.toContain("runScript");            // manifest content, proves materialization ran
 });
 
-test("a malformed #k1= fragment fails loudly instead of booting", async ({ page }) => {
-  await page.goto(appUrl("/?demo=shell#k1=!!!not-base64url!!!"), {
-    waitUntil: "domcontentloaded",
+/** The rows and columns the visible xterm (DOM renderer) is drawing. */
+async function visibleTerminalSize(page: Page): Promise<{ rows: number; cols: number }> {
+  return page.evaluate(() => {
+    const rows = document.querySelectorAll(".xterm-rows > div").length;
+    const screen = document.querySelector<HTMLElement>(".xterm-screen");
+    const measure = document.querySelector<HTMLElement>(".xterm-char-measure-element");
+    if (!screen || !measure?.textContent) return { rows, cols: 0 };
+    const cellWidth = measure.getBoundingClientRect().width / measure.textContent.length;
+    return { rows, cols: Math.round(screen.getBoundingClientRect().width / cellWidth) };
   });
+}
+
+test("a #k1= boot link script sees the visible terminal's size @slow", async ({ page }) => {
+  test.setTimeout(300_000);
+  // A link that opens vim or nano lays the editor out from TIOCGWINSZ. The
+  // runner reaches the PTY without a terminal of its own; it must not shrink
+  // the winsize the visible terminal set, or the editor draws in a corner.
+  const fragment = await scriptFragment('echo "winsize:$(stty size)"\n');
+  await gotoMachine(page, "shell", { hash: fragment });
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({
+    timeout: 180_000,
+  });
+  await expect
+    .poll(() => terminalText(page), { timeout: 120_000 })
+    .toMatch(/winsize:\d+ \d+/);
+  const [, rows, cols] = /winsize:(\d+) (\d+)/.exec(await terminalText(page))!;
+  expect({ rows: Number(rows), cols: Number(cols) })
+    .toEqual(await visibleTerminalSize(page));
+});
+
+test("a malformed #k1= fragment fails loudly instead of booting", async ({ page }) => {
+  await gotoMachine(page, "shell", { hash: "k1=!!!not-base64url!!!" });
   await expect(
     page.getByText("Rejected #k1= boot link fragment", { exact: false }),
   ).toBeVisible({ timeout: 30_000 });
@@ -84,7 +106,7 @@ test("a malformed #k1= fragment fails loudly instead of booting", async ({ page 
 });
 
 test("gallery navigation drops a boot-link fragment", async ({ page }) => {
-  await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+  await gotoMachine(page, "shell");
   const next = await page.evaluate(async () => {
     const { galleryItemUrl } = await import("/pages/kandelo/url-state.ts");
     return galleryItemUrl(
@@ -97,18 +119,21 @@ test("gallery navigation drops a boot-link fragment", async ({ page }) => {
     );
   });
   expect(new URL(next).hash).toBe("");
-  expect(new URL(next).searchParams.get("demo")).toBe("node");
+  expect(new URL(next).searchParams.get("profile")).toBe("node");
+  // The legacy selector on the link the visitor arrived with is dropped, not
+  // carried forward: nothing reads it any more.
+  expect(new URL(next).searchParams.get("demo")).toBeNull();
 });
 
 test("share dialog authors a script link that runs on open @slow", async ({ page, context }) => {
   test.setTimeout(300_000);
-  await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+  await gotoMachine(page, "shell");
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 180_000,
   });
 
   await page
-    .getByRole("button", { name: "Share this machine as a link" })
+    .getByRole("button", { name: "Share this computer as a link" })
     .click();
   await page
     .locator(".kshare textarea")

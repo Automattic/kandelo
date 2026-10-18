@@ -1,0 +1,12 @@
+fate-h264
+fate-hevc
+fate-aac
+fate-mpeg4
+fate-vp9
+fate-opus
+fate-flac
+fate-pcm
+fate-mov
+fate-matroska
+fate-vfilter
+fate-afilter

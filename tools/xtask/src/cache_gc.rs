@@ -21,6 +21,17 @@
 //!   exclusive and non-blocking, and skips when a build holds it. Entries are
 //!   renamed into a trash directory under the cache root while the lock is
 //!   held, then deleted after it is released.
+//! * **ABI.** `--below-abi N` also collects unprotected generations built
+//!   for a kernel ABI below `N`, which no current kernel can run. A library
+//!   or program generation's name carries its ABI (`...-abi<N>-<key>`; see
+//!   `canonical_path`). Generations named before that segment existed were
+//!   built for [`UNNAMED_GENERATION_MAX_ABI`] or older, so a floor above it
+//!   collects them too; a lower floor leaves them to the age rule.
+//! * **Ordinary cache.** A manual `--below-abi` run also scans the ordinary
+//!   resolver's top-level libs/programs for old ABI generations and abandoned
+//!   stages/downloads. Without reliable last-use tracking there, age and size
+//!   eviction cannot prove disuse. Explicit source-cache isolation suppresses
+//!   that additional scan unless `--binary-cache-root` selects it explicitly.
 //!
 //! See `docs/package-management.md` ("Cache garbage collection") for the
 //! policy and its limits.
@@ -58,8 +69,18 @@ pub(crate) const AUTO_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60)
 /// Crash debris and orphaned sidecars younger than this are left alone: a
 /// build on older code (which takes no GC lock) may be creating them now.
 pub(crate) const DEBRIS_MIN_AGE: Duration = DAY;
-/// `--max-size` never evicts a generation used more recently than this.
+/// `--max-size` and `--below-abi` never evict a generation used more
+/// recently than this: a build on code older than this module takes no GC
+/// lock and registers no root, so recent use is its only protection.
 pub(crate) const BUDGET_MIN_AGE: Duration = DAY;
+/// The kernel ABI that was current when generation names gained their
+/// `abi<N>` segment. A library or program generation named without one was
+/// written by older code, so it was built for this ABI or an earlier one, and
+/// `--below-abi` above this value can collect it like a named old-ABI
+/// generation. This is a fixed number, not `ABI_VERSION`: it records when
+/// the old names stopped being written, and later ABI bumps do not change
+/// that.
+const UNNAMED_GENERATION_MAX_ABI: u32 = 46;
 /// The automatic collection runs at most once per this interval per cache.
 pub(crate) const AUTO_GC_INTERVAL: Duration = DAY;
 /// Set to `0`/`false`/`no`/`off` to disable the automatic post-build GC.
@@ -329,6 +350,9 @@ fn live_root_keys(root: &LiveRootV1) -> Option<BTreeSet<String>> {
 pub(crate) struct GcPolicy {
     pub(crate) max_age: Duration,
     pub(crate) max_size: Option<u64>,
+    /// `--below-abi`: also collect unprotected generations built for a
+    /// kernel ABI below this.
+    pub(crate) below_abi: Option<u32>,
     pub(crate) debris_min_age: Duration,
     pub(crate) budget_min_age: Duration,
 }
@@ -338,6 +362,7 @@ impl GcPolicy {
         Self {
             max_age,
             max_size,
+            below_abi: None,
             debris_min_age: DEBRIS_MIN_AGE,
             budget_min_age: BUDGET_MIN_AGE,
         }
@@ -389,6 +414,16 @@ pub(crate) struct GcPlan {
     pub(crate) generations_protected_past_age: usize,
     /// Unreferenced but used within `max_age`.
     pub(crate) generations_recent: usize,
+    /// Built for an ABI below `--below-abi` but kept: referenced by a live
+    /// root, or used within the last day.
+    pub(crate) generations_below_abi_kept: usize,
+    pub(crate) below_abi_protected_bytes: u64,
+    pub(crate) below_abi_recent_bytes: u64,
+    /// Library/program generations named without an ABI that `--below-abi`
+    /// could not settle: their ABI is at most `UNNAMED_GENERATION_MAX_ABI`,
+    /// which is not below the requested floor. Only the age and size rules
+    /// apply to them.
+    pub(crate) generations_abi_unknown: usize,
     pub(crate) live_roots: usize,
     pub(crate) unrecognized_entries: usize,
     /// Bytes still over `--max-size` after every eligible eviction.
@@ -397,6 +432,7 @@ pub(crate) struct GcPlan {
 
 struct ScannedGeneration {
     path: PathBuf,
+    kind: &'static str,
     basename: String,
     key: String,
     last_use: SystemTime,
@@ -404,7 +440,23 @@ struct ScannedGeneration {
 
 struct ScannedSidecar {
     path: PathBuf,
-    basename: String,
+    canonical: PathBuf,
+}
+
+fn generation_is_protected(generation: &ScannedGeneration, protected: &BTreeSet<String>) -> bool {
+    if generation.key.len() == 64 {
+        protected.contains(&generation.key)
+    } else {
+        protected.iter().any(|key| key.starts_with(&generation.key))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CacheLayout {
+    SourceOnly,
+    /// The ordinary resolver has no last-use/root tracking. Only an explicit
+    /// ABI floor can evict its generations; age and size cannot prove disuse.
+    Binary,
 }
 
 fn is_lower_hex_64(value: &str) -> bool {
@@ -414,13 +466,44 @@ fn is_lower_hex_64(value: &str) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// The cache key of a generation directory name (`<...>-<64 hex>`).
+/// The cache key of a generation directory name (`<...>-<64 hex>`, or the
+/// obsolete recipe-shaped `<...>-<8 hex>` spelling).
 fn generation_key(name: &str) -> Option<&str> {
-    if name.starts_with('.') || name.len() < 66 {
+    if name.starts_with('.') {
         return None;
     }
-    let (head, key) = name.split_at(name.len() - 64);
-    (head.ends_with('-') && is_lower_hex_64(key)).then_some(key)
+    let (head, key) = name.rsplit_once('-')?;
+    if !head.is_empty() && is_lower_hex_64(key) {
+        return Some(key);
+    }
+    // Early resolvers used just eight hex characters. Only accept their
+    // recipe-shaped names, and protect them on any matching full-key prefix.
+    let (_, revision) = head.rsplit_once("-rev")?;
+    let mut parts = revision.split('-');
+    let revision = parts.next()?;
+    if revision.is_empty() || !revision.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if let Some(arch) = parts.next() {
+        if !matches!(arch, "wasm32" | "wasm64") || parts.next().is_some() {
+            return None;
+        }
+    }
+    (key.len() == 8 && key.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))).then_some(key)
+}
+
+/// The ABI segment of a generation directory name (`<...>-abi<N>-<64 hex>`),
+/// which `canonical_path` writes for libraries and programs. `None` for
+/// source generations, which serve every ABI, and for generations named
+/// before the segment existed.
+fn generation_named_abi(name: &str) -> Option<u32> {
+    generation_key(name)?;
+    let head = name.rsplit_once('-')?.0;
+    let digits = head.rsplit_once('-')?.1.strip_prefix("abi")?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// For a hidden `.<generation>.<rest>` entry, the generation basename, its
@@ -428,20 +511,22 @@ fn generation_key(name: &str) -> Option<&str> {
 fn split_generation_dotfile(name: &str) -> Option<(&str, &str, &str)> {
     let inner = name.strip_prefix('.')?;
     let bytes = inner.as_bytes();
-    // The first `-<64 hex>.` marks the end of the generation basename.
+    // The first recognized key followed by `.` ends the generation basename.
     let mut index = 0;
     while let Some(offset) = inner[index..].find('-') {
         let dash = index + offset;
-        let key_end = dash + 1 + 64;
-        if key_end < inner.len()
-            && bytes[key_end] == b'.'
-            && is_lower_hex_64(&inner[dash + 1..key_end])
-        {
-            return Some((
-                &inner[..key_end],
-                &inner[dash + 1..key_end],
-                &inner[key_end + 1..],
-            ));
+        for length in [64, 8] {
+            let key_end = dash + 1 + length;
+            if key_end < inner.len()
+                && bytes[key_end] == b'.'
+                && generation_key(&inner[..key_end]).is_some()
+            {
+                return Some((
+                    &inner[..key_end],
+                    &inner[dash + 1..key_end],
+                    &inner[key_end + 1..],
+                ));
+            }
         }
         index = dash + 1;
     }
@@ -452,6 +537,18 @@ fn split_generation_dotfile(name: &str) -> Option<(&str, &str, &str)> {
 fn debris_pid(rest: &str, prefix: &str) -> Option<i32> {
     let tail = rest.strip_prefix(prefix)?;
     let pid = tail.split('-').next()?;
+    pid.parse::<i32>().ok().filter(|pid| *pid > 0)
+}
+
+/// Older archive fetchers left `.tmp-<label>-archive-<pid>-<counter>`.
+/// Parse from the right because labels can themselves contain `-archive-`.
+fn archive_temp_pid(name: &str) -> Option<i32> {
+    let rest = name.strip_prefix(".tmp-")?;
+    let (label, tail) = rest.rsplit_once("-archive-")?;
+    let (pid, counter) = tail.split_once('-')?;
+    if label.is_empty() || counter.is_empty() || !counter.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     pid.parse::<i32>().ok().filter(|pid| *pid > 0)
 }
 
@@ -497,6 +594,11 @@ fn generation_sidecar_names(canonical: &Path, key: &str) -> Vec<String> {
     }
     if let Some(basename) = canonical.file_name().and_then(|name| name.to_str()) {
         names.push(format!(".{basename}{LEGACY_RECEIPT_SUFFIX}"));
+        if key.len() == 8 {
+            // Path helpers intentionally reject obsolete shortened keys;
+            // recognize their historical provenance sidecar for collection.
+            names.push(format!(".{basename}.kandelo-provenance.toml"));
+        }
     }
     names
 }
@@ -511,17 +613,42 @@ fn newest_mtime(paths: impl IntoIterator<Item = PathBuf>, floor: SystemTime) -> 
 
 /// Decide what one collection would remove. `sizes` memoizes measured
 /// directory sizes so an apply can measure before taking the lock.
+#[cfg(test)]
 pub(crate) fn plan(
     base: &Path,
     policy: &GcPolicy,
     now: SystemTime,
     sizes: &mut BTreeMap<PathBuf, u64>,
 ) -> Result<GcPlan, String> {
+    plan_with_layout(base, policy, now, sizes, CacheLayout::SourceOnly)
+}
+
+fn plan_with_layout(
+    base: &Path,
+    policy: &GcPolicy,
+    now: SystemTime,
+    sizes: &mut BTreeMap<PathBuf, u64>,
+    layout: CacheLayout,
+) -> Result<GcPlan, String> {
     let mut plan = GcPlan::default();
     if !base.is_dir() {
         return Ok(plan);
     }
-    let compiled = plan_canonical_source_only_cache_roots(base, None)?.compiled;
+    let compiled = match layout {
+        CacheLayout::SourceOnly => plan_canonical_source_only_cache_roots(base, None)?.compiled,
+        CacheLayout::Binary => base.to_path_buf(),
+    };
+    // Do not follow cache container symlinks into unrelated directories.
+    if compiled != base {
+        for dir in [base.join("source-only-v1"), compiled.clone()] {
+            if fs::symlink_metadata(&dir).is_ok_and(|m| !m.is_dir()) {
+                return Err(format!(
+                    "cache directory must be a real directory: {}",
+                    dir.display()
+                ));
+            }
+        }
+    }
 
     // Roots.
     let mut protected = BTreeSet::<String>::new();
@@ -588,6 +715,10 @@ pub(crate) fn plan(
     let mut diagnostics = Vec::<(PathBuf, String, SystemTime)>::new();
     for kind in KIND_DIRS {
         let dir = compiled.join(kind);
+        if fs::symlink_metadata(&dir).is_ok_and(|m| !m.is_dir()) {
+            plan.unrecognized_entries += 1;
+            continue;
+        }
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
@@ -626,6 +757,7 @@ pub(crate) fn plan(
                     );
                     generations.push(ScannedGeneration {
                         path,
+                        kind,
                         basename: name,
                         key,
                         last_use,
@@ -639,12 +771,13 @@ pub(crate) fn plan(
             if let Some(basename) = known_sidecar_names.get(&name) {
                 sidecars.push(ScannedSidecar {
                     path,
-                    basename: basename.clone(),
+                    canonical: dir.join(basename),
                 });
                 continue;
             }
             if let Some(pid) = debris_pid(&name, ".kandelo-receipt-tmp-")
                 .or_else(|| debris_pid(&name, ".source-only-dispose-"))
+                .or_else(|| archive_temp_pid(&name))
             {
                 push_debris(&mut plan, policy, now, path, pid, modified);
                 continue;
@@ -694,12 +827,12 @@ pub(crate) fn plan(
     let mut reasons = BTreeMap::<usize, String>::new();
     for (index, generation) in generations.iter().enumerate() {
         let unused_for = age(now, generation.last_use);
-        if protected.contains(&generation.key) {
+        if generation_is_protected(generation, &protected) {
             plan.generations_protected += 1;
             if unused_for >= policy.max_age {
                 plan.generations_protected_past_age += 1;
             }
-        } else if unused_for >= policy.max_age {
+        } else if layout == CacheLayout::SourceOnly && unused_for >= policy.max_age {
             evicted.insert(index);
             reasons.insert(
                 index,
@@ -712,7 +845,55 @@ pub(crate) fn plan(
             plan.generations_recent += 1;
         }
     }
-    if let Some(budget) = policy.max_size {
+    if let Some(floor) = policy.below_abi {
+        for (index, generation) in generations.iter().enumerate() {
+            // Source generations serve every ABI (their keys omit it).
+            if generation.kind == "sources" || evicted.contains(&index) {
+                continue;
+            }
+            let (abi, named) = match generation_named_abi(&generation.basename) {
+                Some(abi) => (abi, true),
+                // Named before names carried an ABI: built for at most
+                // `UNNAMED_GENERATION_MAX_ABI`, which settles any floor
+                // above it.
+                None if UNNAMED_GENERATION_MAX_ABI < floor => (UNNAMED_GENERATION_MAX_ABI, false),
+                None => {
+                    plan.generations_abi_unknown += 1;
+                    continue;
+                }
+            };
+            if abi >= floor {
+                continue;
+            }
+            let unused_for = age(now, generation.last_use);
+            if generation_is_protected(generation, &protected) || unused_for < policy.budget_min_age
+            {
+                plan.generations_below_abi_kept += 1;
+                let bytes = measured(sizes, &generation.path);
+                if generation_is_protected(generation, &protected) {
+                    plan.below_abi_protected_bytes += bytes;
+                } else {
+                    plan.below_abi_recent_bytes += bytes;
+                }
+                continue;
+            }
+            plan.generations_recent -= 1;
+            evicted.insert(index);
+            let built_for = if named {
+                format!("built for ABI {abi}")
+            } else {
+                format!("named before generations carried an ABI, so built for ABI {abi} or older")
+            };
+            reasons.insert(
+                index,
+                format!("{built_for}, below --below-abi {floor}; no live checkout references it"),
+            );
+        }
+    }
+    if let Some(budget) = policy
+        .max_size
+        .filter(|_| layout == CacheLayout::SourceOnly)
+    {
         let mut total = 0u64;
         for generation in &generations {
             total += measured(sizes, &generation.path);
@@ -724,7 +905,8 @@ pub(crate) fn plan(
                 .sum::<u64>();
         let mut lru: Vec<usize> = (0..generations.len())
             .filter(|index| {
-                !evicted.contains(index) && !protected.contains(&generations[*index].key)
+                !evicted.contains(index)
+                    && !generation_is_protected(&generations[*index], &protected)
             })
             .collect();
         lru.sort_by_key(|index| generations[*index].last_use);
@@ -752,10 +934,10 @@ pub(crate) fn plan(
         }
     }
     let mut surviving_keys = HashSet::<&str>::new();
-    let mut evicted_basenames = BTreeSet::<&str>::new();
+    let mut evicted_paths = BTreeSet::<&Path>::new();
     for (index, generation) in generations.iter().enumerate() {
         if evicted.contains(&index) {
-            evicted_basenames.insert(&generation.basename);
+            evicted_paths.insert(&generation.path);
             plan.candidates.push(Candidate {
                 path: generation.path.clone(),
                 category: Category::Generation,
@@ -767,7 +949,7 @@ pub(crate) fn plan(
         }
     }
     for sidecar in sidecars {
-        if evicted_basenames.contains(sidecar.basename.as_str()) {
+        if evicted_paths.contains(sidecar.canonical.as_path()) {
             let bytes = fs::symlink_metadata(&sidecar.path)
                 .map(|metadata| metadata.blocks() * 512)
                 .unwrap_or(0);
@@ -925,9 +1107,19 @@ pub(crate) fn collect(
     apply: bool,
     now: SystemTime,
 ) -> Result<GcOutcome, String> {
+    collect_with_layout(base, policy, apply, now, CacheLayout::SourceOnly)
+}
+
+fn collect_with_layout(
+    base: &Path,
+    policy: &GcPolicy,
+    apply: bool,
+    now: SystemTime,
+    layout: CacheLayout,
+) -> Result<GcOutcome, String> {
     let mut sizes = BTreeMap::new();
     if !apply {
-        let mut plan = plan(base, policy, now, &mut sizes)?;
+        let mut plan = plan_with_layout(base, policy, now, &mut sizes, layout)?;
         for candidate in &mut plan.candidates {
             if candidate.bytes == 0 {
                 candidate.bytes = measured(&mut sizes, &candidate.path);
@@ -953,14 +1145,14 @@ pub(crate) fn collect(
             warnings: Vec::new(),
         }));
     }
-    if policy.max_size.is_some() {
+    if policy.max_size.is_some() || policy.below_abi.is_some() {
         // Warm the size memo before locking; see the doc comment.
-        let _ = plan(base, policy, now, &mut sizes)?;
+        let _ = plan_with_layout(base, policy, now, &mut sizes, layout)?;
     }
     let Some(lock) = try_acquire_exclusive(base)? else {
         return Ok(GcOutcome::Skipped);
     };
-    let mut plan = plan(base, policy, now, &mut sizes)?;
+    let mut plan = plan_with_layout(base, policy, now, &mut sizes, layout)?;
     let trash_run = base.join(TRASH_DIR_NAME).join(format!(
         "{}-{}",
         std::process::id(),
@@ -1148,13 +1340,15 @@ pub(crate) fn parse_size(value: &str) -> Result<u64, String> {
     Ok((number * multiplier as f64) as u64)
 }
 
-const USAGE: &str = "usage: xtask cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--source-cache-root PATH]";
+const USAGE: &str = "usage: xtask cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--below-abi N] [--source-cache-root PATH] [--binary-cache-root PATH]";
 
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     let mut apply = false;
     let mut max_age_days = days(DEFAULT_MAX_AGE);
     let mut max_size = None;
+    let mut below_abi = None;
     let mut root = None;
+    let mut binary_root = None;
     let mut iter = args.into_iter();
     while let Some(arg) = iter.next() {
         let (flag, inline) = match arg.split_once('=') {
@@ -1181,12 +1375,27 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                     })?;
             }
             "--max-size" => max_size = Some(parse_size(&value("--max-size")?)?),
-            "--source-cache-root" => {
-                let path = PathBuf::from(value("--source-cache-root")?);
+            "--below-abi" => {
+                below_abi = Some(
+                    value("--below-abi")?
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|abi| *abi >= 1)
+                        .ok_or_else(|| {
+                            "--below-abi must be a whole ABI version >= 1".to_string()
+                        })?,
+                );
+            }
+            "--source-cache-root" | "--binary-cache-root" => {
+                let path = PathBuf::from(value(&flag)?);
                 if !path.is_absolute() {
-                    return Err("--source-cache-root must be an absolute path".to_string());
+                    return Err(format!("{flag} must be an absolute path"));
                 }
-                root = Some(path);
+                if flag == "--source-cache-root" {
+                    root = Some(path);
+                } else {
+                    binary_root = Some(path);
+                }
             }
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -1195,6 +1404,18 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             _ => return Err(format!("unexpected argument {arg:?}\n{USAGE}")),
         }
     }
+    if binary_root.is_some() && below_abi.is_none() {
+        return Err(
+            "--binary-cache-root requires --below-abi; the ordinary cache has no last-use tracking"
+                .to_string(),
+        );
+    }
+    // An isolated source-cache override must never implicitly sweep the
+    // machine-wide binary cache. It can be selected explicitly alongside it.
+    let isolated_source = root.is_some() || std::env::var_os("KANDELO_SOURCE_CACHE_ROOT").is_some();
+    let binary_root = binary_root.or_else(|| {
+        (below_abi.is_some() && !isolated_source).then(crate::build_deps::default_cache_root)
+    });
     let base = match root {
         Some(root) => root,
         None => crate::local_build::default_source_cache_root()?,
@@ -1205,23 +1426,49 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     } else {
         base
     };
-    let policy = GcPolicy::manual(Duration::from_secs(max_age_days * DAY.as_secs()), max_size);
-    let outcome = collect(&base, &policy, apply, SystemTime::now())?;
-    let report = match outcome {
-        GcOutcome::Skipped => {
-            println!(
-                "cache-gc: skipped; a build is using {} (it holds the cache lock). Nothing was removed; try again when it finishes.",
-                base.display()
+    let mut policy = GcPolicy::manual(Duration::from_secs(max_age_days * DAY.as_secs()), max_size);
+    policy.below_abi = below_abi;
+    let mut caches = vec![(base, CacheLayout::SourceOnly)];
+    if let Some(binary_root) = binary_root {
+        let binary_root = if binary_root.exists() {
+            fs::canonicalize(&binary_root)
+                .map_err(|error| format!("canonicalize {}: {error}", binary_root.display()))?
+        } else {
+            binary_root
+        };
+        let source_base = &caches[0].0;
+        if binary_root == *source_base || binary_root.starts_with(source_base) {
+            return Err(
+                "binary cache root must not be the source cache or a directory inside it"
+                    .to_string(),
             );
-            return Ok(());
         }
-        GcOutcome::Completed(report) => report,
-    };
-    print_report(&base, &policy, &report);
+        caches.push((binary_root, CacheLayout::Binary));
+    }
+    let mut total = 0;
+    for (base, layout) in &caches {
+        match collect_with_layout(base, &policy, apply, SystemTime::now(), *layout)? {
+            GcOutcome::Skipped => println!(
+                "cache-gc: skipped {}; a build holds its cache lock. Nothing in this cache was removed; try again when it finishes.",
+                base.display()
+            ),
+            GcOutcome::Completed(report) => {
+                total += report.reclaimed_bytes;
+                print_report(base, &policy, &report, *layout);
+            }
+        }
+    }
+    if caches.len() > 1 {
+        println!(
+            "\ncache-gc total across caches {}: {}",
+            if apply { "removed" } else { "would remove" },
+            human_bytes(total)
+        );
+    }
     Ok(())
 }
 
-fn print_report(base: &Path, policy: &GcPolicy, report: &GcReport) {
+fn print_report(base: &Path, policy: &GcPolicy, report: &GcReport, layout: CacheLayout) {
     let plan = &report.plan;
     let verb = if report.applied {
         "removed"
@@ -1250,22 +1497,40 @@ fn print_report(base: &Path, policy: &GcPolicy, report: &GcReport) {
         },
         base.display()
     );
-    println!(
-        "  policy: collect generations no live checkout references and unused for >= {} days{}",
-        days(policy.max_age),
-        match policy.max_size {
-            Some(budget) => format!(", then least-recently-used down to {}", human_bytes(budget)),
-            None => String::new(),
-        }
-    );
+    if layout == CacheLayout::Binary {
+        println!("  policy: ordinary cache; collect only generations below ABI {} and abandoned debris; no age or size eviction", policy.below_abi.unwrap());
+    } else {
+        println!(
+            "  policy: collect generations no live checkout references and unused for >= {} days{}{}",
+            days(policy.max_age),
+            match policy.below_abi {
+                Some(floor) => format!(", or built for an ABI below {floor}"),
+                None => String::new(),
+            },
+            match policy.max_size {
+                Some(budget) => format!(", then least-recently-used down to {}", human_bytes(budget)),
+                None => String::new(),
+            }
+        );
+    }
     println!("  live checkout roots: {}", plan.live_roots);
     println!(
-        "  generations: {} total, {} protected by a live root ({} of them past the age limit), {} kept as recently used",
+        "  generations: {} total, {} protected by a live root ({} of them past the age limit), {} kept by policy",
         plan.generations_total,
         plan.generations_protected,
         plan.generations_protected_past_age,
         plan.generations_recent
     );
+    if let Some(floor) = policy.below_abi {
+        println!(
+            "  below ABI {floor}: {} kept (protected by a live root or used within the last day), {} named without an ABI (so ABI {UNNAMED_GENERATION_MAX_ABI} or older) not proven below the floor",
+            plan.generations_below_abi_kept, plan.generations_abi_unknown
+        );
+        println!(
+            "  below ABI {floor} kept on disk: {} protected by live roots, {} used within the last day",
+            human_bytes(plan.below_abi_protected_bytes), human_bytes(plan.below_abi_recent_bytes)
+        );
+    }
     let mut by_category = BTreeMap::<Category, (usize, u64)>::new();
     for candidate in &plan.candidates {
         let slot = by_category.entry(candidate.category).or_default();
@@ -1292,7 +1557,7 @@ fn print_report(base: &Path, policy: &GcPolicy, report: &GcReport) {
             plan.unrecognized_entries
         );
     }
-    if plan.live_roots == 0 {
+    if plan.live_roots == 0 && layout == CacheLayout::SourceOnly {
         println!(
             "  note: no checkout has registered a root yet, so only last-use age protects generations"
         );

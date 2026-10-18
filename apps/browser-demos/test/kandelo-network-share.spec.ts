@@ -3,12 +3,12 @@ import { expect, test, type Locator } from "@playwright/test";
 /**
  * Sharing a Kandelo machine with another computer, driven in one browser:
  * two isolated contexts share no BroadcastChannel, so everything that
- * crosses between them travels the manually signalled WebRTC link exactly
- * as it would between two real computers.
+ * crosses between them travels a network session's sharing link exactly as
+ * it would between two real computers.
  *
- * A connected viewer ends up *running* the other computer's machine — a
+ * A viewer that watches ends up *running* the other computer's machine — a
  * replica, restored from its checkpoint and driven by its decision log —
- * because replication starts on its own the moment the link opens. The
+ * because replication starts on its own the moment it watches. The
  * mirror is the bridge and the fallback, not the destination: the sharer's
  * terminal bytes and screen pixels are what the viewer watches while the
  * replica is still being captured, transferred, and booted, and what it
@@ -31,7 +31,7 @@ import {
   closeDockPopovers,
   connectPeers,
   expectReplica,
-  openNetworkPopover,
+  openNetworkPanel,
   takeOverButton,
   terminalText,
   typeIntoTerminal,
@@ -59,7 +59,7 @@ test("bridges the viewer over the shared terminal until its replica runs", async
   const viewerRequests: string[] = [];
   viewer.on("request", (request) => viewerRequests.push(request.url()));
   try {
-    await sharer.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await sharer.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
 
     await sharer.getByRole("button", { name: "Terminal", exact: true })
@@ -99,9 +99,9 @@ test("bridges the viewer over the shared terminal until its replica runs", async
 
     // And the sharer is told the arrangement changed: it is no longer
     // sending a surface to a watcher, the other computer runs a copy.
-    await openNetworkPopover(sharer);
-    await expect(sharer.locator(".knetwork-status"))
-      .toContainText("The other computer is running a copy of this machine", {
+    await openNetworkPanel(sharer);
+    await expect(sharer.locator(".ksharing-status"))
+      .toContainText("is running a copy of this machine", {
         timeout: 30_000,
       });
   } finally {
@@ -133,7 +133,7 @@ test("replicates a machine that shares no surface at all", async ({
     // screen pixels to send. Replication does not care: it moves the
     // machine's state, not a surface, so this is the machine that shows the
     // difference.
-    await sharer.goto(appUrl("/?demo=nginx"), { waitUntil: "domcontentloaded" });
+    await sharer.goto(appUrl("/?profile=nginx"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await connectPeers(sharer, viewer, (reason) => test.skip(true, reason));
 
@@ -167,7 +167,7 @@ test("bridges a running fbDOOM's pixels until its replica paints its own", async
   const sharer = await sharerContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await sharer.goto(appUrl("/?demo=doom"), { waitUntil: "domcontentloaded" });
+    await sharer.goto(appUrl("/?profile=doom"), { waitUntil: "domcontentloaded" });
     if (await sharer.locator("vite-error-overlay").count()) {
       test.skip(true, "Required binary not built - Vite import error");
     }
@@ -236,7 +236,7 @@ test("moves a running fbDOOM to the computer that was watching it", async ({
   const keeper = await keeperContext.newPage();
   const taker = await takerContext.newPage();
   try {
-    await keeper.goto(appUrl("/?demo=doom"), { waitUntil: "domcontentloaded" });
+    await keeper.goto(appUrl("/?profile=doom"), { waitUntil: "domcontentloaded" });
     if (await keeper.locator("vite-error-overlay").count()) {
       test.skip(true, "Required binary not built - Vite import error");
     }
@@ -255,8 +255,8 @@ test("moves a running fbDOOM to the computer that was watching it", async ({
     // The take sits with the link's other controls, in the network popup the
     // connection was made in, and only the computer running the copy is
     // offered it: a keeper cannot push its machine away.
-    await openNetworkPopover(keeper);
-    await openNetworkPopover(taker);
+    await openNetworkPanel(keeper);
+    await openNetworkPanel(taker);
     await expect(takeOverButton(keeper)).toHaveCount(0);
     await takeOverButton(taker).click();
     await closeDockPopovers([keeper, taker]);
@@ -303,7 +303,7 @@ test("carries the machine's files to the computer that takes it", async ({
   const keeper = await keeperContext.newPage();
   const taker = await takerContext.newPage();
   try {
-    await keeper.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await keeper.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await taker.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await expect(keeper.locator(".kshell-host .xterm-rows").first())
       .toBeVisible({ timeout: 120_000 });
@@ -336,7 +336,7 @@ test("carries the machine's files to the computer that takes it", async ({
     await connectPeers(keeper, taker, (reason) => test.skip(true, reason));
     await expectReplica(taker);
 
-    await openNetworkPopover(taker);
+    await openNetworkPanel(taker);
     await takeOverButton(taker).click();
 
     // The taker holds the machine itself now.
@@ -394,7 +394,7 @@ test("moves the keyboard with the machine, in both directions", async ({
   const first = await firstContext.newPage();
   const second = await secondContext.newPage();
   try {
-    await first.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await first.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await second.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await expect(first.locator(".kshell-host .xterm-rows").first())
       .toBeVisible({ timeout: 120_000 });
@@ -404,8 +404,8 @@ test("moves the keyboard with the machine, in both directions", async ({
 
     // The computer with the machine cannot push it away, and the one
     // following is the one offered it.
-    await openNetworkPopover(first);
-    await openNetworkPopover(second);
+    await openNetworkPanel(first);
+    await openNetworkPanel(second);
     await expect(takeOverButton(first)).toHaveCount(0);
     await expect(takeOverButton(second)).toBeVisible({ timeout: 30_000 });
 
@@ -435,8 +435,8 @@ test("moves the keyboard with the machine, in both directions", async ({
 
     // The button changed sides with the machine. This is what a role fixed
     // at connection time could not do.
-    await openNetworkPopover(first);
-    await openNetworkPopover(second);
+    await openNetworkPanel(first);
+    await openNetworkPanel(second);
     await expect(takeOverButton(second)).toHaveCount(0);
     await expect(takeOverButton(first)).toBeVisible({ timeout: 30_000 });
 
@@ -455,8 +455,8 @@ test("moves the keyboard with the machine, in both directions", async ({
       .poll(() => terminalText(second, ".kshell-host"), { timeout: 180_000 })
       .toContain(typedByFirst);
 
-    await openNetworkPopover(first);
-    await openNetworkPopover(second);
+    await openNetworkPanel(first);
+    await openNetworkPanel(second);
     await expect(takeOverButton(first)).toHaveCount(0);
     await expect(takeOverButton(second)).toBeVisible({ timeout: 30_000 });
   } finally {
@@ -482,7 +482,7 @@ test("shows the viewer the page the user's machine is serving", async ({
   const sharer = await sharerContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await sharer.goto(appUrl("/?demo=nginx"), { waitUntil: "domcontentloaded" });
+    await sharer.goto(appUrl("/?profile=nginx"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
 
     // The machine serves its page to its own person first.
@@ -529,7 +529,7 @@ test("a keeper that gave its machine away follows it rather than failing", async
   const keeper = await keeperContext.newPage();
   const taker = await takerContext.newPage();
   try {
-    await keeper.goto(appUrl("/?demo=nginx"), { waitUntil: "domcontentloaded" });
+    await keeper.goto(appUrl("/?profile=nginx"), { waitUntil: "domcontentloaded" });
     await taker.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await expect(keeper.frameLocator('iframe[title="nginx"]').locator("body"))
       .toContainText("Hello from nginx on WebAssembly!", { timeout: 300_000 });
@@ -558,7 +558,7 @@ test("a keeper that gave its machine away follows it rather than failing", async
       });
     });
 
-    await openNetworkPopover(taker);
+    await openNetworkPanel(taker);
     await takeOverButton(taker).click();
     await closeDockPopovers([keeper, taker]);
 

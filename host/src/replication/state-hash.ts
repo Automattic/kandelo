@@ -11,8 +11,8 @@ import type { MachineCheckpoint } from "../migration/checkpoint.js";
  *
  * The hash is taken region by region rather than over one flat image. A single
  * digest can only say "different", which is not enough to act on. A per-region
- * digest names the kernel, the filesystem, or one process, so a mismatch
- * points at the subsystem that produced it.
+ * digest names the kernel (which holds the filesystem) or one process, so a
+ * mismatch points at the subsystem that produced it.
  *
  * A hash is bound to the log position it was taken at. Two hashes from
  * different positions describe two different moments, and comparing them says
@@ -72,8 +72,8 @@ async function digest(bytes: Uint8Array): Promise<string> {
  *
  * The checkpoint is the machine's state, so hashing it needs no second
  * definition of what "the machine" is and cannot drift from what a replica
- * actually adopts. Regions are emitted in a fixed order — kernel, filesystem,
- * then processes by ascending pid — so two hosts that captured the same
+ * actually adopts. Regions are emitted in a fixed order — kernel, then
+ * processes by ascending pid — so two hosts that captured the same
  * machine produce comparable lists without agreeing on anything else.
  */
 export async function hashMachineCheckpoint(
@@ -90,16 +90,6 @@ export async function hashMachineCheckpoint(
       sha256: await digest(checkpoint.kernelMemory),
     },
   ];
-  // One region per mount, in mount order: two machines agree on their files
-  // only if every filesystem matches, and a divergence should name the mount
-  // it is on rather than hide inside one combined digest.
-  for (const mount of checkpoint.filesystems) {
-    regions.push({
-      region: `filesystem:${mount.mountPoint}`,
-      bytes: mount.bytes.byteLength,
-      sha256: await digest(mount.bytes),
-    });
-  }
   const processes = [...checkpoint.processes]
     .sort((left, right) => left.pid - right.pid);
   for (const bucket of processes) {

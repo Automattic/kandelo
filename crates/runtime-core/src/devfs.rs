@@ -25,8 +25,6 @@ pub enum DevfsEntry {
     Root,
     /// /dev/pts
     PtsDir,
-    /// /dev/shm
-    ShmDir,
     /// /dev/mqueue
     MqueueDir,
     /// /dev/fd
@@ -35,6 +33,37 @@ pub enum DevfsEntry {
     InputDir,
     /// /dev/dri
     DriDir,
+    /// /dev/kandelo — Kandelo's own devices (the host clipboard)
+    KandeloDir,
+}
+
+/// Whether `path` is inside the `/dev` namespace at all.
+pub fn is_namespace_path(path: &[u8]) -> bool {
+    path == b"/dev" || path.starts_with(b"/dev/")
+}
+
+/// Whether `path` names a `/dev` subtree that some OTHER kernel authority
+/// serves.
+///
+/// `/dev/shm` is POSIX shared memory. It used to be the sole exception to
+/// kernel ownership of this namespace, served by a host mount on both hosts;
+/// it is now served by the in-kernel tmpfs, which owns `/tmp` and every other
+/// scratch prefix. So the exception is no longer to KERNEL ownership, only to
+/// ownership by this module — and the dispatch has to route it onward rather
+/// than answering `ENOENT` for names devfs does not know.
+pub fn is_delegated_path(path: &[u8]) -> bool {
+    path == b"/dev/shm" || path.starts_with(b"/dev/shm/")
+}
+
+/// Whether the kernel's devfs — not a host mount and not the rootfs overlay —
+/// is the authority for `path`.
+///
+/// `rootfs::owns_path` consults this the same way it consults `tmpfs::owns_path`.
+/// It used to rely instead on the host declaring `/dev` as a foreign prefix,
+/// which made the overlay's view of a kernel-owned namespace depend on the
+/// host's mount list.
+pub fn owns_path(path: &[u8]) -> bool {
+    is_namespace_path(path) && !is_delegated_path(path)
 }
 
 /// Match a resolved path to a devfs directory entry.
@@ -42,11 +71,11 @@ pub fn match_devfs_dir(path: &[u8]) -> Option<DevfsEntry> {
     match path {
         b"/dev" => Some(DevfsEntry::Root),
         b"/dev/pts" => Some(DevfsEntry::PtsDir),
-        b"/dev/shm" => Some(DevfsEntry::ShmDir),
         b"/dev/mqueue" => Some(DevfsEntry::MqueueDir),
         b"/dev/fd" => Some(DevfsEntry::FdDir),
         b"/dev/input" => Some(DevfsEntry::InputDir),
         b"/dev/dri" => Some(DevfsEntry::DriDir),
+        b"/dev/kandelo" => Some(DevfsEntry::KandeloDir),
         _ => None,
     }
 }
@@ -69,6 +98,7 @@ pub fn match_devfs_stat(path: &[u8], uid: u32, gid: u32) -> Option<WasmStat> {
             st_ctime_sec: 0,
             st_ctime_nsec: 0,
             _pad: 0,
+            st_rdev: 0,
         });
     }
     None
@@ -94,6 +124,7 @@ pub fn devfs_symlink_stat(path: &[u8], target_len: usize, uid: u32, gid: u32) ->
         st_ctime_sec: 0,
         st_ctime_nsec: 0,
         _pad: 0,
+        st_rdev: 0,
     }
 }
 
@@ -134,7 +165,10 @@ pub fn devfs_getdents64(
 }
 
 /// Build directory entries for a devfs directory.
-fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u8>, u8, u64)> {
+pub(crate) fn dir_entries(
+    proc: &crate::process::Process,
+    entry: &DevfsEntry,
+) -> Vec<(Vec<u8>, u8, u64)> {
     let mut entries = Vec::new();
 
     match entry {
@@ -163,6 +197,16 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
             entries.push((b"mqueue".into(), DT_DIR, devfs_ino(b"/dev/mqueue")));
             entries.push((b"input".into(), DT_DIR, devfs_ino(b"/dev/input")));
             entries.push((b"dri".into(), DT_DIR, devfs_ino(b"/dev/dri")));
+            entries.push((b"kandelo".into(), DT_DIR, devfs_ino(b"/dev/kandelo")));
+        }
+        DevfsEntry::KandeloDir => {
+            // /dev/kandelo/clipboard — host clipboard text for the guest's
+            // clipboard agent (crate::clipboard).
+            entries.push((
+                b"clipboard".into(),
+                DT_CHR,
+                devfs_ino(b"/dev/kandelo/clipboard"),
+            ));
         }
         DevfsEntry::InputDir => {
             // /dev/input/mice — Linux-compatible PS/2 mouse stream.
@@ -203,7 +247,7 @@ fn dir_entries(proc: &crate::process::Process, entry: &DevfsEntry) -> Vec<(Vec<u
                 }
             }
         }
-        DevfsEntry::ShmDir | DevfsEntry::MqueueDir => {
+        DevfsEntry::MqueueDir => {
             // Empty directories for now
         }
     }
@@ -254,7 +298,10 @@ mod tests {
     fn test_match_devfs_dir() {
         assert_eq!(match_devfs_dir(b"/dev"), Some(DevfsEntry::Root));
         assert_eq!(match_devfs_dir(b"/dev/pts"), Some(DevfsEntry::PtsDir));
-        assert_eq!(match_devfs_dir(b"/dev/shm"), Some(DevfsEntry::ShmDir));
+        // `/dev/shm` is NOT a devfs entry: the in-kernel tmpfs serves it, and
+        // devfs answering for it would shadow the mount with an empty
+        // directory that never lists anything.
+        assert_eq!(match_devfs_dir(b"/dev/shm"), None);
         assert_eq!(match_devfs_dir(b"/dev/mqueue"), Some(DevfsEntry::MqueueDir));
         assert_eq!(match_devfs_dir(b"/dev/fd"), Some(DevfsEntry::FdDir));
         assert_eq!(match_devfs_dir(b"/dev/null"), None);
@@ -367,6 +414,19 @@ mod tests {
             }
         }
         assert!(found, "dri subdir missing from /dev listing");
+    }
+
+    #[test]
+    fn kandelo_dir_lists_the_clipboard_device() {
+        let proc = crate::process::Process::new(1);
+        let root = dir_entries(&proc, &DevfsEntry::Root);
+        assert!(root.iter().any(|(n, t, _)| n.as_slice() == b"kandelo" && *t == DT_DIR));
+        let entries = dir_entries(&proc, &DevfsEntry::KandeloDir);
+        let names: Vec<&[u8]> = entries.iter().map(|(n, _, _)| n.as_slice()).collect();
+        assert_eq!(names, [b"clipboard".as_slice()]);
+        assert_eq!(entries[0].1, DT_CHR);
+        let st = match_devfs_stat(b"/dev/kandelo", 0, 0).unwrap();
+        assert_eq!(st.st_mode & 0o170000, S_IFDIR);
     }
 
     #[test]

@@ -12,6 +12,7 @@ import {
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
 import {
   CHANNEL_STATUS_PENDING,
+  CHANNEL_STATUS_COMPLETE,
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
@@ -26,6 +27,7 @@ const KERNEL_EXPORT_NAMES = [
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
   "kernel_exec_target_size",
+  "kernel_spawn_exec_target_prepare",
   "kernel_fd_is_open",
   "kernel_find_listener_fd_by_accept_wake",
   "kernel_get_fd_accept_wake_idx",
@@ -42,10 +44,6 @@ interface TestTcpListener {
 
 interface ExecWorkerState {
   currentHandlePid: number;
-  epollInterests: Map<
-    string,
-    Array<{ fd: number; events: number; data: bigint }>
-  >;
   tcpListenerTargets: Map<
     number,
     Array<{ pid: number; fd: number; acceptWakeIdx?: number }>
@@ -149,6 +147,62 @@ function registerExecCaller(
 }
 
 describe("kernel exec entry authority", () => {
+  it("cancels an exec whose old worker registration disappeared before commit", () => {
+    const commit = vi.fn(() => 0);
+    const selectedPids: number[] = [];
+    const cancel = vi.fn(() => { selectedPids.push(execState(harness.worker).currentHandlePid); return 0; });
+    const consumed = vi.fn();
+    const harness = makeHarness({
+      kernel_drain_wakeup_events: () => 0,
+      kernel_exec_commit: commit,
+      kernel_exec_target_cancel: cancel,
+    });
+    expect(harness.worker.kernelExecCommit(7, 9, 31, undefined, consumed)).toBe(-3);
+    expect(commit).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 31);
+    expect(consumed).toHaveBeenCalledOnce();
+    expect(selectedPids).toEqual([7]);
+    expect(execState(harness.worker).currentHandlePid).toBe(0);
+  });
+
+  it("rejects a stale image without erasing the successor's committed transition", () => {
+    const commit = vi.fn(() => 0);
+    const cancel = vi.fn(() => 0);
+    const harness = makeHarness({
+      kernel_drain_wakeup_events: () => 0,
+      kernel_exec_commit: commit,
+      kernel_exec_target_cancel: cancel,
+      kernel_fd_is_open: () => 0,
+      kernel_find_listener_fd_by_accept_wake: () => -1,
+      kernel_get_fd_accept_wake_idx: () => -1,
+      kernel_vblank: () => 0,
+    });
+    const old = registerExecCaller(harness);
+    const successor = registerExecCaller(harness);
+    expect(harness.worker.kernelExecCommit(7, 9, 32, undefined, () => {}, successor)).toBe(0);
+    expect(harness.worker.kernelExecCommit(7, 9, 31, undefined, () => {}, old)).toBe(-3);
+    expect(commit).toHaveBeenCalledExactlyOnceWith(7, 9, 32);
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 31);
+    expect(harness.worker.takeCommittedExecTransition(7, successor).retiredChannelOffsets).toEqual(new Set([0]));
+  });
+
+  it("cancels a prepared exec after teardown completed its caller's channel", () => {
+    const commit = vi.fn(() => 0);
+    const cancel = vi.fn(() => 0);
+    const harness = makeHarness({
+      kernel_drain_wakeup_events: () => 0,
+      kernel_exec_commit: commit,
+      kernel_exec_target_cancel: cancel,
+    });
+    const memory = registerExecCaller(harness);
+    // Cooperative termination can wake the old worker before its host
+    // registration disappears. Presence alone is not a valid exec caller.
+    Atomics.store(new Int32Array(memory.buffer), CH_STATUS / 4, CHANNEL_STATUS_COMPLETE);
+    expect(harness.worker.kernelExecCommit(7, 9, 31, undefined, () => {}, memory)).toBe(-3);
+    expect(commit).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledExactlyOnceWith(7, 31);
+  });
+
   it("carries the complete exec transition out of commit without re-entering the kernel", () => {
     const secureExec = vi.fn(() => 1);
     const harness = makeHarness({
@@ -289,10 +343,48 @@ describe("kernel exec entry authority", () => {
     expect(drain).toHaveBeenCalledTimes(2);
   });
 
+  it("rejects busy target operations without retaining their token or output", async () => {
+    const prepare = vi.fn(() => 31);
+    const spawnPrepare = vi.fn(() => 32);
+    const size = vi.fn(() => 0n);
+    const read = vi.fn(() => 0);
+    const cancel = vi.fn(() => 0);
+    const caught: unknown[] = [];
+    let harness!: ExecEntryHarness;
+    harness = makeHarness({
+      kernel_exec_target_prepare: prepare,
+      kernel_spawn_exec_target_prepare: spawnPrepare,
+      kernel_exec_target_size: size,
+      kernel_exec_target_read: read,
+      kernel_exec_target_cancel: cancel,
+      kernel_drain_wakeup_events: () => 0,
+      kernel_vblank: () => {
+        for (const operation of [
+          () => harness.worker.execTargetPrepare(7, 9, -100, "/bin/exact", 0),
+          () => harness.worker.spawnExecTargetPrepare(7, 8, "/bin/exact"),
+          () => harness.worker.execTargetSize(7, 31),
+          () => harness.worker.execTargetRead(7, 31, 0n, new Uint8Array(3)),
+          () => harness.worker.execTargetCancel(7, 31),
+        ]) {
+          try { operation(); } catch (error) { caught.push(error); }
+        }
+        return 0;
+      },
+    });
+
+    (harness.gatedInstance.exports.kernel_vblank as () => number)();
+    // Let queued ingress drain: a refused operation must stay refused.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(caught).toHaveLength(5);
+    for (const error of caught) expect(error).toBeInstanceOf(KernelReentrantEntryError);
+    for (const operation of [prepare, spawnPrepare, size, read, cancel]) {
+      expect(operation).not.toHaveBeenCalled();
+    }
+  });
+
   it("publishes a complete mirror plan before closing host listeners", () => {
     const observations: Array<{
       readonly phase: string;
-      readonly epollPresent: boolean;
       readonly targetsPresent: boolean;
       readonly listenerPresent: boolean;
       readonly virtualKeyPresent: boolean;
@@ -301,7 +393,6 @@ describe("kernel exec entry authority", () => {
     const observe = (phase: string, state: ExecWorkerState): void => {
       observations.push({
         phase,
-        epollPresent: state.epollInterests.has("7:6"),
         targetsPresent: state.tcpListenerTargets.has(8080),
         listenerPresent: state.tcpListeners.has("7:4"),
         virtualKeyPresent: state.tcpVirtualListenerKeys.has(8080),
@@ -346,9 +437,6 @@ describe("kernel exec entry authority", () => {
     registerExecCaller(harness);
     state = execState(harness.worker);
     state.currentHandlePid = 0;
-    state.epollInterests = new Map([
-      ["7:6", [{ fd: 9, events: 1, data: 11n }]],
-    ]);
     state.tcpListenerTargets = new Map([
       [8080, [{ pid: 7, fd: 4, acceptWakeIdx: 41 }]],
     ]);
@@ -368,7 +456,6 @@ describe("kernel exec entry authority", () => {
     expect(observations).toEqual([
       {
         phase: "wake drain",
-        epollPresent: true,
         targetsPresent: true,
         listenerPresent: true,
         virtualKeyPresent: true,
@@ -376,7 +463,6 @@ describe("kernel exec entry authority", () => {
       },
       {
         phase: "wake drain",
-        epollPresent: true,
         targetsPresent: true,
         listenerPresent: true,
         virtualKeyPresent: true,
@@ -384,7 +470,6 @@ describe("kernel exec entry authority", () => {
       },
       {
         phase: "virtual close",
-        epollPresent: false,
         targetsPresent: false,
         listenerPresent: false,
         virtualKeyPresent: false,
@@ -392,7 +477,6 @@ describe("kernel exec entry authority", () => {
       },
       {
         phase: "server close",
-        epollPresent: false,
         targetsPresent: false,
         listenerPresent: false,
         virtualKeyPresent: false,
@@ -414,12 +498,13 @@ describe("kernel exec entry authority", () => {
       kernel_get_fd_accept_wake_idx: () => -1,
       kernel_vblank: () => 0,
     });
+    registerExecCaller(harness);
     const state = execState(harness.worker);
-    const interests = [{ fd: 9, events: 1, data: 11n }];
-    state.epollInterests = new Map([["7:6", interests]]);
+    const targets = [{ pid: 7, fd: 4, acceptWakeIdx: 41 }];
+    state.tcpListenerTargets = new Map([[8080, targets]]);
 
     expect(harness.worker.kernelExecCommit(7, 11, 13)).toBe(-5);
-    expect(state.epollInterests.get("7:6")).toBe(interests);
+    expect(state.tcpListenerTargets.get(8080)).toBe(targets);
     expect(fdIsOpen).not.toHaveBeenCalled();
   });
 });

@@ -84,6 +84,7 @@ function createConnectHarness(
         kernel_handle_channel: handleChannel,
         kernel_is_fd_nonblock: isFdNonblock,
         kernel_set_current_tid: () => 0,
+        kernel_vblank: () => 0,
       },
     },
   );

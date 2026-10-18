@@ -1,0 +1,22 @@
+script_path = "packages/registry/librsvg/build-librsvg.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
+
+# The build compiles Rust against a private sysroot that the build script
+# assembles from these SDK files (target spec, libc fork, std overlay).
+# They are not part of the global toolchain fingerprint, so a Rust
+# package lists them. cargo-c's Kandelo patch is applied by flake.nix,
+# whose bytes the global fingerprint covers, but the patch file itself is
+# a separate input.
+inputs = [
+  "packages/registry/librsvg/build-librsvg.sh",
+  "packages/registry/librsvg/rust-build-env.sh",
+  "packages/registry/librsvg/patches",
+  "scripts/build-rust-sysroot.sh",
+  "sdk/rust/wasm32-unknown-kandelo-std.json",
+  "sdk/rust/libc-kandelo.patch",
+  "sdk/rust/libc-upstream",
+  "sdk/rust/std-overlay",
+  "sdk/rust/cargo-c-kandelo.patch",
+]

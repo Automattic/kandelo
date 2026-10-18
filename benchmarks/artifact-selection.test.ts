@@ -150,6 +150,9 @@ test("static Wasm evidence follows the selected suite and host", () => {
     "benchmarks/wasm/file-throughput.wasm",
     "benchmarks/wasm/syscall-latency.wasm",
   ]);
+  assert.deepEqual(usedPaths("node", "stdin-throughput"), [
+    "benchmarks/wasm/stdin-throughput.wasm",
+  ]);
   assert.deepEqual(usedPaths("node", "process-lifecycle"), [
     "benchmarks/wasm/hello.wasm",
     "benchmarks/wasm/fork-bench.wasm",
@@ -164,6 +167,7 @@ test("static Wasm evidence follows the selected suite and host", () => {
     "benchmarks/wasm/pipe-throughput.wasm",
     "benchmarks/wasm/file-throughput.wasm",
     "benchmarks/wasm/syscall-latency.wasm",
+    "benchmarks/wasm/stdin-throughput.wasm",
     "benchmarks/wasm/hello.wasm",
     "benchmarks/wasm/fork-bench.wasm",
     "benchmarks/wasm/clone-bench.wasm",

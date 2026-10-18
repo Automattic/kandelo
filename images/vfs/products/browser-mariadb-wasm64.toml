@@ -1,7 +1,7 @@
 schema = 1
 id = "browser-mariadb-wasm64"
 architecture = "wasm64"
-output = "mariadb-64.vfs.zst"
+output = "mariadb-vfs.vfs.zst"
 builder = "images/vfs/scripts/build-mariadb-vfs-image.sh"
 
 [[composition.repository]]
@@ -14,6 +14,14 @@ materialization = "embedded"
 name = "mariadb"
 outputs = ["mariadbd"]
 source_roles = ["system-tables"]
+role = "runtime"
+materialization = "embedded"
+
+# bash is /bin/sh in every Kandelo image (see installBashAsPosixShell).
+[[software.package]]
+name = "bash"
+outputs = ["bash"]
+source_roles = []
 role = "runtime"
 materialization = "embedded"
 

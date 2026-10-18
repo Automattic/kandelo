@@ -5,16 +5,13 @@ import {
   VIRTUAL_NETWORK_ERRNO,
 } from "../src/networking/virtual-network";
 import type { TcpConnectionPeer, UdpDatagram } from "../src/types";
+import { NET_READINESS } from "../src/generated/abi";
 
-const POLLIN = 0x0001;
-const POLLOUT = 0x0004;
-const POLLERR = 0x0008;
-const POLLHUP = 0x0010;
 const MSG_PEEK = 0x0002;
 
 describe("LocalVirtualNetwork", () => {
   it("resolves bounded legacy numeric IPv4 forms and valid DNS aliases", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const backend = net.attachMachine({
       id: "server",
       address: [10, 88, 0, 2],
@@ -34,7 +31,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("routes TCP streams between attached machines", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     let accepted: TcpConnectionPeer | null = null;
@@ -58,7 +55,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("honors MSG_PEEK without consuming TCP stream data", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     let accepted: TcpConnectionPeer | null = null;
@@ -79,7 +76,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("reports refused TCP connects when no listener is bound", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
 
@@ -88,7 +85,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("reports host unreachable for unknown virtual addresses", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
 
     client.connect(1, new Uint8Array([10, 88, 0, 99]), 9);
@@ -96,7 +93,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("wakes TCP peers with reset when a machine detaches", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
 
@@ -111,11 +108,18 @@ describe("LocalVirtualNetwork", () => {
 
     net.detachMachine("server");
 
-    const revents = client.poll!(7, POLLIN | POLLOUT);
-    expect(revents & POLLERR).toBe(POLLERR);
-    expect(revents & POLLIN).toBe(POLLIN);
-    expect(revents & POLLOUT).toBe(0);
-    expect(revents & POLLHUP).toBe(POLLHUP);
+    // The backend reports facts; the kernel turns them into revents, and its
+    // own tests (`runtime_core::net_readiness`) pin that mapping. A reset
+    // takes both directions down, so it is an error, end-of-stream, a hangup,
+    // and no longer writable — which the kernel renders as
+    // POLLERR | POLLIN | POLLHUP with POLLOUT suppressed.
+    const facts = client.readiness!(7);
+    expect(facts & NET_READINESS.ERROR).toBe(NET_READINESS.ERROR);
+    expect(facts >>> NET_READINESS.ERRNO_SHIFT)
+      .toBe(VIRTUAL_NETWORK_ERRNO.ECONNRESET);
+    expect(facts & NET_READINESS.RECV_EOF).toBe(NET_READINESS.RECV_EOF);
+    expect(facts & NET_READINESS.HANGUP).toBe(NET_READINESS.HANGUP);
+    expect(facts & NET_READINESS.SEND_READY).toBe(0);
     try {
       client.recv(7, 16, 0);
       throw new Error("recv after detached peer unexpectedly succeeded");
@@ -131,7 +135,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("drains queued TCP data before FIN and keeps an orphaned receive sink", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     let accepted: TcpConnectionPeer | null = null;
@@ -152,16 +156,20 @@ describe("LocalVirtualNetwork", () => {
 
     expect(new TextDecoder().decode(client.recv(7, 16, 0))).toBe("queued");
     expect(client.recv(7, 16, 0)).toHaveLength(0);
-    const revents = client.poll!(7, POLLIN | POLLOUT);
-    expect(revents & POLLIN).toBe(POLLIN);
-    expect(revents & POLLOUT).toBe(POLLOUT);
+    // A bare peer FIN is end-of-stream, not a hangup: the write half is still
+    // live, so the kernel reports POLLIN and keeps POLLOUT set. This endpoint
+    // used to raise POLLHUP here, and only when POLLIN was requested.
+    const facts = client.readiness!(7);
+    expect(facts & NET_READINESS.RECV_EOF).toBe(NET_READINESS.RECV_EOF);
+    expect(facts & NET_READINESS.SEND_READY).toBe(NET_READINESS.SEND_READY);
+    expect(facts & NET_READINESS.HANGUP).toBe(0);
     expect(client.send(7, new TextEncoder().encode("after-fin-one"), 0)).toBe(13);
     expect(client.send(7, new TextEncoder().encode("after-fin-two"), 0)).toBe(13);
     client.close(7);
   });
 
   it("preserves queued TCP data when a cleanly closed machine detaches", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     let accepted: TcpConnectionPeer | null = null;
@@ -186,7 +194,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("keeps the receive direction usable after SHUT_WR", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     let accepted: TcpConnectionPeer | null = null;
@@ -208,7 +216,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("routes UDP datagrams and preserves source metadata", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     const received: UdpDatagram[] = [];
@@ -235,7 +243,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("scopes INADDR_ANY UDP binds to each attached machine", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const one = net.attachMachine({ id: "one", address: [10, 88, 0, 2] });
     const two = net.attachMachine({ id: "two", address: [10, 88, 0, 3] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 4] });
@@ -269,7 +277,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("scopes backend UDP endpoint identifiers to each attached machine", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const one = net.attachMachine({ id: "one", address: [10, 88, 0, 2] });
     const two = net.attachMachine({ id: "two", address: [10, 88, 0, 3] });
     const receivedOne: UdpDatagram[] = [];
@@ -298,7 +306,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("scopes INADDR_ANY TCP listeners to each attached machine", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const one = net.attachMachine({ id: "one", address: [10, 88, 0, 2] });
     const two = net.attachMachine({ id: "two", address: [10, 88, 0, 3] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 4] });
@@ -325,7 +333,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("uses normal UDP errno style for missing destination hosts and ports", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
     net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
 
@@ -348,7 +356,7 @@ describe("LocalVirtualNetwork", () => {
   });
 
   it("throws EAGAIN when a connected stream has no data yet", () => {
-    const net = new LocalVirtualNetwork();
+    const net = new LocalVirtualNetwork({ network: [10, 88, 0, 0], prefixLength: 24 });
     const server = net.attachMachine({ id: "server", address: [10, 88, 0, 2] });
     const client = net.attachMachine({ id: "client", address: [10, 88, 0, 3] });
 

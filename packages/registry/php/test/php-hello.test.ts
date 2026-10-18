@@ -1,9 +1,11 @@
 import { describe, it, expect, afterAll } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runCentralizedProgram } from "../../../../host/test/centralized-test-helper";
+import {
+  makeHostScratchTempRoot,
+  runCentralizedProgram,
+} from "../../../../host/test/centralized-test-helper";
 import { tryResolveBinary } from "../../../../host/src/binary-resolver";
 import { NodePlatformIO } from "../../../../host/src/platform/node";
 
@@ -39,6 +41,22 @@ describe.skipIf(!PHP_AVAILABLE)("PHP CLI on kandelo", () => {
         });
         expect(Array.from(stdoutBytes)).toEqual([0x41, 0x00, 0x42, 0xff]);
         expect(exitCode).toBe(0);
+    }, 60_000);
+
+    // Fibers are built on ucontext, which Kandelo does not support; PHP links
+    // the SDK's opt-in libkandelo-ucontext-unsupported so everything else
+    // runs. Starting a Fiber must stop at the boundary, loudly, not run on.
+    it("aborts with the ucontext diagnostic when a Fiber starts", async () => {
+        const { stdout, stderr, exitCode } = await runCentralizedProgram({
+            programPath: phpBinaryPath,
+            argv: ["php", "-r", 'echo "before\n"; (new Fiber(function () { echo "inside\n"; }))->start(); echo "after\n";'],
+        });
+        expect(stdout).toContain("before");
+        expect(stdout).not.toContain("inside");
+        expect(stdout).not.toContain("after");
+        expect(stderr).toMatch(/(getcontext|makecontext|swapcontext): ucontext is not supported on Kandelo/);
+        // 134 = 128+SIGABRT; 132 is abort()'s trap backstop.
+        expect([134, 132]).toContain(exitCode);
     }, 60_000);
 
     const tmpDir = join(__dirname, ".tmp");
@@ -249,7 +267,7 @@ describe.skipIf(!ZIP_AVAILABLE)("PHP zip extension on kandelo", () => {
     }, 60_000);
 
     it("round-trips a DEFLATE entry through ZipArchive", async () => {
-        const scratch = mkdtempSync(join(tmpdir(), "kandelo-php-zip-"));
+        const scratch = makeHostScratchTempRoot("kandelo-php-zip-");
         const archive = join(scratch, "smoke.zip");
         try {
             const { stdout, stderr, exitCode } = await runCentralizedProgram({

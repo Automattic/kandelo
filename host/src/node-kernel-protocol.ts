@@ -1,3 +1,96 @@
+import type { RemoteSegmentInit } from "./networking/remote-segment-port";
+import type { VfsChangeEvent } from "./vfs/types";
+// Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
+// for which types are NOT shared and why.
+export type {
+  SignalProcessMessage,
+  GetForkCountRequestMessage,
+  GetKernelMemoryPagesRequestMessage,
+  GetWasmModuleCacheStatsRequestMessage,
+  GetSpawnScratchCapacityRequestMessage,
+  EnumProcsRequestMessage,
+  ReadProcMapsRequestMessage,
+  SetSyscallTraceMessage,
+  DrainSyscallTraceMessage,
+  KmsAttachCanvasMessage,
+  KmsAttachStatsMessage,
+  InitErrorMessage,
+  KernelFatalMessage,
+  ResponseMessage,
+  StdoutMessage,
+  StderrMessage,
+  PtyOutputMessage,
+  LazyDownloadMessage,
+  AppendStdinDataMessage,
+  DestroyMessage,
+  ExportRootfsImageMessage,
+  InjectConnectionMessage,
+  PickListenerTargetMessage,
+  PipeCloseReadMessage,
+  PipeCloseWriteMessage,
+  PipeIsWriteOpenMessage,
+  PipeReadMessage,
+  PipeWriteMessage,
+  PtyResizeMessage,
+  PtyWriteMessage,
+  SetStdinDataMessage,
+  TerminateProcessMessage,
+  WakeBlockedReadersMessage,
+  WakeBlockedWritersMessage,
+  HttpRequestMessage,
+  WriteVfsFileMessage,
+  ProcEventMessage,
+  AttachRemotePeerMessage,
+  RemoteNetworkSnapshotMessage,
+  RemoteNetworkHostMessage,
+  RemoteNetworkJoinMessage,
+  RemoteNetworkLeaveMessage,
+} from "./kernel-protocol-shared";
+import type {
+  SignalProcessMessage,
+  GetForkCountRequestMessage,
+  GetKernelMemoryPagesRequestMessage,
+  GetWasmModuleCacheStatsRequestMessage,
+  GetSpawnScratchCapacityRequestMessage,
+  EnumProcsRequestMessage,
+  ReadProcMapsRequestMessage,
+  SetSyscallTraceMessage,
+  DrainSyscallTraceMessage,
+  KmsAttachCanvasMessage,
+  KmsAttachStatsMessage,
+  InitErrorMessage,
+  KernelFatalMessage,
+  ResponseMessage,
+  StdoutMessage,
+  StderrMessage,
+  PtyOutputMessage,
+  LazyDownloadMessage,
+  AppendStdinDataMessage,
+  DestroyMessage,
+  ExportRootfsImageMessage,
+  InjectConnectionMessage,
+  PickListenerTargetMessage,
+  PipeCloseReadMessage,
+  PipeCloseWriteMessage,
+  PipeIsWriteOpenMessage,
+  PipeReadMessage,
+  PipeWriteMessage,
+  PtyResizeMessage,
+  PtyWriteMessage,
+  SetStdinDataMessage,
+  TerminateProcessMessage,
+  WakeBlockedReadersMessage,
+  WakeBlockedWritersMessage,
+  HttpRequestMessage,
+  WriteVfsFileMessage,
+  ProcEventMessage,
+  AttachRemotePeerMessage,
+  RemoteNetworkSnapshotMessage,
+  RemoteNetworkHostMessage,
+  RemoteNetworkJoinMessage,
+  RemoteNetworkLeaveMessage,
+} from "./kernel-protocol-shared";
+
 /**
  * Message protocol for Node.js main thread ↔ kernel worker_thread communication.
  *
@@ -13,7 +106,8 @@
  */
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { HostDiagnosticMessage } from "./host-diagnostic";
-import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
+import type { ImageBuildDeterminism } from "./types";
 import type {
   ClosedLazyAsset,
   ClosedLazyAssetSource,
@@ -33,6 +127,8 @@ export type { HostDiagnostic } from "./host-diagnostic";
 
 export interface InitMessage {
   type: "init";
+  /** Native port ownership passes to this kernel worker during init. */
+  remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
   config: {
     maxWorkers: number;
@@ -46,6 +142,8 @@ export interface InitMessage {
     defaultThreadSlots?: number;
     dataBufferSize?: number;
     useSharedMemory?: boolean;
+    /** See `NodeKernelHostOptions.imageBuildDeterminism`. */
+    imageBuildDeterminism?: ImageBuildDeterminism;
   };
   /**
    * Virtual path → immutable host file for spawn-only preflight. Exec never
@@ -58,7 +156,7 @@ export interface InitMessage {
    */
   execProgramBytes?: Record<string, ArrayBuffer>;
   /**
-   * Bytes of `host/wasm/rootfs.vfs`, read on the main thread and forwarded
+   * Bytes of `host/wasm/rootfs.vfs.zst`, read on the main thread and forwarded
    * to the worker. When present, the worker materialises the default mount
    * spec (rootfs at `/`, scratch dirs at `/tmp` etc.) and constructs a
    * `VirtualPlatformIO`. Absent → worker falls back to `NodePlatformIO`
@@ -111,17 +209,26 @@ export interface InitMessage {
   enableTcpNetwork?: boolean;
 }
 
+/** Read, cancel or release one worker-owned command family. */
+export interface OwnedJobMessage {
+  type: "read_owned_job" | "cancel_owned_job" | "release_owned_job";
+  requestId: number;
+  jobId: string;
+  offset?: number;
+  limit?: number;
+}
+
 export interface SpawnMessage {
   type: "spawn";
   requestId: number;
+  /** Own this process and its descendants as one cancellable command family. */
+  ownedJob?: { id: string; timeoutMs: number };
   /**
    * Supply exactly one program source. `programPath` resolves inside the
    * worker-owned VFS and is the Node peer of BrowserKernel.spawnFromVfs().
    */
   programBytes?: ArrayBuffer;
   programPath?: string;
-  /** Optional pre-compiled module for the same bytes. */
-  programModule?: WebAssembly.Module;
   argv: string[];
   env?: string[];
   cwd?: string;
@@ -140,111 +247,6 @@ export interface SpawnMessage {
   maxAddr?: number;
 }
 
-export interface AppendStdinDataMessage {
-  type: "append_stdin_data";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface SetStdinDataMessage {
-  type: "set_stdin_data";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface PtyWriteMessage {
-  type: "pty_write";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface PtyResizeMessage {
-  type: "pty_resize";
-  pid: number;
-  rows: number;
-  cols: number;
-}
-
-export interface InjectConnectionMessage {
-  type: "inject_connection";
-  requestId: number;
-  pid: number;
-  fd: number;
-  peerAddr: [number, number, number, number];
-  peerPort: number;
-}
-
-export interface PipeReadMessage {
-  type: "pipe_read";
-  requestId: number;
-  pid: number;
-  pipeIdx: number;
-}
-
-export interface PipeWriteMessage {
-  type: "pipe_write";
-  requestId: number;
-  pid: number;
-  pipeIdx: number;
-  data: Uint8Array;
-}
-
-export interface PipeCloseReadMessage {
-  type: "pipe_close_read";
-  pid: number;
-  pipeIdx: number;
-}
-
-export interface PipeCloseWriteMessage {
-  type: "pipe_close_write";
-  pid: number;
-  pipeIdx: number;
-}
-
-export interface PipeIsWriteOpenMessage {
-  type: "pipe_is_write_open";
-  requestId: number;
-  pid: number;
-  pipeIdx: number;
-}
-
-export interface WakeBlockedReadersMessage {
-  type: "wake_blocked_readers";
-  pipeIdx: number;
-}
-
-export interface WakeBlockedWritersMessage {
-  type: "wake_blocked_writers";
-  pipeIdx: number;
-}
-
-export interface PickListenerTargetMessage {
-  type: "pick_listener_target";
-  requestId: number;
-  port: number;
-}
-
-export interface TerminateProcessMessage {
-  type: "terminate_process";
-  requestId: number;
-  pid: number;
-  status: number;
-}
-
-export interface DestroyMessage {
-  type: "destroy";
-  requestId: number;
-}
-
-/**
- * Serialize the quiescent worker-owned root filesystem. Boot-scoped scratch
- * and device mounts are intentionally outside this root-image snapshot.
- */
-export interface ExportRootfsImageMessage {
-  type: "export_rootfs_image";
-  requestId: number;
-}
-
 /** Read one regular file through the worker-owned VFS. */
 export interface ReadVfsFileMessage {
   type: "read_vfs_file";
@@ -252,43 +254,18 @@ export interface ReadVfsFileMessage {
   path: string;
 }
 
-/** Create or replace one regular file through the worker-owned VFS. */
-export interface WriteVfsFileMessage {
-  type: "write_vfs_file";
+/** List one directory through the worker-owned VFS. */
+export interface ReadVfsDirMessage {
+  type: "read_vfs_dir";
   requestId: number;
   path: string;
-  data: Uint8Array;
-  mode: number;
 }
 
-/** Request the kernel's per-process fork counter. The kernel-worker entry
- * forwards this to `kernel_get_fork_count` and posts a `response` message
- * with `result` set to a `bigint` (u64 as BigInt). Used by the spawn
- * regression tests to assert SYS_SPAWN doesn't bump the counter. */
-export interface GetForkCountRequestMessage {
-  type: "get_fork_count";
+/** Describe one path (following symlinks) through the worker-owned VFS. */
+export interface StatVfsPathMessage {
+  type: "stat_vfs_path";
   requestId: number;
-  pid: number;
-}
-
-/** Read the kernel Wasm instance's current 64 KiB linear-memory page count. */
-export interface GetKernelMemoryPagesRequestMessage {
-  type: "get_kernel_memory_pages";
-  requestId: number;
-}
-
-/** Read the retained capacity of the kernel-owned large-spawn region. */
-export interface GetSpawnScratchCapacityRequestMessage {
-  type: "get_spawn_scratch_capacity";
-  requestId: number;
-}
-
-/** Deliver `signum` to `pid`. Responds `true` when the process existed. */
-export interface SignalProcessMessage {
-  type: "signal_process";
-  requestId: number;
-  pid: number;
-  signum: number;
+  path: string;
 }
 
 export interface ResolveExecResponseMessage {
@@ -297,20 +274,78 @@ export interface ResolveExecResponseMessage {
   programBytes: ArrayBuffer | null;
 }
 
-/** Snapshot the kernel's process table. Mirrors the browser host's
- * enum_procs request in browser-kernel-protocol.ts.
- * Response carries `ProcessSnapshot[]`. */
-export interface EnumProcsRequestMessage {
-  type: "enum_procs";
-  requestId: number;
+/** Report the display size (device pixels) of a CRTC's canvas element.
+ *  Mirrors the Browser-side message. Feeds the virtual connector's
+ *  PREFERRED mode and (with an OffscreenCanvas polyfill) the
+ *  `webgl2-scanout` presenter's drawing-buffer size. */
+export interface KmsSetDisplaySizeMessage {
+  type: "kms_set_display_size";
+  crtcId: number;
+  width: number;
+  height: number;
+  /** The display's physical size in millimetres, when the embedder knows
+   *  it; the kernel reports it on the DRM connector (mm_width/mm_height). */
+  physicalMm?: { width: number; height: number };
 }
 
-/** Read `/proc/[pid]/maps` for a foreign process via the host. Response
- * carries a string (Linux maps text) or `null` if the pid is gone. */
-export interface ReadProcMapsRequestMessage {
-  type: "read_proc_maps";
+/**
+ * Main-thread → kernel-worker evdev injection. Mirrors the Browser-side
+ * `InputEventInjectMessage`. Under Node there is no DOM, so production
+ * traffic on this channel comes from tests / headless drivers; the
+ * Node-side `NodeInputSource` is a null-source. Routes to
+ * `CentralizedKernelWorker.injectInputEvent`.
+ */
+export interface InputEventInjectMessage {
+  type: "input_event_inject";
+  device: 0 | 1;
+  ev_type: number;
+  code: number;
+  value: number;
+}
+
+/**
+ * Main-thread → kernel-worker batched evdev injection. Mirrors the
+ * Browser-side `InputEventBatchInjectMessage`: one `SYN_REPORT` frame per
+ * message, so the worker runs a single kernel entry and wake scan for the
+ * whole frame. Routes to `CentralizedKernelWorker.injectInputEventBatch`.
+ */
+export interface InputEventBatchInjectMessage {
+  type: "input_event_batch_inject";
+  records: InputEvent[];
+}
+
+/**
+ * Main-thread → kernel-worker canvas-dims update. Mirrors the
+ * Browser-side `SetInputCanvasDimsMessage`. Sets `ABS_X.maximum` /
+ * `ABS_Y.maximum` reported by EVIOCGABS on `/dev/input/event1`.
+ */
+export interface SetInputCanvasDimsMessage {
+  type: "set_input_canvas_dims";
+  width: number;
+  height: number;
+}
+
+/**
+ * Offer host clipboard text to the guest's clipboard agent through
+ * `/dev/kandelo/clipboard`. Answered with a `ClipboardOfferResult` once the
+ * agent installs it, or with the reason it could not.
+ */
+export interface ClipboardOfferMessage {
+  type: "clipboard_offer";
   requestId: number;
-  pid: number;
+  /** UTF-8, line endings already normalized (`encodeClipboardText`). */
+  text: Uint8Array;
+  timeoutMs?: number;
+}
+
+/**
+ * Copy-out: answer with the next desktop selection the guest's clipboard
+ * agent reports (a `GuestClipboardResult`). Sent before the copy chord.
+ */
+export interface ClipboardGuestWaitMessage {
+  type: "clipboard_guest_wait";
+  requestId: number;
+  timeoutMs?: number;
 }
 
 /**
@@ -342,18 +377,6 @@ export interface CaptureCheckpointRequestMessage {
    * caller on the main thread can arrange for itself.
    */
   beginReplicationStream?: true;
-}
-
-/** Enable / disable the syscall trace ring. Mirrors the browser host. */
-export interface SetSyscallTraceMessage {
-  type: "set_syscall_trace";
-  enabled: boolean;
-}
-
-/** Drain pending syscall trace events. Response carries SyscallTraceEvent[]. */
-export interface DrainSyscallTraceMessage {
-  type: "drain_syscall_trace";
-  requestId: number;
 }
 
 /**
@@ -511,79 +534,13 @@ export interface ReplicationReplayProgress {
   readonly scannedAheadClockReadings: number;
 }
 
-/** Send an HTTP request to a server running in the kernel and wait for the
- *  response. Reply arrives as a `response` message whose `result` is an
- *  {@link HttpResponse}, or with `error` set if no listener was found. */
-export interface HttpRequestMessage {
-  type: "http_request";
-  requestId: number;
-  /** Port the in-kernel server is listening on. */
-  port: number;
-  request: HttpRequest;
-  /** Optional timeout in ms (default 60_000). */
-  timeoutMs?: number;
-  /** Optional raw response byte ceiling. */
-  maxResponseBytes?: number;
-}
-
-/** Register an `OffscreenCanvas` as the scanout target for a KMS CRTC.
- *  Mirrors the Browser-side handler. Under Node, OffscreenCanvas is only
- *  available when the host wires a polyfill; without one the worker
- *  ignores the canvas and only `attachKmsStats` is meaningful. */
-export interface KmsAttachCanvasMessage {
-  type: "kms_attach_canvas";
-  crtcId: number;
-  canvas: OffscreenCanvas;
-  stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" };
-}
-
-/** Register a stats SAB for a CRTC without binding a scanout canvas. */
-export interface KmsAttachStatsMessage {
-  type: "kms_attach_stats";
-  crtcId: number;
-  stats: SharedArrayBuffer;
-}
-
-/**
- * Main-thread → kernel-worker evdev injection. Mirrors the Browser-side
- * `InputEventInjectMessage`. Under Node there is no DOM, so production
- * traffic on this channel comes from tests / headless drivers; the
- * Node-side `NodeInputSource` is a null-source. Routes to
- * `CentralizedKernelWorker.injectInputEvent`.
- */
-export interface InputEventInjectMessage {
-  type: "input_event_inject";
-  device: 0 | 1;
-  ev_type: number;
-  code: number;
-  value: number;
-}
-
-/**
- * Main-thread → kernel-worker batched evdev injection. Mirrors the
- * Browser-side `InputEventBatchInjectMessage`: one `SYN_REPORT` frame per
- * message, so the worker runs a single kernel entry and wake scan for the
- * whole frame. Routes to `CentralizedKernelWorker.injectInputEventBatch`.
- */
-export interface InputEventBatchInjectMessage {
-  type: "input_event_batch_inject";
-  records: InputEvent[];
-}
-
-/**
- * Main-thread → kernel-worker canvas-dims update. Mirrors the
- * Browser-side `SetInputCanvasDimsMessage`. Sets `ABS_X.maximum` /
- * `ABS_Y.maximum` reported by EVIOCGABS on `/dev/input/event1`.
- */
-export interface SetInputCanvasDimsMessage {
-  type: "set_input_canvas_dims";
-  width: number;
-  height: number;
-}
-
 export type MainToKernelMessage =
   | InitMessage
+  | AttachRemotePeerMessage
+  | RemoteNetworkSnapshotMessage
+  | RemoteNetworkHostMessage
+  | RemoteNetworkJoinMessage
+  | RemoteNetworkLeaveMessage
   | SpawnMessage
   | AppendStdinDataMessage
   | SetStdinDataMessage
@@ -601,10 +558,16 @@ export type MainToKernelMessage =
   | TerminateProcessMessage
   | DestroyMessage
   | ExportRootfsImageMessage
+  | ClipboardOfferMessage
+  | ClipboardGuestWaitMessage
   | ReadVfsFileMessage
+  | ReadVfsDirMessage
+  | StatVfsPathMessage
   | WriteVfsFileMessage
+  | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetWasmModuleCacheStatsRequestMessage
   | GetSpawnScratchCapacityRequestMessage
   | SignalProcessMessage
   | ResolveExecResponseMessage
@@ -620,9 +583,11 @@ export type MainToKernelMessage =
   | ReplicationReplayDrainMessage
   | ReplicationSealMessage
   | ReplicationHashReplicaMessage
+  | WatchVfsChangesMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
   | KmsAttachStatsMessage
+  | KmsSetDisplaySizeMessage
   | InputEventInjectMessage
   | InputEventBatchInjectMessage
   | SetInputCanvasDimsMessage;
@@ -633,47 +598,10 @@ export interface ReadyMessage {
   type: "ready";
 }
 
-/** Initialization failed before the worker could publish a usable kernel. */
-export interface InitErrorMessage {
-  type: "init_error";
-  error: string;
-}
-
-/** The dedicated kernel instance is poisoned and has stopped permanently. */
-export interface KernelFatalMessage {
-  type: "kernel_fatal";
-  error: string;
-}
-
-export interface ResponseMessage {
-  type: "response";
-  requestId: number;
-  result: unknown;
-  error?: string;
-}
-
 export interface ExitMessage {
   type: "exit";
   pid: number;
   status: number;
-}
-
-export interface StdoutMessage {
-  type: "stdout";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface StderrMessage {
-  type: "stderr";
-  pid: number;
-  data: Uint8Array;
-}
-
-export interface PtyOutputMessage {
-  type: "pty_output";
-  pid: number;
-  data: Uint8Array;
 }
 
 export interface ResolveExecRequestMessage {
@@ -682,21 +610,27 @@ export interface ResolveExecRequestMessage {
   path: string;
 }
 
-/** Lazy VFS transport progress forwarded by the worker-owned root filesystem. */
-export interface LazyDownloadMessage {
-  type: "lazy_download";
-  event: LazyDownloadEvent;
-}
+/** Which teardown step `performDestroy` is in. */
+export type DestroyPhase = "draining" | "terminating";
 
 /**
- * Posted whenever the kernel forks, execs, or posix_spawns. Mirrors the
- * browser-side ProcEventMessage. Exit events come via the existing
- * ExitMessage; we don't duplicate them here. Spawn events always carry the
- * authoritative parent pid; exec events preserve process identity and do not.
+ * Cumulative teardown progress. Counts processes, not bytes.
+ *
+ * `total` is a lower bound while `totalProvisional` is true: the drain phase
+ * knows only the processes it woke, and the terminate phase adds stragglers it
+ * discovers afterwards. `completed` never resets between phases.
  */
-export type ProcEventMessage =
-  | { type: "proc_event"; kind: "spawn"; pid: number; ppid: number }
-  | { type: "proc_event"; kind: "exec"; pid: number };
+export interface DestroyProgressEvent {
+  phase: DestroyPhase;
+  completed: number;
+  total: number;
+  totalProvisional: boolean;
+}
+
+export interface DestroyProgressMessage {
+  type: "destroy_progress";
+  event: DestroyProgressEvent;
+}
 
 export type KernelToMainMessage =
   | ReadyMessage
@@ -711,4 +645,12 @@ export type KernelToMainMessage =
   | ResolveExecRequestMessage
   | ProcEventMessage
   | LazyDownloadMessage
+  | DestroyProgressMessage
+  | VfsChangeMessage
   | ReplicationRecordedMessage;
+
+export interface WatchVfsChangesMessage {
+  type: "watch_vfs_changes"; prefix: string; enabled: boolean;
+}
+
+export interface VfsChangeMessage { type: "vfs_change"; event: VfsChangeEvent; }

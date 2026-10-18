@@ -190,14 +190,14 @@ describe("Vite browser binary capabilities", () => {
       'sourceOnlyViteAssets.resolve("kernel.wasm")',
     );
     expect(config).toContain(
-      'sourceOnlyViteAssets!.resolve(\n            "programs/wasm32/rootfs.vfs",',
+      'sourceOnlyViteAssets!.resolve(\n            "programs/wasm32/rootfs.vfs.zst",',
     );
     expect(config).toContain(
       "sourceOnlyViteAssets.resolve(request.relPath)",
     );
     expect(config.match(/sourceOnlyViteAssets\.plugin\(\)/g)).toHaveLength(2);
     expect(config).toContain(
-      "SourceOnly browser builds admit only the root main, kandelo, and network inputs",
+      "SourceOnly browser builds admit only the root main, kandelo, network, and peer-network inputs",
     );
     expect(config).toContain(
       'publicDir: sourceOnlyPublicSnapshot?.path ?? "public"',
