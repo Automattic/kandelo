@@ -4033,3 +4033,19 @@ recipe edits were reverted rather than introduce an unvalidated
 pre-optimization step for both FrankenPHP executables. Next establish
 safe memory headroom and measure the full instrumenter after the
 reference-analysis lifetime change, then build and run the package.
+
+**2026-10-17 — Recheck the published ZTS module in Node and Chromium.**
+The SourceOnly revision-6 `opcache-zts.so` has the same SHA-256 as the
+browser fixture's previously tested module. The current ABI-stamped
+Go/PHP embed probe, selected source resolver kernel, and actual
+revision-6 module passed the focused Node run with clean stderr and
+host diagnostics (`PHP EMBED PASS`, `GO PHP EMBED PASS`, and
+`PHP OPCACHE DLOPEN PASS`). The focused Chromium browser-host test
+also passed 1/1 using the byte-identical fixture module and current
+source resolver kernel. A first Chromium attempt reused a Vite server
+started on October 12 at port 5401; its old asset index rejected the
+new kernel member size and caused a page-console 500 even though the
+guest probe's assertions had passed. A fresh Playwright server on port
+5429 passed without that error. These checks establish ZTS embed and
+module loading, **not** OPcache activation in the FrankenPHP SAPI or
+WordPress behavior; those require the still-unbuilt executable.
