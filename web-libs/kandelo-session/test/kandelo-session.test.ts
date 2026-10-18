@@ -1587,7 +1587,7 @@ describe("LiveKernelHost: VFS reads go through the kernel worker", () => {
     const ptyWrite = vi.fn();
     const appendStdinData = vi.fn();
     const arrived = {
-      fs: makeFs({ "/etc/passwd": "" }),
+      ...makeVfs({ "/etc/passwd": "" }),
       framebuffers: {
         list: () => [{ pid: 101 }],
         onChange: () => () => {},
@@ -1648,7 +1648,7 @@ describe("LiveKernelHost: VFS reads go through the kernel worker", () => {
         status: "captured",
         checkpoint: {},
       }),
-      fs: makeFs({ "/etc/passwd": "" }),
+      ...makeVfs({ "/etc/passwd": "" }),
       framebuffers: { list: () => [], onChange: () => () => {}, get: () => undefined },
       getProcessMemory: () => undefined,
     } as never;

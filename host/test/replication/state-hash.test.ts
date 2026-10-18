@@ -182,18 +182,18 @@ describe("promotion state hash comparison", () => {
     expect(gate.diverged).toBe(false);
     expect(gate.summary).toContain("kernel region exempt");
 
-    // A filesystem that differs still refuses: the exemption is one named
-    // region, not a softer comparison.
+    // A process memory that differs still refuses: the exemption is one
+    // named region, not a softer comparison.
     const drifted = await hashMachineCheckpoint(
       machine({
         kernelMemory: new Uint8Array(128).fill(9),
-        filesystems: [mount("/", 8), mount("/home/maker", 3)],
+        processes: [bucket(41, 8)],
       }),
       7,
     );
     const refused = comparePromotionStateHashes(keeper, drifted);
     expect(refused.diverged).toBe(true);
     expect(refused.regions.map((region) => region.region))
-      .toEqual(["filesystem:/"]);
+      .toEqual(["process:41"]);
   });
 });
