@@ -7,6 +7,7 @@ import { expect, test } from "@playwright/test";
  *
  * The second test is the control: it proves the gate selects on the request
  * rather than disabling boot, which the first test alone cannot tell apart.
+ * A network session invitation asks for a machine too: joining needs one.
  */
 
 const appUrl = (path: string): string => {
@@ -24,17 +25,32 @@ test("holds no machine for a bare URL", async ({ page }) => {
     "data-status",
     "idle",
   );
-  await expect(page.locator(".kdock-status-text")).toContainText("No machine");
+  await expect(page.locator(".kdock-status-text")).toContainText("No computer");
 
-  // Beside "No machine", a machine name is a contradiction, so the dock
+  // Beside "No computer", a machine name is a contradiction, so the dock
   // falls back to the product name.
   await expect(page.locator(".kdock-status-title")).toHaveText("Kandelo");
 });
 
-test("boots the machine a demo id asks for", async ({ page }) => {
+test("boots the machine a profile asks for", async ({ page }) => {
   test.setTimeout(300_000);
 
-  await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+  await page.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
+
+  await expect(page.locator(".kdock-status-text")).not.toHaveAttribute(
+    "data-status",
+    "idle",
+    { timeout: 120_000 },
+  );
+  await expect(page.locator(".kempty")).toHaveCount(0);
+});
+
+test("boots a machine for a network session invitation", async ({ page }) => {
+  test.setTimeout(300_000);
+
+  await page.goto(appUrl("/?network=abcdefghijklmnopqrstuvwxyz&networkName=Party"), {
+    waitUntil: "domcontentloaded",
+  });
 
   await expect(page.locator(".kdock-status-text")).not.toHaveAttribute(
     "data-status",

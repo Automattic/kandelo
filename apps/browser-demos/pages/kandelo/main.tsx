@@ -7,6 +7,7 @@ import { App } from "./app/App";
 import { KernelHostProvider } from "./kernel-host/react";
 import type { KernelHost } from "./kernel-host";
 import { readKandeloBootQuery } from "./url-state";
+import { sessionInvitation } from "../../lib/network-session";
 import {
   BootDescriptorError,
   decodeBootDescriptor,
@@ -73,6 +74,7 @@ void (async () => {
         inputs: linkDescriptor?.boot.inputs ?? null,
         parameters: linkDescriptor?.boot.parameters ?? null,
         legacyScriptIgnored,
+        invited: sessionInvitation(location.href) !== null,
       }));
     mount(host);
   } catch (err) {
