@@ -1,92 +1,99 @@
 #!/usr/bin/env bash
 #
-# Stage the vendored Wayland protocol XML into the dep cache.
+# Install wayland-protocols (protocol XML, enum headers, .pc) for
+# wasm32-posix-kernel.
 #
-# wayland-protocols is a `kind = "library"` package (see package.toml).
-# There is no tarball to fetch: the protocol XML is vendored in-tree
-# under `xml/`. This script just copies it into the resolver's
-# `$WASM_POSIX_DEP_OUT_DIR` so consumers that list `wayland-protocols`
-# in `depends_on` find it at
-# `$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/`.
+# wayland-protocols is meson-only and data-only: project() names no
+# language, so nothing is compiled for the target. The build still runs
+# through the SDK cross file (sdk/meson/wasm32posix.ini) like every meson
+# package. Upstream generates include/wayland-protocols/*-enum.h with the
+# build machine's wayland-scanner, found by a native
+# dependency('wayland-scanner').
 #
-# Consumers generate C glue from these files with the host
-# `wayland-scanner` (provided via flake.nix), e.g.:
+# Honors the dep-resolver build-script contract (see
+# docs/package-management.md). When invoked via
+# `cargo xtask build-deps resolve wayland-protocols`, env vars are set by
+# the resolver:
 #
-#     wayland-scanner client-header \
-#         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/xdg-shell.xml" \
-#         xdg-shell-client-protocol.h
-#     wayland-scanner private-code  \
-#         "$WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR/xml/xdg-shell.xml" \
-#         xdg-shell-protocol.c
+#     WASM_POSIX_DEP_OUT_DIR          # install prefix
+#     WASM_POSIX_DEP_VERSION          # upstream version
+#     WASM_POSIX_DEP_SOURCE_URL       # tarball URL
+#     WASM_POSIX_DEP_SOURCE_SHA256    # expected sha256 of the tarball
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_XML="$SCRIPT_DIR/xml"
-INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/wayland-protocols-install}"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/wayland-protocols-src"
 
-if [ ! -f "$SRC_XML/wayland.xml" ] || [ ! -f "$SRC_XML/xdg-shell.xml" ]; then
-    echo "ERROR: vendored protocol XML missing under $SRC_XML" >&2
+WP_VERSION="$WASM_POSIX_DEP_VERSION"
+INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/wayland-protocols-install}"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
+
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/wayland-protocols-build"
+CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"
+
+# In a cross build meson resolves native dependencies with the build
+# machine's pkg-config and build.pkg_config_path, not PKG_CONFIG_PATH.
+# Without wayland-scanner, upstream silently skips the enum headers.
+SCANNER_PC_DIR="$(pkg-config --variable=pcfiledir wayland-scanner)" || {
+    echo "ERROR: wayland-scanner not found by the build machine's pkg-config. Enter scripts/dev-shell.sh." >&2
     exit 1
+}
+
+# --- Stage verified source ---
+if [ ! -d "$SRC_DIR" ]; then
+    echo "==> Staging verified wayland-protocols $WP_VERSION source..."
+    kandelo_package_stage_verified_source wayland-protocols "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
 fi
 
-# Empty the output prefix rather than replacing it: the resolver owns
-# WASM_POSIX_DEP_OUT_DIR and records its inode identity, so an rm -rf +
-# mkdir of the directory ITSELF makes the publish step reject the build
-# ("build stage changed identity and was preserved").
-mkdir -p "$INSTALL_DIR"
-find "$INSTALL_DIR" -mindepth 1 -delete
-mkdir -p "$INSTALL_DIR/xml"
-cp "$SRC_XML"/*.xml "$INSTALL_DIR/xml/"
+# Fresh build dir each run — meson bakes --prefix into the build tree.
+rm -rf "$BUILD_DIR"
+# The resolver-created output directory is itself publication authority, so
+# a recipe must populate that inode rather than delete and recreate it.
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -print -quit)" ]; then
+        echo "ERROR: wayland-protocols resolver output directory must start empty" >&2
+        exit 1
+    fi
+else
+    rm -rf "$INSTALL_DIR"
+fi
 
-# Upstream wayland-protocols installs its XML under
-# share/wayland-protocols/<category>/<protocol>/ and announces that root
-# through pkg-config's pkgdatadir. CMake consumers (Quickshell's
-# pkg_get_variable) resolve protocol paths against that layout, so stage
-# the vendored files a second time at their upstream 1.45 paths.
-# wayland.xml (core wayland) and the wlr-*-unstable-v1.xml files
-# (wlroots) are not wayland-protocols upstream — they stay flat-only.
-DATA_DIR="$INSTALL_DIR/share/wayland-protocols"
-while read -r file category protocol; do
-    mkdir -p "$DATA_DIR/$category/$protocol"
-    cp "$SRC_XML/$file" "$DATA_DIR/$category/$protocol/"
-done <<'MAPEOF'
-linux-dmabuf-v1.xml stable linux-dmabuf
-presentation-time.xml stable presentation-time
-viewporter.xml stable viewporter
-xdg-shell.xml stable xdg-shell
-cursor-shape-v1.xml staging cursor-shape
-ext-data-control-v1.xml staging ext-data-control
-ext-background-effect-v1.xml staging ext-background-effect
-ext-idle-notify-v1.xml staging ext-idle-notify
-ext-session-lock-v1.xml staging ext-session-lock
-ext-workspace-v1.xml staging ext-workspace
-fractional-scale-v1.xml staging fractional-scale
-xdg-activation-v1.xml staging xdg-activation
-idle-inhibit-unstable-v1.xml unstable idle-inhibit
-keyboard-shortcuts-inhibit-unstable-v1.xml unstable keyboard-shortcuts-inhibit
-pointer-gestures-unstable-v1.xml unstable pointer-gestures
-primary-selection-unstable-v1.xml unstable primary-selection
-tablet-unstable-v2.xml unstable tablet
-text-input-unstable-v3.xml unstable text-input
-xdg-decoration-unstable-v1.xml unstable xdg-decoration
-xdg-foreign-unstable-v1.xml unstable xdg-foreign
-xdg-output-unstable-v1.xml unstable xdg-output
-xdg-shell-unstable-v6.xml unstable xdg-shell
-MAPEOF
+echo "==> Configuring wayland-protocols $WP_VERSION..."
+meson setup "$BUILD_DIR" "$SRC_DIR" \
+    --cross-file "$CROSS_FILE" \
+    --prefix "$INSTALL_DIR" \
+    -Dbuild.pkg_config_path="$SCANNER_PC_DIR" \
+    -Dtests=false
 
-mkdir -p "$INSTALL_DIR/share/pkgconfig"
-cat > "$INSTALL_DIR/share/pkgconfig/wayland-protocols.pc" <<'PCEOF'
-prefix=${pcfiledir}/../..
-datarootdir=${prefix}/share
-pkgdatadir=${datarootdir}/wayland-protocols
+echo "==> Generating enum headers..."
+ninja -C "$BUILD_DIR"
 
-Name: Wayland Protocols
-Description: Wayland protocol files
-Version: 1.45
-PCEOF
+echo "==> Installing to $INSTALL_DIR..."
+meson install -C "$BUILD_DIR" --no-rebuild
 
-echo "==> wayland-protocols staged at $INSTALL_DIR"
-for f in "$INSTALL_DIR"/xml/*.xml; do
-    echo "    xml/$(basename "$f") ($(wc -c < "$f") bytes)"
+# The resolver moves the output to its cache path after the build and
+# rewrites the prefix only in lib/pkgconfig/*.pc. Upstream sets prefix
+# explicitly, which pkgconfig.relocatable does not override, so derive it
+# from the .pc file's own location instead.
+sed -i.orig -e 's|^prefix=.*|prefix=${pcfiledir}/../..|' \
+    "$INSTALL_DIR/share/pkgconfig/wayland-protocols.pc"
+rm "$INSTALL_DIR/share/pkgconfig/wayland-protocols.pc.orig"
+
+for f in share/pkgconfig/wayland-protocols.pc \
+         share/wayland-protocols/stable/xdg-shell/xdg-shell.xml \
+         include/wayland-protocols/xdg-shell-enum.h; do
+    if [ ! -f "$INSTALL_DIR/$f" ]; then
+        echo "ERROR: Install failed — $f not found under $INSTALL_DIR" >&2
+        exit 1
+    fi
 done
+
+echo "==> wayland-protocols $WP_VERSION install complete!"
