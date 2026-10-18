@@ -52,9 +52,13 @@ const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // one kernel build, so the version guards against a mismatched kernel, not
 // a persisted format.
 // v18 also preserves the selected source of connected wildcard IPv4 UDP.
+// v19 carries each card0 open file's DRM_CLIENT_CAP_UNIVERSAL_PLANES and
+// DRM magic token, drops its framebuffer id counter (framebuffer ids are
+// device-wide) and its framebuffers (the child shares the parent's table),
+// and carries each AF_NETLINK socket's port id and groups.
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
-const FORK_VERSION: u32 = 18;
+const FORK_VERSION: u32 = 19;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -625,6 +629,7 @@ const FILE_ID_HOST: u8 = 1;
 const FILE_ID_KERNEL_MEMFD: u8 = 2;
 const FILE_ID_KERNEL_SYNTHETIC_REGULAR: u8 = 3;
 const FILE_ID_KERNEL_PROCFS_REGULAR: u8 = 4;
+const FILE_ID_KERNEL_SYSFS_REGULAR: u8 = 5;
 
 fn write_file_id(w: &mut Writer<'_>, file_id: Option<FileId>) -> Result<(), Errno> {
     match file_id {
@@ -655,6 +660,13 @@ fn write_file_id(w: &mut Writer<'_>, file_id: Option<FileId>) -> Result<(), Errn
             w.write_u8(FILE_ID_KERNEL_PROCFS_REGULAR)?;
             w.write_u64(object_id)
         }
+        Some(FileId::Kernel {
+            kind: KernelFileKind::SysFsRegular,
+            object_id,
+        }) => {
+            w.write_u8(FILE_ID_KERNEL_SYSFS_REGULAR)?;
+            w.write_u64(object_id)
+        }
     }
 }
 
@@ -677,6 +689,10 @@ fn read_file_id(r: &mut Reader<'_>) -> Result<Option<FileId>, Errno> {
             kind: KernelFileKind::ProcFsRegular,
             object_id: r.read_u64()?,
         })),
+        FILE_ID_KERNEL_SYSFS_REGULAR => Ok(Some(FileId::Kernel {
+            kind: KernelFileKind::SysFsRegular,
+            object_id: r.read_u64()?,
+        })),
         _ => Err(Errno::EINVAL),
     }
 }
@@ -685,9 +701,11 @@ fn read_file_id(r: &mut Reader<'_>) -> Result<Option<FileId>, Errno> {
 //
 // Each OFD carries a one-byte variant tag (`DRI_TAG_*`) plus the bytes
 // for the variant's payload. Bo refcount accounting moves entirely into
-// the deserialize side: every bo id we restore on a handle, fb, or
-// PrimeBo state gets an extra `with_registry(|r| r.incref(_))` so the
-// child's eventual close-path decrefs are balanced.
+// the deserialize side: every bo id we restore on a handle or PrimeBo
+// state gets an extra `with_registry(|r| r.incref(_))` so the child's
+// eventual close-path decrefs are balanced. Framebuffers are not on the
+// wire: the relink shares the parent's `SharedKmsFbs`, whose entries hold
+// their own bo references.
 
 const DRI_TAG_NONE: u8 = 0;
 const DRI_TAG_RENDER_NODE: u8 = 1;
@@ -723,16 +741,8 @@ fn write_kms_fd_state(
     } else {
         0
     })?;
-    w.write_u32(kms.fbs.len() as u32)?;
-    for (fb_id, fb) in &kms.fbs {
-        w.write_u32(*fb_id)?;
-        w.write_u32(fb.bo_id)?;
-        w.write_u32(fb.width)?;
-        w.write_u32(fb.height)?;
-        w.write_u32(fb.pixel_format)?;
-        w.write_u32(fb.stride)?;
-    }
-    w.write_u32(kms.next_fb_id)?;
+    w.write_u8(kms.universal_planes as u8)?;
+    w.write_u32(kms.magic)?;
     w.write_u32(kms.pending_flips.len() as u32)?;
     for flip in &kms.pending_flips {
         w.write_u32(flip.crtc_id)?;
@@ -823,35 +833,10 @@ fn read_dri_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::DriFdState, Errno
 }
 
 fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno> {
-    use alloc::collections::{BTreeMap, VecDeque};
+    use alloc::collections::VecDeque;
     let holds_master = r.read_u8()? != 0;
-    let fb_count = r.read_u32()? as usize;
-    if fb_count > 65536 {
-        return Err(Errno::EINVAL);
-    }
-    let mut fbs: BTreeMap<u32, crate::ofd::KmsFb> = BTreeMap::new();
-    for _ in 0..fb_count {
-        let fb_id = r.read_u32()?;
-        let bo_id = r.read_u32()?;
-        let width = r.read_u32()?;
-        let height = r.read_u32()?;
-        let pixel_format = r.read_u32()?;
-        let stride = r.read_u32()?;
-        crate::dri::with_registry(|reg| {
-            reg.incref(bo_id);
-        });
-        fbs.insert(
-            fb_id,
-            crate::ofd::KmsFb {
-                bo_id,
-                width,
-                height,
-                pixel_format,
-                stride,
-            },
-        );
-    }
-    let next_fb_id = r.read_u32()?;
+    let universal_planes = r.read_u8()? != 0;
+    let magic = r.read_u32()?;
     let pending_count = r.read_u32()? as usize;
     if pending_count > 65536 {
         return Err(Errno::EINVAL);
@@ -869,8 +854,9 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
     }
     Ok(crate::ofd::KmsFdState {
         holds_master,
-        fbs,
-        next_fb_id,
+        universal_planes,
+        magic,
+        fbs: crate::ofd::SharedKmsFbs::default(),
         pending_flips,
         event_ring: VecDeque::new(),
     })
@@ -1200,10 +1186,12 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                     SocketDomain::Unix => 0,
                     SocketDomain::Inet => 1,
                     SocketDomain::Inet6 => 2,
+                    SocketDomain::Netlink => 3,
                 })?;
                 w.write_u32(match sock.sock_type {
                     SocketType::Stream => 0,
                     SocketType::Dgram => 1,
+                    SocketType::Raw => 2,
                 })?;
                 w.write_u32(sock.protocol)?;
                 w.write_u32(match sock.state {
@@ -1267,6 +1255,8 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
                 // inherited so forked listeners register against the same
                 // readiness event as the parent.
                 w.write_u32(sock.accept_wake_idx.unwrap_or(0xFFFFFFFF))?;
+                w.write_u32(sock.netlink_port)?;
+                w.write_u32(sock.netlink_groups)?;
                 write_durable_socket_state(&mut w, sock)?;
                 // Skip dgram_queue for fork (child starts with empty queue)
             }
@@ -1594,11 +1584,13 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
                 0 => SocketDomain::Unix,
                 1 => SocketDomain::Inet,
                 2 => SocketDomain::Inet6,
+                3 => SocketDomain::Netlink,
                 _ => return Err(Errno::EINVAL),
             };
             let sock_type = match r.read_u32()? {
                 0 => SocketType::Stream,
                 1 => SocketType::Dgram,
+                2 => SocketType::Raw,
                 _ => return Err(Errno::EINVAL),
             };
             let protocol = r.read_u32()?;
@@ -1709,6 +1701,8 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             } else {
                 Some(aw_raw)
             };
+            sock.netlink_port = r.read_u32()?;
+            sock.netlink_groups = r.read_u32()?;
             read_durable_socket_state(&mut r, &mut sock)?;
             sockets.insert_at(idx, sock);
         }
@@ -3055,6 +3049,33 @@ mod tests {
     }
 
     #[test]
+    fn test_fork_roundtrips_netlink_socket_port_and_groups() {
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+
+        let mut proc = Process::new(1);
+        let mut socket = SocketInfo::new(
+            SocketDomain::Netlink,
+            SocketType::Raw,
+            crate::netlink::NETLINK_KOBJECT_UEVENT,
+        );
+        socket.state = SocketState::Bound;
+        socket.netlink_port = 42;
+        socket.netlink_groups = 4;
+        let socket_idx = install_socket_for_fork(&mut proc, socket);
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 43).unwrap();
+        let inherited = child.sockets.get(socket_idx).unwrap();
+
+        assert_eq!(inherited.domain, SocketDomain::Netlink);
+        assert_eq!(inherited.sock_type, SocketType::Raw);
+        assert_eq!(inherited.protocol, crate::netlink::NETLINK_KOBJECT_UEVENT);
+        assert_eq!(inherited.state, SocketState::Bound);
+        assert_eq!((inherited.netlink_port, inherited.netlink_groups), (42, 4));
+    }
+
+    #[test]
     fn test_durable_socket_state_rejects_oversized_strings_and_sources() {
         use crate::socket::{Ipv4MulticastMembership, SocketDomain, SocketInfo, SocketType};
 
@@ -3535,7 +3556,7 @@ mod tests {
     }
 
     #[test]
-    fn fork_preserves_card_fbs_and_increfs_bos() {
+    fn fork_wire_leaves_card_fbs_to_the_shared_table() {
         use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
@@ -3550,8 +3571,8 @@ mod tests {
             -9,
             b"/dev/dri/card0".to_vec(),
         );
-        let mut kms = KmsFdState::default();
-        kms.fbs.insert(
+        let kms = KmsFdState::default();
+        kms.fbs.borrow_mut().insert(
             42,
             KmsFb {
                 bo_id: bo,
@@ -3561,7 +3582,51 @@ mod tests {
                 stride: 64 * 4,
             },
         );
-        kms.next_fb_id = 43;
+        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::Card {
+                dri: DriFdState::default(),
+                kms,
+            }));
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+            .unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+
+        // The relink shares the parent's table; the wire carries no copy
+        // and takes no bo reference for one.
+        let child_kms = child.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+        assert!(child_kms.fbs.borrow().is_empty());
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
+            Some(1)
+        );
+
+        crate::dri::with_registry(|r| r.decref(bo));
+    }
+
+    #[test]
+    fn fork_preserves_card_universal_planes_and_magic() {
+        use crate::ofd::{DriFdState, DriOfdState, KmsFdState};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        let kms = KmsFdState {
+            universal_planes: true,
+            magic: 7,
+            ..Default::default()
+        };
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::Card {
                 dri: DriFdState::default(),
@@ -3576,27 +3641,8 @@ mod tests {
         let child = deserialize_fork_state(&buf[..written], 99).unwrap();
 
         let child_kms = child.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
-        let fb = child_kms.fbs.get(&42).expect("fb 42 cloned");
-        assert_eq!(fb.bo_id, bo);
-        assert_eq!(fb.width, 64);
-        assert_eq!(child_kms.next_fb_id, 43);
-
-        // Fb held an incref on the bo + handle slot (none here) → child
-        // adds one more ref for its inherited fb slot. Parent's
-        // outstanding refs: 1 (alloc) + 0 (no handle in parent) +
-        // 0 (we didn't set up an MODE_ADDFB2 path that bumps this in
-        // the helper). Child's outstanding refs: 1 from the fb in
-        // its kms.fbs.
-        assert_eq!(
-            crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount)),
-            Some(2),
-            "child's inherited fb must hold its own refcount on the bo"
-        );
-
-        crate::dri::with_registry(|r| {
-            r.decref(bo);
-            r.decref(bo);
-        });
+        assert!(child_kms.universal_planes);
+        assert_eq!(child_kms.magic, 7);
     }
 
     #[test]

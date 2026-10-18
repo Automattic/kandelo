@@ -59,7 +59,11 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
 import { bindForeignTexture } from "./webgl/foreign-texture";
-import { blitPresentTarget, ensurePresentTarget } from "./webgl/present-target";
+import {
+  blitGpuScanout,
+  blitPresentTarget,
+  ensurePresentTarget,
+} from "./webgl/present-target";
 import { buildVirtualConnectorMode, connectorModeSize } from "./dri/kms-registry";
 import { DEFAULT_KERNEL_MAX_PAGES, detectPtrWidth } from "./constants";
 import {
@@ -2961,6 +2965,16 @@ export class WasmPosixKernel {
           ) {
             b.canvas.width = fb.width;
             b.canvas.height = fb.height;
+          }
+          // A GPU-tier buffer has no CPU bytes for the vblank pump to show.
+          // The GL session that claimed this CRTC's canvas rendered it on
+          // the same context, so the flip presents it from there.
+          const gpu = fb ? this.gl.gpuBo(fb.bo_id) : undefined;
+          if (
+            fb && gpu && b?.gl && gpu.gl === b.gl &&
+            b.claimedKmsCrtc === crtc_id && !b.gl.isContextLost()
+          ) {
+            blitGpuScanout(b, gpu, fb.width, fb.height);
           }
         },
       },

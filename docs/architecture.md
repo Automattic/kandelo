@@ -1964,10 +1964,10 @@ This is syscall-boundary coherence, not shared physical memory. A process that
 only performs direct loads/stores does not publish or import peer changes until
 it crosses into the kernel. Futex waits and wakes also target the caller's own
 process `SharedArrayBuffer`, so process-shared pthread mutexes/futexes remain
-unsupported across PIDs. Shared mappings of in-kernel memfds return `ENOTSUP`,
-as do file mappings on any backend that cannot provide stable identity;
-`MAP_PRIVATE` is unaffected. File bytes past
-the current EOF are zero-filled or discarded on refresh/writeback rather than
+unsupported across PIDs. In-kernel memfd shared mappings converge the same
+way, backed by the memfd's kernel pages. File mappings on any backend that
+cannot provide stable identity return `ENOTSUP`; `MAP_PRIVATE` is unaffected.
+File bytes past the current EOF are zero-filled or discarded on refresh/writeback rather than
 raising Linux's `SIGBUS`, and writes made outside Kandelo's file syscall paths
 are not detected. The boundary scans are on the syscall hot path; no performance
 claim is made without before/after Node and browser benchmarks.
@@ -3005,17 +3005,125 @@ throughput or performance claim.
 
 This section is the implementation walk-through; [Linux-compatible graphics devices](#linux-compatible-graphics-devices) states the device-level contract.
 
-`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (only `DUMB_BUFFER` and `PRIME` report support; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. There is no plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same surface unmodified. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the pane's aspect ratio at a fixed 1080 logical height — `round(1080 × aspect) × 1080`, width clamped to [1440, 3840] — so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The mode is sampled per GETCONNECTOR call but effectively fixed once a client boots; resizing the pane afterwards reintroduces letterboxing rather than switching modes. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP, SET_CLIENT_CAP, GET_MAGIC / AUTH_MAGIC, SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_GETPLANERESOURCES, MODE_GETPLANE, MODE_OBJ_GETPROPERTIES, MODE_GETPROPERTY, MODE_GETPROPBLOB, MODE_OBJ_SETPROPERTY / MODE_SETPROPERTY, MODE_CURSOR / CURSOR2, MODE_ADDFB2 / RMFB / CLOSEFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. This is the legacy (non-atomic) KMS interface a wlroots compositor such as cage drives:
+
+- **Mode objects.** One CRTC (id 1), one virtual encoder (2), one virtual connector (3) and one primary plane (4). Linux allocates every mode object and property from one id space, and libdrm clients read properties with `DRM_MODE_OBJECT_ANY`, so no two objects share an id (`crates/runtime-core/src/dri/kms.rs`). The primary plane is listed by MODE_GETPLANERESOURCES only after `DRM_CLIENT_CAP_UNIVERSAL_PLANES`, and reports the formats ADDFB2 accepts (XRGB8888, ARGB8888, RGB565). There is no cursor or overlay plane.
+- **Capabilities.** GET_CAP answers every capability Linux defines and fails with `EINVAL` for an unknown one, as `drm_getcap` does. `CRTC_IN_VBLANK_EVENT` and `TIMESTAMP_MONOTONIC` are 1 (flip events carry the CRTC id and a `CLOCK_MONOTONIC` timestamp); `ADDFB2_MODIFIERS`, `ASYNC_PAGE_FLIP`, `SYNCOBJ` and `SYNCOBJ_TIMELINE` are 0. SET_CLIENT_CAP accepts `STEREO_3D`, `UNIVERSAL_PLANES` and `ASPECT_RATIO`; `ATOMIC` fails with `EOPNOTSUPP` because the card has no atomic interface.
+- **Properties.** The plane carries the immutable `type` enum (Primary). The connector carries `EDID` (an immutable blob with no value: the virtual display has no EDID, so MODE_GETPROPBLOB finds no blob), `DPMS`, `link-status` (Good) and `non-desktop` (0). Through the legacy interface only `DPMS` is settable, and only by the master; the value is recorded and reported back, and the virtual display has no power state to change. Properties Linux marks atomic-only are not listed.
+- **Scanout state.** SETCRTC validates its connector list as Linux does and records the mode and framebuffer, which MODE_GETCRTC and MODE_GETPLANE report.
+- **Framebuffers.** RMFB of the framebuffer on the CRTC disables the CRTC, as on Linux. CLOSEFB drops the fd's framebuffer id but leaves a scanned-out framebuffer on the CRTC until the next SETCRTC or PAGE_FLIP replaces it; wlroots closes its framebuffers this way. Framebuffer ids are device-wide. Framebuffers belong to the open file: a child that inherits it through `fork()` or `posix_spawn()` shares the parent's framebuffers, and they are removed only when the last process closes the open file, as Linux does with a `drm_file`. A compositor's child that closes its inherited `O_CLOEXEC` `card0` fd at `exec` leaves the compositor's scanout framebuffer on the CRTC.
+- **Cursor.** The CRTC has no cursor plane. MODE_CURSOR with no buffer (hide) succeeds, which wlroots' legacy commit issues on every frame; showing or moving a cursor fails with `ENXIO`, so a compositor draws its cursor into the frame.
+- **Master.** The first open of `card0` while no file is master becomes master, as Linux's `drm_master_open` does, so a compositor that never calls SET_MASTER (wlroots over libseat's noop backend) can modeset. DROP_MASTER and the master's last close release it; a later SET_MASTER from another file then succeeds.
+- **Authentication and leases.** GET_MAGIC issues a per-open-file token and AUTH_MAGIC lets the master accept it (`EACCES` from a non-master, `EINVAL` for an unknown token such as the 0 that libdrm's `drmIsMaster` probes with). Kandelo does not gate primary-node ioctls on authentication. MODE_CREATE_LEASE fails with `EOPNOTSUPP`: DRM leases are not implemented.
+
+There is no atomic interface (no MODE_ATOMIC or MODE_CREATEPROPBLOB), no legacy ADDFB, GETFB or DIRTYFB, and any other DRM request fails with `ENOSYS`. The card and render node stat as char devices 226:0 and 226:128, and `/sys` describes them (see "Sysfs" in `docs/posix-status.md`), so libdrm's `drmGetNodeTypeFromFd` and `drmGetDeviceNameFromFd2` resolve them as on Linux. A PRIME fd maps its CPU-tier buffer from offset 0, as a dma-buf does; a GPU-tier buffer has no CPU mapping and fails with `EINVAL`. `fstat` of a PRIME fd reports what Linux reports for a dma-buf's anonymous inode: mode `0600` with no file-type bits, and the buffer size. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same surface unmodified. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the pane's aspect ratio at a fixed 1080 logical height — `round(1080 × aspect) × 1080`, width clamped to [1440, 3840] — so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The mode is sampled per GETCONNECTOR call but effectively fixed once a client boots; resizing the pane afterwards reintroduces letterboxing rather than switching modes. The host's mode hooks take a connector index; the card advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge. Beyond the core, libEGL implements the GBM platform (`EGL_EXT_platform_base`, `EGL_KHR_platform_gbm`), `EGL_KHR_surfaceless_context`, `EGL_KHR_no_config_context`, and dma-buf import (`EGL_KHR_image_base`, `EGL_EXT_image_dma_buf_import[_modifiers]`: single-plane `[AX]RGB8888`/`[AX]BGR8888`, LINEAR only). libGLESv2 implements `GL_OES_EGL_image`, `GL_EXT_texture_format_BGRA8888` (BGRA rows travel as RGBA with red and blue exchanged, because WebGL has no BGRA format) and `GL_EXT_unpack_subimage` (row length and skips are applied in the guest; the host's unpack state stays at 0). An EGLImage of a GPU-tier bo stands for the host texture the bo owns: a texture or renderbuffer bound to it is that texture, so sampling and rendering are zero-copy. An EGLImage of a CPU-tier bo keeps the dma-buf mapped and copies its pixels into the bound texture each time it is bound; it cannot back a renderbuffer (`GL_INVALID_OPERATION`), because GL draws would never reach its memory.
 
 `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
 
-`DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) is the fully GPU-backed tier: the bo is a host `WebGLTexture` plus a color-attachment FBO — no SAB, unmappable on the CPU. WebGL textures are not shareable across contexts, so all GPU-tier bos and every GL client that touches them live on **one** shared multiplexer context: the DRM-master compositor's scanout WebGL2 context. A non-master GL client (which has no display canvas of its own) is routed onto that shared context at `host_gl_create_context`; the existing `GlMuxer` (keyed by the WebGL2 context) multiplexes the compositor and its clients by replaying each binding's shadow state on `switchTo`. A client renders into the bo by targeting its FBO: the bo handle reaches the next `eglCreateWindowSurface`'s `GLIO_CREATE_SURFACE` either explicitly (`libEGL`'s `wpkEglSetWindowSurfaceTarget(handle)`) or, for a libwayland-egl `wl_egl_window`, from the bo that window allocated; the kernel translates the per-fd handle to a global bo id and the host redirects the client's "bind default framebuffer 0" to the bo's FBO (sizing the viewport to the bo). Because a toolkit may create the window surface *before* the GL context, the redirect target is captured at surface creation and (re)applied at whichever of context-creation or surface-creation runs last, since it needs both `b.gl` and the resolved bo. A `wl_egl_window_resize` (a tiling compositor resizes every window it maps) gives the window a new bo at the new size and has `libEGL` destroy and re-create the window surface against it, flushing first so commands already queued land in the old bo; the old buffer is destroyed only after the next `eglSwapBuffers` has attached and committed its successor. As in Mesa, the resize takes effect from the next frame. `eglSwapBuffers` flushes the shared context as the buffer-ready fence before `wl_surface.commit`; command order through the one submit queue gives render-before-sample ordering for free (no explicit sync object in v1). `BIND_FOREIGN_TEXTURE` on a GPU-tier bo then degenerates to returning the texture id — true zero-copy, no upload. Allocation degrades to a CPU-tier dumb bo whenever no shared context exists — headless Node has no WebGL2, and in the browser the compositor must have created its context first — so `libgbm` only requests the GPU tier for render-only bos (RENDERING set, none of SCANOUT/CURSOR/WRITE/LINEAR) and falls back to CREATE_DUMB on any error. This producer path is browser-only. Each GPU-tier bo's FBO has color, 24-bit depth, and 8-bit stencil storage, so default-framebuffer depth testing and stencil clipping work for Wayland clients as well as canvas-backed sessions.
+`DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) is the fully GPU-backed tier: the bo is a host `WebGLTexture` plus a color-attachment FBO — no SAB, unmappable on the CPU. WebGL textures are not shareable across contexts, so all GPU-tier bos and every GL client that touches them live on **one** shared multiplexer context: the DRM-master compositor's scanout WebGL2 context. A non-master GL client (which has no display canvas of its own) is routed onto that shared context at `host_gl_create_context`; the existing `GlMuxer` (keyed by the WebGL2 context) multiplexes the compositor and its clients by replaying each binding's shadow state on `switchTo`. A client renders into the bo by targeting its FBO: the bo handle reaches the next `eglCreateWindowSurface`'s `GLIO_CREATE_SURFACE` either explicitly (`libEGL`'s `wpkEglSetWindowSurfaceTarget(handle)`) or, for a libwayland-egl `wl_egl_window`, from the bo that window allocated; the kernel translates the per-fd handle to a global bo id and the host redirects the client's "bind default framebuffer 0" to the bo's FBO (sizing the viewport to the bo). Because a toolkit may create the window surface *before* the GL context, the redirect target is captured at surface creation and (re)applied at whichever of context-creation or surface-creation runs last, since it needs both `b.gl` and the resolved bo. A `wl_egl_window_resize` (a tiling compositor resizes every window it maps) gives the window a new bo at the new size and has `libEGL` destroy and re-create the window surface against it, flushing first so commands already queued land in the old bo; the old buffer is destroyed only after the next `eglSwapBuffers` has attached and committed its successor. As in Mesa, the resize takes effect from the next frame. `eglSwapBuffers` flushes the shared context as the buffer-ready fence before `wl_surface.commit`; command order through the one submit queue gives render-before-sample ordering for free (no explicit sync object in v1). `BIND_FOREIGN_TEXTURE` on a GPU-tier bo then degenerates to returning the texture id — true zero-copy, no upload. Allocation degrades to a CPU-tier dumb bo whenever no shared context exists — headless Node has no WebGL2, and in the browser the compositor must have created its context first — so `libgbm` requests the GPU tier only for bos that GL renders into and falls back to CREATE_DUMB on any error. `gbm_bo_create` treats SCANOUT as CPU-facing (RENDERING set, none of SCANOUT/CURSOR/WRITE/LINEAR), because its scanout callers — the `gbm_surface` ring, a compositor's CPU blit — read or write the bytes. `gbm_bo_create_with_modifiers[2]` is the entry point of a renderer that draws its own scanout buffers (wlroots' gbm allocator), so its SCANOUT|RENDERING bos are GPU-tier. A PAGE_FLIP or SETCRTC that latches a GPU-tier bo on a CRTC whose canvas the same context claimed blits the bo's FBO onto that canvas (`blitGpuScanout`, flipping Y because KMS buffers hold the top row first); the vblank pump has no CPU bytes to show for it. This producer path is browser-only. Each GPU-tier bo's FBO has color, 24-bit depth, and 8-bit stencil storage, so default-framebuffer depth testing and stencil clipping work for Wayland clients as well as canvas-backed sessions.
 
 `MODE_PAGE_FLIP` latches the new framebuffer as the host-side scanout immediately (`host_kms_set_fb`, same call `MODE_SETCRTC` makes) and queues a flip-complete event that `kernel_vblank` — driven by the host's 60 Hz vblank pump — retires into the fd's event ring at the next tick. Two consequences: libdrm's `drmModePageFlip → poll → drmHandleEvent` loop runs at refresh rate rather than ioctl rate, and any host-side consumer of the current scanout (the vblank pump's WebGL2 scanout presenter or the legacy 2D canvas blit used by CPU-rendered demos) always reads the most recently flipped buffer, never a double-buffered client's back buffer. The immediate latch is race-free because a well-behaved client fully paints a bo before flipping to it and only reuses the old bo after the flip-complete event.
 
+## Wayland kiosk compositor (`cage`)
+
+`packages/registry/cage/` builds upstream cage 0.3.1 on upstream wlroots
+0.20.2. cage runs one application as its whole session: it forks and execs
+the client, shows its toplevel fullscreen on the one output, and exits with
+the client's status. It reaches the platform the way a Linux compositor does:
+
+- **Seat.** libseat's `noop` backend (`LIBSEAT_BACKEND=noop`) opens
+  `/dev/dri/card0` and the evdev nodes directly. The first open of `card0`
+  takes DRM master, so wlroots can modeset without SET_MASTER.
+- **Device discovery.** libudev-zero walks `/sys` (see "Sysfs" in
+  `docs/posix-status.md`) to find the card and the input devices, and
+  watches an `AF_NETLINK` `NETLINK_KOBJECT_UEVENT` socket that never
+  reports a hotplug.
+- **Display.** The wlroots DRM backend drives the legacy KMS interface
+  described above: properties, SETCRTC, PAGE_FLIP and CLOSEFB.
+- **Rendering.** The card has a render node, so wlroots chooses its GLES2
+  renderer. It opens `/dev/dri/renderD128`, creates a gbm device on it, and
+  reaches EGL through the GBM platform (`EGL_KHR_platform_gbm`). The gbm
+  allocator gives it GPU-tier scanout buffers
+  (`gbm_bo_create_with_modifiers`); wlroots binds each one as an EGLImage
+  renderbuffer and renders into it, and the page flip that scans it out
+  blits it onto the display canvas, which cage's GL context claimed. A
+  client's `wl_shm` buffer is uploaded as a texture with
+  `GL_EXT_texture_format_BGRA8888` and `GL_EXT_unpack_subimage`; a
+  `linux-dmabuf` buffer is imported with `EGL_EXT_image_dma_buf_import`,
+  zero-copy for a GPU-tier buffer (a GL client's) and copied from the
+  dma-buf mapping for a CPU-tier one. The Node host has no WebGL2, so the
+  GLES2 renderer cannot start there and a session must ask for the pixman
+  renderer with `WLR_RENDERER=pixman`; pixman composites into DRM dumb
+  buffers and reads a client's `wl_shm` pool by mapping the pool fd, a
+  PRIME fd or a memfd.
+- **Input.** libinput's udev backend reads the evdev devices, and cage
+  routes keys and buttons to the focused toplevel.
+
+cage offers no layer shell, data-control, tiling or multi-window layout, so
+the desktops (`wldesktop`, `omarchydesktop`, `hyprdesktop`) and their shell
+clients (Waybar, mako, quickshell, kclipd, qtgallery) stay on `wlcompositor`.
+
+The browser shell image carries cage as a lazy file, and its `cage` machine
+runs `cage -- wlterm`. The machine declares `kms-gl-scanout`, so the vblank
+pump's WebGL2 scanout presenter shows the CRTC whenever no GL context owns
+the canvas: before cage's GLES2 context claims it, after that context ends,
+and for a session on the pixman renderer. The connector mode follows the
+pane's device pixels.
+
+Gates: `host/test/cage-smoke.test.ts` (a raw libwayland client gets a
+configure, a presentation feedback after a real page flip, the keymap, a key
+and a button), and foot, GTK3, libkwl and wlterm as session clients
+(`host/test/{foot,gtk3,libkwl,wlterm}-smoke.test.ts`), all on the pixman
+renderer. The tests share the session root in `host/test/wlroots-session.ts`.
+`apps/browser-demos/test/kandelo-cage.spec.ts` gates the GLES2 renderer in
+the browser.
+
+## Wayland tiling compositor (`sway`)
+
+`packages/registry/sway/` builds upstream sway 1.12 on the same wlroots
+0.20.2 and seat, discovery, display and input path as cage, plus json-c for
+its IPC. The package also ships `swaymsg`, `swaybar`, `swaynag` and the
+upstream default config at `/etc/sway/config`; it is built without the tray
+(no sd-bus provider), gdk-pixbuf or man pages.
+
+On top of cage's path, sway forks and runs each config `exec` through
+`/bin/sh`, tiles toplevels, and serves i3 IPC on a Unix socket
+(`$SWAYSOCK`). It sets `SIGCHLD` to `SIG_IGN` and relies on the kernel
+reaping its children.
+
+Static linking puts sway's own `expand_path` and `list_insert` in the same
+module as libxkbcommon's and libinput's internal functions of those names.
+`wasm-ld` links such a signature mismatch with only a warning and replaces
+the library's calls with traps, so the build renames sway's two symbols.
+
+sway starts `swaybar` and `swaynag` itself: it forks, keeps one end of a
+`socketpair` open across `exec`, and passes its number in
+`WAYLAND_SOCKET`. Each client maps a layer-shell surface that reserves an
+edge of the output. swaybar forks the bar's `status_command` through
+`/bin/sh` and reads its stdout; a swaynag button runs its action through
+`/bin/sh`. Upstream swaynag fills its unused Wayland listener slots with one
+unprototyped function, and a WebAssembly indirect call traps on the type
+mismatch, so `patches/0001-*` gives each slot a function of its event's
+prototype.
+
+Gate: `host/test/sway-smoke.test.ts`, on the pixman renderer in Node: two
+clients from the config tile side by side in `swaymsg -t get_tree`, a click
+focuses each and it receives a button and a key, and `swaymsg exit` ends the
+session with status 0. A config `bar` block starts swaybar, which reserves
+the bottom of the workspace and runs its `status_command`. A config error
+starts swaynag, which reserves the top of the workspace, and a click on its
+"Exit sway" button ends the session with status 0.
+
+The browser shell image carries sway, swaybar, swaynag, swaymsg and swaybg as
+lazy files, and its `sway` machine runs sway on the GLES2 renderer. Like the
+`cage` machine it declares `kms-gl-scanout`, so a sway started again from
+the machine's shell on the pixman renderer still reaches the canvas.
+`apps/browser-demos/test/kandelo-sway.spec.ts` gates the GLES2 renderer,
+swaybar, workspaces, tiling, swaynag's exit button and that restart.
+
 ## Wayland compositor (`wlcompositor`, `wlterm`)
 
-On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.25.0 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). Buffer sharing is zero-copy: clients allocate `wl_shm` pools backed by `gbm` dumb BOs and pass the prime-fd to the compositor via `SCM_RIGHTS`. The same prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888`/`XBGR8888`/`ABGR8888` + `LINEAR` only, no feedback; a GL client's buffer from `libwayland-egl` is `XBGR8888`, because a WebGL RGBA texture stores `[R,G,B,A]` bytes, and the compositor samples it without the red/blue swizzle it applies to `XRGB8888` `[B,G,R,X]` buffers): `zwp_linux_buffer_params_v1.add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to importing with `gbm_bo_import` and CPU-blitting into the scanout buffer. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-EIO` when the canvas context reports `isContextLost()`, `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails, and the compositor's repaint falls through to the CPU path and terminates EGL — no guest-side context-loss API is needed. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
+On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.28.1 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). Buffer sharing is zero-copy: clients allocate `wl_shm` pools backed by `gbm` dumb BOs and pass the prime-fd to the compositor via `SCM_RIGHTS`. The same prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888`/`XBGR8888`/`ABGR8888` + `LINEAR` only, no feedback; a GL client's buffer from `libwayland-egl` is `XBGR8888`, because a WebGL RGBA texture stores `[R,G,B,A]` bytes, and the compositor samples it without the red/blue swizzle it applies to `XRGB8888` `[B,G,R,X]` buffers): `zwp_linux_buffer_params_v1.add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to importing with `gbm_bo_import` and CPU-blitting into the scanout buffer. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-EIO` when the canvas context reports `isContextLost()`, `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails, and the compositor's repaint falls through to the CPU path and terminates EGL — no guest-side context-loss API is needed. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
 
 Kandelo-authored clients build on `libkwl` (`examples/libs/libkwl/`), a small toolkit over `libwayland-client` that wraps registry bind, an `xdg` CSD toplevel, double-buffered `wl_shm` back buffers, xkb keysym/UTF-8 translation, and a `kwl_dispatch` event loop; it exposes `kwl_display_fd()` so an app can `poll` the Wayland connection alongside its own fds. Drawing goes through `libwpkdraw` (`examples/libs/wpkdraw/`), a CPU rasterizer (alpha-blended clear/pixel/rect + an `stb_truetype` font engine over a bundled Inconsolata) that renders into a caller-owned ARGB buffer. `programs/wlterm/` is the first real client: a terminal that `forkpty()`s `sh` (bash, which every Kandelo image binds to `/bin/sh`), runs an in-tree VT100 core (`vt100.c`), and multiplexes the Wayland display fd and the PTY master fd in one `poll` loop — Wayland key events become PTY writes, PTY output feeds the VT100 grid and is rendered back into the libkwl window. Because `wlterm` forks, its wasm is mandatorily processed by `wasm-fork-instrument` (see [fork-instrumentation.md](fork-instrumentation.md)).
 
@@ -3027,7 +3135,7 @@ ignored, and resizing restores full-screen margins. This is terminal behavior,
 independent of the child program or package. The existing limited terminal
 subset (including no alternate screen or VT100 line-drawing set) is unchanged.
 
-The stack is dual-host: the Node smoke gates (`host/test/{wpkdraw,libkwl,wlcompositor,wlterm,wldesktop,wldesktop-liveness}-smoke.test.ts`) drive compositor+client harnesses (two-process for the single-client gates, compositor + wlclock + wlpaint for the desktop gates), and the browser demo (the `wayland` machine in the shell image, declared in `packages/registry/shell/source-rootfs-shell-demo.json`, listed in `apps/browser-demos/pages/kandelo/gallery-roster.json`, and gated by `apps/browser-demos/test/kandelo-wayland.spec.ts`) boots the compositor plus three clients — `wlclock` (animated clock), `wlpaint` (pointer painting), and `wlterm` — against `card0` mirrored to an `OffscreenCanvas`, with DOM keyboard input injected as evdev events and the pane's pointer bridge feeding `event1`. This is the same KMS-to-canvas + `BrowserInputSource` path the `modeset` and `sdl2` demos use. The pane opts into the vblank pump's WebGL2 scanout presenter (`mode: "webgl2-scanout"`: scanout-to-texture upload with shader-side XRGB→RGB swizzle, change-driven presents gated on the kernel commit count plus a ~15 Hz content-probe backstop, and GPU scaling at the pane's device-pixel resolution); in the browser the compositor's own GLES context then claims the canvas for GPU compositing (`markKmsCanvasGlOwned` — the presenter stands down, stats slot 7 flips to 3/`webgl2-gl`), while headless/Node runs stay on the CPU-composite + presenter pipeline. A legacy `mode: "2d"` putImageData blit remains available. See [browser-support.md](browser-support.md#wayland-desktop-demo).
+The stack is dual-host: the Node smoke gates (`host/test/{wpkdraw,wlcompositor,wldesktop,wldesktop-liveness}-smoke.test.ts`) drive compositor+client harnesses (two-process for the single-client gates, compositor + wlclock + wlpaint for the desktop gates; `libkwl` and `wlterm` are gated under cage), and the browser demo (the `wayland` machine in the shell image, declared in `packages/registry/shell/source-rootfs-shell-demo.json`, listed in `apps/browser-demos/pages/kandelo/gallery-roster.json`, and gated by `apps/browser-demos/test/kandelo-wayland.spec.ts`) boots the compositor plus three clients — `wlclock` (animated clock), `wlpaint` (pointer painting), and `wlterm` — against `card0` mirrored to an `OffscreenCanvas`, with DOM keyboard input injected as evdev events and the pane's pointer bridge feeding `event1`. This is the same KMS-to-canvas + `BrowserInputSource` path the `modeset` and `sdl2` demos use. The pane opts into the vblank pump's WebGL2 scanout presenter (`mode: "webgl2-scanout"`: scanout-to-texture upload with shader-side XRGB→RGB swizzle, change-driven presents gated on the kernel commit count plus a ~15 Hz content-probe backstop, and GPU scaling at the pane's device-pixel resolution); in the browser the compositor's own GLES context then claims the canvas for GPU compositing (`markKmsCanvasGlOwned` — the presenter stands down, stats slot 7 flips to 3/`webgl2-gl`), while headless/Node runs stay on the CPU-composite + presenter pipeline. A legacy `mode: "2d"` putImageData blit remains available. See [browser-support.md](browser-support.md#wayland-desktop-demo).
 
 ### Tiling window manager (`WLC_LAYOUT`, workspaces, `kwlctl`, keybinds)
 
@@ -3052,9 +3160,9 @@ theme. Those are ordinary Wayland clients, but they need a protocol that lets a
 surface anchor to an output edge and reserve space from the windows — which is
 what `zwlr_layer_shell_v1` is, and what Quickshell, Waybar, mako and every
 other shell component speak. The compositor implements it (protocol XML
-vendored at
-`packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml`),
-and the in-tree clients below consume it. This is the **O1** milestone of
+from the `wlr-protocols` package,
+`share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml`), and the
+in-tree clients below consume it. This is the **O1** milestone of
 [docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md](plans/2026-07-14-build-hyprland-class-compositor-plan.md).
 The Omarchy machine runs Quickshell in every one of these slots instead
 (see [browser-support.md](browser-support.md#omarchy-desktop-demo)); the
@@ -3163,11 +3271,8 @@ client: stock `wl_display_connect()` (via `XDG_RUNTIME_DIR`), stock
 xdg-shell/SSD negotiation, and a real font pipeline. Two declared patches are
 the entire delta, both kernel-model boundaries rather than feature edits:
 `0001` allocates its `wl_shm` pools as `gbm` prime-fd dumb-bos instead of
-memfds (written when a memfd `MAP_SHARED` mapping never converged across
-processes, so the compositor would have composited stale bytes; the kernel
-now keeps memfd mappings coherent at syscall boundaries, so this patch is a
-candidate for removal), and `0002` serializes
-its font loading (concurrent `FcFontMatch` garbles pattern doubles under the
+memfds (wlcompositor imports every pool with `gbm_bo_import`), and `0002`
+serializes its font loading (concurrent `FcFontMatch` garbles pattern doubles under the
 kernel's thread model — any future threaded font consumer hits the same wall).
 foot forks its shell (`slave.c`), so its wasm is mandatorily
 fork-instrumented; it runs with `--term=vt100` because no foot terminfo is
@@ -3199,10 +3304,10 @@ What it took, on each side of the protocol:
   deliverable. A kernel without those exports is refused, not run with the
   mask silently ignored.
 
-Gated end-to-end by `host/test/foot-smoke.test.ts` (foot on wlcompositor:
-connect, fontconfig+fcft startup, first composited frame through the gbm pool
-path, keys typed into its forked `dash`, clean exit). In the browser, foot is
-a launcher entry of the Omarchy machine — a lazy binary at
+Gated end-to-end by `host/test/foot-smoke.test.ts` (foot as the session
+client of cage: connect, fontconfig+fcft startup, a mapped toplevel through
+the gbm pool path, keys typed into its forked `dash`, clean exit). In the
+browser, foot is a launcher entry of the Omarchy machine — a lazy binary at
 `/usr/local/bin/foot`, with the desktop's `fonts.conf` and Inconsolata under
 `/usr/share/kandelo/fonts` — gated by
 `apps/browser-demos/test/kandelo-omarchy.spec.ts`.

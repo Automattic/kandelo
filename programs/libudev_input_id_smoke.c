@@ -1,5 +1,5 @@
 /*
- * libudev shim + input_id smoke test (PR5b), driven by
+ * libudev-zero + input_id smoke test, driven by
  * host/test/libudev-input-id-smoke.test.ts.
  *
  * Reproduces libinput's path-backend device creation exactly: stat the
@@ -7,9 +7,8 @@
  * udev_device_new_from_devnum('c', rdev) (libinput drops the path), then
  * read back the ID_INPUT* classification and the devnode/sysname. This
  * exercises the whole chain end to end:
- *   - the ABI-v17 rdev fix (event0/event1 stat with distinct char 13:64 /
- *     13:65, so the shim can recover the right node from the devnum),
- *   - the shim's devnum→devnode scan,
+ *   - event0/event1 stat as distinct char devices 13:64 / 13:65,
+ *   - libudev-zero's /sys/dev/char/13:N walk to the input device,
  *   - the input_id classification (event0 → keyboard, event1 → mouse).
  */
 #include <stdio.h>

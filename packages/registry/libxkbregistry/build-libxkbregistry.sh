@@ -59,9 +59,9 @@ fi
 mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include/xkbcommon"
 
 SRC="$SRC_DIR/src"
-# libxkbcommon's hand-curated config.h (a build.toml input) goes into this
-# build's private SRC_DIR copy.
-cp "$SCRIPT_DIR/../libxkbcommon/src/config.h" "$SRC_DIR/config.h"
+# The hand-curated config.h (a build.toml input) goes into this build's
+# private SRC_DIR copy.
+cp "$SCRIPT_DIR/src/config.h" "$SRC_DIR/config.h"
 
 echo "==> Compiling registry.c + util-list.c for wasm32..."
 OBJS=()

@@ -91,6 +91,7 @@ pub enum SocketDomain {
     Unix,
     Inet,
     Inet6,
+    Netlink,
 }
 
 /// Socket type.
@@ -98,6 +99,8 @@ pub enum SocketDomain {
 pub enum SocketType {
     Stream,
     Dgram,
+    /// `SOCK_RAW`, which only `AF_NETLINK` accepts.
+    Raw,
 }
 
 /// Socket connection state.
@@ -684,6 +687,9 @@ pub struct SocketInfo {
     /// connecting socket copies its listener's, captured at `listen()`.
     /// `None` for every other socket.
     pub peer_cred: Option<PeerCred>,
+    /// AF_NETLINK port id and multicast group mask, from bind().
+    pub netlink_port: u32,
+    pub netlink_groups: u32,
     /// Legacy pending connection socket indices for manually constructed or
     /// pre-shared-queue listeners. Normal AF_UNIX, AF_INET, and AF_INET6
     /// stream listeners use `shared_backlog_idx` instead.
@@ -751,6 +757,8 @@ impl SocketInfo {
             peer_addr6: [0; 16],
             peer_port: 0,
             peer_cred: None,
+            netlink_port: 0,
+            netlink_groups: 0,
             listen_backlog: Vec::new(),
             shared_backlog_idx: None,
             accept_wake_idx: None,
@@ -835,6 +843,8 @@ impl Clone for SocketInfo {
             peer_addr6: self.peer_addr6,
             peer_port: self.peer_port,
             peer_cred: self.peer_cred,
+            netlink_port: self.netlink_port,
+            netlink_groups: self.netlink_groups,
             listen_backlog: Vec::new(), // consume-once: don't double-accept
             shared_backlog_idx: self.shared_backlog_idx,
             accept_wake_idx: self.accept_wake_idx,

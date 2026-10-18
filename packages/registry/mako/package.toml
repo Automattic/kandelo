@@ -22,7 +22,7 @@ depends_on = [
   "pcre2@10.44",
   "harfbuzz@10.1.0",
   "fribidi@1.0.16",
-  "pixman@0.42.2",
+  "pixman@0.46.4",
   "fontconfig@2.15.0",
   "freetype@2.13.3",
   "libpng@1.6.43",
@@ -31,14 +31,14 @@ depends_on = [
   "libiconv@1.17",
   "libwayland@1.24.0",
   "libffi@0.1.0",
-  "wayland-protocols@1.45",
+  "wayland-protocols@1.47",
   "libcxx@21.1.7",
 ]
 
 [[host_tools]]
 # Generates the client glue for the five protocol XMLs mako compiles
 # against (xdg-shell, cursor-shape, xdg-activation, tablet-v2 from the
-# vendored wayland-protocols set; wlr-layer-shell from mako's tree).
+# wayland-protocols package; wlr-layer-shell from mako's tree).
 name = "wayland-scanner"
 version_constraint = ">=1.24"
 probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }

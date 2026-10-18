@@ -36,7 +36,7 @@ pub fn procfs_buf_idx(h: i64) -> usize {
 
 /// Encode a procfs buffer index as a host_handle.
 #[inline]
-fn procfs_buf_handle(idx: usize) -> i64 {
+pub fn procfs_buf_handle(idx: usize) -> i64 {
     debug_assert!(
         idx < (crate::descriptor_backing::SYNTHETIC_REGULAR_HANDLE_BASE - PROCFS_BUF_BASE) as usize
     );
@@ -109,12 +109,13 @@ impl ProcfsEntry {
 ///
 /// The current kernel has no runtime mount/umount path and does not yet receive
 /// the host VFS mount router's table. Keep this to filesystems owned directly
-/// by the Rust kernel: the root view plus its procfs/devfs virtual filesystems.
+/// by the Rust kernel: the root view plus its procfs/devfs/sysfs virtual
+/// filesystems.
 pub const MOUNTS_CONTENT: &[u8] =
-    b"kandelo-root / kandelo-vfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec 0 0\ndevfs /dev devfs rw,nosuid 0 0\n";
+    b"kandelo-root / kandelo-vfs rw 0 0\nproc /proc proc rw,nosuid,nodev,noexec 0 0\ndevfs /dev devfs rw,nosuid 0 0\nsysfs /sys sysfs ro,nosuid,nodev,noexec 0 0\n";
 
 const MOUNTINFO_CONTENT: &[u8] =
-    b"1 0 0:1 / / rw - kandelo-vfs kandelo-root rw\n2 1 0:2 / /proc rw,nosuid,nodev,noexec - proc proc rw,nosuid,nodev,noexec\n3 1 0:3 / /dev rw,nosuid - devfs devfs rw,nosuid\n";
+    b"1 0 0:1 / / rw - kandelo-vfs kandelo-root rw\n2 1 0:2 / /proc rw,nosuid,nodev,noexec - proc proc rw,nosuid,nodev,noexec\n3 1 0:3 / /dev rw,nosuid - devfs devfs rw,nosuid\n4 1 0:4 / /sys ro,nosuid,nodev,noexec - sysfs sysfs ro\n";
 
 /// Return the process scope of an entry, if it is under `/proc/<pid>`.
 ///
@@ -1499,12 +1500,14 @@ mod tests {
         assert!(mounts_str.contains("kandelo-root / kandelo-vfs rw 0 0"));
         assert!(mounts_str.contains("proc /proc proc rw,nosuid,nodev,noexec 0 0"));
         assert!(mounts_str.contains("devfs /dev devfs rw,nosuid 0 0"));
+        assert!(mounts_str.contains("sysfs /sys sysfs ro,nosuid,nodev,noexec 0 0"));
 
         let mountinfo = generate_content(&proc, &ProcfsEntry::PidMountinfo(1)).unwrap();
         let mountinfo_str = core::str::from_utf8(&mountinfo).unwrap();
         assert!(mountinfo_str.contains(" - kandelo-vfs kandelo-root "));
         assert!(mountinfo_str.contains(" - proc proc "));
         assert!(mountinfo_str.contains(" - devfs devfs "));
+        assert!(mountinfo_str.contains(" /sys ro,nosuid,nodev,noexec - sysfs sysfs ro\n"));
     }
 
     #[test]

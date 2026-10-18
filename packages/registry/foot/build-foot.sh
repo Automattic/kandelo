@@ -57,7 +57,7 @@ LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
 LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:?WASM_POSIX_DEP_LIBXML2_DIR not set}"
 LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
-PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/xml"
+PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/share/wayland-protocols"
 
 SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
@@ -93,22 +93,23 @@ python3 "$SRC_DIR/scripts/generate-builtin-terminfo.py" \
     '@default_terminfo@' "$SRC_DIR/foot.info" foot "$GEN/foot-terminfo.h"
 
 PROTOCOLS=(
-    xdg-shell
-    xdg-decoration-unstable-v1
-    xdg-output-unstable-v1
-    primary-selection-unstable-v1
-    presentation-time
-    text-input-unstable-v3
-    xdg-activation-v1
-    viewporter
-    fractional-scale-v1
-    tablet-unstable-v2
-    cursor-shape-v1
+    stable/xdg-shell/xdg-shell
+    unstable/xdg-decoration/xdg-decoration-unstable-v1
+    unstable/xdg-output/xdg-output-unstable-v1
+    unstable/primary-selection/primary-selection-unstable-v1
+    stable/presentation-time/presentation-time
+    unstable/text-input/text-input-unstable-v3
+    staging/xdg-activation/xdg-activation-v1
+    stable/viewporter/viewporter
+    staging/fractional-scale/fractional-scale-v1
+    unstable/tablet/tablet-unstable-v2
+    staging/cursor-shape/cursor-shape-v1
 )
 PROTO_OBJS=()
 for proto in "${PROTOCOLS[@]}"; do
-    wayland-scanner client-header "$PROTOCOLS_XML/$proto.xml" "$GEN/$proto.h"
-    wayland-scanner private-code  "$PROTOCOLS_XML/$proto.xml" "$GEN/$proto.c"
+    base="$(basename "$proto")"
+    wayland-scanner client-header "$PROTOCOLS_XML/$proto.xml" "$GEN/$base.h"
+    wayland-scanner private-code  "$PROTOCOLS_XML/$proto.xml" "$GEN/$base.c"
 done
 
 CFLAGS=(
@@ -148,8 +149,9 @@ for tu in "${TUS[@]}"; do
     OBJS+=("$obj")
 done
 for proto in "${PROTOCOLS[@]}"; do
-    obj="$BUILD_DIR/proto-$proto.o"
-    wasm32posix-cc -c "${CFLAGS[@]}" "$GEN/$proto.c" -o "$obj"
+    base="$(basename "$proto")"
+    obj="$BUILD_DIR/proto-$base.o"
+    wasm32posix-cc -c "${CFLAGS[@]}" "$GEN/$base.c" -o "$obj"
     OBJS+=("$obj")
 done
 

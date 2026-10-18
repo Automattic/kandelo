@@ -143,6 +143,51 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // machine sharing this image pays to fetch it.
   { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/local/bin/foot", symlinks: [] },
   { id: "love", resolverPath: "programs/love/love.wasm", vfsPath: "/usr/local/bin/love", symlinks: [] },
+  // The cage kiosk compositor (the cage machine's command).
+  { id: "cage", resolverPath: "programs/cage/cage.wasm", vfsPath: "/usr/local/bin/cage", symlinks: [] },
+  // The sway machine's compositor, the bar and message clients it execs by
+  // name, its IPC client, and the upstream config the session includes
+  // with the wallpaper that config names.
+  { id: "sway", resolverPath: "programs/sway/sway.wasm", vfsPath: "/usr/local/bin/sway", symlinks: [] },
+  {
+    id: "swaybar",
+    dependency: "sway",
+    resolverPath: "programs/sway/swaybar.wasm",
+    vfsPath: "/usr/local/bin/swaybar",
+    symlinks: [],
+  },
+  {
+    id: "swaynag",
+    dependency: "sway",
+    resolverPath: "programs/sway/swaynag.wasm",
+    vfsPath: "/usr/local/bin/swaynag",
+    symlinks: [],
+  },
+  {
+    id: "swaymsg",
+    dependency: "sway",
+    resolverPath: "programs/sway/swaymsg.wasm",
+    vfsPath: "/usr/local/bin/swaymsg",
+    symlinks: [],
+  },
+  {
+    id: "sway-wallpaper",
+    dependency: "sway",
+    resolverPath: "programs/sway/Sway_Wallpaper_Blue_1920x1080.png",
+    vfsPath: "/usr/share/backgrounds/sway/Sway_Wallpaper_Blue_1920x1080.png",
+    symlinks: [],
+    mode: 0o644,
+  },
+  // swaybg draws the wallpaper sway's config names; sway execs it by name.
+  { id: "swaybg", resolverPath: "programs/swaybg.wasm", vfsPath: "/usr/local/bin/swaybg", symlinks: [] },
+  {
+    id: "sway-config",
+    dependency: "sway",
+    resolverPath: "programs/sway/sway.conf",
+    vfsPath: "/etc/sway/config",
+    symlinks: [],
+    mode: 0o644,
+  },
   // ScummVM: the engine and the GUI data it reads from /usr/share/scummvm
   // (the package's declared runtime_files). /usr/local/bin/scummvm is the
   // image's launch wrapper, which execs this engine.

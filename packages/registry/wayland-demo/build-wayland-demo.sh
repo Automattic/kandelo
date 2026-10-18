@@ -55,50 +55,41 @@ done
 export WASM_POSIX_DEP_WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-$KANDELO_PACKAGE_WORK_DIR}"
 SYSROOT="$(
     kandelo_package_prepare_private_sysroot wayland-demo "$SDK_SYSROOT" \
-        libwayland libxkbcommon libinput libevdev libudev mtdev libffi \
+        libwayland libxkbcommon libinput libevdev libudev-zero mtdev libffi \
         glib pcre2 zlib
 )"
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# libinput's public header and the wayland-protocols XML are read from their
-# resolved prefixes directly; everything else is now inside $SYSROOT.
+# libinput's public header and the protocol XML are read from their
+# resolved prefixes directly; everything else is inside $SYSROOT.
 LIBINPUT="${WASM_POSIX_DEP_LIBINPUT_DIR:?resolve wayland-demo through cargo xtask build-deps}"
-# wayland-protocols is a source-only dependency: it stages XML, not a
-# lib/include prefix, so the resolver exports no *_DIR for it. The
-# reviewed copy in-tree is the same file scripts/build-programs.sh scans.
-PROTOCOLS="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:-}"
+WP_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?resolve wayland-demo through cargo xtask build-deps}/share/wayland-protocols"
+WLR_XML="${WASM_POSIX_DEP_WLR_PROTOCOLS_DIR:?resolve wayland-demo through cargo xtask build-deps}/share/wlr-protocols"
 HYPRLAND_PROTOCOLS="${WASM_POSIX_DEP_HYPRLAND_PROTOCOLS_DIR:?resolve wayland-demo through cargo xtask build-deps}"
 
 # --- Generate the Wayland protocol glue -------------------------------
 GEN="$WORK_DIR/gen"
 mkdir -p "$GEN"
-# wayland-protocols installs its vendored XML at <prefix>/xml/ (see its
-# package.toml [outputs].files). Prefer the resolved prefix; fall back to
-# the reviewed in-tree copy for a direct, non-resolver invocation.
-XML_DIR="$SOURCE_ROOT/packages/registry/wayland-protocols/xml"
-if [ -n "$PROTOCOLS" ] && [ -d "$PROTOCOLS/xml" ]; then
-    XML_DIR="$PROTOCOLS/xml"
-fi
-# stem:xml-basename. The generated header basenames are what the sources
+# stem:xml-path. The generated header basenames are what the sources
 # #include, so the stem is fixed by the consumer, not by the XML file name.
 PROTOCOL_LIST=(
-    "xdg-shell:xdg-shell"
-    "linux-dmabuf-v1:linux-dmabuf-v1"
-    "xdg-decoration-v1:xdg-decoration-unstable-v1"
-    "wlr-layer-shell-v1:wlr-layer-shell-unstable-v1"
-    "presentation-time:presentation-time"
-    "xdg-output-v1:xdg-output-unstable-v1"
-    "viewporter:viewporter"
-    "fractional-scale-v1:fractional-scale-v1"
-    "wlr-data-control-v1:wlr-data-control-unstable-v1"
-    "ext-data-control-v1:ext-data-control-v1"
-    "ext-session-lock-v1:ext-session-lock-v1"
-    "ext-idle-notify-v1:ext-idle-notify-v1"
+    "xdg-shell:$WP_XML/stable/xdg-shell/xdg-shell.xml"
+    "linux-dmabuf-v1:$WP_XML/stable/linux-dmabuf/linux-dmabuf-v1.xml"
+    "xdg-decoration-v1:$WP_XML/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml"
+    "wlr-layer-shell-v1:$WLR_XML/unstable/wlr-layer-shell-unstable-v1.xml"
+    "presentation-time:$WP_XML/stable/presentation-time/presentation-time.xml"
+    "xdg-output-v1:$WP_XML/unstable/xdg-output/xdg-output-unstable-v1.xml"
+    "viewporter:$WP_XML/stable/viewporter/viewporter.xml"
+    "fractional-scale-v1:$WP_XML/staging/fractional-scale/fractional-scale-v1.xml"
+    "wlr-data-control-v1:$WLR_XML/unstable/wlr-data-control-unstable-v1.xml"
+    "ext-data-control-v1:$WP_XML/staging/ext-data-control/ext-data-control-v1.xml"
+    "ext-session-lock-v1:$WP_XML/staging/ext-session-lock/ext-session-lock-v1.xml"
+    "ext-idle-notify-v1:$WP_XML/staging/ext-idle-notify/ext-idle-notify-v1.xml"
 )
-echo "==> Generating Wayland protocol glue from $XML_DIR..."
+echo "==> Generating Wayland protocol glue..."
 for entry in "${PROTOCOL_LIST[@]}"; do
     stem="${entry%%:*}"
-    xml="$XML_DIR/${entry#*:}.xml"
+    xml="${entry#*:}"
     [ -f "$xml" ] || { echo "ERROR: protocol XML not found: $xml" >&2; exit 1; }
     wayland-scanner private-code  "$xml" "$GEN/$stem-protocol.c"
     wayland-scanner server-header "$xml" "$GEN/$stem-server-protocol.h"
@@ -212,10 +203,11 @@ wasm32posix-cc "${CFLAGS[@]}" -I"$SYSROOT/include/glib-2.0" \
 # --- launchers and desktop data ----------------------------------------
 # wldesktop starts the floating demo desktop; hyprdesktop and omarchydesktop
 # start the tiling desktop and the Omarchy-shaped one. Omarchy's configs,
-# themes, .desktop entries and shell QML are image data under
-# /usr/share/kandelo, packed into one archive the image builder unpacks
-# there. The Hyprland desktop is not in any image by default, so its
-# launcher and config are separate artifacts an image that wants it installs.
+# themes, .desktop entries and shell QML, and the sway machine's config, are
+# image data under /usr/share/kandelo, packed into one archive the image
+# builder unpacks there. The Hyprland desktop is not in any image by
+# default, so its launcher and config are separate artifacts an image that
+# wants it installs.
 for launcher in wldesktop desktops/hyprdesktop desktops/omarchydesktop; do
     cp "$HERE/$launcher" "$WORK_DIR/$(basename "$launcher")"
     chmod 0755 "$WORK_DIR/$(basename "$launcher")"
@@ -259,3 +251,8 @@ fi
 # reads at runtime travel with this package (see [[runtime_files]]).
 install_local_runtime_file wayland-demo \
     "$LIBINPUT/share/libinput-quirks.zip" libinput-quirks.zip
+# The desktops' GTK3 clients compile a default keymap from the
+# xkeyboard-config rules (see [[runtime_files]]).
+install_local_runtime_file wayland-demo \
+    "${WASM_POSIX_DEP_XKEYBOARD_CONFIG_DIR:?resolve wayland-demo through cargo xtask build-deps}/share/xkeyboard-config.zip" \
+    xkeyboard-config.zip

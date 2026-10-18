@@ -1,0 +1,40 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# Daemonless libudev (libudev.a). A real upstream libudev that reads
+# device state straight from /sys (uevent files, subsystem symlinks) and
+# watches the NETLINK_KOBJECT_UEVENT socket, with no udevd. Built through
+# upstream's meson build with the SDK cross file. pkg-config name
+# `libudev`, version 251, as upstream declares.
+name = "libudev-zero"
+version = "1.0.5"
+kernel_abi = 48
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=0.60.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+[source]
+url = "https://github.com/illiliti/libudev-zero/archive/refs/tags/1.0.5.tar.gz"
+sha256 = "bf4372f79ddbe6b0e266a3d2994ffac7018a7edf4f87632aecb5176565d96138"
+provider = "archive"
+
+[license]
+spdx = "ISC"
+url = "https://github.com/illiliti/libudev-zero/blob/1.0.5/LICENSE"
+
+[build]
+script_path = "packages/registry/libudev-zero/build-libudev-zero.sh"
+
+[outputs]
+libs = ["lib/libudev.a"]
+headers = ["include/libudev.h"]
+pkgconfig = ["lib/pkgconfig/libudev.pc"]

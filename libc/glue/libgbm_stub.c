@@ -11,6 +11,8 @@
  *   - gbm_create_device / gbm_device_destroy
  *   - gbm_device_is_format_supported (32-bpp fourccs)
  *   - gbm_bo_create        (linear, 32-bpp formats only)
+ *   - gbm_bo_create_with_modifiers / gbm_bo_create_with_modifiers2
+ *                          (LINEAR or implicit modifiers only)
  *   - gbm_bo_destroy
  *   - gbm_bo_get_fd        (PRIME export → handle-to-fd)
  *   - gbm_bo_import        (GBM_BO_IMPORT_FD: fd-to-handle)
@@ -19,6 +21,10 @@
  *   - gbm_bo_set/get_user_data (opaque pointer with destroy cb)
  *   - accessors: get_width / get_height / get_stride / get_format
  *                / get_bpp / get_modifier / get_handle / get_device
+ *   - single-plane accessors: get_plane_count / get_offset /
+ *                get_stride_for_plane / get_handle_for_plane /
+ *                get_fd_for_plane
+ *   - gbm_device_get_fd / gbm_device_get_backend_name
  *
  * Surface scanout (added for SDL2 KMSDRM):
  *   - gbm_surface_create / gbm_surface_create_with_modifiers /
@@ -33,9 +39,6 @@
  *
  * Declared in <gbm.h> but intentionally NOT implemented (consumers
  * calling these get link-time undefined-symbol errors):
- *   gbm_bo_create_with_modifiers*, gbm_bo_get_*_for_plane,
- *   gbm_bo_get_plane_count, gbm_bo_get_offset, gbm_bo_get_handle_for_plane,
- *   gbm_device_get_fd, gbm_device_get_backend_name,
  *   gbm_device_get_format_modifier_plane_count, gbm_format_get_name.
  */
 
@@ -128,6 +131,15 @@ void gbm_device_destroy(struct gbm_device *gbm) {
     free(gbm);
 }
 
+int gbm_device_get_fd(struct gbm_device *gbm) {
+    return gbm->fd;
+}
+
+const char *gbm_device_get_backend_name(struct gbm_device *gbm) {
+    (void) gbm;
+    return "kandelo";
+}
+
 /* A bo purely used as a GL render target — RENDERING set, none of the
  * CPU-facing usages (SCANOUT, CURSOR, WRITE, LINEAR) — can be a GPU-tier
  * bo: unmappable, backed by a host WebGLTexture the compositor samples
@@ -140,9 +152,22 @@ static int usage_wants_gpu_tier(uint32_t flags) {
     return (flags & GBM_BO_USE_RENDERING) && !(flags & cpu_facing);
 }
 
-struct gbm_bo *gbm_bo_create(struct gbm_device *gbm,
-                             uint32_t width, uint32_t height,
-                             uint32_t format, uint32_t flags) {
+/* The modifier entry points are the ones a renderer that draws into its
+ * own scanout buffers allocates through (wlroots' gbm allocator). Their
+ * SCANOUT|RENDERING bos are GPU-tier: the renderer fills them with GL, and
+ * the host shows a GPU-tier scanout buffer on the GL-owned display canvas
+ * at each flip. gbm_bo_create keeps SCANOUT CPU-facing for the gbm_surface
+ * ring and for compositors that blit into their scanout buffer on the CPU. */
+static int modifier_usage_wants_gpu_tier(uint32_t flags) {
+    const uint32_t cpu_facing =
+        GBM_BO_USE_CURSOR | GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR;
+    return (flags & GBM_BO_USE_RENDERING) && !(flags & cpu_facing);
+}
+
+static struct gbm_bo *bo_create(struct gbm_device *gbm,
+                                uint32_t width, uint32_t height,
+                                uint32_t format, uint32_t flags,
+                                int gpu_tier) {
     uint32_t bpp = format_bpp(format);
     if (!gbm || !bpp || !width || !height) {
         errno = EINVAL;
@@ -165,7 +190,7 @@ struct gbm_bo *gbm_bo_create(struct gbm_device *gbm,
      * when the host has no shared GL context yet (headless, or before the
      * compositor's context exists) — fall through to a CPU-tier dumb bo,
      * which BIND_FOREIGN_TEXTURE still samples via a host-side upload. */
-    if (usage_wants_gpu_tier(flags)) {
+    if (gpu_tier) {
         struct wpk_drm_gpu_bo_create greq;
         memset(&greq, 0, sizeof(greq));
         greq.width  = width;
@@ -198,6 +223,48 @@ struct gbm_bo *gbm_bo_create(struct gbm_device *gbm,
     bo->stride = req.pitch;
     bo->size   = req.size;
     return bo;
+}
+
+struct gbm_bo *gbm_bo_create(struct gbm_device *gbm,
+                             uint32_t width, uint32_t height,
+                             uint32_t format, uint32_t flags) {
+    return bo_create(gbm, width, height, format, flags,
+                     usage_wants_gpu_tier(flags));
+}
+
+/* Every bo is a single linear plane, so a modifier list is satisfiable
+ * when it names LINEAR or leaves the layout implicit (INVALID). */
+static int modifiers_allow_linear(const uint64_t *modifiers, unsigned count) {
+    for (unsigned i = 0; i < count; i++) {
+        if (modifiers[i] == DRM_FORMAT_MOD_LINEAR
+            || modifiers[i] == DRM_FORMAT_MOD_INVALID)
+            return 1;
+    }
+    return 0;
+}
+
+struct gbm_bo *gbm_bo_create_with_modifiers2(struct gbm_device *gbm,
+                                             uint32_t width, uint32_t height,
+                                             uint32_t format,
+                                             const uint64_t *modifiers,
+                                             const unsigned int count,
+                                             uint32_t flags) {
+    if (count > 0 && (!modifiers || !modifiers_allow_linear(modifiers, count))) {
+        errno = EINVAL;
+        return NULL;
+    }
+    return bo_create(gbm, width, height, format, flags,
+                     modifier_usage_wants_gpu_tier(flags));
+}
+
+struct gbm_bo *gbm_bo_create_with_modifiers(struct gbm_device *gbm,
+                                            uint32_t width, uint32_t height,
+                                            uint32_t format,
+                                            const uint64_t *modifiers,
+                                            const unsigned int count) {
+    return gbm_bo_create_with_modifiers2(gbm, width, height, format,
+                                         modifiers, count,
+                                         GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
 }
 
 struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
@@ -261,6 +328,14 @@ int gbm_bo_get_fd(struct gbm_bo *bo) {
         return -1;
     }
     return req.fd;
+}
+
+int gbm_bo_get_fd_for_plane(struct gbm_bo *bo, int plane) {
+    if (plane != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    return gbm_bo_get_fd(bo);
 }
 
 void *gbm_bo_map(struct gbm_bo *bo,

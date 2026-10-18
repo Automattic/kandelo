@@ -3,9 +3,11 @@
 # Build pixman (libpixman-1.a) for wasm32-posix-kernel.
 #
 # Honors the dep-resolver build-script contract (see
-# docs/package-management.md). Autotools cross-build like libpng: every
-# SIMD backend is disabled explicitly — wasm32 has none of them, and
-# pixman's generic C paths are complete without them.
+# docs/package-management.md). pixman is meson-only since 0.43, so the
+# port builds through upstream's meson build with the SDK cross file
+# (sdk/meson/wasm32posix.ini). Every SIMD backend is disabled
+# explicitly — wasm32 has none of them, and pixman's generic C paths
+# are complete without them.
 
 set -euo pipefail
 
@@ -27,6 +29,7 @@ SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
 SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/pixman-build"
+CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"
 
 if ! command -v wasm32posix-cc &>/dev/null; then
     echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh." >&2
@@ -41,6 +44,7 @@ if [ ! -d "$SRC_DIR" ]; then
         "$KANDELO_PACKAGE_WORK_DIR"
 fi
 
+# Fresh build dir each run — meson bakes --prefix into the build tree.
 rm -rf "$BUILD_DIR"
 # The resolver-created output directory is itself publication authority, so
 # a recipe must populate that inode rather than delete and recreate it.
@@ -52,41 +56,36 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
 else
     rm -rf "$INSTALL_DIR"
 fi
-mkdir -p "$BUILD_DIR"
 
-echo "==> Configuring pixman for wasm32..."
-(
-    cd "$BUILD_DIR"
-    CFLAGS="-O2" \
-    "$SRC_DIR/configure" \
-        --host=wasm32-unknown-none \
-        --prefix="$INSTALL_DIR" \
-        --enable-static \
-        --disable-shared \
-        --disable-mmx \
-        --disable-sse2 \
-        --disable-ssse3 \
-        --disable-vmx \
-        --disable-arm-simd \
-        --disable-arm-neon \
-        --disable-arm-a64-neon \
-        --disable-arm-iwmmxt \
-        --disable-mips-dspr2 \
-        --disable-openmp \
-        --disable-gtk \
-        --disable-libpng \
-        CC=wasm32posix-cc \
-        AR=wasm32posix-ar \
-        RANLIB=wasm32posix-ranlib
+echo "==> Configuring pixman $PIXMAN_VERSION for wasm32..."
+meson setup "$BUILD_DIR" "$SRC_DIR" \
+    --cross-file "$CROSS_FILE" \
+    --prefix "$INSTALL_DIR" \
+    --libdir lib \
+    -Dbuildtype=plain \
+    -Doptimization=2 \
+    -Dloongson-mmi=disabled \
+    -Dmmx=disabled \
+    -Dsse2=disabled \
+    -Dssse3=disabled \
+    -Dvmx=disabled \
+    -Darm-simd=disabled \
+    -Dneon=disabled \
+    -Da64-neon=disabled \
+    -Dmips-dspr2=disabled \
+    -Drvv=disabled \
+    -Dgnu-inline-asm=disabled \
+    -Dopenmp=disabled \
+    -Dgtk=disabled \
+    -Dlibpng=disabled \
+    -Dtests=disabled \
+    -Ddemos=disabled
 
-    echo "==> Building pixman..."
-    # Library only — the test/ and demo/ trees want a runnable host.
-    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" -C pixman
+echo "==> Building pixman..."
+ninja -C "$BUILD_DIR"
 
-    echo "==> Installing to $INSTALL_DIR..."
-    make -C pixman install
-    make install-pkgconfigDATA
-)
+echo "==> Installing to $INSTALL_DIR..."
+meson install -C "$BUILD_DIR" --no-rebuild
 
 if [ -f "$INSTALL_DIR/lib/libpixman-1.a" ]; then
     echo "==> pixman build complete!"

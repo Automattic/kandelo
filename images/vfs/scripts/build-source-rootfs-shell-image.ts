@@ -74,6 +74,7 @@ export interface SourceRootfsShellInputs {
   omarchydesktopPath: string;
   desktopDataPath: string;
   libinputQuirksPath: string;
+  xkeyboardConfigPath: string;
   espeakNgDataPath: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
@@ -1441,6 +1442,10 @@ export async function buildSourceRootfsShellImage(
     inputs.libinputQuirksPath,
     "libinput quirks dependency",
   );
+  const xkeyboardConfig = readRegularInput(
+    inputs.xkeyboardConfigPath,
+    "xkeyboard-config dependency",
+  );
   const espeakNgData = readRegularInput(
     inputs.espeakNgDataPath,
     "espeak-ng data dependency",
@@ -1477,6 +1482,10 @@ export async function buildSourceRootfsShellImage(
   // wlcompositor's statically linked libinput reads its device quirks from
   // LIBINPUT_QUIRKS_DIR, compiled in as /usr/share/libinput.
   unpackDataZip(fs, "/usr/share/libinput", libinputQuirks);
+  // GTK3 compiles a default keymap from the xkeyboard-config rules before
+  // the compositor's keymap arrives; libxkbcommon reads them from its
+  // compiled-in root, /usr/share/X11/xkb.
+  unpackDataZip(fs, "/usr/share/X11/xkb", xkeyboardConfig);
   // The Quake engine, unzip, and lha are lazy /usr/bin binaries; only this
   // small extraction+launch wrapper is written eagerly.
   writeVfsBinary(
@@ -1590,6 +1599,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--omarchydesktop",
     "--desktop-data",
     "--libinput-quirks",
+    "--xkeyboard-config",
     "--espeak-ng-data",
     "--demo-config",
     "--demo-profile-overlay",
@@ -1613,6 +1623,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--omarchydesktop <omarchydesktop> " +
           "--desktop-data <kandelo-desktop-data.zip> " +
           "--libinput-quirks <libinput-quirks.zip> " +
+          "--xkeyboard-config <xkeyboard-config.zip> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
           "--dependency-contract <dependencies.json> " +
@@ -1631,6 +1642,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     omarchydesktopPath: values.get("--omarchydesktop")!,
     desktopDataPath: values.get("--desktop-data")!,
     libinputQuirksPath: values.get("--libinput-quirks")!,
+    xkeyboardConfigPath: values.get("--xkeyboard-config")!,
     espeakNgDataPath: values.get("--espeak-ng-data")!,
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
