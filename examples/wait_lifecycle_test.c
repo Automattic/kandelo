@@ -575,6 +575,56 @@ static int test_sigkill_stopped_child(void)
     return 0;
 }
 
+static int test_sigterm_waiting_child(void)
+{
+    int gate[2];
+    int ready[2];
+    if (pipe(gate) != 0)
+        return fail("waiting child gate pipe");
+    if (pipe(ready) != 0)
+        return fail("waiting child ready pipe");
+
+    pid_t pid = fork();
+    if (pid < 0)
+        return fail("fork waiting child");
+    if (pid == 0) {
+        close(gate[1]);
+        close(ready[0]);
+        pid_t grandchild = fork();
+        if (grandchild < 0)
+            _exit(120);
+        if (grandchild == 0) {
+            char byte;
+            read(gate[0], &byte, 1);
+            _exit(0);
+        }
+        close(gate[0]);
+        if (write(ready[1], "x", 1) != 1)
+            _exit(121);
+        waitpid(grandchild, NULL, 0);
+        _exit(122);
+    }
+
+    close(gate[0]);
+    close(ready[1]);
+    char byte;
+    if (read(ready[0], &byte, 1) != 1)
+        return fail("waiting child ready");
+    close(ready[0]);
+    usleep(100000);
+
+    if (kill(pid, SIGTERM) != 0)
+        return fail("SIGTERM waiting child");
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid || !WIFSIGNALED(status) ||
+        WTERMSIG(status) != SIGTERM) {
+        fprintf(stderr, "SIGTERM waiting child status mismatch: status=%#x\n", status);
+        return -1;
+    }
+    close(gate[1]);
+    return 0;
+}
+
 static int test_sa_nocldstop(void)
 {
     struct sigaction action;
@@ -1462,6 +1512,8 @@ int main(int argc, char **argv)
         return 10;
     if (test_caught_sigcont_precedes_stop_boundary_return() != 0)
         return 11;
+    if (test_sigterm_waiting_child() != 0)
+        return 14;
     puts("WAIT_LIFECYCLE_PASS");
     return 0;
 #endif
