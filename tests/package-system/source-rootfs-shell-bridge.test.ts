@@ -239,6 +239,7 @@ function fixturePaths(root: string) {
   const omarchydesktopPath = join(root, "omarchydesktop");
   const desktopDataPath = join(root, "kandelo-desktop-data.zip");
   const libinputQuirksPath = join(root, "libinput-quirks.zip");
+  const xkeyboardConfigPath = join(root, "xkeyboard-config.zip");
   const demoConfigPath = join(
     repoRoot,
     "packages/registry/shell/source-rootfs-shell-demo.json",
@@ -266,6 +267,12 @@ function fixturePaths(root: string) {
       "10-generic-keyboard.quirks": new TextEncoder().encode(
         "[Generic Keyboard]\n",
       ),
+    }),
+  );
+  writeFileSync(
+    xkeyboardConfigPath,
+    zipSync({
+      "rules/evdev": new TextEncoder().encode("! model = keycodes\n"),
     }),
   );
   writeFileSync(
@@ -356,6 +363,7 @@ function fixturePaths(root: string) {
     omarchydesktopPath,
     desktopDataPath,
     libinputQuirksPath,
+    xkeyboardConfigPath,
     demoConfigPath,
     demoProfileOverlayPath,
     dependencyRoots,
@@ -762,6 +770,9 @@ describe("canonical source-rootfs shell", () => {
     expect(
       text(readVfsFile(fs, "/usr/share/libinput/10-generic-keyboard.quirks")),
     ).toBe("[Generic Keyboard]\n");
+    expect(text(readVfsFile(fs, "/usr/share/X11/xkb/rules/evdev"))).toBe(
+      "! model = keycodes\n",
+    );
     // Assert byte-for-byte equality against the tracked source for one
     // image shader and one sound shader: a loose "non-empty" check would
     // pass for a truncated or stubbed preset, which is exactly the kind of
@@ -1205,6 +1216,7 @@ describe("canonical source-rootfs shell", () => {
       "omarchydesktop",
       "kandelo-desktop-data.zip",
       "libinput-quirks.zip",
+      "xkeyboard-config.zip",
     ]) {
       writeFileSync(join(waylandDemoDir, name), name);
     }
@@ -1301,6 +1313,9 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     );
     expect(invocation).toContain(
       `--libinput-quirks ${waylandDemoDir}/libinput-quirks.zip`,
+    );
+    expect(invocation).toContain(
+      `--xkeyboard-config ${waylandDemoDir}/xkeyboard-config.zip`,
     );
     expect(invocation).toContain(
       `--demo-profile-overlay ${join(repoRoot, "packages/registry/shell/source-rootfs-shell-demo-profiles.json")}`,

@@ -142,6 +142,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "cage",
+      "version": "0.3.1",
+      "role": "lazy-file"
+    },
+    {
       "name": "dbus",
       "version": "1.14.10",
       "role": "lazy-file"
