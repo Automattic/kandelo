@@ -3973,3 +3973,22 @@ the existing module at byte `0x223` even with `--enable-all`, despite the
 prior Node/browser `dlopen` evidence; do not use this WABT result as a
 runtime verdict. A new peer browser suite again reduced unused RAM below
 0.5 GiB, so the much larger FrankenPHP instrumenter was not started.
+
+**2026-10-17 — Measure the revised classic link before instrumentation.**
+After the peer browser suite finished, a diagnostic fork-tool override
+copied the raw revision-24 FrankenPHP classic executable out of the
+resolver work directory and intentionally stopped that package build
+before fork instrumentation. No invalid executable was published. The
+raw Wasm is 56 MiB, with 43,502 defined functions, 100,000 data
+segments, and 255 exports. Comparing its export section with the
+revision-6 ZTS OPcache module's import-derived list found all 242
+requested symbols present, so the new Go external-linker export flags
+work for the real FrankenPHP/PHP static link. The instrumenter's
+`--sink-report` analysis completed in 9.31 seconds with 1.93 GiB peak
+resident memory and marked 34,233 functions in its conservative fork
+closure (`source=closure`). This is strong evidence of why the full
+rewrite is expensive, not proof that any specific algorithm or data
+segment policy causes its earlier 10.6 GiB peak. Full fork
+instrumentation, ABI stamping, Node/Chromium boot, and WordPress
+verification remain open. Do not publish or run the raw diagnostic Wasm
+as a Kandelo package.
