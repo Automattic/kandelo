@@ -1010,6 +1010,7 @@ pub enum Errno {
     EPROTOTYPE = 91,
     ENOPROTOOPT = 92,
     EPROTONOSUPPORT = 93,
+    ESOCKTNOSUPPORT = 94,
     EOPNOTSUPP = 95,
     EAFNOSUPPORT = 97,
     EADDRINUSE = 98,
@@ -1086,6 +1087,7 @@ impl Errno {
             91 => Some(Errno::EPROTOTYPE),
             92 => Some(Errno::ENOPROTOOPT),
             93 => Some(Errno::EPROTONOSUPPORT),
+            94 => Some(Errno::ESOCKTNOSUPPORT),
             95 => Some(Errno::EOPNOTSUPP),
             97 => Some(Errno::EAFNOSUPPORT),
             98 => Some(Errno::EADDRINUSE),
@@ -1242,6 +1244,8 @@ pub mod fd_flags {
 
 /// Filesystem mount flags reported through statfs(2).
 pub mod statfs_flags {
+    /// Mounted read-only.
+    pub const ST_RDONLY: u32 = 0x1;
     /// Ignore set-user-ID and set-group-ID mode bits on execution.
     pub const ST_NOSUID: u32 = 0x2;
 }
@@ -1310,8 +1314,10 @@ pub mod socket {
     pub const AF_UNIX: u32 = 1;
     pub const AF_INET: u32 = 2;
     pub const AF_INET6: u32 = 10;
+    pub const AF_NETLINK: u32 = 16;
     pub const SOCK_STREAM: u32 = 1;
     pub const SOCK_DGRAM: u32 = 2;
+    pub const SOCK_RAW: u32 = 3;
     pub const SOCK_NONBLOCK: u32 = 0o4000;
     pub const SOCK_CLOEXEC: u32 = 0o2000000;
     pub const SOL_SOCKET: u32 = 1;

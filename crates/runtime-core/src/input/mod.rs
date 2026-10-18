@@ -118,6 +118,21 @@ pub fn reset_key_state() {
     }
 }
 
+/// The `EVIOCGNAME` name of a device (`0` = keyboard, `1` = pointer).
+pub fn device_name(device: u8) -> &'static str {
+    if device == 0 { "wpk virtual keyboard" } else { "wpk virtual pointer" }
+}
+
+/// The `EVIOCGID` identity of a device.
+pub fn device_id(device: u8) -> WpkInputId {
+    WpkInputId {
+        bustype: BUS_VIRTUAL,
+        vendor: 0x1209,
+        product: if device == 0 { 0x0001 } else { 0x0002 },
+        version: 0x0001,
+    }
+}
+
 fn set_bit(buf: &mut [u8], bit: u16) {
     let byte = (bit as usize) >> 3;
     let shift = (bit as usize) & 7;

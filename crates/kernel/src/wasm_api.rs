@@ -11607,7 +11607,7 @@ fn cross_process_loopback_connect(
                             s.bind_addr6 == [0; 16]
                                 && s.get_option(IPPROTO_IPV6, IPV6_V6ONLY).unwrap_or(0) == 0
                         }
-                        SocketDomain::Unix => false,
+                        SocketDomain::Unix | SocketDomain::Netlink => false,
                     }
                 {
                     listener_pid = Some(pid);

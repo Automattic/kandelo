@@ -1024,6 +1024,7 @@ pub fn owns_path(path: &[u8]) -> bool {
     path.first() == Some(&b'/')
         && !crate::tmpfs::owns_path(path)
         && !crate::devfs::owns_path(path)
+        && !crate::sysfs::is_namespace_path(path)
         && !path_under_foreign(path)
 }
 
@@ -5448,6 +5449,13 @@ mod tests {
         assert!(!owns_path(b"/var/run/php.sock"));
         // non-absolute is never a rootfs path.
         assert!(!owns_path(b"relative"));
+    }
+
+    #[test]
+    fn owns_path_excludes_sysfs() {
+        assert!(!owns_path(b"/sys"));
+        assert!(!owns_path(b"/sys/class/drm/card0"));
+        assert!(owns_path(b"/system"));
     }
 
     #[test]
