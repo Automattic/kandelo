@@ -26,6 +26,7 @@ link_archives() {
 php_prefix="$(resolve_dep php-zts)"
 test -f "$php_prefix/lib/libphp.a"
 ln -sf "$php_prefix/lib/libphp.a" "$fixture_dir/lib/libphp.a"
+cp "$php_prefix/lib/opcache-zts.so" "$output_dir/opcache-zts.so"
 link_archives icu libicui18n.a libicuio.a libicuuc.a libicudata.a
 link_archives libcxx 'libc++.a' 'libc++abi.a'
 link_archives libcurl libcurl.a
@@ -40,8 +41,18 @@ ln -sf "$repo_root/sysroot/lib/libkandelo-ucontext-unsupported.a" \
 
 php_include="$php_prefix/include/php"
 export CGO_CFLAGS="-I$php_include -I$php_include/main -I$php_include/Zend -I$php_include/TSRM -I$php_include/sapi/embed -I$php_include/ext"
+requested_export_list="$(node "$repo_root/scripts/wasm-side-module-c-exports.mjs" \
+    "$output_dir/opcache-zts.so")"
+test -n "$requested_export_list"
+mapfile -t requested_exports <<< "$requested_export_list"
+export_flags=()
+for symbol in "${requested_exports[@]}"; do
+    export_flags+=("-Wl,--export-dynamic-symbol=$symbol")
+done
+link_flags="-extldflags '${export_flags[*]}'"
 GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc \
-    "$repo_root/../go-kandelo/bin/go" build -a -o "$output_dir/probe.wasm" "$fixture_dir/main.go"
+    "$repo_root/../go-kandelo/bin/go" build -a -ldflags="$link_flags" \
+    -o "$output_dir/probe.wasm" "$fixture_dir/main.go"
 wasm-validate --enable-threads --enable-exceptions "$output_dir/probe.wasm"
 "$repo_root/scripts/run-wasm-fork-instrument.sh" "$output_dir/probe.wasm" \
     -o "$output_dir/probe-instrumented.wasm"

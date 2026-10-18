@@ -3871,3 +3871,38 @@ the host reported under 0.1 GiB unused. The instrumenter was terminated
 to avoid exhausting the user's machine; the SourceOnly package did not
 publish, and the Caddy package was not started. This is a resource gate,
 not a compiler or runtime success/failure result.
+
+**2026-10-17 — Package ZTS OPcache without PHP-specific linker shims.**
+The `php-zts` SourceOnly recipe now requests PHP's upstream shared OPcache
+extension, builds the static embed target separately to avoid PHP libtool's
+unsupported Wasm shared-link command, and links the PIC extension objects
+with the SDK's side-module linker. The existing CLI/FPM OPcache module uses
+the same helper, including fork instrumentation and the side-module ABI
+marker. The revised ZTS package (revision 5) rebuilt and resolver-validated
+`libphp.a` and `opcache-zts.so`; the latter is 279 KiB and imports 290
+entries (242 functions, 42 globals, two tags, one memory, three tables).
+The first live-load attempt identified a missing mutable `__tls_base` export;
+the ZTS side-module link now requests it, matching Kandelo's fork-replay
+contract. A general import-enumeration utility derives explicit C exports
+from side modules; the small side-module fixture still passes on Node and
+three browser engines with generated requests. The PHP embed fixture links
+the real OPcache import closure and `dlopen`s the ZTS module after PHP
+initialization. Its ABI-stamped Node run exited 0 with empty stderr and
+host diagnostics; Chromium, Firefox, and WebKit passed the focused browser
+gate 3/3. This is live module loading, not Zend registration or accelerated
+execution. FrankenPHP and WordPress have not been rebuilt on this package
+pin, and no OPcache performance claim follows. Full FrankenPHP
+instrumentation remains a memory-headroom gate.
+
+An exploratory `zend_extension` INI boot in the PHP embed fixture confirmed
+that PHP read the INI and registered OPcache, but PHP upstream refused to
+activate caching for the `embed` SAPI: its built-in supported-SAPI check
+explicitly names FrankenPHP, not `embed`. This is not a Kandelo loader
+failure; do not rename the test SAPI to fake activation. The exploratory
+mode was removed. Activate and test the module in real FrankenPHP instead.
+The existing PHP CLI/FPM SourceOnly package also rebuilt successfully
+after its OPcache side-module link was moved into the shared helper; this
+is a build regression check, not a fresh CLI/FPM runtime soak. After the
+fixture cleanup, both ABI-stamped Node probes passed again, and the combined
+PHP embed, ZTS OPcache `dlopen`, and generic C-export browser run passed 9/9
+across Chromium, Firefox, and WebKit.

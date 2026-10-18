@@ -868,7 +868,7 @@ fi
 
 if [ "$PHP_BUILD_VARIANT" = "zts-embed" ]; then
     SAPI_CONFIG_FLAGS=(--disable-cli --disable-fpm --enable-embed=static --enable-zts)
-    EXTENSION_CONFIG_FLAGS=(--enable-intl --with-curl --enable-phar --with-zip)
+    EXTENSION_CONFIG_FLAGS=(--enable-opcache --enable-intl --with-curl --enable-phar --with-zip)
 else
     SAPI_CONFIG_FLAGS=(--enable-cli --enable-fpm --enable-opcache)
     EXTENSION_CONFIG_FLAGS=(--enable-intl=shared --with-curl=shared --enable-phar=shared --enable-zend-test=shared --with-zip=shared)
@@ -1227,13 +1227,55 @@ fi
 # the directory PHP's `#include <libxml/parser.h>` resolves against.
 EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include/libxml2"
 
+build_opcache_side_module() {
+    local output="$1"
+    local abi_object="$WORK_DIR/fork-side-module-abi.o"
+    local targets=(
+        ext/opcache/ZendAccelerator.lo
+        ext/opcache/zend_accelerator_blacklist.lo
+        ext/opcache/zend_accelerator_debug.lo
+        ext/opcache/zend_accelerator_hash.lo
+        ext/opcache/zend_accelerator_module.lo
+        ext/opcache/zend_persist.lo
+        ext/opcache/zend_persist_calc.lo
+        ext/opcache/zend_file_cache.lo
+        ext/opcache/zend_shared_alloc.lo
+        ext/opcache/zend_accelerator_util_funcs.lo
+        ext/opcache/shared_alloc_shm.lo
+        ext/opcache/shared_alloc_mmap.lo
+        ext/opcache/shared_alloc_posix.lo
+    )
+    local objects=()
+    local link_flags=()
+    local target
+
+    if [ "$PHP_BUILD_VARIANT" = "zts-embed" ]; then
+        link_flags+=(-Wl,--export=__tls_base)
+    fi
+
+    wasm32posix-cc -fPIC -O2 -I"$REPO_ROOT/libc/glue" -c \
+        "$SCRIPT_DIR/fork-side-module-abi.c" -o "$abi_object"
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+        EXTRA_CFLAGS="$EXTRA_INC_LIBXML" "${targets[@]}"
+    for target in "${targets[@]}"; do
+        objects+=("ext/opcache/.libs/$(basename "${target%.lo}").o")
+    done
+    wasm32posix-cc -shared -fPIC "${link_flags[@]}" \
+        -o "$output" "${objects[@]}" "$abi_object"
+    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$output" \
+        -o "$output.instr" --entry env.fork
+    mv "$output.instr" "$output"
+}
+
 if [ "$PHP_BUILD_VARIANT" = "zts-embed" ]; then
-    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML"
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+        EXTRA_CFLAGS="$EXTRA_INC_LIBXML" libphp.la
     test -f libs/libphp.a
     INSTALL_ROOT="$WORK_DIR/install" make install-headers
     INSTALL_DIR="${KANDELO_PACKAGE_OUT_DIR:-$WORK_DIR/output}"
     mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
     cp libs/libphp.a "$INSTALL_DIR/lib/libphp.a"
+    build_opcache_side_module "$INSTALL_DIR/lib/opcache-zts.so"
     cp -R "$WORK_DIR/install/usr/include/php" "$INSTALL_DIR/include/php"
     exit 0
 fi
@@ -1256,43 +1298,7 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 # and feed the PIC objects to the SDK's `wasm32posix-cc -shared`,
 # which routes through `wasm-ld --shared --experimental-pic`.
 echo "==> Building opcache.so (Zend extension)..."
-FORK_SIDE_MODULE_ABI_OBJECT="$WORK_DIR/fork-side-module-abi.o"
-wasm32posix-cc -fPIC -O2 -I"$REPO_ROOT/libc/glue" -c \
-    "$SCRIPT_DIR/fork-side-module-abi.c" \
-    -o "$FORK_SIDE_MODULE_ABI_OBJECT"
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
-    EXTRA_CFLAGS="$EXTRA_INC_LIBXML" \
-    ext/opcache/ZendAccelerator.lo \
-    ext/opcache/zend_accelerator_blacklist.lo \
-    ext/opcache/zend_accelerator_debug.lo \
-    ext/opcache/zend_accelerator_hash.lo \
-    ext/opcache/zend_accelerator_module.lo \
-    ext/opcache/zend_persist.lo \
-    ext/opcache/zend_persist_calc.lo \
-    ext/opcache/zend_file_cache.lo \
-    ext/opcache/zend_shared_alloc.lo \
-    ext/opcache/zend_accelerator_util_funcs.lo \
-    ext/opcache/shared_alloc_shm.lo \
-    ext/opcache/shared_alloc_mmap.lo \
-    ext/opcache/shared_alloc_posix.lo
-wasm32posix-cc -shared -fPIC -o "$BIN_DIR/opcache.so" \
-    ext/opcache/.libs/ZendAccelerator.o \
-    ext/opcache/.libs/zend_accelerator_blacklist.o \
-    ext/opcache/.libs/zend_accelerator_debug.o \
-    ext/opcache/.libs/zend_accelerator_hash.o \
-    ext/opcache/.libs/zend_accelerator_module.o \
-    ext/opcache/.libs/zend_persist.o \
-    ext/opcache/.libs/zend_persist_calc.o \
-    ext/opcache/.libs/zend_file_cache.o \
-    ext/opcache/.libs/zend_shared_alloc.o \
-    ext/opcache/.libs/zend_accelerator_util_funcs.o \
-    ext/opcache/.libs/shared_alloc_shm.o \
-    ext/opcache/.libs/shared_alloc_mmap.o \
-    ext/opcache/.libs/shared_alloc_posix.o \
-    "$FORK_SIDE_MODULE_ABI_OBJECT"
-echo "==> Applying fork instrumentation to opcache.so side module..."
-"$FORK_INSTRUMENT" "$BIN_DIR/opcache.so" -o "$BIN_DIR/opcache.so.instr" --entry env.fork
-mv "$BIN_DIR/opcache.so.instr" "$BIN_DIR/opcache.so"
+build_opcache_side_module "$BIN_DIR/opcache.so"
 echo "==> opcache.so: $(wc -c < "$BIN_DIR/opcache.so") bytes"
 
 # Build ext/curl as a normal shared PHP extension. libcurl.a is PIC and is

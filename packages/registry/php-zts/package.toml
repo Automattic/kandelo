@@ -18,5 +18,5 @@ url = "https://github.com/php/php-src/blob/master/LICENSE"
 script_path = "packages/registry/php-zts/build-php-zts.sh"
 
 [outputs]
-libs = ["lib/libphp.a"]
+libs = ["lib/libphp.a", "lib/opcache-zts.so"]
 headers = ["include/php"]

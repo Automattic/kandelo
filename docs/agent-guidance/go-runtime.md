@@ -354,10 +354,18 @@ Trace the whole link path before changing flags or package recipes:
   address globals. `-ldl` also selects the SDK's real Wasm `dlopen` glue,
   rather than its empty compatibility archive. The `c-exports` probe loads
   a side module that imports both kinds of symbol on Node.js and all three
-  browsers. This is a general link contract, not OPcache validation: build
-  the PHP ZTS module, enumerate its complete import closure, request and
-  resolve those exports, then test live OPcache loading and WordPress before
-  claiming accelerator or performance parity.
+  browsers. The `php-zts` SourceOnly package now builds an instrumented
+  `opcache-zts.so` alongside `libphp.a`; it has 290 Wasm imports, including
+  242 functions and 42 globals. The general
+  `scripts/wasm-side-module-c-exports.mjs` utility derives required C
+  exports from its imports. The PHP embed fixture requests those exports
+  and `dlopen`s the real ZTS module on Node and three browser engines.
+  ZTS side modules must export mutable `__tls_base` for fork replay. This
+  proves import closure and loading, not Zend extension registration,
+  accelerated PHP execution, FrankenPHP integration, or performance parity.
+  Upstream OPcache rejects the PHP `embed` SAPI for acceleration even when
+  an INI successfully registers the extension; it accepts the real
+  FrankenPHP SAPI. Do not rename a probe SAPI to bypass that check.
 - A Go cgo executable must be fork-instrumented and carry the exact current
   `kandelo.abi.contract` digest. `install_local_binary` can instrument but
   does not stamp by itself: instrument first, stamp that fresh artifact, then

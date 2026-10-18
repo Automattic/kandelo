@@ -18,7 +18,18 @@ wasm-validate --enable-threads "$output_dir/libprobe.so"
     -o "$output_dir/libprobe-instrumented.so" --entry env.fork
 mv "$output_dir/libprobe-instrumented.so" "$output_dir/libprobe.so"
 
-link_flags="-extldflags '-Wl,--export-dynamic-symbol=export_only_function -Wl,--export-dynamic-symbol=export_only_data'"
+requested_export_list="$(node "$repo_root/scripts/wasm-side-module-c-exports.mjs" \
+    "$output_dir/libprobe.so")"
+mapfile -t requested_exports <<< "$requested_export_list"
+if [ "${requested_exports[*]}" != "export_only_data export_only_function" ]; then
+    printf 'unexpected side-module C imports: %s\n' "${requested_exports[*]}" >&2
+    exit 1
+fi
+export_flags=()
+for symbol in "${requested_exports[@]}"; do
+    export_flags+=("-Wl,--export-dynamic-symbol=$symbol")
+done
+link_flags="-extldflags '${export_flags[*]}'"
 GO111MODULE=off CGO_ENABLED=1 GOOS=kandelo GOARCH=wasm CC=wasm32posix-cc \
     "$repo_root/../go-kandelo/bin/go" build -a -ldflags="$link_flags" \
     -o "$output_dir/probe.wasm" "$fixture_dir/main.go"

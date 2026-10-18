@@ -308,9 +308,13 @@ validates, fork-instruments, and runs as an ABI-stamped Kandelo process on Node 
 Chromium with exit 0 and no diagnostics. This is narrow Go-to-C coverage,
 not general cgo support: Go-owned and C-created-pthread callbacks pass focused
 process probes, but secure startup and broader PHP behavior remain incomplete.
-The `php-zts` package now builds a static ZTS embed library, and a narrow
+The `php-zts` package now builds a static ZTS embed library and a separate
+instrumented OPcache side module. The
 `tests/go/cgo/php-embed` probe executes PHP initialization, a script string,
-and shutdown on both hosts. That probe alone is not a request-level gate.
+and shutdown; its opt-in `opcache` mode also requests all side-module C
+exports and `dlopen`s the real module. Both modes pass on Node and all three
+browser engines. A successful `dlopen` is not Zend extension registration,
+OPcache acceleration, or a request-level gate.
 
 The `frankenphp-classic` package is a separate request-level gate. Its
 resolver-built binary serves a PHP request and a static asset through
@@ -325,7 +329,9 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_FRANKENPHP_CLASSI
 ```sh
 scripts/dev-shell.sh bash tests/go/cgo/php-embed/build.sh
 scripts/dev-shell.sh bash -c 'node --import tsx tests/go/cgo/php-embed/run.ts .context/go-php-embed/probe-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)"'
+scripts/dev-shell.sh bash -c 'node --import tsx tests/go/cgo/php-embed/run.ts .context/go-php-embed/probe-instrumented.wasm "$(scripts/resolve-binary.sh kernel.wasm)" .context/go-php-embed/opcache-zts.so'
 scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --grep "PHP ZTS embed"'
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && KANDELO_GO_BROWSER_TESTS=1 KANDELO_GO_CGO_RUNTIME_TESTS=1 npx playwright test test/go-port.spec.ts --project=chromium --project=firefox --project=webkit --workers=1 --grep "PHP ZTS OPcache side module loads"'
 ```
 
 ```sh

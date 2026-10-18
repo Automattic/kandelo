@@ -2,8 +2,9 @@ script_path = "packages/registry/php-zts/build-php-zts.sh"
 inputs = [
   "packages/registry/php-zts/build-php-zts.sh",
   "packages/registry/php/build-php.sh",
+  "packages/registry/php/fork-side-module-abi.c",
   "scripts/package-build-roots.sh",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 3
+revision = 5

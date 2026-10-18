@@ -563,6 +563,17 @@ if (process.env.KANDELO_GO_CGO_RUNTIME_TESTS === "1") {
     stdout: ["PHP EMBED PASS", "GO PHP EMBED PASS"],
   });
   probes.push({
+    name: "PHP ZTS OPcache side module loads into a Go cgo executable",
+    file: "../go-php-embed/probe-instrumented.wasm",
+    argv: ["go-php-embed", "opcache"],
+    directories: ["/lib"],
+    dataFiles: () => [{
+      path: "/lib/opcache-zts.so",
+      data: Array.from(readFileSync(resolve(fixtureDir, "../go-php-embed/opcache-zts.so"))),
+    }],
+    stdout: ["PHP EMBED PASS", "GO PHP EMBED PASS", "PHP OPCACHE DLOPEN PASS"],
+  });
+  probes.push({
     name: "cgo links a declared C static archive",
     file: "../go-static-archive/probe-instrumented.wasm",
     argv: ["go-cgo-static-archive"],
