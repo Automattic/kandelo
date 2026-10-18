@@ -35,6 +35,13 @@ import lhaWasmUrl from "@binaries/programs/wasm32/lha.wasm?url";
 import quakeWasmUrl from "@binaries/programs/wasm32/quake.wasm?url";
 import footWasmUrl from "@binaries/programs/wasm32/foot.wasm?url";
 import cageWasmUrl from "@binaries/programs/wasm32/cage/cage.wasm?url";
+import swayWasmUrl from "@binaries/programs/wasm32/sway/sway.wasm?url";
+import swaybarWasmUrl from "@binaries/programs/wasm32/sway/swaybar.wasm?url";
+import swaynagWasmUrl from "@binaries/programs/wasm32/sway/swaynag.wasm?url";
+import swaymsgWasmUrl from "@binaries/programs/wasm32/sway/swaymsg.wasm?url";
+import swayConfigUrl from "@binaries/programs/wasm32/sway/sway.conf?url";
+import swayWallpaperUrl from "@binaries/programs/wasm32/sway/Sway_Wallpaper_Blue_1920x1080.png?url";
+import swaybgWasmUrl from "@binaries/programs/wasm32/swaybg.wasm?url";
 import dbusDaemonWasmUrl from "@binaries/programs/wasm32/dbus/dbus-daemon.wasm?url";
 import qtgalleryWasmUrl from "@binaries/programs/wasm32/qtgallery.wasm?url";
 import quickshellWasmUrl from "@binaries/programs/wasm32/quickshell.wasm?url";
@@ -111,6 +118,13 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/quake.wasm": quakeWasmUrl,
   "programs/foot.wasm": footWasmUrl,
   "programs/cage/cage.wasm": cageWasmUrl,
+  "programs/sway/sway.wasm": swayWasmUrl,
+  "programs/sway/swaybar.wasm": swaybarWasmUrl,
+  "programs/sway/swaynag.wasm": swaynagWasmUrl,
+  "programs/sway/swaymsg.wasm": swaymsgWasmUrl,
+  "programs/sway/sway.conf": swayConfigUrl,
+  "programs/sway/Sway_Wallpaper_Blue_1920x1080.png": swayWallpaperUrl,
+  "programs/swaybg.wasm": swaybgWasmUrl,
   "programs/dbus/dbus-daemon.wasm": dbusDaemonWasmUrl,
   "programs/qtgallery.wasm": qtgalleryWasmUrl,
   "programs/quickshell.wasm": quickshellWasmUrl,

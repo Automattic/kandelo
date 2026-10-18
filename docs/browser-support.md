@@ -943,15 +943,17 @@ follow-ups, not as the end state.
   is behaviour real Hyprland has (popups and tooltips, window swapping
   beyond `swapwindow`, animations, the full dispatcher set). **Deferred:
   port real Hyprland.** It needs platform work first: Hyprland renders
-  only with OpenGL ES 3 through its `aquamarine` backend, so Kandelo's EGL
-  must import dmabufs as EGLImages and provide fence/explicit sync over
-  the WebGL2 bridge; aquamarine expects KMS properties, planes and an
-  EDID blob from the kernel's connector; and it opens devices through
-  libseat and enumerates them through libudev, which here is a stand-in
-  with no `/sys` device tree behind it. A wlroots-based compositor with
-  its pixman software renderer is the fallback if the EGL work proves
-  too large. The dependency graph, each platform gap and a build order
-  are in `docs/plans/2026-09-30-real-hyprland-port-inventory.md`.
+  only with OpenGL ES 3 through its `aquamarine` backend, and Kandelo's
+  GLES bridge is ES 2.0 with no fence or explicit sync; aquamarine also
+  expects an EDID blob from the kernel's connector. The device side is in
+  place: the kernel reports KMS properties and the primary plane, `/sys`
+  describes the card and the input devices, and upstream libseat and
+  libudev-zero use them. Kandelo's EGL imports dmabufs as EGLImages, and
+  upstream wlroots renders with its GLES2 renderer under cage in the
+  browser's `cage` machine (see "Wayland kiosk compositor" in
+  `docs/architecture.md`). cage hosts one application, not a desktop.
+  The dependency graph, each platform gap and a build order are in
+  `docs/plans/2026-09-30-real-hyprland-port-inventory.md`.
 - **The shell is this repository's QML, not Omarchy's.** Omarchy v4's
   Quickshell configuration is written against real Hyprland and against
   services this machine does not run (PipeWire, UPower, NetworkManager,
@@ -1192,10 +1194,9 @@ resolves every function it imports against it; the package build fails if
 any plugin import has no export to bind to. The machine's command is
 `/usr/local/bin/scummvm`, a small wrapper in the image that:
 
-- names SDL's backends in the environment. Kandelo has no libudev, so
-  SDL's evdev layer only finds the kernel's keyboard and pointer when
-  `SDL_EVDEV_DEVICES` lists them (the libudev gap is in the register in
-  [package-management.md](package-management.md#packages-that-are-not-real-upstream-builds-yet)).
+- names SDL's backends in the environment. The `sdl2` package is built
+  with `--disable-libudev`, so SDL's evdev layer only finds the kernel's
+  keyboard and pointer when `SDL_EVDEV_DEVICES` lists them.
 - seeds `~/scummvm.ini` on first launch. ScummVM rewrites its config
   whenever the user adds a game, so it lives in the writable home rather
   than in image content. `gui_scale` stays at ScummVM's default of 100%;

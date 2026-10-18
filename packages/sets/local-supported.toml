@@ -578,6 +578,18 @@ name = "cage"
 class = "user-software"
 
 [[packages]]
+name = "json-c"
+class = "platform"
+
+[[packages]]
+name = "sway"
+class = "user-software"
+
+[[packages]]
+name = "swaybg"
+class = "user-software"
+
+[[packages]]
 name = "sdl2-mixer-playwave"
 class = "user-software"
 
