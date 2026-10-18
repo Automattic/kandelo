@@ -6,6 +6,7 @@
 //! own submodules.
 
 pub mod bo;
+pub mod kms;
 pub mod master;
 
 pub use bo::{BoId, BoRegistry, BoTier, GbmBo, PrimeCookie, with_registry};

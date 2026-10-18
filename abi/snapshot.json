@@ -1,5 +1,5 @@
 {
-  "abi_version": 50,
+  "abi_version": 51,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1152,7 +1152,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 50,
+      "abi_version": 51,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1529,11 +1529,23 @@
       "wasm32Size": 4,
       "wasm64Size": 4
     },
+    "1074029585": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
     "1074291721": {
       "argKind": "pointer",
       "direction": "in",
       "wasm32Size": 8,
       "wasm64Size": 8
+    },
+    "1074816013": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 16,
+      "wasm64Size": 16
     },
     "17920": {
       "argKind": "pointer",
@@ -1668,6 +1680,12 @@
       "wasm64Size": 4
     },
     "2147767344": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "2147771394": {
       "argKind": "pointer",
       "direction": "out",
       "wasm32Size": 4,
@@ -1901,6 +1919,12 @@
       "wasm32Size": 4,
       "wasm64Size": 4
     },
+    "3221775568": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 8,
+      "wasm64Size": 8
+    },
     "3222037549": {
       "argKind": "pointer",
       "direction": "inout",
@@ -1925,7 +1949,25 @@
       "wasm32Size": 16,
       "wasm64Size": 16
     },
+    "3222299819": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299820": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
     "3222299827": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299829": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 16,
@@ -1955,7 +1997,37 @@
       "wasm32Size": 24,
       "wasm64Size": 24
     },
+    "3222824122": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
+    "3222824134": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
+    "3223086243": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 28,
+      "wasm64Size": 28
+    },
     "3223348402": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
+    "3223348406": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
+    "3223348409": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 32,
@@ -1967,6 +2039,12 @@
       "wasm32Size": 36,
       "wasm64Size": null
     },
+    "3223610555": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 36,
+      "wasm64Size": 36
+    },
     "3225445376": {
       "argKind": "pointer",
       "direction": "inout",
@@ -1974,6 +2052,12 @@
       "wasm64Size": 64
     },
     "3225445536": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 64,
+      "wasm64Size": 64
+    },
+    "3225445546": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 64,

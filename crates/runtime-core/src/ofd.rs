@@ -260,6 +260,35 @@ pub struct KmsFb {
     pub stride: u32,
 }
 
+/// Exact-ownership handle to one card0 OFD's framebuffer table.
+///
+/// Mirrors [`SharedInputRing`]: `fork` (via
+/// [`OfdTable::link_shared_states_from`]) and `posix_spawn` (by clone) keep
+/// one `Rc`, so every process holding the OFD sees one table. Linux owns
+/// framebuffers in the `drm_file` behind a forked `struct file` and removes
+/// them only at its last close; a child closing its inherited card0 fd at
+/// exec must not remove the compositor's scanout framebuffers. Each entry
+/// holds one bo reference, taken by ADDFB and released when the entry is
+/// removed.
+#[derive(Clone, Debug, Default)]
+pub struct SharedKmsFbs(Rc<RefCell<BTreeMap<u32, KmsFb>>>);
+
+impl SharedKmsFbs {
+    pub fn borrow(&self) -> core::cell::Ref<'_, BTreeMap<u32, KmsFb>> {
+        self.0.borrow()
+    }
+
+    pub fn borrow_mut(&self) -> core::cell::RefMut<'_, BTreeMap<u32, KmsFb>> {
+        self.0.borrow_mut()
+    }
+
+    /// The table, when this handle is its last holder; None while another
+    /// process still holds the OFD.
+    pub fn into_last(self) -> Option<BTreeMap<u32, KmsFb>> {
+        Rc::try_unwrap(self.0).ok().map(RefCell::into_inner)
+    }
+}
+
 /// A page-flip queued by `DRM_IOCTL_MODE_PAGE_FLIP` and not yet
 /// drained as a `DRM_EVENT_FLIP_COMPLETE` to the caller.
 #[derive(Clone, Copy, Debug)]
@@ -273,8 +302,12 @@ pub struct PendingFlip {
 #[derive(Clone, Debug, Default)]
 pub struct KmsFdState {
     pub holds_master: bool,
-    pub fbs: BTreeMap<u32, KmsFb>,
-    pub next_fb_id: u32,
+    /// `DRM_CLIENT_CAP_UNIVERSAL_PLANES`: the fd sees primary and cursor
+    /// planes, not only overlays.
+    pub universal_planes: bool,
+    /// The `DRM_IOCTL_GET_MAGIC` token, issued on first request; 0 = none.
+    pub magic: u32,
+    pub fbs: SharedKmsFbs,
     pub pending_flips: Vec<PendingFlip>,
     pub event_ring: VecDeque<u8>,
 }
@@ -922,6 +955,9 @@ impl OfdTable {
                 (ofd.input_state.as_deref_mut(), source_ofd.input_state.as_deref())
             {
                 child_input.ring = source_input.ring.clone();
+            }
+            if let (Some(child_kms), Some(source_kms)) = (ofd.kms_mut(), source_ofd.kms()) {
+                child_kms.fbs = source_kms.fbs.clone();
             }
         }
         Ok(())
