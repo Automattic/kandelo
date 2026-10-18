@@ -1596,7 +1596,10 @@ caller is owed the call it was making.
 
 Restore adds kernel exports. `kernel_enumerate_host_handles` and
 `kernel_remap_host_handles` let a receiver read the host handles held inside
-restored kernel memory and rewrite them to its own. `kernel_rearm_host_timers`
+restored kernel memory and rewrite them to its own;
+`kernel_get_fd_status_flags` reads the flags it reopens a stream with, and
+`kernel_seek_fd` moves the reopened handle to the recorded position. Both name
+the process explicitly, so no guest task is bound for them. `kernel_rearm_host_timers`
 re-arms a restored process's armed interval timer with its remaining time
 (POSIX timer slots store no deadline, so their remaining time stays a
 documented gap). `kernel_pty_index_for_pid` lets the receiver re-seed the host
