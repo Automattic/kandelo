@@ -141,19 +141,24 @@ fn sdk_kernel_contract(sysroot: &Path) -> Result<KernelContract, String> {
             .map_err(|e| format!("read SDK startup object: {e}"))?,
         &mut contract,
     )?;
-    // channel_syscall.c supplies this import outside libc.a. Its typed
-    // declaration is already authoritative in the shared fork contract.
-    let fork = abi::WPK_FORK_PROCESS_IMPORT;
+    record_glue_imports(&mut contract);
+    Ok(contract)
+}
+
+/// The kernel imports channel_syscall.c supplies outside libc.a. Their typed
+/// declarations are already authoritative in the shared process contract.
+fn record_glue_imports(contract: &mut KernelContract) {
     let value = |value: &abi::ProgramArtifactValueType| match value {
         abi::ProgramArtifactValueType::I32 => wasmparser::ValType::I32,
         abi::ProgramArtifactValueType::I64 => wasmparser::ValType::I64,
-        _ => unreachable!("kernel_fork has scalar arguments"),
+        _ => unreachable!("the glue's kernel imports have scalar arguments"),
     };
-    contract.entry(fork.name.into()).or_default().insert((
-        fork.params.iter().map(value).collect(),
-        fork.results.iter().map(value).collect(),
-    ));
-    Ok(contract)
+    for import in [abi::WPK_FORK_PROCESS_IMPORT, abi::WPK_CHECKPOINT_PROCESS_IMPORT] {
+        contract.entry(import.name.into()).or_default().insert((
+            import.params.iter().map(value).collect(),
+            import.results.iter().map(value).collect(),
+        ));
+    }
 }
 
 fn audit(facts: &Imports, contract: &KernelContract) -> Vec<String> {
@@ -413,6 +418,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_glue_supplies_fork_and_checkpoint_imports() {
+        let mut contract = KernelContract::new();
+        record_glue_imports(&mut contract);
+        assert_eq!(
+            contract.get("kernel_checkpoint"),
+            Some(&BTreeSet::from([(vec![], vec![])])),
+        );
+        assert!(contract.contains_key("kernel_fork"));
+        let checkpoint = Imports {
+            entries: vec![("kernel".into(), "kernel_checkpoint".into(), TypeRef::Func(0))],
+            types: vec![FuncType::new([], [])],
+            ..Imports::default()
+        };
+        assert!(audit(&checkpoint, &contract).is_empty());
     }
 
     #[test]
