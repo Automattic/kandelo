@@ -1,15 +1,15 @@
 /**
- * PR5b gate for the libudev shim + input_id classification. Spawns
+ * libudev-zero classifies the virtual evdev nodes from /sys. Spawns
  * `libudev_input_id_smoke` in the centralized kernel. The fixture mirrors
  * libinput's path backend: it stat()s each virtual evdev node, hands only
  * the resulting st_rdev to udev_device_new_from_devnum('c', rdev), and
  * reads back the ID_INPUT* classification.
  *
- * This proves the whole PR5b chain end to end: the ABI-v17 rdev fix
- * (event0/event1 stat with distinct char 13:64 / 13:65), the shim's
- * devnum→devnode recovery, and the input_id classification (event0 →
- * keyboard, event1 → mouse). No event injection is needed — the
- * classification reads only the static EVIOCGBIT/EVIOCGPROP capabilities.
+ * This proves the chain end to end: event0/event1 stat as distinct char
+ * devices 13:64 / 13:65, libudev-zero follows /sys/dev/char/13:N to the
+ * input device directory, and it classifies from the capability bitmaps
+ * there (event0 → keyboard, event1 → mouse). No event injection is
+ * needed: the classification reads only static capabilities.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -18,7 +18,7 @@ import { tryResolveBinary } from "../src/binary-resolver";
 
 const fixtureBinary = tryResolveBinary("programs/libudev_input_id_smoke.wasm");
 
-describe("libudev shim — input_id classification", () => {
+describe("libudev-zero — input_id classification", () => {
   it.skipIf(!fixtureBinary)(
     "classifies event0 as keyboard and event1 as mouse via the real udev API",
     async () => {

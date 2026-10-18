@@ -8,7 +8,7 @@
  *   libinput_path_add_device(ev0)   → stat() the node, recover st_rdev
  *                                      (PR5b kernel fix), udev_device_new_
  *                                      from_devnum → input_id classification
- *                                      (libudev shim), evdev_device_new →
+ *                                      (libudev-zero), evdev_device_new →
  *                                      libevdev_new_from_fd capability probe
  *                                      (libevdev), device accepted (ID_INPUT
  *                                      + KEYBOARD tags), DEVICE_ADDED queued
