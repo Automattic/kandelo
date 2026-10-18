@@ -3743,6 +3743,43 @@ pub extern "C" fn kernel_remap_host_handles(kind: u32, old_handle: i64, new_hand
     }
 }
 
+/// Read the open file status flags (`F_GETFL`) of `fd` in `pid`, for restore.
+///
+/// The receiver reopens a restored stream handle with the access mode and
+/// status flags its open file description records. Returns the flags (>= 0),
+/// a negative errno for a bad descriptor, and -ESRCH for a dead pid.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_fd_status_flags(pid: u32, fd: i32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    match syscalls::sys_fcntl(proc, fd, wasm_posix_shared::fcntl_cmd::F_GETFL, 0) {
+        Ok(flags) => flags,
+        Err(e) => -(e as i32),
+    }
+}
+
+/// Seek `fd` in `pid` through the kernel's own seek path, for restore.
+///
+/// A reopened host handle starts at offset 0, but the restored open file
+/// description records where the captured process stood; a `SEEK_CUR` of 0
+/// moves the new host handle there. Returns the new offset (>= 0), a
+/// negative errno for a bad or unseekable descriptor, and -ESRCH for a dead
+/// pid.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_seek_fd(pid: u32, fd: i32, offset: i64, whence: u32) -> i64 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i64);
+    };
+    let mut host = WasmHostIO;
+    match syscalls::sys_lseek(proc, &mut host, fd, offset, whence) {
+        Ok(position) => position,
+        Err(e) => -(e as i64),
+    }
+}
+
 /// Re-arm this machine's host timers for one restored process.
 ///
 /// A restored kernel memory carries armed ITIMER_REAL state — the monotonic

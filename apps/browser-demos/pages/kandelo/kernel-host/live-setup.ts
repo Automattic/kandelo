@@ -567,6 +567,12 @@ export interface CreateLiveHostOptions {
    * silence isn't mistaken for the script having run.
    */
   legacyScriptIgnored?: boolean;
+  /**
+   * True when the page opens a network session invitation. Joining needs a
+   * running computer, so an invitation asks for a machine even without a
+   * boot query.
+   */
+  invited?: boolean;
 }
 
 export async function createLiveHost(
@@ -634,7 +640,7 @@ export async function createLiveHost(
   // whole image download on a choice the visitor never made, and leaves a page
   // that came to watch another computer's machine contending with one of its
   // own. A gallery launch arrives later, through applyBootDescriptor.
-  const machineRequested = protectedProfile !== undefined ||
+  const machineRequested = protectedProfile !== undefined || opts.invited === true ||
     Boolean(opts.vfsUrl?.trim()) || Boolean(opts.profile?.trim()) ||
     (opts.inputs?.length ?? 0) > 0 || opts.parameters != null;
   let host: LiveKernelHost;
