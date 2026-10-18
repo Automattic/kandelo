@@ -142,8 +142,8 @@ verified ingress configuration before deployment**:
 Merely observing `X-Forwarded-For`, `CF-Connecting-IP` or another IP-shaped
 header is insufficient to establish this contract. Configuring its name is
 an operator assertion of that protection, not proof supplied by this worker.
-Neither a trusted Spacefast header nor its classification is established by
-our current live tests. Do not enable a guessed header or use the limiter
+The live investigation below found no usable visitor IP in the tested
+Functions environment. Do not enable a guessed header or use the limiter
 opt-out to bypass this requirement. A missing/invalid identity,
 misconfiguration, missing database or failed query returns 503 before any
 upstream fetch. There is no shared fallback bucket. The existing live v9
@@ -158,6 +158,48 @@ The new table name avoids reinterpreting old fixed-window rows; an upgrade
 starts fresh buckets. SQL behavior is tested against real MariaDB, including
 concurrent consumers. This new policy has not been live-tested on Spacefast.
 Spacefast's hosting quotas can independently return 429s.
+
+### Spacefast visitor-IP availability
+
+Live checks on 2026-10-18 used an isolated private diagnostic Space in
+Brandon's Team. Kandelo's live v9 deployment was preserved. Authenticated
+requests tested a baseline, 13 forged headers, and a forged forwarding chain:
+
+| Input or metadata | Observed behavior |
+| --- | --- |
+| `X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP`, `CF-Connecting-IPv6`, `Spacefast-Visitor-IP` | Absent in the Function, including after forgery |
+| `True-Client-IP`, `Fastly-Client-IP`, `X-Client-IP`, `X-Spacefast-Client-IP`, `X-Stattic-Client-IP`, `Forwarded` | Forged values reached the Function unchanged |
+| `sf-fx-visitor` | Forged internal visitor context did not reach the Function |
+| `request.ip`, `clientIp`, `clientIP`, `remoteAddress`, `remoteAddr` | No address exposed |
+| `request.cf` | Only `country`; no address |
+| Execution context `props` and `tracing` | Empty; no address |
+| `X-IP-Proxy-Type` | Present and the tested forged `SES` value was replaced; this supplies no client address |
+
+An unauthenticated request to the diagnostic was rejected with 403. Neither
+cookies nor authorization values were returned by its handler. The temporary
+introspection handler was retired after the checks.
+
+The public Spacefast runtime source explains the trust boundary at revision
+`9217af5ad9f6f551d2af88af3fa224f664c3b10f`:
+
+- [Header sanitization](https://github.com/spacefast/stattic/blob/9217af5ad9f6f551d2af88af3fa224f664c3b10f/runtime/engine/shared/context.php#L532)
+  deliberately removes untrusted IP headers.
+- [Functions dispatch](https://github.com/spacefast/stattic/blob/9217af5ad9f6f551d2af88af3fa224f664c3b10f/runtime/engine/runtime/functions-dispatch.php#L197)
+  constructs visitor metadata from a server-owned `SPACEFAST_VISITOR_IP`
+  FastCGI parameter, not an HTTP header of that name.
+- [Trusted visitor-IP handling](https://github.com/spacefast/stattic/blob/9217af5ad9f6f551d2af88af3fa224f664c3b10f/runtime/engine/runtime/zero.php#L631)
+  also excludes `REMOTE_ADDR`: on that hosting path it identifies the
+  provider proxy rather than the browser.
+
+The observed Function therefore cannot safely enable this per-client policy
+through configuration alone. Spacefast must populate its trusted ingress
+identity and expose it through a documented, protected Function field. The
+probe cannot distinguish an absent ingress value from a missing downstream
+mapping. Presence of the source-code path does not establish that the deployed
+platform supplies it. Until that contract is available and live-tested,
+leave the limiter closed; do not substitute the provider address or a
+client-chosen header. This finding applies to the tested deployment, not a
+claim about every Spacefast provider or a future platform release.
 
 The reusable core also accepts `createCorsProxy({ rateLimit })` for an
 alternative durable limiter. It returns a denial Response, or void to admit.

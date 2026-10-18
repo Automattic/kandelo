@@ -2368,7 +2368,9 @@ been verified. The optional pinned transport remains available in the core
 and covered by local TCP/TLS fixture tests. The entry uses the Space's database
 for per-client token buckets matching Playground's capacity and refill. This
 new policy requires a verified trusted client-IP header before deployment;
-otherwise it fails closed with 503. It is locally SQL-tested, not live-tested.
+otherwise it fails closed with 503. SQL is locally tested. A private live
+diagnostic found no usable client IP in Function headers or metadata; the
+per-client limiter remains unactivated pending Spacefast ingress support.
 The existing v9 deployment retains the earlier shared fixed-window limiter.
 The app's build command can select this proxy explicitly, and its packager
 can colocate the app and `/cors-proxy` in one Space. A live Chromium check on 2026-10-15 verified a guest `curl`
