@@ -12,7 +12,7 @@ const handler = {
       upstreamBodyEncoding: "decoded",
       onUpstreamError: error => console.error("CORS proxy upstream request failed", error),
       rateLimit: env.DB && !["true", "1"].includes(env.CORS_PROXY_DISABLE_RATE_LIMIT ?? "")
-        ? createDatabaseRateLimit(env.DB) : undefined,
+        ? createDatabaseRateLimit(env.DB, env) : undefined,
     })(request);
   },
 };

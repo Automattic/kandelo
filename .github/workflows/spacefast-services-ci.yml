@@ -39,9 +39,11 @@ jobs:
         run: scripts/dev-shell.sh npm ci --no-audit --no-fund
       - name: Verify proxy policy, transport, rate limiting and packaging
         run: scripts/dev-shell.sh npm --prefix apps/spacefast-cors-proxy test
-      - name: Verify signalling against real MariaDB and PHP
+      - name: Verify proxy SQL and signalling against real MariaDB and PHP
         run: |
           set -euo pipefail
           signalling_tools="$(nix build --impure --no-link --print-out-paths -f apps/signalling/spacefast/test/tools.nix)"
+          scripts/dev-shell.sh env KANDELO_SIGNALLING_TEST_TOOLS="$signalling_tools" \
+            npm --prefix apps/spacefast-cors-proxy run test:database
           scripts/dev-shell.sh env KANDELO_SIGNALLING_TEST_TOOLS="$signalling_tools" \
             npm --prefix apps/signalling/spacefast test

@@ -699,3 +699,16 @@ test("restricted origin configuration fails closed and replaces legacy CORS gran
   const approved = await proxy(request(TARGET, { headers: { Origin: "https://kandelo.dev", Referer: "https://kandelo.dev/" } }));
   assert.equal(approved.status, 200); await approved.text();
 });
+
+
+test("configured trusted ingress headers are consumed locally and never forwarded upstream", async () => {
+  let headers: Headers | undefined;
+  const response = await relay({
+    env: { CORS_PROXY_TRUSTED_CLIENT_IP_HEADER: "X-Trusted-IP", CORS_PROXY_TRUSTED_PROXY_TYPE_HEADER: "X-Trusted-Type" },
+    fetch: async (_url, init) => { headers = new Headers(init.headers); return new Response("ok"); },
+  })(request(TARGET, { headers: { "X-Trusted-IP": "192.0.2.1", "X-Trusted-Type": "UNK", Accept: "text/plain" } }));
+  assert.equal(response.status, 200);
+  assert.equal(headers!.has("X-Trusted-IP"), false);
+  assert.equal(headers!.has("X-Trusted-Type"), false);
+  assert.equal(headers!.get("Accept"), "text/plain");
+});

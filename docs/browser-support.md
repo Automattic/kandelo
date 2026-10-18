@@ -2366,10 +2366,12 @@ and connection-time private-network protection belong to Spacefast in this
 mode. Kandelo cannot prevent DNS rebinding; the platform's protection has not
 been verified. The optional pinned transport remains available in the core
 and covered by local TCP/TLS fixture tests. The entry uses the Space's database
-for a shared request budget; basic counter queries succeeded live, though the
-600-request ceiling was not stress-tested. The app's build command can select
-this proxy explicitly, and its packager can colocate the app and `/cors-proxy`
-in one Space. A live Chromium check on 2026-10-15 verified a guest `curl`
+for per-client token buckets matching Playground's capacity and refill. This
+new policy requires a verified trusted client-IP header before deployment;
+otherwise it fails closed with 503. It is locally SQL-tested, not live-tested.
+The existing v9 deployment retains the earlier shared fixed-window limiter.
+The app's build command can select this proxy explicitly, and its packager
+can colocate the app and `/cors-proxy` in one Space. A live Chromium check on 2026-10-15 verified a guest `curl`
 request through the same-origin proxy with HTTP 200 and exit status 0. The live
 serving path requires the range alias, omits HEAD Content-Length, and did not
 preserve the worker's CORS origin grant in private-Space probes. See that app's
@@ -2628,8 +2630,10 @@ Referer admission as well as CORS grants; absent or unapproved Referers are
 403 before upstream work. Preflight uses the approved Origin. These headers
 are forgeable by non-browser clients, so the admission rule does not replace
 rate limiting or deployment access controls. The worker's durable budget is
-600 requests per minute shared by the Space, unlike Playground's per-client
-token-bucket deployment. See the
+a 1,000-token bucket per IPv4 address or IPv6 /64, refilling 100 per minute.
+Its client-IP header must be verified as overwritten by trusted ingress; no
+Spacefast header is trusted by default. A separately configured trusted
+classification header enables Playground's search-engine exclusion. See the
 [standalone proxy recipe](../apps/spacefast-cors-proxy/README.md#separate-proxy-site)
 for configuration, cross-origin hosting boundaries and the upstream comparison.
 

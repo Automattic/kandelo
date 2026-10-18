@@ -1,6 +1,6 @@
 import { validateTarget } from "./network-policy.ts";
 import { createPinnedFetch } from "./pinned-fetch.ts";
-import type { ProxyDatabase } from "./rate-limit.ts";
+import type { ProxyDatabase, RateLimitConfiguration } from "./rate-limit.ts";
 import { hasApprovedReferer, parseApprovedRefererOrigins } from "./request-policy.ts";
 
 /**
@@ -17,7 +17,7 @@ export type OriginRule =
   | { type: "match-exact"; origin: string }
   | { type: "match-subdomain"; scheme: "http" | "https"; host: string; port: number | null };
 
-export interface ProxyEnvironment {
+export interface ProxyEnvironment extends RateLimitConfiguration {
   DB?: ProxyDatabase;
   CUSTOM_SUPPORTED_ORIGINS_SPACE_SEPARATED?: string;
   CORS_PROXY_DISABLE_RATE_LIMIT?: string;
@@ -223,6 +223,10 @@ export function createCorsProxy(options: ProxyOptions = {}): (request: Request) 
       if (!parsed.target) return error(400, "Bad Request\n\nNo URL provided");
       target = validateTarget(parsed.target, proxy);
       forwarded = requestHeaders(request.headers);
+      // Trusted ingress metadata belongs to admission, never to the asset host.
+      for (const name of [env.CORS_PROXY_TRUSTED_CLIENT_IP_HEADER, env.CORS_PROXY_TRUSTED_PROXY_TYPE_HEADER]) {
+        if (name) forwarded.delete(name);
+      }
     } catch (cause) { return error(400, `Bad Request\n\n${(cause as Error).message}`); }
     // Ask for the unencoded representation so range offsets and HEAD sizes
     // agree. Full responses may still carry opaque compressed bytes.
