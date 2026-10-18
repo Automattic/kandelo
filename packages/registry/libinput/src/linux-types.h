@@ -9,8 +9,8 @@
  * types, so the bundled set is self-consistent without touching the
  * sysroot. It mirrors the libevdev port's shim (PR5a).
  *
- * build-libinput.sh copies this to the bundled include tree as
- * linux/types.h before compiling.
+ * build-libinput.sh copies this to a private include directory as
+ * linux/types.h and passes that directory to meson in c_args.
  */
 #ifndef LIBINPUT_WASM_LINUX_TYPES_H
 #define LIBINPUT_WASM_LINUX_TYPES_H

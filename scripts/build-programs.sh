@@ -633,11 +633,11 @@ if ls "$REPO_ROOT"/programs/libevdev_*.c >/dev/null 2>&1; then
 
     stage_sysroot_file "$LIBEVDEV_PREFIX/lib/libevdev.a" "$SYSROOT/lib/libevdev.a"
     mkdir -p "$SYSROOT/include/libevdev"
-    stage_sysroot_file "$LIBEVDEV_PREFIX/include/libevdev/libevdev.h" "$SYSROOT/include/libevdev/libevdev.h"
+    stage_sysroot_file "$LIBEVDEV_PREFIX/include/libevdev-1.0/libevdev/libevdev.h" "$SYSROOT/include/libevdev/libevdev.h"
 fi
 
 # Resolve mtdev and copy its archive + headers into the sysroot when
-# there are any mtdev_*.c programs to build. mtdev is the link-only
+# there are any mtdev_*.c programs to build. mtdev is the protocol-A
 # multitouch dependency of the real libinput port (PR5). Same
 # cached-resolve contract as the blocks above. See
 # docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5b).
@@ -652,28 +652,27 @@ if ls "$REPO_ROOT"/programs/mtdev_*.c >/dev/null 2>&1; then
     stage_sysroot_file "$MTDEV_PREFIX/include/mtdev-plumbing.h" "$SYSROOT/include/mtdev-plumbing.h"
 fi
 
-# Resolve libudev and copy its archive + header into the sysroot when
-# there are any libudev_*.c programs to build. libudev is the input_id
-# classification shim the real libinput port (PR5) needs to accept
-# devices. Same cached-resolve contract as the blocks above. See
-# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5b).
+# Resolve libudev-zero and copy its archive + header into the sysroot
+# when there are any libudev_*.c programs to build. libudev-zero is the
+# libudev the real libinput port (PR5) classifies devices with, from the
+# kernel's /sys tree. Same cached-resolve contract as the blocks above.
 if ls "$REPO_ROOT"/programs/libudev_*.c >/dev/null 2>&1; then
-    echo "==> Resolving libudev for libudev programs..."
+    echo "==> Resolving libudev-zero for libudev programs..."
     HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
-    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libudev >/dev/null)
-    LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev)"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libudev-zero >/dev/null)
+    LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev-zero)"
 
     stage_sysroot_file "$LIBUDEV_PREFIX/lib/libudev.a" "$SYSROOT/lib/libudev.a"
     stage_sysroot_file "$LIBUDEV_PREFIX/include/libudev.h" "$SYSROOT/include/libudev.h"
 fi
 
 # Resolve libinput (real 1.25.0) for the libinput smoke. This is the real
-# path-backend library the Wayland compositor will use (PR5c). The smoke is
+# library the Wayland compositor uses (PR5c). The smoke is
 # built in a dedicated pass after the program loop (build_program can't add
 # the real header's -I), and links the real archive from its cache prefix by
 # full path — deliberately NOT via a $SYSROOT/lib/libinput.a copy — so the
 # sysroot carries no libinput identity. Its deps
-# (libevdev + libudev shim + mtdev stub) resolve transitively; we capture
+# (libevdev + libudev-zero + mtdev) resolve transitively; we capture
 # each prefix for the smoke's link line. See
 # docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5c).
 LIBINPUT_REAL_PREFIX=""
@@ -683,7 +682,7 @@ if ls "$REPO_ROOT"/programs/libinput_smoke.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libinput >/dev/null)
     LIBINPUT_REAL_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libinput)"
     LIBINPUT_LIBEVDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libevdev)"
-    LIBINPUT_LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev)"
+    LIBINPUT_LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev-zero)"
     LIBINPUT_MTDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path mtdev)"
 fi
 
@@ -900,12 +899,12 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libevdev.a"
             ;;
         mtdev_smoke.c)
-            # Link-only proof of the mtdev stub + not-protocol-A check.
+            # Link proof of mtdev + not-protocol-A check.
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libmtdev.a"
             ;;
         libudev_input_id_smoke.c)
-            # input_id classification through the libudev shim's real API.
+            # input_id classification through libudev-zero's libudev API.
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libudev.a"
             ;;

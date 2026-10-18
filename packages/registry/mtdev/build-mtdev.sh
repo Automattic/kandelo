@@ -1,65 +1,74 @@
 #!/usr/bin/env bash
 #
-# Build mtdev (libmtdev.a) — a libinput-scoped STUB of the mtdev API,
-# NOT a full mtdev port — for wasm32-posix-kernel.
+# Build mtdev (libmtdev.a) for wasm32-posix-kernel through upstream's
+# autotools build and the SDK's wasm32posix-configure wrapper, which
+# auto-loads sdk/config.site. configure.ac probes no library functions,
+# so no cache variable needs a seed.
 #
-# The bundled `src/mtdev_stub.c` + `include/mtdev.h` +
-# `include/mtdev-plumbing.h` are the entire substitute; there is no
-# source tarball to fetch. libinput's evdev backend unconditionally
-# includes <mtdev-plumbing.h> and links the mtdev symbols, but only
-# calls them for legacy multitouch protocol-A devices
-# (`evdev_need_mtdev()`), which the kernel's slot-less virtual devices
-# never are. The stub exists to satisfy the link; each entry point
-# aborts if actually reached. See
-# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 and
-# include/mtdev-plumbing.h for the full rationale.
-#
-# `package.toml`'s sentinel `[source]` block exists to satisfy the
-# resolver schema, not to be downloaded.
-#
-# Honors the dep-resolver build-script contract (see
-# docs/package-management.md). When invoked via
-# `cargo xtask build-deps resolve mtdev`, env vars are set by the
-# resolver and the build installs into the shared cache:
-#
-#     WASM_POSIX_DEP_OUT_DIR  # where to install lib/ + include/
-
+# Only the library, its headers and mtdev.pc are built and installed:
+# the test/ programs are upstream's own diagnostics, not package outputs.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC="$SCRIPT_DIR/src/mtdev_stub.c"
-INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/mtdev-install}"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+# shellcheck source=/dev/null
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
+WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
+SRC_DIR="$WORK_DIR/mtdev-src"
+INSTALL_DIR="${KANDELO_PACKAGE_OUT_DIR:-$WORK_DIR/mtdev-install}"
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Enter scripts/dev-shell.sh first." >&2
+MTDEV_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
+
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
+if ! command -v wasm32posix-configure &>/dev/null; then
+    echo "ERROR: wasm32posix-configure not found after sourcing sdk/activate.sh." >&2
     exit 1
 fi
-if ! command -v wasm32posix-ar &>/dev/null; then
-    echo "ERROR: wasm32posix-ar not found." >&2
-    exit 1
+
+if [ ! -d "$SRC_DIR" ]; then
+    echo "==> Staging verified mtdev $MTDEV_VERSION source..."
+    kandelo_package_stage_verified_source mtdev "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
 fi
 
-# Empty the output prefix rather than replacing it: the resolver owns
-# WASM_POSIX_DEP_OUT_DIR and records its inode identity, so an rm -rf +
-# mkdir of the directory ITSELF makes the publish step reject the build
-# ("build stage changed identity and was preserved").
-mkdir -p "$INSTALL_DIR"
-find "$INSTALL_DIR" -mindepth 1 -delete
-mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
+cd "$SRC_DIR"
 
-OBJ="$(mktemp -d)/mtdev_stub.o"
-trap 'rm -rf "$(dirname "$OBJ")"' EXIT
+if [ ! -f Makefile ]; then
+    echo "==> Configuring mtdev for wasm32..."
+    wasm32posix-configure \
+        --prefix="$INSTALL_DIR" \
+        --disable-shared \
+        --enable-static \
+        2>&1 | tail -30
+fi
 
-echo "==> Compiling mtdev libinput-scoped stub..."
-wasm32posix-cc -c -O2 -fPIC \
-    -I"$SCRIPT_DIR/include" \
-    "$SRC" -o "$OBJ"
+echo "==> Building mtdev..."
+make -C src -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" 2>&1 | tail -30
 
-echo "==> Archiving libmtdev.a..."
-wasm32posix-ar rcs "$INSTALL_DIR/lib/libmtdev.a" "$OBJ"
+echo "==> Installing mtdev to $INSTALL_DIR..."
+make -C src install 2>&1 | tail -15
+make install-pkgconfigDATA 2>&1 | tail -5
+# libtool's archive description is for libtool-driven links; consumers
+# link libmtdev.a through mtdev.pc.
+rm -f "$INSTALL_DIR/lib/libmtdev.la"
 
-cp "$SCRIPT_DIR/include/mtdev.h"           "$INSTALL_DIR/include/mtdev.h"
-cp "$SCRIPT_DIR/include/mtdev-plumbing.h"  "$INSTALL_DIR/include/mtdev-plumbing.h"
+for f in \
+    lib/libmtdev.a \
+    lib/pkgconfig/mtdev.pc \
+    include/mtdev.h \
+    include/mtdev-plumbing.h \
+    include/mtdev-mapping.h
+do
+    if [ ! -f "$INSTALL_DIR/$f" ]; then
+        echo "ERROR: expected mtdev output missing: $f" >&2
+        exit 1
+    fi
+done
 
-echo "==> mtdev (libinput-scoped stub) installed at $INSTALL_DIR"
-echo "    lib/libmtdev.a ($(wc -c < "$INSTALL_DIR/lib/libmtdev.a") bytes)"
+echo "==> mtdev $MTDEV_VERSION build complete!"
+ls -lh "$INSTALL_DIR/lib/libmtdev.a"

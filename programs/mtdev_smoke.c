@@ -1,13 +1,13 @@
 /*
- * mtdev stub smoke test (PR5b), driven by host/test/mtdev-smoke.test.ts.
+ * mtdev smoke test, driven by host/test/mtdev-smoke.test.ts.
  *
- * The mtdev stub is link-only for our devices: libinput references five
- * mtdev symbols but calls them solely for legacy protocol-A multitouch
+ * mtdev is link-only for our devices: libinput references five mtdev
+ * symbols but calls them solely for legacy protocol-A multitouch
  * (`evdev_need_mtdev()` — has ABS_MT_POSITION_X/Y but no ABS_MT_SLOT).
  * This test proves both halves of that contract without libinput present:
- *   1. libmtdev.a links — the five symbols resolve.
+ *   1. the upstream libmtdev.a links — the five symbols resolve.
  *   2. the kernel's virtual pointer is NOT protocol-A, so the predicate
- *      that would enter the stub is false and it is never called.
+ *      that would route it through mtdev is false.
  */
 #include <fcntl.h>
 #include <linux/input.h>
