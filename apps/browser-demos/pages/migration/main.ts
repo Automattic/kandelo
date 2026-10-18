@@ -30,11 +30,11 @@ import type { MachineCheckpoint } from "@host/migration/checkpoint";
 import { LocalFramebufferMirror } from "@host/migration/mirror-local";
 import { LocalCheckpointHandover } from "@host/migration/transport-local";
 import {
-  answerPeerInvite,
-  createPeerInvite,
+  answerSharingInvite,
+  createSharingInvite,
   type PeerInvite,
   type PeerLink,
-} from "../../lib/peer-link";
+} from "../../lib/sharing-peer";
 import kernelWasmUrl from "@kernel-wasm?url";
 import fbdoomUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
 import {
@@ -344,7 +344,7 @@ inviteCreateButton.addEventListener("click", () => {
       setLinkStatus("Creating the invite code...");
       pendingInvite?.cancel();
       pendingInvite = null;
-      const invite = await createPeerInvite();
+      const invite = await createSharingInvite();
       if (attempt !== linkAttempt) {
         invite.cancel();
         return;
@@ -366,7 +366,7 @@ inviteAnswerButton.addEventListener("click", () => {
     const attempt = ++linkAttempt;
     try {
       setLinkStatus("Answering the invite...");
-      const { answer, connected } = await answerPeerInvite(remoteSignal.value);
+      const { answer, connected } = await answerSharingInvite(remoteSignal.value);
       if (attempt !== linkAttempt) {
         void connected.then((stale) => stale.close(), () => {});
         return;

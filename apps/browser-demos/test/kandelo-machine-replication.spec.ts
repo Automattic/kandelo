@@ -18,12 +18,13 @@ import { expect, test, type Page } from "@playwright/test";
  * computer holds a machine, which one may type, and what each is told it is
  * looking at.
  *
- * Replication starts on its own, as soon as the link opens: the computer
- * holding a machine is the user, and the computer holding none is the viewer.
- * The one choice there is belongs to the user — joining sends the machine's
- * whole state to the other computer, so the Network popup's Watch and Join
- * buttons are the machine owner's grant, offered before the connection is
- * completed and switchable at any point in either direction.
+ * Replication starts on its own once the viewer gives its copy of the
+ * session's machine up to watch: the computer holding a machine is the user,
+ * and the computer holding none is the viewer. The one choice there is
+ * belongs to the user — joining sends the machine's whole state to the other
+ * computer, so the network session panel's Watch and Join buttons are the
+ * machine owner's grant, offered once the session pairs the two computers and
+ * switchable at any point in either direction.
  *
  * Chromium only, for the same reason as `kandelo-network-share.spec.ts`: only
  * headless Chromium forms a loopback ICE pair.
@@ -36,10 +37,11 @@ import {
   connectPeers,
   expectReplica,
   networkButton,
-  openNetworkPopover,
+  openNetworkPanel,
   takeOverButton as takeButton,
   terminalText,
   typeIntoTerminal,
+  watchSharer,
 } from "./support/peer-pair";
 
 /**
@@ -76,7 +78,7 @@ test("runs the user's machine on the computer that was watching it", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await user.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
 
@@ -107,14 +109,14 @@ test("runs the user's machine on the computer that was watching it", async ({
     // Both computers are told which of them they are. The viewer runs a
     // machine and still cannot type into it, which is the one thing a summary
     // derived from "does this computer hold a machine" would get backwards.
-    await openNetworkPopover(user);
-    await openNetworkPopover(viewer);
-    await expect(viewer.locator(".knetwork-status"))
+    await openNetworkPanel(user);
+    await openNetworkPanel(viewer);
+    await expect(viewer.locator(".ksharing-status"))
       .toContainText("This computer is running a copy of it", {
         timeout: 30_000,
       });
-    await expect(user.locator(".knetwork-status"))
-      .toContainText("The other computer is running a copy of this machine", {
+    await expect(user.locator(".ksharing-status"))
+      .toContainText("is running a copy of this machine", {
         timeout: 30_000,
       });
 
@@ -154,7 +156,7 @@ test("gives the viewer the user's shell, not a shell of its own", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await user.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
 
@@ -213,7 +215,7 @@ test("follows the user to the demo they launch next", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await user.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
     await connectPeers(user, viewer, (reason) => test.skip(true, reason));
@@ -273,22 +275,22 @@ test("lets the user grant the mirror only, and the replica again", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await user.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
+    await connectPeers(user, viewer, (reason) => test.skip(true, reason), { watch: false });
 
-    // The grant is offered before the connection exists, to the computer
-    // holding the machine, and joining is what a link gives by default.
-    await openNetworkPopover(user);
+    // The grant is offered to the computer holding the machine, and joining
+    // is what a session gives by default.
+    await openNetworkPanel(user);
     const watch = user.getByRole("button", { name: "Watch", exact: true });
     const join = user.getByRole("button", { name: "Join", exact: true });
     await expect(join).toHaveAttribute("aria-pressed", "true");
     await watch.click();
     await expect(watch).toHaveAttribute("aria-pressed", "true");
+    await watchSharer(viewer);
 
-    await connectPeers(user, viewer, (reason) => test.skip(true, reason));
-
-    // The grant chosen before connecting holds: the viewer gets the mirror,
+    // The grant chosen before the viewer watches holds: the viewer gets the mirror,
     // and no machine boots on its computer. A line typed on the user's
     // machine reaches it as pixels.
     const mirrored = `kandelo-mirrored-${Date.now().toString(36)}`;
@@ -306,7 +308,7 @@ test("lets the user grant the mirror only, and the replica again", async ({
     // the machine, and the line typed while it could only watch is in the
     // state it adopts — the machine that arrives is the user's, not a fresh
     // one.
-    await openNetworkPopover(user);
+    await openNetworkPanel(user);
     await user.getByRole("button", { name: "Join", exact: true }).click();
     await closeDockPopovers([user, viewer]);
     // The read freezes the machine at a syscall, so an untouched shell at its
@@ -320,7 +322,7 @@ test("lets the user grant the mirror only, and the replica again", async ({
     // Taking the grant back ends the recording, and the viewer's page lets
     // the replica go: the mirror pane returns on a computer that was running
     // a machine a moment ago.
-    await openNetworkPopover(user);
+    await openNetworkPanel(user);
     await user.getByRole("button", { name: "Watch", exact: true }).click();
     await expect(viewer.locator(".kshared-machine"))
       .toHaveCount(1, { timeout: 120_000 });
@@ -369,7 +371,7 @@ test("replicates a machine whose screen only a GL context painted", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=modeset"), { waitUntil: "domcontentloaded" });
+    await user.goto(appUrl("/?profile=modeset"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
 
     // The fluid sim paints through the EGL to WebGL2 bridge: no frame of it
@@ -429,7 +431,7 @@ test("puts the taker's splats where the taker points after a take-over", async (
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=modeset"), { waitUntil: "domcontentloaded" });
+    await user.goto(appUrl("/?profile=modeset"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await expect(user.locator(".kdock-status-text"))
       .toHaveAttribute("data-status", "running", { timeout: 300_000 });
@@ -450,7 +452,7 @@ test("puts the taker's splats where the taker points after a take-over", async (
       { steps: 8 },
     );
 
-    await openNetworkPopover(viewer);
+    await openNetworkPanel(viewer);
     await takeButton(viewer).click();
     await closeDockPopovers([user, viewer]);
     await expect(viewer.locator(".kdock-status"))
@@ -510,7 +512,7 @@ test("gives the machine to the viewer, and a replica back to the user", async ({
   const user = await userContext.newPage();
   const viewer = await viewerContext.newPage();
   try {
-    await user.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+    await user.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
     await viewer.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
     await openShell(user);
     await connectPeers(user, viewer, (reason) => test.skip(true, reason));
@@ -519,7 +521,7 @@ test("gives the machine to the viewer, and a replica back to the user", async ({
     // Taking the machine over replaces the viewer's replica with the machine
     // itself. The replica was a copy kept the same by the log; what arrives
     // now is the state, and this computer decides for it from here.
-    await openNetworkPopover(viewer);
+    await openNetworkPanel(viewer);
     await takeButton(viewer).click();
     await closeDockPopovers([user, viewer]);
     await expect(viewer.locator(".kdock-status"))
@@ -550,11 +552,11 @@ test("gives the machine to the viewer, and a replica back to the user", async ({
     // And the keyboard went with the machine: what the computer that took it
     // typed above reached a shell. The other one is offered the take, not the
     // typing.
-    await openNetworkPopover(user);
-    await openNetworkPopover(viewer);
+    await openNetworkPanel(user);
+    await openNetworkPanel(viewer);
     await expect(takeButton(user)).toHaveCount(1);
     await expect(takeButton(viewer)).toHaveCount(0);
-    await expect(networkButton(user)).toHaveClass(/is-connected/);
+    await expect(networkButton(user)).toHaveAccessibleName("Network session: connected");
   } finally {
     await viewerContext.close();
     await userContext.close();

@@ -22,7 +22,7 @@ import * as React from "react";
 import { SharedFramebuffer } from "./SharedFramebuffer";
 import { SharedTerminal } from "./SharedTerminal";
 import type { TerminalScreen } from "../app/shared-terminal";
-import type { PeerLink } from "../../../lib/peer-link";
+import type { PeerLink } from "../../../lib/sharing-peer";
 
 export const SharedMachine: React.FC<{
   link: PeerLink;

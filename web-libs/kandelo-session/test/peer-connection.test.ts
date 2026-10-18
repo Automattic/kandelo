@@ -5,6 +5,7 @@ import {
   decodePeerSignal,
   encodePeerSignal,
   parseIceServers,
+  peerSignalPurpose,
   type PeerConnectionDeclaration,
 } from "../src/peer-connection";
 
@@ -122,6 +123,13 @@ describe("purpose-checked peer signalling", () => {
     expect(() => decodePeerSignal("kandelo1:" + "a".repeat(65536), network, "offer")).toThrow("bounded");
     expect(() => decodePeerSignal("kandelo1:" + btoa(JSON.stringify({ type: "offer", sdp: "v=0" })), network, "offer")).toThrow("expected network");
     expect(() => encodePeerSignal({ type: "offer", sdp: "a".repeat(65536) }, network)).toThrow("64 KiB");
+  });
+  it("names a code's purpose so a receiver can route it, and rejects one it cannot read", () => {
+    expect(peerSignalPurpose(offer(migration))).toBe("migration");
+    expect(peerSignalPurpose(answer())).toBe("network");
+    expect(() => peerSignalPurpose("random")).toThrow("bounded");
+    expect(() => peerSignalPurpose("kandelo1:!")).toThrow("malformed");
+    expect(() => peerSignalPurpose("kandelo1:" + btoa(JSON.stringify({ type: "offer", sdp: "v=0" })))).toThrow("declares no purpose");
   });
   it("keeps chunking on reliable ordered channels", async () => {
     await expect(createPeerConnectionInvite({ purpose: "network", channels: [{ ...network.channels[0], chunking: {} }] })).rejects.toThrow("ordered, reliable");

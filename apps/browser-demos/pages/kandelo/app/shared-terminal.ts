@@ -30,7 +30,7 @@ import {
   type TerminalSize,
 } from "@host/migration/terminal-local";
 import type { KernelHost } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import type { PeerLink } from "../../../lib/peer-link";
+import type { PeerLink } from "../../../lib/sharing-peer";
 
 /** A terminal screen, kept so it can outlive the machine that drew it. */
 export interface TerminalScreen {

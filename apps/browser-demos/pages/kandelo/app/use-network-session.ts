@@ -1,7 +1,8 @@
 import * as React from "react";
 import type { KernelHost } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { answerNetworkInvite, attachNetworkBridge, createNetworkInvite } from "../../../lib/network-peer";
-import { NetworkSessionController, sessionInvitation, type SessionState } from "../../../lib/network-session";
+import { NetworkSessionController, sessionInvitation, type SessionState, type SharingPartner } from "../../../lib/network-session";
+import { answerSharingInvite, createSharingInvite } from "../../../lib/sharing-peer";
 
 /**
  * Production uses signalling/piplet.php under the deployment base unless
@@ -15,12 +16,14 @@ function signallingServer(): string | null {
 }
 
 const transport = { createInvite: createNetworkInvite, answerInvite: answerNetworkInvite, bridge: attachNetworkBridge };
+const sharing = { createInvite: createSharingInvite, answerInvite: answerSharingInvite };
 
 export function useNetworkSession(host: KernelHost) {
   const controller = React.useMemo(() => new NetworkSessionController({
     machine: () => host.getStatus() === "running" ? host : null,
     server: signallingServer,
     transport,
+    sharing,
     pageHref: () => location.href,
   }), [host]);
   const state = React.useSyncExternalStore(
@@ -49,14 +52,21 @@ export function useNetworkSession(host: KernelHost) {
   const [open, setOpen] = React.useState(invitation !== null);
 
   React.useEffect(() => {
-    // A session belongs to one running machine; booting another ends it.
+    // The guest network belongs to one running machine, so a machine switch
+    // detaches it; the session and its sharing links outlive the switch.
     let previous = host.getStatus();
     const off = host.subscribeStatus((status) => {
-      if (previous === "running" && status !== "running" && controller.getState().phase !== "offline") void controller.leave();
+      if (previous === "running" && status !== "running") void controller.machineChanged();
       previous = status;
     });
     return () => { off(); void controller.leave(); };
   }, [host, controller]);
+
+  // One sharing pair at a time. A joiner's one partner is the host; the host
+  // picks among its joiners, and a lone joiner needs no picking.
+  const [chosen, setChosen] = React.useState<string | null>(null);
+  const partner: SharingPartner | null = state.partners.find((candidate) => candidate.id === chosen)
+    ?? (state.partners.length === 1 ? state.partners[0]! : null);
 
   const leave = React.useCallback(async () => {
     await controller.leave();
@@ -69,6 +79,13 @@ export function useNetworkSession(host: KernelHost) {
     create: (name: string) => controller.create(name),
     join: (room: string, name: string) => controller.join(room, name),
     leave,
+    partner,
+    choosePartner: setChosen,
+    /**
+     * Give this computer's machine up to watch the partner's. An invitation
+     * boots the session's machine here, so this machine is that copy.
+     */
+    watch: () => host.releaseMachine(),
     /** Decline the invitation this page was opened with. */
     dismissInvitation: () => setInvitation(null),
   };

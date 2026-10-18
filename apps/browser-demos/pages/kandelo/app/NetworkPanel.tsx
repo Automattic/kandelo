@@ -9,7 +9,12 @@ import { createPortal } from "react-dom";
 import type { NetworkSession } from "./use-network-session";
 import { NETWORK_PHASE_LABEL } from "./Dock";
 
-export const NetworkPanel: React.FC<{ session: NetworkSession; running: boolean }> = ({ session, running }) => {
+export const NetworkPanel: React.FC<{
+  session: NetworkSession;
+  running: boolean;
+  /** Shown while this computer is in a session: sharing one machine with a member. */
+  sharing?: React.ReactNode;
+}> = ({ session, running, sharing }) => {
   const { state, invitation } = session;
   const [name, setName] = React.useState("LAN party");
   const [copied, setCopied] = React.useState(false);
@@ -74,19 +79,24 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; running: boolean 
                   <p className="knetwork-note">The link opens this machine for whoever follows it, and lets them ask to join while this computer hosts the session.</p>
                 </div>
               )}
-              <div>
-                <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Computers</div>
-                <ul className="knetwork-members" aria-label="Computers in this session">
-                  {members.map((member) => (
-                    <li key={member.address}>
-                      <code>{member.address}</code>
-                      <span>{member.hostname}</span>
-                      {member.address === self && <small>this computer</small>}
-                    </li>
-                  ))}
-                </ul>
-                <p className="knetwork-note">Programs reach each other by these addresses or names. Each computer keeps its own machine and files.</p>
-              </div>
+              {state.phase !== "connected" || state.networkAttached ? (
+                <div>
+                  <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Computers</div>
+                  <ul className="knetwork-members" aria-label="Computers in this session">
+                    {members.map((member) => (
+                      <li key={member.address}>
+                        <code>{member.address}</code>
+                        <span>{member.hostname}</span>
+                        {member.address === self && <small>this computer</small>}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="knetwork-note">Programs reach each other by these addresses or names. Each computer keeps its own machine and files.</p>
+                </div>
+              ) : (
+                <p className="knetwork-note">This computer's machine is not on the session's network: it changed since joining. The computers can still share a machine.</p>
+              )}
+              {sharing}
             </>
           ) : (
             <>

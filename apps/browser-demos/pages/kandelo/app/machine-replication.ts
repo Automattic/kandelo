@@ -62,7 +62,7 @@ import type {
   KernelHost,
   MachineStatus,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import type { PeerLink } from "../../../lib/peer-link";
+import type { PeerLink } from "../../../lib/sharing-peer";
 
 /**
  * How long a viewer waits for the user's machine.

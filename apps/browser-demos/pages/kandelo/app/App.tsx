@@ -13,10 +13,8 @@ import { Gallery } from "../views/Gallery";
 import { EmptyState } from "../views/EmptyState";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { SharedMachine } from "../panes/SharedMachine";
-import { NetworkPopup } from "./NetworkPopup";
 import { useMachineHandover } from "./machine-handover";
 import { useMachineReplication } from "./machine-replication";
-import { usePeerSession } from "./peer-session";
 import { useFramebufferPublisher } from "./shared-framebuffer";
 import { useTerminalPublisher } from "./shared-terminal";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
@@ -34,6 +32,7 @@ import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
 import { useNetworkSession } from "./use-network-session";
 import { NetworkPanel } from "./NetworkPanel";
+import { SharingSection } from "./SharingSection";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
@@ -77,7 +76,6 @@ export const App: React.FC = () => {
   const lazyDownloads = useLazyDownloads();
   const machineProgress = useMachineProgress();
   const surface = useMachineSurfaceController();
-  const peer = usePeerSession();
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
@@ -90,7 +88,6 @@ export const App: React.FC = () => {
   const [internalsOpen, setInternalsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
-  const [networkOpen, setNetworkOpen] = React.useState(false);
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
   const [themeOpen, setThemeOpen] = React.useState(false);
@@ -109,21 +106,22 @@ export const App: React.FC = () => {
   // computer with a screen and a shell stacked in one column, with nothing
   // saying which of them the other person is using.
   const presenting = surface.status === "running" ? surface.activePrimary : null;
+  const sharingLink = networkSession.partner?.link ?? null;
   const terminalSharing = useTerminalPublisher(
     host,
-    peer.link,
+    sharingLink,
     terminals.find((terminal) => terminal.id === activeTerminalId)?.path,
     presenting === "terminal",
   );
   const sharingScreen = useFramebufferPublisher(
     host,
-    peer.link,
+    sharingLink,
     presenting === "framebuffer",
   );
   // Replication first: a viewer running a replica is still a viewer, and the
   // handover must not offer that replica as a second machine to take.
-  const replication = useMachineReplication(host, peer.link);
-  const handover = useMachineHandover(host, peer.link, replication.replicating);
+  const replication = useMachineReplication(host, sharingLink);
+  const handover = useMachineHandover(host, sharingLink, replication.replicating);
 
   const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
   React.useEffect(() => {
@@ -231,16 +229,8 @@ export const App: React.FC = () => {
     setDemoDockControls(null);
     setDemoGuidePopup(null);
     setInternalsOpen(false);
-    setNetworkOpen(false);
     setThemeOpen(false);
   }, [desc.id]);
-
-  // The popup exists to buy a connection. Once there is one it is covering the
-  // machine it was opened to share, so it gets out of the way; the Network
-  // button stays lit and reopens it for the controls that outlive the codes.
-  React.useEffect(() => {
-    if (peer.link) setNetworkOpen(false);
-  }, [peer.link]);
 
   const closeDockPane = React.useCallback(() => {
     setDockPane(null);
@@ -249,7 +239,6 @@ export const App: React.FC = () => {
   const selectDockPane = React.useCallback((pane: DockPaneId | null) => {
     setInternalsOpen(false);
     setDemoGuideOpen(false);
-    setNetworkOpen(false);
     setThemeOpen(false);
     setDockPane((current) => current === pane ? null : pane);
   }, []);
@@ -257,7 +246,6 @@ export const App: React.FC = () => {
   const selectMachineView = React.useCallback((view: DockViewId) => {
     setDockPane(null);
     setInternalsOpen(false);
-    setNetworkOpen(false);
     setThemeOpen(false);
     surface.chooseView(view);
   }, [surface]);
@@ -266,7 +254,6 @@ export const App: React.FC = () => {
     if (!demoGuide) return;
     setDockPane(null);
     setInternalsOpen(false);
-    setNetworkOpen(false);
     setThemeOpen(false);
     setDemoGuideOpen((open) => !open);
   }, [demoGuide]);
@@ -275,24 +262,14 @@ export const App: React.FC = () => {
     if (!surface.canUseInternals) return;
     setDockPane(null);
     setDemoGuideOpen(false);
-    setNetworkOpen(false);
     setThemeOpen(false);
     setInternalsOpen((open) => !open);
   }, [surface.canUseInternals]);
-
-  const toggleNetwork = React.useCallback(() => {
-    setDockPane(null);
-    setDemoGuideOpen(false);
-    setInternalsOpen(false);
-    setThemeOpen(false);
-    setNetworkOpen((open) => !open);
-  }, []);
 
   const toggleTheme = React.useCallback(() => {
     setDockPane(null);
     setDemoGuideOpen(false);
     setInternalsOpen(false);
-    setNetworkOpen(false);
     setThemeOpen((open) => !open);
   }, []);
 
@@ -467,12 +444,12 @@ export const App: React.FC = () => {
       onLaunchItem={onLaunchGalleryItem}
       onBrowseAll={() => setDockPane("gallery")}
       onApplyDescriptor={applyDescriptor}
-      peerNote={peer.link
+      peerNote={sharingLink
         ? handover.handedOver
           ? "You handed this machine over. It is starting on the other computer."
           : "Connected. Waiting for the other computer to share a screen."
         : null}
-      watching={peer.link !== null}
+      watching={sharingLink !== null}
     />
   );
 
@@ -483,14 +460,14 @@ export const App: React.FC = () => {
         {...(machineProgress === null ? {} : { inert: true })}
       >
         <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
-          {(isEmpty || handover.taking || replication.joining) && peer.link ? (
+          {(isEmpty || handover.taking || replication.joining) && sharingLink ? (
             // While a machine is arriving, this pane stays up over the boot
             // that is running behind it. `taking` ends when `adoptMachine`
             // resolves, and `joining` when `replicateMachine` does — both
             // after the checkpoint has restored, so the swap happens when
             // there is a live screen to swap to.
             <SharedMachine
-              link={peer.link}
+              link={sharingLink}
               moving={moving}
               held={held}
               idle={emptyState}
@@ -569,7 +546,28 @@ export const App: React.FC = () => {
 
         {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
 
-        {networkSession.open && <NetworkPanel session={networkSession} running={surface.status === "running"} />}
+        {networkSession.open && (
+          <NetworkPanel
+            session={networkSession}
+            running={surface.status === "running"}
+            sharing={
+              <SharingSection
+                session={networkSession}
+                sharingTerminal={terminalSharing.sharing}
+                sharingScreen={sharingScreen}
+                handover={handover}
+                canTakeMachine={
+                  (isEmpty || replication.replicating)
+                  && !replication.joining
+                  && handover.peerHasMachine
+                }
+                hasMachine={!isEmpty}
+                presenting={presenting}
+                replication={replication}
+              />
+            }
+          />
+        )}
 
         <Dock
           networkPhase={networkSession.state.phase}
@@ -579,33 +577,15 @@ export const App: React.FC = () => {
           viewControls={viewControls}
           guidePopup={demoGuidePopup}
           internalsPopup={internalsPopup}
-          networkPopup={
-            <NetworkPopup
-              session={peer}
-              sharingTerminal={terminalSharing.sharing}
-              sharingScreen={sharingScreen}
-              handover={handover}
-              canTakeMachine={
-                (isEmpty || replication.replicating)
-                && !replication.joining
-                && handover.peerHasMachine
-              }
-              hasMachine={!isEmpty}
-              presenting={presenting}
-              replication={replication}
-            />
-          }
           themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
           guideAvailable={!isEmpty && demoGuide !== null}
           guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
           internalsAvailable={!isEmpty && surface.canUseInternals}
           internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
-          networkOpen={networkOpen}
-          networkConnected={peer.link !== null}
           // Only in a pair. A computer on its own is neither, and one machine
           // with one person at it needs no word for that.
           role={
-            peer.link === null
+            sharingLink === null
               ? null
               : isEmpty || replication.replicating
                 ? "viewer"
@@ -629,12 +609,10 @@ export const App: React.FC = () => {
           onSelectView={selectMachineView}
           onToggleGuide={toggleDemoGuide}
           onToggleInternals={toggleInternals}
-          onToggleNetwork={toggleNetwork}
           onToggleTheme={toggleTheme}
           onOpenShare={() => setShareOpen(true)}
           onCloseGuide={() => setDemoGuideOpen(false)}
           onCloseInternals={() => setInternalsOpen(false)}
-          onCloseNetwork={() => setNetworkOpen(false)}
           onCloseTheme={() => setThemeOpen(false)}
           onHeightChange={setDockHeight}
           onLayoutChange={onDockLayoutChange}
