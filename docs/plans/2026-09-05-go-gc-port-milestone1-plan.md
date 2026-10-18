@@ -3956,3 +3956,20 @@ WordPress revision 30 reflects the changed image bytes. This is a
 configuration correction based on PHP behavior, **not** a Kandelo runtime
 result. The real ZTS module and FrankenPHP SAPI still need to be built and
 run before activation can be claimed.
+
+**2026-10-17 — Rebuild the revised ZTS package under shared-memory
+pressure.** A first revision-6 SourceOnly attempt was stopped during
+configure when free RAM fell below 1 GiB while another workspace's
+browser suite was active; this was a deliberate resource stop, not a
+source failure. After that suite completed, the revision-6 PHP-ZTS
+resolver build passed in 4m51s. It published `libphp.a` (91 MiB) and
+`opcache-zts.so` (279 KiB). The OPcache side-module SHA-256 exactly
+matches the previously Node/browser-loaded revision-5 module
+(`37b5be3108c232d81379689b91e47df1560c4ca2a90447d2e0bc81e19a30dcd6`),
+as expected because revision 6 only adds VFS product projection. This
+does not prove the new product selector was projected: the package was
+resolved without a product selection. WABT `wasm-validate` still rejects
+the existing module at byte `0x223` even with `--enable-all`, despite the
+prior Node/browser `dlopen` evidence; do not use this WABT result as a
+runtime verdict. A new peer browser suite again reduced unused RAM below
+0.5 GiB, so the much larger FrankenPHP instrumenter was not started.
