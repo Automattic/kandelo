@@ -2645,7 +2645,9 @@ The Spacefast combined build includes a TypeScript implementation at
 must be admitted by the Space's access settings. The endpoint uses MySQL
 conditional updates for atomic matching across workers, preserving the PHP
 session/room protocol and limits. It shares neither state nor request budget
-with `/cors-proxy`. See [Spacefast signalling](../apps/signalling/spacefast/README.md)
+with `/cors-proxy`. Packaging omits the portable PHP piplet from the
+Spacefast output and leaves the original static build intact for WP Cloud.
+See [Spacefast signalling](../apps/signalling/spacefast/README.md)
 for storage, tests and hosting boundaries. Guest traffic still uses the peer
 link; hosting signalling on Spacefast supplies no TURN relay.
 

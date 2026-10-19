@@ -293,8 +293,8 @@ exactly the chosen base.
 WP Cloud can keep serving this static build with the portable PHP signalling
 endpoint (`--signalling-url /signalling/piplet.php`) and its chosen CORS proxy.
 Spacefast is an optional host: package the static build with its Functions
-proxy and database-backed signalling, or host only the proxy in a separate
-Space with an exact approved-Referer list. Either host can select that proxy
+proxy and database-backed signalling. An experimental separate-proxy layout
+uses an exact approved-Referer list. Either host can select that proxy
 with `--cors-proxy 'https://YOUR-PROXY.space.fast/?url='`. See the
 [Spacefast deployment recipes](apps/spacefast-cors-proxy/README.md#separate-proxy-site)
 for both layouts, access requirements and the rate-limit policy.

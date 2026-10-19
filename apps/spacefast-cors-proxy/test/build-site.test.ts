@@ -60,6 +60,19 @@ test("site packager rejects private build inputs and symlinks", async t => {
   await assert.rejects(execute(process.execPath, [builder, root]), /ENOENT/);
 });
 
+test("Spacefast packaging substitutes its signalling Function and preserves the WP Cloud input", async t => {
+  const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "signalling"));
+  const php = "<?php /* portable WP Cloud signalling */";
+  await writeFile(join(root, "signalling/piplet.php"), php);
+  const { stdout } = await execute(process.execPath, [builder, root]);
+  const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
+  assert.equal(await readFile(join(root, "signalling/piplet.php"), "utf8"), php);
+  await assert.rejects(readFile(join(output, "signalling/piplet.php")), { code: "ENOENT" });
+  const { default: signalling } = await import(pathToFileURL(join(output, "functions/signalling.mjs")).href);
+  assert.equal((await signalling(new Request("https://site.example/signalling", { method: "OPTIONS" }), { env: {} })).status, 204);
+});
+
 test("isolation headers cover documents and workers without claiming large binary downloads", async t => {
   const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, "pages", "demo"), { recursive: true });

@@ -364,6 +364,9 @@ scripts, including clean document URLs. Binary downloads have no custom
 isolation headers: Spacefast cannot serve files above 100 MiB through its
 PHP header-serving lane. Shared memory isolation remains on pages and workers.
 Publish that directory through the Functions-aware Spacefast publishing flow.
+Packaging omits the portable `signalling/piplet.php` from the Spacefast
+output, where `/signalling` uses the database-backed Function. The original
+static build retains its PHP endpoint for WP Cloud.
 The packager rejects symlinks, existing root worker/function trees, dotenv files, dependency/auth directories and
 the private VFS product map. It does not copy test files or fixture keys.
 Keep the Space's access settings private unless public access is requested.
@@ -399,6 +402,9 @@ route with `phpdbg`, enforce all its executable lines are covered, and verify
 PHP-issued signatures in the worker against the same real database. Browser
 tests in `apps/browser-demos/test/browser-cors-proxy.spec.ts` cover cookie-free
 sessions, persistence, reload, POST replay and service-worker reprojection.
+Deployment-command tests check endpoint defaults and precedence across the
+isolated shell. Packaging tests preserve the WP Cloud PHP input and verify
+that Spacefast emits its own signalling Function instead.
 
 Tests include Referer/Origin admission and spoofed-lookalike rejection,
 compiled standalone/combined allowlists, malformed DNS/HTTP input,

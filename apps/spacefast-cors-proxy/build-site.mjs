@@ -38,7 +38,12 @@ const app = fileURLToPath(new URL("./", import.meta.url));
 const context = fileURLToPath(new URL("../../.context/", import.meta.url));
 await mkdir(context, { recursive: true });
 const output = await mkdtemp(join(context, "spacefast-kandelo-build-"));
-await cp(source, output, { recursive: true });
+await cp(source, output, {
+  recursive: true,
+  // The portable piplet mutates its PHP file on WP Cloud. Spacefast instead
+  // owns signalling at /signalling through the database-backed Function below.
+  filter: path => path !== join(source, "signalling", "piplet.php"),
+});
 if (!options.withoutProxy) {
   await buildSessionRoute(output, options.approved);
   await mkdir(join(output, "functions", "cors-proxy"), { recursive: true });
