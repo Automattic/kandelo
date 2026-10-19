@@ -943,6 +943,44 @@ fn active_segment_offsets_preserve_extended_const_semantics_without_a_shape_gate
 }
 
 #[test]
+fn literal_segment_offsets_do_not_add_globals() {
+    let input = wat::parse_str(
+        r#"
+        (module
+          (import "env" "base" (global $base i32))
+          (memory 1)
+          (table 8 funcref)
+          (func $target)
+          (elem (i32.const 3) $target)
+          (data (i32.const 16) "a")
+          (data (i32.const 32) "b")
+          (data (global.get $base) "c"))
+        "#,
+    )
+    .expect("parse segment fixture");
+    let mut module = Module::from_buffer(&input).expect("parse fixture module");
+    let original_globals = module.globals.iter().count();
+    fork_instrument::module_state::plan(&mut module);
+    assert_eq!(module.globals.iter().count(), original_globals + 1);
+
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (@custom "dylink.0" (before first) "state-only")
+          (import "env" "base" (global $base i32))
+          (memory 1)
+          (table 8 funcref)
+          (func $target)
+          (elem (i32.const 3) $target)
+          (data (i32.const 16) "a")
+          (data (i32.const 32) "b")
+          (data (global.get $base) "c"))
+        "#,
+    );
+    validate(&bytes);
+}
+
+#[test]
 fn segment_lifetime_is_activation_owned_and_reapplied() {
     let bytes = instrument_wat(
         r#"

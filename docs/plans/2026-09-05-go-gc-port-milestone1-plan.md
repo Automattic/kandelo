@@ -4081,3 +4081,20 @@ memory fell to about 1.5 GiB. No full instrumenter or package build was
 started. Resume only when sufficient memory is available; first measure
 the new full-instrumenter peak safely, then rebuild FrankenPHP and the
 WordPress image and run the real OPcache/Node/Chromium gates.
+
+**2026-10-19 — Remove unnecessary globals for literal segment offsets.**
+The captured revision-24 FrankenPHP classic input has exactly 100,000
+active data segments, and `wasm-objdump` reports an `i32` literal offset
+for every one. The generic fork module-state planner now emits that
+literal directly in its bootstrap helper rather than allocating an
+immutable offset global per segment. Nonliteral offsets still retain an
+immutable global, preserving WebAssembly's extended-constant evaluation
+and imported-global semantics. The transform does not merge segments,
+fill the gaps between them, change their indices, or change fork-child
+data replay. A new regression covers mixed literal/imported-global
+offsets; all 389 `fork-instrument` crate tests passed. The previous
+workspace-wide formatting check found unrelated preexisting formatting
+drift; the new code was checked against `rustfmt` suggestions. This is
+an instrumenter-size reduction opportunity, not evidence of a lower
+full-build RSS peak. No full FrankenPHP rebuild or browser demo run was
+started under the current memory headroom.

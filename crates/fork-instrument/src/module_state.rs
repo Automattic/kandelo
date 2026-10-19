@@ -120,15 +120,21 @@ struct ActiveElement {
     id: ElementId,
     table: TableId,
     offset: ConstExpr,
-    offset_global: GlobalId,
+    runtime_offset: SegmentOffset,
     len: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SegmentOffset {
+    Constant(Value),
+    Evaluated(GlobalId),
 }
 
 #[derive(Debug, Clone)]
 struct ActiveData {
     id: DataId,
     memory: MemoryId,
-    offset_global: GlobalId,
+    runtime_offset: SegmentOffset,
     len: u64,
 }
 
@@ -252,22 +258,21 @@ pub fn plan(module: &mut Module) -> ModuleStatePlan {
             _ => None,
         };
         if let Some((table, offset, len)) = active {
-            let offset_global = module.globals.add_local(
+            let runtime_offset = segment_offset(
+                module,
                 if module.tables.get(table).table64 {
                     ValType::I64
                 } else {
                     ValType::I32
                 },
-                false,
-                false,
-                offset.clone(),
+                &offset,
             );
             module.elements.get_mut(id).kind = ElementKind::Passive;
             active_elements.push(ActiveElement {
                 id,
                 table,
                 offset,
-                offset_global,
+                runtime_offset,
                 len,
             });
         }
@@ -289,21 +294,20 @@ pub fn plan(module: &mut Module) -> ModuleStatePlan {
             DataKind::Passive => None,
         };
         if let Some((memory, offset, len)) = active {
-            let offset_global = module.globals.add_local(
+            let runtime_offset = segment_offset(
+                module,
                 if module.memories.get(memory).memory64 {
                     ValType::I64
                 } else {
                     ValType::I32
                 },
-                false,
-                false,
-                offset.clone(),
+                &offset,
             );
             module.data.get_mut(id).kind = DataKind::Passive;
             active_data.push(ActiveData {
                 id,
                 memory,
-                offset_global,
+                runtime_offset,
                 len,
             });
         }
@@ -404,6 +408,15 @@ pub fn plan(module: &mut Module) -> ModuleStatePlan {
         active_data,
         original_start: module.start.take(),
         original_functions,
+    }
+}
+
+fn segment_offset(module: &mut Module, ty: ValType, offset: &ConstExpr) -> SegmentOffset {
+    match offset {
+        ConstExpr::Value(value @ (Value::I32(_) | Value::I64(_))) => {
+            SegmentOffset::Constant(*value)
+        }
+        _ => SegmentOffset::Evaluated(module.globals.add_local(ty, false, false, offset.clone())),
     }
 }
 
@@ -2476,12 +2489,7 @@ fn emit_active_element_initializers(
     drop_after: bool,
 ) -> Result<()> {
     for active in active_elements {
-        // WHY: retaining the original const expression in an immutable
-        // global makes Walrus/WebAssembly own extended-const semantics. The
-        // runtime helper reads the already-evaluated index and therefore does
-        // not impose an instruction whitelist or evaluate the expression more
-        // than once when active segments are converted to passive segments.
-        body.global_get(active.offset_global);
+        emit_segment_offset(body, active.runtime_offset);
         body.i32_const(0)
             .i32_const(
                 u32::try_from(active.len)
@@ -2504,7 +2512,7 @@ fn emit_active_data_initializers(
     active_data: &[ActiveData],
 ) -> Result<()> {
     for active in active_data {
-        body.global_get(active.offset_global);
+        emit_segment_offset(body, active.runtime_offset);
         body.i32_const(0)
             .i32_const(
                 u32::try_from(active.len)
@@ -2518,6 +2526,21 @@ fn emit_active_data_initializers(
             .instr(DataDrop { data: active.id });
     }
     Ok(())
+}
+
+fn emit_segment_offset(body: &mut InstrSeqBuilder<'_>, offset: SegmentOffset) {
+    match offset {
+        SegmentOffset::Constant(Value::I32(value)) => {
+            body.i32_const(value);
+        }
+        SegmentOffset::Constant(Value::I64(value)) => {
+            body.i64_const(value);
+        }
+        SegmentOffset::Evaluated(global) => {
+            body.global_get(global);
+        }
+        SegmentOffset::Constant(_) => unreachable!("segment offset must be an integer"),
+    }
 }
 
 fn reserve_static_record(
