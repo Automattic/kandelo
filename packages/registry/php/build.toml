@@ -16,6 +16,8 @@ commit      = "UNPUBLISHED"
 # stop opcache's file cache from writing wall-clock bookkeeping into each .bin
 # so build-time prewarmed caches are reproducible (18), then upgrade the
 # single CLI/FPM runtime and its shared extensions to PHP 8.5.12, including
-# built-in, opt-in OPcache with a deterministic file-cache arena (19).
-revision = 19
+# built-in, opt-in OPcache with a deterministic file-cache arena (19), then
+# map opcache's shared memory MAP_PRIVATE instead of rejecting its normal
+# mode (20).
+revision = 20
 publication_state = "pending"

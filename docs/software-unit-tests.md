@@ -14,9 +14,9 @@ results and inventory totals below remain historical **8.3.15** evidence.
 > are historical evidence, not results for PR #740, Batch 2, or the current
 > repository head. Replace them only after an exact-tip Batch 2 run records its
 > source, package, ABI, host, browser, command, and durable per-test outcomes.
-> The current harness also records normal opcache SHM tests and partial
-> `CAPTURE_STDIO` descriptor-inheritance tests as explicit unsupported platform
-> boundaries; historical counts predate those truthfulness corrections.
+> The current harness also records partial `CAPTURE_STDIO`
+> descriptor-inheritance tests as explicit unsupported platform boundaries;
+> historical counts predate that truthfulness correction.
 
 ## Historical Status Snapshot
 
