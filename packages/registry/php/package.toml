@@ -36,9 +36,10 @@ wasm = "php.wasm"
 name = "php-fpm"
 wasm = "php-fpm.wasm"
 
-# PHP 8.5 includes OPcache in CLI/FPM. Caching is opt-in and requires
-# opcache.file_cache_only=1 plus a configured file cache: cross-process
-# MAP_SHARED is unavailable. No separate OPcache module is shipped.
+# PHP 8.5 includes OPcache in CLI/FPM. Caching is opt-in. Until Kandelo
+# implements immediate cross-process MAP_SHARED, OPcache maps its shared
+# memory MAP_PRIVATE: each process, such as each FPM worker, owns its own
+# cache. No separate OPcache module is shipped.
 
 # ext/curl is an opt-in shared PHP extension loaded through the standard
 # `extension=curl.so` path. curl.so absorbs PIC libcurl code while resolving
