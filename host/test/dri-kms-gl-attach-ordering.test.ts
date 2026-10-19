@@ -102,12 +102,15 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
     getKmsCanvas: () => canvas,
     getKmsCrtcIds: () => [1],
     markKmsCanvasGlOwned: () => {},
+    getKmsDisplaySize: () => ({ width: 640, height: 480 }),
     onKmsGlPresented: (crtc: number) => presented.push(crtc),
   });
   kernel.gl.bind({ pid: PID, cmdbufAddr: 128, cmdbufLen: 0 });
   const binding = kernel.gl.get(PID)!;
   binding.cmdbufView = new Uint8Array(memory.buffer, 128, 0);
   imports.env.host_kms_set_master(PID);
+  imports.env.host_kms_addfb(PID, 10, 100, 640, 480, 0x34325258, 2560);
+  imports.env.host_kms_set_fb(PID, 1, 10);
   imports.env.host_gl_create_context(PID, 1, 0, 0);
   expect(imports.env.host_gl_submit(PID, 0, 0)).toBe(0);
   const oldTarget = binding.presentTarget!.fbo;
@@ -119,10 +122,15 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
   expect(deletedRenderbuffers).toContain(oldDepthStencil);
   if (newContext) imports.env.host_gl_destroy_context(PID, 1);
   const attrs = new DataView(memory.buffer, 64, 20);
-  attrs.setUint32(4, 640, true);
-  attrs.setUint32(8, 480, true);
+  attrs.setUint32(4, 800, true);
+  attrs.setUint32(8, 600, true);
   imports.env.host_gl_create_surface(PID, 2, 64, 20);
   if (newContext) imports.env.host_gl_create_context(PID, 2, 0, 0);
+  // SDL creates the resized EGL surface/context before its next SETCRTC.
+  // The old scanout must not override that new drawable and clear the
+  // completed first frame when the new FB is finally latched.
+  expect([canvas.width, canvas.height]).toEqual([800, 600]);
+  expect([binding.presentTarget!.w, binding.presentTarget!.h]).toEqual([800, 600]);
   expect(binding.presentTarget, "the next frame needs a target before any draws").not.toBeNull();
   expect(binding.presentTarget!.fbo).not.toBe(oldTarget);
   expect(imports.env.host_gl_submit(PID, 0, 0)).toBe(0);

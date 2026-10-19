@@ -998,7 +998,13 @@ for (const density of [1, 2]) {
       };
       const position = () => page.evaluate(() => {
         const events = (globalThis as any).__pointerTrace as { ev_type: number; code: number; value: number }[];
-        return [0, 1].map(code => events.filter(e => e.ev_type === 3 && e.code === code).at(-1)?.value);
+        // Decode the stable absolute-device range into the current scanout,
+        // as the guest's cached evdev bounds do after a display mode change.
+        const [, w, h] = document.body.innerText.match(/(\d+)×(\d+) · \d+ flips/)!.map(Number);
+        return [w, h].map((extent, code) => {
+          const value = events.filter(e => e.ev_type === 3 && e.code === code).at(-1)?.value;
+          return value === undefined ? undefined : Math.floor(value * (extent - 1) / 65535);
+        });
       });
       const status = await page.getByText(/\d+×\d+ · \d+ flips/).innerText();
       const [, width, height] = status.match(/(\d+)×(\d+)/)!.map(Number);
@@ -1550,6 +1556,119 @@ for (const density of [1, 2]) {
         await expect.poll(async () => Buffer.compare(beforeTurn,
           await page.screenshot({ clip: header, scale: "css" })), { timeout: 30_000 }).not.toBe(0);
       }
+
+    });
+    test("screen resolution choices resize the game and retain working controls", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "graphical acceptance targets Chromium");
+      test.setTimeout(240_000);
+      await gotoMachine(page, "freeciv");
+      await running(page);
+      await showGame(page);
+      await expect(page.getByText("960×540", { exact: false })).toBeVisible();
+      const click = async (x: number, y: number) => nativeAction(page,
+        async () => canvas(page).click({ position: await nativePosition(page, x, y) }));
+      const openInterface = async (width: number, height: number, inGame = false) => {
+        await click(inGame ? 10 : width - 100, inGame ? 10 : height - 55);
+        let box = (await canvas(page).boundingBox())!;
+        await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100);
+        await click(width / 2, height / 2 - 96); // Local options.
+        await waitForPanel(page, box.width / 2 - 145, box.height / 2, false);
+        await click(width / 2, height / 2 + 9); // Interface.
+        await waitForPanel(page, box.width / 2 - 200, box.height / 2);
+        box = (await canvas(page).boundingBox())!;
+        const thumb = await nativePosition(page, width / 2 + 233, height / 2 - 91);
+        const bottom = await nativePosition(page, width / 2 + 233, height / 2 + 137);
+        // Wait for the actual resolution field's long horizontal border,
+        // rather than an intermediate frame halfway through the drag.
+        await page.mouse.move(box.x + thumb.x, box.y + thumb.y);
+        await page.mouse.down();
+        await page.mouse.move(box.x + bottom.x, box.y + bottom.y, { steps: 6 });
+        await page.mouse.up();
+        await expect.poll(async () => {
+          const png = await page.screenshot({ scale: "css", clip: {
+            x: box.x + (width / 2 + 105) * box.width / width,
+            y: box.y + (height / 2 + 100) * box.height / height,
+            width: 105 * box.width / width, height: 25 * box.height / height,
+          } });
+          return page.evaluate(async encoded => {
+            const bitmap = await createImageBitmap(new Blob([
+              Uint8Array.from(atob(encoded), c => c.charCodeAt(0)),
+            ], { type: "image/png" }));
+            const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+            ctx.drawImage(bitmap, 0, 0);
+            const { width, height } = bitmap;
+            bitmap.close();
+            const pixels = ctx.getImageData(0, 0, width, height).data;
+            for (let y = 0; y < height; y++) {
+              let dark = 0;
+              for (let x = 0; x < width; x++) {
+                const i = (y * width + x) * 4;
+                if (Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) < 140) dark++;
+              }
+              if (dark > width * 0.8) return true;
+            }
+            return false;
+          }, png.toString("base64"));
+        }).toBe(true);
+      };
+      await openInterface(960, 540);
+      const choicesClip = { x: 880, y: 220, width: 130, height: 200 };
+      const beforeChoices = await page.screenshot({ scale: "css", clip: choicesClip });
+      await click(635, 383); // Screen resolution dropdown.
+      await expect.poll(async () => Buffer.compare(beforeChoices,
+        await page.screenshot({ scale: "css", clip: choicesClip }))).not.toBe(0);
+      await page.screenshot({ path: `../../.context/freeciv-resolution-choices-${density}.png`, scale: "css" });
+      // SDL orders the 17 standard modes from largest to smallest. The
+      // dropdown opens upward by 17 rows of 15 guest pixels.
+      await click(635, 351); // 800x600.
+      await click(691, 92); // Apply through the native titlebar checkmark.
+      await expect(page.getByText("800×600", { exact: false })).toBeVisible({ timeout: 30_000 });
+      await page.screenshot({ path: `../../.context/freeciv-resolution-800-${density}.png`, scale: "css" });
+      // Apply returns to the category picker. Leave both option levels
+      // before exercising the relocated main-menu button.
+      for (let i = 0; i < 2; i++) await page.keyboard.press("Escape", { delay: 100 });
+      // Reopen settings after the aspect change: this proves pointer
+      // coordinates, hit testing and the resized window agree.
+      await openInterface(800, 600);
+      await click(555, 413);
+      await click(555, 336); // 1280x720, row 12, menu top at 149.
+      await click(611, 122);
+      await expect(page.getByText("1280×720", { exact: false })).toBeVisible({ timeout: 30_000 });
+      await page.screenshot({ path: `../../.context/freeciv-resolution-1280-${density}.png`, scale: "css" });
+      for (let i = 0; i < 2; i++) await page.keyboard.press("Escape", { delay: 100 });
+      await click(1180, 665); // Options remains clickable at the new mode.
+      const box = (await canvas(page).boundingBox())!;
+      await waitForPanel(page, box.width / 2 + 50, box.height / 2 + 50);
+      await click(640, 358); // Save Local Options.
+      const settings = await guestCommand(page,
+        'grep "gui_sdl2_screen" "$HOME/.freeciv/freeciv-client-rc-3.2"');
+      expect(settings).toMatch(/1280/);
+      expect(settings).toMatch(/720/);
+      await multiplayer(page, "local");
+      await showGame(page);
+      await expect(page.getByText("1280×720", { exact: false })).toBeVisible({ timeout: 30_000 });
+      await page.screenshot({ path: `../../.context/freeciv-resolution-restored-${density}.png`, scale: "css" });
+      // Start an actual game at the saved mode, then change resolution
+      // while its map and unit panels are live.
+      await multiplayer(page, "host");
+      await expect.poll(() => terminalLines(page), { timeout: 60_000 })
+        .toMatch(/has connected from (?:localhost|127\.0\.0\.1)/);
+      await showGame(page);
+      const lobby = (await canvas(page).boundingBox())!;
+      await canvas(page).click({ position: { x: lobby.width - 50, y: lobby.height - 24 } });
+      await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/rules the/);
+      await showGame(page);
+      await openInterface(1280, 720, true);
+      await click(795, 473);
+      await click(795, 426); // 960x540, row 14, menu top at 209.
+      await click(851, 182);
+      await expect(page.getByText("960×540", { exact: false })).toBeVisible({ timeout: 30_000 });
+      for (let i = 0; i < 2; i++) await page.keyboard.press("Escape", { delay: 100 });
+      await click(10, 10);
+      const game = (await canvas(page).boundingBox())!;
+      await waitForPanel(page, game.width / 2 + 50, game.height / 2 + 50);
+      await page.keyboard.press("Escape", { delay: 100 });
+      await page.screenshot({ path: `../../.context/freeciv-resolution-game-${density}.png`, scale: "css" });
 
     });
     test("font settings accept typed digits", async ({ page, browserName }) => {

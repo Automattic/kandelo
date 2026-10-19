@@ -8,6 +8,7 @@
 pub mod bo;
 pub mod cursor;
 pub mod master;
+pub mod modes;
 
 pub use bo::{BoId, BoRegistry, BoTier, GbmBo, PrimeCookie, with_registry};
 

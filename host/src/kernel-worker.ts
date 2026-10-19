@@ -42,6 +42,7 @@ import {
 } from "./kernel";
 import { resolveIoctlContract } from "./ioctl-contract";
 import { connectorModeSize } from "./dri/kms-registry";
+import { ABSOLUTE_POINTER_EXTENT } from "./input/input-source.js";
 import {
   createKernelEntryScopedInstance,
   invokeKernelEntrySerializedHostOperation,
@@ -3744,20 +3745,8 @@ export class CentralizedKernelWorker {
       // before binding an FB (SDL2's KMSDRM ordering). See
       // WasmPosixKernel.tryAttachKmsGlCanvas.
       getKmsCrtcIds: () => [...this.kmsCanvases.keys()],
-      // The scanout framebuffer defines the pointer coordinate space:
-      // the pane maps pointer positions into framebuffer pixels and
-      // `sendPointerAbs` forwards them as EV_ABS, so EVIOCGABS on the
-      // pointer device must advertise exactly this framebuffer's size.
-      // This SETCRTC hook keeps the range truthful for consumers that
-      // open the device later and for mid-session modesets. Consumers
-      // scale EV_ABS by the range (SDL's evdev backend does), so a range
-      // that is not the framebuffer's misplaces the pointer. It cannot reach a
-      // libinput consumer that is already running — libinput caches
-      // absinfo at device open — which is why `setKmsDisplaySize`
-      // advertises the derived connector mode before the guest starts.
-      onKmsScanoutFb: (_crtcId: number, width: number, height: number) => {
-        this.setInputCanvasDims(width, height);
-      },
+      // Absolute pointer axes belong to the device, not the framebuffer.
+      // Never change their range at SETCRTC: running input clients cache it.
       markKmsCanvasGlOwned: (crtcId: number) => {
         // A program GL context now owns the canvas (fires only after the
         // context actually exists). If the pump's webgl2-scanout
@@ -6446,6 +6435,7 @@ export class CentralizedKernelWorker {
     }
 
     this.#initialized = true;
+    this.setInputCanvasDims(ABSOLUTE_POINTER_EXTENT, ABSOLUTE_POINTER_EXTENT);
     // The vblank pump runs only when something needs it: an attached KMS
     // canvas or stats view (attachKmsCanvas starts it too), or a program
     // that has started scanning out -- onKmsScanoutActive, since its page
@@ -33273,12 +33263,8 @@ export class CentralizedKernelWorker {
    *  with `devicePixelContentBoxSize`. Zero/negative dims are ignored
    *  (a hidden pane reports 0×0 — keep the last real size).
    *
-   *  It also keys the EVIOCGABS range on `/dev/input/event1` to the
-   *  connector mode this size derives (`connectorModeSize`, which the
-   *  compositor's framebuffer will match). It must land here, not only
-   *  at SETCRTC: libinput caches absinfo when it opens the device, and
-   *  a compositor opens `event1` before it presents its first frame —
-   *  a range corrected at SETCRTC is a range libinput never sees.
+   *  The pointer's fixed device range remains independent of this size;
+   *  SDL and libinput cache it before the first frame and across modesets.
    *
    *  `physicalMm`, when given, is the display's physical size; the kernel
    *  reports it on the connector, where a compositor derives its output
@@ -33306,8 +33292,7 @@ export class CentralizedKernelWorker {
       display.mmHeight = Math.round(physicalMm.height);
     }
     this.kmsDisplaySizes.set(crtc_id, display);
-    const mode = connectorModeSize(display);
-    this.setInputCanvasDims(mode.width, mode.height);
+    this.setInputCanvasDims(ABSOLUTE_POINTER_EXTENT, ABSOLUTE_POINTER_EXTENT);
   }
 
   /** Attach a stats SAB for a CRTC without registering a scanout canvas.

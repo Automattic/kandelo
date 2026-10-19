@@ -1853,13 +1853,18 @@ fn handle_dri_card_ioctl(
             if req.connector_id != 1 {
                 return Err(Errno::ENOENT);
             }
-            let modes_ptr = (req.count_modes >= 1 && req.modes_ptr != 0)
+            let modes = crate::dri::modes::connector_modes(host.kms_mode_info(1));
+            let mode_count = modes.len() as u32;
+            // Linux reports the available count on both calls, but copies
+            // the list only if the caller supplied enough capacity. A resize
+            // between the count and fill calls can therefore be retried.
+            let modes_ptr = (req.count_modes >= mode_count && req.modes_ptr != 0)
                 .then(|| {
                     probe_dri_process_pointer(
                         host,
                         pid,
                         req.modes_ptr,
-                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                        modes.len() * core::mem::size_of::<WpkDrmModeModeinfo>(),
                     )
                 })
                 .transpose()?;
@@ -1867,11 +1872,10 @@ fn handle_dri_card_ioctl(
                 .then(|| probe_dri_process_pointer(host, pid, req.encoders_ptr, 4))
                 .transpose()?;
             if let Some(pointer) = modes_ptr {
-                let mode = host.kms_mode_info(1);
                 let mode_bytes = unsafe {
                     core::slice::from_raw_parts(
-                        &mode as *const _ as *const u8,
-                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                        modes.as_ptr() as *const u8,
+                        modes.len() * core::mem::size_of::<WpkDrmModeModeinfo>(),
                     )
                 };
                 let rc = host.proc_write_bytes(pid, pointer, mode_bytes);
@@ -1894,7 +1898,7 @@ fn handle_dri_card_ioctl(
                 modes_ptr: req.modes_ptr,
                 props_ptr: req.props_ptr,
                 prop_values_ptr: req.prop_values_ptr,
-                count_modes: 1,
+                count_modes: mode_count,
                 count_encoders: 1,
                 encoder_id: 1,
                 connector_id: 1,
@@ -47413,7 +47417,7 @@ impl HostIO for RelSymlinkMock {
 
         let connector = WpkDrmModeGetConnector {
             modes_ptr: 0x0000_0001_0000_5678,
-            count_modes: 1,
+            count_modes: u32::MAX,
             connector_id: 1,
             ..Default::default()
         };
@@ -47434,6 +47438,56 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::EFAULT),
         );
+        assert!(host.proc_write_calls.is_empty());
+    }
+
+    #[test]
+    fn dri_connector_mode_query_respects_capacity_and_validates_all_outputs() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeGetConnector>()];
+        let query = |proc: &mut Process, host: &mut MockHostIO, buf: &mut [u8], req| {
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req); }
+            sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_GETCONNECTOR, buf)
+        };
+        let request = WpkDrmModeGetConnector { connector_id: 1, ..Default::default() };
+        query(&mut proc, &mut host, &mut buf, request).unwrap();
+        let response: WpkDrmModeGetConnector = unsafe {
+            core::ptr::read_unaligned(buf.as_ptr() as *const _)
+        };
+        assert!(response.count_modes > 1);
+        assert!(host.proc_write_calls.is_empty());
+
+        // An insufficient list is left untouched, and the actual count is
+        // returned so libdrm can allocate and retry without a partial list.
+        query(&mut proc, &mut host, &mut buf, WpkDrmModeGetConnector {
+            modes_ptr: 4096, count_modes: 1, ..request
+        }).unwrap();
+        assert!(host.proc_write_calls.is_empty());
+        let full_request = WpkDrmModeGetConnector {
+            modes_ptr: 4096, count_modes: response.count_modes,
+            encoders_ptr: 8192, count_encoders: 1, ..request
+        };
+        query(&mut proc, &mut host, &mut buf, full_request).unwrap();
+        let bytes = &host.proc_write_calls[0].2;
+        assert_eq!(bytes.len(), response.count_modes as usize * 68);
+        assert!(bytes.chunks_exact(68).any(|mode| {
+            u16::from_le_bytes(mode[4..6].try_into().unwrap()) == 1920
+                && u16::from_le_bytes(mode[14..16].try_into().unwrap()) == 1080
+        }));
+        host.proc_write_calls.clear();
+        assert_eq!(query(&mut proc, &mut host, &mut buf, WpkDrmModeGetConnector {
+            encoders_ptr: u64::MAX, ..full_request
+        }), Err(Errno::EFAULT));
+        assert!(host.proc_write_calls.is_empty());
+        // Checking just one mode's range would let the full copy run past
+        // the end of process memory.
+        let near_end = host.proc_memory.len() as u64 - 68;
+        assert_eq!(query(&mut proc, &mut host, &mut buf, WpkDrmModeGetConnector {
+            modes_ptr: near_end, ..full_request
+        }), Err(Errno::EFAULT));
         assert!(host.proc_write_calls.is_empty());
     }
 

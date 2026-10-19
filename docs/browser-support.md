@@ -2125,7 +2125,11 @@ scaled for presentation; this does not give raster fonts native-density
 outlines. The normal connector bounds, 640×480 through 3840×2160, still
 apply. Small panes can therefore fit the minimum mode rather than
 maintaining the requested scale. Set this before launching a graphical
-client; there is no KMS hotplug or automatic client mode switch.
+client; there is no KMS hotplug or automatic client mode switch. The
+virtual connector also lists 17 standard resolutions from 640×480 through
+3840×2160, deduplicating its preferred mode. Applications can select those
+modes through ordinary SDL/libdrm APIs; the browser fits the chosen scanout
+and aspect ratio.
 
 Omitting `displayScale` preserves native device-pixel output and CSS-derived
 physical size, so Wayland compositors and DPI-aware applications retain
@@ -2135,7 +2139,9 @@ metadata, not application font, theme, or coordinate patches.
 Pointer input waits for the first published scanout size; the canvas's
 initial allocation is not an input coordinate space. Absolute positions
 are confined to valid pixel indices, including captured drags outside
-the pane and subpixel rounding at its edges. Sending an out-of-window
+the pane and subpixel rounding at its edges, then encoded in the fixed
+0–65535 absolute-device range. SDL and libinput can keep their cached
+axis bounds across display mode changes. Sending an out-of-window
 position to SDL's direct-display backend can clear mouse focus, hiding
 its cursor and dropping window focus for subsequent input.
 SDL's evdev adapter also maps inclusive device bounds to inclusive

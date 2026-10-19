@@ -202,6 +202,28 @@ This is bitmap scaling, not independent native-density glyph rasterization.
 The shared connector minimum is 640×480, so smaller panes fit that mode.
 DPI-aware compositor profiles omit `displayScale` and retain native output.
 
+The normal game menu exposes resolutions under **Options → Local options →
+Interface → Screen resolution**. Kandelo's virtual monitor advertises 17
+standard modes from 640×480 to 3840×2160, plus the pane-derived preferred
+mode when its size is not already in that list. Smaller resolutions make
+the whole bitmap UI larger; larger resolutions show more map and smaller
+controls. The browser fits the selected aspect ratio with letterboxing.
+The preferred mode and the default 150% presentation remain unchanged.
+
+Freeciv's SDL2 resolution callback originally only rearranged widgets.
+The client correction calls SDL's window/display mode APIs, recreates its
+surfaces after closing the settings panel, then reflows the UI. Fullscreen
+uses the chosen display mode instead of SDL's desktop-fullscreen mode,
+which deliberately ignores resolution requests. First launch selects the
+monitor's preferred mode; saved choices apply on subsequent launches.
+This application correction contains no Kandelo-specific dimensions.
+Kandelo keeps the absolute pointer's 0–65535 device range fixed across mode
+changes, rather than changing the range already cached by SDL/libinput.
+The SDK forwards GBM native-window dimensions through the ordinary EGL
+surface API. The GL bridge retains that resized drawable independently of the
+old scanout, and retires destroyed contexts' objects and cached state
+before recreating them on the shared native WebGL context.
+
 Kandelo supplies a virtual KMS cursor plane through Linux's `MODE_CURSOR`
 and `MODE_CURSOR2` ioctls. It retains cursor images, positions, hotspots,
 and visibility separately from the application framebuffer. The browser
@@ -269,6 +291,17 @@ with coverage in the SDL package runtime test and browser cursor-edge
 tests. Retire the local patch once a verified upstream release supplies
 the fix; preserve the same bounds in local overflow recovery.
 
+## Message contrast
+
+The shipped upstream SDL2 Human theme uses a translucent `bg2.png` message
+panel (alpha 179/255, about 70% opaque) and yellow `(255, 255, 0)`
+unvisited location links. Other message
+text is dark. These assets and colors are unchanged by the port; terrain
+showing through the panel can reduce contrast. Changing monitor resolution
+scales this whole image and does not repair that color contrast. A native
+full-game pixel comparison has not been run; the theme/source comparison
+alone must not be presented as proof of identical SDL blending.
+
 ## Remaining application corrections
 
 The package keeps bounded corrections for upstream Freeciv defects:
@@ -277,6 +310,8 @@ The package keeps bounded corrections for upstream Freeciv defects:
 - Migrate first-run defaults before command-line overrides, preserving
   the explicitly requested fullscreen mode.
 - Use SDL color cursors instead of manually painting cursor sprites.
+- Apply Screen resolution through SDL instead of only repositioning widgets;
+  retire the old map surface when replacing the rendering surfaces.
 - Preserve a callback's quit result while draining queued input.
 - Avoid `SDL_SetEventFilter` when entering/leaving a drag. That SDL API
   discards queued events, including a release already following the press.

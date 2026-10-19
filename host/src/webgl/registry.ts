@@ -60,6 +60,9 @@ export type GlBinding = GlBindingInput & {
   contextId: GlContextHandle | null;
   /** EGL surface handle (opaque u32 the C side picks). */
   surfaceId: GlSurfaceHandle | null;
+  /** Drawable dimensions survive context replacement and may arrive before
+   * a context/canvas. An old scanout is not the new EGL surface's size. */
+  surfaceSize: { width: number; height: number } | null;
 
   /** Cmdbuf-name (u32) → real GL object maps. */
   buffers: Map<number, WebGLBuffer>;
@@ -194,6 +197,7 @@ export class GlContextRegistry {
       canvas,
       contextId: null,
       surfaceId: null,
+      surfaceSize: null,
       buffers: new Map(),
       textures: new Map(),
       shaders: new Map(),
@@ -220,12 +224,32 @@ export class GlContextRegistry {
     this.pendingForwards.delete(pid);
     const b = this.bindings.get(pid);
     if (!b) return;
-    // The GL context can outlive the binding (a KMS canvas context is
-    // shared with the vblank pump), so free the binding's foreign
-    // textures deterministically instead of leaving them to context GC.
-    for (const entry of b.foreignTextures.values()) {
-      b.gl?.deleteTexture(entry.tex);
-    }
+    this.destroyContext(pid);
+    this.bindings.delete(pid);
+    for (const l of this.listeners) l(pid, "unbind");
+  }
+
+  /** The native WebGL context is shared and survives guest EGL contexts.
+   * Retire this context's resources and shadow state before reusing it. */
+  destroyContext(pid: number): void {
+    const b = this.bindings.get(pid);
+    if (!b) return;
+    const gl = b.gl;
+    // Foreign GPU textures belong to their BO, independently of this
+    // context. CPU upload textures and ordinary guest textures are owned.
+    const boTextures = new Set([...this.gpuBos.values()].map(bo => bo.tex));
+    const textures = new Set([
+      ...b.textures.values(), ...[...b.foreignTextures.values()].map(entry => entry.tex),
+    ]);
+    for (const texture of textures) if (!boTextures.has(texture)) gl?.deleteTexture(texture);
+    for (const object of b.buffers.values()) gl?.deleteBuffer(object);
+    for (const object of b.shaders.values()) gl?.deleteShader(object);
+    for (const object of b.programs.values()) gl?.deleteProgram(object);
+    for (const object of b.vaos.values()) gl?.deleteVertexArray(object);
+    for (const object of b.fbos.values()) gl?.deleteFramebuffer(object);
+    for (const object of b.rbos.values()) gl?.deleteRenderbuffer(object);
+    for (const map of [b.buffers, b.textures, b.shaders, b.programs, b.vaos,
+      b.fbos, b.rbos, b.uniformLocations, b.foreignTextures]) map.clear();
     if (b.shadow.defaultVao) {
       b.gl?.deleteVertexArray(b.shadow.defaultVao);
       b.shadow.defaultVao = null;
@@ -236,8 +260,11 @@ export class GlContextRegistry {
       b.gl?.deleteRenderbuffer(b.presentTarget.depthStencil);
       b.presentTarget = null;
     }
-    this.bindings.delete(pid);
-    for (const l of this.listeners) l(pid, "unbind");
+    b.renderTargetFbo = null;
+    b.currentProgram = null;
+    b.shadow = defaultShadow();
+    b.contextId = null;
+    b.gl = null;
   }
 
   get(pid: number): GlBinding | undefined {

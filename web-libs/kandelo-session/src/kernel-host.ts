@@ -1,4 +1,5 @@
 import { connectorModeSize } from "../../../host/src/dri/kms-registry";
+import { absolutePointerValue } from "../../../host/src/input/input-source.js";
 import type {
   DemoDockActionConfig,
   DemoGuideConfig,
@@ -3199,8 +3200,8 @@ export class LiveKernelHost implements KernelHost {
         // Layout can send pointerenter before the first scanout. Never
         // inject guessed coordinates: an out-of-window event makes SDL's
         // direct-display backend lose mouse focus and hide its cursor.
-        const rx = Math.max(0, Math.min(width - 1, Math.round(x)));
-        const ry = Math.max(0, Math.min(height - 1, Math.round(y)));
+        const rx = absolutePointerValue(x, width);
+        const ry = absolutePointerValue(y, height);
         // The position, then the buttons, in that order: a consumer
         // flushes motion on the SYN, so the cursor is already at (rx, ry)
         // when a press arrives in the next frame.
@@ -3211,9 +3212,8 @@ export class LiveKernelHost implements KernelHost {
         // records; the host compensated by driving the cursor to the
         // origin with an over-large negative delta before every event, and
         // any click that landed before the corrective frame registered at
-        // (0, 0). The axis range comes from `kernel_set_input_canvas_dims`,
-        // which is why these are framebuffer pixels and not a normalised
-        // value.
+        // (0, 0). Device values are normalized to a fixed 0..65535 range,
+        // so clients that cache absinfo still work after a display modeset.
         inject.call(kernel, 1, EV_ABS, ABS_X, rx);
         inject.call(kernel, 1, EV_ABS, ABS_Y, ry);
         inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);

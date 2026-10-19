@@ -829,15 +829,8 @@ export interface KernelCallbacks {
   onKmsScanoutActive?: () => void;
   /**
    * A SETCRTC/PAGE_FLIP latched `fbId` onto `crtcId`; `width`/`height`
-   * are that framebuffer's dimensions. The scanout framebuffer defines
-   * the pointer coordinate space — the embedder maps pointer positions
-   * into framebuffer pixels and `sendPointerAbs` forwards them as
-   * `EV_ABS` — so the worker uses this to keep the pointer device's
-   * advertised `EVIOCGABS` range equal to the space those coordinates
-   * are in for consumers that open the device after the modeset. A
-   * consumer that is already running never re-reads the range (libinput
-   * caches absinfo at device open); open-time correctness comes from
-   * `setKmsDisplaySize` advertising the derived connector mode.
+   * are that framebuffer's dimensions. This is scanout state only: the
+   * absolute pointer device retains its fixed range across modesets.
    */
   onKmsScanoutFb?: (crtcId: number, width: number, height: number) => void;
 }
@@ -1042,7 +1035,7 @@ export class WasmPosixKernel {
       // the size the program is about to render at. Skipping that leaves
       // a HiDPI pane on the 1920x1080 default, so the guest renders below
       // the panel's device-pixel count and the browser upscales it.
-      const fb = this.kms.currentFb(crtc)
+      const fb = b.surfaceSize ?? this.kms.currentFb(crtc)
         ?? connectorModeSize(this.callbacks.getKmsDisplaySize?.());
       if (canvas.width !== fb.width || canvas.height !== fb.height) {
         canvas.width = fb.width;
@@ -2519,9 +2512,8 @@ export class WasmPosixKernel {
           this.releaseClaimedKmsCanvas(pid);
           const b = this.gl.get(pid);
           if (!b) return;
-          b.gl = null;
-          b.contextId = null;
-          b.currentProgram = null;
+          if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+          this.gl.destroyContext(pid);
           if (b.forward) b.forward.onDestroyContext();
         },
         host_gl_create_surface: (
@@ -2548,6 +2540,7 @@ export class WasmPosixKernel {
             const dv = new DataView(attrs.buffer, attrs.byteOffset, 20);
             const w = dv.getUint32(4, true);
             const h = dv.getUint32(8, true);
+            if (w > 0 && h > 0) b.surfaceSize = { width: w, height: h };
             if (b.canvas && w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
               b.canvas.width = w;
               b.canvas.height = h;
@@ -2588,6 +2581,7 @@ export class WasmPosixKernel {
           const b = this.gl.get(pid);
           if (!b) return;
           b.surfaceId = null;
+          b.surfaceSize = null;
           // Drop the producer render-target reference — the FBO itself is
           // owned by the GPU bo (freed via destroyGpuBo on bo destroy),
           // so never delete it here. Reset shadow.fbo so a subsequent

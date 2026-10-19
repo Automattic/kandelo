@@ -38,6 +38,43 @@ describe("GlContextRegistry", () => {
     expect(reg.get(7)!.cmdbufView).toBeNull();
   });
 
+  it("retires a destroyed context without replaying its program or losing its surface", () => {
+    const deleted: unknown[] = [];
+    const gl = new Proxy({}, { get: () => (object: unknown) => deleted.push(object) }) as WebGL2RenderingContext;
+    const reg = new GlContextRegistry();
+    reg.bind({ pid: 7, cmdbufAddr: 128, cmdbufLen: 1024 });
+    const b = reg.get(7)!;
+    const program = {} as WebGLProgram;
+    const texture = {} as WebGLTexture;
+    const vao = {} as WebGLVertexArrayObject;
+    b.gl = gl;
+    b.contextId = 1;
+    b.surfaceId = 2;
+    b.surfaceSize = { width: 800, height: 600 };
+    b.programs.set(1, program);
+    b.textures.set(2, texture);
+    b.foreignTextures.set(100, { tex: texture, texId: 2, w: 1, h: 1, scratch: null });
+    b.shadow.currentProgram = b.currentProgram = program;
+    b.shadow.defaultVao = vao;
+    b.nextUniformLoc = 10;
+    reg.destroyContext(7);
+    expect(deleted.filter(object => object === texture)).toHaveLength(1);
+    expect(deleted).toContain(program);
+    expect(deleted).toContain(vao);
+    expect(b.shadow.currentProgram).toBeNull();
+    expect(b.currentProgram).toBeNull();
+    expect(b.programs.size).toBe(0);
+    expect(b.textures.size).toBe(0);
+    expect(b.foreignTextures.size).toBe(0);
+    expect(b.gl).toBeNull();
+    expect(b.surfaceId).toBe(2);
+    expect(b.surfaceSize).toEqual({ width: 800, height: 600 });
+    expect(b.cmdbufAddr).toBe(128);
+    expect(b.nextUniformLoc).toBe(10);
+    reg.destroyContext(7);
+    expect(deleted.filter(object => object === program)).toHaveLength(1);
+  });
+
   it("rebindMemory on an unknown pid is a no-op", () => {
     const reg = new GlContextRegistry();
     expect(() => reg.rebindMemory(999)).not.toThrow();

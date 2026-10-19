@@ -4,7 +4,7 @@ import { observePreviewRequest } from "../panes/preview-progress";
 import { BrowserKernel } from "@host/browser-kernel-host";
 import { setWebMcpSession, type WebMcpIdentity } from "../webmcp/runtime";
 import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
-import { connectorModeSize } from "@host/dri/kms-registry";
+import { ABSOLUTE_POINTER_EXTENT } from "@host/input/input-source";
 import { composeImageInWorker } from "./image-composer-client";
 import { imageMachine, type ImageMachine } from "./image-composer";
 import {
@@ -1803,25 +1803,18 @@ function attachDeclaredInputSource(
   kernel: BrowserKernel,
   machine: ImageMachine,
   tick: (msg: string) => void,
-  host: Pick<LiveKernelHost, "getKmsDisplaySize" | "reportClipboardPasteFailure">,
+  host: Pick<LiveKernelHost, "reportClipboardPasteFailure">,
 ): void {
   const displaySelector = machine.runtime.features.includes("kms")
     ? ".kmodeset-surface"
     : machine.runtime.features.includes("framebuffer")
     ? ".kframebuffer-surface"
     : null;
-  // A KMS pane sends the pointer as framebuffer pixels (sendPointerAbs), and
-  // consumers scale EV_ABS values by the advertised range (SDL's evdev
-  // backend does, and libinput caches the range when it opens the device),
-  // so the range must be the space those values are in: the connector's
-  // mode, which is the framebuffer a KMS program renders at. The window size
-  // is unrelated to it — publishing it here put ScummVM's cursor 1.5x off.
-  // The mode is fixed at boot (a resize letterboxes), so it is not
-  // republished on resize; the kernel worker also keeps the range on the
-  // scanout framebuffer at SETCRTC.
+  // KMS uses a stable virtual-tablet range, independent of display pixels.
+  // Consumers cache absinfo at open; changing it on resize breaks input.
   const kms = displaySelector === ".kmodeset-surface";
   const dims = () => kms
-    ? connectorModeSize(host.getKmsDisplaySize(KMS_PRIMARY_CRTC))
+    ? { width: ABSOLUTE_POINTER_EXTENT, height: ABSOLUTE_POINTER_EXTENT }
     : {
       width: Math.max(window.innerWidth, machine.display?.minWidth ?? 0),
       height: Math.max(window.innerHeight, machine.display?.minHeight ?? 0),

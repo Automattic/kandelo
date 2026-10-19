@@ -50,6 +50,10 @@ static void    *g_current_egl_window = NULL;
  * the symbols resolve to NULL and the wayland-egl path is simply skipped. */
 __attribute__((weak)) uint32_t _wpk_wlegl_bo_handle(void *egl_window);
 __attribute__((weak)) void     _wpk_wlegl_present(void *egl_window);
+/* A GBM native window carries its drawable size before the first modeset.
+ * Weak: EGL clients using another window backend need not link libgbm. */
+__attribute__((weak)) int _wpk_gbm_surface_dimensions(const void *window,
+                                                     uint32_t *width, uint32_t *height);
 
 #define EGL_DPY_HANDLE      ((EGLDisplay)(uintptr_t)1)
 #define EGL_CONFIG_HANDLE   ((EGLConfig) (uintptr_t)1)
@@ -222,12 +226,10 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
         .width = 0, .height = 0, .config_id = 1,
         .reserved = {0,0,0,0},
     };
-    /* Native window handles are opaque here (there is no real winsys), so
-     * an explicit EGL_WIDTH/EGL_HEIGHT attrib pair is the only way a
-     * caller can size the drawing buffer. The host resizes the backing
-     * canvas to a non-zero request — a KMS compositor passes its mode
-     * dims since it creates the surface before its first ADDFB (the
-     * point where the host could otherwise infer a size). */
+    int is_gbm = win && _wpk_gbm_surface_dimensions
+        && _wpk_gbm_surface_dimensions((void *)win, &surf.width, &surf.height);
+    /* Preserve explicit dimensions for existing canvas callers without a
+     * native window. A real GBM window needs no application sizing hint. */
     if (attrib_list) {
         for (const EGLint *a = attrib_list; a[0] != EGL_NONE; a += 2) {
             if (a[0] == EGL_WIDTH)  surf.width  = (uint32_t)a[1];
@@ -246,8 +248,8 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
      * eglSwapBuffers can attach+commit it. */
     uint32_t target = g_pending_surface_target_bo;
     g_pending_surface_target_bo = 0;
-    g_current_egl_window = (void *)win;
-    if (!target && win && _wpk_wlegl_bo_handle)
+    g_current_egl_window = is_gbm ? NULL : (void *)win;
+    if (!target && !is_gbm && win && _wpk_wlegl_bo_handle)
         target = _wpk_wlegl_bo_handle((void *)win);
     surf.reserved[0] = target;
     if (ioctl(g_fd, GLIO_CREATE_SURFACE, &surf) != 0) {

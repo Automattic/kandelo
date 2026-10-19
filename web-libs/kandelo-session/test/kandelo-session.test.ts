@@ -2978,7 +2978,7 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       Atomics.store(handle.stats, 3, 540);
       handle.sendPointerAbs(1060, 633, 1);
       expect(injectInputEvent.mock.calls).toEqual([
-        [1, 3, 0, 959], [1, 3, 1, 539], [1, 0, 0, 0],
+        [1, 3, 0, 65535], [1, 3, 1, 65535], [1, 0, 0, 0],
         [1, 1, 0x110, 1], [1, 0, 0, 0],
       ]);
       injectInputEvent.mockClear();
@@ -2990,6 +2990,28 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       injectInputEvent.mockClear();
       handle.sendPointerAbs(NaN, Infinity, 1);
       expect(injectInputEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  it("encodes changed scanout sizes for clients with cached absolute-device bounds", () => {
+    withFakeResizeObserver(() => {
+      const injectInputEvent = vi.fn();
+      const host = new LiveKernelHost();
+      host.attachKernel({ ...makeKmsKernel(), injectInputEvent } as any);
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      for (const [width, height] of [[960, 540], [800, 600], [1280, 720], [3840, 2160]]) {
+        Atomics.store(handle.stats, 2, width);
+        Atomics.store(handle.stats, 3, height);
+        for (const [x, y] of [[0, 0], [width - 1, height - 1], [123, 234]]) {
+          injectInputEvent.mockClear();
+          handle.sendPointerAbs(x, y, 0);
+          const axes = injectInputEvent.mock.calls.filter(call => call[1] === 3);
+          // Use the consumer's integer-division conversion, retaining the
+          // same absinfo maxima before and after every mode change.
+          expect(axes.map((call, i) => Math.floor(call[3] * ([width, height][i] - 1) / 65535)))
+            .toEqual([x, y]);
+        }
+      }
     });
   });
 
