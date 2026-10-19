@@ -19,8 +19,9 @@ test("cursor buffers retain their pixels across browser guest exec", async ({ pa
   const imageUrl = new URL("/__cursor_exec_image.vfs", baseURL).href;
   await page.route(kernelUrl, route => route.fulfill({ body: readFileSync(resolveBinary("kernel.wasm")) }));
   await page.route(imageUrl, route => route.fulfill({ body: Buffer.from(imageBytes) }));
-  await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
-  await page.waitForFunction(() => (window as any).__testRunnerReady === true);
+  // Use an inert COI-served document: this probe supplies its own kernel
+  // and image and must not activate the test runner's unrelated boot assets.
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
   const modulePath = fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts", import.meta.url));
   const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl }) => {
     const { BrowserKernel } = await import(moduleUrl);

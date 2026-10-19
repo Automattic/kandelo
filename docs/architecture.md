@@ -3081,8 +3081,11 @@ without changing DRM semantics for other clients.
 Cursor transport adds no required Wasm import. The optional
 `kernel_kms_cursor_configure(version)` export accepts protocol 1 and returns
 1, or negative `ENOTSUP` for unknown versions. Until negotiation, cursor
-capabilities report zero and valid master cursor requests fail `ENOTSUP`
-before retaining a buffer. Both Node and browser hosts negotiate support;
+capabilities report zero and valid master cursor requests that reach the
+kernel fail `ENOTSUP` before retaining a buffer. An older host adapter can
+reject the unknown ioctl earlier with `EINVAL`; the zero capability is the
+supported way to detect the unavailable plane. Both Node and browser hosts
+negotiate support;
 a visible display is not required. The two cursor exports are optional in
 ABI 50 and become required in ABI 51 through the export lifecycle table.
 

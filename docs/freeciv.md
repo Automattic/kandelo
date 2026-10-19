@@ -219,8 +219,10 @@ The cursor transport uses optional kernel exports, with no new required
 host import under ABI 50. The host negotiates protocol 1 through
 `kernel_kms_cursor_configure` and reads coalesced complete state through
 `kernel_kms_cursor_read` before presenting a frame. Hosts that do not
-negotiate support see zero cursor dimensions and cursor requests fail with
-`ENOTSUP`; they can still instantiate the kernel. This is an explicit
+negotiate support see zero cursor dimensions and can still instantiate the
+kernel. Requests reaching the kernel fail with `ENOTSUP`; older host
+adapters may reject an unknown ioctl earlier with `EINVAL`. Clients should
+query the capability before using the plane. This is an explicit
 unsupported-device boundary, not an automatic SDL software-cursor fallback.
 Both exports are scheduled to become required at ABI 51. This establishes
 the next host baseline without requiring a cursor-specific ABI bump.
