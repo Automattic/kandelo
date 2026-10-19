@@ -52,16 +52,23 @@ if (!options.withoutProxy) {
       resolveDir: app, sourcefile: "cors-proxy-entry.ts" },
     // A catch-all preserves Playground's /https://target path form as well as
     // the base route's encoded ?url= form, without claiming the static app.
-    outfile: join(output, "functions", "cors-proxy", "[...rest].mjs"),
+    outfile: join(output, "functions", "cors-proxy", "_handler.mjs"),
     bundle: true, format: "esm", platform: "browser", target: "es2022",
     external: ["cloudflare:*"],
   });
+  // CLI 0.5.0 detects `export default`, but not esbuild's equivalent
+  // `export { binding as default }`. Keep a literal router entry and put
+  // bundled code in an underscore-prefixed helper, which is never routed.
+  await writeFile(join(output, "functions", "cors-proxy", "[...rest].mjs"),
+    'import handler from "./_handler.mjs";\nexport default handler;\n');
 }
 await build({
   entryPoints: [join(app, "../signalling/spacefast/handler.ts")],
-  outfile: join(output, "functions", "signalling.mjs"),
+  outfile: join(output, "functions", "_signalling.mjs"),
   bundle: true, format: "esm", platform: "browser", target: "es2022",
 });
+await writeFile(join(output, "functions", "signalling.mjs"),
+  'import handler from "./_signalling.mjs";\nexport default handler;\n');
 await writeFile(join(output, "sf.jsonc"), JSON.stringify({
   $schema: "https://spacefast.com/schemas/sf.json",
   runtime: { kind: "functions", compatibilityDate: "2026-07-01" },

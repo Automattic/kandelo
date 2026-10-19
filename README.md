@@ -296,7 +296,8 @@ Spacefast is an optional host: package the static build with its Functions
 proxy and database-backed signalling. An experimental separate-proxy layout
 uses an exact approved-Referer list. Either host can select that proxy
 with `--cors-proxy 'https://YOUR-PROXY.space.fast/?url='`. See the
-[Spacefast deployment recipes](apps/spacefast-cors-proxy/README.md#separate-proxy-site)
+[Spacefast quickstart](#5-deploy-to-spacefast-optional) and
+[deployment recipes](apps/spacefast-cors-proxy/README.md#combined-kandelo-site)
 for both layouts, access requirements and the rate-limit policy.
 
 Production output is bound to the absolute prefix selected at build time. The
@@ -356,6 +357,39 @@ browser requests and Node.js-host networking are not filtered by this profile.
 Browser Kandelo supports local loopback and virtual machine-to-machine UDP/TCP. External raw TCP/UDP sockets are still constrained by the browser sandbox and require fetch, service-worker, proxy, or future WebRTC-backed transports behind the POSIX socket layer.
 
 The browser UI uses pre-built **VFS images** - binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
+
+### 5. Deploy to Spacefast (optional)
+
+The normal build remains suitable for WP Cloud. To host the app, CORS proxy
+and signalling together on Spacefast, install the
+[official Spacefast CLI](https://spacefast.com/docs/cli/), sign in with
+`sf auth login`, and select an existing Space's live URL. For a new Space,
+run `sf spaces add --team "YOUR TEAM" --name Kandelo` first and use the
+live URL it prints.
+Use its origin without a trailing slash or path.
+
+Run from the repository root:
+
+```bash
+KANDELO_SPACE_URL='https://YOUR-KANDELO.space.fast'
+
+./run.sh build-browser --base / --out .context/kandelo-spacefast-static \
+  --cors-proxy '/cors-proxy?url=' --signalling-url /signalling
+
+scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
+  .context/kandelo-spacefast-static --allow-referer "$KANDELO_SPACE_URL"
+
+# Replace BUNDLE_DIR with the final directory printed by the previous command.
+sf publish "BUNDLE_DIR" --prebuilt --space "$KANDELO_SPACE_URL" --wait
+```
+
+The publish command updates that Space's live version and preserves its
+access settings. Both clients must have access to a private Space. The
+Space's database is supplied automatically; the services create their tables
+on first use. Reload existing tabs after deploying the new proxy protocol.
+Build and packaging commands do not sign in or publish. See the
+[full deployment guide](apps/spacefast-cors-proxy/README.md#combined-kandelo-site)
+for custom origins, platform limits and the experimental separate proxy.
 
 ## Porting Software
 

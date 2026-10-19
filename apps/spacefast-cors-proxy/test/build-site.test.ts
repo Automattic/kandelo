@@ -23,9 +23,9 @@ test("site packager preserves the built app and emits a compiled file-router han
   const { stdout } = await execute(process.execPath, [builder, root]);
   const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
   assert.deepEqual((await readdir(output)).sort(), ["_headers", "functions", "index.html", "service-worker.js", "sf.jsonc", "vfs-groups"]);
-  assert.deepEqual((await readdir(join(output, "functions"))).sort(), ["cors-proxy", "cors-proxy-session.php", "signalling.mjs"]);
+  assert.deepEqual((await readdir(join(output, "functions"))).sort(), ["_signalling.mjs", "cors-proxy", "cors-proxy-session.php", "signalling.mjs"]);
   assert.ok((await readFile(join(output, "functions/cors-proxy-session.php"), "utf8")).includes('$approved = null;'));
-  assert.deepEqual(await readdir(join(output, "functions", "cors-proxy")), ["[...rest].mjs"]);
+  assert.deepEqual((await readdir(join(output, "functions", "cors-proxy"))).sort(), ["[...rest].mjs", "_handler.mjs"]);
   assert.equal(await readFile(join(output, "index.html"), "utf8"), "<h1>Kandelo</h1>");
   assert.equal(await readFile(join(output, "vfs-groups", "manifest.json"), "utf8"), "{}");
   const config = JSON.parse(await readFile(join(output, "sf.jsonc"), "utf8"));
@@ -33,7 +33,12 @@ test("site packager preserves the built app and emits a compiled file-router han
   const headers = await readFile(join(output, "_headers"), "utf8");
   for (const line of ["Cross-Origin-Opener-Policy: same-origin", "Cross-Origin-Embedder-Policy: require-corp", "Cross-Origin-Resource-Policy: same-origin"]) assert.ok(headers.includes(line));
   const workerPath = join(output, "functions", "cors-proxy", "[...rest].mjs");
-  const worker = await readFile(workerPath, "utf8");
+  for (const entry of [workerPath, join(output, "functions", "signalling.mjs")]) {
+    // Match the official CLI's route admission: its default-export scanner
+    // cannot discover esbuild's `export { binding as default }` form.
+    assert.match(await readFile(entry, "utf8"), /\bexport\s+default\b/);
+  }
+  const worker = await readFile(join(output, "functions", "cors-proxy", "_handler.mjs"), "utf8");
   assert.ok(worker.includes('import("cloudflare:sockets")'));
   assert.ok(!/node:|BEGIN PRIVATE KEY/.test(worker));
   const { default: route } = await import(pathToFileURL(workerPath).href);
@@ -110,7 +115,8 @@ test("a Spacefast app using a separate proxy can omit the local proxy route", as
   const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
   const { stdout } = await execute(process.execPath, [builder, root, "--without-proxy"]);
   const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
-  assert.deepEqual(await readdir(join(output, "functions")), ["signalling.mjs"]);
+  assert.deepEqual((await readdir(join(output, "functions"))).sort(), ["_signalling.mjs", "signalling.mjs"]);
+  assert.match(await readFile(join(output, "functions", "signalling.mjs"), "utf8"), /\bexport\s+default\b/);
   assert.equal(await readFile(join(output, "index.html"), "utf8"), "<h1>Kandelo</h1>");
   assert.ok((await readFile(join(output, "_headers"), "utf8")).includes("Cross-Origin-Embedder-Policy: require-corp"));
   await assert.rejects(execute(process.execPath, [builder, root, "--without-proxy", "--allow-referer", "https://site.example"]), /cannot be used/);

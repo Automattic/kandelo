@@ -312,9 +312,10 @@ The command requires at least one `--allow-referer` and prints a unique
 `handler.mjs`, `functions/cors-proxy-session.php` and `sf.jsonc`. It does
 not install, sign in or publish. The
 approved list is compiled into the worker and takes precedence over a runtime
-environment override. Enable the Space's database capability/`env.DB` binding
-to use the default guest limiter. The PHP bridge and worker must share the
-same Space database. Missing verified identity or storage returns 503; do not
+environment override. Spacefast supplies the worker's `env.DB` binding and
+the native PHP database automatically; no connection string or separate
+database-enable command is needed. Both use the same Space database.
+Missing verified identity or storage returns 503; do not
 disable limiting to work around either failure.
 
 Publish that generated directory as its own Functions Space using the chosen
@@ -345,25 +346,66 @@ supported independently of Spacefast.
 The package also includes [Spacefast signalling](../signalling/spacefast/README.md)
 for named sessions and rooms, backed by atomic MySQL updates.
 
+Install the [official CLI](https://spacefast.com/docs/cli/) and sign in once:
+
+```sh
+sf auth login
+```
+
+Use an existing Space's canonical live URL. To create an empty Space first:
+
+```sh
+sf spaces add --team "YOUR TEAM" --name Kandelo
+```
+
+Use the URL printed by that command, not an access link or an immutable
+version URL. Creating the Space first lets the proxy's exact Referer policy
+approve its actual app origin. New Spaces inherit the team's access defaults;
+publishing to an existing Space preserves its access settings.
+Set `KANDELO_SPACE_URL` to the origin without a trailing slash or path.
+
 Build the app with the same-origin proxy, then package the generated output:
 
 ```sh
+KANDELO_SPACE_URL='https://YOUR-KANDELO.space.fast'
+
 ./run.sh build-browser --base / --out .context/kandelo-spacefast-static \
   --cors-proxy '/cors-proxy?url=' --signalling-url /signalling
 scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
   .context/kandelo-spacefast-static \
-  --allow-referer https://YOUR-KANDELO.space.fast
+  --allow-referer "$KANDELO_SPACE_URL"
+
+# Replace BUNDLE_DIR with the final directory printed by the packager.
+sf publish "BUNDLE_DIR" --prebuilt --space "$KANDELO_SPACE_URL" --wait
 ```
 
-The second command prints a unique `.context/spacefast-kandelo-build-*`
+The packaging command prints a unique `.context/spacefast-kandelo-build-*`
 directory. It contains the static app, a bundled
 `functions/cors-proxy/[...rest].mjs`,
 `functions/cors-proxy-session.php`, `functions/signalling.mjs`, `sf.jsonc`
-and the COOP/COEP/CORP response headers for documents and worker
+and underscore-prefixed bundled helpers. The public route modules retain
+literal `export default` entry points so CLI 0.5.0 discovers them; helper
+names start with `_` so they never claim extra routes. It also contains
+the COOP/COEP/CORP response headers for documents and worker
 scripts, including clean document URLs. Binary downloads have no custom
 isolation headers: Spacefast cannot serve files above 100 MiB through its
 PHP header-serving lane. Shared memory isolation remains on pages and workers.
-Publish that directory through the Functions-aware Spacefast publishing flow.
+`sf publish --prebuilt` detects the Functions configuration and publishes
+that generated directory. It skips Kandelo compilation and dependency
+installation. `--wait` waits for the live version; add `--dry-run` to inspect
+the local publish plan without uploading. Do not publish the repository or
+the unwrapped Vite output. Spacefast supplies `env.DB` and the native PHP
+database automatically, and the services create their own tables on first
+use. No database connection string belongs in the build. Use a signed-in,
+team-owned Space: unclaimed Spaces restrict outbound hosts, which prevents
+the CORS proxy from fetching arbitrary public assets. See Spacefast's
+[Functions](https://spacefast.com/docs/functions/) and
+[publish CLI](https://spacefast.com/docs/cli/publish/) references.
+
+After publication, open the canonical live URL and reload existing tabs so
+they use the new proxy-session handshake. Private Spaces require both peers
+to have access. Add another `--allow-referer` for every custom app origin;
+the list admits exact origins, not every `space.fast` subdomain.
 Packaging omits the portable `signalling/piplet.php` from the Spacefast
 output, where `/signalling` uses the database-backed Function. The original
 static build retains its PHP endpoint for WP Cloud.
