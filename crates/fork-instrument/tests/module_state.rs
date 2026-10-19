@@ -965,7 +965,10 @@ fn literal_segment_offsets_do_not_add_globals() {
     let bytes = instrument_wat(wat);
     validate(&bytes);
     let module = Module::from_buffer(&bytes).expect("parse instrumented module");
-    let bootstrap = local(&module, export_function(&module, WPK_FORK_EXPORT_MODULE_BOOTSTRAP));
+    let bootstrap = local(
+        &module,
+        export_function(&module, WPK_FORK_EXPORT_MODULE_BOOTSTRAP),
+    );
     let mut preceding = Vec::new();
     let mut data_offsets = Vec::new();
     let mut element_offsets = Vec::new();
@@ -991,6 +994,53 @@ fn literal_segment_offsets_do_not_add_globals() {
     });
     assert_eq!(data_offsets, [Some(16), Some(32), None]);
     assert_eq!(element_offsets, [Some(3)]);
+}
+
+#[test]
+fn large_active_data_initialization_uses_bounded_helpers() {
+    const DATA_SEGMENTS: usize = 2050;
+    const MAX_PER_HELPER: usize = 1024;
+    let mut wat =
+        String::from("(module (@custom \"dylink.0\" (before first) \"state-only\") (memory 1)");
+    for offset in 0..DATA_SEGMENTS {
+        wat.push_str(&format!("(data (i32.const {offset}) \"x\")"));
+    }
+    wat.push(')');
+    let bytes = instrument_wat(&wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).expect("parse instrumented module");
+    for (export, expected_instruction) in [
+        (WPK_FORK_EXPORT_MODULE_BOOTSTRAP, "memory.init"),
+        (WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP, "data.drop"),
+    ] {
+        let entry = local(&module, export_function(&module, export));
+        let mut helpers = Vec::new();
+        walk(entry, entry.entry_block(), &mut |instr| {
+            if let Instr::Call(call) = instr {
+                helpers.push(call.func);
+            }
+            assert!(
+                !matches!(instr, Instr::MemoryInit(_) | Instr::DataDrop(_)),
+                "{export} must delegate large segment replay"
+            );
+        });
+        assert_eq!(helpers.len(), 3, "{export} must emit three bounded helpers");
+        let mut total = 0;
+        for helper in helpers {
+            let helper = local(&module, helper);
+            let mut count = 0;
+            walk(helper, helper.entry_block(), &mut |instr| {
+                if (expected_instruction == "memory.init" && matches!(instr, Instr::MemoryInit(_)))
+                    || (expected_instruction == "data.drop" && matches!(instr, Instr::DataDrop(_)))
+                {
+                    count += 1;
+                }
+            });
+            assert!(count > 0 && count <= MAX_PER_HELPER);
+            total += count;
+        }
+        assert_eq!(total, DATA_SEGMENTS);
+    }
 }
 
 #[test]

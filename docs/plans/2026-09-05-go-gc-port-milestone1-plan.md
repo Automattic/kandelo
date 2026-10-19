@@ -4119,3 +4119,18 @@ errors; focused Vitest was stopped during its all-fixture global setup
 when system unused memory fell below 2 GiB. Neither result validates
 the merged host runtime. Do not start the full FrankenPHP build at that
 headroom.
+
+**2026-10-19 — Bound active-data replay helper size.** The generic
+module-state transform previously put every active-data `memory.init`
+and `data.drop` operation into one bootstrap function. For the 100,000-
+segment Go linker output, that made very large individual Wasm functions
+in addition to the segment metadata. The transform now keeps small
+modules unchanged but splits modules with more than 1,024 active data
+segments into ordered helpers of at most 1,024 segments each, separately
+for parent initialization and thread-only segment consumption. A
+2,050-segment regression validates both three-helper paths, instruction
+counts, and the emitted Wasm; all 390 fork-instrument crate tests passed
+on the final change.
+This bounds individual helper size without coalescing data or changing
+replay order, but does not establish a lower total instrumenter RSS or a
+successful FrankenPHP build. The full build still needs more free RAM.

@@ -76,6 +76,13 @@ const TABLE_PAGE_SHIFT: u32 = WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT as u32;
 const TABLE_PAGE_SIZE: u64 = 1 << TABLE_PAGE_SHIFT;
 const GLOBAL_RECIPE_PAYLOAD_SIZE: u32 = 4;
 const WASM32_MAX_PAGES: u64 = 1 << 16;
+const ACTIVE_DATA_PER_HELPER: usize = 1024;
+
+#[derive(Clone, Copy)]
+enum ActiveDataReplay {
+    Initialize,
+    DropOnly,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct GlobalState {
@@ -2426,6 +2433,7 @@ fn emit_bootstrap_helper(
     plan: &ModuleStatePlan,
     bootstrap_done: GlobalId,
 ) -> Result<FunctionId> {
+    let data_helpers = active_data_helpers(module, &plan.active_data, ActiveDataReplay::Initialize);
     let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
     {
         let mut body = builder.func_body();
@@ -2440,8 +2448,14 @@ fn emit_bootstrap_helper(
                     // and fork children to skip the parent-only phase.
                     emit_active_element_initializers(initialize, &plan.active_elements, true)
                         .expect("active element segment length fits u32");
-                    emit_active_data_initializers(initialize, &plan.active_data)
-                        .expect("active data segment length fits u32");
+                    if let Some(helpers) = &data_helpers {
+                        for &helper in helpers {
+                            initialize.call(helper);
+                        }
+                    } else {
+                        emit_active_data_initializers(initialize, &plan.active_data)
+                            .expect("active data segment length fits u32");
+                    }
                     initialize.i32_const(1).global_set(bootstrap_done);
                     if let Some(start) = plan.original_start {
                         initialize.call(start);
@@ -2458,6 +2472,7 @@ fn emit_thread_bootstrap_helper(
     plan: &ModuleStatePlan,
     bootstrap_done: GlobalId,
 ) -> Result<FunctionId> {
+    let data_helpers = active_data_helpers(module, &plan.active_data, ActiveDataReplay::DropOnly);
     let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
     {
         let mut body = builder.func_body();
@@ -2472,8 +2487,14 @@ fn emit_thread_bootstrap_helper(
                     // converted active data without copying or rerunning start.
                     emit_active_element_initializers(initialize, &plan.active_elements, true)
                         .expect("active element segment length fits u32");
-                    for active in &plan.active_data {
-                        initialize.instr(DataDrop { data: active.id });
+                    if let Some(helpers) = &data_helpers {
+                        for &helper in helpers {
+                            initialize.call(helper);
+                        }
+                    } else {
+                        for active in &plan.active_data {
+                            initialize.instr(DataDrop { data: active.id });
+                        }
                     }
                     initialize.i32_const(1).global_set(bootstrap_done);
                 },
@@ -2481,6 +2502,39 @@ fn emit_thread_bootstrap_helper(
             );
     }
     Ok(builder.finish(Vec::new(), &mut module.funcs))
+}
+
+fn active_data_helpers(
+    module: &mut Module,
+    active_data: &[ActiveData],
+    replay: ActiveDataReplay,
+) -> Option<Vec<FunctionId>> {
+    if active_data.len() <= ACTIVE_DATA_PER_HELPER {
+        return None;
+    }
+    Some(
+        active_data
+            .chunks(ACTIVE_DATA_PER_HELPER)
+            .map(|chunk| {
+                let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+                {
+                    let mut body = builder.func_body();
+                    match replay {
+                        ActiveDataReplay::Initialize => {
+                            emit_active_data_initializers(&mut body, chunk)
+                                .expect("active data segment length fits u32");
+                        }
+                        ActiveDataReplay::DropOnly => {
+                            for active in chunk {
+                                body.instr(DataDrop { data: active.id });
+                            }
+                        }
+                    }
+                }
+                builder.finish(Vec::new(), &mut module.funcs)
+            })
+            .collect(),
+    )
 }
 
 fn emit_active_element_initializers(
