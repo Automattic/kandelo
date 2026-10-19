@@ -3106,6 +3106,14 @@ or application-owned scanout. It never reads live guest memory during
 that detached presentation phase and never exposes a partially drawn
 application frame. Node retains the same state without a canvas.
 
+Host address-space retirement distinguishes exec from process exit. Exec
+flushes and removes old buffer mappings but retains buffer ownership and
+DRM master state for open descriptions the kernel kept. The replacement
+can map a retained handle into its new memory and recover its pixels.
+Kernel close-on-exec and final-reference callbacks still destroy buffers
+and release master state; trap/exit cleanup retains its process teardown
+backstop. Both Node and browser use this same path.
+
 The browser's optional image-owned `presentation.displayScale` advertises
 a readable virtual monitor for bitmap interfaces. The guest mode, 96-DPI
 reference dimensions, scanout, input range, and cursor use one grid. Without

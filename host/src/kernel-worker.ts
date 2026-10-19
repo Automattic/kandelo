@@ -9084,10 +9084,11 @@ export class CentralizedKernelWorker {
   private releaseProcessViews(
     pid: number,
     expectedMemory: WebAssembly.Memory,
+    transition: "exit" | "exec" = "exit",
   ): boolean {
     const registration = this.processes.get(pid);
     if (!registration || registration.memory !== expectedMemory) return false;
-    this.#kernel.releaseProcessViews(pid);
+    this.#kernel.releaseProcessViews(pid, transition);
     return true;
   }
 
@@ -10118,7 +10119,7 @@ export class CentralizedKernelWorker {
       return false;
     }
     if (registration) {
-      this.releaseProcessViews(pid, registration.memory);
+      this.releaseProcessViews(pid, registration.memory, "exec");
     }
     (this.execHandoffPids ??= new Set()).add(pid);
     for (const channel of registration?.channels ?? []) {

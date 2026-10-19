@@ -386,3 +386,28 @@ describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
     expectPattern(readPattern(memReused, BO_ADDR, BO_SIZE), 0x51);
   });
 });
+
+
+it("exec flushes the old mapping and permits the retained GEM handle to bind new memory", () => {
+  let active = newMemory();
+  const old = active;
+  const reg = new GbmBoRegistry({ getProcessMemory: () => active });
+  reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+  reg.bind(100, 1, BO_ADDR, BO_SIZE);
+  fillPattern(old, BO_ADDR, BO_SIZE, 0x61);
+  reg.releaseProcessMappings(100);
+  expect(reg.get(100, 1)).toBeDefined();
+  expect(reg.get(100, 1)?.binding).toBeNull();
+  expectPattern(reg.pixelView(1)!, 0x61);
+  // Retired memory must never overwrite the preserved backing.
+  fillPattern(old, BO_ADDR, BO_SIZE, 0xa5);
+  active = newMemory();
+  reg.bind(100, 1, BO_ADDR, BO_SIZE);
+  reg.primeBindFromSab(100, 1, active);
+  expectPattern(readPattern(active, BO_ADDR, BO_SIZE), 0x61);
+  fillPattern(active, BO_ADDR, BO_SIZE, 0x72);
+  reg.syncCreatorToSab(1);
+  expectPattern(reg.pixelView(1)!, 0x72);
+  reg.releaseProcess(100);
+  expect(reg.get(100, 1)).toBeUndefined();
+});

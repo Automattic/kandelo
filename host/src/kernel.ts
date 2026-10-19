@@ -1103,10 +1103,11 @@ export class WasmPosixKernel {
    * Release every device-side alias owned by one process generation.
    *
    * Normal guest close/unmap paths remain authoritative for device semantics;
-   * this idempotent host backstop covers exec, traps, and forced termination
-   * where those guest hooks may never run.
+   * exec retires address-space aliases while retaining open DRI resources.
+   * The exit backstop also releases ownership for traps or forced termination
+   * where guest cleanup hooks may never run.
    */
-  releaseProcessViews(pid: number): void {
+  releaseProcessViews(pid: number, transition: "exit" | "exec" = "exit"): void {
     this.gl_submit_queue.removePid(pid);
     // Hand a GL-claimed CRTC back to the vblank pump BEFORE unbind, which
     // deletes the binding that holds `claimedKmsCrtc`. Afterwards the claim
@@ -1117,8 +1118,15 @@ export class WasmPosixKernel {
     this.releaseClaimedKmsCanvas(pid);
     this.gl.unbind(pid);
     this.framebuffers.unbind(pid);
-    this.bos.releaseProcess(pid);
-    if (this.kms.isMasterPid(pid)) this.kms.dropMaster();
+    if (transition === "exec") {
+      // WHY: Rust already closed CLOEXEC descriptors. Remaining GEM handles,
+      // scanout and cursor references belong to surviving open descriptions,
+      // not to the old address space. Only their mappings retire here.
+      this.bos.releaseProcessMappings(pid);
+    } else {
+      this.bos.releaseProcess(pid);
+      if (this.kms.isMasterPid(pid)) this.kms.dropMaster();
+    }
   }
 
   /**

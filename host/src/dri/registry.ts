@@ -233,6 +233,14 @@ export class GbmBoRegistry {
     for (const l of this.listeners) l(pid, bo_id, "unbind");
   }
 
+  /** Exec replaces mappings, while non-CLOEXEC GEM handles remain open.
+   * Flush the retiring address space without discarding kernel-owned BOs. */
+  releaseProcessMappings(pid: number): void {
+    for (const [boId, entry] of this.bos) {
+      if (entry.bindingsByPid.has(pid)) this.unbind(pid, boId);
+    }
+  }
+
   /**
    * Remove every binding and handle owned by one process.
    *
