@@ -17,7 +17,7 @@ test("a machine switch shows teardown then load progress @slow", async ({
   test.skip(browserName !== "chromium", "needs CDP network emulation");
   test.setTimeout(400_000);
 
-  await page.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
+  await page.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 240_000,
   });
