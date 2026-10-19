@@ -4099,3 +4099,23 @@ drift; the new code was checked against `rustfmt` suggestions. This is
 an instrumenter-size reduction opportunity, not evidence of a lower
 full-build RSS peak. No full FrankenPHP rebuild or browser demo run was
 started under the current memory headroom.
+
+**2026-10-19 — Check latest-main integration and ABI policy.**
+`origin/main` advanced 27 commits to `90283c479`, including independent
+ABI 50 network changes. A local trial merge had four content conflicts:
+the ABI summary, ABI guide, Node worker-transfer list, and generated
+resolver bundle. The combined generated resolver bundle matched the
+source, and the Node transfer list can preserve both rootfs-image
+ownership and remote-peer ports. However, the ABI snapshot classifier
+compared the merged snapshot against current main
+and rejected the added preallocated-thread-slot declaration as a
+change to the existing `process_memory_layout` section. The trial
+merge was discarded before push; the branch remains on its previous
+base with the two offset-replay commits pushed. A correct integration
+requires ABI 51, an updated snapshot, regenerated ABI constants, and
+rebuilt ABI-bound artifacts, not a relaxed compatibility check.
+A direct host `tsc` run also reported existing unrelated project-wide
+errors; focused Vitest was stopped during its all-fixture global setup
+when system unused memory fell below 2 GiB. Neither result validates
+the merged host runtime. Do not start the full FrankenPHP build at that
+headroom.
