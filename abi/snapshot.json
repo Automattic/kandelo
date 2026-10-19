@@ -1151,7 +1151,18 @@
     ]
   },
   "host_adapter": {
-    "kernel_export_lifecycles": [],
+    "kernel_export_lifecycles": [
+      {
+        "name": "kernel_kms_cursor_configure",
+        "optional_since_abi": 50,
+        "required_from_abi": 51
+      },
+      {
+        "name": "kernel_kms_cursor_read",
+        "optional_since_abi": 50,
+        "required_from_abi": 51
+      }
+    ],
     "manifest": {
       "abi_version": 50,
       "channel_data_offset": 72,
@@ -1228,6 +1239,8 @@
       "kernel_clipboard_guest_read",
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
+      "kernel_kms_cursor_configure",
+      "kernel_kms_cursor_read",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
@@ -2701,6 +2714,16 @@
       "kind": "func",
       "name": "kernel_kms_commit_count",
       "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_kms_cursor_configure",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_kms_cursor_read",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",

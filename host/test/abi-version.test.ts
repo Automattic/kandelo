@@ -165,6 +165,20 @@ describe("ABI version marker", () => {
     );
   });
 
+  it("loads the cursor-capable kernel without a cursor host callback", async () => {
+    const module = await WebAssembly.compile(kernelWasm as BufferSource);
+    expect(WebAssembly.Module.imports(module).map(entry => entry.name))
+      .not.toContain("host_kms_cursor");
+    // This harness supplies only declared imports and never opts into cursor
+    // support. It represents a host that predates the optional interface.
+    const instance = await instantiateKernelOnly(kernelWasm);
+    const configure = instance.exports.kernel_kms_cursor_configure as (version: number) => number;
+    const read = instance.exports.kernel_kms_cursor_read as (pointer: number, length: number) => number;
+    expect(typeof read).toBe("function");
+    expect(configure(2)).toBe(-95);
+    expect(configure(1)).toBe(1);
+  });
+
   it("freshly-built user programs export a matching __abi_version", async () => {
     // Pick a program we know build-programs.sh regenerates every run.
     const userProg = readFileSync(resolveBinary("programs/exec-caller.wasm"));

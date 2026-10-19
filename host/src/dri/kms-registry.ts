@@ -140,6 +140,27 @@ export class KmsRegistry {
     this.cursorSnapshot();
   }
 
+  /** Protocol 1 carries the complete latest state, never a dangling delta. */
+  applyCursorRecord(bytes: Uint8Array): void {
+    if (bytes.byteLength !== 32) throw new Error("Invalid KMS cursor record");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const pid = view.getInt32(0, true);
+    // Forced process cleanup can retire host views before a queued update
+    // is drained. Such a record must never resurrect the dead owner's BO.
+    if (pid !== 0 && !this.isMasterPid(pid)) return;
+    const bo = view.getUint32(4, true);
+    const width = view.getUint32(8, true);
+    const height = view.getUint32(12, true);
+    const x = view.getInt32(16, true), y = view.getInt32(20, true);
+    const hotX = view.getInt32(24, true), hotY = view.getInt32(28, true);
+    if (bo && (!width || !height || width > 64 || height > 64)) {
+      throw new Error("Invalid KMS cursor image geometry");
+    }
+    const imageChanged = bo !== this.cursorBo || width !== this.cursor.width
+      || height !== this.cursor.height || hotX !== this.cursor.hotX || hotY !== this.cursor.hotY;
+    this.setCursor(pid, imageChanged ? 3 : 2, bo, width, height, x, y, hotX, hotY);
+  }
+
   constructor(private gbm: GbmBoRegistry) {}
 
   addFb(fb: HostFb): void { this.fbs.set(fb.fb_id, fb); }

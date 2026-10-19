@@ -1665,6 +1665,14 @@ export class WasmPosixKernel {
         this.#kernelEntryGate,
       );
       this.#initializationState = "initialized";
+      const exports = this.#instance.exports;
+      const configureCursor = exports.kernel_kms_cursor_configure;
+      const readCursor = exports.kernel_kms_cursor_read;
+      if (typeof configureCursor === "function" && typeof readCursor === "function") {
+        if (configureCursor(1) !== 1) throw new Error("Kernel rejected KMS cursor protocol 1");
+      } else if (configureCursor || readCursor) {
+        throw new Error("Kernel has an incomplete KMS cursor transport");
+      }
       this.#publishHostDirectoryRoots();
     } catch (error) {
       this.#abortInitialization(error);
@@ -2963,10 +2971,6 @@ export class WasmPosixKernel {
           return 0;
         },
         host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
-        host_kms_cursor: (pid: number, _crtc: number, flags: number, boId: number,
-          width: number, height: number, x: number, y: number, hotX: number, hotY: number): void => {
-          this.kms.setCursor(pid, flags, boId, width, height, x, y, hotX, hotY);
-        },
         host_kms_set_fb: (pid: number, crtc_id: number, fb_id: number): void => {
           this.kms.setFb(crtc_id, fb_id);
           this.callbacks.onKmsScanoutActive?.();

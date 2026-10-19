@@ -163,6 +163,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_handle_channel_record",
   "kernel_inject_datagram",
   "kernel_ioctl",
+  "kernel_kms_cursor_read",
   "kernel_ipc_shm_read_chunk",
   "kernel_ipc_shm_write_chunk",
   "kernel_mq_drain_notification",
@@ -273,6 +274,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_rootfs_set_foreign_mount_roots":
     case "kernel_watch_fs_changes":
     case "kernel_drain_fs_changes":
+    case "kernel_kms_cursor_read":
     case "kernel_rootfs_stat_mode":
     case "kernel_rootfs_unlink_file":
     case "kernel_truncate":
@@ -400,6 +402,7 @@ function isKernelScratchExportName(
     case "kernel_rootfs_set_foreign_mount_roots":
     case "kernel_watch_fs_changes":
     case "kernel_drain_fs_changes":
+    case "kernel_kms_cursor_read":
     case "kernel_rootfs_stat_mode":
     case "kernel_rootfs_inspect_stat":
     case "kernel_rootfs_inspect_read_file":

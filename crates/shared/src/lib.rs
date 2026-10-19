@@ -3568,6 +3568,8 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_ipc_shmdt_for_process"),
         HostAdapterKernelExport::required("kernel_ipc_shmdt_for_task"),
         HostAdapterKernelExport::required("kernel_is_fd_nonblock"),
+        HostAdapterKernelExport::optional_until("kernel_kms_cursor_configure", 50, 51),
+        HostAdapterKernelExport::optional_until("kernel_kms_cursor_read", 50, 51),
         HostAdapterKernelExport::required("kernel_mark_process_signaled"),
         HostAdapterKernelExport::required("kernel_pcm_claim_transport"),
         HostAdapterKernelExport::required("kernel_pcm_clock_update"),

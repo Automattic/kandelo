@@ -223,6 +223,14 @@ function signatures(
       parameters: [i32, i32, i32, i32],
       result: i32,
     },
+    kernel_kms_cursor_configure: {
+      parameters: [i32],
+      result: i32,
+    },
+    kernel_kms_cursor_read: {
+      parameters: [pointer, i32],
+      result: i32,
+    },
     kernel_ioctl: {
       parameters: [i32, i32, pointer, i32, i32],
       result: i32,
@@ -723,7 +731,11 @@ export function createKernelScratchTestInstance(
   const entries = Object.entries(signatures(pointerWidth)).filter(
     ([name]) =>
       (selected === undefined || selected.has(name))
-      && !excluded.has(name),
+      && !excluded.has(name)
+      // Optional transports must be absent unless the fixture supplies them;
+      // a zero-returning stub would falsely negotiate unsupported hardware.
+      && (!(name === "kernel_kms_cursor_configure" || name === "kernel_kms_cursor_read")
+        || selected?.has(name) || typeof resolveExports()[name] === "function"),
   );
   if (selected !== undefined) {
     const known = new Set(entries.map(([name]) => name));

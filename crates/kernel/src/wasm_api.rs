@@ -342,18 +342,6 @@ unsafe extern "C" {
     ) -> i32;
     fn host_kms_rmfb(pid: i32, fb_id: u32);
     fn host_kms_set_fb(pid: i32, crtc_id: u32, fb_id: u32);
-    fn host_kms_cursor(
-        pid: i32,
-        crtc_id: u32,
-        flags: u32,
-        bo_id: u32,
-        width: u32,
-        height: u32,
-        x: i32,
-        y: i32,
-        hot_x: i32,
-        hot_y: i32,
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1189,6 +1177,7 @@ impl HostIO for WasmHostIO {
     }
 
     fn kms_drop_master(&mut self, pid: i32) {
+        CURSOR_TRANSPORT.lock().clear();
         unsafe { host_kms_drop_master(pid) }
     }
 
@@ -1233,24 +1222,17 @@ impl HostIO for WasmHostIO {
         unsafe { host_kms_set_fb(pid, crtc_id, fb_id) }
     }
 
+    fn kms_cursor_supported(&mut self) -> bool {
+        CURSOR_TRANSPORT.lock().supported()
+    }
+
     fn kms_cursor(
-        &mut self,
-        pid: i32,
-        crtc_id: u32,
-        flags: u32,
-        bo_id: u32,
-        width: u32,
-        height: u32,
-        x: i32,
-        y: i32,
-        hot_x: i32,
-        hot_y: i32,
+        &mut self, pid: i32, _crtc_id: u32, flags: u32, bo_id: u32,
+        width: u32, height: u32, x: i32, y: i32, hot_x: i32, hot_y: i32,
     ) {
-        unsafe {
-            host_kms_cursor(
-                pid, crtc_id, flags, bo_id, width, height, x, y, hot_x, hot_y,
-            )
-        }
+        CURSOR_TRANSPORT.lock().update(
+            pid, flags, bo_id, width, height, x, y, hot_x, hot_y,
+        );
     }
 }
 
@@ -15710,6 +15692,31 @@ pub extern "C" fn kernel_input_event(
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
     crate::input::set_canvas_dims(width, height);
+}
+
+static CURSOR_TRANSPORT: spin::Mutex<crate::dri::cursor::CursorTransport> =
+    spin::Mutex::new(crate::dri::cursor::CursorTransport::new());
+
+/// Negotiate cursor protocol 1. Older hosts never call this and cursor
+/// capability remains disabled. No new host import is needed under ABI 50.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kms_cursor_configure(version: u32) -> i32 {
+    CURSOR_TRANSPORT.lock().configure(version)
+}
+
+/// Read the latest complete cursor state, coalescing image and motion updates.
+/// Protocol 1: eight little-endian words (pid, BO, width, height, x, y, hot_x,
+/// hot_y). Returns 32 after copying, 0 when unchanged, or negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kms_cursor_read(out_ptr: *mut u8, out_len: u32) -> i32 {
+    if out_ptr.is_null() || out_len < 32 { return -(Errno::EINVAL as i32); }
+    let mut transport = CURSOR_TRANSPORT.lock();
+    let Some(words) = transport.take() else { return 0 };
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, 32) };
+    for (chunk, word) in out.chunks_exact_mut(4).zip(words) {
+        chunk.copy_from_slice(&word.to_le_bytes());
+    }
+    32
 }
 
 /// Number of successful page-flip commits on the given crtc.

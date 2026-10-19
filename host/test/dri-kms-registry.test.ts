@@ -240,3 +240,33 @@ it("refreshes the live cursor producer without flushing beyond the packed image"
   mapped.fill(1);
   expect(kms.cursorSnapshot().pixels).toBeNull();
 });
+
+
+it("consumes full cursor records without recopying motion images or resurrecting retired owners", () => {
+  const bos = new GbmBoRegistry();
+  bos.create({ pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8 });
+  bos.pixelView(1)!.set([0, 0, 255, 255]);
+  const kms = new KmsRegistry(bos);
+  const record = (words: number[]) => {
+    const bytes = new Uint8Array(32);
+    const view = new DataView(bytes.buffer);
+    words.forEach((word, i) => view.setUint32(i * 4, word, true));
+    return bytes;
+  };
+  kms.setMasterPid(7);
+  kms.applyCursorRecord(record([7, 1, 2, 2, 30, 40, -3, 1]));
+  const pixels = kms.cursorSnapshot().pixels;
+  expect(pixels).not.toBeNull();
+  kms.applyCursorRecord(record([7, 1, 2, 2, -5, 70, -3, 1]));
+  expect(kms.cursorSnapshot()).toMatchObject({ x: -5, y: 70, hotX: -3 });
+  expect(kms.cursorSnapshot().pixels).toBe(pixels);
+  kms.dropMaster();
+  bos.destroy(7, 1);
+  kms.applyCursorRecord(record([7, 1, 2, 2, 30, 40, 0, 0]));
+  expect(kms.cursorSnapshot().pixels).toBeNull();
+  kms.setMasterPid(8);
+  kms.applyCursorRecord(record([8, 0, 0, 0, 1, 2, 0, 0]));
+  expect(kms.cursorSnapshot()).toMatchObject({ x: 1, y: 2, pixels: null });
+  kms.applyCursorRecord(record([0, 0, 0, 0, 0, 0, 0, 0]));
+  expect(kms.cursorSnapshot().pixels).toBeNull();
+});

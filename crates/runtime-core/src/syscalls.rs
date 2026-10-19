@@ -1168,7 +1168,7 @@ fn handle_dri_ioctl(
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             cap.value = match cap.capability {
                 DRM_CAP_DUMB_BUFFER => 1,
-                0x8 | 0x9 => 64, // DRM_CAP_CURSOR_WIDTH / HEIGHT
+                0x8 | 0x9 => if host.kms_cursor_supported() { 64 } else { 0 },
                 DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
                 _ => 0,
             };
@@ -2019,6 +2019,11 @@ fn handle_dri_card_ioctl(
             }
             if !kms_state(proc, ofd_idx)?.holds_master {
                 return Err(Errno::EACCES);
+            }
+            // WHY: older hosts must instantiate without cursor imports, but
+            // must not accept invisible cursor state or retain its BOs.
+            if !host.kms_cursor_supported() {
+                return Err(Errno::ENOTSUP);
             }
             let mut bo_id = 0;
             if flags & 1 != 0 {
@@ -21785,6 +21790,7 @@ mod tests {
         /// Recorded pid for every `gl_unbind` call.
         gl_unbind_calls: Vec<i32>,
         proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
+        cursor_supported: bool,
         /// Simulated guest linear memory for `proc_read_bytes` /
         /// `proc_write_bytes`. Without it every cross-memory call fails with
         /// the trait's `-ENOSYS` default, which would make a test that means
@@ -21936,6 +21942,7 @@ mod tests {
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
                 proc_write_calls: Vec::new(),
+                cursor_supported: false,
                 // 64 KiB — one wasm page, enough for every address these
                 // tests use and small enough that a deliberately-high
                 // address is out of range.
@@ -22366,6 +22373,8 @@ mod tests {
     }
 
     impl HostIO for MockHostIO {
+        fn kms_cursor_supported(&mut self) -> bool { self.cursor_supported }
+
         fn host_udp_source_address(&mut self, _dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
             self.udp_source_result
         }
@@ -48462,6 +48471,7 @@ impl HostIO for RelSymlinkMock {
             crate::dri::bo::reset_registry();
             let mut proc = Process::new(1);
             let mut host = MockHostIO::new();
+            host.cursor_supported = true;
             let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
             let mut request = [0u8; 36];
             let fill = |buf: &mut [u8], words: [u32; 9]| {
@@ -48494,7 +48504,22 @@ impl HostIO for RelSymlinkMock {
             )
             .unwrap();
             let handle = u32::from_le_bytes(create[16..20].try_into().unwrap());
+            // An old host has no cursor transport: report no capability and
+            // reject before retaining the otherwise valid image buffer.
+            host.cursor_supported = false;
+            let mut cap = [0u8; 16];
+            cap[..8].copy_from_slice(&8u64.to_le_bytes());
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, &mut cap).unwrap();
+            assert_eq!(u64::from_le_bytes(cap[8..].try_into().unwrap()), 0);
             fill(&mut request, [3, 1, 30, 40, 64, 64, handle, u32::MAX, 1]);
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR2, &mut request),
+                Err(Errno::ENOTSUP));
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            assert_eq!(proc.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo, None);
+            host.cursor_supported = true;
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, &mut cap).unwrap();
+            assert_eq!(u64::from_le_bytes(cap[8..].try_into().unwrap()), 64);
+
             sys_ioctl(
                 &mut proc,
                 &mut host,

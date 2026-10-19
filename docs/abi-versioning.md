@@ -98,6 +98,13 @@ required host callback to an optional kernel-export interface is a separate
 transport change, with its own capability negotiation and compatibility
 validation.
 
+The KMS cursor transport uses this mechanism: `kernel_kms_cursor_configure`
+and `kernel_kms_cursor_read` are optional in ABI 50 and required from ABI
+51. New hosts negotiate protocol 1; older hosts load the kernel with cursor
+capability disabled. No cursor host import is required. See
+[the cursor transport contract](architecture.md) for the record layout and
+ownership rules.
+
 ### Changes that require a version bump
 
 Anything that could make an old compiled binary misbehave against a new

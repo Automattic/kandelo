@@ -33520,6 +33520,19 @@ export class CentralizedKernelWorker {
 
         // Cursor pixels are already owned copies; the detached presenter
         // never reads guest memory and cannot expose an unfinished GL frame.
+        // WHY: consume coalesced state before touching the old cursor BO: a
+        // newer ioctl may already have released it. All Wasm reads stay in
+        // this entry, and the presenter receives only owned pixel copies.
+        if (typeof entry.instance.exports.kernel_kms_cursor_read === "function") {
+          this.#requireMainScratchRegion().withLease(lease => {
+            const pointer = lease.exportPointer(0, 32);
+            const count = this.#invokeEntryScratchExport(
+              entry, lease, "kernel_kms_cursor_read", [pointer, 32],
+            );
+            if (count === 32) this.#kernel.kms.applyCursorRecord(lease.copyOut(0, 32));
+            else if (count !== 0) throw new Error(`Invalid KMS cursor record length: ${count}`);
+          });
+        }
         const cursor = this.#kernel.kms.cursorSnapshot();
         const cursorPlanes = Array.from(this.kmsCursorPlanes, ([crtcId, plane]) => {
           const fb = this.#kernel.kms.currentFb(crtcId);
