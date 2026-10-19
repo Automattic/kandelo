@@ -944,27 +944,7 @@ fn active_segment_offsets_preserve_extended_const_semantics_without_a_shape_gate
 
 #[test]
 fn literal_segment_offsets_do_not_add_globals() {
-    let input = wat::parse_str(
-        r#"
-        (module
-          (import "env" "base" (global $base i32))
-          (memory 1)
-          (table 8 funcref)
-          (func $target)
-          (elem (i32.const 3) $target)
-          (data (i32.const 16) "a")
-          (data (i32.const 32) "b")
-          (data (global.get $base) "c"))
-        "#,
-    )
-    .expect("parse segment fixture");
-    let mut module = Module::from_buffer(&input).expect("parse fixture module");
-    let original_globals = module.globals.iter().count();
-    fork_instrument::module_state::plan(&mut module);
-    assert_eq!(module.globals.iter().count(), original_globals + 1);
-
-    let bytes = instrument_wat(
-        r#"
+    let wat = r#"
         (module
           (@custom "dylink.0" (before first) "state-only")
           (import "env" "base" (global $base i32))
@@ -975,9 +955,42 @@ fn literal_segment_offsets_do_not_add_globals() {
           (data (i32.const 16) "a")
           (data (i32.const 32) "b")
           (data (global.get $base) "c"))
-        "#,
-    );
+        "#;
+    let input = wat::parse_str(wat).expect("parse segment fixture");
+    let mut module = Module::from_buffer(&input).expect("parse fixture module");
+    let original_globals = module.globals.iter().count();
+    fork_instrument::module_state::plan(&mut module);
+    assert_eq!(module.globals.iter().count(), original_globals + 1);
+
+    let bytes = instrument_wat(wat);
     validate(&bytes);
+    let module = Module::from_buffer(&bytes).expect("parse instrumented module");
+    let bootstrap = local(&module, export_function(&module, WPK_FORK_EXPORT_MODULE_BOOTSTRAP));
+    let mut preceding = Vec::new();
+    let mut data_offsets = Vec::new();
+    let mut element_offsets = Vec::new();
+    walk(bootstrap, bootstrap.entry_block(), &mut |instr| {
+        if matches!(instr, Instr::MemoryInit(_) | Instr::TableInit(_)) {
+            let offset = preceding
+                .get(preceding.len() - 3)
+                .expect("segment initialization has offset, source, and length operands");
+            let literal = match offset {
+                Instr::Const(ir::Const {
+                    value: ir::Value::I32(value),
+                }) => Some(*value),
+                Instr::GlobalGet(_) => None,
+                other => panic!("unexpected segment offset operand: {other:?}"),
+            };
+            if matches!(instr, Instr::MemoryInit(_)) {
+                data_offsets.push(literal);
+            } else {
+                element_offsets.push(literal);
+            }
+        }
+        preceding.push(instr.clone());
+    });
+    assert_eq!(data_offsets, [Some(16), Some(32), None]);
+    assert_eq!(element_offsets, [Some(3)]);
 }
 
 #[test]

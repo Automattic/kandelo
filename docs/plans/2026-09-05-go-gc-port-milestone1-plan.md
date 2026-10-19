@@ -4092,7 +4092,8 @@ immutable global, preserving WebAssembly's extended-constant evaluation
 and imported-global semantics. The transform does not merge segments,
 fill the gaps between them, change their indices, or change fork-child
 data replay. A new regression covers mixed literal/imported-global
-offsets; all 389 `fork-instrument` crate tests passed. The previous
+offsets and checks the emitted bootstrap operands; all 389
+`fork-instrument` crate tests passed. The previous
 workspace-wide formatting check found unrelated preexisting formatting
 drift; the new code was checked against `rustfmt` suggestions. This is
 an instrumenter-size reduction opportunity, not evidence of a lower
