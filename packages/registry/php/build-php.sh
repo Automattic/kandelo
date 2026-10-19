@@ -668,48 +668,214 @@ p.write_text(s.replace(anchor, recheck + anchor, 1))
 PY
 fi
 
-# PHP requires one shared-memory backend to be compiled even when callers use
-# opcache.file_cache_only=1. The MAP_ANON backend is the only viable build-time
-# choice for this target, but Kandelo does not yet provide cross-process
-# MAP_SHARED: the normal opcache SHM mode would therefore give FPM workers
-# divergent cache/lock state. Enable the backend only so the file-cache path can
-# be built, then add a target guard below that rejects opcache startup unless
-# file-cache-only mode is explicitly configured. This is a documented runtime
-# boundary, not a claim that the configure probe's fork-sharing semantics pass.
-if [ -f configure ] && ! grep -q "wasm-opcache patch applied" configure; then
-    perl -i.bak -0pe 's/      have_shm_mmap_anon=no\n      ;;/      have_shm_mmap_anon=yes\n      ;; # wasm-opcache patch applied/' configure
-    rm -f configure.bak
+# opcache keeps its cache in one MAP_SHARED|MAP_ANONYMOUS region that the FPM
+# master maps before it forks the workers. Kandelo merges shared mappings across
+# processes only at syscall boundaries (docs/posix-status.md), so a cache that
+# workers share is not a supported model, and comparing a 64 MiB region at every
+# syscall would dominate each request. Map the region MAP_PRIVATE instead: fork
+# copies it, and each process owns a cache that only it reads and writes. The
+# cache locks are fcntl() locks on opcache's lock file, which the kernel keeps
+# across processes. The cost: a worker recompiles scripts another worker cached.
+if [ -f ext/opcache/shared_alloc_mmap.c ] \
+   && ! grep -q "kandelo-opcache-private-mapping" ext/opcache/shared_alloc_mmap.c; then
+    python3 - <<'PY'
+from pathlib import Path
+
+p = Path("ext/opcache/shared_alloc_mmap.c")
+s = p.read_text()
+marker = "#if defined(MAP_ANON) && !defined(MAP_ANONYMOUS)\n"
+sharing = """#if defined(__wasm__) /* kandelo-opcache-private-mapping */
+# define ZEND_OPCACHE_MAP_SHARING MAP_PRIVATE
+#else
+# define ZEND_OPCACHE_MAP_SHARING MAP_SHARED
+#endif
+"""
+if marker not in s or "MAP_SHARED|MAP_ANONYMOUS" not in s:
+    raise SystemExit("opcache private mapping: mmap markers not found")
+s = s.replace(marker, sharing + marker, 1)
+p.write_text(s.replace("MAP_SHARED|MAP_ANONYMOUS", "ZEND_OPCACHE_MAP_SHARING|MAP_ANONYMOUS"))
+PY
 fi
 
+# A root process with opcache.preload_user forks a child that drops to that user
+# and preloads into the shared memory; the parent then reads the result from it.
+# With the private mapping, the child's writes stay in its own copy. The child
+# writes the used part of each segment to an unlinked temporary file, and the
+# parent reads it back at the same addresses, which fork keeps. The parent then
+# sees what it would see through MAP_SHARED, and nothing of the child's private
+# memory. A file, not a pipe: the segments can be larger than a pipe holds.
 if [ -f ext/opcache/ZendAccelerator.c ] \
-   && ! grep -q "kandelo-opcache-file-cache-only" ext/opcache/ZendAccelerator.c; then
+   && ! grep -q "kandelo-opcache-preload-segments" ext/opcache/ZendAccelerator.c; then
     python3 - <<'PY'
 from pathlib import Path
 
 p = Path("ext/opcache/ZendAccelerator.c")
 s = p.read_text()
-marker = "\tfile_cache_only = ZCG(accel_directives).file_cache_only;\n"
-guard = """#if defined(__wasm__) /* kandelo-opcache-file-cache-only */
-\tif (!ZCG(accel_directives).file_cache_only) {
-\t\taccel_startup_ok = false;
-\t\tzend_accel_error_noreturn(
-\t\t\tACCEL_LOG_FATAL,
-\t\t\t\"Kandelo requires opcache.file_cache_only=1 because cross-process MAP_SHARED is unavailable.\");
-\t\treturn SUCCESS;
+replacements = [
+    (
+        "static zend_result accel_finish_startup(void)\n{\n",
+        """#if defined(__wasm__) /* kandelo-opcache-preload-segments */
+static int kandelo_preload_open_segments(void)
+{
+\tchar path[MAXPATHLEN];
+\tint len = snprintf(path, sizeof(path), "%s/opcache-preload-XXXXXX", php_get_temporary_directory());
+\tif (len < 0 || (size_t) len >= sizeof(path)) {
+\t\treturn -1;
+\t}
+\tint fd = mkstemp(path);
+\tif (fd >= 0) {
+\t\tunlink(path);
+\t}
+\treturn fd;
+}
+
+static bool kandelo_preload_write_all(int fd, const void *buf, size_t len)
+{
+\tconst char *p = buf;
+\twhile (len > 0) {
+\t\tssize_t n = write(fd, p, len);
+\t\tif (n < 0 && errno == EINTR) {
+\t\t\tcontinue;
+\t\t}
+\t\tif (n <= 0) {
+\t\t\treturn false;
+\t\t}
+\t\tp += n;
+\t\tlen -= n;
+\t}
+\treturn true;
+}
+
+static bool kandelo_preload_read_all(int fd, void *buf, size_t len, off_t offset)
+{
+\tchar *p = buf;
+\twhile (len > 0) {
+\t\tssize_t n = pread(fd, p, len, offset);
+\t\tif (n < 0 && errno == EINTR) {
+\t\t\tcontinue;
+\t\t}
+\t\tif (n <= 0) {
+\t\t\treturn false;
+\t\t}
+\t\tp += n;
+\t\tlen -= n;
+\t\toffset += n;
+\t}
+\treturn true;
+}
+
+static bool kandelo_preload_send_segments(int fd)
+{
+\tfor (int i = 0; i < ZSMMG(shared_segments_count); i++) {
+\t\tzend_shared_segment *segment = ZSMMG(shared_segments)[i];
+\t\tif (!kandelo_preload_write_all(fd, &segment->pos, sizeof(segment->pos))
+\t\t || !kandelo_preload_write_all(fd, segment->p, segment->pos)) {
+\t\t\treturn false;
+\t\t}
+\t}
+\treturn true;
+}
+
+static bool kandelo_preload_receive_segments(int fd)
+{
+\toff_t offset = 0;
+\tfor (int i = 0; i < ZSMMG(shared_segments_count); i++) {
+\t\tzend_shared_segment *segment = ZSMMG(shared_segments)[i];
+\t\tsize_t used;
+\t\tif (!kandelo_preload_read_all(fd, &used, sizeof(used), offset) || used > segment->size) {
+\t\t\treturn false;
+\t\t}
+\t\toffset += sizeof(used);
+\t\tif (!kandelo_preload_read_all(fd, segment->p, used, offset)) {
+\t\t\treturn false;
+\t\t}
+\t\toffset += used;
+\t}
+\treturn true;
+}
+#endif
+
+static zend_result accel_finish_startup(void)
+{
+""",
+    ),
+    (
+        """\tpid_t pid;
+\tif (accel_finish_startup_preload_subprocess(&pid) == FAILURE) {
+\t\tzend_shared_alloc_unlock();
+\t\treturn FAILURE;
+\t}
+
+\tif (pid == -1) { /* no subprocess was needed */
+""",
+        """#if defined(__wasm__)
+\tint segments = kandelo_preload_open_segments();
+\tif (segments < 0) {
+\t\tzend_shared_alloc_unlock();
+\t\tzend_accel_error_noreturn(ACCEL_LOG_FATAL, "Preloading failed to create a temporary file");
+\t\treturn FAILURE;
 \t}
 #endif
-\tfile_cache_only = ZCG(accel_directives).file_cache_only;
-"""
-if marker not in s:
-    raise SystemExit("opcache file-cache-only guard: startup marker not found")
-p.write_text(s.replace(marker, guard, 1))
+
+\tpid_t pid;
+\tif (accel_finish_startup_preload_subprocess(&pid) == FAILURE) {
+#if defined(__wasm__)
+\t\tclose(segments);
+#endif
+\t\tzend_shared_alloc_unlock();
+\t\treturn FAILURE;
+\t}
+
+\tif (pid == -1) { /* no subprocess was needed */
+#if defined(__wasm__)
+\t\tclose(segments);
+#endif
+""",
+    ),
+    (
+        """\t\tconst zend_result ret = accel_finish_startup_preload(true);
+
+\t\texit(ret == SUCCESS ? 0 : 1);
+""",
+        """\t\tconst zend_result ret = accel_finish_startup_preload(true);
+
+#if defined(__wasm__)
+\t\texit(ret == SUCCESS && kandelo_preload_send_segments(segments) ? 0 : 1);
+#else
+\t\texit(ret == SUCCESS ? 0 : 1);
+#endif
+""",
+    ),
+    (
+        """\t\t\tzend_accel_error_noreturn(ACCEL_LOG_FATAL, "Preloading failed to waitpid(%d)", pid);
+\t\t}
+""",
+        """\t\t\tzend_accel_error_noreturn(ACCEL_LOG_FATAL, "Preloading failed to waitpid(%d)", pid);
+\t\t}
+
+#if defined(__wasm__)
+\t\tbool preloaded = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+\t\tbool received = preloaded && kandelo_preload_receive_segments(segments);
+\t\tclose(segments);
+\t\tif (preloaded && !received) {
+\t\t\tzend_shared_alloc_unlock();
+\t\t\tzend_accel_error_noreturn(ACCEL_LOG_FATAL, "Preloading failed to read the shared memory of process %d", pid);
+\t\t}
+#endif
+""",
+    ),
+]
+for old, new in replacements:
+    if s.count(old) != 1:
+        raise SystemExit("opcache preload segments: accel_finish_startup marker not found")
+    s = s.replace(old, new, 1)
+p.write_text(s)
 PY
 fi
 
 # PHP 8.5 always includes OPcache. Keep caching opt-in on Kandelo because
-# its default shared-memory backend requires unsupported cross-process
-# MAP_SHARED. Images explicitly enable the supported file-cache-only backend;
-# the startup guard above still rejects an explicitly enabled SHM backend.
+# its shared memory is private to each process (see the MAP_PRIVATE patch
+# above). Images explicitly enable the file-cache-only backend.
 if ! grep -q 'kandelo-opcache-opt-in' ext/opcache/zend_accelerator_module.c; then
     python3 - <<'PY_DEFAULT'
 from pathlib import Path
@@ -982,6 +1148,12 @@ if [ ! -f Makefile ]; then
     # this preserves the actual 1.11.4 API instead of silently compiling an
     # older, reduced ZipArchive surface.
     #
+    # php_cv_shm_mmap_anon=yes: opcache's probe for its mmap shared-memory
+    # backend runs a fork test, which a cross compile cannot run, and falls
+    # back to "no" for every non-Linux host. Without a backend, opcache cannot
+    # start outside file-cache-only mode. Select the MAP_ANON backend, which
+    # the MAP_PRIVATE patch above adapts to this target.
+    #
     # musl exposes Linux unshare() as an ENOSYS stub. PHP must not advertise
     # pcntl_unshare() when this target cannot provide namespace isolation, so
     # override the cross probe with the target's real capability.
@@ -1031,6 +1203,7 @@ if [ ! -f Makefile ]; then
     ac_cv_lib_iconv_libiconv=yes \
     ac_cv_lib_curl_curl_easy_perform=yes \
     ac_cv_func_unshare=no \
+    php_cv_shm_mmap_anon=yes \
     wasm32posix-configure \
         --disable-all \
         --disable-rpath \
