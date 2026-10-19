@@ -312,9 +312,12 @@ async function recordPeerRoute(page: Page) {
     const traces: any[] = [];
     const byConnection = new WeakMap<RTCPeerConnection, any>();
     (globalThis as any).__freecivPeerRoutes = traces;
+    const connections: RTCPeerConnection[] = [];
+    (globalThis as any).__freecivPeerConnections = connections;
     globalThis.RTCPeerConnection = class extends Native {
       constructor(...args: ConstructorParameters<typeof Native>) {
         super(...args);
+        connections.push(this);
         const trace = { candidates: [] as string[], candidateTimes: [] as any[], errors: [] as any[],
           descriptionReads: [] as any[], states: [] as any[], stats: [] as any[] };
         traces.push(trace);
@@ -373,96 +376,122 @@ async function recordPeerRoute(page: Page) {
   });
 }
 
-test("two Freeciv clients start a game over a network session", async ({ browser, page, browserName }) => {
-  test.skip(browserName !== "chromium", "the local peer fixture uses Chromium's ICE candidate flags");
-  test.setTimeout(480_000);
-  page.setDefaultTimeout(15_000);
-  await recordPeerRoute(page);
-  console.log("Booting the multiplayer host");
-  await gotoMachine(page, "freeciv");
-  await running(page);
-  await showGame(page);
-  console.log("Creating the network session");
-  await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
-  await page.getByLabel("Session name").fill("Freeciv night");
-  await page.getByRole("button", { name: "Create session", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Network session: connected", exact: true }))
-    .toBeAttached({ timeout: 30_000 });
-  const link = await page.locator("[data-network-link]").getAttribute("data-network-link");
-  expect(link).toBeTruthy();
-  await page.locator(".knetwork .kshare-x").click();
-  console.log("Starting the hosting Freeciv server and client");
-  await multiplayer(page, "host");
-  await expect.poll(() => terminalLines(page), { timeout: 90_000 })
-    .toMatch(/Player-[0-9a-f]+ has connected from (?:localhost|127\.0\.0\.1)/);
-  console.log("Host client connected; opening the invited machine");
-  const context = await browser.newContext();
-  const joiner = await context.newPage();
-  joiner.setDefaultTimeout(15_000);
-  await recordPeerRoute(joiner);
-  try {
-    await joiner.goto(link!, { waitUntil: "domcontentloaded" });
-    await running(joiner);
-    await joiner.getByRole("button", { name: "Join session", exact: true }).click();
-    await expect(joiner.locator(".knetwork-status")).toContainText("this computer is 10.89.0.2", { timeout: 90_000 });
-    await joiner.locator(".knetwork .kshare-x").click();
-    await showGame(joiner);
-    console.log("Joining Freeciv through the peer network");
-    await multiplayer(joiner, "join");
+test.describe("local Freeciv peer routing", () => {
+  // Chromium's own IP-permission tests require a media grant to enumerate
+  // non-default interfaces, including loopback. This isolated test context
+  // grants permission without opening a microphone. Production asks for none.
+  // https://github.com/chromium/chromium/blob/main/content/browser/webrtc/webrtc_ip_permissions_browsertest.cc
+  test.use({ permissions: ["microphone"] });
+
+  test("two Freeciv clients start a game over a network session", async ({ browser, page, browserName }) => {
+    test.skip(browserName !== "chromium", "the local peer fixture uses Chromium's ICE candidate flags");
+    test.setTimeout(480_000);
+    page.setDefaultTimeout(15_000);
+    await recordPeerRoute(page);
+    console.log("Booting the multiplayer host");
+    await gotoMachine(page, "freeciv");
+    await running(page);
+    await showGame(page);
+    console.log("Creating the network session");
+    await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
+    await page.getByLabel("Session name").fill("Freeciv night");
+    await page.getByRole("button", { name: "Create session", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Network session: connected", exact: true }))
+      .toBeAttached({ timeout: 30_000 });
+    const link = await page.locator("[data-network-link]").getAttribute("data-network-link");
+    expect(link).toBeTruthy();
+    await page.locator(".knetwork .kshare-x").click();
+    console.log("Starting the hosting Freeciv server and client");
+    await multiplayer(page, "host");
     await expect.poll(() => terminalLines(page), { timeout: 90_000 })
-      .toMatch(/Player-[0-9a-f]+ has connected from 10\.89\.0\.2/);
-    await showGame(page);
-    await showGame(joiner);
-    for (const player of [page, joiner]) {
-      await expect(player.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 30_000 });
+      .toMatch(/Player-[0-9a-f]+ has connected from (?:localhost|127\.0\.0\.1)/);
+    console.log("Host client connected; opening the invited machine");
+    const context = await browser.newContext({ permissions: ["microphone"] });
+    const joiner = await context.newPage();
+    joiner.setDefaultTimeout(15_000);
+    await recordPeerRoute(joiner);
+    try {
+      await joiner.goto(link!, { waitUntil: "domcontentloaded" });
+      await running(joiner);
+      await joiner.getByRole("button", { name: "Join session", exact: true }).click();
+      await expect(joiner.locator(".knetwork-status")).toContainText("this computer is 10.89.0.2", { timeout: 90_000 });
+      // Prove that this is the intended local fixture rather than a lucky LAN
+      // hairpin route. Observe the browser's selected pair without rewriting SDP.
+      for (const player of [page, joiner]) {
+        await expect.poll(() => player.evaluate(async () => {
+          for (const rtc of (globalThis as any).__freecivPeerConnections as RTCPeerConnection[]) {
+            const report = await rtc.getStats();
+            for (const transport of report.values()) {
+              if (transport.type !== "transport" || !transport.selectedCandidatePairId) continue;
+              const pair = report.get(transport.selectedCandidatePairId);
+              const addresses = [pair?.localCandidateId, pair?.remoteCandidateId]
+                .map(id => id && report.get(id)?.address);
+              if (addresses.some(address => address === "127.0.0.1" || address === "::1")) return true;
+            }
+          }
+          return false;
+        }), { timeout: 15_000 }).toBe(true);
+      }
+      await joiner.locator(".knetwork .kshare-x").click();
+      await showGame(joiner);
+      console.log("Joining Freeciv through the peer network");
+      await multiplayer(joiner, "join");
+      await expect.poll(() => terminalLines(page), { timeout: 90_000 })
+        .toMatch(/Player-[0-9a-f]+ has connected from 10\.89\.0\.2/);
+      await showGame(page);
+      await showGame(joiner);
+      for (const player of [page, joiner]) {
+        await expect(player.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 30_000 });
+      }
+      await page.screenshot({ path: "../../.context/freeciv-network-host.png" });
+      await joiner.screenshot({ path: "../../.context/freeciv-network-joiner.png" });
+      console.log("Both lobbies rendered; starting the game from each client");
+      // Both players press Freeciv's own Start button in the connection lobby.
+      for (const player of [page, joiner]) {
+        const display = canvas(player);
+        const box = await display.boundingBox();
+        expect(box).not.toBeNull();
+        await display.click({ position: { x: box!.width * 0.925, y: box!.height * 0.95 } });
+      }
+      await expect.poll(() => terminalLines(page), { timeout: 90_000 }).toMatch(/rules the/);
+      await showGame(page);
+      await showGame(joiner);
+      // End a turn from both keyboards and observe the year/status strip
+      // change on each real game display after the server advances the turn.
+      const headers = [];
+      for (const player of [page, joiner]) {
+        const display = await canvas(player).boundingBox();
+        expect(display).not.toBeNull();
+        const clip = { x: display!.x + 300, y: display!.y + 3, width: 480, height: 12 };
+        headers.push({ player, clip, before: await player.screenshot({ clip }) });
+      }
+      for (const player of [page, joiner]) {
+        await canvas(player).focus();
+        await player.keyboard.press("Shift+Enter", { delay: 100 });
+      }
+      for (const { player, clip, before } of headers) {
+        await expect.poll(async () => Buffer.compare(before, await player.screenshot({ clip })),
+          { timeout: 60_000 }).not.toBe(0);
+      }
+      await page.screenshot({ path: "../../.context/freeciv-game-host.png" });
+      await joiner.screenshot({ path: "../../.context/freeciv-game-joiner.png" });
+      for (const player of [page, joiner]) {
+        await expect(player.getByTestId("kms-dock-action-error")).toHaveCount(0);
+      }
+    } finally {
+      for (const [name, player] of [["host", page], ["joiner", joiner]] as const) {
+        // Each repeat owns its evidence: a later successful session must never
+        // overwrite the candidate pairs from the intermittent failure.
+        const evidencePath = test.info().outputPath(`peer-${name}-routes.json`);
+        writeFileSync(evidencePath, JSON.stringify(
+          await player.evaluate(() => (globalThis as any).__freecivPeerRoutes)
+            .catch(error => ({ error: String(error) })), null, 2));
+        await test.info().attach(`peer-${name}-routes`, { path: evidencePath, contentType: "application/json" });
+      }
+      await context.close();
     }
-    await page.screenshot({ path: "../../.context/freeciv-network-host.png" });
-    await joiner.screenshot({ path: "../../.context/freeciv-network-joiner.png" });
-    console.log("Both lobbies rendered; starting the game from each client");
-    // Both players press Freeciv's own Start button in the connection lobby.
-    for (const player of [page, joiner]) {
-      const display = canvas(player);
-      const box = await display.boundingBox();
-      expect(box).not.toBeNull();
-      await display.click({ position: { x: box!.width * 0.925, y: box!.height * 0.95 } });
-    }
-    await expect.poll(() => terminalLines(page), { timeout: 90_000 }).toMatch(/rules the/);
-    await showGame(page);
-    await showGame(joiner);
-    // End a turn from both keyboards and observe the year/status strip
-    // change on each real game display after the server advances the turn.
-    const headers = [];
-    for (const player of [page, joiner]) {
-      const display = await canvas(player).boundingBox();
-      expect(display).not.toBeNull();
-      const clip = { x: display!.x + 300, y: display!.y + 3, width: 480, height: 12 };
-      headers.push({ player, clip, before: await player.screenshot({ clip }) });
-    }
-    for (const player of [page, joiner]) {
-      await canvas(player).focus();
-      await player.keyboard.press("Shift+Enter", { delay: 100 });
-    }
-    for (const { player, clip, before } of headers) {
-      await expect.poll(async () => Buffer.compare(before, await player.screenshot({ clip })),
-        { timeout: 60_000 }).not.toBe(0);
-    }
-    await page.screenshot({ path: "../../.context/freeciv-game-host.png" });
-    await joiner.screenshot({ path: "../../.context/freeciv-game-joiner.png" });
-    for (const player of [page, joiner]) {
-      await expect(player.getByTestId("kms-dock-action-error")).toHaveCount(0);
-    }
-  } finally {
-    for (const [name, player] of [["host", page], ["joiner", joiner]] as const) {
-      // Each repeat owns its evidence: a later successful session must never
-      // overwrite the candidate pairs from the intermittent failure.
-      const evidencePath = test.info().outputPath(`peer-${name}-routes.json`);
-      writeFileSync(evidencePath, JSON.stringify(
-        await player.evaluate(() => (globalThis as any).__freecivPeerRoutes)
-          .catch(error => ({ error: String(error) })), null, 2));
-      await test.info().attach(`peer-${name}-routes`, { path: evidencePath, contentType: "application/json" });
-    }
-    await context.close();
-  }
+  });
+
 });
 
 test("New Game launches Freeciv's own local server child", async ({ page, browserName }) => {

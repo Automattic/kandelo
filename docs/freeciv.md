@@ -286,14 +286,22 @@ count scene uploads separately from cursor-plane presentations, and a second
 SDL application exercises the shared default cursor. These checks support
 specific paths; they do not establish general application performance.
 
-The peer fixture uses two isolated Chromium contexts on one host. Its
-recorded ICE candidates can use the host's LAN interface; allowing loopback
-does not guarantee a loopback route. ICE setup can fail before
-Freeciv joins, independently of the application controls. Successful game
-playthroughs do not establish reliable connectivity without a TURN relay.
-The fixture records the descriptions actually published, candidate arrival
-times, and candidate-pair statistics so a failed connection can be traced
-beyond the presence of a candidate address.
+The peer fixture uses two isolated Chromium contexts on one host. It grants
+media permission inside those disposable test contexts, without opening a
+microphone, to enumerate loopback candidates. This follows
+[Chromium's IP-permission test](https://github.com/chromium/chromium/blob/main/content/browser/webrtc/webrtc_ip_permissions_browsertest.cc).
+The application requests no media permission. The fixture verifies a
+selected candidate pair with a loopback endpoint and retains the production
+ICE server list and signalling behavior.
+
+A standalone native WebRTC comparison reproduced the local failure outside
+Kandelo: six exchanges without media permission failed (three with STUN and
+three without), while six with permission connected. The failing contexts
+published default-interface LAN/public candidates; the granted contexts
+also enumerated loopback. This identifies a local test route boundary; it
+does not establish Internet connectivity or explain why this machine's LAN
+route failed. The fixture records descriptions actually published, candidate
+arrival times, and live candidate-pair statistics so failures retain evidence.
 Internet NAT traversal, Firefox, WebKit, and Freeciv inside Wayland have not
 been verified for this port. See the PR for the exact validation performed
 against its current head; earlier results do not prove a later revision.
