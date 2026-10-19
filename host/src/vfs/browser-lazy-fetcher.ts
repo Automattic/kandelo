@@ -1,4 +1,5 @@
 import { corsProxyFetchUrl } from "../networking/cors-proxy-url";
+import { fetchWithProxySession } from "../networking/cors-proxy-session";
 import type {
   BrowserCorsProxyConfig,
 } from "../networking/browser-cors-proxy";
@@ -51,12 +52,12 @@ export function createBrowserLazyFetcher(
     // The deployment config, not VFS metadata, chooses this proxy. A private
     // same-origin proxy needs the application's session to admit the request;
     // it must strip that cookie before contacting the artifact destination.
-    // External proxies never receive browser credentials. Do not reveal the
-    // application's referrer to either transport.
-    return fetchImpl(corsProxyFetchUrl(proxyUrl, target.href), {
+    // External proxies receive no browser credentials. Only the application's
+    // origin is sent as Referer, for restricted proxy admission.
+    return fetchWithProxySession(corsProxyFetchUrl(proxyUrl, target.href), {
       ...(init ?? {}),
       credentials: proxyCredentials,
-      referrerPolicy: "no-referrer",
-    });
+      referrerPolicy: "strict-origin",
+    }, fetchImpl);
   };
 }

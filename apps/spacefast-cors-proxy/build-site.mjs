@@ -2,7 +2,7 @@ import { build } from "esbuild";
 import { cp, mkdir, mkdtemp, readdir, stat, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
-import { buildOptions, proxyEntry } from "./build-options.mjs";
+import { buildOptions, proxyEntry, buildSessionRoute } from "./build-options.mjs";
 
 // Only consume the generated site. Never publish the repository or its tests.
 const options = buildOptions(process.argv.slice(2), { site: true });
@@ -40,6 +40,7 @@ await mkdir(context, { recursive: true });
 const output = await mkdtemp(join(context, "spacefast-kandelo-build-"));
 await cp(source, output, { recursive: true });
 if (!options.withoutProxy) {
+  await buildSessionRoute(output, options.approved);
   await mkdir(join(output, "functions", "cors-proxy"), { recursive: true });
   await build({
     stdin: { contents: proxyEntry(options.approved, { route: true }),

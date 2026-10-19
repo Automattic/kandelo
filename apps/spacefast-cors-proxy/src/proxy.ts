@@ -10,8 +10,8 @@ import { hasApprovedReferer, parseApprovedRefererOrigins } from "./request-polic
 export const MAX_REQUEST_BYTES = 1024 * 1024;
 export const MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
 const METHODS = "GET, HEAD, POST, OPTIONS";
-const REQUEST_HEADERS = "Accept, Authorization, Content-Type, git-protocol, Range, wp_blog, wp_install, X-Cors-Proxy-Allowed-Request-Headers, X-Cors-Proxy-Content-Type, X-Cors-Proxy-Range";
-const EXPOSE_HEADERS = "X-Playground-Cors-Proxy, Content-Range, Accept-Ranges, ETag, Content-Length, Last-Modified, Date, Retry-After";
+const REQUEST_HEADERS = "Accept, Authorization, Content-Type, git-protocol, Range, wp_blog, wp_install, X-Cors-Proxy-Allowed-Request-Headers, X-Cors-Proxy-Content-Type, X-Cors-Proxy-Range, X-Kandelo-Proxy-Session";
+const EXPOSE_HEADERS = "X-Playground-Cors-Proxy, Content-Range, Accept-Ranges, ETag, Content-Length, Last-Modified, Date, Retry-After, X-Kandelo-Proxy-Session";
 
 export type OriginRule =
   | { type: "match-exact"; origin: string }
@@ -88,13 +88,13 @@ function configuredOrigins(value: string): OriginRule[] {
 const HOP_HEADERS = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
   "te", "trailer", "transfer-encoding", "upgrade"];
 const REQUEST_DENY = new Set([...HOP_HEADERS, "host", "cookie", "cookie2", "content-length",
-  "x-cors-proxy-allowed-request-headers", "x-cors-proxy-content-type", "x-cors-proxy-range"]);
+  "x-cors-proxy-allowed-request-headers", "x-cors-proxy-content-type", "x-cors-proxy-range", "x-kandelo-proxy-session"]);
 const RESPONSE_DENY = new Set([...HOP_HEADERS, "set-cookie", "set-cookie2", "authorization",
   "www-authenticate", "cache-control", "strict-transport-security", "upgrade-insecure-requests",
   "clear-site-data", "content-security-policy", "content-security-policy-report-only",
   "cross-origin-opener-policy", "cross-origin-embedder-policy", "cross-origin-resource-policy",
   "x-sendfile", "x-sendfile-temporary", "x-sendfile2", "x-lighttpd-send-file",
-  "surrogate-control", "edge-control", "status"]);
+  "surrogate-control", "edge-control", "status", "x-kandelo-proxy-session"]);
 
 function connectionHeaders(headers: Headers): Set<string> {
   return new Set((headers.get("connection") ?? "").toLowerCase().split(",").map(name => name.trim()));

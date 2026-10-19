@@ -3,7 +3,9 @@
 A Spacefast Functions worker implementing the Playground CORS proxy
 protocol. It can run alone or beside a Kandelo production build.
 The production entry is `handler.ts`; `sf.jsonc` declares the Functions
-runtime. There are no runtime npm dependencies or Node imports.
+runtime. A native PHP Function at `/cors-proxy-session` bridges the verified
+Spacefast guest/account identity into the worker. There are no runtime npm
+dependencies or Node imports.
 
 The compatibility reference is WordPress Playground's
 [`packages/playground/php-cors-proxy`](https://github.com/WordPress/wordpress-playground/tree/869d25157449d28e100154dec75073b9569bfd1a/packages/playground/php-cors-proxy),
@@ -109,55 +111,81 @@ the security boundary of the deployed workaround.
 
 ## Configuration
 
-The entry module uses Spacefast's `env.DB` binding for durable per-client
-token buckets. It follows Playground's production policy at upstream commit
-`d7b19bdb598ccb405f0dcb7afcaa9b036676c18a`:
+The default limiter uses Spacefast's verified guest identity, or its account
+identity when the session endpoint is called while signed in. The native PHP
+Function calls [`sf_auth()`](https://spacefast.com/docs/functions/php/);
+request headers cannot select an identity. The worker uses `env.DB` for
+atomic MySQL token buckets and keeps Playground's production capacity/refill
+at upstream commit `d7b19bdb598ccb405f0dcb7afcaa9b036676c18a`:
 
-- Each IPv4 address has its own bucket; IPv6 addresses share their /64.
-- A new bucket holds 1,000 tokens. Each admitted request consumes one token.
+- Each verified identity has its own bucket, initially holding 1,000 tokens.
+  Each admitted proxy request consumes one token.
 - Refill is 100 tokens per minute, using whole elapsed database-clock seconds
-  and whole tokens, capped at 1,000. As in Playground, a successful request
-  resets the refill timestamp and discards any fractional refill remainder.
-- A trusted `SES` (search-engine) classification gets no tokens. Other
-  classifications use the default bucket. Idle buckets expire after one day.
-- OPTIONS consumes no tokens. Exhaustion returns 429 with browser-readable
-  `Retry-After: 1`; denied retries do not reset the refill timestamp.
+  and whole tokens, capped at 1,000. A successful request resets the refill
+  timestamp and discards the fractional remainder, as in Playground.
+- OPTIONS and session challenges consume no tokens. Exhaustion returns 429
+  with browser-readable `Retry-After: 1`. Refused retries leave the refill
+  timestamp alone. Idle buckets expire after one day.
+- A conditional UPDATE consumes under the row lock. Its affected-row count
+  identifies this request's admission without a racy follow-up read. Isolates
+  cannot spend the same tokens. A backward database clock cannot mint tokens.
+- Missing storage or failed queries return 503 before an upstream fetch.
+  There is no shared fallback budget or isolate-local accounting.
+
+This is **per identity, rather than Playground's per IP or IPv6 /64**. Guests
+can obtain a new identity by clearing their platform session and quota token,
+or using a new browser profile. It does not provide equivalent resistance to
+quota evasion. Spacefast hosting quotas can independently return 429s.
+
+### Cookie-independent quota sessions
+
+The worker challenges missing, expired or invalid credentials with HTTP 401
+and `X-Kandelo-Proxy-Session: required`, before contacting any destination.
+Kandelo's host transports and service worker then GET `/cors-proxy-session`
+on that exact configured proxy origin. The endpoint applies the compiled
+Referer/Origin restrictions before reading verified auth or issuing a token.
+With no compiled list, the endpoint admits only the proxy's own origin.
+
+The endpoint signs a 30-day, proxy-origin-bound quota credential containing
+an opaque identity pseudonym. A random signing key lives in the Space's
+MySQL database; reissuing a credential for the same verified identity keeps
+the same bucket. Neither raw identities nor platform cookies enter the token.
+`guest:local`, missing auth and malformed guest identities fail closed.
+
+The browser persists this token in IndexedDB on the **app's origin**,
+scoped to the configured proxy origin. Web Locks serialize first use across
+page, kernel worker and service worker where available. If storage is blocked,
+the transport retains an in-memory session. External proxies receive no
+application cookies, and the token works without third-party cookies. A
+signed-in account is used at issuance; an existing guest credential continues
+to identify its original guest until replaced or expired.
+
+Requests send the token in `X-Kandelo-Proxy-Session`; preflight allows that
+header. The proxy strips it from upstream requests and responses. It grants
+only quota identity, never Space access or upstream authentication. The
+transport retries a session challenge once, preserving replayable POST bytes;
+a challenge has sent nothing upstream. It does not retry 429s or ordinary
+upstream failures. Requests provide only the application's origin as Referer,
+using `strict-origin`, to support restricted standalone proxies.
+
+### Optional ingress policy
 
 The [upstream deployment limiter](https://github.com/WordPress/wordpress-playground/blob/d7b19bdb598ccb405f0dcb7afcaa9b036676c18a/packages/playground/php-cors-proxy-deployment/cors-proxy-config.php)
-trusts WP Cloud's client-IP and proxy-type headers. Spacefast's current
-[Functions contract](https://spacefast.com/docs/functions/) does not document
-an equivalent trusted client identity. Therefore **these buckets need a
-verified ingress configuration before deployment**:
+uses WP Cloud's protected client-IP and classification headers. The legacy
+`CORS_PROXY_TRUSTED_CLIENT_IP_HEADER` setting explicitly selects IP-based
+buckets instead of guest sessions. It requires a verified edge that overwrites
+that header on every request, with no bypass. **The tested Spacefast runtime
+exposes no usable client-IP header; leave this unset for Spacefast.**
+`CORS_PROXY_TRUSTED_PROXY_TYPE_HEADER` optionally enables trusted uppercase
+three-letter classifications: `SES` receives no tokens, others use the normal
+budget. Unset classification defaults to `UNK`; search-engine exclusion is
+therefore unavailable without a separately verified source.
 
-- `CORS_PROXY_TRUSTED_CLIENT_IP_HEADER`: required. Name of a header that the
-  serving edge overwrites with exactly one validated client IP on every
-  request. It must reject or replace caller-supplied values, and visitors
-  must have no route around that edge. No header name is trusted by default.
-- `CORS_PROXY_TRUSTED_PROXY_TYPE_HEADER`: optional. An equivalently protected
-  header containing a three-letter uppercase classification, including
-  `SES`. Without this setting, classification defaults to `UNK`, so
-  search-engine exclusion is unavailable. When configured, absent or
-  malformed classification fails closed.
-
-Merely observing `X-Forwarded-For`, `CF-Connecting-IP` or another IP-shaped
-header is insufficient to establish this contract. Configuring its name is
-an operator assertion of that protection, not proof supplied by this worker.
-The live investigation below found no usable visitor IP in the tested
-Functions environment. Do not enable a guessed header or use the limiter
-opt-out to bypass this requirement. A missing/invalid identity,
-misconfiguration, missing database or failed query returns 503 before any
-upstream fetch. There is no shared fallback bucket. The existing live v9
-worker still uses the earlier shared fixed-window limiter until republished.
-
-The worker creates its own MySQL token-bucket table. A conditional UPDATE
-atomically refills and spends under the row lock; its affected-row count
-identifies this request's admission without a racy follow-up read. Separate
-isolates cannot spend the same tokens. Database-clock regression does not
-mint tokens or move timestamps backward. Refusal leaves the timestamp alone.
-The new table name avoids reinterpreting old fixed-window rows; an upgrade
-starts fresh buckets. SQL behavior is tested against real MariaDB, including
-concurrent consumers. This new policy has not been live-tested on Spacefast.
-Spacefast's hosting quotas can independently return 429s.
+Local tests cover the worker at 100% lines, branches and functions, and run
+the actual PHP bridge and SQL against disposable MariaDB. A private diagnostic
+Space in Brandon's Team verified guest and signed-in issuance and a proxied
+fetch on 2026-10-18. The Kandelo live v9 deployment remains unchanged and still
+uses its earlier shared limiter until explicitly republished.
 
 ### Spacefast visitor-IP availability
 
@@ -191,15 +219,12 @@ The public Spacefast runtime source explains the trust boundary at revision
   also excludes `REMOTE_ADDR`: on that hosting path it identifies the
   provider proxy rather than the browser.
 
-The observed Function therefore cannot safely enable this per-client policy
-through configuration alone. Spacefast must populate its trusted ingress
-identity and expose it through a documented, protected Function field. The
-probe cannot distinguish an absent ingress value from a missing downstream
-mapping. Presence of the source-code path does not establish that the deployed
-platform supplies it. Until that contract is available and live-tested,
-leave the limiter closed; do not substitute the provider address or a
-client-chosen header. This finding applies to the tested deployment, not a
-claim about every Spacefast provider or a future platform release.
+These findings prevent configuring the optional **IP-based** mode safely on
+the tested runtime. The default guest-identity mode above avoids that missing
+interface. The probe cannot distinguish an absent ingress value from a
+missing downstream mapping; source-code presence does not prove the deployed
+platform supplies an address. Do not substitute a provider address or a
+client-chosen IP header.
 
 The reusable core also accepts `createCorsProxy({ rateLimit })` for an
 alternative durable limiter. It returns a denial Response, or void to admit.
@@ -257,7 +282,7 @@ shell. Its existing range alias profile works with this implementation.
 Publish a generated bundle and `sf.jsonc`, not this source directory's tests,
 fixture keys or local output. A root worker claims the whole site; deploy it
 as its own proxy Space. The combined build below instead uses a file-router
-entry, so only `/cors-proxy` and its descendants, plus the exact `/signalling`
+entry, so only `/cors-proxy` and its descendants, `/cors-proxy-session`, and `/signalling`
 endpoint, wake the worker. Static
 files keep their normal serving path. The production entry uses the platform-
 Fetch workaround described above.
@@ -274,12 +299,13 @@ scripts/dev-shell.sh npm --prefix apps/spacefast-cors-proxy run build -- \
 
 The command requires at least one `--allow-referer` and prints a unique
 `.context/spacefast-cors-proxy-build-*` directory containing only
-`handler.mjs` and `sf.jsonc`. It does not install, sign in or publish. The
+`handler.mjs`, `functions/cors-proxy-session.php` and `sf.jsonc`. It does
+not install, sign in or publish. The
 approved list is compiled into the worker and takes precedence over a runtime
 environment override. Enable the Space's database capability/`env.DB` binding
-and configure the verified trusted identity described above for the default
-limiter. Missing identity configuration will return 503. Do not disable
-rate limiting to work around a missing binding or identity.
+to use the default guest limiter. The PHP bridge and worker must share the
+same Space database. Missing verified identity or storage returns 503; do not
+disable limiting to work around either failure.
 
 Publish that generated directory as its own Functions Space using the chosen
 team and access settings. The separate proxy must be reachable by the client:
@@ -322,7 +348,8 @@ scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
 The second command prints a unique `.context/spacefast-kandelo-build-*`
 directory. It contains the static app, a bundled
 `functions/cors-proxy/[...rest].mjs`,
-`functions/signalling.mjs`, `sf.jsonc` and the COOP/COEP/CORP response headers for documents and worker
+`functions/cors-proxy-session.php`, `functions/signalling.mjs`, `sf.jsonc`
+and the COOP/COEP/CORP response headers for documents and worker
 scripts, including clean document URLs. Binary downloads have no custom
 isolation headers: Spacefast cannot serve files above 100 MiB through its
 PHP header-serving lane. Shared memory isolation remains on pages and workers.
@@ -357,7 +384,11 @@ on kernel, package or VFS build artifacts and does not use Vitest.
 The Spacefast service-contract CI workflow runs the proxy suite and the
 real MariaDB proxy-SQL and MariaDB/PHP signalling suites without deployment
 credentials. The proxy SQL tests reuse the declared disposable-database tools
-from the signalling test harness.
+from the signalling test harness. They also execute the actual PHP session
+route with `phpdbg`, enforce all its executable lines are covered, and verify
+PHP-issued signatures in the worker against the same real database. Browser
+tests in `apps/browser-demos/test/browser-cors-proxy.spec.ts` cover cookie-free
+sessions, persistence, reload, POST replay and service-worker reprojection.
 
 Tests include Referer/Origin admission and spoofed-lookalike rejection,
 compiled standalone/combined allowlists, malformed DNS/HTTP input,

@@ -120,7 +120,8 @@ test("SES is denied and all other Playground classifications use the default bud
 test("unknown ingress identity fails closed and arbitrary forwarded headers cannot choose buckets", async () => {
   const { state, DB } = database();
   const forged = new Request("https://proxy.example/cors-proxy", { headers: { "X-Forwarded-For": "192.0.2.1", "CF-Connecting-IP": "192.0.2.2" } });
-  for (const settings of [{}, config, { CORS_PROXY_TRUSTED_CLIENT_IP_HEADER: "" },
+  assert.equal((await handler.fetch(forged, { DB })).status, 401);
+  for (const settings of [config, { CORS_PROXY_TRUSTED_CLIENT_IP_HEADER: "" },
     { CORS_PROXY_TRUSTED_CLIENT_IP_HEADER: "bad header" }, { ...config, CORS_PROXY_TRUSTED_PROXY_TYPE_HEADER: "" },
     { ...config, CORS_PROXY_TRUSTED_PROXY_TYPE_HEADER: "X-Trusted-IP" }]) {
     assert.equal((await handler.fetch(forged, { DB, ...settings })).status, 503);

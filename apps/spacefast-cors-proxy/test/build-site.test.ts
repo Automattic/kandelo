@@ -23,7 +23,8 @@ test("site packager preserves the built app and emits a compiled file-router han
   const { stdout } = await execute(process.execPath, [builder, root]);
   const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
   assert.deepEqual((await readdir(output)).sort(), ["_headers", "functions", "index.html", "service-worker.js", "sf.jsonc", "vfs-groups"]);
-  assert.deepEqual((await readdir(join(output, "functions"))).sort(), ["cors-proxy", "signalling.mjs"]);
+  assert.deepEqual((await readdir(join(output, "functions"))).sort(), ["cors-proxy", "cors-proxy-session.php", "signalling.mjs"]);
+  assert.ok((await readFile(join(output, "functions/cors-proxy-session.php"), "utf8")).includes('$approved = null;'));
   assert.deepEqual(await readdir(join(output, "functions", "cors-proxy")), ["[...rest].mjs"]);
   assert.equal(await readFile(join(output, "index.html"), "utf8"), "<h1>Kandelo</h1>");
   assert.equal(await readFile(join(output, "vfs-groups", "manifest.json"), "utf8"), "{}");

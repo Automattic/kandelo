@@ -2,13 +2,14 @@ import { build } from "esbuild";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { buildOptions, proxyEntry } from "./build-options.mjs";
+import { buildOptions, proxyEntry, buildSessionRoute } from "./build-options.mjs";
 
 const { approved } = buildOptions(process.argv.slice(2));
 const app = fileURLToPath(new URL("./", import.meta.url));
 const context = fileURLToPath(new URL("../../.context/", import.meta.url));
 await mkdir(context, { recursive: true });
 const output = await mkdtemp(join(context, "spacefast-cors-proxy-build-"));
+await buildSessionRoute(output, approved);
 await build({
   stdin: { contents: proxyEntry(approved), resolveDir: app, sourcefile: "proxy-entry.ts" },
   outfile: join(output, "handler.mjs"),

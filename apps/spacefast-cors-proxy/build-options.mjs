@@ -1,4 +1,16 @@
 import { parseApprovedRefererOrigins } from "./src/request-policy.ts";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+export async function buildSessionRoute(output, approved) {
+  const source = await readFile(new URL("./session.php", import.meta.url), "utf8");
+  // JSON arrays of validated origins are also PHP array literals. Escape $
+  // since PHP double-quoted strings otherwise interpolate it.
+  const literal = approved.length ? JSON.stringify(approved).replaceAll("$", "\\$") : "null";
+  await mkdir(join(output, "functions"), { recursive: true });
+  await writeFile(join(output, "functions/cors-proxy-session.php"),
+    source.replace("__KANDELO_APPROVED_ORIGINS__", literal));
+}
 
 export function buildOptions(args, { site = false } = {}) {
   const origins = [];

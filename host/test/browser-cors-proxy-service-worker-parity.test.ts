@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { createProxySessionTransport } from "../src/networking/cors-proxy-session";
 
 import {
   BROWSER_CONTROLLED_REQUEST_HEADER_NAMES,
@@ -107,6 +108,7 @@ interface SentRequest {
   credentials: RequestCredentials;
   referrerPolicy: ReferrerPolicy;
   headers: Record<string, string>;
+  body?: string;
 }
 
 // Run the service worker's own proxy-dispatch code, not a copy: the section
@@ -129,7 +131,7 @@ function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
       allowAnonymousGetHeaderOmission: true,
       rangeRequestHeaderAlias: "x-cors-proxy-range",
     }),
-  );
+  ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`);
   const warnings: string[] = [];
   const sent: SentRequest[] = [];
   const fakeFetch = async (request: Request) => {
@@ -140,6 +142,7 @@ function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
       credentials: request.credentials,
       referrerPolicy: request.referrerPolicy,
       headers: Object.fromEntries(request.headers.entries()),
+      ...(request.method === "POST" ? { body: await request.text() } : {}),
     };
     sent.push(record);
     return answer(record);
@@ -156,6 +159,20 @@ function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
   ) as (request: Request, outgoingUrl: string, targetUrl: string) => Promise<Response>;
   return { dispatch, sent, warnings };
 }
+
+it("preserves Firefox POST bytes when Request.body is null", async () => {
+  const body = vi.spyOn(Request.prototype, "body", "get").mockReturnValue(null);
+  try {
+    const { dispatch, sent } = serviceWorkerDispatch(() => new Response("ok"));
+    const response = await dispatch(new Request("https://asset.example/post", {
+      method: "POST", headers: { "Content-Type": "text/plain", "X-Kandelo-Proxy-Session": "caller-value" }, body: "upload bytes",
+    }), "https://proxy.example/?https://asset.example/post", "https://asset.example/post");
+    expect(response.status).toBe(200);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].body).toBe("upload bytes");
+    expect(sent[0].headers["x-kandelo-proxy-session"]).toBeUndefined();
+  } finally { body.mockRestore(); }
+});
 
 const TARGET = "https://origin.example/archive.zip";
 const PROXIED = `https://proxy.example/?${TARGET}`;
@@ -177,7 +194,7 @@ describe("service worker proxy dispatch", () => {
       }
     }
     expect(sent.map(request => request.credentials)).toEqual(["same-origin", "same-origin", "omit", "omit"]);
-    expect(sent.every(request => request.referrerPolicy === "no-referrer")).toBe(true);
+    expect(sent.every(request => request.referrerPolicy === "strict-origin")).toBe(true);
   });
 
   it("accepts the kernel worker's already-projected alias without a diagnostic", async () => {

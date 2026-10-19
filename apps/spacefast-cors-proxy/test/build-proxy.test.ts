@@ -22,7 +22,10 @@ test("standalone output contains only runtime files and enforces the compiled al
   const { stdout } = await execute(process.execPath, [builder, "--allow-referer", "https://kandelo.dev",
     "--allow-referer", "https://remote-oak.space.fast"]);
   const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
-  assert.deepEqual((await readdir(output)).sort(), ["handler.mjs", "sf.jsonc"]);
+  assert.deepEqual((await readdir(output)).sort(), ["functions", "handler.mjs", "sf.jsonc"]);
+  const session = await readFile(join(output, "functions/cors-proxy-session.php"), "utf8");
+  assert.ok(session.includes('["https://kandelo.dev","https://remote-oak.space.fast"]'));
+  assert.ok(!session.includes("__KANDELO_APPROVED_ORIGINS__"));
   const config = JSON.parse(await readFile(join(output, "sf.jsonc"), "utf8"));
   assert.equal(config.runtime.entry, "handler.mjs");
   const { default: worker } = await import(pathToFileURL(join(output, "handler.mjs")).href);

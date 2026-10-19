@@ -44,7 +44,8 @@ describe("browser lazy VFS fetch transport", () => {
       {
         signal: controller.signal,
         credentials: "same-origin",
-        referrerPolicy: "no-referrer",
+        referrerPolicy: "strict-origin",
+        headers: new Headers(),
       },
     );
   });
@@ -59,7 +60,7 @@ describe("browser lazy VFS fetch transport", () => {
 
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://proxy.kandelo.test/?url=https%3A%2F%2Fcdn.example.test%2Fasset",
-      { credentials: "omit", referrerPolicy: "no-referrer" },
+      { credentials: "omit", referrerPolicy: "strict-origin", headers: new Headers() },
     );
   });
 
@@ -73,7 +74,7 @@ describe("browser lazy VFS fetch transport", () => {
 
     expect(fetchImpl).toHaveBeenCalledWith(
       "https://demo.kandelo.test/__proxy?url=https%3A%2F%2Fcdn.example.test%2Fasset",
-      { credentials: "same-origin", referrerPolicy: "no-referrer" },
+      { credentials: "same-origin", referrerPolicy: "strict-origin", headers: new Headers() },
     );
   });
 

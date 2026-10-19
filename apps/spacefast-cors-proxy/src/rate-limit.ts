@@ -1,3 +1,5 @@
+import { guestBucketKey } from "./guest-session.ts";
+
 /** Spacefast's D1-shaped binding brokers SQL to the Space's MySQL database. */
 export interface ProxyDatabase {
   prepare(sql: string): {
@@ -47,8 +49,9 @@ function headerName(value: string | undefined): string {
 
 /**
  * Playground's whole-token refill policy, backed by an atomic MySQL UPDATE.
- * Never use a caller-selected address, an isolate-local map, or a shared
- * fallback bucket when the deployment cannot establish a trusted identity.
+ * Verified Spacefast quota sessions are the default identity. A protected
+ * ingress header is an explicit alternative. Never trust caller-chosen IDs,
+ * isolate-local accounting, or a shared fallback bucket.
  */
 export function createDatabaseRateLimit(database: ProxyDatabase,
   config: RateLimitConfiguration = {}): (request: Request) => Promise<Response | void> {
@@ -59,11 +62,14 @@ export function createDatabaseRateLimit(database: ProxyDatabase,
     return result;
   }
   return async request => {
-    const ipHeader = headerName(config.CORS_PROXY_TRUSTED_CLIENT_IP_HEADER);
+    const ipHeader = config.CORS_PROXY_TRUSTED_CLIENT_IP_HEADER === undefined
+      ? undefined : headerName(config.CORS_PROXY_TRUSTED_CLIENT_IP_HEADER);
     const typeHeader = config.CORS_PROXY_TRUSTED_PROXY_TYPE_HEADER === undefined
       ? undefined : headerName(config.CORS_PROXY_TRUSTED_PROXY_TYPE_HEADER);
-    if (ipHeader === typeHeader) throw new Error("Rate-limit identity headers must differ");
-    const key = clientBucketKey(request.headers.get(ipHeader) ?? "");
+    if (ipHeader !== undefined && ipHeader === typeHeader) throw new Error("Rate-limit identity headers must differ");
+    const key = ipHeader === undefined ? await guestBucketKey(database, request)
+      : clientBucketKey(request.headers.get(ipHeader) ?? "");
+    if (key instanceof Response) return key;
     const type = typeHeader ? request.headers.get(typeHeader) : "UNK";
     if (!type || !/^[A-Z]{3}$/.test(type)) throw new Error("Invalid rate-limit proxy classification");
     const denied = (retryAfter?: string) => new Response(request.method === "HEAD" ? null : "Rate limit exceeded",

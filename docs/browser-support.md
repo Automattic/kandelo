@@ -1360,8 +1360,8 @@ CORS even though an ordinary command-line client can read them. An explicit
 proxy. A deployment-configured same-origin proxy uses `credentials: "same-origin"`
 to admit requests on authenticated hosting, including private Spacefast Spaces.
 VFS metadata chooses the artifact target, never this trusted proxy URL. An
-external proxy receives `credentials: "omit"`; all proxied lazy requests omit
-the referrer. Service-worker reprojection uses the same credential rule for
+external proxy receives `credentials: "omit"`; proxied requests send only the
+application origin as Referer (`strict-origin`) for approved-origin admission. Service-worker reprojection uses the same credential rule for
 already-proxied requests and automatic cross-origin GET/HEAD wrapping.
 The proxy must strip application cookies before contacting the
 artifact destination. Redirects to another origin cannot carry those cookies.
@@ -1566,7 +1566,7 @@ visible to another machine's requests even though both live under the same
 scope's origin.
 
 Each machine's bridge authority (its live `MessagePort`, session id, and
-cookie jar) is also persisted to Cache Storage under a per-name key as it is
+cookie jar) is also persisted to IndexedDB under a per-name key as it is
 established, independent of the in-memory registry. If the browser
 terminates and restarts the service worker while a machine's host tab is
 still open, the worker has lost every live `MessagePort` but still has each
@@ -2366,11 +2366,13 @@ and connection-time private-network protection belong to Spacefast in this
 mode. Kandelo cannot prevent DNS rebinding; the platform's protection has not
 been verified. The optional pinned transport remains available in the core
 and covered by local TCP/TLS fixture tests. The entry uses the Space's database
-for per-client token buckets matching Playground's capacity and refill. This
-new policy requires a verified trusted client-IP header before deployment;
-otherwise it fails closed with 503. SQL is locally tested. A private live
-diagnostic found no usable client IP in Function headers or metadata; the
-per-client limiter remains unactivated pending Spacefast ingress support.
+for per-identity token buckets matching Playground's 1,000-token capacity and
+100/minute refill. A native PHP Function verifies Spacefast's guest/account
+identity and issues a signed, proxy-scoped quota token. Browser transports
+persist it on the app's origin, so a separate proxy needs no third-party
+cookies. This changes the abuse boundary: new guest identities can get fresh
+budgets, unlike Playground's per-IP policy. SQL and PHP are locally tested;
+a private live diagnostic verified guest issuance and a proxied fetch.
 The existing v9 deployment retains the earlier shared fixed-window limiter.
 The app's build command can select this proxy explicitly, and its packager
 can colocate the app and `/cors-proxy` in one Space. A live Chromium check on 2026-10-15 verified a guest `curl`
@@ -2632,10 +2634,14 @@ Referer admission as well as CORS grants; absent or unapproved Referers are
 403 before upstream work. Preflight uses the approved Origin. These headers
 are forgeable by non-browser clients, so the admission rule does not replace
 rate limiting or deployment access controls. The worker's durable budget is
-a 1,000-token bucket per IPv4 address or IPv6 /64, refilling 100 per minute.
-Its client-IP header must be verified as overwritten by trusted ingress; no
-Spacefast header is trusted by default. A separately configured trusted
-classification header enables Playground's search-engine exclusion. See the
+a 1,000-token bucket per verified guest/account identity, refilling 100 per
+minute. Clearing the guest session and token can obtain a fresh identity;
+this is weaker against quota evasion than Playground's IP-based policy.
+Same-origin deployment uses Spacefast cookies to verify identity; a separate
+proxy issues a narrow signed token that persists on the app's origin, so
+third-party cookies are unnecessary. A configured trusted classification
+header can enable Playground's search-engine exclusion; none is assumed.
+See the
 [standalone proxy recipe](../apps/spacefast-cors-proxy/README.md#separate-proxy-site)
 for configuration, cross-origin hosting boundaries and the upstream comparison.
 
