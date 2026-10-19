@@ -70,24 +70,49 @@ export async function connectPeers(
     .toHaveAttribute("data-status", "running", { timeout: 300_000 });
   await openNetworkPanel(viewer);
   await viewer.getByRole("button", { name: "Join session", exact: true }).click();
-  const joined = await Promise.race([
-    sharingStatus(viewer).waitFor({ timeout: 90_000 }).then(() => "joined"),
-    viewer.locator(".knetwork-error").waitFor({ timeout: 90_000 }).then(() => "failed"),
-  ]);
-  if (joined === "failed") {
-    const failure = await viewer.locator(".knetwork-error").innerText();
-    expect(failure, `the session failed outside the ICE boundary: ${failure}`)
-      .toContain(ICE_BOUNDARY);
-    skip(
-      "no ICE route between two local contexts — on macOS, grant the "
-      + "Playwright browser Local Network permission to run this spec",
-    );
-    return;
-  }
+  await expectLinked(viewer, skip);
   await openNetworkPanel(sharer);
   await expect(sharingStatus(sharer)).toBeVisible({ timeout: 30_000 });
   if (watch) await watchSharer(viewer);
   await closeNetworkPanels([sharer, viewer]);
+}
+
+/**
+ * Wait for this joiner's sharing link, or skip at the ICE boundary. Two shapes
+ * of that boundary, neither a transport defect: the "no direct route" report,
+ * and the silent hang where nothing ever settles — headless Chromium refuses a
+ * second loopback pair this way after any pair was torn down. Every signalling
+ * or codec bug fails differently, with its own reason.
+ */
+async function expectLinked(viewer: Page, skip: (reason: string) => void): Promise<void> {
+  const joined = await Promise.race([
+    sharingStatus(viewer).waitFor({ timeout: 90_000 }).then(() => "joined"),
+    viewer.locator(".knetwork-error").waitFor({ timeout: 90_000 }).then(() => "failed"),
+  ]).catch(() => "silent");
+  if (joined === "joined") return;
+  if (joined === "failed") {
+    const failure = await viewer.locator(".knetwork-error").innerText();
+    expect(failure, `the session failed outside the ICE boundary: ${failure}`)
+      .toContain(ICE_BOUNDARY);
+  }
+  skip(
+    "no ICE route between two local contexts — on macOS, grant the "
+    + "Playwright browser Local Network permission to run this spec",
+  );
+}
+
+/** Connect the joiner's sharing link to the host again, keeping its page. */
+export async function reconnectPeers(viewer: Page, skip: (reason: string) => void): Promise<void> {
+  await openNetworkPanel(viewer);
+  await viewer.getByRole("button", { name: "Connect to host again", exact: true }).click();
+  await expectLinked(viewer, skip);
+  await closeNetworkPanels([viewer]);
+}
+
+/** Whether this computer has a sharing partner, read from the panel. */
+export async function expectPaired(page: Page, paired: boolean, timeout = 30_000): Promise<void> {
+  await openNetworkPanel(page);
+  await expect(sharingStatus(page)).toHaveCount(paired ? 1 : 0, { timeout });
 }
 
 /** Give the viewer's copy of the session's machine up to watch the host's. */

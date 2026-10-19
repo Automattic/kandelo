@@ -291,7 +291,7 @@ test("a machine switch detaches the network and keeps the session and its partne
   await host.leave();
 });
 
-test("a joiner whose partner and network are both gone has no session left", async () => {
+test("a joiner whose host left and whose network is gone has no session left", async () => {
   const { api } = fakeSignalling();
   const sharing = fakeSharing();
   const host = controller(fakeMachine(), api, new Map(), sharing);
@@ -300,10 +300,36 @@ test("a joiner whose partner and network are both gone has no session left", asy
   const joiner = controller(fakeMachine(), api, new Map(), sharing);
   await joiner.join(room, name);
   await joiner.machineChanged();
-  joiner.getState().partners[0]!.link.close();
+  await host.leave();
   await until(() => joiner.getState().phase === "error", "the joiner to notice");
   assert.match(joiner.getState().error!, /The host left, or the link between you failed/);
   assert.equal(joiner.getState().roomClosed, true);
+});
+
+test("a closed sharing link leaves the session, and the joiner connects it again", async () => {
+  const { api } = fakeSignalling();
+  const sharing = fakeSharing();
+  const host = controller(fakeMachine(), api, new Map(), sharing);
+  await host.create("Again");
+  const { room, name } = sessionInvitation(host.getState().link!)!;
+  const joiner = controller(fakeMachine(), api, new Map(), sharing);
+  await joiner.join(room, name);
+  await joiner.machineChanged();
+  await until(() => host.getState().partners.length === 1, "the host's partner");
+  const first = host.getState().partners[0]!;
+  host.disconnectPartner(first.id);
+  await until(() => joiner.getState().partners.length === 0, "the joiner to lose its partner");
+  // The room is still open, so only the sharing link went.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(joiner.getState().phase, "connected");
+
+  await joiner.reconnectSharing();
+  assert.equal(joiner.getState().partners.length, 1);
+  await until(() => host.getState().partners.length === 1, "the host's new partner");
+  const second = host.getState().partners[0]!;
+  assert.notEqual(second.id, first.id, "a reconnect never reuses a join token");
+  assert.equal(second.name, "peer-1");
+  await joiner.leave();
   await host.leave();
 });
 

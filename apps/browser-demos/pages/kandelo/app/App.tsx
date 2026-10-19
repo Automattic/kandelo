@@ -122,7 +122,13 @@ export const App: React.FC = () => {
   // Replication first: a viewer running a replica is still a viewer, and the
   // handover must not offer that replica as a second machine to take.
   const replication = useMachineReplication(host, sharingLink);
-  const handover = useMachineHandover(host, sharingLink, replication.replicating);
+  const handover = useMachineHandover(
+    host,
+    sharingLink,
+    replication.replicating,
+    replication.promote,
+    replication.joining,
+  );
   const names = usePeerNickname(sharingLink);
 
   const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
@@ -377,13 +383,25 @@ export const App: React.FC = () => {
 
   const isEmpty = surface.status === "idle";
   // Only in a pair. A computer on its own is neither, and one machine with
-  // one person at it needs no word for that.
+  // one person at it needs no word for that. A replica parked by a dropped
+  // link is the exception: the machine here is still the other computer's,
+  // and the word for that stays "viewer".
   const pairRole =
-    sharingLink === null
-      ? null
-      : isEmpty || replication.replicating
-        ? "viewer"
-        : "user";
+    replication.replicating
+      ? "viewer"
+      : sharingLink === null
+        ? null
+        : isEmpty
+          ? "viewer"
+          : "user";
+  // A machine taken from the partner goes back to it before the sharing link
+  // closes, so the person who gave it keeps running it. Leaving the session
+  // closes that link too.
+  const disconnectSharing = async (close: () => void | Promise<void>) => {
+    if (!(await handover.handBack())) return;
+    replication.disconnecting();
+    await close();
+  };
   // A name only for someone you are watching: on your own dock you know who
   // you are, so the user's badge keeps the role word, and the other person's
   // name replaces only "Viewer". Null falls back to the role words.
@@ -562,7 +580,10 @@ export const App: React.FC = () => {
 
         {networkSession.open && (
           <NetworkPanel
-            session={networkSession}
+            session={{
+              ...networkSession,
+              leave: () => disconnectSharing(networkSession.leave),
+            }}
             running={surface.status === "running"}
             sharing={
               <SharingSection
@@ -580,6 +601,7 @@ export const App: React.FC = () => {
                 replication={replication}
                 nickname={names.nickname}
                 onNicknameChange={names.setNickname}
+                onDisconnect={(id) => disconnectSharing(() => networkSession.disconnectPartner(id))}
               />
             }
           />

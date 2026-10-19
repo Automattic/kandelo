@@ -29,16 +29,20 @@
  * asked for. Recording the reader means every process replays its own
  * readings, in its own order, whatever order the processes ran in.
  *
- * `pid` is zero for a reading the host took for itself rather than for a
- * guest. Threads of one process share a pid, so a multi-threaded guest that
- * reads clocks from several threads still shares one stream and can still
- * diverge; that is a smaller boundary than the one this closes, and closing
- * it needs the current thread id at the syscall the same way this needed the
- * current process.
+ * `tid` closes the same boundary one level down. Threads of one process
+ * share a pid, and which of them reaches its next read first is host
+ * scheduling exactly as it is between processes — the kernel worker binds
+ * the channel's thread before every dispatch, so the reading is keyed by the
+ * task it was handed to, and every thread replays its own readings in its
+ * own order. A process's leader thread has `tid` equal to `pid`.
+ *
+ * `pid` and `tid` are zero for a reading the host took for itself rather
+ * than for a guest.
  */
 export interface ReplicationClockReading {
   readonly kind: "clock";
   readonly pid: number;
+  readonly tid: number;
   readonly clockId: number;
   readonly sec: number;
   readonly nsec: number;
@@ -97,15 +101,16 @@ export interface ReplicationAcceptSelection {
  * the random devices alike; a replica hands its guest the recorded bytes and
  * draws nothing of its own.
  *
- * `pid` keys the draw the way it keys a clock reading, and for the same
- * reason: which process reaches its next draw first is host scheduling, so
- * each process replays its own draws in its own order. There is no borrowing
+ * `pid` and `tid` key the draw the way they key a clock reading, and for the
+ * same reason: which task reaches its next draw first is host scheduling, so
+ * each task replays its own draws in its own order. There is no borrowing
  * here, though — a borrowed reading is still a time the machine observed,
  * but bytes other than the recorded ones are a different machine.
  */
 export interface ReplicationRandomBytes {
   readonly kind: "random";
   readonly pid: number;
+  readonly tid: number;
   readonly bytes: Uint8Array;
 }
 
@@ -385,6 +390,9 @@ const ACCEPT_SELECTION_WAIT_MS = 1_000;
  * replica at the first clock read positioned after it — by any process, not
  * only by the one whose readings surround it.
  */
+/** One task's stream identity: threads of one process replay separately. */
+const taskKey = (pid: number, tid: number): string => `${pid}:${tid}`;
+
 export class ReplicationLogReader {
   readonly #entries: ReplicationLogEntry[];
   readonly #applyPushed?: (decision: ReplicationPushedDecision) => void;
@@ -394,10 +402,10 @@ export class ReplicationLogReader {
   readonly #onDiverged?: (error: ReplicationDivergence) => void;
   /** Which entries have been served. Parallel to `#entries`. */
   readonly #taken: boolean[];
-  /** Where each process's next clock reading is looked for. */
-  readonly #clockAt = new Map<number, number>();
-  /** Where each process's next random draw is looked for. */
-  readonly #randomAt = new Map<number, number>();
+  /** Where each task's next clock reading is looked for, by `pid:tid`. */
+  readonly #clockAt = new Map<string, number>();
+  /** Where each task's next random draw is looked for, by `pid:tid`. */
+  readonly #randomAt = new Map<string, number>();
   /** Where each listener's next accept selection is looked for. */
   readonly #acceptAt = new Map<number, number>();
   /** Selections a listener owes, one per accept it took without the log. */
@@ -405,13 +413,13 @@ export class ReplicationLogReader {
   #borrowedAcceptSelections = 0;
   /** The reading the log carries last, per clock, for a borrow. */
   readonly #latestReading = new Map<number, { sec: number; nsec: number }>();
-  /** The reading each process was last served, per clock, for `aheadMs`. */
+  /** The reading each task was last served, per clock, for `aheadMs`. */
   readonly #servedReading = new Map<
-    number,
+    string,
     Map<number, { sec: number; nsec: number }>
   >();
-  /** Processes that borrowed: their primary counterpart stopped reading. */
-  readonly #offStream = new Set<number>();
+  /** Tasks that borrowed: their primary counterpart stopped reading. */
+  readonly #offStream = new Set<string>();
   #borrowedClockReadings = 0;
   #scannedAheadClockReadings = 0;
   /** How far pushed decisions have been delivered. */
@@ -513,20 +521,26 @@ export class ReplicationLogReader {
     if (pid === 0) {
       return this.entryReady() ? Number.POSITIVE_INFINITY : null;
     }
-    const at = this.#findClock(pid);
+    // Any task of the process: the waiting process's next recorded reading
+    // belongs to whichever of its threads reads next, and the gap to that
+    // task's last served reading is the wait the primary actually spent.
+    const at = this.#findClock(pid, null);
     if (at === null) return null;
     const next = this.#entries[at]!.decision as ReplicationClockReading;
-    const served = this.#servedReading.get(pid)?.get(next.clockId);
+    const served = this.#servedReading
+      .get(taskKey(next.pid, next.tid))
+      ?.get(next.clockId);
     if (served === undefined) return null;
     return (next.sec - served.sec) * 1000 + (next.nsec - served.nsec) / 1e6;
   }
 
-  /** Keep the reading this process was last served, per clock. */
+  /** Keep the reading this task was last served, per clock. */
   #serve(reading: ReplicationClockReading): ReplicationClockReading {
-    let byClock = this.#servedReading.get(reading.pid);
+    const key = taskKey(reading.pid, reading.tid);
+    let byClock = this.#servedReading.get(key);
     if (byClock === undefined) {
       byClock = new Map();
-      this.#servedReading.set(reading.pid, byClock);
+      this.#servedReading.set(key, byClock);
     }
     byClock.set(reading.clockId, { sec: reading.sec, nsec: reading.nsec });
     return reading;
@@ -595,36 +609,41 @@ export class ReplicationLogReader {
   }
 
   /**
-   * The reading the primary handed this process for its next clock read.
+   * The reading the primary handed this task for its next clock read.
    *
-   * The search runs over this process's own readings, so another process
-   * having read a different clock in between is not a divergence — it is the
-   * two computers scheduling their workers differently, which every machine
-   * with more than one process does.
+   * The search runs over this task's own readings, so another process — or
+   * another thread of this one — having read a different clock in between is
+   * not a divergence: it is the two computers scheduling their workers
+   * differently, which every machine with more than one task does.
    *
-   * On a live replay the same scheduling difference reaches inside one
-   * process: the replica's process can read its two clocks in a different
-   * interleaving than its primary counterpart did. Its next recorded reading
-   * of the clock it asked for is served instead, and the reading it stepped
-   * over stays for its own later read. A finished recording replayed locally
-   * keeps the strict order and reports the mismatch as the divergence it is.
+   * On a live replay the same scheduling difference reaches inside one task:
+   * the replica's task can read its two clocks in a different interleaving
+   * than its primary counterpart did. Its next recorded reading of the clock
+   * it asked for is served instead, and the reading it stepped over stays for
+   * its own later read. A finished recording replayed locally keeps the
+   * strict order and reports the mismatch as the divergence it is.
    */
-  takeClock(clockId: number, pid: number): ReplicationClockReading {
+  takeClock(
+    clockId: number,
+    pid: number,
+    tid: number,
+  ): ReplicationClockReading {
+    const key = taskKey(pid, tid);
     let deadline: number | null = null;
     for (;;) {
-      const at = this.#findClock(pid);
+      const at = this.#findClock(pid, tid);
       // Everything the primary pushed before this reading, first — and over
-      // the readings other processes have not taken, because a process that
-      // may never read again must not hold the primary's input.
+      // the readings other tasks have not taken, because a task that may
+      // never read again must not hold the primary's input.
       this.#deliverPushed(at ?? this.#entries.length, { over: true });
       if (at !== null) {
         const entry = this.#entries[at]!;
         const decision = entry.decision as ReplicationClockReading;
         if (decision.clockId === clockId) {
-          this.#clockAt.set(pid, at + 1);
+          this.#clockAt.set(key, at + 1);
           this.#take(at);
           if (this.#index <= at) this.#index = at + 1;
-          this.#offStream.delete(pid);
+          this.#offStream.delete(key);
           return this.#serve(decision);
         }
         if (this.#extendWithin === undefined) {
@@ -634,14 +653,14 @@ export class ReplicationLogReader {
               + `${decision.clockId}`,
           );
         }
-        const ahead = this.#findClockAhead(pid, clockId, at + 1);
+        const ahead = this.#findClockAhead(pid, tid, clockId, at + 1);
         if (ahead !== null) {
           const served = this.#entries[ahead]!
             .decision as ReplicationClockReading;
           this.#deliverPushed(ahead, { over: true });
           this.#take(ahead);
           if (this.#index <= ahead) this.#index = ahead + 1;
-          this.#offStream.delete(pid);
+          this.#offStream.delete(key);
           this.#scannedAheadClockReadings += 1;
           return this.#serve(served);
         }
@@ -657,11 +676,11 @@ export class ReplicationLogReader {
       }
       if (this.#extendWithin !== undefined) {
         const now = Date.now();
-        deadline ??= now + (this.#offStream.has(pid)
+        deadline ??= now + (this.#offStream.has(key)
           ? CLOCK_OFF_STREAM_WAIT_MS
           : CLOCK_STREAM_WAIT_MS);
         if (now >= deadline) {
-          const borrowed = this.#borrow(clockId, pid);
+          const borrowed = this.#borrow(clockId, pid, tid);
           if (borrowed !== null) return borrowed;
           deadline = null;
           continue;
@@ -722,12 +741,12 @@ export class ReplicationLogReader {
    * so the read waits for the primary, and a primary that never draws them
    * is a divergence that surfaces at this reader's next mismatched take.
    */
-  takeRandom(pid: number, length: number): Uint8Array {
+  takeRandom(pid: number, tid: number, length: number): Uint8Array {
     for (;;) {
-      const at = this.#findRandom(pid);
+      const at = this.#findRandom(pid, tid);
       // Everything the primary pushed before this draw, first — and over the
-      // entries other processes have not taken, because a process that may
-      // never ask again must not hold the primary's input.
+      // entries other tasks have not taken, because a task that may never
+      // ask again must not hold the primary's input.
       this.#deliverPushed(at ?? this.#entries.length, { over: true });
       if (at !== null) {
         const entry = this.#entries[at]!;
@@ -739,7 +758,7 @@ export class ReplicationLogReader {
               + `drew ${decision.bytes.byteLength}`,
           );
         }
-        this.#randomAt.set(pid, at + 1);
+        this.#randomAt.set(taskKey(pid, tid), at + 1);
         this.#take(at);
         if (this.#index <= at) this.#index = at + 1;
         return decision.bytes;
@@ -898,14 +917,19 @@ export class ReplicationLogReader {
    * order the primary recorded them, so the machine-latest reading is never
    * ahead of a reading the process's own later entry will carry.
    */
-  #borrow(clockId: number, pid: number): ReplicationClockReading | null {
+  #borrow(
+    clockId: number,
+    pid: number,
+    tid: number,
+  ): ReplicationClockReading | null {
     const latest = this.#latestReading.get(clockId);
     if (latest === undefined) return null;
-    this.#offStream.add(pid);
+    this.#offStream.add(taskKey(pid, tid));
     this.#borrowedClockReadings += 1;
     return this.#serve({
       kind: "clock",
       pid,
+      tid,
       clockId,
       sec: latest.sec,
       nsec: latest.nsec,
@@ -923,65 +947,83 @@ export class ReplicationLogReader {
   }
 
   /**
-   * Where this process's next unserved reading sits, or null when the log
+   * Where this task's next unserved reading sits, or null when the log holds
+   * none yet.
+   *
+   * The search resumes from where the last one stopped, so a task does not
+   * rescan the whole log on every read. A null `tid` matches any task of the
+   * process, for `aheadMs`, whose question is the process's rather than one
+   * thread's.
+   */
+  #findClock(pid: number, tid: number | null): number | null {
+    const key = tid === null ? `${pid}:any` : taskKey(pid, tid);
+    let at = this.#clockAt.get(key) ?? 0;
+    for (; at < this.#entries.length; at += 1) {
+      if (this.#taken[at] === true) continue;
+      const decision = this.#entries[at]!.decision;
+      if (
+        decision.kind === "clock"
+        && decision.pid === pid
+        && (tid === null || decision.tid === tid)
+      ) {
+        this.#clockAt.set(key, at);
+        return at;
+      }
+    }
+    this.#clockAt.set(key, at);
+    return null;
+  }
+
+  /**
+   * Where this task's next unserved random draw sits, or null when the log
    * holds none yet.
    *
-   * The search resumes from where the last one stopped, so a process does not
-   * rescan the whole log on every read.
+   * The search resumes from where the last one stopped, so a task does not
+   * rescan the whole log on every draw.
    */
-  #findClock(pid: number): number | null {
-    let at = this.#clockAt.get(pid) ?? 0;
+  #findRandom(pid: number, tid: number): number | null {
+    const key = taskKey(pid, tid);
+    let at = this.#randomAt.get(key) ?? 0;
     for (; at < this.#entries.length; at += 1) {
       if (this.#taken[at] === true) continue;
       const decision = this.#entries[at]!.decision;
-      if (decision.kind === "clock" && decision.pid === pid) {
-        this.#clockAt.set(pid, at);
+      if (
+        decision.kind === "random"
+        && decision.pid === pid
+        && decision.tid === tid
+      ) {
+        this.#randomAt.set(key, at);
         return at;
       }
     }
-    this.#clockAt.set(pid, at);
+    this.#randomAt.set(key, at);
     return null;
   }
 
   /**
-   * Where this process's next unserved random draw sits, or null when the
-   * log holds none yet.
-   *
-   * The search resumes from where the last one stopped, so a process does
-   * not rescan the whole log on every draw.
-   */
-  #findRandom(pid: number): number | null {
-    let at = this.#randomAt.get(pid) ?? 0;
-    for (; at < this.#entries.length; at += 1) {
-      if (this.#taken[at] === true) continue;
-      const decision = this.#entries[at]!.decision;
-      if (decision.kind === "random" && decision.pid === pid) {
-        this.#randomAt.set(pid, at);
-        return at;
-      }
-    }
-    this.#randomAt.set(pid, at);
-    return null;
-  }
-
-  /**
-   * The process's next unserved reading of this one clock, past its next
+   * The task's next unserved reading of this one clock, past its next
    * reading overall, or null when the log holds none yet.
    *
-   * A live replica's process can interleave its reads of two clocks
-   * differently than its primary counterpart did — the request the primary
-   * hands one worker the replica hands another. Serving the process its own
-   * next reading of the clock it asked for keeps every reading one the
-   * primary recorded for this process, in order per clock, while the reading
-   * it stepped over stays where its own later read will find it.
+   * A live replica's task can interleave its reads of two clocks differently
+   * than its primary counterpart did — the request the primary hands one
+   * worker the replica hands another. Serving the task its own next reading
+   * of the clock it asked for keeps every reading one the primary recorded
+   * for this task, in order per clock, while the reading it stepped over
+   * stays where its own later read will find it.
    */
-  #findClockAhead(pid: number, clockId: number, from: number): number | null {
+  #findClockAhead(
+    pid: number,
+    tid: number,
+    clockId: number,
+    from: number,
+  ): number | null {
     for (let at = from; at < this.#entries.length; at += 1) {
       if (this.#taken[at] === true) continue;
       const decision = this.#entries[at]!.decision;
       if (
         decision.kind === "clock"
         && decision.pid === pid
+        && decision.tid === tid
         && decision.clockId === clockId
       ) {
         return at;

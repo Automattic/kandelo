@@ -23,7 +23,7 @@ import type { ReplicationLogEntry } from "../../src/replication/log";
 import {
   compareMachineStateHashes,
   hashMachineCheckpoint,
-} from "../support/state-hash";
+} from "../../src/replication/state-hash";
 import {
   GUEST,
   READS,

@@ -616,6 +616,7 @@ const SUITE_MODULES: Record<string, string> = {
   "mariadb-aria-64": "./suites/mariadb-aria-64.js",
   "mariadb-innodb": "./suites/mariadb-innodb.js",
   "mariadb-innodb-64": "./suites/mariadb-innodb-64.js",
+  "replication-takeover": "./suites/replication-takeover.js",
 };
 
 const DISABLED_SUITES: Record<string, string> = {
