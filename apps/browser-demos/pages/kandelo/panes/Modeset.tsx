@@ -83,7 +83,6 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
   const [pasteError, setPasteError] = React.useState<string | null>(null);
   const [pointerLocked, setPointerLocked] = React.useState(false);
   const [pointerLockError, setPointerLockError] = React.useState<string | null>(null);
-  const requestPointerLockRef = React.useRef<(() => void) | null>(null);
   const pointerLockEnabledRef = React.useRef(false);
   pointerLockEnabledRef.current = active && status === "running" && !presentation.hostPointer;
   React.useEffect(
@@ -186,6 +185,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     let wasmCursorX = MODESET_FB_W / 2;
     let wasmCursorY = MODESET_FB_H / 2;
     let buttons = 0;
+    let lastPointerType = "";
     let activePointerId: number | null = null;
     const sink: MouseEventSink = {
       injectMouseEvent: (dx, dy, bts) => {
@@ -284,6 +284,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       // must not overwrite its position or clear its button snapshot.
       if (activePointerId !== null && e.pointerId !== activePointerId) return;
       activePointerId = e.pointerId;
+      lastPointerType = e.pointerType;
       e.preventDefault();
       // Return keyboard focus from dock controls to the guest surface.
       // The image-declared evdev source scopes capture to this surface.
@@ -365,11 +366,10 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     const onLockError = (reason?: unknown) => setPointerLockError(
       "Pointer lock was denied by the browser. " +
       (reason instanceof Error ? `${reason.message} ` : "") +
-      "Click Lock pointer to try again.",
+      "Click the display to try again.",
     );
-    requestPointerLockRef.current = () => {
-      if (locked()) { releaseLock(); return; }
-      if (!pointerLockEnabledRef.current) return;
+    const requestCapture = () => {
+      if (locked() || !pointerLockEnabledRef.current || typeof canvas.requestPointerLock !== "function") return;
       setPointerLockError(null);
       canvas.focus();
       try {
@@ -379,6 +379,14 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
           if (closed || !pointerLockEnabledRef.current) releaseLock();
         }, (reason) => { if (!closed) onLockError(reason); });
       } catch (reason) { onLockError(reason); }
+    };
+    const onClick = (e: MouseEvent) => {
+      // Capture after the click's down/up have reached the guest. Locking on
+      // pointerdown can cancel pointer capture and strand the initial press.
+      // Touch has no Escape key; a tap must always remain ordinary input.
+      if (e.isTrusted && lastPointerType !== "touch") {
+        requestCapture();
+      }
     };
     const onContextMenu = (e: Event) => e.preventDefault();
     canvas.addEventListener("pointerenter", onPointerEnter);
@@ -399,9 +407,9 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     doc.addEventListener("keydown", onKeyDown);
     window.addEventListener("blur", releaseLock);
     canvas.addEventListener("contextmenu", onContextMenu);
+    canvas.addEventListener("click", onClick);
     return () => {
       closed = true;
-      requestPointerLockRef.current = null;
       releaseLock();
       setPointerLocked(false);
       canvas.removeEventListener("pointerenter", onPointerEnter);
@@ -419,6 +427,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       doc.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("blur", releaseLock);
       canvas.removeEventListener("contextmenu", onContextMenu);
+      canvas.removeEventListener("click", onClick);
     };
   }, [status, canvas]);
 
@@ -507,18 +516,6 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       active={hasFrame}
     >
       {dockActions.controls}
-      {status === "running" && hasFrame && !presentation.hostPointer && typeof canvas?.requestPointerLock === "function" && (
-        <button
-          type="button"
-          className="kdemo-surface-action"
-          data-testid="kms-pointer-lock"
-          aria-pressed={pointerLocked}
-          title="Keep the pointer inside the display for edge scrolling. Escape releases it."
-          onClick={() => requestPointerLockRef.current?.()}
-        >
-          {pointerLocked ? "Pointer locked · Esc to release" : "Lock pointer"}
-        </button>
-      )}
       {ingest && status === "running" && (
         <IngestControl
           accept={ingest.accept}
@@ -530,8 +527,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
         />
       )}
     </DemoSurfaceDockControls>
-  ), [busy, canvas, crtcId, dockActions.controls, hasFrame, ingest, ingestFile, ingestName, pointerLocked,
-    presentation.hostPointer, status, statusLabel]);
+  ), [busy, crtcId, dockActions.controls, hasFrame, ingest, ingestFile, ingestName, status, statusLabel]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -565,6 +561,11 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
           </div>
         )}
         {dockActions.toasts}
+        {pointerLocked && (
+          <div className="kdemo-toast kmodeset-pointer-hint" role="status" data-testid="kms-pointer-hint">
+            Pointer captured · Press Esc to release
+          </div>
+        )}
         {pointerLockError && (
           <div className="kdemo-toast" data-error="true" role="alert">
             {pointerLockError}

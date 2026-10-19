@@ -20,7 +20,21 @@ test.beforeEach(async ({ page }) => {
   observe(page);
   page.context().on("page", observe);
 });
-async function showGame(page: Page) {
+async function showGame(page: Page, { pointerLock = false } = {}) {
+  // Absolute-input regressions explicitly release browser capture. Dedicated
+  // capture cases retain it and drive native relative movement instead.
+  // Do not replace requestPointerLock or pretend a request succeeded.
+  await page.evaluate(keep => {
+    const scope = globalThis as any;
+    scope.__retainPointerLock = keep;
+    if (!scope.__releaseTestPointerLock) {
+      scope.__releaseTestPointerLock = () => {
+        if (!scope.__retainPointerLock && document.pointerLockElement) document.exitPointerLock();
+      };
+      document.addEventListener("pointerlockchange", scope.__releaseTestPointerLock);
+    }
+    scope.__releaseTestPointerLock();
+  }, pointerLock);
   await page.getByRole("button", { name: "Demo", exact: true }).click({ timeout: 60_000 });
   await expect(canvas(page)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText(/Waiting for PAGE_FLIP on CRTC/)).toBeHidden({ timeout: 120_000 });
@@ -801,7 +815,49 @@ for (const density of [1, 2]) {
         }
       }
     });
-    test("optional pointer lock pans the map and preserves clicks", async ({ page, browserName }) => {
+    test("clicking the display captures the pointer with a visible Escape hint", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "trusted pointer lock regression targets Chromium");
+      test.setTimeout(150_000);
+      await gotoMachine(page, "freeciv");
+      await running(page);
+      await showGame(page, { pointerLock: true });
+      await expect(page.getByTestId("kms-pointer-lock")).toHaveCount(0);
+      await expect(page.getByRole("checkbox", { name: "Lock on click", exact: true })).toHaveCount(0);
+      const captured = () => page.evaluate(() => document.pointerLockElement?.tagName ?? null);
+      expect(await captured()).toBeNull();
+      const box = (await canvas(page).boundingBox())!;
+      // The initiating click must open Options before capture takes over.
+      await canvas(page).click({ position: await menuPosition(page, "options") });
+      await expect.poll(captured).toBe("CANVAS");
+      await expect(page.getByTestId("kms-pointer-hint")).toHaveText("Pointer captured · Press Esc to release");
+      await page.getByTestId("kms-pointer-hint").screenshot({
+        path: `../../.context/freeciv-pointer-capture-hint-${density}.png`, scale: "css",
+      });
+      await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100);
+      await page.screenshot({ path: `../../.context/freeciv-click-to-capture-${density}.png`, scale: "css" });
+      await expect(page.getByTestId("kms-pointer-hint")).toBeHidden({ timeout: 6_000 });
+      await page.keyboard.press("Escape");
+      await expect.poll(captured).toBeNull();
+      await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100, false);
+      await canvas(page).click({ position: await menuPosition(page, "options") });
+      await expect.poll(captured).toBe("CANVAS");
+      await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100);
+      await page.keyboard.press("Escape");
+      await expect.poll(captured).toBeNull();
+      // Touch input stays usable without trapping a device with no Escape key.
+      const input = await page.context().newCDPSession(page);
+      await input.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+      const point = await menuPosition(page, "options");
+      await input.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
+        { id: 1, x: box.x + point.x, y: box.y + point.y },
+      ] });
+      await input.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100);
+      expect(await captured()).toBeNull();
+      await input.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+      await input.detach();
+    });
+    test("pointer lock pans the map and preserves clicks", async ({ page, browserName }) => {
       test.skip(browserName !== "chromium", "trusted pointer lock regression targets Chromium");
       test.setTimeout(240_000);
       await page.addInitScript(() => {
@@ -849,15 +905,17 @@ for (const density of [1, 2]) {
         }, png.toString("base64"));
       };
       await expect.poll(terrain).toBeGreaterThan(5_000);
-      const lock = page.getByTestId("kms-pointer-lock");
+      await showGame(page, { pointerLock: true });
+      // Capture on empty terrain: clicking the starting unit stack opens
+      // Freeciv's unit picker, whose modal correctly disables edge scrolling.
+      const capture = () => canvas(page).click({ position: { x: 120, y: 80 } });
       const captured = () => page.evaluate(() => document.pointerLockElement?.tagName ?? null);
       expect(await captured()).toBeNull();
-      const lockBox = (await lock.boundingBox())!;
-      let mouseX = lockBox.x + lockBox.width / 2;
-      let mouseY = lockBox.y + lockBox.height / 2;
-      await lock.click();
+      let mouseX = box.x + 120;
+      let mouseY = box.y + 80;
+      await capture();
       await expect.poll(captured).toBe("CANVAS");
-      await expect(lock).toHaveAttribute("aria-pressed", "true");
+      await expect(page.getByTestId("kms-pointer-hint")).toBeVisible();
       const move = async (dx: number, dy: number) => {
         // Chromium derives movementX/Y from consecutive protocol positions,
         // while the page's clientX/Y stay frozen at the capture point.
@@ -895,13 +953,13 @@ for (const density of [1, 2]) {
       await page.screenshot({ path: `../../.context/freeciv-pointer-lock-${density}.png`, scale: "css" });
       await page.keyboard.press("Escape");
       await expect.poll(captured).toBeNull();
-      await expect(lock).toHaveAttribute("aria-pressed", "false");
+
       await waitForOptions(page, false);
       await canvas(page).click({ position: { x: 16, y: 16 } });
       await waitForOptions(page);
       await page.keyboard.press("Escape");
       await waitForOptions(page, false);
-      await lock.click();
+      await capture();
       await expect.poll(captured).toBe("CANVAS");
       await page.mouse.down();
       // Leaving the pane must release capture and the guest's held button.
@@ -911,18 +969,18 @@ for (const density of [1, 2]) {
       await expect.poll(() => page.evaluate(() => (globalThis as any).__pointerTrace
         .filter((e: any) => e.ev_type === 1 && e.code === 272).map((e: any) => e.value).slice(-2)))
         .toEqual([1, 0]);
-      await showGame(page);
-      await lock.click();
+      await showGame(page, { pointerLock: true });
+      await capture();
       await expect.poll(captured).toBe("CANVAS");
       await page.evaluate(() => window.dispatchEvent(new Event("blur")));
       await expect.poll(captured).toBeNull();
-      await expect(lock).toHaveAttribute("aria-pressed", "false");
+
       // A denied browser capability must remain visible, not appear captured.
       await canvas(page).evaluate(node => Object.defineProperty(node, "requestPointerLock", {
         configurable: true, value: () => Promise.reject(new DOMException("Denied", "NotAllowedError")),
       }));
       try {
-        await lock.click();
+        await capture();
         await expect(page.getByRole("alert")).toContainText("Pointer lock was denied");
         expect(await captured()).toBeNull();
       } finally {

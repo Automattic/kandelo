@@ -1049,6 +1049,17 @@
   background: color-mix(in oklch, red 18%, var(--kdock-bg-sunk));
 }
 
+.kmodeset-pointer-hint {
+  pointer-events: none;
+  font-size: 13px;
+  animation: kmodeset-pointer-hint 4s forwards;
+}
+
+@keyframes kmodeset-pointer-hint {
+  0%, 85% { opacity: 1; }
+  100% { opacity: 0; visibility: hidden; }
+}
+
 .kdemo-toast-dismiss {
   flex: 0 0 auto;
   border: 0;

@@ -110,11 +110,15 @@ the mouse wheel is not its map-panning control. Holding right-click for at
 least half a second opens a terrain/unit context menu instead of recentering.
 **Escape** closes that menu.
 
-The demo's **Lock pointer** button optionally keeps mouse movement inside
-the display. Move to an edge to scroll, then move back into the map to stop.
-**Escape** releases the pointer. Switching panes, leaving the browser window,
-or hiding the tab also releases it. Ordinary clicks never enable pointer lock.
-This uses the shared KMS display input adapter; Freeciv's controls are unchanged.
+Clicking the game captures the pointer inside the display. A brief
+**Press Esc to release** hint appears. Move to an edge to scroll, then move
+back into the map to stop. **Escape** releases the pointer. Switching panes,
+leaving the browser window, or hiding the tab also releases it. Touch taps
+never capture the pointer.
+
+This is the shared KMS display behavior; there are no pointer-capture dock
+controls, image settings, or Freeciv changes. The initial click reaches the
+guest before capture begins.
 
 **G** begins a pending destination; moving the pointer previews a route and
 left-click commits it. Right-click panning does not cancel the pending order.
