@@ -756,7 +756,7 @@ export class NodeKernelHost {
   }
 
   /**
-   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * Set the absolute input producer's coordinate extent so EVIOCGABS
    * on `/dev/input/event1` reports the right `ABS_X.maximum` /
    * `ABS_Y.maximum`. Mirrors `BrowserKernel.setInputCanvasDims`.
    */

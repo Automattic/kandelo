@@ -9,7 +9,7 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
 test.use({ serviceWorkers: "block" });
 
-test("SDL presents the first complete frame after native window and context replacement", async ({ page, baseURL }) => {
+test("SDL preserves first-frame geometry and alpha blending after window and context replacement", async ({ page, baseURL }) => {
   test.setTimeout(120_000);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const target = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)![1];
@@ -66,7 +66,7 @@ test("SDL presents the first complete frame after native window and context repl
       child.exit.then((code: number) => { scope.__resizeExitCode = code; });
     }, { moduleUrl: new URL(`/@fs/${resolve(root, "host/src/browser-kernel-host.ts")}`, baseURL).href,
       kernelUrl, imageUrl });
-    for (const [width, height, red, green, blue] of [[960, 540, 220, 30, 40], [800, 600, 30, 210, 50], [1280, 720, 40, 60, 220]]) {
+    for (const [width, height, red, green, blue] of [[960, 540, 255, 0, 0], [800, 600, 0, 255, 0], [1280, 720, 0, 0, 255]]) {
       await expect.poll(async () => {
         const status = await page.evaluate(() => ({ output: (globalThis as any).__resizeOutput,
           exit: (globalThis as any).__resizeExitCode, diagnostics: (globalThis as any).__resizeDiagnostics }));
@@ -80,9 +80,12 @@ test("SDL presents the first complete frame after native window and context repl
       ])).toEqual([width, height]);
       // The guest draws exactly once. Requiring its first frame at several
       // positions catches clears and clipping after a late SETCRTC resize.
+      const baseColor = [red, green, blue];
+      const expected = [baseColor, baseColor.map(value => 128 + value * 127 / 255), baseColor];
+      // Native GL/screenshot quantization can differ by one intensity level.
       await expect.poll(async () => {
         const png = await page.locator("#resize-screen").screenshot();
-        return page.evaluate(async encoded => {
+        const pixels = await page.evaluate(async encoded => {
           const bitmap = await createImageBitmap(new Blob([
             Uint8Array.from(atob(encoded), c => c.charCodeAt(0)),
           ], { type: "image/png" }));
@@ -93,7 +96,10 @@ test("SDL presents the first complete frame after native window and context repl
           bitmap.close();
           return pixels;
         }, png.toString("base64"));
-      }).toEqual(Array.from({ length: 3 }, () => [red, green, blue, 255]));
+        if (pixels.some(pixel => pixel[3] !== 255)) return 255;
+        return Math.max(...pixels.flatMap((pixel, i) =>
+          pixel.slice(0, 3).map((value, channel) => Math.abs(value - expected[i][channel]))));
+      }).toBeLessThanOrEqual(1);
       await page.evaluate(() => {
         const kernel = (globalThis as any).__resizeKernel;
         kernel.injectInputEventBatch([

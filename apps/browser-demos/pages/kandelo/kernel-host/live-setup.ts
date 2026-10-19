@@ -1794,10 +1794,9 @@ function genericPresentationForMachine(
  * - `evdev-input` ALONE: a global input consumer. Pointer comes from the
  *   window and capture is scoped to the demo stage.
  *
- * The viewport is the browser window. `display` in demo.json is a FLOOR the
- * machine states, not a size it imposes, so the published canvas dimensions
- * (which set EVIOCGABS's ABS_X/Y maxima) are the window clamped up to that
- * minimum, republished on resize.
+ * KMS uses fixed absolute-axis bounds independent of display modes. Other
+ * input consumers use browser-window coordinates, clamped to the image's
+ * declared display minimum and republished on resize.
  */
 function attachDeclaredInputSource(
   kernel: BrowserKernel,

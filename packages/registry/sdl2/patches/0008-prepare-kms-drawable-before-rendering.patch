@@ -1,0 +1,62 @@
+Prepare the KMS drawable before the renderer submits a resized frame.
+
+SDL defers GBM/EGL surface recreation to SwapWindow, but the GLES renderer
+may flush a clear before compiling its first draw shader. Recreating the
+surface then discards that clear and sends later commands to a new target.
+Implement the ordinary GL_GetDrawableSize driver hook. With the window's
+context current, resolve pending surface changes before RunCommandQueue
+reads the drawable dimensions and emits GL commands. Keep the swap-time
+fallback for clients that never query the drawable.
+
+This corrects SDL's direct-display backend ordering; it adds no Kandelo
+conditions or application dimensions. Reproduce on native KMSDRM before
+submitting upstream, alongside the absolute-axis endpoint report.
+
+--- a/src/video/kmsdrm/SDL_kmsdrmvideo.c
++++ b/src/video/kmsdrm/SDL_kmsdrmvideo.c
+@@ -285,6 +285,7 @@
+     device->GL_UnloadLibrary = KMSDRM_GLES_UnloadLibrary;
+     device->GL_CreateContext = KMSDRM_GLES_CreateContext;
+     device->GL_MakeCurrent = KMSDRM_GLES_MakeCurrent;
++    device->GL_GetDrawableSize = KMSDRM_GLES_GetDrawableSize;
+     device->GL_SetSwapInterval = KMSDRM_GLES_SetSwapInterval;
+     device->GL_GetSwapInterval = KMSDRM_GLES_GetSwapInterval;
+     device->GL_SwapWindow = KMSDRM_GLES_SwapWindow;
+--- a/src/video/kmsdrm/SDL_kmsdrmopengles.c
++++ b/src/video/kmsdrm/SDL_kmsdrmopengles.c
+@@ -86,6 +86,25 @@
+     return 0;
+ }
+
++/* Apply a pending mode before the renderer emits any GL commands. Waiting
++   until SwapWindow discards draws already flushed to the old EGL surface. */
++void KMSDRM_GLES_GetDrawableSize(_THIS, SDL_Window *window, int *w, int *h)
++{
++    SDL_WindowData *windata = (SDL_WindowData *)window->driverdata;
++    SDL_DisplayData *dispdata = (SDL_DisplayData *)SDL_GetDisplayForWindow(window)->driverdata;
++
++    if (windata->egl_surface_dirty && SDL_GL_GetCurrentWindow() == window &&
++        SDL_GL_GetCurrentContext() != NULL) {
++        if (KMSDRM_CreateSurfaces(_this, window) < 0) {
++            if (w) *w = 0;
++            if (h) *h = 0;
++            return;
++        }
++    }
++    if (w) *w = dispdata->mode.hdisplay;
++    if (h) *h = dispdata->mode.vdisplay;
++}
++
+ int KMSDRM_GLES_SwapWindow(_THIS, SDL_Window *window)
+ {
+     SDL_WindowData *windata = ((SDL_WindowData *)window->driverdata);
+--- a/src/video/kmsdrm/SDL_kmsdrmopengles.h
++++ b/src/video/kmsdrm/SDL_kmsdrmopengles.h
+@@ -38,6 +38,7 @@
+ extern int KMSDRM_GLES_SetSwapInterval(_THIS, int interval);
+ extern int KMSDRM_GLES_LoadLibrary(_THIS, const char *path);
+ extern SDL_GLContext KMSDRM_GLES_CreateContext(_THIS, SDL_Window *window);
++extern void KMSDRM_GLES_GetDrawableSize(_THIS, SDL_Window *window, int *w, int *h);
+ extern int KMSDRM_GLES_SwapWindow(_THIS, SDL_Window *window);
+ extern int KMSDRM_GLES_MakeCurrent(_THIS, SDL_Window *window, SDL_GLContext context);
+

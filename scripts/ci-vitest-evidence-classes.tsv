@@ -49,7 +49,9 @@ host/test/dlopen-host-imports.test.ts	source-only
 host/test/dri-bo-teardown.test.ts	source-only
 host/test/dri-cube-pyramid.test.ts	prepared-product
 host/test/dri-dumb-roundtrip.test.ts	prepared-product
+host/test/dri-egl-native-window.test.ts	prepared-product
 host/test/dri-kms-cursor.test.ts	prepared-product
+host/test/dri-kms-modes.test.ts	prepared-product
 host/test/dri-kms-pageflip.test.ts	prepared-product
 host/test/dri-kms-registry.test.ts	source-only
 host/test/dri-kms-stats-sab.test.ts	source-only

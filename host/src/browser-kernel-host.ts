@@ -1237,10 +1237,10 @@ export class BrowserKernel {
   }
 
   /**
-   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * Set the absolute input producer's coordinate extent so EVIOCGABS
    * on `/dev/input/event1` reports `ABS_X.maximum = width - 1` and
-   * `ABS_Y.maximum = height - 1`. Call once at boot when the canvas
-   * is attached and again on any resize.
+   * `ABS_Y.maximum = height - 1`. Consumers cache these bounds when
+   * opening the device; KMS uses a fixed 65536×65536 extent across resizes.
    */
   setInputCanvasDims(width: number, height: number): void {
     this.sendToKernel({ type: "set_input_canvas_dims", width, height });

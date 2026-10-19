@@ -1582,12 +1582,12 @@ for (const density of [1, 2]) {
         // rather than an intermediate frame halfway through the drag.
         await page.mouse.move(box.x + thumb.x, box.y + thumb.y);
         await page.mouse.down();
-        await page.mouse.move(box.x + bottom.x, box.y + bottom.y, { steps: 6 });
+        await page.mouse.move(box.x + bottom.x, box.y + bottom.y, { steps: 30 });
         await page.mouse.up();
         await expect.poll(async () => {
           const png = await page.screenshot({ scale: "css", clip: {
             x: box.x + (width / 2 + 105) * box.width / width,
-            y: box.y + (height / 2 + 100) * box.height / height,
+            y: box.y + (height / 2 + 70) * box.height / height,
             width: 105 * box.width / width, height: 25 * box.height / height,
           } });
           return page.evaluate(async encoded => {
@@ -1614,13 +1614,13 @@ for (const density of [1, 2]) {
       await openInterface(960, 540);
       const choicesClip = { x: 880, y: 220, width: 130, height: 200 };
       const beforeChoices = await page.screenshot({ scale: "css", clip: choicesClip });
-      await click(635, 383); // Screen resolution dropdown.
+      await click(635, 353); // Screen resolution dropdown.
       await expect.poll(async () => Buffer.compare(beforeChoices,
         await page.screenshot({ scale: "css", clip: choicesClip }))).not.toBe(0);
       await page.screenshot({ path: `../../.context/freeciv-resolution-choices-${density}.png`, scale: "css" });
       // SDL orders the 17 standard modes from largest to smallest. The
       // dropdown opens upward by 17 rows of 15 guest pixels.
-      await click(635, 351); // 800x600.
+      await click(635, 321); // 800x600.
       await click(691, 92); // Apply through the native titlebar checkmark.
       await expect(page.getByText("800×600", { exact: false })).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `../../.context/freeciv-resolution-800-${density}.png`, scale: "css" });
@@ -1630,8 +1630,8 @@ for (const density of [1, 2]) {
       // Reopen settings after the aspect change: this proves pointer
       // coordinates, hit testing and the resized window agree.
       await openInterface(800, 600);
-      await click(555, 413);
-      await click(555, 336); // 1280x720, row 12, menu top at 149.
+      await click(555, 383);
+      await click(555, 306); // 1280x720, row 12, menu top at 119.
       await click(611, 122);
       await expect(page.getByText("1280×720", { exact: false })).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `../../.context/freeciv-resolution-1280-${density}.png`, scale: "css" });
@@ -1659,8 +1659,8 @@ for (const density of [1, 2]) {
       await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/rules the/);
       await showGame(page);
       await openInterface(1280, 720, true);
-      await click(795, 473);
-      await click(795, 426); // 960x540, row 14, menu top at 209.
+      await click(795, 443);
+      await click(795, 396); // 960x540, row 14, menu top at 179.
       await click(851, 182);
       await expect(page.getByText("960×540", { exact: false })).toBeVisible({ timeout: 30_000 });
       for (let i = 0; i < 2; i++) await page.keyboard.press("Escape", { delay: 100 });

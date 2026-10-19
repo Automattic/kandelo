@@ -9,7 +9,7 @@ int main(void) {
     CHECK(window);
     SDL_Renderer *renderer = NULL;
     const int sizes[][2] = {{960, 540}, {800, 600}, {1280, 720}};
-    const Uint8 colors[][3] = {{220, 30, 40}, {30, 210, 50}, {40, 60, 220}};
+    const Uint8 colors[][3] = {{255, 0, 0}, {0, 255, 0}, {0, 0, 255}};
     for (int i = 0; i < 3; i++) {
         SDL_DisplayMode mode = {.w = sizes[i][0], .h = sizes[i][1]};
         CHECK(SDL_SetWindowDisplayMode(window, &mode) == 0);
@@ -17,9 +17,19 @@ int main(void) {
         if (renderer) SDL_DestroyRenderer(renderer);
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
         CHECK(renderer);
+        SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32,
+                                                 SDL_TEXTUREACCESS_STATIC, 1, 1);
+        CHECK(texture);
+        const Uint8 translucent_white[] = {255, 255, 255, 128};
+        CHECK(SDL_UpdateTexture(texture, NULL, translucent_white, 4) == 0);
+        CHECK(SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND) == 0);
         CHECK(SDL_SetRenderDrawColor(renderer, colors[i][0], colors[i][1], colors[i][2], 255) == 0);
         CHECK(SDL_RenderClear(renderer) == 0);
+        SDL_Rect overlay = {sizes[i][0] / 4, sizes[i][1] / 4,
+                            sizes[i][0] / 2, sizes[i][1] / 2};
+        CHECK(SDL_RenderCopy(renderer, texture, NULL, &overlay) == 0);
         SDL_RenderPresent(renderer);
+        SDL_DestroyTexture(texture);
         printf("READY:%dx%d\n", sizes[i][0], sizes[i][1]);
         fflush(stdout);
         SDL_Event event;

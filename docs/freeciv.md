@@ -223,6 +223,9 @@ The SDK forwards GBM native-window dimensions through the ordinary EGL
 surface API. The GL bridge retains that resized drawable independently of the
 old scanout, and retires destroyed contexts' objects and cached state
 before recreating them on the shared native WebGL context.
+SDL's KMS backend prepares pending drawable changes when the renderer
+queries its output size, with the window's context current. Deferring
+recreation until swap can discard part of an already submitted frame.
 
 Kandelo supplies a virtual KMS cursor plane through Linux's `MODE_CURSOR`
 and `MODE_CURSOR2` ioctls. It retains cursor images, positions, hotspots,
@@ -290,6 +293,18 @@ mice and desktop Wayland/X11 input. The local shared correction is
 with coverage in the SDL package runtime test and browser cursor-edge
 tests. Retire the local patch once a verified upstream release supplies
 the fix; preserve the same bounds in local overflow recovery.
+
+## Future work: report SDL's deferred drawable recreation
+
+SDL 2.32.10's KMS backend recreates a dirty EGL surface during the first
+swap after a mode change. Shader compilation can flush a clear beforehand,
+so that clear is lost while subsequent queued draws reach the new surface.
+The SDL package implements the standard `GL_GetDrawableSize` driver hook
+to prepare the drawable before the GLES renderer submits commands, while
+retaining the upstream swap-time fallback for other callers. The browser
+regression checks a clear plus translucent texture at three resolutions.
+Reproduce this ordering defect on native Linux KMSDRM before reporting it
+upstream. That native reproduction and upstream report remain future work.
 
 ## Message contrast
 
