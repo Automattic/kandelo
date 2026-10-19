@@ -289,6 +289,9 @@ recorded ICE candidates can use the host's LAN interface; allowing loopback
 does not guarantee a loopback route. ICE setup can fail before
 Freeciv joins, independently of the application controls. Successful game
 playthroughs do not establish reliable connectivity without a TURN relay.
+The fixture records the descriptions actually published, candidate arrival
+times, and candidate-pair statistics so a failed connection can be traced
+beyond the presence of a candidate address.
 Internet NAT traversal, Firefox, WebKit, and Freeciv inside Wayland have not
 been verified for this port. See the PR for the exact validation performed
 against its current head; earlier results do not prove a later revision.

@@ -310,23 +310,64 @@ async function recordPeerRoute(page: Page) {
   await page.addInitScript(() => {
     const Native = RTCPeerConnection;
     const traces: any[] = [];
+    const byConnection = new WeakMap<RTCPeerConnection, any>();
     (globalThis as any).__freecivPeerRoutes = traces;
     globalThis.RTCPeerConnection = class extends Native {
       constructor(...args: ConstructorParameters<typeof Native>) {
         super(...args);
-        const trace = { candidates: [] as string[], states: [] as any[] };
+        const trace = { candidates: [] as string[], candidateTimes: [] as any[], errors: [] as any[],
+          descriptionReads: [] as any[], states: [] as any[], stats: [] as any[] };
         traces.push(trace);
+        byConnection.set(this, trace);
+        let sampling = false;
+        const sampleStats = () => {
+          if (sampling || this.connectionState === "closed") return;
+          sampling = true;
+          const at = performance.now();
+          void this.getStats().then(report => {
+            trace.stats.push({ at, records: [...report.values()].filter(record =>
+              ["candidate-pair", "local-candidate", "remote-candidate", "transport"].includes(record.type)) });
+          }, error => trace.stats.push({ at, error: String(error) })).finally(() => {
+            sampling = false;
+            if (trace.stats.length > 128) trace.stats.shift();
+          });
+        };
+        // Failure handlers close RTC immediately; a later getStats() can be
+        // empty. Retain bounded samples from the live connection instead.
+        const sampler = window.setInterval(() => {
+          if (["connected", "failed", "closed"].includes(this.connectionState)) window.clearInterval(sampler);
+          else sampleStats();
+        }, 500);
         this.addEventListener("icecandidate", event => {
-          if (event.candidate) trace.candidates.push(event.candidate.candidate);
+          if (event.candidate) {
+            trace.candidates.push(event.candidate.candidate);
+            trace.candidateTimes.push({ at: performance.now(), type: event.candidate.type });
+          }
         });
+        this.addEventListener("icecandidateerror", event => trace.errors.push({
+          at: performance.now(), url: event.url, code: event.errorCode, message: event.errorText,
+        }));
         for (const event of ["connectionstatechange", "iceconnectionstatechange", "icegatheringstatechange"]) {
-          this.addEventListener(event, () => trace.states.push({
-            at: performance.now(), connection: this.connectionState,
-            ice: this.iceConnectionState, gathering: this.iceGatheringState,
-            remote: this.remoteDescription?.sdp.split("\r\n")
-              .filter(line => line.startsWith("a=candidate:")),
-          }));
+          this.addEventListener(event, () => {
+            trace.states.push({
+              at: performance.now(), connection: this.connectionState,
+              ice: this.iceConnectionState, gathering: this.iceGatheringState,
+              remote: this.remoteDescription?.sdp.split("\r\n")
+                .filter(line => line.startsWith("a=candidate:")),
+            });
+            sampleStats();
+          });
         }
+      }
+      get localDescription() {
+        const description = super.localDescription;
+        const trace = byConnection.get(this);
+        // The single-code publisher reads this getter after its gather wait.
+        // Record that exact candidate set, independently of later events.
+        trace?.descriptionReads.push({ at: performance.now(), gathering: this.iceGatheringState,
+          candidates: description?.sdp.split("\r\n").filter(line => line.startsWith("a=candidate:")),
+        });
+        return description;
       }
     } as typeof Native;
   });
@@ -412,9 +453,13 @@ test("two Freeciv clients start a game over a network session", async ({ browser
     }
   } finally {
     for (const [name, player] of [["host", page], ["joiner", joiner]] as const) {
-      writeFileSync(`../../.context/freeciv-peer-${name}-routes.json`, JSON.stringify(
+      // Each repeat owns its evidence: a later successful session must never
+      // overwrite the candidate pairs from the intermittent failure.
+      const evidencePath = test.info().outputPath(`peer-${name}-routes.json`);
+      writeFileSync(evidencePath, JSON.stringify(
         await player.evaluate(() => (globalThis as any).__freecivPeerRoutes)
           .catch(error => ({ error: String(error) })), null, 2));
+      await test.info().attach(`peer-${name}-routes`, { path: evidencePath, contentType: "application/json" });
     }
     await context.close();
   }
