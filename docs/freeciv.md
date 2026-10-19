@@ -193,6 +193,28 @@ or `height - 1`, never the first pixel outside the window. Leaving the
 graphics pane can produce such an edge sample; mapping it outside would
 clear SDL's mouse focus and hide the cursor even after returning.
 
+## Future work: report SDL's absolute-pointer endpoint bug
+
+- [ ] Report the SDL2 direct evdev absolute-mouse conversion upstream and
+  propose a general fix. No upstream report has been filed yet.
+
+SDL 2.32.10's `src/core/linux/SDL_evdev.c` scales an axis with
+`(value - minimum) * width / (maximum - minimum)`. At the advertised
+maximum this produces `width`, outside the window's valid `0..width - 1`
+pixels. SDL can then clear mouse focus and hide the KMS cursor; later
+motion uses that lost focus and does not restore the cursor. This was
+reproduced on Kandelo, independently of Freeciv's widgets.
+
+Before filing, check the current upstream implementation and create a
+standalone native Linux KMSDRM reproduction with an absolute evdev device;
+that native reproduction has not been run. Include endpoint and
+out-of-range sample regressions, and distinguish this path from relative
+mice and desktop Wayland/X11 input. The local shared correction is
+[`0007-scale-inclusive-absolute-axes.patch`](../packages/registry/sdl2/patches/0007-scale-inclusive-absolute-axes.patch),
+with coverage in the SDL package runtime test and browser cursor-edge
+tests. Retire the local patch once a verified upstream release supplies
+the fix; preserve the same bounds in local overflow recovery.
+
 ## Remaining application corrections
 
 The package keeps bounded corrections for upstream Freeciv defects:
