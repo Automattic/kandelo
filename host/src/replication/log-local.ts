@@ -166,6 +166,11 @@ type LocalReplicationMessage<TMachine> =
   | { readonly kind: "cursor"; readonly position: PreviewCursor | null }
   | { readonly kind: "scrolled"; readonly position: PreviewScroll }
   | { readonly kind: "miss"; readonly key: string }
+  | {
+      readonly kind: "nickname";
+      readonly name: string | null;
+      readonly reply: boolean;
+    }
   | { readonly kind: "granted"; readonly grant: ReplicationGrant }
   | { readonly kind: "ended" }
   | { readonly kind: "join"; readonly joinId: string }
@@ -521,6 +526,47 @@ export class LocalReplicationLog<TMachine = never> {
    */
   publishScroll(position: PreviewScroll): void {
     this.#post({ kind: "scrolled", position });
+  }
+
+  /**
+   * Exchange nicknames with the computer on this channel.
+   *
+   * Presentation like `publishCursor`, but symmetric: the name belongs to the
+   * person at the computer, not to the machine, and either side of the pair
+   * may carry one. Which is why it rides no role — a take-over swaps who
+   * publishes the log, and the names stay where the people are.
+   *
+   * The two pages attach at different moments, so the announcement posted
+   * first can reach a listener that does not exist yet. Every announcement
+   * heard is therefore answered with this side's current name, marked as a
+   * reply so the answers do not answer each other; the later page's own
+   * announcement is what fetches the earlier one's name across.
+   *
+   * `hear` receives the other side's name, null when that person gave none.
+   * Returns the name's controls: `set` to change it, `stop` to leave the
+   * exchange.
+   */
+  announceNickname(
+    initial: string | null,
+    hear: (name: string | null) => void,
+  ): { set: (name: string | null) => void; stop: () => void } {
+    let name = initial;
+    const listener = (event: MessageEvent) => {
+      const message = event.data as LocalReplicationMessage<TMachine>;
+      if (message.kind !== "nickname") return;
+      hear(message.name);
+      if (!message.reply) this.#post({ kind: "nickname", name, reply: true });
+    };
+    this.#channel.addEventListener("message", listener);
+    this.#post({ kind: "nickname", name, reply: false });
+    return {
+      set: (next) => {
+        if (next === name) return;
+        name = next;
+        this.#post({ kind: "nickname", name, reply: false });
+      },
+      stop: () => this.#channel.removeEventListener("message", listener),
+    };
   }
 
   /**

@@ -4,6 +4,7 @@
 import * as React from "react";
 import type { MachineHandover } from "./machine-handover";
 import type { MachineReplication } from "./machine-replication";
+import { NICKNAME_MAX_LENGTH } from "../../../lib/peer-nickname";
 import type { FramebufferSharing } from "./shared-framebuffer";
 import type { NetworkSession } from "./use-network-session";
 import type { PrimarySurface } from "../../../../../web-libs/kandelo-session/src/kernel-host";
@@ -124,6 +125,12 @@ export const SharingSection: React.FC<{
   /** The surface this computer's machine presents, or null without one. */
   presenting: PrimarySurface | null;
   replication: MachineReplication;
+  /**
+   * This person's nickname, as typed. The pair exchanges the names, and the
+   * watching page's dock badge then says who it is viewing.
+   */
+  nickname: string;
+  onNicknameChange: (name: string) => void;
 }> = ({
   session,
   sharingTerminal,
@@ -133,6 +140,8 @@ export const SharingSection: React.FC<{
   hasMachine,
   presenting,
   replication,
+  nickname,
+  onNicknameChange,
 }) => {
   const { state, partner } = session;
   const note = takeNote(handover);
@@ -141,6 +150,17 @@ export const SharingSection: React.FC<{
   return (
     <div className="ksharing">
       <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>Share a machine</div>
+      <label className="knetwork-field">
+        Your nickname — how the other person sees you
+        <input
+          type="text"
+          spellCheck={false}
+          maxLength={NICKNAME_MAX_LENGTH}
+          value={nickname}
+          placeholder="Ada"
+          onChange={(event) => onNicknameChange(event.target.value)}
+        />
+      </label>
       {state.sharingError && (
         <div className="knetwork-error" role="alert">
           {`Sharing with the hosting computer failed: ${state.sharingError}`}

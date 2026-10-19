@@ -33,6 +33,7 @@ import { TerminalDockControls } from "./TerminalDockControls";
 import { useNetworkSession } from "./use-network-session";
 import { NetworkPanel } from "./NetworkPanel";
 import { SharingSection } from "./SharingSection";
+import { usePeerNickname } from "./peer-nickname";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
@@ -122,6 +123,7 @@ export const App: React.FC = () => {
   // handover must not offer that replica as a second machine to take.
   const replication = useMachineReplication(host, sharingLink);
   const handover = useMachineHandover(host, sharingLink, replication.replicating);
+  const names = usePeerNickname(sharingLink);
 
   const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
   React.useEffect(() => {
@@ -374,6 +376,18 @@ export const App: React.FC = () => {
   }, [terminals]);
 
   const isEmpty = surface.status === "idle";
+  // Only in a pair. A computer on its own is neither, and one machine with
+  // one person at it needs no word for that.
+  const pairRole =
+    sharingLink === null
+      ? null
+      : isEmpty || replication.replicating
+        ? "viewer"
+        : "user";
+  // A name only for someone you are watching: on your own dock you know who
+  // you are, so the user's badge keeps the role word, and the other person's
+  // name replaces only "Viewer". Null falls back to the role words.
+  const pairRoleName = pairRole === "viewer" ? names.peerNickname : null;
   const dockActiveView: DockViewId | null = !isEmpty && surface.activeView !== "internals"
     ? surface.activeView
     : null;
@@ -564,6 +578,8 @@ export const App: React.FC = () => {
                 hasMachine={!isEmpty}
                 presenting={presenting}
                 replication={replication}
+                nickname={names.nickname}
+                onNicknameChange={names.setNickname}
               />
             }
           />
@@ -582,15 +598,8 @@ export const App: React.FC = () => {
           guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
           internalsAvailable={!isEmpty && surface.canUseInternals}
           internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
-          // Only in a pair. A computer on its own is neither, and one machine
-          // with one person at it needs no word for that.
-          role={
-            sharingLink === null
-              ? null
-              : isEmpty || replication.replicating
-                ? "viewer"
-                : "user"
-          }
+          role={pairRole}
+          roleName={pairRoleName}
           themeOpen={themeOpen}
           shareAvailable={!isEmpty}
           // A machine on its way here is booting, whatever the surface it is
