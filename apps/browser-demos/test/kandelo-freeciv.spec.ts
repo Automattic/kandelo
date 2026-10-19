@@ -181,6 +181,7 @@ async function multiplayer(page: Page, entry: "host" | "join" | "local") {
 
 test.afterEach(async ({ page }, info) => {
   if (info.status === info.expectedStatus) return;
+  await page.evaluate(() => document.exitPointerLock());
   await page.screenshot({ path: "../../.context/freeciv-browser-failure.png" });
   writeFileSync("../../.context/freeciv-browser-failure.txt", await page.locator("body").innerText());
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
@@ -798,6 +799,134 @@ for (const density of [1, 2]) {
           } }));
           await waitForNationPicker(page);
         }
+      }
+    });
+    test("optional pointer lock pans the map and preserves clicks", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "trusted pointer lock regression targets Chromium");
+      test.setTimeout(240_000);
+      await page.addInitScript(() => {
+        (globalThis as any).__pointerTrace = [];
+        const post = Worker.prototype.postMessage;
+        Worker.prototype.postMessage = function (message: any, ...rest: any[]) {
+          const records = message?.type === "input_event_batch_inject" ? message.records
+            : message?.type === "input_event_inject" ? [message] : [];
+          for (const event of records) {
+            if (event.device === 1) (globalThis as any).__pointerTrace.push(event);
+          }
+          return Reflect.apply(post, this, [message, ...rest]);
+        };
+      });
+      await gotoMachine(page, "freeciv");
+      await running(page);
+      await showGame(page);
+      await multiplayer(page, "host");
+      await expect.poll(() => terminalLines(page), { timeout: 60_000 })
+        .toMatch(/has connected from (?:localhost|127\.0\.0\.1)/);
+      await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 30_000 });
+      const box = (await canvas(page).boundingBox())!;
+      await canvas(page).click({ position: { x: box.width - 50, y: box.height - 24 } });
+      await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/rules the/);
+      await showGame(page);
+      await waitForPanel(page, 60, 80, false);
+      await canvas(page).focus();
+      await page.keyboard.press("c");
+      const terrain = async () => {
+        const png = await page.screenshot({ scale: "css", clip: {
+          x: box.x + box.width / 2 - 150, y: box.y + box.height / 2 - 100, width: 300, height: 200,
+        } });
+        return page.evaluate(async encoded => {
+          const bitmap = await createImageBitmap(new Blob([
+            Uint8Array.from(atob(encoded), c => c.charCodeAt(0)),
+          ], { type: "image/png" }));
+          const ctx = new OffscreenCanvas(300, 200).getContext("2d")!;
+          ctx.drawImage(bitmap, 0, 0); bitmap.close();
+          const pixels = ctx.getImageData(0, 0, 300, 200).data;
+          let count = 0;
+          for (let i = 0; i < pixels.length; i += 4) {
+            if (Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) > 16) count++;
+          }
+          return count;
+        }, png.toString("base64"));
+      };
+      await expect.poll(terrain).toBeGreaterThan(5_000);
+      const lock = page.getByTestId("kms-pointer-lock");
+      const captured = () => page.evaluate(() => document.pointerLockElement?.tagName ?? null);
+      expect(await captured()).toBeNull();
+      const lockBox = (await lock.boundingBox())!;
+      let mouseX = lockBox.x + lockBox.width / 2;
+      let mouseY = lockBox.y + lockBox.height / 2;
+      await lock.click();
+      await expect.poll(captured).toBe("CANVAS");
+      await expect(lock).toHaveAttribute("aria-pressed", "true");
+      const move = async (dx: number, dy: number) => {
+        // Chromium derives movementX/Y from consecutive protocol positions,
+        // while the page's clientX/Y stay frozen at the capture point.
+        mouseX += dx; mouseY += dy;
+        await page.mouse.move(mouseX, mouseY);
+      };
+      const position = () => page.evaluate(() => {
+        const events = (globalThis as any).__pointerTrace as { ev_type: number; code: number; value: number }[];
+        return [0, 1].map(code => events.filter(e => e.ev_type === 3 && e.code === code).at(-1)?.value);
+      });
+      const status = await page.getByText(/\d+×\d+ · \d+ flips/).innerText();
+      const [, width, height] = status.match(/(\d+)×(\d+)/)!.map(Number);
+      const scale = Math.min(box.width / width, box.height / height);
+      // Native relative events must reach the last valid pixel, stay there
+      // through overshoot, and reverse immediately in the same guest grid.
+      await move(100_000, -100_000);
+      await expect.poll(position).toEqual([width - 1, 0]);
+      await move(-12 * scale, 0);
+      await expect.poll(position).toEqual([width - 13, 0]);
+      for (let i = 0; i < 3; i++) await move(1, 0);
+      await expect.poll(position).toEqual([width - 13 + Math.round(3 / scale), 0]);
+      // Move to the middle of the northern edge. Actual terrain disappearing
+      // proves the unmodified SDL edge-scroll loop runs while the OS is locked.
+      await move(-(width / 2) * scale, 0);
+      await expect.poll(terrain, { timeout: 30_000 }).toBeLessThan(10);
+      await move(0, 100 * scale);
+      await page.keyboard.press("c");
+      await expect.poll(terrain).toBeGreaterThan(5_000);
+      // Click a real native widget at the integrated position. Browser client
+      // coordinates remain frozen while locked and must not retarget the click.
+      const [px, py] = await position();
+      await move((10 - px!) * scale, (10 - py!) * scale);
+      await page.mouse.down(); await page.mouse.up();
+      await waitForOptions(page);
+      await page.screenshot({ path: `../../.context/freeciv-pointer-lock-${density}.png`, scale: "css" });
+      await page.keyboard.press("Escape");
+      await expect.poll(captured).toBeNull();
+      await expect(lock).toHaveAttribute("aria-pressed", "false");
+      await waitForOptions(page, false);
+      await canvas(page).click({ position: { x: 16, y: 16 } });
+      await waitForOptions(page);
+      await page.keyboard.press("Escape");
+      await waitForOptions(page, false);
+      await lock.click();
+      await expect.poll(captured).toBe("CANVAS");
+      await page.mouse.down();
+      // Leaving the pane must release capture and the guest's held button.
+      await page.getByRole("button", { name: "Terminal", exact: true }).evaluate((button: HTMLButtonElement) => button.click());
+      await expect.poll(captured).toBeNull();
+      await page.mouse.up();
+      await expect.poll(() => page.evaluate(() => (globalThis as any).__pointerTrace
+        .filter((e: any) => e.ev_type === 1 && e.code === 272).map((e: any) => e.value).slice(-2)))
+        .toEqual([1, 0]);
+      await showGame(page);
+      await lock.click();
+      await expect.poll(captured).toBe("CANVAS");
+      await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+      await expect.poll(captured).toBeNull();
+      await expect(lock).toHaveAttribute("aria-pressed", "false");
+      // A denied browser capability must remain visible, not appear captured.
+      await canvas(page).evaluate(node => Object.defineProperty(node, "requestPointerLock", {
+        configurable: true, value: () => Promise.reject(new DOMException("Denied", "NotAllowedError")),
+      }));
+      try {
+        await lock.click();
+        await expect(page.getByRole("alert")).toContainText("Pointer lock was denied");
+        expect(await captured()).toBeNull();
+      } finally {
+        await canvas(page).evaluate(node => { delete (node as any).requestPointerLock; });
       }
     });
     test("map navigation and orders keep accepting clicks", async ({ page, browserName }) => {

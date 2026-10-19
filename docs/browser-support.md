@@ -2136,6 +2136,19 @@ display pixels, for both ordinary input and overflow recovery. The
 maximum axis sample reaches the last pixel rather than `width` or
 `height`; out-of-range device samples are confined to the same bounds.
 
+KMS surfaces with a guest-rendered cursor offer optional **Lock pointer**
+capture when the browser supports it. Locked relative mouse motion accumulates
+in the same fitted scanout grid as ordinary absolute input, retaining
+fractional motion and clamping at the display edges without hidden overshoot.
+Both evdev and PS/2 consumers receive that position and its button state;
+locked clicks use the integrated position rather than frozen browser client
+coordinates. No guest package or device-mode change is involved. Escape,
+window blur, a hidden document, pane changes, and teardown release capture;
+capture changes release held buttons. Rejected requests surface an error.
+Surfaces declaring `hostPointer` keep ordinary browser pointer handling,
+since locking would hide their only cursor. Node input devices are unchanged:
+pointer lock is a browser presentation facility.
+
 The display also mounts a transparent cursor plane over the scanout.
 Linux `MODE_CURSOR` / `MODE_CURSOR2` requests update its shape, hotspot,
 and position independently of application frames, through SDL or libdrm.

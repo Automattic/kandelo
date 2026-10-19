@@ -34,6 +34,8 @@ const MODESET_FB_W = 1920;
 const MODESET_FB_H = 1080;
 
 export interface ModesetProps {
+  /** Hidden panes remain mounted to advertise their display size. */
+  active?: boolean;
   dragProps?: import("./PaneHead").PaneHeadDragProps;
   onCollapse?: () => void;
   onMaximize?: () => void;
@@ -68,7 +70,7 @@ const ZERO_STATS: KmsStats = {
 
 const RENDERER_LABELS: Record<number, string> = { 1: "2d", 2: "webgl2", 3: "webgl2-gl" };
 
-export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onDockControlsChange }) => {
+export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PRIMARY_CRTC, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
   const presentation = usePresentation();
@@ -79,6 +81,11 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
   // A paste gesture over the machine that never reached the guest (the
   // `clipboard` runtime feature). Shown until dismissed or replaced.
   const [pasteError, setPasteError] = React.useState<string | null>(null);
+  const [pointerLocked, setPointerLocked] = React.useState(false);
+  const [pointerLockError, setPointerLockError] = React.useState<string | null>(null);
+  const requestPointerLockRef = React.useRef<(() => void) | null>(null);
+  const pointerLockEnabledRef = React.useRef(false);
+  pointerLockEnabledRef.current = active && status === "running" && !presentation.hostPointer;
   React.useEffect(
     () => host.subscribeClipboardPasteFailures((failure) => {
       setPasteError(describeClipboardPasteFailure(failure));
@@ -175,8 +182,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     if (status !== "running") return;
     if (!canvas) return;
 
-    let prevCanvasX: number | null = null;
-    let prevCanvasY: number | null = null;
+    let closed = false;
     let wasmCursorX = MODESET_FB_W / 2;
     let wasmCursorY = MODESET_FB_H / 2;
     let buttons = 0;
@@ -229,13 +235,9 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
       wasmCursorY += dy;
     };
     const handlePointerAt = (canvasX: number, canvasY: number) => {
-      if (prevCanvasX === null || prevCanvasY === null) {
-        sendDelta(Math.round(canvasX - wasmCursorX), Math.round(canvasY - wasmCursorY));
-      } else {
-        sendDelta(Math.round(canvasX - prevCanvasX), Math.round(canvasY - prevCanvasY));
-      }
-      prevCanvasX = canvasX;
-      prevCanvasY = canvasY;
+      // Difference rounded positions, not rounded deltas: repeated fractional
+      // steps must accumulate identically in the absolute and PS/2 devices.
+      sendDelta(Math.round(canvasX) - wasmCursorX, Math.round(canvasY) - wasmCursorY);
     };
     // Absolute-position pointer feed for evdev consumers (SDL2's
     // KMSDRM backend reads `/dev/input/event1`, which the PS/2
@@ -244,8 +246,8 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     // matching the kernel's inclusive ABS_X/Y bounds. SDL scales those
     // bounds to inclusive display pixels. modeset.c ignores
     // event1 (it reads PS/2 /dev/input/mice), so feeding both is safe.
-    let lastAbsX = wasmCursorX;
-    let lastAbsY = wasmCursorY;
+    let lastAbsX = (fbDims()?.w ?? MODESET_FB_W) / 2;
+    let lastAbsY = (fbDims()?.h ?? MODESET_FB_H) / 2;
     const sendAbs = (canvasX: number, canvasY: number) => {
       lastAbsX = canvasX;
       lastAbsY = canvasY;
@@ -265,22 +267,19 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
       sendAbs(c.x, c.y);
     };
     const onPointerEnter = (e: PointerEvent) => {
+      if (locked()) return;
       if (activePointerId !== null && e.pointerId !== activePointerId) return;
       if (e.pointerType === "touch") return;
       updatePointer(e, "move", false);
     };
-    const onPointerLeave = (e: PointerEvent) => {
-      if (activePointerId !== null && e.pointerId !== activePointerId) return;
-      if (e.pointerType === "touch") return;
-      prevCanvasX = null;
-      prevCanvasY = null;
-    };
     const onPointerMove = (e: PointerEvent) => {
+      if (locked()) return;
       if (activePointerId !== null && e.pointerId !== activePointerId) return;
       if (e.pointerType === "touch" && e.pointerId !== activePointerId) return;
       updatePointer(e, "move", e.pointerId === activePointerId);
     };
     const onPointerDown = (e: PointerEvent) => {
+      if (locked()) return;
       // One pointer owns a gesture. Another finger, pen, or hovering mouse
       // must not overwrite its position or clear its button snapshot.
       if (activePointerId !== null && e.pointerId !== activePointerId) return;
@@ -293,11 +292,10 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
       updatePointer(e, "down", true);
     };
     const onPointerUp = (e: PointerEvent) => {
+      if (locked()) return;
       if (activePointerId !== null && e.pointerId !== activePointerId) return;
       if (e.pointerType === "touch") {
         if (e.pointerId !== activePointerId) return;
-        prevCanvasX = null;
-        prevCanvasY = null;
       }
       e.preventDefault();
       updatePointer(e, "up", false);
@@ -305,8 +303,6 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     };
     const releasePointer = () => {
       activePointerId = null;
-      prevCanvasX = null;
-      prevCanvasY = null;
       if (buttons === 0) return;
       buttons = 0;
       handleRef.current?.sendMouseEvent(0, 0, 0);
@@ -321,9 +317,71 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     const onLostPointerCapture = (e: PointerEvent) => {
       if (e.pointerId === activePointerId) releasePointer();
     };
+    const doc = canvas.ownerDocument;
+    const locked = () => doc.pointerLockElement === canvas;
+    // Locked browsers guarantee mouse events, not pointer capture. Use only
+    // that stream while locked, avoiding duplicate motion/button delivery.
+    const onLockedMouse = (e: MouseEvent) => {
+      if (!locked()) return;
+      const dims = fbDims();
+      const rect = canvas.getBoundingClientRect();
+      if (!dims || rect.width <= 0 || rect.height <= 0) return;
+      const scale = Math.min(rect.width / dims.w, rect.height / dims.h);
+      // Retain subpixel motion in guest space. Clamp the accumulator itself:
+      // overshooting an edge must not consume subsequent reverse movement.
+      const x = Math.max(0, Math.min(dims.w - 1,
+        lastAbsX + (e.type === "mousemove" ? e.movementX / scale : 0)));
+      const y = Math.max(0, Math.min(dims.h - 1,
+        lastAbsY + (e.type === "mousemove" ? e.movementY / scale : 0)));
+      const phase = e.type === "mousedown" ? "down" : e.type === "mouseup" ? "up" : "move";
+      const next = pointerButtons(buttons, e, phase, true);
+      handlePointerAt(x, y);
+      if (next !== buttons) {
+        buttons = next;
+        handleRef.current?.sendMouseEvent(0, 0, buttons);
+      }
+      sendAbs(x, y);
+      e.preventDefault();
+    };
+    const onLockChange = () => {
+      if (locked() && !pointerLockEnabledRef.current) { releaseLock(); return; }
+      releasePointer();
+      setPointerLocked(locked());
+      if (locked()) {
+        setPointerLockError(null);
+        canvas.focus();
+      }
+    };
+    const releaseLock = () => {
+      releasePointer();
+      if (locked()) doc.exitPointerLock();
+    };
+    const onVisibilityChange = () => {
+      if (doc.hidden) releaseLock();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && locked()) releaseLock();
+    };
+    const onLockError = (reason?: unknown) => setPointerLockError(
+      "Pointer lock was denied by the browser. " +
+      (reason instanceof Error ? `${reason.message} ` : "") +
+      "Click Lock pointer to try again.",
+    );
+    requestPointerLockRef.current = () => {
+      if (locked()) { releaseLock(); return; }
+      if (!pointerLockEnabledRef.current) return;
+      setPointerLockError(null);
+      canvas.focus();
+      try {
+        // Older browsers return void; current implementations return a Promise.
+        const request = canvas.requestPointerLock() as Promise<void> | undefined;
+        request?.then(() => {
+          if (closed || !pointerLockEnabledRef.current) releaseLock();
+        }, (reason) => { if (!closed) onLockError(reason); });
+      } catch (reason) { onLockError(reason); }
+    };
     const onContextMenu = (e: Event) => e.preventDefault();
     canvas.addEventListener("pointerenter", onPointerEnter);
-    canvas.addEventListener("pointerleave", onPointerLeave);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerdown", onPointerDown);
     // Pointer capture routes up/cancel to the canvas even when the
@@ -332,21 +390,42 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerCancel);
     canvas.addEventListener("lostpointercapture", onLostPointerCapture);
-    window.addEventListener("blur", releasePointer);
+    canvas.addEventListener("mousemove", onLockedMouse);
+    canvas.addEventListener("mousedown", onLockedMouse);
+    canvas.addEventListener("mouseup", onLockedMouse);
+    doc.addEventListener("pointerlockchange", onLockChange);
+    doc.addEventListener("pointerlockerror", onLockError);
+    doc.addEventListener("visibilitychange", onVisibilityChange);
+    doc.addEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", releaseLock);
     canvas.addEventListener("contextmenu", onContextMenu);
     return () => {
-      releasePointer();
+      closed = true;
+      requestPointerLockRef.current = null;
+      releaseLock();
+      setPointerLocked(false);
       canvas.removeEventListener("pointerenter", onPointerEnter);
-      canvas.removeEventListener("pointerleave", onPointerLeave);
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerCancel);
       canvas.removeEventListener("lostpointercapture", onLostPointerCapture);
-      window.removeEventListener("blur", releasePointer);
+      canvas.removeEventListener("mousemove", onLockedMouse);
+      canvas.removeEventListener("mousedown", onLockedMouse);
+      canvas.removeEventListener("mouseup", onLockedMouse);
+      doc.removeEventListener("pointerlockchange", onLockChange);
+      doc.removeEventListener("pointerlockerror", onLockError);
+      doc.removeEventListener("visibilitychange", onVisibilityChange);
+      doc.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", releaseLock);
       canvas.removeEventListener("contextmenu", onContextMenu);
     };
   }, [status, canvas]);
+
+  React.useEffect(() => {
+    if (active && !presentation.hostPointer) return;
+    if (canvas && canvas.ownerDocument.pointerLockElement === canvas) canvas.ownerDocument.exitPointerLock();
+  }, [active, presentation.hostPointer, canvas]);
 
   // Drain the stats SAB at 4 Hz. The numbers are advisory; rAF would
   // re-render every blit, which is overkill for a status panel.
@@ -428,6 +507,18 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
       active={hasFrame}
     >
       {dockActions.controls}
+      {status === "running" && hasFrame && !presentation.hostPointer && typeof canvas?.requestPointerLock === "function" && (
+        <button
+          type="button"
+          className="kdemo-surface-action"
+          data-testid="kms-pointer-lock"
+          aria-pressed={pointerLocked}
+          title="Keep the pointer inside the display for edge scrolling. Escape releases it."
+          onClick={() => requestPointerLockRef.current?.()}
+        >
+          {pointerLocked ? "Pointer locked · Esc to release" : "Lock pointer"}
+        </button>
+      )}
       {ingest && status === "running" && (
         <IngestControl
           accept={ingest.accept}
@@ -439,7 +530,8 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
         />
       )}
     </DemoSurfaceDockControls>
-  ), [busy, crtcId, dockActions.controls, hasFrame, ingest, ingestFile, ingestName, status, statusLabel]);
+  ), [busy, canvas, crtcId, dockActions.controls, hasFrame, ingest, ingestFile, ingestName, pointerLocked,
+    presentation.hostPointer, status, statusLabel]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -473,6 +565,13 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
           </div>
         )}
         {dockActions.toasts}
+        {pointerLockError && (
+          <div className="kdemo-toast" data-error="true" role="alert">
+            {pointerLockError}
+            <button type="button" className="kdemo-toast-dismiss" aria-label="Dismiss pointer lock error"
+              onClick={() => setPointerLockError(null)}>×</button>
+          </div>
+        )}
         {busy && (
           <div className="kdemo-toast" data-testid="kms-ingest-busy">
             {ingestName ? `loading ${ingestName}…` : "loading…"}
