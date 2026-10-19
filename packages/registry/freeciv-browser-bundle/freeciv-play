@@ -1,0 +1,41 @@
+#!/bin/sh
+# Product launcher: ordinary Freeciv processes and TCP connections.
+set -eu
+mode="${1:-local}"
+[ "$#" -eq 0 ] || shift
+mkdir -p "$HOME/.freeciv/saves"
+cd "$HOME/.freeciv"
+case "$mode" in
+    local) exec /usr/bin/freeciv "$@" ;;
+    join) server=host ;;
+    host) server=127.0.0.1 ;;
+    *) echo "usage: freeciv-play [local|host|join]" >&2; exit 2 ;;
+esac
+# A new screen name avoids collisions between the machines' maker accounts.
+player="${FREECIV_PLAYER:-Player-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')}"
+server_pid=
+client_pid=
+cleanup() {
+    trap - EXIT INT TERM HUP
+    [ -z "$client_pid" ] || kill -TERM "$client_pid" 2>/dev/null || :
+    [ -z "$server_pid" ] || kill -TERM "$server_pid" 2>/dev/null || :
+    [ -z "$client_pid" ] || wait "$client_pid" 2>/dev/null || :
+    [ -z "$server_pid" ] || wait "$server_pid" 2>/dev/null || :
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
+if [ "$mode" = host ]; then
+    /usr/bin/freeciv-server --bind 0.0.0.0 --port 5556 \
+        --read /usr/share/freeciv-kandelo/host.serv \
+        --saves "$HOME/.freeciv/saves" </dev/null &
+    server_pid=$!
+fi
+# Freeciv's own autoconnection retry handles server startup and network errors.
+/usr/bin/freeciv --autoconnect --server "$server" --port 5556 \
+    --name "$player" "$@" &
+client_pid=$!
+set +e
+wait "$client_pid"
+status=$?
+client_pid=
+exit "$status"

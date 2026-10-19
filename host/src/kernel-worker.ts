@@ -3775,6 +3775,13 @@ export class CentralizedKernelWorker {
         const stats = this.kmsStatsViews.get(crtcId);
         if (stats && stats.length > 7) Atomics.store(stats, 7, 3);
       },
+      onKmsGlPresented: (crtcId: number) => {
+        const stats = this.kmsStatsViews.get(crtcId);
+        if (stats) {
+          Atomics.add(stats, 0, 1);
+          Atomics.store(stats, 1, performance.now() | 0);
+        }
+      },
       markKmsCanvasGlReleased: (crtcId: number) => {
         // The claiming GL session is gone (context destroyed / EGL
         // terminated — e.g. a GPU compositor degrading to its CPU

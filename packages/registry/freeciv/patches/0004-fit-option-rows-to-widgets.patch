@@ -1,0 +1,67 @@
+Lay out option rows using their measured widget heights.
+
+The fixed 30-pixel pitch overlaps text when fonts are large, whether from
+user settings or display DPI. Retain the minimum pitch, and grow rows to
+fit the actual labels and fields.
+
+--- a/client/gui-sdl2/optiondlg.c
++++ b/client/gui-sdl2/optiondlg.c
+@@ -133,6 +133,7 @@
+   SDL_Rect area;
+   int longest[widgets_per_row], xpos[widgets_per_row];
+   int w, h, i, j;
++  int row_height = adj_size(30);
+   va_list args;
+ 
+   fc_assert_ret(NULL != window);
+@@ -145,14 +146,15 @@
+   for (widget = begin, i = 0; widget != end; widget = widget->next, i++) {
+     j = i % widgets_per_row;
+     longest[j] = MAX(longest[j], widget->size.w);
++    row_height = MAX(row_height, widget->size.h + adj_size(4));
+   }
+ 
+   fc_assert(0 == (i % widgets_per_row));
+ 
+   if (-1 == rows_shown) {
+-    h = 30 * (i / widgets_per_row);
++    h = row_height * (i / widgets_per_row);
+   } else {
+-    h = 30 * MIN((i / widgets_per_row), rows_shown);
++    h = row_height * MIN((i / widgets_per_row), rows_shown);
+   }
+ 
+   w = (1 - widgets_per_row) * adj_size(20);
+@@ -172,7 +174,8 @@
+   /* Resize window. */
+   logo = theme_get_background(active_theme, BACKGROUND_OPTIONDLG);
+   if (resize_window(window, logo, NULL,
+-                    adj_size(w + 80), adj_size(h + 80))) {
++                    w + adj_size(80) + (window->size.w - window->area.w),
++                    h + adj_size(80) + (window->size.h - window->area.h))) {
+     FREESURFACE(logo);
+   }
+ 
+@@ -200,18 +203,18 @@
+   }
+ 
+   /* Set button position. */
+-  h = 30 * (i / widgets_per_row + 1);
++  h = row_height * (i / widgets_per_row);
+   for (widget = begin, i = 0; widget != end; widget = widget->next, i++) {
+     j = i % widgets_per_row;
+     if (0 == j) {
+-      h -= 30;
++      h -= row_height;
+     }
+     widget_resize(widget, longest[j], widget->size.h);
+     if (1 == widgets_per_row) {
+       widget_set_position(widget, area.x + (area.w - widget->size.w) / 2,
+-                          area.y + adj_size(h));
++                          area.y + adj_size(40) + h);
+     } else {
+-      widget_set_position(widget, xpos[j], area.y + adj_size(h));
++      widget_set_position(widget, xpos[j], area.y + adj_size(40) + h);
+     }
+   }
+ 

@@ -802,6 +802,8 @@ export interface KernelCallbacks {
    * for canvases now painted directly by WebGL2. Idempotent.
    */
   markKmsCanvasGlOwned?: (crtcId: number) => void;
+  /** A canvas-backed GL frame has actually been presented on this CRTC. */
+  onKmsGlPresented?: (crtcId: number) => void;
   /**
    * Inverse of `markKmsCanvasGlOwned`: the GL session that claimed the
    * canvas is gone (context destroyed or renderD128 session terminated),
@@ -1091,6 +1093,9 @@ export class WasmPosixKernel {
       // Failure is non-fatal: the session falls back to drawing straight
       // at the canvas.
       ensurePresentTarget(b);
+      // A recreated EGL context retains its per-pid binding object. Its
+      // new default target must still be replayed on the shared context.
+      this.gl_muxers.get(ctx)?.invalidateCurrent();
     }
   }
 
@@ -2549,6 +2554,19 @@ export class WasmPosixKernel {
               this.gl.applyRenderTarget(b);
             }
           }
+          if (b.gl && b.claimedKmsCrtc != null) {
+            // Surface recreation can retain the GL context. Build the
+            // replacement drawable before the guest draws: creating it at
+            // SwapBuffers would leave the completed frame on the canvas,
+            // then blit an empty offscreen target on subsequent presents.
+            const previousDefault = b.renderTargetFbo;
+            const previousFramebuffer = b.shadow.fbo;
+            ensurePresentTarget(b);
+            if (previousFramebuffer !== null && previousFramebuffer !== previousDefault) {
+              b.shadow.fbo = previousFramebuffer;
+            }
+            this.gl_muxers.get(b.gl)?.invalidateCurrent();
+          }
         },
         host_gl_destroy_surface: (pid: number, _surfaceId: number): void => {
           const b = this.gl.get(pid);
@@ -2571,6 +2589,7 @@ export class WasmPosixKernel {
           if (b.presentTarget) {
             b.gl?.deleteFramebuffer(b.presentTarget.fbo);
             b.gl?.deleteTexture(b.presentTarget.tex);
+            b.gl?.deleteRenderbuffer(b.presentTarget.depthStencil);
             b.presentTarget = null;
           }
         },
@@ -2693,6 +2712,9 @@ export class WasmPosixKernel {
             // only when one was established before the frame.
             const established = b.presentTarget !== null;
             if (ensurePresentTarget(b) && established) blitPresentTarget(b);
+            if (b.gl && b.canvas && (b.presentTarget !== null || b.renderTargetFbo === null)) {
+              this.callbacks.onKmsGlPresented?.(b.claimedKmsCrtc);
+            }
           }
           return 0;
         },

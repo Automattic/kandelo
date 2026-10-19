@@ -72,6 +72,14 @@ patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0001-recognize-kandelo-as-unix.pa
 echo "==> Applying the KMSDRM display-DPI patch..."
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0002-kmsdrm-display-dpi-from-connector.patch"
 
+# A direct evdev display without Linux VT keymaps still needs SDL_TEXTINPUT.
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0003-evdev-text-without-console.patch"
+
+echo "==> Preserving evdev input chronology across devices..."
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0004-order-evdev-devices-by-timestamp.patch"
+
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0005-resynchronize-mouse-after-evdev-overflow.patch"
+
 # --- Wayland pkg-config wiring (step 12b) ------------------------------
 # SDL2's configure gates the Wayland backend on a hard pkg-config probe
 # (configure.ac CheckWayland ~L1742):

@@ -108,7 +108,12 @@ export function dockActionProgress(output: string, programName: string): DockAct
  */
 export function shellPromptReturned(output: string): boolean {
   const text = output.replace(ANSI_ESCAPE, "");
-  const lastLine = text.slice(text.lastIndexOf("\n") + 1);
+  const newline = text.lastIndexOf("\n");
+  // A subscriber can attach while the previous prompt is still arriving.
+  // That partial prompt does not prove the newly dispatched command exited.
+  // The command's echoed Enter (or its output) must first complete a line.
+  if (newline < 0) return false;
+  const lastLine = text.slice(newline + 1);
   return !lastLine.includes("\r")
     && /[$#] $/.test(lastLine)
     && !/^[#\s]*$/.test(lastLine);

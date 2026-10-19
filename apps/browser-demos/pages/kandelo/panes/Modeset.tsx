@@ -14,6 +14,7 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { describeClipboardPasteFailure } from "../../../../../web-libs/kandelo-session/src/clipboard-paste";
 import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
+import { pointerButtons } from "@host/input/pointer-buttons";
 import { DemoSurfaceDockControls, IngestControl } from "./Framebuffer";
 import { useDockActions } from "./DockActions";
 import { useFittedCanvasStyle } from "./canvasFit";
@@ -47,6 +48,7 @@ interface KmsStats {
   width: number;
   height: number;
   commitCount: number;
+  presentCount: number;
   lastFrameUs: number;
   /** Vblank-pump presenter id from stats slot 7: 1 = legacy 2d blit,
    *  2 = WebGL2 scanout presenter, 3 = program-owned WebGL2 (the app —
@@ -59,6 +61,7 @@ const ZERO_STATS: KmsStats = {
   width: 0,
   height: 0,
   commitCount: 0,
+  presentCount: 0,
   lastFrameUs: 0,
   renderer: 0,
 };
@@ -92,7 +95,12 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
   const [error, setError] = React.useState<string | null>(null);
   const [stats, setStats] = React.useState<KmsStats>(ZERO_STATS);
   // The flip counter tells a dock action when its replacement is drawing.
-  const dockActions = useDockActions("kms", status === "running" ? stats.commitCount : null);
+  const readPresentCount = React.useCallback(() => {
+    const counters = handleRef.current?.stats;
+    return counters ? Atomics.load(counters, 0) : 0;
+  }, []);
+  const dockActions = useDockActions("kms", status === "running" ? stats.presentCount : null,
+    undefined, readPresentCount);
 
   // Mount the host's display canvas for this CRTC rather than rendering one:
   // a program's WebGL context is bound to that canvas for good, so a
@@ -169,9 +177,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     let wasmCursorX = MODESET_FB_W / 2;
     let wasmCursorY = MODESET_FB_H / 2;
     let buttons = 0;
-    let activeTouchId: number | null = null;
-    const buttonBit = (button: number) =>
-      button === 0 ? 1 : button === 2 ? 2 : button === 1 ? 4 : 0;
+    let activePointerId: number | null = null;
     const sink: MouseEventSink = {
       injectMouseEvent: (dx, dy, bts) => {
         handleRef.current?.sendMouseEvent(dx, dy, bts);
@@ -234,75 +240,81 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     // .width), exactly the range SDL expects after we set the kernel's
     // ABS_X/Y.maximum to the framebuffer size. modeset.c ignores
     // event1 (it reads PS/2 /dev/input/mice), so feeding both is safe.
+    let lastAbsX = wasmCursorX;
+    let lastAbsY = wasmCursorY;
     const sendAbs = (canvasX: number, canvasY: number) => {
+      lastAbsX = canvasX;
+      lastAbsY = canvasY;
       handleRef.current?.sendPointerAbs(canvasX, canvasY, buttons);
     };
-    const onPointerEnter = (e: PointerEvent) => {
-      if (e.pointerType === "touch") return;
+    const updatePointer = (e: PointerEvent, phase: "down" | "move" | "up", allowPresses: boolean) => {
       const c = toCanvasCoords(e.clientX, e.clientY);
+      const next = pointerButtons(buttons, e, phase, allowPresses);
+      // Deliver the new position before the button edge in both feeds.
       handlePointerAt(c.x, c.y);
+      if (next !== buttons) {
+        buttons = next;
+        handleRef.current?.sendMouseEvent(0, 0, buttons);
+      }
+      if (e.buttons === 0) activePointerId = null;
       sendAbs(c.x, c.y);
     };
+    const onPointerEnter = (e: PointerEvent) => {
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
+      if (e.pointerType === "touch") return;
+      updatePointer(e, "move", false);
+    };
     const onPointerLeave = (e: PointerEvent) => {
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
       if (e.pointerType === "touch") return;
       prevCanvasX = null;
       prevCanvasY = null;
     };
     const onPointerMove = (e: PointerEvent) => {
-      if (e.pointerType === "touch" && e.pointerId !== activeTouchId) return;
-      const c = toCanvasCoords(e.clientX, e.clientY);
-      handlePointerAt(c.x, c.y);
-      sendAbs(c.x, c.y);
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
+      if (e.pointerType === "touch" && e.pointerId !== activePointerId) return;
+      updatePointer(e, "move", e.pointerId === activePointerId);
     };
     const onPointerDown = (e: PointerEvent) => {
-      if (e.pointerType === "touch") {
-        // Track a single finger; a second finger would teleport the
-        // cursor back and forth between touch points.
-        if (activeTouchId !== null) return;
-        activeTouchId = e.pointerId;
-      }
-      const bit = buttonBit(e.button);
-      if (bit === 0) return;
+      // One pointer owns a gesture. Another finger, pen, or hovering mouse
+      // must not overwrite its position or clear its button snapshot.
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
+      activePointerId = e.pointerId;
       e.preventDefault();
       // Return keyboard focus from dock controls to the guest surface.
       // The image-declared evdev source scopes capture to this surface.
       canvas.focus();
       canvas.setPointerCapture(e.pointerId);
-      if (e.pointerType === "touch") {
-        // A finger moves and presses in one event; move the cursor to
-        // the touch point first so the click lands under the finger,
-        // not at the cursor's previous position.
-        const c = toCanvasCoords(e.clientX, e.clientY);
-        handlePointerAt(c.x, c.y);
-      }
-      buttons |= bit;
-      const c = toCanvasCoords(e.clientX, e.clientY);
-      handleRef.current?.sendMouseEvent(0, 0, buttons);
-      sendAbs(c.x, c.y);
+      updatePointer(e, "down", true);
     };
     const onPointerUp = (e: PointerEvent) => {
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
       if (e.pointerType === "touch") {
-        if (e.pointerId !== activeTouchId) return;
-        activeTouchId = null;
+        if (e.pointerId !== activePointerId) return;
         prevCanvasX = null;
         prevCanvasY = null;
       }
-      const bit = buttonBit(e.button);
-      if (bit === 0) return;
       e.preventDefault();
-      buttons &= ~bit;
-      const c = toCanvasCoords(e.clientX, e.clientY);
-      handleRef.current?.sendMouseEvent(0, 0, buttons);
-      sendAbs(c.x, c.y);
+      updatePointer(e, "up", false);
+      activePointerId = null;
     };
-    const onPointerCancel = (e: PointerEvent) => {
-      if (e.pointerType === "touch" && e.pointerId !== activeTouchId) return;
-      activeTouchId = null;
+    const releasePointer = () => {
+      activePointerId = null;
       prevCanvasX = null;
       prevCanvasY = null;
       if (buttons === 0) return;
       buttons = 0;
       handleRef.current?.sendMouseEvent(0, 0, 0);
+      // SDL reads evdev, independently of the legacy PS/2 stream. Both
+      // devices must observe the release, at the last pointer position.
+      sendAbs(lastAbsX, lastAbsY);
+    };
+    const onPointerCancel = (e: PointerEvent) => {
+      if (activePointerId !== null && e.pointerId !== activePointerId) return;
+      releasePointer();
+    };
+    const onLostPointerCapture = (e: PointerEvent) => {
+      if (e.pointerId === activePointerId) releasePointer();
     };
     const onContextMenu = (e: Event) => e.preventDefault();
     canvas.addEventListener("pointerenter", onPointerEnter);
@@ -314,14 +326,19 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     // document-level mouseup listener.
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerCancel);
+    canvas.addEventListener("lostpointercapture", onLostPointerCapture);
+    window.addEventListener("blur", releasePointer);
     canvas.addEventListener("contextmenu", onContextMenu);
     return () => {
+      releasePointer();
       canvas.removeEventListener("pointerenter", onPointerEnter);
       canvas.removeEventListener("pointerleave", onPointerLeave);
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerCancel);
+      canvas.removeEventListener("lostpointercapture", onLostPointerCapture);
+      window.removeEventListener("blur", releasePointer);
       canvas.removeEventListener("contextmenu", onContextMenu);
     };
   }, [status, canvas]);
@@ -336,6 +353,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
         width: Atomics.load(s, 2),
         height: Atomics.load(s, 3),
         commitCount: Atomics.load(s, 5),
+        presentCount: Atomics.load(s, 0),
         lastFrameUs: Atomics.load(s, 6),
         renderer: s.length > 7 ? Atomics.load(s, 7) : 0,
       });

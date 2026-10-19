@@ -1,0 +1,150 @@
+Preserve queued input when entering and leaving native drags.
+
+SDL_SetEventFilter discards the entire event queue, including a button release
+that may already follow the press. Window, scrollbar, and slider drags must
+consume that release. Process their motion normally without a global filter;
+the widget handlers already calculate changes from their previous positions.
+
+--- a/client/gui-sdl2/gui_main.c
++++ b/client/gui-sdl2/gui_main.c
+@@ -101,8 +101,6 @@
+ Uint32 sdl2_client_flags = 0;
+ 
+ Uint32 widget_info_counter = 0;
+-int MOVE_STEP_X = DEFAULT_MOVE_STEP;
+-int MOVE_STEP_Y = DEFAULT_MOVE_STEP;
+ extern bool draw_goto_patrol_lines;
+ bool is_unit_move_blocked;
+ bool LSHIFT;
+@@ -574,28 +572,6 @@
+   event.user.data2 = NULL;
+ 
+   SDL_PushEvent(&event);
+-}
+-
+-/**********************************************************************//**
+-  Filter out mouse motion events for too small movement to react to.
+-  This function may run in a separate event thread.
+-**************************************************************************/
+-int FilterMouseMotionEvents(void *data, SDL_Event *event)
+-{
+-  if (event->type == SDL_MOUSEMOTION) {
+-    static int x = 0, y = 0;
+-
+-    if (((MOVE_STEP_X > 0) && (abs(event->motion.x - x) >= MOVE_STEP_X))
+-        || ((MOVE_STEP_Y > 0) && (abs(event->motion.y - y) >= MOVE_STEP_Y)) ) {
+-      x = event->motion.x;
+-      y = event->motion.y;
+-      return 1;    /* Catch it */
+-    } else {
+-      return 0;    /* Drop it, we've handled it */
+-    }
+-  }
+-
+-  return 1;
+ }
+ 
+ /**********************************************************************//**
+--- a/client/gui-sdl2/gui_main.h
++++ b/client/gui-sdl2/gui_main.h
+@@ -112,9 +112,6 @@
+ void disable_focus_animation(void);
+ 
+ 
+-#define DEFAULT_MOVE_STEP 5
+-extern int MOVE_STEP_X, MOVE_STEP_Y;
+-int FilterMouseMotionEvents(void *data, SDL_Event *event);
+ 
+ widget_id gui_event_loop(void *data, void (*loop_action)(void *data),
+                          widget_id (*key_down_handler)(SDL_Keysym key, void *data),
+--- a/client/gui-sdl2/widget_window.c
++++ b/client/gui-sdl2/widget_window.c
+@@ -366,12 +366,8 @@
+   pmove.pwindow = pwindow;
+   pmove.moved = FALSE;
+   get_logical_mouse_state(&pmove.prev_x, &pmove.prev_y);
+-  /* Filter mouse motion events */
+-  SDL_SetEventFilter(FilterMouseMotionEvents, NULL);
+   ret = (gui_event_loop((void *)&pmove, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                         move_window_button_up, move_window_motion) == ID_MOVED_WINDOW);
+-  /* Turn off Filter mouse motion events */
+-  SDL_SetEventFilter(NULL, NULL);
+ 
+   return ret;
+ }
+--- a/client/gui-sdl2/widget_scrollbar.c
++++ b/client/gui-sdl2/widget_scrollbar.c
+@@ -1118,16 +1118,8 @@
+   get_logical_mouse_state(&motion.prev_x, &motion.prev_y);
+   motion.offset = motion.prev_y - vscroll->pscroll_bar->dst->dest_rect.y - vscroll->pscroll_bar->size.y;
+ 
+-  MOVE_STEP_X = 0;
+-  MOVE_STEP_Y = 3;
+-  /* Filter mouse motion events */
+-  SDL_SetEventFilter(FilterMouseMotionEvents, NULL);
+   gui_event_loop((void *)&motion, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                  scroll_mouse_button_up, scroll_mouse_motion_handler);
+-  /* Turn off Filter mouse motion events */
+-  SDL_SetEventFilter(NULL, NULL);
+-  MOVE_STEP_X = DEFAULT_MOVE_STEP;
+-  MOVE_STEP_Y = DEFAULT_MOVE_STEP;
+ 
+   return motion.begin;
+ }
+--- a/client/gui-sdl2/repodlgs.c
++++ b/client/gui-sdl2/repodlgs.c
+@@ -1380,16 +1380,10 @@
+     motion.max = motion.min + motion.gov_max * 1.5;
+     motion.x = horiz_src->size.x;
+ 
+-    MOVE_STEP_Y = 0;
+-    /* Filter mouse motion events */
+-    SDL_SetEventFilter(FilterMouseMotionEvents, NULL);
+     gui_event_loop((void *)(&motion), NULL, NULL, NULL, NULL, NULL, NULL,
+                    NULL, NULL,
+                    report_scroll_mouse_button_up,
+                    report_scroll_mouse_motion_handler);
+-    /* Turn off Filter mouse motion events */
+-    SDL_SetEventFilter(NULL, NULL);
+-    MOVE_STEP_Y = DEFAULT_MOVE_STEP;
+ 
+ END:
+     unselect_widget_action();
+--- a/client/gui-sdl2/cma_fe.c
++++ b/client/gui-sdl2/cma_fe.c
+@@ -162,17 +162,9 @@
+     motion.max = motion.min + 70;
+     motion.base = -20;
+ 
+-    MOVE_STEP_X = 2;
+-    MOVE_STEP_Y = 0;
+-    /* Filter mouse motion events */
+-    SDL_SetEventFilter(FilterMouseMotionEvents, NULL);
+     gui_event_loop((void *)(&motion), NULL, NULL, NULL, NULL, NULL, NULL,
+                    NULL, NULL,
+                    scroll_mouse_button_up, scroll_mouse_motion_handler);
+-    /* Turn off Filter mouse motion events */
+-    SDL_SetEventFilter(NULL, NULL);
+-    MOVE_STEP_X = DEFAULT_MOVE_STEP;
+-    MOVE_STEP_Y = DEFAULT_MOVE_STEP;
+ 
+     selected_widget = pwidget;
+     set_wstate(pwidget, FC_WS_SELECTED);
+@@ -202,17 +194,9 @@
+     motion.max = motion.min + 54;
+     motion.base = 1;
+ 
+-    MOVE_STEP_X = 2;
+-    MOVE_STEP_Y = 0;
+-    /* Filter mouse motion events */
+-    SDL_SetEventFilter(FilterMouseMotionEvents, NULL);
+     gui_event_loop((void *)(&motion), NULL, NULL, NULL, NULL, NULL, NULL,
+                    NULL, NULL,
+                    scroll_mouse_button_up, scroll_mouse_motion_handler);
+-    /* Turn off Filter mouse motion events */
+-    SDL_SetEventFilter(NULL, NULL);
+-    MOVE_STEP_X = DEFAULT_MOVE_STEP;
+-    MOVE_STEP_Y = DEFAULT_MOVE_STEP;
+ 
+     selected_widget = pwidget;
+     set_wstate(pwidget, FC_WS_SELECTED);

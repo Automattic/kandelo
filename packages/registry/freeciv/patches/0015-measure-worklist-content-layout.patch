@@ -1,0 +1,290 @@
+Measure production editor rows and share target-card layout.
+
+Keep the header progress and action rows separate, using the same header
+extent when rebuilding its lists. Stack measured artwork, names, and
+descriptions for both buildings and units, then pad all cards to the common
+grid height without scaling their text.
+
+--- a/client/gui-sdl2/wldlg.c
++++ b/client/gui-sdl2/wldlg.c
+@@ -84,6 +84,7 @@
+   struct widget *production_progress;
+ 
+   int stock;
++  int header_height;
+   struct universal currently_building;
+ } *editor = NULL;
+ 
+@@ -268,14 +269,14 @@
+ 
+     setup_vertical_widgets_position(1,
+       editor->end_widget_list->area.x + adj_size(2),
+-      get_widget_pointer_from_main_list(ID_WINDOW)->area.y + adj_size(152) +
++      get_widget_pointer_from_main_list(ID_WINDOW)->area.y + (editor->header_height + adj_size(7)) +
+         editor->work->scroll->up_left_button->size.h + 1,
+       adj_size(126), 0, editor->work->begin_widget_list,
+       editor->work->end_widget_list);
+ 
+     setup_vertical_scrollbar_area(editor->work->scroll,
+         editor->end_widget_list->area.x + adj_size(2),
+-        get_widget_pointer_from_main_list(ID_WINDOW)->area.y + adj_size(152),
++        get_widget_pointer_from_main_list(ID_WINDOW)->area.y + (editor->header_height + adj_size(7)),
+         adj_size(225), FALSE);
+ 
+     show_scrollbar(editor->work->scroll);
+@@ -285,7 +286,7 @@
+   add_widget_to_vertical_scroll_widget_list(editor->work, buf,
+                                             dock, FALSE,
+                                             editor->end_widget_list->area.x + adj_size(2),
+-                                            editor->end_widget_list->area.y + adj_size(152));
++                                            editor->end_widget_list->area.y + (editor->header_height + adj_size(7)));
+ 
+   buf->size.w = adj_size(126);
+ 
+@@ -497,13 +498,13 @@
+ 
+     setup_vertical_widgets_position(1,
+       editor->end_widget_list->area.x + adj_size(2),
+-      get_widget_pointer_from_main_list(ID_WINDOW)->area.y + adj_size(152),
++      get_widget_pointer_from_main_list(ID_WINDOW)->area.y + (editor->header_height + adj_size(7)),
+         adj_size(126), 0, editor->work->begin_widget_list,
+       editor->work->end_widget_list);
+ #if 0
+     setup_vertical_scrollbar_area(editor->work->scroll,
+         editor->end_widget_list->area.x + adj_size(2),
+-        get_widget_pointer_from_main_list(ID_WINDOW)->area.y + adj_size(152),
++        get_widget_pointer_from_main_list(ID_WINDOW)->area.y + (editor->header_height + adj_size(7)),
+         adj_size(225), FALSE);*/
+ #endif /* 0 */
+     hide_scrollbar(editor->work->scroll);
+@@ -726,7 +727,7 @@
+                                               buf, editor->work->begin_active_widget_list,
+                                               FALSE,
+                                               editor->end_widget_list->area.x + adj_size(2),
+-                                              editor->end_widget_list->area.y + adj_size(152));
++                                              editor->end_widget_list->area.y + (editor->header_height + adj_size(7)));
+ 
+     firstfree++;
+     if (firstfree == MAX_LEN_WORKLIST - 1) {
+@@ -826,7 +827,7 @@
+       add_widget_to_vertical_scroll_widget_list(editor->work,
+         buf, editor->work->begin_active_widget_list, FALSE,
+         editor->end_widget_list->area.x + adj_size(2),
+-        editor->end_widget_list->area.y + adj_size(152));
++        editor->end_widget_list->area.y + (editor->header_height + adj_size(7)));
+     }
+ 
+     refresh_worklist_count_label();
+@@ -1046,6 +1047,36 @@
+ }
+ 
+ /* ====================================================================== */
++
++/**********************************************************************//**
++  Stack artwork and measured text without clipping the description.
++**************************************************************************/
++static SDL_Surface *worklist_target_surface(int width, int min_height,
++                                           SDL_Surface *art,
++                                           SDL_Surface *name,
++                                           SDL_Surface *details,
++                                           SDL_Color color)
++{
++  int content_height = art->h + name->h + details->h + adj_size(8);
++  int height = MAX(min_height, content_height + adj_size(8));
++  SDL_Surface *surface = create_surf(width, height, SDL_SWSURFACE);
++  SDL_Rect dst;
++
++  SDL_FillRect(surface, NULL, map_rgba(surface->format, color));
++  create_frame(surface, 0, 0, width - 1, height - 1,
++               get_theme_color(COLOR_THEME_WLDLG_FRAME));
++  dst.x = (width - art->w) / 2;
++  dst.y = (height - content_height) / 2;
++  alphablit(art, NULL, surface, &dst, 255);
++  dst.x = (width - name->w) / 2;
++  dst.y += art->h + adj_size(4);
++  alphablit(name, NULL, surface, &dst, 255);
++  dst.x = (width - details->w) / 2;
++  dst.y += name->h + adj_size(4);
++  alphablit(details, NULL, surface, &dst, 255);
++
++  return surface;
++}
+ 
+ /**********************************************************************//**
+   Global/City worklist editor.
+@@ -1232,6 +1263,15 @@
+   buf->key = SDLK_ESCAPE;
+ 
+   add_to_gui_list(ID_BUTTON, buf);
++
++  /* Header text, progress, and action buttons occupy separate rows. */
++  editor->header_height = adj_size(4);
++  for (struct widget *header = pwindow->prev;
++       header != buf->next; header = header->prev) {
++    editor->header_height += header->size.h;
++  }
++  editor->header_height += MAX(buf->size.h, buf->next->size.h) + adj_size(25);
++  editor->header_height = MAX(editor->header_height, adj_size(145));
+   /* --------------------------- */
+   /* work list */
+ 
+@@ -1525,27 +1565,22 @@
+       pstr->style &= ~TTF_STYLE_BOLD;
+       pstr->style &= ~TTF_STYLE_STRIKETHROUGH;
+ 
+-      text = create_text_surf_from_utf8(pstr);
++      text = create_text_surf_smaller_than_w(pstr, icon->w - adj_size(4));
+ 
+       /*-----------------*/
+ 
+       zoomed = get_building_surface(pimprove);
+       zoomed = zoomSurface(zoomed, DEFAULT_ZOOM * ((float)54 / zoomed->w),
+                            DEFAULT_ZOOM * ((float)54 / zoomed->w), 1);
+-      dst.x = (icon->w - zoomed->w) / 2;
+-      dst.y = (icon->h/2 - zoomed->h) / 2;
+-      alphablit(zoomed, NULL, icon, &dst, 255);
+-      dst.y += zoomed->h;
++      {
++        SDL_Surface *target = worklist_target_surface(icon->w, icon->h,
++                                                       zoomed, text_name, text,
++                                                       bg_color);
++
++        FREESURFACE(icon);
++        icon = target;
++      }
+       FREESURFACE(zoomed);
+-
+-      dst.x = (icon->w - text_name->w) / 2;
+-      dst.y += ((icon->h - dst.y) - (text_name->h + text->h)) / 2;
+-      alphablit(text_name, NULL, icon, &dst, 255);
+-
+-      dst.x = (icon->w - text->w) / 2;
+-      dst.y += text_name->h;
+-      alphablit(text, NULL, icon, &dst, 255);
+-
+       FREESURFACE(text);
+       FREESURFACE(text_name);
+ 
+@@ -1633,22 +1668,18 @@
+       copy_chars_to_utf8_str(pstr, cbuf);
+       pstr->style &= ~TTF_STYLE_BOLD;
+ 
+-      text = create_text_surf_from_utf8(pstr);
++      text = create_text_surf_smaller_than_w(pstr, icon->w - adj_size(4));
+ 
+       zoomed = adj_surf(get_unittype_surface(un, direction8_invalid()));
+-      dst.x = (icon->w - zoomed->w) / 2;
+-      dst.y = (icon->h / 2 - zoomed->h) / 2;
+-      alphablit(zoomed, NULL, icon, &dst, 255);
++      {
++        SDL_Surface *target = worklist_target_surface(icon->w, icon->h,
++                                                       zoomed, text_name, text,
++                                                       bg_color);
++
++        FREESURFACE(icon);
++        icon = target;
++      }
+       FREESURFACE(zoomed);
+-
+-      dst.x = (icon->w - text_name->w) / 2;
+-      dst.y = icon->h / 2 + (icon->h / 2 - (text_name->h + text->h)) / 2;
+-      alphablit(text_name, NULL, icon, &dst, 255);
+-
+-      dst.x = (icon->w - text->w) / 2;
+-      dst.y += text_name->h;
+-      alphablit(text, NULL, icon, &dst, 255);
+-
+       FREESURFACE(text);
+       FREESURFACE(text_name);
+ 
+@@ -1670,6 +1701,24 @@
+ 
+     }
+   } unit_type_iterate_end;
++
++  for (struct widget *target = last->prev; ; target = target->prev) {
++    if (target->size.h != widget_h) {
++      SDL_Surface *surface = create_surf(widget_w - adj_size(4),
++                                         widget_h - adj_size(4), SDL_SWSURFACE);
++      SDL_Rect src = {1, 1, target->theme->w - 2, target->theme->h - 2};
++      SDL_Rect dest = {1, (surface->h - target->theme->h) / 2 + 1, 0, 0};
++
++      SDL_FillRect(surface, NULL, map_rgba(surface->format, bg_color));
++      alphablit(target->theme, &src, surface, &dest, 255);
++      create_frame(surface, 0, 0, surface->w - 1, surface->h - 1,
++                   get_theme_color(COLOR_THEME_WLDLG_FRAME));
++      set_new_icon2_theme(target, surface, TRUE);
++    }
++    if (target == buf) {
++      break;
++    }
++  }
+ 
+   editor->targets = fc_calloc(1, sizeof(struct advanced_dialog));
+ 
+@@ -1707,7 +1756,7 @@
+   dst.x = area.x;
+   dst.y = area.y;
+   dst.w = adj_size(130);
+-  dst.h = adj_size(145);
++  dst.h = editor->header_height;
+ 
+   SDL_FillRect(pwindow->theme, &dst,
+                map_rgba(pwindow->theme->format,
+@@ -1776,25 +1825,25 @@
+     /* rename worklist */
+     buf = buf->prev;
+     buf->size.x = area.x + (adj_size(130) - buf->size.w) / 2;
+-    buf->size.y = area.y + 1 + (adj_size(145) - buf->size.h) / 2;
++    buf->size.y = area.y + 1 + (editor->header_height - buf->size.h) / 2;
+   }
+ 
+   /* ok button */
+   buf = buf->prev;
+   buf->size.x = area.x + (adj_size(65) - buf->size.w) / 2;
+-  buf->size.y = area.y + adj_size(135) - buf->size.h;
++  buf->size.y = area.y + editor->header_height - adj_size(10) - buf->size.h;
+ 
+   /* exit button */
+   buf = buf->prev;
+   buf->size.x = area.x + adj_size(65) + (adj_size(65) - buf->size.w) / 2;
+-  buf->size.y = area.y + adj_size(135) - buf->size.h;
++  buf->size.y = area.y + editor->header_height - adj_size(10) - buf->size.h;
+ 
+   /* worklist */
+   /* editor->work->scroll->count: including production */
+   if (len > 0) {
+     /* FIXME */
+     setup_vertical_widgets_position(1,
+-                                    area.x + adj_size(2), area.y + adj_size(152)
++                                    area.x + adj_size(2), area.y + (editor->header_height + adj_size(7))
+           /* + ((editor->work->scroll->count > editor->work->scroll->active + 2) ?
+              editor->work->scroll->up_left_button->size.h + 1 : 0)*/,
+                                     adj_size(126), 0, editor->work->begin_widget_list,
+@@ -1802,7 +1851,7 @@
+ 
+     setup_vertical_scrollbar_area(editor->work->scroll,
+                                   area.x + adj_size(2),
+-                                  area.y + adj_size(152),
++                                  area.y + (editor->header_height + adj_size(7)),
+                                   adj_size(225), FALSE);
+   }
+ 
+@@ -1810,7 +1859,7 @@
+   if (editor->global) {
+     setup_vertical_widgets_position(1,
+                                     area.x + adj_size(4),
+-                                    area.y + adj_size(384) +
++                                    area.y + (editor->header_height + adj_size(239)) +
+                                     (editor->global->scroll ?
+                                      editor->global->scroll->up_left_button->size.h + 1 : 0),
+                                     adj_size(122), 0, editor->global->begin_widget_list,
+@@ -1819,7 +1868,7 @@
+     if (editor->global->scroll) {
+       setup_vertical_scrollbar_area(editor->global->scroll,
+                                     area.x + adj_size(4),
+-                                    area.y + adj_size(384),
++                                    area.y + (editor->header_height + adj_size(239)),
+                                     adj_size(93), FALSE);
+     }
+ 

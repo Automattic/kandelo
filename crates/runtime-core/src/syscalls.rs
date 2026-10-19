@@ -2168,7 +2168,7 @@ fn handle_input_ioctl(
             let (w, h) = crate::input::canvas_dims();
             let abs = match axis {
                 ABS_X => WpkInputAbsinfo {
-                    value: 0,
+                    value: crate::input::absolute_axis(ABS_X),
                     minimum: 0,
                     maximum: (w as i32) - 1,
                     fuzz: 0,
@@ -2176,7 +2176,7 @@ fn handle_input_ioctl(
                     resolution: 1,
                 },
                 ABS_Y => WpkInputAbsinfo {
-                    value: 0,
+                    value: crate::input::absolute_axis(ABS_Y),
                     minimum: 0,
                     maximum: (h as i32) - 1,
                     fuzz: 0,
@@ -8646,8 +8646,15 @@ pub fn sys_mkdir(
     path: &[u8],
     mode: u32,
 ) -> Result<(), Errno> {
-    let resolved =
-        resolve_namespace_path(proc, host, path, PathResolveOptions::CREATE_DIRECTORY)?.path;
+    let entry = resolve_namespace_path(proc, host, path, PathResolveOptions::CREATE_DIRECTORY)?;
+    // Resolution has already checked search permission on the ancestors.
+    // An existing final entry needs no parent mutation: report EEXIST before
+    // testing write permission, as for mkfifo and symlink creation. Recursive
+    // mkdir users must be able to traverse existing root-owned ancestors.
+    if entry.stat.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    let resolved = entry.path;
     // In-kernel tmpfs owns the scratch mounts; create the directory in Rust and
     // assign ownership from the caller's credentials directly.
     if crate::tmpfs::claims_path(&resolved) {
@@ -16501,14 +16508,17 @@ pub fn sys_mkdirat(
     path: &[u8],
     mode: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_at_path(
+    let entry = resolve_at_path(
         proc,
         host,
         dirfd,
         path,
         PathResolveOptions::CREATE_DIRECTORY,
-    )?
-    .path;
+    )?;
+    if entry.stat.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    let resolved = entry.path;
     if crate::tmpfs::claims_path(&resolved) {
         let effective_mode = mode & !proc.umask;
         check_parent_writable(proc, host, &resolved)?;
@@ -20831,6 +20841,12 @@ mod tests {
 
         let mut user = user_process(2);
         let denied = |r: Result<(), Errno>| r.unwrap_err();
+        // An already occupied name does not create an entry. Searchable,
+        // root-owned ancestors need not be writable for this EEXIST result.
+        for path in [b"/locked".as_slice(), b"/locked/dir", b"/locked/file", b"/tmp/perm-root-owned"] {
+            assert_eq!(denied(sys_mkdir(&mut user, &mut host, path, 0o755)), Errno::EEXIST);
+            assert_eq!(denied(sys_mkdirat(&mut user, &mut host, AT_FDCWD, path, 0o755)), Errno::EEXIST);
+        }
         assert_eq!(denied(sys_unlink(&mut user, &mut host, b"/locked/file")), Errno::EACCES);
         assert_eq!(
             denied(sys_unlinkat(&mut user, &mut host, AT_FDCWD, b"/locked/file", 0)),
@@ -26127,6 +26143,7 @@ mod tests {
     fn test_mkdir_delegates_to_host() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.set_missing_path(b"/tmp/newdir");
         sys_mkdir(&mut proc, &mut host, b"/tmp/newdir", 0o755).unwrap();
     }
 
@@ -33673,6 +33690,7 @@ mod tests {
     fn test_mkdirat_at_fdcwd() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.set_missing_path(b"/tmp/newdir");
         let result = sys_mkdirat(&mut proc, &mut host, AT_FDCWD, b"/tmp/newdir", 0o755);
         assert!(result.is_ok());
     }
@@ -37954,6 +37972,7 @@ mod tests {
 
     struct TrackingHostIO {
         next_handle: i64,
+        missing_paths: std::collections::HashSet<Vec<u8>>,
         last_open_path: Vec<u8>,
         last_stat_path: Vec<u8>,
         last_lstat_path: Vec<u8>,
@@ -37984,6 +38003,7 @@ mod tests {
         fn new() -> Self {
             TrackingHostIO {
                 next_handle: 100,
+                missing_paths: std::collections::HashSet::new(),
                 last_open_path: Vec::new(),
                 last_stat_path: Vec::new(),
                 last_lstat_path: Vec::new(),
@@ -38017,6 +38037,9 @@ mod tests {
         }
         fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
             self.last_stat_path = path.to_vec();
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
             let mode = test_default_mode(path);
             Ok(WasmStat {
                 st_dev: 0,
@@ -38038,6 +38061,9 @@ mod tests {
         }
         fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
             self.last_lstat_path = path.to_vec();
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
             // Return regular file/dir by default (not symlink) so realpath works
             let mode = test_default_mode(path);
             Ok(WasmStat {
@@ -38060,6 +38086,7 @@ mod tests {
         }
         fn host_mkdir(&mut self, path: &[u8], _mode: u32) -> Result<(), Errno> {
             self.last_mkdir_path = path.to_vec();
+            self.missing_paths.remove(path);
             Ok(())
         }
         fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno> {
@@ -38342,6 +38369,7 @@ impl HostIO for TrackingHostIO {
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
         let dirfd = open_dir_fd(&mut proc, &mut host, b"/home/dir");
+        host.missing_paths.insert(b"/home/dir/newdir".to_vec());
         let result = sys_mkdirat(&mut proc, &mut host, dirfd, b"newdir", 0o755);
         assert!(result.is_ok());
         assert_eq!(host.last_mkdir_path, b"/home/dir/newdir");
@@ -52142,6 +52170,26 @@ impl HostIO for RelSymlinkMock {
         // Restore the default so other tests running in parallel see
         // the boot value.
         crate::input::set_canvas_dims(1280, 720);
+    }
+
+    #[test]
+    fn evioc_gabs_reports_device_position_before_and_after_open() {
+        use wasm_posix_shared::input::{ABS_X, ABS_Y, EVIOCGABS_NR_BASE, WpkInputAbsinfo};
+
+        crate::input::dispatch::push_event(1, 3, ABS_X, 317, 0, 0);
+        let (mut proc, mut host, fd) = open_evdev(618, b"/dev/input/event1");
+        crate::input::dispatch::push_event(1, 3, ABS_Y, 219, 0, 0);
+        // Keyboard/unsupported-axis events must not modify pointer state.
+        crate::input::dispatch::push_event(0, 3, ABS_X, 999, 0, 0);
+        for (axis, value) in [(ABS_X, 317), (ABS_Y, 219)] {
+            let mut buf = [0u8; core::mem::size_of::<WpkInputAbsinfo>()];
+            let req = evioc(2, EVIOCGABS_NR_BASE + axis as u32, buf.len() as u32);
+            sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+            let abs: WpkInputAbsinfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            assert_eq!(abs.value, value);
+        }
+        crate::input::note_absolute_event(1, ABS_X, 0);
+        crate::input::note_absolute_event(1, ABS_Y, 0);
     }
 
     #[test]

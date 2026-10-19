@@ -666,8 +666,8 @@ export type MachineAudioState =
  * DRM master and commits page-flips drives the pixels.
  *
  * Stats slots (Int32Array view over the SAB the handle owns):
- *   0: frame count (host pump, monotonic)
- *   1: last blit timestamp (ms, performance.now() | 0)
+ *   0: canvas presentation count (pump and direct GL, monotonic)
+ *   1: last presentation timestamp (ms, performance.now() | 0)
  *   2: current scanout width
  *   3: current scanout height
  *   4: last blit µs
@@ -3182,9 +3182,15 @@ export class LiveKernelHost implements KernelHost {
         inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
         const changed = buttons ^ prevButtons;
         if (changed) {
-          if (changed & 1) inject.call(kernel, 1, EV_KEY, BTN_LEFT, buttons & 1 ? 1 : 0);
-          if (changed & 2) inject.call(kernel, 1, EV_KEY, BTN_RIGHT, buttons & 2 ? 1 : 0);
-          if (changed & 4) inject.call(kernel, 1, EV_KEY, BTN_MIDDLE, buttons & 4 ? 1 : 0);
+          // A full snapshot may repair a missed release alongside a new
+          // press. End the old gesture before beginning the next one.
+          for (const value of [0, 1]) {
+            for (const [bit, code] of [[1, BTN_LEFT], [2, BTN_RIGHT], [4, BTN_MIDDLE]] as const) {
+              if ((changed & bit) && Number(Boolean(buttons & bit)) === value) {
+                inject.call(kernel, 1, EV_KEY, code, value);
+              }
+            }
+          }
           inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
           prevButtons = buttons;
         }

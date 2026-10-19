@@ -29,6 +29,9 @@ describe("image-owned grouped runtime URLs", () => {
     expect(map("vim.zip")).toBe(
       "https://demo.invalid/a/assets-group/assets/programs/wasm32/vim.zip",
     );
+    expect(map("freeciv.zip")).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/freeciv.zip",
+    );
   });
 
   it("maps /a/ and /candidate-b/ to their own exact manifest directories", () => {
@@ -138,6 +141,7 @@ describe("image-owned grouped runtime URLs", () => {
     "kandelo-lazy:programs/program.wasm?version=1",
     "program.zip",
     "vim.zip#fragment",
+    "freeciv.zip#fragment",
     "nethack.zip\0",
   ])("rejects unsafe grouped legacy reference %j", (reference) => {
     expect(() => normalizeImageOwnedLazyReference(reference)).toThrow(

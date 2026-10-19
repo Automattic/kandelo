@@ -2897,6 +2897,21 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     });
   });
 
+  it("a pointer snapshot releases old buttons before pressing new ones", () => {
+    withFakeResizeObserver(() => {
+      const injectInputEvent = vi.fn();
+      const host = new LiveKernelHost();
+      host.attachKernel({ ...makeKmsKernel(), injectInputEvent } as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      handle.sendPointerAbs(100, 100, 2);
+      injectInputEvent.mockClear();
+      handle.sendPointerAbs(120, 100, 1);
+      expect(injectInputEvent.mock.calls.filter(call => call[1] === 1))
+        .toEqual([[1, 1, 0x111, 0], [1, 1, 0x110, 1]]);
+    });
+  });
+
   it("kmsDisplayCanvas keeps one canvas per CRTC for the kernel's lifetime", () => {
     // A program's WebGL context is bound to the canvas it was created on,
     // so a remounted pane must get the SAME element back — and the same

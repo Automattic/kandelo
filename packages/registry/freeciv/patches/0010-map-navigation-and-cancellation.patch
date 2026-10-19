@@ -1,0 +1,47 @@
+Make map navigation and cancellation unambiguous in the SDL2 client.
+
+Allow either mouse button to recenter the minimap. Let Escape cancel an active
+map command before the global Options shortcut, preserving modal dialogs' own
+Escape bindings. Compare tile pointers safely when a held pointer crosses an
+off-map area; canvas_pos_to_tile can return NULL at a non-wrapping map edge.
+
+--- a/client/gui-sdl2/gui_main.c
++++ b/client/gui-sdl2/gui_main.c
+@@ -232,7 +232,17 @@
+ {
+   static struct widget *pwidget;
+ 
+-  if ((pwidget = find_next_widget_for_key(NULL, key)) != NULL) {
++  pwidget = find_next_widget_for_key(NULL, key);
++  /* Escape belongs to an active map command before the global Options
++   * shortcut. A dialog's own Escape binding still takes precedence. */
++  if (key.sym == SDLK_ESCAPE && hover_state != HOVER_NONE
++      && C_S_RUNNING == client_state()
++      && (pwidget == NULL || pwidget->id == ID_CLIENT_OPTIONS)) {
++    map_event_handler(key);
++    return ID_ERROR;
++  }
++
++  if (pwidget != NULL) {
+     return widget_pressed_action(pwidget);
+   } else {
+     if (key.sym == SDLK_TAB) {
+@@ -448,7 +458,7 @@
+   if (button_behavior.counting && (button_behavior.hold_state >= MB_HOLD_MEDIUM)) {
+     ptile = canvas_pos_to_tile(motion_event->x, motion_event->y,
+                                mouse_zoom);
+-    if (tile_index(ptile) != tile_index(button_behavior.ptile)) {
++    if (ptile == NULL || ptile != button_behavior.ptile) {
+       button_behavior.counting = FALSE;
+     }
+   }
+--- a/client/gui-sdl2/mapctrl.c
++++ b/client/gui-sdl2/mapctrl.c
+@@ -1288,6 +1288,7 @@
+   int mouse_x, mouse_y;
+ 
+   switch (main_data.event.button.button) {
++  case SDL_BUTTON_LEFT:
+   case SDL_BUTTON_RIGHT:
+     mouse_x = main_data.event.motion.x - minimap_window->dst->dest_rect.x -
+       minimap_window->area.x - overview_start_x;

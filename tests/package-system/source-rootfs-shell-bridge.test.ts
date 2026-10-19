@@ -1173,7 +1173,7 @@ describe("canonical source-rootfs shell", () => {
         sourceDateEpoch: "0",
       }),
     ).rejects.toThrow(
-      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffplay, love, modeset, quake, scummvm",
+      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffplay, freeciv, love, modeset, quake, scummvm",
     );
   });
 

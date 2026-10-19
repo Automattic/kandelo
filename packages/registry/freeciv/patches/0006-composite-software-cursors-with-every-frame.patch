@@ -1,0 +1,287 @@
+Complete upstream color-cursor mode without uploading the scene on motion.
+
+The normal pointer previously required hardware even in software-color mode.
+Draw it alongside the other color cursors using cached renderer textures.
+Keep the scene texture separate, and sample cursor state at presentation so
+pending motion events do not each force another full upload/presentation.
+Release cursor textures before SDL recreates the renderer. All coordinates
+use the same logical transform as the scene and its input.
+
+--- a/client/gui-sdl2/gui_mouse.c
++++ b/client/gui-sdl2/gui_mouse.c
+@@ -50,6 +50,129 @@
+ SDL_Cursor *disabled_cursor = NULL;
+ 
+ struct color_cursor current_color_cursor;
++static SDL_Surface *default_pointer;
++
++struct pointer_state {
++  SDL_Surface *surface;
++  int x, y, hot_x, hot_y;
++  bool enabled;
++};
++static struct pointer_state presented_pointer;
++static bool pointer_state_valid = FALSE;
++
++struct pointer_texture {
++  SDL_Surface *surface;
++  SDL_Texture *texture;
++};
++static struct pointer_texture pointer_textures[CURSOR_LAST * NUM_CURSOR_FRAMES + 1];
++static int pointer_texture_count;
++
++static SDL_Surface *create_default_pointer(void)
++{
++  static const char *rows[] = {
++    "X", "XX", "X.X", "X..X", "X...X", "X....X", "X.....X",
++    "X......X", "X.......X", "X........X", "X.....XXXXX",
++    "X..X..X", "X.X X..X", "XX  X..X", "X    X..X", "     X..X",
++    "      XX"
++  };
++  SDL_Surface *surface = create_surf(11, 17, SDL_SWSURFACE);
++  Uint32 black = SDL_MapRGBA(surface->format, 0, 0, 0, 255);
++  Uint32 white = SDL_MapRGBA(surface->format, 255, 255, 255, 255);
++
++  SDL_FillRect(surface, NULL, SDL_MapRGBA(surface->format, 0, 0, 0, 0));
++  for (int y = 0; y < ARRAY_SIZE(rows); y++) {
++    for (int x = 0; rows[y][x]; x++) {
++      if (rows[y][x] != ' ') {
++        SDL_Rect pixel = {x, y, 1, 1};
++        SDL_FillRect(surface, &pixel, rows[y][x] == 'X' ? black : white);
++      }
++    }
++  }
++  return surface;
++}
++
++
++static struct pointer_state current_pointer(void)
++{
++  struct pointer_state state = {0};
++
++  state.enabled = GUI_SDL_OPTION(use_color_cursors) && default_pointer;
++  if (state.enabled) {
++    state.surface = current_color_cursor.cursor;
++    if (state.surface) {
++      state.hot_x = current_color_cursor.hot_x;
++      state.hot_y = current_color_cursor.hot_y;
++    } else {
++      state.surface = default_pointer;
++    }
++    get_logical_mouse_state(&state.x, &state.y);
++  }
++  return state;
++}
++
++bool mouse_cursor_needs_redraw(void)
++{
++  struct pointer_state state = current_pointer();
++
++  return !pointer_state_valid
++    || state.enabled != presented_pointer.enabled
++    || (state.enabled
++        && (state.surface != presented_pointer.surface
++            || state.x != presented_pointer.x || state.y != presented_pointer.y
++            || state.hot_x != presented_pointer.hot_x
++            || state.hot_y != presented_pointer.hot_y));
++}
++
++/* Textures belong to the renderer, not the tileset surfaces. Release them
++ * before recreating a renderer, even if SDL reuses the same pointer value. */
++void free_mouse_cursor_textures(void)
++{
++  for (int i = 0; i < pointer_texture_count; i++) {
++    SDL_DestroyTexture(pointer_textures[i].texture);
++  }
++  pointer_texture_count = 0;
++  pointer_state_valid = FALSE;
++}
++
++/* Composite after the cached scene, without changing its CPU surface or
++ * uploading it again. One texture per cursor frame survives pointer motion. */
++void render_mouse_cursor(void)
++{
++  struct pointer_state state = current_pointer();
++  SDL_Texture *texture = NULL;
++  SDL_Rect area;
++
++  if (!pointer_state_valid || state.enabled != presented_pointer.enabled) {
++    SDL_ShowCursor(state.enabled ? SDL_DISABLE : SDL_ENABLE);
++  }
++  presented_pointer = state;
++  pointer_state_valid = TRUE;
++  if (!state.enabled) {
++    return;
++  }
++  for (int i = 0; i < pointer_texture_count; i++) {
++    if (pointer_textures[i].surface == state.surface) {
++      texture = pointer_textures[i].texture;
++      break;
++    }
++  }
++  if (!texture && pointer_texture_count < ARRAY_SIZE(pointer_textures)) {
++    texture = SDL_CreateTextureFromSurface(main_data.renderer, state.surface);
++    if (texture) {
++      pointer_textures[pointer_texture_count++] = (struct pointer_texture) {
++        state.surface, texture
++      };
++    }
++  }
++  if (texture) {
++    area = (SDL_Rect) {state.x - state.hot_x, state.y - state.hot_y,
++                       state.surface->w, state.surface->h};
++    SDL_RenderCopy(main_data.renderer, texture, NULL, &area);
++  } else {
++    log_error("Failed to create cursor texture: %s", SDL_GetError());
++    pointer_state_valid = FALSE;
++  }
++}
+ 
+ /**********************************************************************//**
+   Convert SDL surface to SDL cursor format (code from SDL-dev mailing list)
+@@ -95,41 +218,6 @@
+ }
+ 
+ /**********************************************************************//**
+-  Draw current cursor.
+-**************************************************************************/
+-void draw_mouse_cursor(void)
+-{
+-  int cursor_x = 0;
+-  int cursor_y = 0;
+-  static SDL_Rect area = {0, 0, 0, 0};
+-
+-  if (GUI_SDL_OPTION(use_color_cursors)) {
+-    /* Restore background */
+-    if (area.w != 0) {
+-      flush_rect(&area, TRUE);
+-    }
+-
+-    if (current_color_cursor.cursor != NULL) {
+-      SDL_GetMouseState(&cursor_x, &cursor_y);
+-      area.x = cursor_x - current_color_cursor.hot_x;
+-      area.y = cursor_y - current_color_cursor.hot_y;
+-      area.w = current_color_cursor.cursor->w;
+-      area.h = current_color_cursor.cursor->h;
+-
+-      /* Show cursor */
+-      screen_blit(current_color_cursor.cursor, NULL, &area, 255);
+-      /* Update screen */
+-      update_main_screen();
+-#if 0
+-      SDL_UpdateRect(main_data.screen, area.x, area.y, area.w, area.h);
+-#endif
+-    } else {
+-      area = (SDL_Rect){0, 0, 0, 0};
+-    }
+-  } 
+-}
+-
+-/**********************************************************************//**
+   Load the cursors (mouse substitute sprites), including a goto cursor,
+   an airdrop cursor, a nuke cursor, and a patrol cursor.
+ **************************************************************************/
+@@ -140,6 +228,7 @@
+   SDL_Surface *surf;
+ 
+   std_cursor = SDL_GetCursor();
++  default_pointer = create_default_pointer();
+ 
+   surf = create_surf(1, 1, SDL_SWSURFACE);
+   disabled_cursor = SurfaceToCursor(surf, 0, 0);
+@@ -172,6 +261,8 @@
+     }
+   }
+ 
++  free_mouse_cursor_textures();
++  FREESURFACE(default_pointer);
+   SDL_FreeCursor(std_cursor);
+   SDL_FreeCursor(disabled_cursor);
+ }
+--- a/client/gui-sdl2/gui_mouse.h
++++ b/client/gui-sdl2/gui_mouse.h
+@@ -17,7 +17,9 @@
+ #include "mapview_g.h"
+ 
+ void animate_mouse_cursor(void);
+-void draw_mouse_cursor(void);
++bool mouse_cursor_needs_redraw(void);
++void render_mouse_cursor(void);
++void free_mouse_cursor_textures(void);
+ 
+ void unload_cursors(void);
+ 
+--- a/client/gui-sdl2/graphics.c
++++ b/client/gui-sdl2/graphics.c
+@@ -44,6 +44,7 @@
+ /* gui-sdl2 */
+ #include "colors.h"
+ #include "gui_tilespec.h"
++#include "gui_mouse.h"
+ #include "mapview.h"
+ #include "themebackgrounds.h"
+ #include "themespec.h"
+@@ -541,6 +542,7 @@
+ static void free_surfaces(void)
+ {
+   if (main_data.renderer != NULL) {
++    free_mouse_cursor_textures();
+     SDL_DestroyRenderer(main_data.renderer);
+     main_data.renderer = NULL;
+ 
+@@ -686,11 +688,16 @@
+ **************************************************************************/
+ void update_main_screen(void)
+ {
+-  if (render_dirty) {
+-    SDL_UpdateTexture(main_data.maintext, NULL,
+-                      main_surface->pixels, main_surface->pitch);
++  if (render_dirty || mouse_cursor_needs_redraw()) {
++    /* Pointer-only frames reuse the GPU scene. A full upload here would
++     * copy megabytes through the GL bridge for each mouse movement. */
++    if (render_dirty) {
++      SDL_UpdateTexture(main_data.maintext, NULL,
++                        main_surface->pixels, main_surface->pitch);
++    }
+     SDL_RenderClear(main_data.renderer);
+     SDL_RenderCopy(main_data.renderer, main_data.maintext, NULL, NULL);
++    render_mouse_cursor();
+     SDL_RenderPresent(main_data.renderer);
+ 
+     render_dirty = FALSE;
+--- a/client/gui-sdl2/gui_main.c
++++ b/client/gui-sdl2/gui_main.c
+@@ -481,7 +481,6 @@
+     }
+   }
+ 
+-  draw_mouse_cursor();
+ 
+   return ID_ERROR;
+ }
+@@ -710,7 +709,6 @@
+         case ANIM:
+           update_button_hold_state();
+           animate_mouse_cursor();
+-          draw_mouse_cursor();
+           break;
+         case SHOW_WIDGET_INFO_LABEL:
+           draw_widget_info_label();
+--- a/client/gui-sdl2/mapview.c
++++ b/client/gui-sdl2/mapview.c
+@@ -234,7 +234,6 @@
+     }
+     j = 0;
+ 
+-    draw_mouse_cursor();
+ 
+     /* Render to screen */
+     update_main_screen();
+@@ -270,7 +269,6 @@
+       }
+     }
+ 
+-    draw_mouse_cursor();
+ 
+     /* Render to screen */
+     update_main_screen();

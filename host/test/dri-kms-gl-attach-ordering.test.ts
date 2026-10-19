@@ -20,6 +20,7 @@ import { createKernelScratchTestInstance } from "./support/kernel-scratch-instan
 function harness(callbacks: Record<string, unknown>): {
   kernel: WasmPosixKernel & Record<string, any>;
   imports: { env: Record<string, (...args: any[]) => any> };
+  memory: WebAssembly.Memory;
 } {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   const kernel = createWasmPosixKernelTestHarness({
@@ -37,7 +38,7 @@ function harness(callbacks: Record<string, unknown>): {
   const imports = kernel.testAuthority.buildImportObject(memory) as {
     env: Record<string, (...args: any[]) => any>;
   };
-  return { kernel, imports };
+  return { kernel, imports, memory };
 }
 
 function fakeCanvas(width = 300, height = 150): {
@@ -75,6 +76,66 @@ function fakeCanvas(width = 300, height = 150): {
 }
 
 const PID = 101;
+
+it.each([false, true])("rebuilds a recreated EGL window before drawing (new context: %s)", (newContext) => {
+  let drawFramebuffer: unknown = null;
+  let contextLost = false;
+  const presented: number[] = [];
+  const deletedRenderbuffers: unknown[] = [];
+  const gl = new Proxy({
+    ...fakeCanvas().getContext() as object,
+    getParameter: (p: number) => p === 0x8ca6 ? drawFramebuffer : null,
+    bindFramebuffer: (target: number, fbo: unknown) => {
+      if (target === 0x8d40 || target === 0x8ca9) drawFramebuffer = fbo;
+    },
+    deleteFramebuffer: (fbo: unknown) => {
+      if (drawFramebuffer === fbo) drawFramebuffer = null;
+    },
+    deleteRenderbuffer: (rbo: unknown) => deletedRenderbuffers.push(rbo),
+    FRAMEBUFFER_COMPLETE: 0x8cd5,
+    isContextLost: () => contextLost,
+  }, {
+    get: (target, key) => key in target ? target[key as keyof typeof target] : () => {},
+  });
+  const canvas = { width: 640, height: 480, getContext: () => gl };
+  const { kernel, imports, memory } = harness({
+    getKmsCanvas: () => canvas,
+    getKmsCrtcIds: () => [1],
+    markKmsCanvasGlOwned: () => {},
+    onKmsGlPresented: (crtc: number) => presented.push(crtc),
+  });
+  kernel.gl.bind({ pid: PID, cmdbufAddr: 128, cmdbufLen: 0 });
+  const binding = kernel.gl.get(PID)!;
+  binding.cmdbufView = new Uint8Array(memory.buffer, 128, 0);
+  imports.env.host_kms_set_master(PID);
+  imports.env.host_gl_create_context(PID, 1, 0, 0);
+  expect(imports.env.host_gl_submit(PID, 0, 0)).toBe(0);
+  const oldTarget = binding.presentTarget!.fbo;
+  const oldDepthStencil = binding.presentTarget!.depthStencil;
+  expect(drawFramebuffer).toBe(oldTarget);
+
+  // SDL can recreate the window surface while retaining its GL context.
+  imports.env.host_gl_destroy_surface(PID, 1);
+  expect(deletedRenderbuffers).toContain(oldDepthStencil);
+  if (newContext) imports.env.host_gl_destroy_context(PID, 1);
+  const attrs = new DataView(memory.buffer, 64, 20);
+  attrs.setUint32(4, 640, true);
+  attrs.setUint32(8, 480, true);
+  imports.env.host_gl_create_surface(PID, 2, 64, 20);
+  if (newContext) imports.env.host_gl_create_context(PID, 2, 0, 0);
+  expect(binding.presentTarget, "the next frame needs a target before any draws").not.toBeNull();
+  expect(binding.presentTarget!.fbo).not.toBe(oldTarget);
+  expect(imports.env.host_gl_submit(PID, 0, 0)).toBe(0);
+  expect(drawFramebuffer, "the muxer must replay the new default target").toBe(binding.presentTarget!.fbo);
+  expect(presented).toEqual([]);
+  expect(imports.env.host_gl_present(PID)).toBe(0);
+  expect(imports.env.host_gl_present(PID)).toBe(0);
+  expect(presented).toEqual([1, 1]);
+  contextLost = true;
+  expect(imports.env.host_gl_present(PID)).toBe(-5);
+  expect(imports.env.host_gl_present(PID + 1)).toBe(0);
+  expect(presented).toEqual([1, 1]);
+});
 
 describe("KMS GL canvas auto-attach — ordering independence", () => {
   it("attaches at eglCreateContext when the master pid has no FB bound yet (SDL2 KMSDRM order)", () => {

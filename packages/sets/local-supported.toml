@@ -540,6 +540,22 @@ name = "scummvm"
 class = "user-software"
 
 [[packages]]
+name = "freeciv"
+class = "user-software"
+
+[[packages]]
+name = "freeciv-browser-bundle"
+class = "browser-product"
+
+[[packages]]
+name = "sdl2-image"
+class = "platform"
+
+[[packages]]
+name = "sdl2-ttf"
+class = "platform"
+
+[[packages]]
 name = "sdl-dsp-test"
 class = "test-support"
 

@@ -182,6 +182,11 @@
       "role": "lazy-archive"
     },
     {
+      "name": "freeciv-browser-bundle",
+      "version": "3.2.6",
+      "role": "lazy-archive"
+    },
+    {
       "name": "nethack-browser-bundle",
       "version": "3.6.7",
       "role": "lazy-archive"

@@ -110,7 +110,9 @@ export type GlBinding = GlBindingInput & {
    *  window) into the bo's FBO, so its GL output lands in the bo the
    *  compositor samples zero-copy. Owned by the bo, NOT this binding —
    *  never deleted on unbind (destroyed via `destroyGpuBo` on bo
-   *  destroy). Null for canvas-backed (master) and CPU-tier sessions. */
+   *  destroy). Canvas-backed sessions also use this redirect while their
+   *  own presentTarget exists; that FBO is owned by this binding. Null for
+   *  CPU-tier sessions and canvases drawing directly to the default FBO. */
   renderTargetFbo: WebGLFramebuffer | null;
 
   /** Canvas-backed present target: an offscreen FBO the session renders

@@ -1,0 +1,63 @@
+Size window title bars to fit their measured text.
+
+The skeleton already accounts for large titles, but the client area and
+title painting still assume a fixed 20 pixels, clipping HiDPI text. Use
+the same measured height for allocation, client area and painting.
+
+--- a/client/gui-sdl2/widget_window.c
++++ b/client/gui-sdl2/widget_window.c
+@@ -45,6 +45,15 @@
+ 
+ static int (*baseclass_redraw)(struct widget *pwidget);
+ 
++/* A configured font can be taller than the theme's minimum title bar. */
++static int window_title_height(struct widget *pwindow)
++{
++  SDL_Rect text;
++
++  utf8_str_size(pwindow->string_utf8, &text);
++  return MAX(WINDOW_TITLE_HEIGHT, text.h + adj_size(4));
++}
++
+ /**********************************************************************//**
+   Redraw Window Graphic ( without other Widgets )
+ **************************************************************************/
+@@ -69,15 +78,15 @@
+ 
+     /* Draw Window's TitleBar */
+     dst = pwindow->area;
+-    dst.y -= (WINDOW_TITLE_HEIGHT + 1);
+-    dst.h = WINDOW_TITLE_HEIGHT;
++    dst.y -= (window_title_height(pwindow) + 1);
++    dst.h = window_title_height(pwindow);
+     fill_rect_alpha(pwindow->dst->surface, &dst, &title_bg_color);
+ 
+     /* Draw Text on Window's TitleBar */
+     tmp = create_text_surf_from_utf8(pwindow->string_utf8);
+     dst.x += adj_size(4);
+     if (tmp) {
+-      dst.y += ((WINDOW_TITLE_HEIGHT - tmp->h) / 2);
++      dst.y += ((window_title_height(pwindow) - tmp->h) / 2);
+       alphablit(tmp, NULL, pwindow->dst->surface, &dst, 255);
+       FREESURFACE(tmp);
+     }
+@@ -166,8 +175,8 @@
+   }
+ 
+   if (pwindow->string_utf8 != NULL) {
+-    area.y += (WINDOW_TITLE_HEIGHT + 1);
+-    area.h -= (WINDOW_TITLE_HEIGHT + 1);
++    area.y += (window_title_height(pwindow) + 1);
++    area.h -= (window_title_height(pwindow) + 1);
+   }
+ 
+   widget_set_area(pwindow, area);
+@@ -208,7 +217,7 @@
+     utf8_str_size(title, &size);
+ 
+     w += size.w + adj_size(10);
+-    h += MAX(size.h, WINDOW_TITLE_HEIGHT + 1);
++    h += window_title_height(pwindow) + 1;
+   }
+ 
+   pwindow->size.w = w;

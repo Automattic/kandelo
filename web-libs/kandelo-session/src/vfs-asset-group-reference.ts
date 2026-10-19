@@ -26,7 +26,7 @@ export function normalizeImageOwnedLazyReference(reference: string): string {
     return "assets/programs/wasm32/love/share/love-examples.zip";
   }
   if (
-    reference === "vim.zip" || reference === "nethack.zip" ||
+    reference === "vim.zip" || reference === "freeciv.zip" || reference === "nethack.zip" ||
     reference === "ruby.zip" || reference === "python.zip" ||
     reference === "node.zip" || reference === "perl.zip" ||
     reference === "man.zip" || reference === "coreutils-docs.zip" ||

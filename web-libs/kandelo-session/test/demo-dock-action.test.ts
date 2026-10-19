@@ -193,6 +193,13 @@ describe("dock action progress", () => {
     expect(shellPromptReturned("fetch-game: Downloading...\r\n")).toBe(false);
   });
 
+  it("ignores the previous prompt still arriving before command input", () => {
+    expect(shellPromptReturned("ndelo$ ")).toBe(false);
+    expect(shellPromptReturned("kandelo$ ")).toBe(false);
+    expect(shellPromptReturned("\x1b[?2004hkandelo$ ")).toBe(false);
+    expect(shellPromptReturned("ndelo$ /usr/bin/play\r\nkandelo$ ")).toBe(true);
+  });
+
   it("does not mistake curl's progress bar for a root prompt", () => {
     expect(shellPromptReturned("fetch-game: Downloading...\r\n\r####      # ")).toBe(false);
     expect(shellPromptReturned("fetch-game: Downloading...\r\n######## ")).toBe(false);
