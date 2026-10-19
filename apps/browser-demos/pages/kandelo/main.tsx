@@ -80,7 +80,7 @@ void (async () => {
     // doesn't have to open devtools to find out why nothing rendered.
     const detail = err instanceof Error ? err.message : String(err);
     container.innerHTML = `
-      <div style="padding:32px;font-family:var(--k-font-mono);color:var(--k-err);max-width:780px;">
+      <div style="padding:32px;font-family:var(--k-font-mono);color:var(--k-err-ink);max-width:780px;">
         <div style="font-weight:600;margin-bottom:8px">LiveKernelHost setup failed</div>
         <pre style="white-space:pre-wrap;font-size:12px;color:var(--k-text-muted)">${escapeHtml(detail)}</pre>
         <div style="margin-top:12px;font-size:12px;color:var(--k-text-faint)">

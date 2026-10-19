@@ -1306,6 +1306,21 @@ The dock may be collapsed or moved horizontally within the browser viewport;
 that placement is UI-only presentation state and does not alter the running
 machine, boot descriptor, VFS image, or share/export data.
 
+Theme tokens distinguish decorative fills from readable text. `--k-accent` and
+the status colors (`--k-ok`, `--k-warn`, `--k-err`, `--k-info`) supply fills,
+borders, and indicators; their `-ink` counterparts supply colored text on app
+surfaces. Muted and secondary text also derive from the active palette's text
+and surface colors. Solid selected controls pair `--kdock-active-fill` with
+`--kdock-active-text`; menus and translucent accent controls use surface text.
+This applies to the dock, theme picker, gallery, sharing, and inspector UI in
+both light and dark mode. `test/theme-contrast.spec.ts` checks these roles and
+shared controls at a minimum text contrast of 4.5:1 across all six palette/mode
+combinations, including hover, press, and keyboard focus. It also rejects CSS
+that uses decorative hues as text or selected-fill text without its solid fill.
+Touch controls and display prompts own opaque backgrounds so guest pixels
+cannot wash out their labels. Disabled controls and decorative preset glyphs
+are outside that text-contrast check.
+
 Image-declared demo guides from `/etc/kandelo/demo.json` remain part of the
 machine presentation owned by the demo image. Guide actions may run terminal or
 web actions through `KernelHost`, but they do not replace process supervision,

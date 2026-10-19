@@ -144,9 +144,9 @@ const MissingEndpoint: React.FC<{ label: string; detail: string }> = ({ label, d
     </div>
     <div style={{ marginTop: 12, color: "var(--k-text-faint)", fontSize: 11 }}>
       Wire this when the matching method on{" "}
-      <code style={{ color: "var(--k-accent)" }}>LiveKernelHost</code> is implemented.
+      <code style={{ color: "var(--k-accent-ink)" }}>LiveKernelHost</code> is implemented.
       See{" "}
-      <code style={{ color: "var(--k-accent)" }}>
+      <code style={{ color: "var(--k-accent-ink)" }}>
         design_handoff_kandelo_ui/kernel-host-contract.md
       </code>{" "}
       under "What needs to be NEW in <code>kernel/</code> and <code>host/</code>".
@@ -157,7 +157,7 @@ const MissingEndpoint: React.FC<{ label: string; detail: string }> = ({ label, d
 const ErrorBox: React.FC<{ message: string }> = ({ message }) => (
   <div style={{
     padding: "16px 24px",
-    color: "var(--k-err)",
+    color: "var(--k-err-ink)",
     fontFamily: "var(--k-font-mono)",
     fontSize: 12,
   }}>
@@ -350,7 +350,7 @@ const VfsTab: React.FC = () => {
                   onClick={() => setPath(actual)}
                   style={{
                     ...vfsCrumbStyle,
-                    color: i === all.length - 1 ? "var(--k-text)" : "var(--k-accent)",
+                    color: i === all.length - 1 ? "var(--k-text)" : "var(--k-accent-ink)",
                   }}
                 >
                   {label}
@@ -402,7 +402,7 @@ const VfsTab: React.FC = () => {
                       background: isSelected ? "color-mix(in oklch, var(--k-accent) 9%, transparent)" : undefined,
                     }}
                   >
-                    <td style={{ color: entry.kind === "d" ? "var(--k-accent)" : "var(--k-text)" }}>
+                    <td style={{ color: entry.kind === "d" ? "var(--k-accent-ink)" : "var(--k-text)" }}>
                       {entry.kind === "d" ? `${entry.name}/` : entry.name}
                       {entry.target && (
                         <span className="dim" style={{ marginLeft: 8 }}>→ {entry.target}</span>
@@ -618,7 +618,7 @@ const ConfigTab: React.FC = () => {
             <tbody>
               {kstate.value.map((kv) => (
                 <tr key={kv.k}>
-                  <td style={{ color: kv.k.startsWith("kandelo.") ? "var(--k-accent)" : "var(--k-text)" }}>{kv.k}</td>
+                  <td style={{ color: kv.k.startsWith("kandelo.") ? "var(--k-accent-ink)" : "var(--k-text)" }}>{kv.k}</td>
                   <td className="dim">{kv.v}</td>
                 </tr>
               ))}
@@ -639,7 +639,7 @@ const ConfigTab: React.FC = () => {
             <tbody>
               {mounts.value.map((m, i) => (
                 <tr key={i}>
-                  <td style={{ color: "var(--k-accent)" }}>{m.source}</td>
+                  <td style={{ color: "var(--k-accent-ink)" }}>{m.source}</td>
                   <td>{m.target}</td>
                   <td className="dim">{m.fs}</td>
                   <td className="dim">{m.opts}</td>
@@ -694,10 +694,10 @@ const MemMapTable: React.FC<{ entries: MemMapEntry[] }> = ({ entries }) => {
         {entries.map((m, i) => (
           <tr key={i}>
             <td>{m.range}</td>
-            <td style={{ color: m.perm.includes("x") ? "var(--k-accent)" : "var(--k-text-muted)" }}>{m.perm}</td>
+            <td style={{ color: m.perm.includes("x") ? "var(--k-accent-ink)" : "var(--k-text-muted)" }}>{m.perm}</td>
             <td className="dim">{m.offset}</td>
             <td className="num">{m.size}</td>
-            <td style={{ color: m.path.startsWith("[") ? "var(--k-info)" : "var(--k-text)" }}>{m.path}</td>
+            <td style={{ color: m.path.startsWith("[") ? "var(--k-info-ink)" : "var(--k-text)" }}>{m.path}</td>
           </tr>
         ))}
       </tbody>
@@ -747,7 +747,7 @@ const SyscallsTab: React.FC = () => {
             border: "1px solid var(--k-border)",
             borderRadius: "var(--k-radius-sm)",
             background: recording ? "color-mix(in oklch, var(--k-accent) 16%, transparent)" : "transparent",
-            color: recording ? "var(--k-accent)" : "var(--k-text-muted)",
+            color: recording ? "var(--k-accent-ink)" : "var(--k-text-muted)",
             fontFamily: "var(--k-font-mono)",
             fontSize: 10,
             fontWeight: 700,
@@ -767,9 +767,9 @@ const SyscallsTab: React.FC = () => {
             {events.map((e, i) => (
               <tr key={i}>
                 <td className="dim">{e.t}</td>
-                <td style={{ color: "var(--k-accent)" }}>{e.call}</td>
+                <td style={{ color: "var(--k-accent-ink)" }}>{e.call}</td>
                 <td>{e.args}</td>
-                <td style={{ color: e.ret.startsWith("-") ? "var(--k-err)" : "var(--k-ok)" }}>{e.ret}</td>
+                <td style={{ color: e.ret.startsWith("-") ? "var(--k-err-ink)" : "var(--k-ok-ink)" }}>{e.ret}</td>
               </tr>
             ))}
           </tbody>
