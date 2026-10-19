@@ -472,6 +472,46 @@ for (const density of [1, 2]) {
         }
       },
     });
+    test("pointer capture beyond display edges preserves cursor and menu clicks", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "direct-display input regression targets Chromium");
+      test.setTimeout(150_000);
+      await gotoMachine(page, "freeciv");
+      await running(page);
+      await showGame(page);
+      const box = (await canvas(page).boundingBox())!;
+      await waitForPanel(page, box.width - 60, box.height - 60);
+      const worker = page.workers().find(worker => /browser-kernel-worker-entry/.test(worker.url()));
+      expect(worker).toBeTruthy();
+      await worker!.evaluate(() => {
+        const proto = OffscreenCanvasRenderingContext2D.prototype;
+        const put = proto.putImageData;
+        proto.putImageData = function (...args: Parameters<typeof put>) {
+          if (args[0].width <= 64 && args[0].height <= 64) {
+            (globalThis as any).__edgeCursor = { x: args[1], y: args[2] };
+          }
+          return put.apply(this, args);
+        };
+      });
+      await page.mouse.move(box.x + 60, box.y + 80);
+      await page.mouse.down();
+      // Subpixel rounding at the right edge and captured motion below the
+      // canvas must never deliver x == width or y == height to SDL.
+      await page.mouse.move(box.x + box.width - 0.1, box.y + 80);
+      await page.mouse.move(box.x + box.width - 1, box.y + box.height + 20);
+      await page.mouse.up();
+      await page.mouse.move(box.x + 60, box.y + 80);
+      const status = await page.getByText(/\d+×\d+ · \d+ flips/).innerText();
+      const [, width, height] = status.match(/(\d+)×(\d+)/)!;
+      await expect.poll(async () => {
+        const cursor = await worker!.evaluate(() => (globalThis as any).__edgeCursor);
+        return cursor && Math.abs(cursor.x - 60 * Number(width) / box.width) <= 1
+          && Math.abs(cursor.y - 80 * Number(height) / box.height) <= 1;
+      }, { timeout: 15_000 }).toBe(true);
+      await canvas(page).click({ position: await menuPosition(page, "options") });
+      await waitForOptions(page);
+      await page.screenshot({ path: `../../.context/freeciv-edge-cursor-${density}.png`, scale: "css" });
+    });
+
     test("New Game shows filtered nations and readable leader controls", async ({ page, browserName }) => {
       test.skip(browserName !== "chromium", "native dialog regression targets Chromium");
       test.setTimeout(150_000);

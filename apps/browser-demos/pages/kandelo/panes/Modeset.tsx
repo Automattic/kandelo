@@ -28,8 +28,8 @@ import { useFittedCanvasStyle } from "./canvasFit";
 // back into the placeholder attributes (observed: the webgl2-scanout
 // presenter's display-sized buffer shows up in `canvas.width`). The
 // pointer math therefore maps through the kernel-reported scanout
-// dims (stats slots 2/3, `fbDims` below), with these constants as the
-// pre-first-frame fallback.
+// dims (stats slots 2/3, `fbDims` below). These constants only seed the
+// canvas; input waits for the guest's actual scanout dimensions.
 const MODESET_FB_W = 1920;
 const MODESET_FB_H = 1080;
 
@@ -191,17 +191,18 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     // placeholder's width/height reflect whatever bitmap the worker last
     // committed — under the webgl2-scanout presenter that's the DISPLAY
     // size, not the framebuffer. The kernel publishes the real scanout
-    // dims in stats slots 2/3; fall back to the modeset constants until
-    // the first frame lands.
+    // dims in stats slots 2/3. Before the first frame there is no valid
+    // input coordinate space, even if layout emits pointerenter.
     const fbDims = () => {
       const s = handleRef.current?.stats;
-      const w = (s && Atomics.load(s, 2)) || MODESET_FB_W;
-      const h = (s && Atomics.load(s, 3)) || MODESET_FB_H;
-      return { w, h };
+      const w = s && Atomics.load(s, 2);
+      const h = s && Atomics.load(s, 3);
+      return w && h && w > 0 && h > 0 ? { w, h } : null;
     };
     const toCanvasCoords = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return { x: 0, y: 0 };
+      const dims = fbDims();
+      if (!dims || rect.width <= 0 || rect.height <= 0) return null;
       // The framebuffer keeps its aspect ratio inside the element with
       // letterbox bars — via CSS `object-fit: contain` when the bitmap
       // is fb-sized (2d / GL-owned modes), or via the webgl2-scanout
@@ -210,15 +211,15 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
       // same contain math, so one mapping covers every mode: map
       // through the fitted content box, clamping bar-area pointers to
       // the nearest framebuffer edge.
-      const { w: fbW, h: fbH } = fbDims();
+      const { w: fbW, h: fbH } = dims;
       const scale = Math.min(rect.width / fbW, rect.height / fbH);
       const offX = rect.left + (rect.width - fbW * scale) / 2;
       const offY = rect.top + (rect.height - fbH * scale) / 2;
       const clamp = (v: number, max: number) =>
         Math.min(Math.max(v, 0), max);
       return {
-        x: clamp((clientX - offX) / scale, fbW),
-        y: clamp((clientY - offY) / scale, fbH),
+        x: clamp((clientX - offX) / scale, fbW - 1),
+        y: clamp((clientY - offY) / scale, fbH - 1),
       };
     };
     const sendDelta = (dx: number, dy: number) => {
@@ -252,6 +253,7 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     };
     const updatePointer = (e: PointerEvent, phase: "down" | "move" | "up", allowPresses: boolean) => {
       const c = toCanvasCoords(e.clientX, e.clientY);
+      if (!c) return;
       const next = pointerButtons(buttons, e, phase, allowPresses);
       // Deliver the new position before the button edge in both feeds.
       handlePointerAt(c.x, c.y);

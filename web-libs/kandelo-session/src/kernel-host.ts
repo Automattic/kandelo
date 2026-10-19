@@ -700,7 +700,8 @@ export interface KmsDisplayHandle {
    *  evdev consumers like SDL2 ignore. The handle tracks button state
    *  internally so callers can pass the full bitmask every call and
    *  only press/release transitions are emitted. No-op when the wrapped
-   *  kernel lacks evdev injection. */
+   *  kernel lacks evdev injection or no scanout has been published yet.
+   *  Positions are confined to the scanout's valid pixel indices. */
   sendPointerAbs(x: number, y: number, buttons: number): void;
   /** Detach the canvas. Subsequent vblank ticks no-op for this CRTC. */
   close(): void;
@@ -3193,7 +3194,13 @@ export class LiveKernelHost implements KernelHost {
       sendPointerAbs: (x, y, buttons) => {
         const inject = kernel.injectInputEvent;
         if (!inject) return;
-        const rx = Math.round(x), ry = Math.round(y);
+        const width = Atomics.load(stats, 2), height = Atomics.load(stats, 3);
+        if (width <= 0 || height <= 0 || !Number.isFinite(x) || !Number.isFinite(y)) return;
+        // Layout can send pointerenter before the first scanout. Never
+        // inject guessed coordinates: an out-of-window event makes SDL's
+        // direct-display backend lose mouse focus and hide its cursor.
+        const rx = Math.max(0, Math.min(width - 1, Math.round(x)));
+        const ry = Math.max(0, Math.min(height - 1, Math.round(y)));
         // The position, then the buttons, in that order: a consumer
         // flushes motion on the SYN, so the cursor is already at (rx, ry)
         // when a press arrives in the next frame.

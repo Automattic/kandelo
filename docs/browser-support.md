@@ -2125,6 +2125,13 @@ physical size, so Wayland compositors and DPI-aware applications retain
 ownership of their scaling. This setting belongs to image presentation
 metadata, not application font, theme, or coordinate patches.
 
+Pointer input waits for the first published scanout size; the canvas's
+initial allocation is not an input coordinate space. Absolute positions
+are confined to valid pixel indices, including captured drags outside
+the pane and subpixel rounding at its edges. Sending an out-of-window
+position to SDL's direct-display backend can clear mouse focus, hiding
+its cursor and preventing subsequent clicks from reaching the window.
+
 The display also mounts a transparent cursor plane over the scanout.
 Linux `MODE_CURSOR` / `MODE_CURSOR2` requests update its shape, hotspot,
 and position independently of application frames, through SDL or libdrm.

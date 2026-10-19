@@ -2954,11 +2954,42 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       host.attachKernel({ ...makeKmsKernel(), injectInputEvent } as any);
       host.setKmsDisplayMode("webgl2-scanout");
       const handle = host.attachKmsDisplay(makeCanvas())!;
+      Atomics.store(handle.stats, 2, 960);
+      Atomics.store(handle.stats, 3, 540);
       handle.sendPointerAbs(100, 100, 2);
       injectInputEvent.mockClear();
       handle.sendPointerAbs(120, 100, 1);
       expect(injectInputEvent.mock.calls.filter(call => call[1] === 1))
         .toEqual([[1, 1, 0x111, 0], [1, 1, 0x110, 1]]);
+    });
+  });
+
+  it("ignores pointer input before scanout and confines it to valid pixels afterwards", () => {
+    withFakeResizeObserver(() => {
+      const injectInputEvent = vi.fn();
+      const host = new LiveKernelHost();
+      host.attachKernel({ ...makeKmsKernel(), injectInputEvent } as any);
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      // A real browser can enter the canvas during layout, before the
+      // guest's first frame. Guessed dimensions must not reach evdev.
+      handle.sendPointerAbs(1060, 633, 1);
+      expect(injectInputEvent).not.toHaveBeenCalled();
+      Atomics.store(handle.stats, 2, 960);
+      Atomics.store(handle.stats, 3, 540);
+      handle.sendPointerAbs(1060, 633, 1);
+      expect(injectInputEvent.mock.calls).toEqual([
+        [1, 3, 0, 959], [1, 3, 1, 539], [1, 0, 0, 0],
+        [1, 1, 0x110, 1], [1, 0, 0, 0],
+      ]);
+      injectInputEvent.mockClear();
+      handle.sendPointerAbs(-10, -2, 0);
+      expect(injectInputEvent.mock.calls).toEqual([
+        [1, 3, 0, 0], [1, 3, 1, 0], [1, 0, 0, 0],
+        [1, 1, 0x110, 0], [1, 0, 0, 0],
+      ]);
+      injectInputEvent.mockClear();
+      handle.sendPointerAbs(NaN, Infinity, 1);
+      expect(injectInputEvent).not.toHaveBeenCalled();
     });
   });
 
