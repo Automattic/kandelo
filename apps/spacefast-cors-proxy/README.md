@@ -168,6 +168,10 @@ a challenge has sent nothing upstream. It does not retry 429s or ordinary
 upstream failures. Requests provide only the application's origin as Referer,
 using `strict-origin`, to support restricted standalone proxies.
 
+Deploy the updated Kandelo frontend with this proxy, including when the app
+runs on WP Cloud, and reload existing tabs. Older builds that only construct
+proxy URLs do not implement this quota handshake and will receive HTTP 401.
+
 ### Optional ingress policy
 
 The [upstream deployment limiter](https://github.com/WordPress/wordpress-playground/blob/d7b19bdb598ccb405f0dcb7afcaa9b036676c18a/packages/playground/php-cors-proxy-deployment/cors-proxy-config.php)
