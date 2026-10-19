@@ -1488,6 +1488,14 @@ abort before headers never fired that signal (a plain pass-through
 until it answers. This is a browser boundary, not relay behavior: a direct
 abort of a relay request cancels upstream in both engines.
 
+The 2026-10-19 Playwright Firefox check did not close the upstream transfer
+within ten seconds after aborting a page read after its first body chunk.
+The same failure reproduced using current main's service worker and the
+unchanged development relay; Chromium and WebKit passed that check.
+Service-worker body cancellation propagation is therefore not guaranteed
+on the tested Firefox path either. This does not affect the proxy's
+ability to return range bytes, but an abandoned transfer can remain open.
+
 **Reading an answer.** A `200` answer to a ranged request is legal HTTP: any
 server or relay may ignore `Range`. Kandelo code that issues a ranged read
 must use `fetchByteRange()` from `host/src/networking/byte-range-fetch.ts`.
