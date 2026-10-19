@@ -105,6 +105,15 @@ capability disabled. No cursor host import is required. See
 [the cursor transport contract](architecture.md) for the record layout and
 ownership rules.
 
+Host compatibility and local artifact admission are separate checks. The
+local build stamps kernels and programs with a digest of the complete ABI
+snapshot; runtime admission rejects differently stamped programs even when
+the ABI number matches. An additive snapshot update therefore still needs
+rebuilt guest artifacts under the current policy. Optional cursor exports
+allow an older host adapter to instantiate the new kernel; they do not
+bypass that program/kernel digest check. Cross-version host checks must
+use guest artifacts stamped for the kernel being tested.
+
 ### Changes that require a version bump
 
 Anything that could make an old compiled binary misbehave against a new
