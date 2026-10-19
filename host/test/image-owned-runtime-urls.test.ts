@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { ROOTFS_LAZY_ASSET_URLS } from "../../apps/browser-demos/lib/init/rootfs-lazy-files";
 import {
   imageOwnedRuntimeUrlMapper,
   imageOwnedRuntimeUrlTable,
@@ -86,8 +88,24 @@ describe("image-owned grouped runtime URLs", () => {
         .toMatch(/^https:\/\/demo\.invalid\/a\/assets-group\//);
     }
     // And a known rootfs binary is in it, so the table is not merely non-empty.
-    expect(table["binaries/programs/wasm32/dash.wasm"]).toBe(
-      "https://demo.invalid/a/assets-group/assets/programs/wasm32/dash.wasm",
+    expect(table["binaries/programs/wasm32/bash.wasm"]).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/bash.wasm",
+    );
+  });
+
+  it("keeps browser rootfs imports within the declared rootfs outputs", () => {
+    const mapping = readFileSync(new URL("../../images/rootfs/PACKAGES.toml", import.meta.url), "utf8");
+    const source = readFileSync(new URL("../../apps/browser-demos/lib/init/rootfs-lazy-files.ts", import.meta.url), "utf8");
+    const declared = new Set([...mapping.matchAll(/^\s*binary\s*=\s*("(?:[^"\\]|\\.)*")/gm)]
+      .map(match => JSON.parse(match[1]) as string));
+    const imports = [...source.matchAll(/from\s+"@binaries\/([^"?]+)\?url"/g)]
+      .map(match => match[1]);
+    expect(imports.length).toBeGreaterThan(0);
+    // A static import outside this closure prevents every focused image from
+    // booting under SourceOnly, even when it never executes that program.
+    for (const path of imports) expect(declared.has(path), path).toBe(true);
+    expect([...ROOTFS_LAZY_ASSET_URLS.keys()].sort()).toEqual(
+      imports.map(path => `binaries/${path}`).sort(),
     );
   });
 

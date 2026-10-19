@@ -1724,6 +1724,13 @@ Browser demos use pre-built **VFS images** — binary snapshots of a filesystem 
    `lazyUrlBase`, and `lazyUrlMap` replaces individual URLs without
    rewriting the image.
 
+Static browser asset tables stay within the package closure they represent.
+The canonical rootfs table follows `images/rootfs/PACKAGES.toml`; optional
+utilities belong to their owning image's table. An unrelated static import
+can prevent a SourceOnly deployment from loading its browser modules before
+the selected image even boots, regardless of whether that image executes
+the optional program.
+
 The canonical package shell has a 512 MiB filesystem ceiling. Products that
 copy that shell and add their own application tree use a separate 768 MiB
 profile: the image writer accounts free data bytes and free inodes
