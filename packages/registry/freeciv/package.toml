@@ -7,6 +7,7 @@ depends_on = [
   "sdl2@2.32.10",
   "sdl2-image@2.8.12",
   "sdl2-ttf@2.24.0",
+  "sdl2-mixer@2.8.2",
   "libwayland@1.24.0",
   "libxkbcommon@1.7.0",
   "libffi@0.1.0",

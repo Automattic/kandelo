@@ -222,6 +222,12 @@ backend is paced primarily by blocking `write()`; SDL3 additionally waits on
 truthful `SNDCTL_DSP_GETOSPACE` results. Capture/duplex opens fail with
 `ENOTSUP`, so do not advertise recording support in application UI.
 
+The reusable `sdl2-mixer` library package enables upstream's bundled WAVE,
+Vorbis, FLAC, and MP3 decoders. Its configure step uses a relative source
+path so upstream filename filters cannot match a workspace or temporary
+build directory. Freeciv and the unmodified `playwave` sample share this
+library rather than rebuilding private copies.
+
 The host audio integration suite also builds SDL_mixer 2.8.2's upstream
 `playwave` example unchanged and runs it with `SDL_AUDIODRIVER=dsp`. It checks
 44.1 kHz signed-16 stereo and 22.05 kHz unsigned-8 mono WAVs byte-for-byte at

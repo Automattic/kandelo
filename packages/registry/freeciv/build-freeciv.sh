@@ -42,7 +42,7 @@ export PATH="$WORK/native-bin:$PATH"
 # alone only covers upstream dependency() calls. Never probe host headers.
 export CFLAGS="" LDFLAGS=""
 lib_dirs=()
-for dep in SDL2 SDL2_IMAGE SDL2_TTF LIBWAYLAND LIBXKBCOMMON LIBFFI LIBPNG FREETYPE ZLIB LIBCURL OPENSSL ICU LIBCXX SQLITE READLINE NCURSES; do
+for dep in SDL2 SDL2_IMAGE SDL2_TTF SDL2_MIXER LIBWAYLAND LIBXKBCOMMON LIBFFI LIBPNG FREETYPE ZLIB LIBCURL OPENSSL ICU LIBCXX SQLITE READLINE NCURSES; do
     key="WASM_POSIX_DEP_${dep}_DIR"
     prefix="${!key:?missing declared dependency}"
     CFLAGS+=" -I$prefix/include"
@@ -68,7 +68,7 @@ meson setup "$WORK/build" "$SRC" \
     --cross-file "$WORK/freeciv-cross.ini" \
     --prefix /usr --libdir lib -Dbuildtype=release \
     -Dclients=sdl2 -Dserver=enabled '-Dfcmp=[]' '-Dtools=[]' \
-    -Daudio=none -Dnls=false -Dsyslua=false -Dmwand=false \
+    -Daudio=sdl2 -Dnls=false -Dsyslua=false -Dmwand=false \
     -Dreadline=true -Dsvgflags=false
 ninja -C "$WORK/build" -j"${WASM_POSIX_BUILD_JOBS:-8}"
 meson install -C "$WORK/build" --no-rebuild --destdir "$WORK/install"

@@ -572,6 +572,10 @@ name = "wayland-demo"
 class = "user-software"
 
 [[packages]]
+name = "sdl2-mixer"
+class = "platform"
+
+[[packages]]
 name = "sdl2-mixer-playwave"
 class = "user-software"
 

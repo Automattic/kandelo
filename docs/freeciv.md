@@ -16,16 +16,45 @@ Choose **Freeciv** in the computer gallery. Its initial command is
 `freeciv-play`, which opens Freeciv's ordinary main menu. **Start New Game**
 uses the client's upstream local-server launch path.
 
-The package recipes are `freeciv`, `sdl2-image`, `sdl2-ttf`, and
+The package recipes are `freeciv`, `sdl2-image`, `sdl2-ttf`, `sdl2-mixer`, and
 `freeciv-browser-bundle`. They are included in the local supported set.
 Freeciv is built through upstream Meson, using the SDK cross file and
 resolver-owned dependencies. Its native tolua generator is built from
 the Lua and tolua sources in the same verified upstream archive.
 
 The first port selects the SDL2 client and server, with GNU readline
-for the server console. Audio, translations, the modpack installer,
+for the server console. Audio uses the upstream SDL2_mixer backend through
+Kandelo's existing OSS `/dev/dsp` device. Translations, the modpack installer,
 extra clients, and editing tools are disabled through upstream options.
 The resulting server links GPLv3 readline and is a GPLv3 aggregate.
+
+## Display backends
+
+The SDL package includes both Wayland and direct KMSDRM backends. The
+Freeciv wrapper leaves backend selection to SDL when a compositor socket
+exists; otherwise it selects KMSDRM and the absolute evdev pointer. The
+gallery currently uses that direct-display path.
+
+Wayland can centralize window focus, keyboard mapping, pointer routing,
+cursor ownership, and output scale behind the same protocols used by other
+desktop applications. Freeciv has not yet been acceptance-tested through
+that path. In particular, Kandelo's current `wlcompositor` ignores client
+cursor surfaces and relies on the browser pointer. Client cursors need a
+shared compositor implementation before this can preserve Freeciv's
+contextual cursors. Switching backends alone does not establish correct
+bitmap UI scaling or fix Freeciv widget defects.
+
+## Audio
+
+The port enables Freeciv's standard sound effects and menu music, using the
+shared `sdl2-mixer` package and the shipped `stdsounds`/`stdmusic` Ogg files.
+There is no Freeciv-specific browser audio path. SDL opens `/dev/dsp`; the
+machine's normal PCM transport and AudioWorklet play the result.
+
+Click the graphics pane, or the audio status toast's **Enable** button, to
+satisfy browser audio activation. The standard music set contains menu music
+only; silence between in-game sound effects is expected. Additional in-game
+music sets are not bundled.
 
 ## Multiplayer
 

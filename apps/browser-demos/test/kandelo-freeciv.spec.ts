@@ -523,6 +523,47 @@ for (const density of [1, 2]) {
       await page.screenshot({ path: `../../.context/freeciv-edge-cursor-${density}.png`, scale: "css" });
     });
 
+    test("menu music reaches the shared audio output", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "audio acceptance targets Chromium");
+      test.setTimeout(150_000);
+      await page.addInitScript(() => {
+        const Original = globalThis.AudioWorkletNode;
+        globalThis.AudioWorkletNode = class extends Original {
+          constructor(context: BaseAudioContext, name: string, options?: AudioWorkletNodeOptions) {
+            super(context, name, options);
+            if (name === "kandelo-pcm-output") {
+              const analyser = context.createAnalyser();
+              analyser.fftSize = 2048;
+              this.connect(analyser);
+              const probe = { context, peak: 0 };
+              (globalThis as any).__freecivAudio = probe;
+              const samples = new Float32Array(analyser.fftSize);
+              setInterval(() => {
+                analyser.getFloatTimeDomainData(samples);
+                for (const sample of samples) probe.peak = Math.max(probe.peak, Math.abs(sample));
+              }, 16);
+            }
+          }
+        };
+      });
+      await gotoMachine(page, "freeciv");
+      await running(page);
+      await showGame(page);
+      // A trusted gesture activates the machine's real AudioContext.
+      await canvas(page).click({ position: { x: 60, y: 80 } });
+      const audio = () => page.evaluate(() => {
+        const probe = (globalThis as any).__freecivAudio;
+        return { state: probe?.context.state, peak: probe?.peak ?? 0,
+          sampleRate: probe?.context.sampleRate };
+      });
+      await expect.poll(async () => (await audio()).state, { timeout: 30_000 }).toBe("running");
+      // Measure the production worklet's output, after Freeciv decoded its
+      // shipped Ogg menu track and wrote through SDL_mixer and /dev/dsp.
+      await expect.poll(async () => (await audio()).peak, { timeout: 30_000 }).toBeGreaterThan(0.01);
+      console.log(`Freeciv audio ${density}x: ${JSON.stringify(await audio())}`);
+      await page.screenshot({ path: `../../.context/freeciv-audio-menu-${density}.png`, scale: "css" });
+    });
+
     test("New Game shows filtered nations and readable leader controls", async ({ page, browserName }) => {
       test.skip(browserName !== "chromium", "native dialog regression targets Chromium");
       test.setTimeout(150_000);
