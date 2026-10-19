@@ -24,7 +24,7 @@ test("exactly one machine is marked current, across machines sharing an image @s
 }) => {
   test.setTimeout(400_000);
 
-  await page.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
+  await page.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 240_000,
   });

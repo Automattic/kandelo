@@ -20,7 +20,7 @@ test("the terminal fills the width and height above the dock @slow", async ({
   test.setTimeout(400_000);
   await page.setViewportSize({ width: 1280, height: 800 });
 
-  await page.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
+  await page.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 240_000,
   });

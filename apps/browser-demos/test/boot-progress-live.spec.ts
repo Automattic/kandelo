@@ -34,7 +34,7 @@ test("the boot screen shows image progress during a real boot @slow", async ({
     uploadThroughput: (1 * 1024 * 1024) / 8,
   });
 
-  await page.goto(appUrl("/?demo=shell"), { waitUntil: "domcontentloaded" });
+  await page.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
 
   const progressBar = page.locator(bar);
   await expect(progressBar).toBeVisible({ timeout: 60_000 });

@@ -24,7 +24,7 @@ test("the overlay is modal while a switch is in flight @slow", async ({
     uploadThroughput: (1 * 1024 * 1024) / 8,
   });
 
-  await page.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
+  await page.goto(appUrl("/?profile=shell"), { waitUntil: "domcontentloaded" });
 
   // While the overlay is up, the app content behind it must be inert, so a
   // keyboard user cannot tab into a machine that is not there.

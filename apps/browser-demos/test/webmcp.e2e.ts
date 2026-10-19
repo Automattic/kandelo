@@ -30,10 +30,11 @@ async function running(page: Page): Promise<string> {
   return (await call(page, "get_computer_status")).profile.profileId;
 }
 
-// A profile is selected by launching it, not by a query parameter: the app
+// A bare URL holds no machine, so the page asks for the shell image's own
+// `shell` profile. Any other profile is selected by launching it: the app
 // reads `?vfs=<image>&profile=<id>`, and this suite knows no image URL.
 async function open(page: Page, profile = "shell") {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.goto("/?profile=shell", { waitUntil: "domcontentloaded" });
   await expect.poll(() => page.evaluate(() => typeof (document as any).modelContext?.getTools), {
     message: "Native document.modelContext is required; use webmcp.playwright.config.ts with current Chrome",
   }).toBe("function");
