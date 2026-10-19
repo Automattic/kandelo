@@ -187,15 +187,15 @@ therefore unavailable without a separately verified source.
 
 Local tests cover the worker at 100% lines, branches and functions, and run
 the actual PHP bridge and SQL against disposable MariaDB. A private diagnostic
-Space in Brandon's Team verified guest and signed-in issuance and a proxied
-fetch on 2026-10-18. The Kandelo live v9 deployment remains unchanged and still
-uses its earlier shared limiter until explicitly republished.
+Space verified guest and signed-in issuance and a proxied fetch on
+2026-10-18. Existing deployments retain their earlier limiter until explicitly
+republished with the new frontend and proxy together.
 
 ### Spacefast visitor-IP availability
 
-Live checks on 2026-10-18 used an isolated private diagnostic Space in
-Brandon's Team. Kandelo's live v9 deployment was preserved. Authenticated
-requests tested a baseline, 13 forged headers, and a forged forwarding chain:
+Live checks on 2026-10-18 used an isolated private diagnostic Space.
+Authenticated requests tested a baseline, 13 forged headers, and a forged
+forwarding chain:
 
 | Input or metadata | Observed behavior |
 | --- | --- |
@@ -242,7 +242,7 @@ does not disable limiting by default or emulate it with isolate-local state.
 `CORS_PROXY_ALLOWED_REFERER_ORIGINS` enables a request admission policy:
 
 ```text
-https://remote-oak.space.fast https://kandelo.dev
+https://app.example https://wp.example
 ```
 
 Only exact, canonical HTTP(S) origins are accepted, without trailing slashes,
@@ -299,12 +299,13 @@ are tested in local browsers; the private live diagnostic verified the
 same-origin quota handshake only. Use the combined site for the verified
 Spacefast hosting layout.
 
-Build a standalone proxy with an explicit list of approved client origins:
+Set `KANDELO_SPACE_URL` and `WP_CLOUD_ORIGIN` to the approved client origins,
+without trailing slashes or paths. Build a standalone proxy with that list:
 
 ```sh
 scripts/dev-shell.sh npm --prefix apps/spacefast-cors-proxy run build -- \
-  --allow-referer https://remote-oak.space.fast \
-  --allow-referer https://kandelo.dev
+  --allow-referer "$KANDELO_SPACE_URL" \
+  --allow-referer "$WP_CLOUD_ORIGIN"
 ```
 
 The command requires at least one `--allow-referer` and prints a unique
@@ -327,12 +328,13 @@ serving layer admits the intended Origin and preserves the worker's CORS
 headers; the earlier private combined-site probes did not establish this.
 No build command changes access or publishes anything automatically.
 
-Once its URL is known, either deployment can use it:
+Set `SPACEFAST_PROXY_ORIGIN` to its canonical origin. Either deployment can
+then use it:
 
 ```sh
 # WP Cloud: static Kandelo plus the portable PHP signalling endpoint.
 ./run.sh build-browser --base / --out .context/kandelo-wpcloud-static \
-  --cors-proxy 'https://YOUR-PROXY.space.fast/?url=' \
+  --cors-proxy "${SPACEFAST_PROXY_ORIGIN}/?url=" \
   --signalling-url /signalling/piplet.php
 ```
 
@@ -346,37 +348,55 @@ supported independently of Spacefast.
 The package also includes [Spacefast signalling](../signalling/spacefast/README.md)
 for named sessions and rooms, backed by atomic MySQL updates.
 
-Install the [official CLI](https://spacefast.com/docs/cli/) and sign in once:
+Use the reusable [`scripts/deploy-spacefast.mjs`](../../scripts/deploy-spacefast.mjs)
+script from the repository root with Node 24 and Kandelo's normal build
+prerequisites. Preparation needs no Spacefast authentication. To publish,
+install the [official CLI](https://spacefast.com/docs/cli/) separately and
+sign in once with `sf auth login`.
+
+Select an existing Space's canonical live origin. To create an empty Space
+first, explicitly choose its team, then run:
 
 ```sh
-sf auth login
+# Set SPACEFAST_TEAM to your chosen team name or ID.
+sf spaces add --team "$SPACEFAST_TEAM" --name Kandelo
 ```
 
-Use an existing Space's canonical live URL. To create an empty Space first:
+Use the canonical live origin printed by that command, not an access link or
+an immutable version URL. Creating the Space first lets the proxy's exact
+Referer policy approve its actual app origin. New Spaces inherit the team's
+access defaults; publishing to an existing Space preserves access settings.
+Set `KANDELO_SPACE_URL` to that HTTPS origin without a trailing slash or path.
 
 ```sh
-sf spaces add --team "YOUR TEAM" --name Kandelo
+# Prepare only, then print the bundle path and an exact publish command.
+node scripts/deploy-spacefast.mjs --space "$KANDELO_SPACE_URL"
 ```
 
-Use the URL printed by that command, not an access link or an immutable
-version URL. Creating the Space first lets the proxy's exact Referer policy
-approve its actual app origin. New Spaces inherit the team's access defaults;
-publishing to an existing Space preserves its access settings.
-Set `KANDELO_SPACE_URL` to the origin without a trailing slash or path.
-
-Build the app with the same-origin proxy, then package the generated output:
+For publication or a local CLI check, choose one of these alternatives:
 
 ```sh
-KANDELO_SPACE_URL='https://YOUR-KANDELO.space.fast'
+node scripts/deploy-spacefast.mjs --space "$KANDELO_SPACE_URL" --publish
+node scripts/deploy-spacefast.mjs --space "$KANDELO_SPACE_URL" --dry-run
+```
 
-./run.sh build-browser --base / --out .context/kandelo-spacefast-static \
-  --cors-proxy '/cors-proxy?url=' --signalling-url /signalling
+Each invocation builds a fresh app with `/cors-proxy?url=` and `/signalling`,
+then packages it. To publish an already prepared bundle, use its printed
+command instead of rebuilding. `--publish` updates the selected live Space;
+`--dry-run` compiles the local publish plan without uploading. Neither mode
+installs tools, signs in, creates a Space or changes access. No saved CLI
+selection supplies the target. Additional approved app origins can be passed
+with repeated `--allow-referer` arguments; the target is approved automatically.
+Build and package steps use the declared development shell; the CLI uses
+its existing host authentication. Run `--help` for the current interface.
+
+For advanced layouts or an existing static build, the underlying packager
+remains available:
+
+```sh
+# Set STATIC_BUILD_DIR to the generated static app directory.
 scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
-  .context/kandelo-spacefast-static \
-  --allow-referer "$KANDELO_SPACE_URL"
-
-# Replace BUNDLE_DIR with the final directory printed by the packager.
-sf publish "BUNDLE_DIR" --prebuilt --space "$KANDELO_SPACE_URL" --wait
+  "$STATIC_BUILD_DIR" --allow-referer "$KANDELO_SPACE_URL"
 ```
 
 The packaging command prints a unique `.context/spacefast-kandelo-build-*`
@@ -445,8 +465,11 @@ PHP-issued signatures in the worker against the same real database. Browser
 tests in `apps/browser-demos/test/browser-cors-proxy.spec.ts` cover cookie-free
 sessions, persistence, reload, POST replay and service-worker reprojection.
 Deployment-command tests check endpoint defaults and precedence across the
-isolated shell. Packaging tests preserve the WP Cloud PHP input and verify
-that Spacefast emits its own signalling Function instead.
+isolated shell. Account-free deployment-script fixtures verify explicit
+targets, modes, approved origins, unique output paths and failure propagation
+without installing tools or contacting Spacefast. Packaging tests preserve
+the WP Cloud PHP input and verify that Spacefast emits its own signalling
+Function instead.
 
 Tests include Referer/Origin admission and spoofed-lookalike rejection,
 compiled standalone/combined allowlists, malformed DNS/HTTP input,

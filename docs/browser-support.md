@@ -2414,8 +2414,12 @@ same-origin prefix such as `/cors-proxy?url=`. Both endpoint flags override
 their exported `VITE_CORS_PROXY_URL` / `VITE_KANDELO_SIGNALLING_URL`
 variables. When neither a flag nor its exported variable is set, Vite can
 load that value from its normal `.env` files. Without a proxy override, the
-existing Playground production default is retained. Spacefast packaging is
-a separate, explicit step; a normal build never publishes or signs in.
+existing Playground production default is retained. Spacefast deployment is
+optional: the reusable `node scripts/deploy-spacefast.mjs --space ORIGIN` prepares
+the combined bundle; `--publish` explicitly publishes it and `--dry-run`
+runs local CLI checks instead. The target has no saved default. See the
+[deployment guide](../apps/spacefast-cors-proxy/README.md#combined-kandelo-site).
+A normal build never publishes or signs in.
 
 The SourceOnly local DAG described in
 [Package Management](package-management.md#local-dag-build) is the canonical
@@ -2666,7 +2670,7 @@ proxy; an explicit URL can instead select a standalone Spacefast proxy.
 The separate-site layout is experimental: browser tests cover the protocol,
 but Spacefast's live cross-origin serving layer has not been verified.
 Build that separate worker with repeated `--allow-referer` origins for every
-approved app (including `https://kandelo.dev` if desired). It requires actual
+approved app (including a WP Cloud app's origin if desired). It requires actual
 Referer admission as well as CORS grants; absent or unapproved Referers are
 403 before upstream work. Preflight uses the approved Origin. These headers
 are forgeable by non-browser clients, so the admission rule does not replace

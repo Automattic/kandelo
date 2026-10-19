@@ -14,18 +14,16 @@ The PHP file remains the portable implementation and the development default.
 
 For account setup and the complete publish sequence, see the
 [Spacefast deployment quickstart](../../spacefast-cors-proxy/README.md#combined-kandelo-site).
-For an existing Space, the commands are:
+For an existing Space, set `KANDELO_SPACE_URL` to its canonical HTTPS origin
+without a trailing slash or path, then run from the repository root:
 
 ```sh
-KANDELO_SPACE_URL='https://YOUR-KANDELO.space.fast'
-./run.sh build-browser --base / --out .context/kandelo-spacefast-static \
-  --cors-proxy '/cors-proxy?url=' --signalling-url /signalling
-scripts/dev-shell.sh node apps/spacefast-cors-proxy/build-site.mjs \
-  .context/kandelo-spacefast-static --allow-referer "$KANDELO_SPACE_URL"
-# Replace BUNDLE_DIR with the final directory printed by the packager.
-sf publish "BUNDLE_DIR" --prebuilt --space "$KANDELO_SPACE_URL" --wait
+node scripts/deploy-spacefast.mjs --space "$KANDELO_SPACE_URL" --publish
 ```
 
+Omit `--publish` to prepare without publishing, or use `--dry-run` instead
+for local CLI checks. The script builds the combined app, proxy and signalling
+bundle; it never installs tools, signs in, creates a Space or changes access.
 Spacefast supplies the database; tables are created on first use.
 No account credentials, database connection string, test
 fixtures, or repository files belong in that upload. Existing Space access
