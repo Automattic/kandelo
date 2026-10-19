@@ -131,7 +131,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
               </button>
             </div>
             {pasteError && (
-              <div style={{ color: "var(--k-err)", fontSize: 11.5, fontFamily: "var(--k-font-mono)" }}>
+              <div style={{ color: "var(--k-err-ink)", fontSize: 11.5, fontFamily: "var(--k-font-mono)" }}>
                 {pasteError}
               </div>
             )}
@@ -182,7 +182,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
               padding: "6px 12px",
               border: 0,
               background: "transparent",
-              color: "var(--k-accent)",
+              color: "var(--k-accent-ink)",
               fontFamily: "inherit",
               fontSize: 12.5,
               fontWeight: 600,

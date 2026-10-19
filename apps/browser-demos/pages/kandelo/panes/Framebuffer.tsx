@@ -413,7 +413,8 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           justifyContent: "center",
           fontFamily: "var(--k-font-mono)",
           fontSize: 11,
-          color: "color-mix(in oklch, var(--k-fb-text) 60%, transparent)",
+          background: "var(--k-fb-bg)",
+          color: "var(--k-text-muted)",
           pointerEvents: "none",
         }}>
           Waiting for a process to bind /dev/fb0.
@@ -452,7 +453,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
         <div style={{
           fontFamily: "var(--k-font-mono)",
           fontSize: 11,
-          color: "color-mix(in oklch, var(--k-fb-text) 60%, transparent)",
+          color: "var(--k-text-muted)",
           textAlign: "center",
           padding: 24,
         }}>
