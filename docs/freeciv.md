@@ -28,6 +28,38 @@ Kandelo's existing OSS `/dev/dsp` device. Translations, the modpack installer,
 extra clients, and editing tools are disabled through upstream options.
 The resulting server links GPLv3 readline and is a GPLv3 aggregate.
 
+## Measured build cost
+
+One SourceOnly build on 2026-10-19 used an Apple M5 Max (18 CPUs, 48 GiB
+RAM), the declared Nix toolchain, and LLVM 21.1.7. Freeciv's Ninja build
+used eight jobs while up to sixteen package nodes ran concurrently.
+Dependencies and downloaded sources were already available when its node
+started. The build system's per-node timings include compilation, fork
+instrumentation, artifact validation, and publication.
+
+| Source build stage | Wall time |
+|---|---:|
+| Freeciv 3.2.6 revision 21, client and server | 490.6 s (8m 11s) |
+| Browser archive bundle | 68.5 s (1m 9s) |
+| Sequential Freeciv and bundle nodes | 559.1 s (9m 19s) |
+
+This is a single measurement under competing build load, excluding the
+cost of building dependencies and fetching uncached sources. It is not a
+measured increase in the entire build's elapsed time: independent work can
+run in parallel with Freeciv.
+
+Separate cached `xtask build-deps --source-only --arch=wasm32 resolve`
+invocations took 24.4 seconds for Freeciv and 29.4 seconds for the complete
+browser bundle. These checks reused the exact published entries without
+running either recipe. The bundle lookup includes checking Freeciv and its
+dependencies, so these cached times must not be added together. An aggregate
+build can skip current nodes before launching these individual checks.
+
+The source-cache timing history records the build under Freeciv cache key
+`4a477f20bda301964adc0d4a24be37f7f3a31bf6654a6d8e3f17ab7fe8871ddc`
+and bundle key
+`1821b4224c6d1cb514c02411423454a67d610abe11de1b5a4ed6149f77e4539f`.
+
 ## Display backends
 
 The SDL package includes both Wayland and direct KMSDRM backends. The
