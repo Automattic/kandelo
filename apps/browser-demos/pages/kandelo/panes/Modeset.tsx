@@ -240,9 +240,9 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     // Absolute-position pointer feed for evdev consumers (SDL2's
     // KMSDRM backend reads `/dev/input/event1`, which the PS/2
     // `sendMouseEvent` path above does NOT reach). `toCanvasCoords`
-    // already maps the OS pointer into framebuffer pixels (0..canvas
-    // .width), exactly the range SDL expects after we set the kernel's
-    // ABS_X/Y.maximum to the framebuffer size. modeset.c ignores
+    // already maps the OS pointer into framebuffer pixels (0..width-1),
+    // matching the kernel's inclusive ABS_X/Y bounds. SDL scales those
+    // bounds to inclusive display pixels. modeset.c ignores
     // event1 (it reads PS/2 /dev/input/mice), so feeding both is safe.
     let lastAbsX = wasmCursorX;
     let lastAbsY = wasmCursorY;

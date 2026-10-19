@@ -2130,7 +2130,11 @@ initial allocation is not an input coordinate space. Absolute positions
 are confined to valid pixel indices, including captured drags outside
 the pane and subpixel rounding at its edges. Sending an out-of-window
 position to SDL's direct-display backend can clear mouse focus, hiding
-its cursor and preventing subsequent clicks from reaching the window.
+its cursor and dropping window focus for subsequent input.
+SDL's evdev adapter also maps inclusive device bounds to inclusive
+display pixels, for both ordinary input and overflow recovery. The
+maximum axis sample reaches the last pixel rather than `width` or
+`height`; out-of-range device samples are confined to the same bounds.
 
 The display also mounts a transparent cursor plane over the scanout.
 Linux `MODE_CURSOR` / `MODE_CURSOR2` requests update its shape, hotspot,

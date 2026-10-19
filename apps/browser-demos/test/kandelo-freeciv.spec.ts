@@ -455,9 +455,10 @@ for (const density of [1, 2]) {
     test.use({
       // Native compositor density is needed too: Chromium's emulated DPR
       // alone leaves ResizeObserver's device-pixel box at the host density.
-      page: async ({ playwright, launchOptions, browserName, baseURL }, use) => {
+      page: async ({ playwright, launchOptions, headless, browserName, baseURL }, use) => {
         const browser = await playwright[browserName].launch({
           ...launchOptions,
+          headless,
           args: browserName === "chromium"
             ? [...(launchOptions.args ?? []), `--force-device-scale-factor=${density}`]
             : launchOptions.args,
@@ -499,13 +500,23 @@ for (const density of [1, 2]) {
       await page.mouse.move(box.x + box.width - 0.1, box.y + 80);
       await page.mouse.move(box.x + box.width - 1, box.y + box.height + 20);
       await page.mouse.up();
-      await page.mouse.move(box.x + 60, box.y + 80);
+      await worker!.evaluate(() => { (globalThis as any).__edgeCursor = undefined; });
+      await page.mouse.move(box.x + 120, box.y + 80);
       const status = await page.getByText(/\d+×\d+ · \d+ flips/).innerText();
       const [, width, height] = status.match(/(\d+)×(\d+)/)!;
       await expect.poll(async () => {
         const cursor = await worker!.evaluate(() => (globalThis as any).__edgeCursor);
-        return cursor && Math.abs(cursor.x - 60 * Number(width) / box.width) <= 1
+        return cursor && Math.abs(cursor.x - 120 * Number(width) / box.width) <= 1
           && Math.abs(cursor.y - 80 * Number(height) / box.height) <= 1;
+      }, { timeout: 15_000 }).toBe(true);
+      // Hovering at an axis maximum must also retain focus, without a
+      // pressed button or capture masking an out-of-window coordinate.
+      await page.mouse.move(box.x + box.width - 0.1, box.y + 80);
+      await worker!.evaluate(() => { (globalThis as any).__edgeCursor = undefined; });
+      await page.mouse.move(box.x + 60, box.y + 80);
+      await expect.poll(async () => {
+        const cursor = await worker!.evaluate(() => (globalThis as any).__edgeCursor);
+        return cursor && Math.abs(cursor.x - 60 * Number(width) / box.width) <= 1;
       }, { timeout: 15_000 }).toBe(true);
       await canvas(page).click({ position: await menuPosition(page, "options") });
       await waitForOptions(page);
@@ -1118,7 +1129,9 @@ for (const density of [1, 2]) {
           bitmap.close();
           let lit = 0;
           for (let i = 0; i < pixels.length; i += 4) {
-            if (pixels[i] || pixels[i + 1] || pixels[i + 2]) lit++;
+            // Brave's canvas privacy protection can perturb black by a
+            // low bit; count visible ink rather than exact nonzero bytes.
+            if (Math.max(pixels[i], pixels[i + 1], pixels[i + 2]) > 16) lit++;
           }
           return lit;
         }, png.toString("base64"));
@@ -1135,6 +1148,12 @@ for (const density of [1, 2]) {
       await page.mouse.move(clip.x, clip.y);
       await expect.poll(cursorPixels, { timeout: 15_000 }).toBeGreaterThan(10);
       await page.screenshot({ path: `../../.context/freeciv-cursor-game-${density}.png`, scale: "css" });
+      await page.mouse.move(box.x + box.width - 0.1, box.y + 80);
+      await page.getByRole("button", { name: "Terminal", exact: true }).click();
+      await showGame(page);
+      await page.mouse.move(clip.x, clip.y);
+      await expect.poll(cursorPixels, { timeout: 15_000 }).toBeGreaterThan(10);
+
       await page.mouse.move(box.x + 120, box.y + 80);
       await expect.poll(cursorPixels, { timeout: 15_000 }).toBe(0);
       // SDL pointer coordinates and raw DRM image origins have different
@@ -1154,17 +1173,17 @@ for (const density of [1, 2]) {
       });
       const originNear = async (x: number, y: number) => {
         const point = await worker!.evaluate(() => (globalThis as any).__cursorOrigin);
-        return point && Math.abs(point.x - x) <= 1 && Math.abs(point.y - y) <= 1;
+        return { point, near: !!point && Math.abs(point.x - x) <= 1 && Math.abs(point.y - y) <= 1 };
       };
       const target = await nativePosition(page, 600, 160);
       await page.mouse.move(box.x + target.x, box.y + target.y);
-      await expect.poll(() => originNear(600, 160)).toBe(true);
+      await expect.poll(() => originNear(600, 160)).toMatchObject({ near: true });
       await canvas(page).focus();
       await page.keyboard.press("g");
-      await expect.poll(() => originNear(584, 144)).toBe(true);
+      await expect.poll(() => originNear(584, 144)).toMatchObject({ near: true });
       await page.screenshot({ path: `../../.context/freeciv-color-cursor-${density}.png`, scale: "css" });
       await page.keyboard.press("Escape");
-      await expect.poll(() => originNear(600, 160)).toBe(true);
+      await expect.poll(() => originNear(600, 160)).toMatchObject({ near: true });
 
       // Unmodified theme fonts and artwork must fit the unit panel together;
       // its text rows must remain separate at the shared display scale.

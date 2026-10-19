@@ -9,7 +9,7 @@ import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../../..");
 
-it("evdev preserves device order, emits text and modifiers, and respects StopTextInput", async () => {
+it("evdev preserves text, event order, overflow recovery, and inclusive pointer bounds", async () => {
   const temp = mkdtempSync(join(tmpdir(), "kandelo-sdl-text-"));
   let output = "";
   const record = (_pid: number, bytes: Uint8Array) => { output += new TextDecoder().decode(bytes); };
@@ -95,7 +95,22 @@ it("evdev preserves device order, emits text and modifiers, and respects StopTex
     host.injectInputEvent(1, 1, 272, 0);
     host.injectInputEvent(1, 0, 0, 0);
     host.appendStdinData(pid, new Uint8Array([120]));
+    await expect.poll(() => output, { timeout: 30_000 }).toContain("READY:6");
+    // The device maximum is a legal sample. SDL must map it to the
+    // final pixel, then confine noisy samples before sending motion.
+    const [, maxX, maxY, lastX, lastY] = output.match(/GRID:(\d+):(\d+):(\d+):(\d+)/)!.map(Number);
+    const positions = [[maxX, maxY], [maxX + 100, -100], [Math.floor(maxX / 2), Math.floor(maxY / 2)]];
+    for (const [index, [x, y]] of positions.entries()) {
+      host.injectInputEvent(1, 3, 0, x);
+      host.injectInputEvent(1, 3, 1, y);
+      host.injectInputEvent(1, 0, 0, 0);
+      host.appendStdinData(pid, new Uint8Array([120]));
+      await expect.poll(() => output, { timeout: 30_000 }).toContain(index === 2 ? "DONE" : `READY:${index + 7}`);
+    }
     expect(await exit, output).toBe(0);
+    expect(output).toContain(`POSITION:6:${lastX}:${lastY}`);
+    expect(output).toContain(`POSITION:7:${lastX}:0`);
+    expect(output).toContain(`POSITION:8:${Math.floor(positions[2][0] * lastX / maxX)}:${Math.floor(positions[2][1] * lastY / maxY)}`);
     expect(output).toContain("DEVICE:0:3:199:0");
     expect(output).toContain("MOUSE:5:1:1");
     expect(output).toContain("MOUSE:5:1:0");

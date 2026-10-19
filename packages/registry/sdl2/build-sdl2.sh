@@ -81,6 +81,8 @@ patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0004-order-evdev-devices-by-times
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0005-resynchronize-mouse-after-evdev-overflow.patch"
 # Cursor hotspots belong to SDL pointer semantics; DRM x/y are image origins.
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0006-kmsdrm-cursor-hotspots.patch"
+# Device maxima must land on the last pixel, preserving mouse focus.
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0007-scale-inclusive-absolute-axes.patch"
 
 # --- Wayland pkg-config wiring (step 12b) ------------------------------
 # SDL2's configure gates the Wayland backend on a hard pkg-config probe

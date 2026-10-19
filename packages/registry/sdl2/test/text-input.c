@@ -16,8 +16,14 @@ int main(void)
     }
     int observer = open("/dev/input/event1", O_RDONLY | O_NONBLOCK);
     if (observer < 0) return 3;
+    struct input_absinfo axis_x, axis_y;
+    SDL_DisplayMode mode;
+    if (ioctl(observer, EVIOCGABS(ABS_X), &axis_x) < 0
+        || ioctl(observer, EVIOCGABS(ABS_Y), &axis_y) < 0
+        || SDL_GetCurrentDisplayMode(0, &mode) < 0) return 7;
+    printf("GRID:%d:%d:%d:%d\n", axis_x.maximum, axis_y.maximum, mode.w - 1, mode.h - 1);
     SDL_StartTextInput();
-    for (int phase = 0; phase < 6; ++phase) {
+    for (int phase = 0; phase < 9; ++phase) {
         printf("READY:%d\n", phase);
         fflush(stdout);
         if (getchar() == EOF) return 2;
@@ -32,6 +38,11 @@ int main(void)
         if (phase >= 3) {
             printf("BUTTONS:%d:%u\n", phase, SDL_GetMouseState(NULL, NULL));
             fflush(stdout);
+        }
+        if (phase >= 6) {
+            int x, y;
+            SDL_GetMouseState(&x, &y);
+            printf("POSITION:%d:%d:%d\n", phase, x, y);
         }
         if (phase == 4) {
             struct input_event dropped;

@@ -158,6 +158,12 @@ blur. SDL resynchronizes ordinary mouse state after `SYN_DROPPED` using
 independently of an evdev reader's overflowed ring. These are shared platform
 or SDL fixes, not Freeciv resets or synthesized clicks.
 
+SDL maps inclusive absolute-axis bounds to inclusive display pixels,
+including overflow recovery. A maximum device sample reaches `width - 1`
+or `height - 1`, never the first pixel outside the window. Leaving the
+graphics pane can produce such an edge sample; mapping it outside would
+clear SDL's mouse focus and hide the cursor even after returning.
+
 ## Remaining application corrections
 
 The package keeps bounded corrections for upstream Freeciv defects:
