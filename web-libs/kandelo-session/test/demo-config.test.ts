@@ -15,6 +15,7 @@ import {
   resolveDemoRuntime,
   resolveDemoInit,
   resolveDemoDisplay,
+  resolveDemoPresentation,
   type KandeloDemoConfig,
 } from "../src/demo-config";
 
@@ -573,4 +574,20 @@ describe("tracked demo-config sources", () => {
       expect(Object.keys(config).sort()).toEqual(["profiles", "version"]);
     },
   );
+});
+
+
+describe("virtual display scale", () => {
+  const presentation = { bootPrimary: "syslog", runningPrimary: ["kms"],
+    terminalAccess: "drawer", internalsAccess: "drawer" };
+  it("preserves a readable bitmap scale in image-owned metadata", () => {
+    const config = withProfile({ presentation: { ...presentation, displayScale: 1.5 } });
+    validateKandeloDemoConfig(config);
+    expect(resolveDemoPresentation(config, "m")?.displayScale).toBe(1.5);
+  });
+  it.each([0, -1, 0.49, 4.01, Infinity, NaN, "1.5", null])("rejects invalid scale %s", (displayScale) => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      presentation: { ...presentation, displayScale },
+    }))).toThrow("presentation.displayScale");
+  });
 });

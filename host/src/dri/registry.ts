@@ -299,12 +299,13 @@ export class GbmBoRegistry {
     e: InternalEntry,
     pid: number,
     binding: GbmBoBinding,
+    byteLimit = Infinity,
   ): void {
     const resolver = this.getProcessMemory;
     if (!resolver) return;
     const mem = resolver(pid);
     if (!mem) return;
-    const copyLen = Math.min(binding.len, e.size);
+    const copyLen = Math.min(binding.len, e.size, byteLimit);
     if (binding.addr + copyLen > mem.buffer.byteLength) return;
     const dst = new Uint8Array(e.sab, 0, copyLen);
     const src = new Uint8Array(mem.buffer, binding.addr, copyLen);
@@ -347,11 +348,11 @@ export class GbmBoRegistry {
    *  bind sees the producer's latest pixels. Unlike `syncFromMemory`,
    *  consumers' (possibly stale) mappings are left out — flushing an
    *  importer after the creator would clobber fresh bytes. */
-  syncCreatorToSab(bo_id: number): void {
+  syncCreatorToSab(bo_id: number, byteLimit = Infinity): void {
     const e = this.bos.get(bo_id);
     if (!e) return;
     const binding = e.bindingsByPid.get(e.creatorPid);
-    if (binding) this.flushMemoryToSab(e, e.creatorPid, binding);
+    if (binding) this.flushMemoryToSab(e, e.creatorPid, binding, byteLimit);
   }
 
   /** Flush each bound pid's Memory into the SAB (KMS scanout calls this

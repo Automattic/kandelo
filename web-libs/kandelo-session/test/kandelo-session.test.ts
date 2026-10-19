@@ -2805,6 +2805,56 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     }
   };
 
+  it.each([1, 2, 3])("uses the same bitmap grid at browser density %s", (density) => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.setPresentation({ ...host.getPresentation(), displayScale: 1.5 });
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      FakeResizeObserver.instances[0].cb([{
+        devicePixelContentBoxSize: [{ inlineSize: 1440 * density, blockSize: 810 * density }],
+        contentRect: { width: 1440, height: 810 },
+      }]);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenCalledWith(1, 960, 540, mmFor(960, 540));
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 960, height: 540 });
+    });
+  });
+
+  it("uses the actual bounded mode for virtual DPI and ignores hidden panes", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.setPresentation({ ...host.getPresentation(), displayScale: 1.5 });
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      const ro = FakeResizeObserver.instances[0];
+      fireResize(ro, 500, 320);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenLastCalledWith(1, 640, 480, mmFor(640, 480));
+      fireResize(ro, 0, 0);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenCalledTimes(1);
+      fireResize(ro, 1439, 809);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenLastCalledWith(1, 958, 538, mmFor(958, 538));
+    });
+  });
+
+  it("keeps native device resolution for a compositor without displayScale", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      FakeResizeObserver.instances[0].cb([{
+        devicePixelContentBoxSize: [{ inlineSize: 2880, blockSize: 1620 }],
+        contentRect: { width: 1440, height: 810 },
+      }]);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenCalledWith(1, 2880, 1620, mmFor(1440, 810));
+    });
+  });
+
   it("detachKernel clears the reported sizes and the stale observer stops feeding them", () => {
     withFakeResizeObserver(() => {
       const host = new LiveKernelHost();
@@ -2944,11 +2994,13 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
         const handle = host.attachKmsDisplay(canvas, 1)!;
         handle.close(); // pane unmount
 
-        // Remount: same element, same handle, one transfer.
+        const cursor = host.kmsCursorCanvas(1);
+        // Remount: each plane transfers once, with the same handle.
         expect(host.kmsDisplayCanvas(1, { width: 640, height: 480 })).toBe(canvas);
         expect(canvas.width).toBe(1920); // size applies only at creation
         expect(host.attachKmsDisplay(canvas, 1)).toBe(handle);
-        expect(transfers).toBe(1);
+        expect(transfers).toBe(2);
+        expect(host.kmsCursorCanvas(1)).toBe(cursor);
         expect(kernelA.kmsAttachCanvas).toHaveBeenCalledTimes(1);
 
         // Each CRTC has its own canvas.
@@ -2959,6 +3011,7 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
         host.detachKernel();
         host.attachKernel(makeKmsKernel() as any);
         expect(host.kmsDisplayCanvas(1, size)).not.toBe(canvas);
+        expect(host.kmsCursorCanvas(1)).not.toBe(cursor);
       });
     } finally {
       (globalThis as { document?: unknown }).document = realDocument;

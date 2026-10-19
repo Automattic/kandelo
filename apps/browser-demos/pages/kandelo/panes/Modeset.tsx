@@ -123,7 +123,10 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     const display = host.kmsDisplayCanvas(crtcId, { width: MODESET_FB_W, height: MODESET_FB_H });
     display.classList.add("kmodeset-canvas");
     display.tabIndex = 0;
-    if (display.parentNode !== slot) slot.replaceChildren(display);
+    const cursor = host.kmsCursorCanvas(crtcId);
+    cursor.classList.add("kmodeset-cursor");
+    cursor.setAttribute("aria-hidden", "true");
+    if (display.parentNode !== slot) slot.replaceChildren(display, cursor);
     setCanvas(display);
   }, [host, status, crtcId]);
 
@@ -388,7 +391,10 @@ export const Modeset: React.FC<ModesetProps> = ({ crtcId = KMS_PRIMARY_CRTC, onD
     // the guest's cursor and the OS pointer disagree. A guest that draws
     // no cursor declares `hostPointer` so the browser keeps drawing one.
     canvas.style.cursor = presentation.hostPointer ? "default" : "none";
-  }, [canvas, canvasStyle, presentation.hostPointer]);
+    const cursor = host.kmsCursorCanvas(crtcId);
+    cursor.style.width = canvas.style.width;
+    cursor.style.height = canvas.style.height;
+  }, [canvas, canvasStyle, presentation.hostPointer, host, crtcId]);
   const statusLabel = hasFrame
     ? `${stats.width}×${stats.height} · ${stats.commitCount} flips · ${stats.lastFrameUs}µs` +
       (RENDERER_LABELS[stats.renderer] ? ` · ${RENDERER_LABELS[stats.renderer]}` : "")

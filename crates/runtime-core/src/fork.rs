@@ -54,7 +54,8 @@ const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // v18 also preserves the selected source of connected wildcard IPv4 UDP.
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
-const FORK_VERSION: u32 = 18;
+// v19 retains the KMS cursor BO across exec; fork children own no cursor.
+const FORK_VERSION: u32 = 19;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -723,6 +724,7 @@ fn write_kms_fd_state(
     } else {
         0
     })?;
+    w.write_u32(if preserve_master { kms.cursor_bo.unwrap_or(0) } else { 0 })?;
     w.write_u32(kms.fbs.len() as u32)?;
     for (fb_id, fb) in &kms.fbs {
         w.write_u32(*fb_id)?;
@@ -825,6 +827,11 @@ fn read_dri_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::DriFdState, Errno
 fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno> {
     use alloc::collections::{BTreeMap, VecDeque};
     let holds_master = r.read_u8()? != 0;
+    let cursor = r.read_u32()?;
+    let cursor_bo = if cursor == 0 { None } else {
+        crate::dri::with_registry(|reg| reg.incref(cursor));
+        Some(cursor)
+    };
     let fb_count = r.read_u32()? as usize;
     if fb_count > 65536 {
         return Err(Errno::EINVAL);
@@ -869,6 +876,7 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
     }
     Ok(crate::ofd::KmsFdState {
         holds_master,
+        cursor_bo,
         fbs,
         next_fb_id,
         pending_flips,
@@ -3531,6 +3539,62 @@ mod tests {
         assert!(
             !child_kms.holds_master,
             "fork child must not inherit KMS master"
+        );
+    }
+
+    #[test]
+    fn cursor_ownership_survives_exec_but_not_fork() {
+        use crate::ofd::{DriFdState, DriOfdState, KmsFdState};
+        let _lock = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| r.alloc(64, 64, 32).id);
+        let mut proc = Process::new(1);
+        let ofd = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            -9,
+            b"/dev/dri/card0".to_vec(),
+        );
+        proc.ofd_table.get_mut(ofd).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::Card {
+                dri: DriFdState::default(),
+                kms: KmsFdState {
+                    holds_master: true,
+                    cursor_bo: Some(bo),
+                    ..Default::default()
+                },
+            }));
+        proc.fd_table
+            .alloc(crate::fd::OpenFileDescRef(ofd), 0)
+            .unwrap();
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+        assert_eq!(
+            child.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo,
+            None
+        );
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
+            1
+        );
+        let written = serialize_exec_state(&proc, &mut buf).unwrap();
+        let replacement = deserialize_exec_state(&buf[..written], 1).unwrap();
+        assert_eq!(
+            replacement
+                .ofd_table
+                .get(ofd)
+                .unwrap()
+                .kms()
+                .unwrap()
+                .cursor_bo,
+            Some(bo)
+        );
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
+            2
         );
     }
 

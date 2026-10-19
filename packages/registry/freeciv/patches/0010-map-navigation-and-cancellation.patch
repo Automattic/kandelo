@@ -1,6 +1,6 @@
-Make map navigation and cancellation unambiguous in the SDL2 client.
+Preserve map command cancellation and guard off-map tiles.
 
-Allow either mouse button to recenter the minimap. Let Escape cancel an active
+Let Escape cancel an active
 map command before the global Options shortcut, preserving modal dialogs' own
 Escape bindings. Compare tile pointers safely when a held pointer crosses an
 off-map area; canvas_pos_to_tile can return NULL at a non-wrapping map edge.
@@ -35,13 +35,3 @@ off-map area; canvas_pos_to_tile can return NULL at a non-wrapping map edge.
        button_behavior.counting = FALSE;
      }
    }
---- a/client/gui-sdl2/mapctrl.c
-+++ b/client/gui-sdl2/mapctrl.c
-@@ -1288,6 +1288,7 @@
-   int mouse_x, mouse_y;
- 
-   switch (main_data.event.button.button) {
-+  case SDL_BUTTON_LEFT:
-   case SDL_BUTTON_RIGHT:
-     mouse_x = main_data.event.motion.x - minimap_window->dst->dest_rect.x -
-       minimap_window->area.x - overview_start_x;

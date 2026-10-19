@@ -342,6 +342,18 @@ unsafe extern "C" {
     ) -> i32;
     fn host_kms_rmfb(pid: i32, fb_id: u32);
     fn host_kms_set_fb(pid: i32, crtc_id: u32, fb_id: u32);
+    fn host_kms_cursor(
+        pid: i32,
+        crtc_id: u32,
+        flags: u32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        x: i32,
+        y: i32,
+        hot_x: i32,
+        hot_y: i32,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,6 +1231,26 @@ impl HostIO for WasmHostIO {
 
     fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {
         unsafe { host_kms_set_fb(pid, crtc_id, fb_id) }
+    }
+
+    fn kms_cursor(
+        &mut self,
+        pid: i32,
+        crtc_id: u32,
+        flags: u32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        x: i32,
+        y: i32,
+        hot_x: i32,
+        hot_y: i32,
+    ) {
+        unsafe {
+            host_kms_cursor(
+                pid, crtc_id, flags, bo_id, width, height, x, y, hot_x, hot_y,
+            )
+        }
     }
 }
 

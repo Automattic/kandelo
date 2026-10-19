@@ -2108,6 +2108,32 @@ Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
 
+A bitmap interface can declare `presentation.displayScale` (0.5–4 CSS
+pixels per guest pixel). The browser advertises a virtual display sized
+from the CSS content box divided by that scale, at 96 reference DPI.
+For example, a 1440×810 CSS pane at scale 1.5 advertises 960×540 at both
+1× and 2× browser density. Fonts, artwork, hit targets, cursor hotspots,
+and absolute input all use that one guest grid. The whole bitmap is
+scaled for presentation; this does not give raster fonts native-density
+outlines. The normal connector bounds, 640×480 through 3840×2160, still
+apply. Small panes can therefore fit the minimum mode rather than
+maintaining the requested scale. Set this before launching a graphical
+client; there is no KMS hotplug or automatic client mode switch.
+
+Omitting `displayScale` preserves native device-pixel output and CSS-derived
+physical size, so Wayland compositors and DPI-aware applications retain
+ownership of their scaling. This setting belongs to image presentation
+metadata, not application font, theme, or coordinate patches.
+
+The display also mounts a transparent cursor plane over the scanout.
+Linux `MODE_CURSOR` / `MODE_CURSOR2` requests update its shape, hotspot,
+and position independently of application frames, through SDL or libdrm.
+The worker snapshots cursor pixels and presents changed state at vblank;
+it never paints a cursor into a guest's saved scene or uploads the scene
+on cursor motion. The overlay uses the scanout's fitted coordinate space
+and cannot intercept input. Both Node and browser retain the same cursor
+device state; Node has no visual surface unless the embedder attaches one.
+
 Images can also declare an optional `guide`. When `guide` is absent, Kandelo
 does not render a demo panel; this is the intended shape for demos where the
 primary surface is enough, such as WordPress and Doom. A guide can contain

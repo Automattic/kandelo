@@ -13,6 +13,7 @@ export interface DemoPresentationConfig {
   internalsAccess: DemoPresentation["internalsAccess"];
   touchControls?: boolean;
   hostPointer?: boolean;
+  displayScale?: number;
 }
 
 /**
@@ -1150,6 +1151,12 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     throw new Error("presentation.runningPrimary must contain at least one valid surface");
   }
 
+  if (config.displayScale !== undefined &&
+      (typeof config.displayScale !== "number" || !Number.isFinite(config.displayScale) ||
+       config.displayScale < 0.5 || config.displayScale > 4)) {
+    throw new Error("presentation.displayScale must be a number between 0.5 and 4");
+  }
+
   return {
     bootPrimary,
     runningPrimary,
@@ -1157,6 +1164,7 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     internalsAccess: accessMode(config.internalsAccess, "internalsAccess"),
     ...(typeof config.touchControls === "boolean" ? { touchControls: config.touchControls } : {}),
     ...(typeof config.hostPointer === "boolean" ? { hostPointer: config.hostPointer } : {}),
+    ...(config.displayScale !== undefined ? { displayScale: config.displayScale as number } : {}),
   };
 }
 

@@ -1168,6 +1168,7 @@ fn handle_dri_ioctl(
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             cap.value = match cap.capability {
                 DRM_CAP_DUMB_BUFFER => 1,
+                0x8 | 0x9 => 64, // DRM_CAP_CURSOR_WIDTH / HEIGHT
                 DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
                 _ => 0,
             };
@@ -1743,6 +1744,11 @@ fn handle_dri_card_ioctl(
             if crate::dri::master::drop_master(pid, ofd_idx) {
                 if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
                     kms.holds_master = false;
+                    if let Some(old) = kms.cursor_bo.take() {
+                        if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
+                            host.gbm_bo_destroy(pid, old);
+                        }
+                    }
                 }
                 host.kms_drop_master(pid);
             }
@@ -1986,6 +1992,68 @@ fn handle_dri_card_ioctl(
                 host.gbm_bo_destroy(pid, bo_id);
             }
             host.kms_rmfb(pid, fb_id);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_CURSOR | DRM_IOCTL_MODE_CURSOR2 => {
+            let size = if request == DRM_IOCTL_MODE_CURSOR2 { 36 } else { 28 };
+            if buf.len() < size {
+                return Err(Errno::EINVAL);
+            }
+            let word = |i: usize| {
+                u32::from_le_bytes(buf[i * 4..i * 4 + 4].try_into().unwrap())
+            };
+            let flags = word(0);
+            let crtc = word(1);
+            let (x, y) = (word(2) as i32, word(3) as i32);
+            let (width, height, handle) = (word(4), word(5), word(6));
+            let (hot_x, hot_y) = if size == 36 {
+                (word(7) as i32, word(8) as i32)
+            } else {
+                (0, 0)
+            };
+            if flags == 0 || flags & !3 != 0 {
+                return Err(Errno::EINVAL);
+            }
+            if crtc != 1 {
+                return Err(Errno::ENOENT);
+            }
+            if !kms_state(proc, ofd_idx)?.holds_master {
+                return Err(Errno::EACCES);
+            }
+            let mut bo_id = 0;
+            if flags & 1 != 0 {
+                if handle != 0 {
+                    if width == 0 || height == 0 || width > 64 || height > 64 {
+                        return Err(Errno::EINVAL);
+                    }
+                    bo_id = *dri_state(proc, ofd_idx)?.handles.get(&handle)
+                        .ok_or(Errno::ENOENT)?;
+                    // Linux legacy cursor images use packed ARGB8888 rows,
+                    // independently of the dumb allocation's original pitch.
+                    let valid = crate::dri::with_registry(|r| {
+                        r.get(bo_id).is_some_and(|bo| {
+                            bo.tier == crate::dri::BoTier::CpuShared
+                                && bo.size >= u64::from(width) * u64::from(height) * 4
+                        })
+                    });
+                    if !valid {
+                        return Err(Errno::EINVAL);
+                    }
+                    crate::dri::with_registry(|r| r.incref(bo_id));
+                }
+                // WHY: cursor scanout outlives its userspace GEM handle.
+                // Swap references only after validating the entire request.
+                let old = core::mem::replace(
+                    &mut kms_state_mut(proc, ofd_idx)?.cursor_bo,
+                    (bo_id != 0).then_some(bo_id),
+                );
+                if let Some(old) = old {
+                    if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
+                        host.gbm_bo_destroy(pid, old);
+                    }
+                }
+            }
+            host.kms_cursor(pid, crtc, flags, bo_id, width, height, x, y, hot_x, hot_y);
             Ok(())
         }
         DRM_IOCTL_MODE_SETCRTC => {
@@ -2285,6 +2353,7 @@ pub fn dri_release_ofd_state(
             }
         }
         crate::ofd::DriOfdState::Card { dri, kms } => {
+            if let Some(bo_id) = kms.cursor_bo { release_bo(host, bo_id); }
             // KMS-side cleanup first: release framebuffers (each
             // holds an extra bo refcount) and notify the host so it
             // can drop GL textures / canvases bound to those fbs.
@@ -48380,6 +48449,132 @@ impl HostIO for RelSymlinkMock {
             sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETCRTC, &mut buf).unwrap_err(),
             Errno::ENOENT
         );
+    }
+
+    #[test]
+    fn kms_cursor_gates_requests_and_retains_bo_until_hidden_or_closed() {
+        use wasm_posix_shared::dri::*;
+        let _master = crate::dri::master::lock_for_test();
+        let _registry = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for cleanup in ["hide", "drop", "close"] {
+            crate::dri::bo::reset_registry();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+            let mut request = [0u8; 36];
+            let fill = |buf: &mut [u8], words: [u32; 9]| {
+                for (chunk, word) in buf.chunks_exact_mut(4).zip(words) {
+                    chunk.copy_from_slice(&word.to_le_bytes());
+                }
+            };
+            fill(&mut request, [1, 1, 0, 0, 64, 64, 1, 0, 0]);
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    DRM_IOCTL_MODE_CURSOR2,
+                    &mut request
+                ),
+                Err(Errno::EACCES)
+            );
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+            let mut create = [0u8; 32];
+            create[4..8].copy_from_slice(&64u32.to_le_bytes());
+            create[0..4].copy_from_slice(&64u32.to_le_bytes());
+            create[8..12].copy_from_slice(&32u32.to_le_bytes());
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_CREATE_DUMB,
+                &mut create,
+            )
+            .unwrap();
+            let handle = u32::from_le_bytes(create[16..20].try_into().unwrap());
+            fill(&mut request, [3, 1, 30, 40, 64, 64, handle, u32::MAX, 1]);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_CURSOR2,
+                &mut request,
+            )
+            .unwrap();
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            let bo = proc
+                .ofd_table
+                .get(ofd)
+                .unwrap()
+                .kms()
+                .unwrap()
+                .cursor_bo
+                .unwrap();
+            assert_eq!(
+                crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
+                2
+            );
+            fill(&mut request, [1, 1, 0, 0, 65, 64, handle, 0, 0]);
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    DRM_IOCTL_MODE_CURSOR2,
+                    &mut request
+                ),
+                Err(Errno::EINVAL)
+            );
+            assert_eq!(
+                proc.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo,
+                Some(bo)
+            );
+            // Closing the application's GEM handle must not destroy a visible cursor.
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_DESTROY_DUMB,
+                &mut handle.to_le_bytes(),
+            )
+            .unwrap();
+            assert_eq!(
+                crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
+                1
+            );
+            fill(&mut request, [2, 1, u32::MAX, 10, 0, 0, 0, 0, 0]);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_CURSOR,
+                &mut request[..28],
+            )
+            .unwrap();
+            match cleanup {
+                "hide" => {
+                    fill(&mut request, [1, 1, 0, 0, 0, 0, 0, 0, 0]);
+                    sys_ioctl(
+                        &mut proc,
+                        &mut host,
+                        fd,
+                        DRM_IOCTL_MODE_CURSOR2,
+                        &mut request,
+                    )
+                    .unwrap();
+                    sys_close(&mut proc, &mut host, fd).unwrap();
+                }
+                "drop" => {
+                    sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
+                    sys_close(&mut proc, &mut host, fd).unwrap();
+                }
+                "close" => sys_close(&mut proc, &mut host, fd).unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
+        }
     }
 
     #[test]

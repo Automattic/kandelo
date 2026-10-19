@@ -4690,3 +4690,13 @@
 }
 .knetwork-members code { font-family: var(--k-font-mono); min-width: 7.5em; }
 .knetwork-members small { margin-left: auto; color: var(--k-text-faint); font-size: 11px; }
+
+/* A hardware cursor is composited independently of the guest's frame. */
+.kmodeset-cursor {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  image-rendering: pixelated;
+}

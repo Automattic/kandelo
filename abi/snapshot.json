@@ -1955,6 +1955,12 @@
       "wasm32Size": 24,
       "wasm64Size": 24
     },
+    "3223086243": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 28,
+      "wasm64Size": 28
+    },
     "3223348402": {
       "argKind": "pointer",
       "direction": "inout",
@@ -1966,6 +1972,12 @@
       "direction": "inout",
       "wasm32Size": 36,
       "wasm64Size": null
+    },
+    "3223610555": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 36,
+      "wasm64Size": 36
     },
     "3225445376": {
       "argKind": "pointer",

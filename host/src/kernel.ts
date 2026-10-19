@@ -2963,6 +2963,10 @@ export class WasmPosixKernel {
           return 0;
         },
         host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
+        host_kms_cursor: (pid: number, _crtc: number, flags: number, boId: number,
+          width: number, height: number, x: number, y: number, hotX: number, hotY: number): void => {
+          this.kms.setCursor(pid, flags, boId, width, height, x, y, hotX, hotY);
+        },
         host_kms_set_fb: (pid: number, crtc_id: number, fb_id: number): void => {
           this.kms.setFb(crtc_id, fb_id);
           this.callbacks.onKmsScanoutActive?.();

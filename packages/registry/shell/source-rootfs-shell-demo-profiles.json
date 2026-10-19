@@ -30,7 +30,8 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer"
+        "internalsAccess": "drawer",
+        "displayScale": 1.5
       },
       "dockActions": [
         {
@@ -490,8 +491,7 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "hostPointer": true
+        "internalsAccess": "drawer"
       },
       "dockActions": [
         {

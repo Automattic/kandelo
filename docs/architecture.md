@@ -3045,7 +3045,7 @@ throughput or performance claim.
 
 This section is the implementation walk-through; [Linux-compatible graphics devices](#linux-compatible-graphics-devices) states the device-level contract.
 
-`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (only `DUMB_BUFFER` and `PRIME` report support; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. There is no hardware cursor plane (`MODE_CURSOR` / `MODE_CURSOR2` are unsupported), plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same surface unmodified. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the pane's aspect ratio at a fixed 1080 logical height — `round(1080 × aspect) × 1080`, width clamped to [1440, 3840] — so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The mode is sampled per GETCONNECTOR call but effectively fixed once a client boots; resizing the pane afterwards reintroduces letterboxing rather than switching modes. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (`DUMB_BUFFER`, `PRIME`, and 64×64 cursor dimensions report support; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. `MODE_CURSOR` / `MODE_CURSOR2` provide one virtual cursor plane. There is no general plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same DRM interfaces. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the reported pixel dimensions, even-aligned and clamped to [640, 3840] × [480, 2160], so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The mode is sampled per GETCONNECTOR call but effectively fixed once a client boots; resizing the pane afterwards reintroduces letterboxing rather than switching modes. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
 
 `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
 
@@ -3059,7 +3059,43 @@ binding so the next submission binds the replacement target. GPU-backed
 buffer producers retain their own targets. Node has no WebGL context and
 continues to use the CPU scanout path.
 
-KMS display stats distinguish presentations from page flips. Slot 0 counts
+The cursor plane accepts Linux's 28-byte `drm_mode_cursor` and 36-byte
+`drm_mode_cursor2` layouts. Requests require DRM master and CRTC 1;
+unknown flags, oversized images, and undersized buffers
+fail before changing state. Images are tightly packed CPU-shared premultiplied ARGB8888
+buffers, up to 64×64, independent of the allocation's original pitch,
+matching [Linux's legacy cursor layout](https://github.com/torvalds/linux/blob/v6.6/drivers/gpu/drm/drm_plane.c#L959). Showing a cursor retains its buffer independently
+of the application's GEM handle. Hiding it, dropping master, or closing
+the owning card descriptor releases that reference. Exec retains it;
+fork children do not inherit the parent's cursor ownership. The internal
+fork-state encoding is version 19, produced and consumed by one kernel
+build. The new ioctl descriptions are additive under ABI 50.
+
+DRM cursor positions locate the image origin. Signed hotspot values are
+virtualization hints and do not offset the image, following the
+[Linux cursor contract](https://www.kernel.org/doc/html/v6.6/gpu/drm-kms.html).
+SDL's KMS backend converts pointer coordinates to image coordinates on
+motion, warp, and shape changes. This keeps nonzero-hotspot cursors aligned
+without changing DRM semantics for other clients.
+
+`KmsRegistry` refreshes the packed cursor image from its producer mapping
+at vblank, using the shared GBM coherence boundary. It retains an owned
+RGBA snapshot until pixels change; position-only updates reuse it. The
+copy is bounded to the cursor image rather than the allocation size.
+The worker composites this state
+on a separate transparent canvas at vblank, independently of CPU, GPU,
+or application-owned scanout. It never reads live guest memory during
+that detached presentation phase and never exposes a partially drawn
+application frame. Node retains the same state without a canvas.
+
+The browser's optional image-owned `presentation.displayScale` advertises
+a readable virtual monitor for bitmap interfaces. The guest mode, 96-DPI
+reference dimensions, scanout, input range, and cursor use one grid. Without
+that setting, the existing native-device-pixel and physical-size path is
+preserved for compositors. See [display presentation](browser-support.md)
+for its bounds and resampling limitations.
+
+KMS display stats distinguish scene presentations from page flips. Cursor-plane updates do not increment scene presentation counters. Slot 0 counts
 canvas presentations from the CPU/scanout presenters and successful direct
 GL presents; slot 5 remains the kernel's `MODE_PAGE_FLIP` queue count. A
 first frame drawn during `MODE_SETCRTC` need not issue a page flip. The

@@ -1283,11 +1283,11 @@ export class BrowserKernel {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas },
   ): void {
     this.sendToKernel(
       { type: "kms_attach_canvas", crtcId, canvas, stats, opts },
-      [canvas],
+      opts?.cursorCanvas ? [canvas, opts.cursorCanvas] : [canvas],
     );
   }
 

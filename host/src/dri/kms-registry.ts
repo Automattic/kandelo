@@ -1,3 +1,4 @@
+import type { KmsCursor } from "./cursor-plane.js";
 import type { GbmBoRegistry } from "./registry.js";
 
 export type HostFb = {
@@ -86,6 +87,58 @@ export class KmsRegistry {
   private crtcBindings = new Map<number, number>();
   private masterPid: number | null = null;
   private flips = 0;
+  private cursor: KmsCursor = {
+    version: 0, x: 0, y: 0, hotX: 0, hotY: 0, width: 0, height: 0, pixels: null,
+  };
+
+  private cursorBo = 0;
+  private cursorBytes: Uint8Array | null = null;
+
+  /** Called under the kernel entry before deferred canvas presentation.
+   * Cursor mappings remain live, just like scanout; only changed pixels
+   * allocate a new owned snapshot for the detached observer phase. */
+  cursorSnapshot(): KmsCursor {
+    if (!this.cursorBo) return this.cursor;
+    const length = this.cursor.width * this.cursor.height * 4;
+    // Cursor images use a packed prefix, even in a larger allocation.
+    // Never flush stale importer mappings over the producer's live image.
+    this.gbm.syncCreatorToSab(this.cursorBo, length);
+    const bytes = this.gbm.pixelView(this.cursorBo);
+    if (!bytes || bytes.length < length) {
+      throw new Error("KMS cursor BO is unavailable or undersized");
+    }
+    if (this.cursorBytes?.every((value, i) => value === bytes[i])) return this.cursor;
+    this.cursorBytes = bytes.slice(0, length);
+    const pixels = new Uint8ClampedArray(length);
+    // Linux cursor images are tightly packed premultiplied ARGB8888;
+    // ImageData requires straight-alpha RGBA, including partial alpha.
+    for (let i = 0; i < length; i += 4) {
+      const a = bytes[i + 3];
+      pixels[i] = a ? bytes[i + 2] * 255 / a : 0;
+      pixels[i + 1] = a ? bytes[i + 1] * 255 / a : 0;
+      pixels[i + 2] = a ? bytes[i] * 255 / a : 0;
+      pixels[i + 3] = a;
+    }
+    this.cursor = { ...this.cursor, version: this.cursor.version + 1, pixels };
+    return this.cursor;
+  }
+
+  setCursor(_pid: number, flags: number, boId: number, width: number, height: number,
+    x: number, y: number, hotX: number, hotY: number): void {
+    const next = { ...this.cursor, version: this.cursor.version + 1 };
+    if (flags & 1) {
+      this.cursorBo = boId;
+      this.cursorBytes = null;
+      next.pixels = null;
+      next.width = width;
+      next.height = height;
+      next.hotX = hotX;
+      next.hotY = hotY;
+    }
+    if (flags & 2) { next.x = x; next.y = y; }
+    this.cursor = next;
+    this.cursorSnapshot();
+  }
 
   constructor(private gbm: GbmBoRegistry) {}
 
@@ -107,7 +160,12 @@ export class KmsRegistry {
   }
 
   setMasterPid(pid: number): void { this.masterPid = pid; }
-  dropMaster(): void { this.masterPid = null; }
+  dropMaster(): void {
+    this.masterPid = null;
+    this.cursorBo = 0;
+    this.cursorBytes = null;
+    this.cursor = { ...this.cursor, version: this.cursor.version + 1, pixels: null };
+  }
   isMasterPid(pid: number): boolean { return this.masterPid === pid; }
   /** The pid currently holding DRM master, or null. The compositor's
    *  scanout context is the shared GPU-bo multiplexer context, so the

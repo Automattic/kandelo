@@ -273,3 +273,23 @@ Keep notification callbacks and their captured scheduling state inside
 the active-watch path. This makes the default path's work visible in the
 code and avoids adding notification state when nobody requests updates.
 Measure both paths before claiming a performance improvement.
+
+
+## Give bitmap interfaces one display grid
+
+A bitmap client lays out text, theme art, hit rectangles, and mouse state
+in one pixel grid. Enlarging fonts independently can create a sequence of
+widget patches without repairing the original mismatch. Let the platform
+advertise a readable virtual monitor and scale the complete output once.
+Keep native device pixels available for compositors that own their output
+scale. The presentation policy belongs in image metadata, not an
+application-name check in the host.
+
+Cursor shape and position belong to the display contract. Implement a
+missing cursor plane and let clients use their toolkit's cursor API;
+painting a cursor must not require the application to redraw its scene.
+Check the raw device coordinates separately from a toolkit's hotspot
+conversion, because two incorrect offsets can cancel in an application
+screenshot. Keep genuine upstream input defects at their owning layer:
+changing a platform API's documented queue semantics to suit one client
+would make the next client wrong. See [Freeciv](freeciv.md) for this split.

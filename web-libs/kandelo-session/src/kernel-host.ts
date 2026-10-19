@@ -1,3 +1,4 @@
+import { connectorModeSize } from "../../../host/src/dri/kms-registry";
 import type {
   DemoDockActionConfig,
   DemoGuideConfig,
@@ -301,7 +302,7 @@ export interface KernelLike {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas },
   ): void;
   /**
    * Report the CRTC canvas's display size in device pixels. The
@@ -767,6 +768,11 @@ export interface DemoPresentation {
    * Defaults to hidden.
    */
   hostPointer?: boolean;
+  /** CSS pixels per guest display pixel for bitmap interfaces. When omitted,
+   * advertise native device pixels so compositors can own output scaling.
+   * A value of 1.5 gives all guest content the same 150% presentation scale,
+   * independently of browser density; the virtual display reports 96 DPI. */
+  displayScale?: number;
 }
 
 // ── Process lifecycle events ──────────────────────────────────────────────
@@ -1081,6 +1087,10 @@ export interface KernelHost {
     crtcId?: number,
     size?: { width: number; height: number },
   ): HTMLCanvasElement;
+
+  /** The virtual hardware cursor plane; mount over the scanout with the
+   * same fitted dimensions and pointer-events disabled. */
+  kmsCursorCanvas(crtcId?: number): HTMLCanvasElement;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
   getWebPreview(): WebPreviewState | null;
@@ -1404,6 +1414,8 @@ export class LiveKernelHost implements KernelHost {
   /** The one display canvas per CRTC for the current kernel
    *  (kmsDisplayCanvas). Scoped to the kernel: detachKernel clears it. */
   private kmsDisplayCanvases = new Map<number, HTMLCanvasElement>();
+  /** The matching virtual cursor plane, with the same kernel lifetime. */
+  private kmsCursorCanvases = new Map<number, HTMLCanvasElement>();
   /** The display-size ResizeObserver per attached canvas: disconnected when
    *  the pane closes its handle, reconnected when the cached handle is
    *  reused (StrictMode's mount → cleanup → mount). */
@@ -1525,6 +1537,7 @@ export class LiveKernelHost implements KernelHost {
     // Each canvas's control was transferred to the detached kernel's worker;
     // the next kernel needs canvases of its own.
     this.kmsDisplayCanvases.clear();
+    this.kmsCursorCanvases.clear();
     this.refreshTerminalAvailability();
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
@@ -2983,9 +2996,8 @@ export class LiveKernelHost implements KernelHost {
     this.kmsDisplayModeDefault = mode;
   }
 
-  /** See {@link kmsDisplaySizes}: last device-pixel display size the
-   *  attached pane reported for `crtcId`, or undefined before the
-   *  first ResizeObserver delivery. */
+  /** Last reported guest monitor size (virtual when displayScale is set),
+   * or undefined before the pane's first ResizeObserver delivery. */
   getKmsDisplaySize(crtcId: number = KMS_PRIMARY_CRTC): { width: number; height: number } | undefined {
     const size = this.kmsDisplaySizes.get(crtcId);
     return size ? { ...size } : undefined;
@@ -3071,6 +3083,17 @@ export class LiveKernelHost implements KernelHost {
     return canvas;
   }
 
+  /** The virtual hardware cursor plane; mount over the scanout with the
+   * same fitted dimensions and pointer-events disabled. */
+  kmsCursorCanvas(crtcId: number = KMS_PRIMARY_CRTC): HTMLCanvasElement {
+    let canvas = this.kmsCursorCanvases.get(crtcId);
+    if (!canvas) {
+      canvas = globalThis.document.createElement("canvas");
+      this.kmsCursorCanvases.set(crtcId, canvas);
+    }
+    return canvas;
+  }
+
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId: number = KMS_PRIMARY_CRTC,
@@ -3099,6 +3122,9 @@ export class LiveKernelHost implements KernelHost {
     this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, {
       ...opts,
       mode,
+      ...(globalThis.document ? {
+        cursorCanvas: this.kmsCursorCanvas(crtcId).transferControlToOffscreen(),
+      } : {}),
     });
     const kernel = this.kernel;
     // The webgl2-scanout presenter renders at display resolution: track
@@ -3124,27 +3150,31 @@ export class LiveKernelHost implements KernelHost {
         }
         const entry = entries[entries.length - 1];
         const dp = entry.devicePixelContentBoxSize?.[0];
-        const width = dp
-          ? dp.inlineSize
-          : entry.contentRect.width * (globalThis.devicePixelRatio || 1);
-        const height = dp
-          ? dp.blockSize
-          : entry.contentRect.height * (globalThis.devicePixelRatio || 1);
-        // The physical size, from the CSS box: CSS defines 96 px per inch,
-        // so a client deriving DPI from it gets the device-pixel ratio —
-        // the output scale a HiDPI screen needs. It is the browser's
-        // reference size, not a measured panel.
+        const scale = this.presentation.displayScale;
+        // WHY: bitmap clients must see one readable pixel grid, including
+        // hit testing and device state. Enlarging only fonts breaks their
+        // theme geometry. Compositors keep native output when unset.
+        const requestedWidth = scale !== undefined
+          ? entry.contentRect.width / scale
+          : dp?.inlineSize ?? entry.contentRect.width * (globalThis.devicePixelRatio || 1);
+        const requestedHeight = scale !== undefined
+          ? entry.contentRect.height / scale
+          : dp?.blockSize ?? entry.contentRect.height * (globalThis.devicePixelRatio || 1);
+        // Hidden panes must not replace a live mode with the minimum.
+        if (!(requestedWidth >= 1) || !(requestedHeight >= 1)) return;
+        // Use the connector's actual bounded grid for virtual physical size
+        // too, so rounding and minimum modes cannot introduce another DPI
+        // multiplier. Native output retains CSS-derived reference size.
+        const { width, height } = scale === undefined
+          ? { width: requestedWidth, height: requestedHeight }
+          : connectorModeSize({ width: requestedWidth, height: requestedHeight });
         const physicalMm = {
-          width: (entry.contentRect.width * 25.4) / 96,
-          height: (entry.contentRect.height * 25.4) / 96,
+          width: ((scale === undefined ? entry.contentRect.width : width) * 25.4) / 96,
+          height: ((scale === undefined ? entry.contentRect.height : height) * 25.4) / 96,
         };
-        // A hidden pane reports 0×0 — keep the last real size (the
-        // worker ignores non-positive dims too).
-        if (width >= 1 && height >= 1) {
-          this.kmsDisplaySizes.set(crtcId, { width, height });
-          kernel.kmsSetDisplaySize?.(crtcId, width, height, physicalMm);
-          this.settleKmsDisplaySizeWaiters(crtcId, { width, height });
-        }
+        this.kmsDisplaySizes.set(crtcId, { width, height });
+        kernel.kmsSetDisplaySize?.(crtcId, width, height, physicalMm);
+        this.settleKmsDisplaySizeWaiters(crtcId, { width, height });
       });
       resizeObserver.observe(canvas);
       this.kmsResizeObservers.set(canvas, resizeObserver);

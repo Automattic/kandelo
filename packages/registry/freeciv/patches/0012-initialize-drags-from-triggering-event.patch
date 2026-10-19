@@ -34,7 +34,7 @@ scrollbar, and slider drags; cursor presentation still samples current state.
 +    *y = main_data.event.tfinger.y * main_window_height();
 +    break;
 +  default:
-+    get_logical_mouse_state(x, y);
++    SDL_GetMouseState(x, y);
 +    break;
 +  }
  }
@@ -57,7 +57,7 @@ scrollbar, and slider drags; cursor presentation still samples current state.
  
    pmove.pwindow = pwindow;
    pmove.moved = FALSE;
--  get_logical_mouse_state(&pmove.prev_x, &pmove.prev_y);
+-  SDL_GetMouseState(&pmove.prev_x, &pmove.prev_y);
 +  get_pointer_event_position(&pmove.prev_x, &pmove.prev_y);
    ret = (gui_event_loop((void *)&pmove, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
                          move_window_button_up, move_window_motion) == ID_MOVED_WINDOW);
@@ -68,7 +68,7 @@ scrollbar, and slider drags; cursor presentation still samples current state.
    motion.end_widget_list = end_widget_list;
    motion.vscroll = vscroll;
    motion.old_y = vscroll->pscroll_bar->size.y;
--  get_logical_mouse_state(&motion.prev_x, &motion.prev_y);
+-  SDL_GetMouseState(&motion.prev_x, &motion.prev_y);
 +  get_pointer_event_position(&motion.prev_x, &motion.prev_y);
    motion.offset = motion.prev_y - vscroll->pscroll_bar->dst->dest_rect.y - vscroll->pscroll_bar->size.y;
  

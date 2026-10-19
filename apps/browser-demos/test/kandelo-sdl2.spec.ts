@@ -131,3 +131,40 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
     .poll(() => terminalText(page), { timeout: 30_000 })
     .toMatch(/sdl2: OK frames=\d+ elapsed=\d+ ms exit=esc/);
 });
+
+test("SDL's default cursor uses the shared KMS cursor plane", async ({ page, browserName }) => {
+  test.skip(browserName !== "chromium", "cursor plane acceptance targets Chromium");
+  test.setTimeout(180_000);
+  await gotoMachineOrSkip(page, "sdl2");
+  const canvas = page.locator(".kmodeset-canvas").first();
+  await expect(canvas).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 90_000 });
+  const worker = page.workers().find(worker => /browser-kernel-worker-entry/.test(worker.url()));
+  expect(worker).toBeTruthy();
+  await worker!.evaluate(() => {
+    const proto = OffscreenCanvasRenderingContext2D.prototype;
+    const put = proto.putImageData;
+    proto.putImageData = function (...args: Parameters<typeof put>) {
+      const image = args[0];
+      if (image.width <= 64 && image.height <= 64) {
+        let opaque = 0;
+        for (let i = 3; i < image.data.length; i += 4) if (image.data[i]) opaque++;
+        (globalThis as any).__kmsCursorProbe = { x: args[1], y: args[2], opaque };
+      }
+      return put.apply(this, args);
+    };
+  });
+  const box = (await canvas.boundingBox())!;
+  await expect.poll(() => page.getByText(/\d+×\d+ · \d+ flips/).innerText())
+    .toMatch(/webgl2-gl/);
+  const status = await page.getByText(/\d+×\d+ · \d+ flips/).innerText();
+  const [, width, height] = status.match(/(\d+)×(\d+)/)!;
+  for (const point of [{ x: 180, y: 90 }, { x: 320, y: 160 }]) {
+    await page.mouse.move(box.x + point.x, box.y + point.y);
+    await expect.poll(() => worker!.evaluate(() => (globalThis as any).__kmsCursorProbe))
+      .toMatchObject({ x: Math.round(point.x * Number(width) / box.width),
+        y: Math.round(point.y * Number(height) / box.height) });
+    expect((await worker!.evaluate(() => (globalThis as any).__kmsCursorProbe)).opaque).toBeGreaterThan(20);
+  }
+  await page.screenshot({ path: "../../.context/sdl-shared-kms-cursor.png", scale: "css", clip: box });
+});

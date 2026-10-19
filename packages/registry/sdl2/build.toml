@@ -6,6 +6,7 @@ inputs = [
   "packages/registry/sdl2/patches/0003-evdev-text-without-console.patch",
   "packages/registry/sdl2/patches/0004-order-evdev-devices-by-timestamp.patch",
   "packages/registry/sdl2/patches/0005-resynchronize-mouse-after-evdev-overflow.patch",
+  "packages/registry/sdl2/patches/0006-kmsdrm-cursor-hotspots.patch",
   "libc/glue/libgbm_stub.c",
   "libc/glue/libegl_stub.c",
   "libc/glue/libglesv2_stub.c",
@@ -15,4 +16,4 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 9
+revision = 10

@@ -5411,6 +5411,10 @@ pub mod dri {
     /// `_IOWR('d', 0xa2, drm_mode_crtc)`.
     pub const DRM_IOCTL_MODE_SETCRTC: u32 = 0xc068_64a2;
 
+    /// Linux `drm_mode_cursor` and `drm_mode_cursor2` (28/36 bytes).
+    pub const DRM_IOCTL_MODE_CURSOR: u32 = 0xc01c_64a3;
+    pub const DRM_IOCTL_MODE_CURSOR2: u32 = 0xc024_64bb;
+
     /// `_IOWR('d', 0xa6, drm_mode_get_encoder)`.
     pub const DRM_IOCTL_MODE_GETENCODER: u32 = 0xc014_64a6;
 

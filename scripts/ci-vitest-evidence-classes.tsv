@@ -49,6 +49,7 @@ host/test/dlopen-host-imports.test.ts	source-only
 host/test/dri-bo-teardown.test.ts	source-only
 host/test/dri-cube-pyramid.test.ts	prepared-product
 host/test/dri-dumb-roundtrip.test.ts	prepared-product
+host/test/dri-kms-cursor.test.ts	prepared-product
 host/test/dri-kms-pageflip.test.ts	prepared-product
 host/test/dri-kms-registry.test.ts	source-only
 host/test/dri-kms-stats-sab.test.ts	source-only
@@ -401,7 +402,6 @@ packages/registry/ffmpeg/test/ffmpeg-tier1.test.ts	prepared-product
 packages/registry/ffmpeg/test/ffmpeg-tier2-bbb.test.ts	prepared-product
 packages/registry/ffmpeg/test/fixtures-manifest.test.ts	source-only
 packages/registry/freeciv/test/runtime.test.ts	prepared-product
-packages/registry/sdl2/test/runtime.test.ts	prepared-product
 packages/registry/git/test/git.test.ts	prepared-product
 packages/registry/grep/test/grep.test.ts	prepared-product
 packages/registry/gzip/test/gzip.test.ts	prepared-product
@@ -416,6 +416,7 @@ packages/registry/php/test/php-intl.test.ts	prepared-product
 packages/registry/php/test/php-pdo-column-metadata.test.ts	prepared-product
 packages/registry/posix-utils-lite/test/process-tools.test.ts	prepared-product
 packages/registry/ruby/test/posix-spawn.test.ts	prepared-product
+packages/registry/sdl2/test/runtime.test.ts	prepared-product
 packages/registry/sed/test/sed.test.ts	prepared-product
 packages/registry/spidermonkey/test/spidermonkey-node-compat.test.ts	prepared-product
 packages/registry/spidermonkey/test/spidermonkey-node-parity.test.ts	prepared-product

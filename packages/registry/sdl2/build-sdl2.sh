@@ -79,6 +79,8 @@ echo "==> Preserving evdev input chronology across devices..."
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0004-order-evdev-devices-by-timestamp.patch"
 
 patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0005-resynchronize-mouse-after-evdev-overflow.patch"
+# Cursor hotspots belong to SDL pointer semantics; DRM x/y are image origins.
+patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/0006-kmsdrm-cursor-hotspots.patch"
 
 # --- Wayland pkg-config wiring (step 12b) ------------------------------
 # SDL2's configure gates the Wayland backend on a hard pkg-config probe

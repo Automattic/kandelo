@@ -62,7 +62,7 @@ the widget handlers already calculate changes from their previous positions.
 @@ -366,12 +366,8 @@
    pmove.pwindow = pwindow;
    pmove.moved = FALSE;
-   get_logical_mouse_state(&pmove.prev_x, &pmove.prev_y);
+   SDL_GetMouseState(&pmove.prev_x, &pmove.prev_y);
 -  /* Filter mouse motion events */
 -  SDL_SetEventFilter(FilterMouseMotionEvents, NULL);
    ret = (gui_event_loop((void *)&pmove, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
@@ -75,7 +75,7 @@ the widget handlers already calculate changes from their previous positions.
 --- a/client/gui-sdl2/widget_scrollbar.c
 +++ b/client/gui-sdl2/widget_scrollbar.c
 @@ -1118,16 +1118,8 @@
-   get_logical_mouse_state(&motion.prev_x, &motion.prev_y);
+   SDL_GetMouseState(&motion.prev_x, &motion.prev_y);
    motion.offset = motion.prev_y - vscroll->pscroll_bar->dst->dest_rect.y - vscroll->pscroll_bar->size.y;
  
 -  MOVE_STEP_X = 0;

@@ -1,3 +1,4 @@
+import { KmsCursorPlane } from "./dri/cursor-plane";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
 /**
@@ -3665,6 +3666,8 @@ export class CentralizedKernelWorker {
    *  host without an OffscreenCanvas polyfill) so the pump doesn't retry
    *  `getContext` at 60 Hz. */
   private kmsGlPresenters = new Map<number, KmsGlPresenter | null>();
+  /** Cursor output is independent of the CPU/GPU scanout presenter. */
+  private kmsCursorPlanes = new Map<number, KmsCursorPlane>();
   /** Canvases whose WebGL context-loss listeners are installed. A lost
    *  context silently no-ops every GL call, so without these hooks the
    *  pump keeps "presenting" frozen pixels while the kernel-side flip
@@ -33205,7 +33208,7 @@ export class CentralizedKernelWorker {
     crtc_id: number,
     canvas: OffscreenCanvas,
     statsSab?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas },
   ): void {
     // An embedder may attach a NEW OffscreenCanvas for the same CRTC;
     // a presenter cached against the old canvas would keep painting the
@@ -33234,6 +33237,8 @@ export class CentralizedKernelWorker {
       ? undefined
       : new Int32Array(statsSab);
     this.kmsCanvases.set(crtc_id, canvas);
+    if (opts?.cursorCanvas) this.kmsCursorPlanes.set(crtc_id, new KmsCursorPlane(opts.cursorCanvas));
+    else this.kmsCursorPlanes.delete(crtc_id);
     if (statsView) this.kmsStatsViews.set(crtc_id, statsView);
     const mode = opts?.mode ?? "auto";
     if (mode === "2d") {
@@ -33513,8 +33518,17 @@ export class CentralizedKernelWorker {
           });
         }
 
+        // Cursor pixels are already owned copies; the detached presenter
+        // never reads guest memory and cannot expose an unfinished GL frame.
+        const cursor = this.#kernel.kms.cursorSnapshot();
+        const cursorPlanes = Array.from(this.kmsCursorPlanes, ([crtcId, plane]) => {
+          const fb = this.#kernel.kms.currentFb(crtcId);
+          const size = fb ?? connectorModeSize(this.kmsDisplaySizes.get(crtcId));
+          return { plane, width: size.width, height: size.height };
+        });
         entry.deferObserverEffect(() => {
           if (this.vblankTimer !== timer) return undefined;
+          for (const { plane, width, height } of cursorPlanes) plane.present(cursor, width, height);
           // The pump never acquires a context here: only canvases explicitly
           // attached in 2D mode can appear in the owned snapshot.
           for (const blit of blits) {

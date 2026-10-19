@@ -694,7 +694,7 @@ export class NodeKernelHost {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas },
   ): void {
     this.sendToWorker({ type: "kms_attach_canvas", crtcId, canvas, stats, opts });
   }

@@ -268,6 +268,8 @@ pub struct PendingFlip {
 #[derive(Clone, Debug, Default)]
 pub struct KmsFdState {
     pub holds_master: bool,
+    /// A visible cursor owns a BO reference independently of GEM handles.
+    pub cursor_bo: Option<u32>,
     pub fbs: BTreeMap<u32, KmsFb>,
     pub next_fb_id: u32,
     pub pending_flips: Vec<PendingFlip>,
