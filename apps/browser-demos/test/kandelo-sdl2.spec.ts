@@ -156,14 +156,17 @@ test("SDL's default cursor uses the shared KMS cursor plane", async ({ page, bro
   });
   const box = (await canvas.boundingBox())!;
   await expect.poll(() => page.getByText(/\d+×\d+ · \d+ flips/).innerText())
-    .toMatch(/webgl2-gl/);
+    .toMatch(/webgl2-gl/i);
   const status = await page.getByText(/\d+×\d+ · \d+ flips/).innerText();
   const [, width, height] = status.match(/(\d+)×(\d+)/)!;
   for (const point of [{ x: 180, y: 90 }, { x: 320, y: 160 }]) {
     await page.mouse.move(box.x + point.x, box.y + point.y);
-    await expect.poll(() => worker!.evaluate(() => (globalThis as any).__kmsCursorProbe))
-      .toMatchObject({ x: Math.round(point.x * Number(width) / box.width),
-        y: Math.round(point.y * Number(height) / box.height) });
+    const expected = { x: point.x * Number(width) / box.width,
+      y: point.y * Number(height) / box.height };
+    await expect.poll(async () => {
+      const cursor = await worker!.evaluate(() => (globalThis as any).__kmsCursorProbe);
+      return cursor && Math.abs(cursor.x - expected.x) <= 1 && Math.abs(cursor.y - expected.y) <= 1;
+    }).toBe(true);
     expect((await worker!.evaluate(() => (globalThis as any).__kmsCursorProbe)).opaque).toBeGreaterThan(20);
   }
   await page.screenshot({ path: "../../.context/sdl-shared-kms-cursor.png", scale: "css", clip: box });

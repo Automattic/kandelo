@@ -209,7 +209,11 @@ count scene uploads separately from cursor-plane presentations, and a second
 SDL application exercises the shared default cursor. These checks support
 specific paths; they do not establish general application performance.
 
-The peer fixture uses two isolated Chromium contexts and loopback ICE.
+The peer fixture uses two isolated Chromium contexts on one host. Its
+recorded ICE candidates can use the host's LAN interface; allowing loopback
+does not guarantee a loopback route. ICE setup can fail before
+Freeciv joins, independently of the application controls. Successful game
+playthroughs do not establish reliable connectivity without a TURN relay.
 Internet NAT traversal, Firefox, WebKit, and Freeciv inside Wayland have not
 been verified for this port. See the PR for the exact validation performed
 against its current head; earlier results do not prove a later revision.
