@@ -46,6 +46,7 @@ import {
   HOST_ADAPTER_MANIFEST_MAGIC,
   HOST_ADAPTER_MANIFEST_SIZE,
   HOST_ADAPTER_MANIFEST_VERSION,
+  HOST_ADAPTER_KERNEL_EXPORT_LIFECYCLES,
   HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS,
   HOST_ADAPTER_OPTIONAL_KERNEL_FEATURES,
   HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS,
@@ -657,6 +658,9 @@ describe("generated host ABI bindings", () => {
     );
     expect(HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS).toEqual(
       snapshot.host_adapter.optional_kernel_exports,
+    );
+    expect(HOST_ADAPTER_KERNEL_EXPORT_LIFECYCLES).toEqual(
+      snapshot.host_adapter.kernel_export_lifecycles,
     );
 
     expect(Object.entries(HOST_ADAPTER_WORKER_FEATURES)).toEqual(

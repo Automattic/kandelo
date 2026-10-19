@@ -1151,6 +1151,7 @@
     ]
   },
   "host_adapter": {
+    "kernel_export_lifecycles": [],
     "manifest": {
       "abi_version": 50,
       "channel_data_offset": 72,

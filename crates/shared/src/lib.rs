@@ -3451,99 +3451,226 @@ pub mod abi {
         },
     ];
 
-    pub const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS: &[&str] = &[
-        "__abi_version",
-        "kernel_alloc_scratch",
-        "kernel_blocking_retry_release",
-        "kernel_blocking_retry_token",
-        "kernel_commit_process_exit",
-        "kernel_create_process",
-        "kernel_create_process_with_stdio",
-        "kernel_dequeue_signal",
-        "kernel_exec_commit",
-        "kernel_exec_target_cancel",
-        "kernel_exec_target_prepare",
-        "kernel_exec_target_read",
-        "kernel_exec_target_size",
-        "kernel_fork_process",
-        "kernel_get_cwd",
-        "kernel_get_dirfd_path",
-        "kernel_get_fd_path",
-        "kernel_get_parent_pid",
-        "kernel_get_process_exit_signal",
-        "kernel_get_process_state",
-        "kernel_get_socket_timeout_ms",
-        "kernel_handle_channel",
-        "kernel_handle_channel_record",
-        "kernel_has_sa_nocldstop",
-        "kernel_host_adapter_manifest_len",
-        "kernel_host_adapter_manifest_ptr",
-        "kernel_install_host_stdin_pipe",
-        "kernel_ipc_shm_lookup_mapping_for_task",
-        "kernel_ipc_shm_record_mapping_for_process",
-        "kernel_ipc_shm_record_mapping_for_task",
-        "kernel_ipc_shmat_for_process",
-        "kernel_ipc_shmat_for_task",
-        "kernel_ipc_shmdt_addr_for_process",
-        "kernel_ipc_shmdt_addr_for_task",
-        "kernel_ipc_shmdt_for_process",
-        "kernel_ipc_shmdt_for_task",
-        "kernel_is_fd_nonblock",
-        "kernel_mark_process_signaled",
-        "kernel_pcm_claim_transport",
-        "kernel_pcm_clock_update",
-        "kernel_pcm_reconcile",
-        "kernel_pcm_transport_len",
-        "kernel_pcm_transport_ptr",
-        "kernel_pick_signal_target_tid",
-        "kernel_pick_tcp_listener_target",
-        "kernel_pipe_has_readers",
-        "kernel_posix_timer_fire",
-        "kernel_process_metadata_begin",
-        "kernel_process_metadata_cancel",
-        "kernel_process_metadata_commit",
-        "kernel_process_metadata_stage",
-        "kernel_process_secure_exec",
-        "kernel_publish_spawn_child",
-        "kernel_reap_exited_child",
-        "kernel_remove_process",
-        "kernel_reset_tcp_connection",
-        "kernel_set_current_tid",
-        "kernel_set_cwd",
-        "kernel_spawn_exec_commit",
-        "kernel_spawn_exec_target_prepare",
-        "kernel_spawn_process",
-        "kernel_spawn_reserved_process",
-        "kernel_spawn_scratch_begin",
-        "kernel_spawn_scratch_cancel",
-        "kernel_spawn_scratch_capacity",
-        "kernel_spawn_scratch_pointer",
-        "kernel_spawn_scratch_retained_capacity",
-        "kernel_take_process_timer_cleanup",
-        "kernel_tcp_connection_id",
-        "kernel_thread_exit",
-        "kernel_thread_has_deliverable",
-        "kernel_transfer_channel_execute",
-        "kernel_transfer_io_execute",
-        "kernel_transfer_scratch_begin",
-        "kernel_transfer_scratch_cancel",
-        "kernel_transfer_scratch_capacity",
-        "kernel_transfer_scratch_pointer",
-        "kernel_validate_task",
-        "kernel_wait_child_poll",
+    /// Lifecycle of a kernel export consumed by host adapters. An optional
+    /// interface can carry an explicit promotion deadline for a later ABI.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HostAdapterExportPolicy {
+        Required,
+        Optional,
+        OptionalUntil {
+            optional_since_abi: u32,
+            required_from_abi: u32,
+        },
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct HostAdapterKernelExport {
+        pub name: &'static str,
+        pub policy: HostAdapterExportPolicy,
+    }
+
+    impl HostAdapterKernelExport {
+        pub const fn required(name: &'static str) -> Self {
+            Self {
+                name,
+                policy: HostAdapterExportPolicy::Required,
+            }
+        }
+
+        pub const fn optional(name: &'static str) -> Self {
+            Self {
+                name,
+                policy: HostAdapterExportPolicy::Optional,
+            }
+        }
+
+        pub const fn optional_until(
+            name: &'static str,
+            optional_since_abi: u32,
+            required_from_abi: u32,
+        ) -> Self {
+            assert!(optional_since_abi > 0);
+            assert!(required_from_abi > optional_since_abi);
+            Self {
+                name,
+                policy: HostAdapterExportPolicy::OptionalUntil {
+                    optional_since_abi,
+                    required_from_abi,
+                },
+            }
+        }
+
+        pub const fn required_at(self, abi: u32) -> bool {
+            match self.policy {
+                HostAdapterExportPolicy::Required => true,
+                HostAdapterExportPolicy::Optional => false,
+                HostAdapterExportPolicy::OptionalUntil {
+                    required_from_abi, ..
+                } => abi >= required_from_abi,
+            }
+        }
+
+        pub const fn optional_at(self, abi: u32) -> bool {
+            match self.policy {
+                HostAdapterExportPolicy::Required => false,
+                HostAdapterExportPolicy::Optional => true,
+                HostAdapterExportPolicy::OptionalUntil {
+                    optional_since_abi,
+                    required_from_abi,
+                } => abi >= optional_since_abi && abi < required_from_abi,
+            }
+        }
+    }
+
+    /// Sorted single source for generated host checks and artifact admission.
+    /// Keep scheduled records after promotion so the reviewed deadline remains
+    /// visible. Optional interfaces without a deadline never auto-promote.
+    pub const HOST_ADAPTER_KERNEL_EXPORTS: &[HostAdapterKernelExport] = &[
+        HostAdapterKernelExport::required("__abi_version"),
+        HostAdapterKernelExport::required("kernel_alloc_scratch"),
+        HostAdapterKernelExport::required("kernel_blocking_retry_release"),
+        HostAdapterKernelExport::required("kernel_blocking_retry_token"),
+        HostAdapterKernelExport::optional("kernel_clipboard_ack"),
+        HostAdapterKernelExport::optional("kernel_clipboard_guest_generation"),
+        HostAdapterKernelExport::optional("kernel_clipboard_guest_read"),
+        HostAdapterKernelExport::optional("kernel_clipboard_offer"),
+        HostAdapterKernelExport::optional("kernel_clipboard_stage"),
+        HostAdapterKernelExport::required("kernel_commit_process_exit"),
+        HostAdapterKernelExport::required("kernel_create_process"),
+        HostAdapterKernelExport::required("kernel_create_process_with_stdio"),
+        HostAdapterKernelExport::required("kernel_dequeue_signal"),
+        HostAdapterKernelExport::required("kernel_exec_commit"),
+        HostAdapterKernelExport::required("kernel_exec_target_cancel"),
+        HostAdapterKernelExport::required("kernel_exec_target_prepare"),
+        HostAdapterKernelExport::required("kernel_exec_target_read"),
+        HostAdapterKernelExport::required("kernel_exec_target_size"),
+        HostAdapterKernelExport::required("kernel_fork_process"),
+        HostAdapterKernelExport::required("kernel_get_cwd"),
+        HostAdapterKernelExport::required("kernel_get_dirfd_path"),
+        HostAdapterKernelExport::required("kernel_get_fd_path"),
+        HostAdapterKernelExport::required("kernel_get_parent_pid"),
+        HostAdapterKernelExport::required("kernel_get_process_exit_signal"),
+        HostAdapterKernelExport::required("kernel_get_process_state"),
+        HostAdapterKernelExport::required("kernel_get_socket_timeout_ms"),
+        HostAdapterKernelExport::required("kernel_handle_channel"),
+        HostAdapterKernelExport::required("kernel_handle_channel_record"),
+        HostAdapterKernelExport::required("kernel_has_sa_nocldstop"),
+        HostAdapterKernelExport::required("kernel_host_adapter_manifest_len"),
+        HostAdapterKernelExport::required("kernel_host_adapter_manifest_ptr"),
+        HostAdapterKernelExport::required("kernel_install_host_stdin_pipe"),
+        HostAdapterKernelExport::required("kernel_ipc_shm_lookup_mapping_for_task"),
+        HostAdapterKernelExport::required("kernel_ipc_shm_record_mapping_for_process"),
+        HostAdapterKernelExport::required("kernel_ipc_shm_record_mapping_for_task"),
+        HostAdapterKernelExport::required("kernel_ipc_shmat_for_process"),
+        HostAdapterKernelExport::required("kernel_ipc_shmat_for_task"),
+        HostAdapterKernelExport::required("kernel_ipc_shmdt_addr_for_process"),
+        HostAdapterKernelExport::required("kernel_ipc_shmdt_addr_for_task"),
+        HostAdapterKernelExport::required("kernel_ipc_shmdt_for_process"),
+        HostAdapterKernelExport::required("kernel_ipc_shmdt_for_task"),
+        HostAdapterKernelExport::required("kernel_is_fd_nonblock"),
+        HostAdapterKernelExport::required("kernel_mark_process_signaled"),
+        HostAdapterKernelExport::required("kernel_pcm_claim_transport"),
+        HostAdapterKernelExport::required("kernel_pcm_clock_update"),
+        HostAdapterKernelExport::required("kernel_pcm_reconcile"),
+        HostAdapterKernelExport::required("kernel_pcm_transport_len"),
+        HostAdapterKernelExport::required("kernel_pcm_transport_ptr"),
+        HostAdapterKernelExport::required("kernel_pick_signal_target_tid"),
+        HostAdapterKernelExport::required("kernel_pick_tcp_listener_target"),
+        HostAdapterKernelExport::required("kernel_pipe_has_readers"),
+        HostAdapterKernelExport::required("kernel_posix_timer_fire"),
+        HostAdapterKernelExport::required("kernel_process_metadata_begin"),
+        HostAdapterKernelExport::required("kernel_process_metadata_cancel"),
+        HostAdapterKernelExport::required("kernel_process_metadata_commit"),
+        HostAdapterKernelExport::required("kernel_process_metadata_stage"),
+        HostAdapterKernelExport::required("kernel_process_secure_exec"),
+        HostAdapterKernelExport::required("kernel_publish_spawn_child"),
+        HostAdapterKernelExport::required("kernel_reap_exited_child"),
+        HostAdapterKernelExport::required("kernel_remove_process"),
+        HostAdapterKernelExport::optional("kernel_reserve_host_region"),
+        HostAdapterKernelExport::optional("kernel_reserve_host_region_at"),
+        HostAdapterKernelExport::required("kernel_reset_tcp_connection"),
+        HostAdapterKernelExport::required("kernel_set_current_tid"),
+        HostAdapterKernelExport::required("kernel_set_cwd"),
+        HostAdapterKernelExport::optional("kernel_set_max_addr"),
+        HostAdapterKernelExport::optional("kernel_set_mmap_base"),
+        HostAdapterKernelExport::required("kernel_spawn_exec_commit"),
+        HostAdapterKernelExport::required("kernel_spawn_exec_target_prepare"),
+        HostAdapterKernelExport::required("kernel_spawn_process"),
+        HostAdapterKernelExport::required("kernel_spawn_reserved_process"),
+        HostAdapterKernelExport::required("kernel_spawn_scratch_begin"),
+        HostAdapterKernelExport::required("kernel_spawn_scratch_cancel"),
+        HostAdapterKernelExport::required("kernel_spawn_scratch_capacity"),
+        HostAdapterKernelExport::required("kernel_spawn_scratch_pointer"),
+        HostAdapterKernelExport::required("kernel_spawn_scratch_retained_capacity"),
+        HostAdapterKernelExport::required("kernel_take_process_timer_cleanup"),
+        HostAdapterKernelExport::required("kernel_tcp_connection_id"),
+        HostAdapterKernelExport::required("kernel_thread_exit"),
+        HostAdapterKernelExport::required("kernel_thread_has_deliverable"),
+        HostAdapterKernelExport::required("kernel_transfer_channel_execute"),
+        HostAdapterKernelExport::required("kernel_transfer_io_execute"),
+        HostAdapterKernelExport::required("kernel_transfer_scratch_begin"),
+        HostAdapterKernelExport::required("kernel_transfer_scratch_cancel"),
+        HostAdapterKernelExport::required("kernel_transfer_scratch_capacity"),
+        HostAdapterKernelExport::required("kernel_transfer_scratch_pointer"),
+        HostAdapterKernelExport::required("kernel_validate_task"),
+        HostAdapterKernelExport::required("kernel_wait_child_poll"),
     ];
 
-    pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] = &[
-        "kernel_clipboard_ack",
-        "kernel_clipboard_guest_generation",
-        "kernel_clipboard_guest_read",
-        "kernel_clipboard_offer",
-        "kernel_clipboard_stage",
-        "kernel_reserve_host_region",
-        "kernel_reserve_host_region_at",
-        "kernel_set_max_addr",
-        "kernel_set_mmap_base",
-    ];
+    const fn host_adapter_export_count(
+        exports: &[HostAdapterKernelExport],
+        abi: u32,
+        required: bool,
+    ) -> usize {
+        let mut count = 0;
+        let mut i = 0;
+        while i < exports.len() {
+            if if required {
+                exports[i].required_at(abi)
+            } else {
+                exports[i].optional_at(abi)
+            } {
+                count += 1;
+            }
+            i += 1;
+        }
+        count
+    }
+
+    const fn host_adapter_export_names<const N: usize>(
+        exports: &[HostAdapterKernelExport],
+        abi: u32,
+        required: bool,
+    ) -> [&'static str; N] {
+        let mut names = [""; N];
+        let mut count = 0;
+        let mut i = 0;
+        while i < exports.len() {
+            if if required {
+                exports[i].required_at(abi)
+            } else {
+                exports[i].optional_at(abi)
+            } {
+                names[count] = exports[i].name;
+                count += 1;
+            }
+            i += 1;
+        }
+        assert!(count == N);
+        names
+    }
+
+    // WHY: derive both lists at compile time from the ABI, so a scheduled
+    // promotion cannot update host startup without also updating the package
+    // validator (or vice versa). Existing consumers keep their slice contract.
+    pub const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS: &[&str] =
+        &host_adapter_export_names::<
+            { host_adapter_export_count(HOST_ADAPTER_KERNEL_EXPORTS, crate::ABI_VERSION, true) },
+        >(HOST_ADAPTER_KERNEL_EXPORTS, crate::ABI_VERSION, true);
+
+    pub const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS: &[&str] =
+        &host_adapter_export_names::<
+            { host_adapter_export_count(HOST_ADAPTER_KERNEL_EXPORTS, crate::ABI_VERSION, false) },
+        >(HOST_ADAPTER_KERNEL_EXPORTS, crate::ABI_VERSION, false);
 
     pub static HOST_ADAPTER_MANIFEST: HostAdapterManifest = HostAdapterManifest {
         magic: HOST_ADAPTER_MANIFEST_MAGIC,
@@ -4201,6 +4328,12 @@ pub mod abi {
         fn host_adapter_export_and_feature_lists_are_sorted_unique() {
             assert_sorted_unique(HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS);
             assert_sorted_unique(HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS);
+            let mut previous = "";
+            for export in super::HOST_ADAPTER_KERNEL_EXPORTS {
+                assert!(previous < export.name, "kernel export policies must be sorted and unique");
+                assert!(!export.name.is_empty());
+                previous = export.name;
+            }
 
             let mut required_worker_features = 0;
             let mut previous_name = "";
@@ -4244,6 +4377,48 @@ pub mod abi {
                     "host-owned retry protocol silently treats {required} as optional"
                 );
             }
+        }
+
+        #[test]
+        fn scheduled_kernel_exports_promote_at_the_declared_abi() {
+            use super::{HostAdapterKernelExport as Export, host_adapter_export_names};
+            const EXPORTS: &[Export] = &[
+                Export::required("kernel_baseline"),
+                Export::optional("kernel_optional_forever"),
+                Export::optional_until("kernel_scheduled", 50, 51),
+            ];
+            assert_eq!(
+                host_adapter_export_names::<1>(EXPORTS, 49, true),
+                ["kernel_baseline"]
+            );
+            assert_eq!(
+                host_adapter_export_names::<1>(EXPORTS, 49, false),
+                ["kernel_optional_forever"]
+            );
+            assert_eq!(
+                host_adapter_export_names::<1>(EXPORTS, 50, true),
+                ["kernel_baseline"]
+            );
+            assert_eq!(
+                host_adapter_export_names::<2>(EXPORTS, 50, false),
+                ["kernel_optional_forever", "kernel_scheduled"]
+            );
+            for abi in [51, 52, 100] {
+                assert_eq!(
+                    host_adapter_export_names::<2>(EXPORTS, abi, true),
+                    ["kernel_baseline", "kernel_scheduled"]
+                );
+                assert_eq!(
+                    host_adapter_export_names::<1>(EXPORTS, abi, false),
+                    ["kernel_optional_forever"]
+                );
+            }
+        }
+
+        #[test]
+        #[should_panic]
+        fn scheduled_kernel_export_requires_an_optional_abi_before_promotion() {
+            super::HostAdapterKernelExport::optional_until("kernel_invalid", 50, 50);
         }
 
         #[test]

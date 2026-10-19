@@ -173,6 +173,14 @@ invented default-arrow drawing have been removed. SDL supplies the normal
 arrow. This is an application use of a platform cursor facility; the KMS
 implementation also serves other SDL and libdrm applications.
 
+The current cursor transport adds a required kernel-Wasm host import,
+`host_kms_cursor`. That import is incompatible with older hosts under the
+same ABI even though the new DRM ioctls are additive. A revision to optional
+kernel exports with host capability negotiation is still needed to keep
+this feature compatible under ABI 50. Export lifecycle metadata can then
+schedule those interfaces as required in the next ABI epoch; scheduling
+alone does not replace the current import.
+
 SDL's shared evdev backend supplies printable US ASCII `SDL_TEXTINPUT` when
 no console keymap is available, including Shift, Caps Lock, repeats, and
 Num Lock keypad digits. Control/Alt/GUI shortcuts do not insert text.

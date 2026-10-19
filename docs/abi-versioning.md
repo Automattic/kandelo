@@ -59,6 +59,47 @@ Existing ABI release and VFS behavior is unchanged.
 
 ## What counts as an ABI change
 
+### Scheduled optional kernel exports
+
+`shared::abi::HOST_ADAPTER_KERNEL_EXPORTS` declares host-facing kernel
+exports once. Each entry is required, optional indefinitely, or optional
+until a declared ABI version. For example, an interface introduced during
+ABI 50 can be scheduled with
+`HostAdapterKernelExport::optional_until("kernel_example", 50, 51)`.
+The example name is illustrative; only implemented exports belong in the
+declaration table.
+
+The current `ABI_VERSION` determines the generated required and optional
+lists at compile time. At ABI 50 the example stays optional; at ABI 51
+and later it becomes required automatically, even when that ABI bump was
+made for another reason. The host startup validator, TypeScript binary
+resolver, Rust package validator, and artifact validation scripts consume
+those derived lists. There is no separate host-specific promotion rule.
+Normal snapshot and binding regeneration after an ABI bump is still
+required; it computes the promotion without a manual list edit.
+
+Scheduled deadlines are recorded in the snapshot and generated TypeScript
+as `HOST_ADAPTER_KERNEL_EXPORT_LIFECYCLES`. The generator rejects missing
+exports, invalid dates, and effective lists that disagree with a deadline.
+Adding a future schedule is compatible; moving an interface into the
+required list within the current ABI remains incompatible. Removing or
+changing an existing schedule is also rejected as a no-bump change.
+After promotion, retain its declaration rather than rewriting its history.
+
+Interfaces declared `optional(...)` have no deadline and remain optional
+across ABI bumps. Making a cursor interface required would establish that
+host/kernel protocol as a baseline; it would not require a visible display
+or enable unsupported rendering capabilities. A new required WebAssembly
+host import is still an incompatible change: optional kernel exports and
+required host imports have different instantiation requirements.
+
+This scheduling mechanism does not migrate existing imports. Converting a
+required host callback to an optional kernel-export interface is a separate
+transport change, with its own capability negotiation and compatibility
+validation.
+
+### Changes that require a version bump
+
 Anything that could make an old compiled binary misbehave against a new
 kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
 

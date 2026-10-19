@@ -868,6 +868,8 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_set_mmap_base",
 ] as const;
 
+export const HOST_ADAPTER_KERNEL_EXPORT_LIFECYCLES = [] as const;
+
 export const PCM_TRANSPORT_MAGIC = 827147088 as const;
 export const PCM_TRANSPORT_VERSION = 1 as const;
 export const PCM_TRANSPORT_HEADER_BYTES = 128 as const;
