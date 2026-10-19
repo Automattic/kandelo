@@ -30,6 +30,10 @@ const examplesDir = join(repoRoot, "examples");
 const fixturesDir = join(__dirname, "fixtures");
 
 const C_TEST_FIXTURES = [
+  {
+    src: join(repoRoot, "programs/exec-caller.c"),
+    out: join(fixturesDir, "abi-version-user.wasm"),
+  },
   { src: join(fixturesDir, "kms-cursor.c"), out: join(fixturesDir, "kms-cursor.wasm") },
   {
     src: join(fixturesDir, "mkdir-existing-directory.c"),

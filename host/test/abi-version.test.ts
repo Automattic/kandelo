@@ -19,7 +19,7 @@ import {
 /**
  * Coverage for the ABI version surface:
  *   - the kernel wasm exports `__abi_version` returning an i32/i64 value
- *   - at least one shipped user program exports `__abi_version` with
+ *   - a freshly SDK-built user program exports `__abi_version` with
  *     the matching value (i.e. the glue picked it up at build time)
  *
  * End-to-end rejection of mismatched programs is exercised implicitly
@@ -180,17 +180,13 @@ describe("ABI version marker", () => {
   });
 
   it("freshly-built user programs export a matching __abi_version", async () => {
-    // Pick a program we know build-programs.sh regenerates every run.
-    const userProg = readFileSync(resolveBinary("programs/exec-caller.wasm"));
+    // Global setup owns this SDK-built fixture. Developer-program mirrors
+    // are not package members and cannot be selected under SourceOnly.
+    const userProg = readFileSync(new URL("./fixtures/abi-version-user.wasm", import.meta.url));
     const module = await WebAssembly.compile(userProg as BufferSource);
     const exports = WebAssembly.Module.exports(module);
     const entry = exports.find((e) => e.name === "__abi_version");
-    if (!entry) {
-      // Program is legacy (predates the marker rollout) — skip.
-      // Once all committed binaries carry the marker, this branch
-      // can turn into a hard expectation.
-      return;
-    }
+    expect(entry).toBeDefined();
 
     // Actually instantiate to read the value. The kernel's ABI version
     // is the comparison target.
