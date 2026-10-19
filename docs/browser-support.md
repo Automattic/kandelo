@@ -2281,6 +2281,10 @@ The command set includes jq 1.8.2 at `/usr/bin/jq` (also `/bin/jq`),
 with its bundled Oniguruma regular expressions and decimal-number support.
 Its executable stays lazy until first use, including for commands such as
 `printf '%s\n' '{"answer":42}' | jq '.answer'`.
+PHP 8.3.15's CLI is also a lazy executable at `/usr/bin/php` (with a
+`/bin/php` alias). Running `php -r 'echo 6 * 7, PHP_EOL;'` fetches it on
+first use. The base shell adds only the CLI; PHP-FPM and shared extensions
+are not installed by this declaration.
 `./run.sh --fetch-only build shell-vfs` refuses source fallback.
 
 Shell-derived packages consume that resolved image as a declared dependency.
@@ -2393,13 +2397,17 @@ at `/candidate-b/`. A completed build is not freely relocatable, and
 
 `./run.sh build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]` performs every step
 below for one prefix (default `/`, output `apps/browser-demos/dist`) and
-fails if the output lacks `index.html`, `service-worker.js`, or the VFS
-group, or contains the private product map.
+fails if the output lacks `index.html`, `service-worker.js`, the VFS
+group, or `signalling/piplet.php`, or contains the private product map.
 
 `--cors-proxy` sets the production `VITE_CORS_PROXY_URL` explicitly inside
 the clean development shell. It accepts an absolute proxy prefix or a
-same-origin prefix such as `/cors-proxy?url=`. Without it, the existing
-Playground production default is retained.
+same-origin prefix such as `/cors-proxy?url=`. Both endpoint flags override
+their exported `VITE_CORS_PROXY_URL` / `VITE_KANDELO_SIGNALLING_URL`
+variables. When neither a flag nor its exported variable is set, Vite can
+load that value from its normal `.env` files. Without a proxy override, the
+existing Playground production default is retained. Spacefast packaging is
+a separate, explicit step; a normal build never publishes or signs in.
 
 The SourceOnly local DAG described in
 [Package Management](package-management.md#local-dag-build) is the canonical
@@ -2609,10 +2617,27 @@ adapter capability.
 Computers find each other through the signalling piplet's rooms. The
 development server relays the real `apps/signalling/piplet.php` same-origin
 at `<base>__kandelo_signalling`, run by PHP from `apps/signalling/tools.nix`
-(or `KANDELO_SIGNALLING_PHP`, or `php` on `PATH`). A deployment names its
-piplet with `VITE_KANDELO_SIGNALLING_URL`; serve it same-origin or with CORS.
-Without either, the panel says sessions are unavailable rather than offering
-a button that cannot work.
+(or `KANDELO_SIGNALLING_PHP`, or `php` on `PATH`). Production defaults to
+the same-origin `<base>signalling/piplet.php`: a build for `/kandelo/` uses
+`/kandelo/signalling/piplet.php`. Override it with
+`VITE_KANDELO_SIGNALLING_URL` when building; serve a
+cross-origin endpoint with CORS. For example:
+
+```bash
+VITE_KANDELO_SIGNALLING_URL=/custom/piplet.php ./run.sh build-browser
+```
+
+The build forwards this deployment setting into its isolated dev shell.
+The endpoint is embedded in the browser bundle; changing it requires a rebuild.
+`build-browser` includes a copy of the PHP piplet at
+`signalling/piplet.php` in the output directory. Serve that path with
+64-bit PHP 8.3 or newer, and make its directory writable by the PHP server
+user: the piplet stores session state by replacing its own file. Static-only
+hosting cannot execute the included piplet; use a separately hosted PHP
+endpoint and the URL override in that case. Replacing the deployed piplet
+with a fresh build clears its active sessions.
+If the endpoint is unavailable, session creation or joining reports the request
+failure in the panel.
 
 The Spacefast combined build includes a TypeScript implementation at
 `/signalling`. Pass `--signalling-url /signalling` to `build-browser` to set
@@ -2628,6 +2653,8 @@ WP Cloud remains a supported static host: build with
 `--signalling-url /signalling/piplet.php` and keep serving the portable PHP
 piplet there. An omitted `--cors-proxy` retains the production Playground
 proxy; an explicit URL can instead select a standalone Spacefast proxy.
+The separate-site layout is experimental: browser tests cover the protocol,
+but Spacefast's live cross-origin serving layer has not been verified.
 Build that separate worker with repeated `--allow-referer` origins for every
 approved app (including `https://kandelo.dev` if desired). It requires actual
 Referer admission as well as CORS grants; absent or unapproved Referers are

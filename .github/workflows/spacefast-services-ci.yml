@@ -12,6 +12,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "scripts/dev-shell.sh"
+      - "run.sh"
   push:
     branches: [main]
     paths:
@@ -24,6 +25,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "scripts/dev-shell.sh"
+      - "run.sh"
 
 permissions:
   contents: read

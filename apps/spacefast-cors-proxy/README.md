@@ -293,6 +293,12 @@ Fetch workaround described above.
 
 ### Separate proxy site
 
+This layout is **experimental** until verified through Spacefast's live
+cross-origin serving layer. Its cookie-free session flow and Referer policy
+are tested in local browsers; the private live diagnostic verified the
+same-origin quota handshake only. Use the combined site for the verified
+Spacefast hosting layout.
+
 Build a standalone proxy with an explicit list of approved client origins:
 
 ```sh
@@ -329,9 +335,9 @@ Once its URL is known, either deployment can use it:
   --signalling-url /signalling/piplet.php
 ```
 
-Upload that static output to WP Cloud and retain the existing PHP piplet at
-`/signalling/piplet.php`. Omitting `--cors-proxy` keeps the production default
-Playground proxy. The PHP proxy and PHP signalling implementations remain
+Upload that static output to WP Cloud; the build includes the PHP piplet at
+`/signalling/piplet.php`. Without a proxy override, the production default
+remains Playground. The PHP proxy and PHP signalling implementations remain
 supported independently of Spacefast.
 
 ### Combined Kandelo site

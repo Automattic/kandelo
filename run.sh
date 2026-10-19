@@ -2775,8 +2775,10 @@ cmd_prepare_browser() {
 cmd_build_browser() {
     local base="/"
     local out="$REPO_ROOT/apps/browser-demos/dist"
-    local cors_proxy=""
-    local signalling_url=""
+    local cors_proxy="${VITE_CORS_PROXY_URL-}"
+    local signalling_url="${VITE_KANDELO_SIGNALLING_URL-}"
+    local cors_proxy_set="${VITE_CORS_PROXY_URL+1}"
+    local signalling_url_set="${VITE_KANDELO_SIGNALLING_URL+1}"
     while [ $# -gt 0 ]; do
         case "$1" in
             --base) [ $# -ge 2 ] || { err "--base requires a value"; exit 2; }
@@ -2786,13 +2788,15 @@ cmd_build_browser() {
                     out="$2"; shift 2 ;;
             --out=*) out="${1#--out=}"; shift ;;
             --cors-proxy) [ $# -ge 2 ] && [ -n "$2" ] || { err "--cors-proxy requires a URL"; exit 2; }
-                          cors_proxy="$2"; shift 2 ;;
+                          cors_proxy="$2"; cors_proxy_set=1; shift 2 ;;
             --cors-proxy=*) cors_proxy="${1#--cors-proxy=}"; shift
-                           [ -n "$cors_proxy" ] || { err "--cors-proxy requires a URL"; exit 2; } ;;
+                           [ -n "$cors_proxy" ] || { err "--cors-proxy requires a URL"; exit 2; }
+                           cors_proxy_set=1 ;;
             --signalling-url) [ $# -ge 2 ] && [ -n "$2" ] || { err "--signalling-url requires a URL"; exit 2; }
-                              signalling_url="$2"; shift 2 ;;
+                              signalling_url="$2"; signalling_url_set=1; shift 2 ;;
             --signalling-url=*) signalling_url="${1#--signalling-url=}"; shift
-                               [ -n "$signalling_url" ] || { err "--signalling-url requires a URL"; exit 2; } ;;
+                               [ -n "$signalling_url" ] || { err "--signalling-url requires a URL"; exit 2; }
+                               signalling_url_set=1 ;;
             *)
                 err "Usage: $0 build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]"
                 exit 2
@@ -2814,9 +2818,18 @@ cmd_build_browser() {
     # so it and the group it authenticates live under local-binaries/, never
     # under the output directory.
     step "Building production browser app for $base"
+    # Deployment configuration must cross the isolated shell explicitly.
+    # Leave an unset URL absent so Vite can still load it from .env files.
+    local deployment_env=(env)
+    if [ -n "$cors_proxy_set" ]; then
+        deployment_env+=("VITE_CORS_PROXY_URL=$cors_proxy")
+    fi
+    if [ -n "$signalling_url_set" ]; then
+        deployment_env+=("VITE_KANDELO_SIGNALLING_URL=$signalling_url")
+    fi
     # dev-shell.sh does not forward arbitrary caller environment, so the
-    # inner script takes the repo root, base, output and endpoints as arguments.
-    bash "$REPO_ROOT/scripts/dev-shell.sh" bash -c '
+    # inner script takes the repo root, base, and output as arguments.
+    bash "$REPO_ROOT/scripts/dev-shell.sh" "${deployment_env[@]}" bash -c '
         set -euo pipefail
         cd "$1"
         export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
@@ -2830,13 +2843,16 @@ cmd_build_browser() {
         echo "==> Building the authenticated VFS asset group..."
         node node_modules/tsx/dist/cli.mjs scripts/build-local-vfs-asset-group.ts \
             "$KANDELO_PAGES_VFS_ASSET_GROUP_DIR" "$KANDELO_PAGES_PRODUCT_MAP"
-        VITE_BASE="$2" VITE_CORS_PROXY_URL="$4" VITE_KANDELO_SIGNALLING_URL="$5" npm --prefix apps/browser-demos run build -- \
+        VITE_BASE="$2" npm --prefix apps/browser-demos run build -- \
             --outDir "$3" --emptyOutDir
-    ' build-browser "$REPO_ROOT" "$base" "$out" "$cors_proxy" "$signalling_url"
+        # Copy after Vite empties the output so the default endpoint ships.
+        mkdir -p "$3/signalling"
+        cp apps/signalling/piplet.php "$3/signalling/piplet.php"
+    ' build-browser "$REPO_ROOT" "$base" "$out"
 
     # Fail loudly on an incomplete site rather than letting it be uploaded.
     local missing=0 required
-    for required in index.html service-worker.js vfs-groups; do
+    for required in index.html service-worker.js vfs-groups signalling/piplet.php; do
         if [ ! -e "$out/$required" ]; then
             err "build-browser: $out/$required is missing"
             missing=1
