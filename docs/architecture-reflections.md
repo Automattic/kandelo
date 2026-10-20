@@ -265,6 +265,17 @@ Then repeat full machine switches in one page with real audio activation.
 Creating a fresh page or forcing GC after every cycle can make precisely
 this class of regression disappear from the test.
 
+Choose a long enough observation window to separate startup growth from
+continued retention. In the Node spawn-churn measurement, the same host
+exceeded its limits at 48 children and then leveled off when continued to
+256. Weak retirement records showed collection of old generations. A
+control that deliberately kept the memories alive continued growing and
+failed the original limits. Preserve that distinction: extending one
+persistent workload observes more history; restarting after a failure
+throws that history away. Total resident memory is useful supporting
+evidence, but cannot identify an owner or promise a collection deadline.
+See [the measured comparison](measurements/2026-10-20-process-memory-rss-window.md).
+
 The reusable local command and native Safari evidence requirements live in
 the [validation contract](agent-guidance/validation.md#browser-memory-regression-gate).
 

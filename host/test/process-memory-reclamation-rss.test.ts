@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 const MIB = 1024 * 1024;
+const WAVE_CHILDREN = 8;
+const WAVE_COUNT = 32;
 const harnessPath = fileURLToPath(
   new URL("./fixtures/process-memory-reclamation-rss.ts", import.meta.url),
 );
@@ -44,14 +46,10 @@ describe("process-memory reclamation under real sequential spawn churn", () => {
           env: {
             ...process.env,
             KANDELO_RECLAIM_WARMUP_CHILDREN: "4",
-            KANDELO_RECLAIM_WAVE_CHILDREN: "8",
-            // The calibrated window (docs/measurements/2026-07-28-process-
-            // memory-retirement-rss.md): 12 waves, so the late window spans
-            // children 32-96. Over a 4-wave window, one wave that is not
-            // collected yet, or the climb before a collection cycle, moved
-            // the slope and growth past their bounds with nothing retained.
-            KANDELO_RECLAIM_WAVES: "12",
+            KANDELO_RECLAIM_WAVE_CHILDREN: String(WAVE_CHILDREN),
+            KANDELO_RECLAIM_WAVES: String(WAVE_COUNT),
             KANDELO_RECLAIM_CHILD_MIB: "8",
+            KANDELO_RECLAIM_PRESSURE_BYTES: String(4 * MIB),
           },
           maxBuffer: 8 * MIB,
           timeout: 180_000,
@@ -70,13 +68,19 @@ describe("process-memory reclamation under real sequential spawn churn", () => {
       const result = JSON.parse(lines.at(-1) ?? "") as HarnessResult;
       expect(result.stderr).toEqual([]);
       expect(result.diagnostics).toEqual([]);
-      expect(result.samples).toHaveLength(13);
+      expect(result.samples.map((sample) => sample.completedChildren)).toEqual(
+        Array.from({ length: WAVE_COUNT + 1 }, (_, wave) => wave * WAVE_CHILDREN),
+      );
       expect(result.pressureBytes).toBe(4 * MIB);
 
       // A stale listener, Worker, lease, or process-table reference would keep
       // the retired Memory live even when ordinary allocation pressure makes
       // the engine collect. Permit noise, but reject history-proportional
-      // retention.
+      // retention. WHY: 48 children can end during startup/collection growth:
+      // the same process failed that short window, then leveled off at 256.
+      // Keep one persistent host and the original limits; restarting or
+      // forcing GC would hide the history this test must observe. See
+      // docs/measurements/2026-10-20-process-memory-rss-window.md.
       expect(
         result.slopeBytesPerChild,
         JSON.stringify(result),

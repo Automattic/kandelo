@@ -129,6 +129,7 @@ protocol type audit covers declared payloads; the runtime probe covers
 actual messages, including dynamically typed RPC results. Neither replaces
 tests that prove device storage is independent of guest memory.
 
+
 Playwright WebKit is useful coverage, but is not native iOS Safari evidence.
 For browser memory/lifecycle changes, also repeat the switching sequence in
 native Safari where available, enable audio through real user activation,
@@ -139,6 +140,20 @@ validation. Extend the repeated sequence to launch any newly introduced
 device consumer: a new KMS application needs a KMS launch in the cycle
 alongside the existing framebuffer and web cases. These checks supplement
 relevant POSIX/conformance suites.
+
+## Node process-memory reclamation measurements
+
+Resident set size (RSS) measures the whole Node process, including its
+workers, compiled code, and allocator pages. A short rising window alone
+does not identify a retained guest memory. For a reclamation failure, keep
+the original samples and continue the workload in the same host. Compare
+that trend with exact ownership and weak finalization records. Do not
+clear a failure by restarting the host, forcing garbage collection, or
+retrying until green. Check
+that a deliberately retained-memory control still fails before changing
+the measurement window or limits. The Node spawn-churn test uses 256
+children with unchanged 2 MiB-per-child and 64 MiB late-growth limits.
+See [the window calibration](../measurements/2026-10-20-process-memory-rss-window.md).
 
 ## Waiting on long builds and suites
 
