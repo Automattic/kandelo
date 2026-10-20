@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -33,7 +34,9 @@ struct crtc {
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s: %s\n", #x, strerror(errno)); return 1; } } while (0)
 #define GETCONNECTOR 0xc05064a7
 
-int main(void) {
+int main(int argc, char **argv) {
+    int max_x = argc > 1 ? atoi(argv[1]) : 65535;
+    int max_y = argc > 2 ? atoi(argv[2]) : 65535;
     int fd = open("/dev/dri/card0", O_RDWR);
     CHECK(fd >= 0);
     struct connector c = { .id = 1 };
@@ -62,8 +65,8 @@ int main(void) {
     int input = open("/dev/input/event1", O_RDONLY);
     CHECK(input >= 0);
     struct absinfo x, y;
-    CHECK(ioctl(input, 0x80184540, &x) == 0 && x.maximum == 65535);
-    CHECK(ioctl(input, 0x80184541, &y) == 0 && y.maximum == 65535);
+    CHECK(ioctl(input, 0x80184540, &x) == 0 && x.maximum == max_x);
+    CHECK(ioctl(input, 0x80184541, &y) == 0 && y.maximum == max_y);
     CHECK(ioctl(fd, 0x641e, 0) == 0);
     for (unsigned width = 800; width <= 1280; width += 480) {
         unsigned height = width == 800 ? 600 : 720;
@@ -78,8 +81,8 @@ int main(void) {
         }
         CHECK(crtc.mode.hdisplay == width);
         CHECK(ioctl(fd, 0xc06864a2, &crtc) == 0);
-        CHECK(ioctl(input, 0x80184540, &x) == 0 && x.maximum == 65535);
-        CHECK(ioctl(input, 0x80184541, &y) == 0 && y.maximum == 65535);
+        CHECK(ioctl(input, 0x80184540, &x) == 0 && x.maximum == max_x);
+        CHECK(ioctl(input, 0x80184541, &y) == 0 && y.maximum == max_y);
         CHECK(ioctl(fd, 0xc00464af, &fb.id) == 0);
         CHECK(ioctl(fd, 0xc00464b4, &bo.handle) == 0);
     }

@@ -758,7 +758,9 @@ export class NodeKernelHost {
   /**
    * Set the absolute input producer's coordinate extent so EVIOCGABS
    * on `/dev/input/event1` reports the right `ABS_X.maximum` /
-   * `ABS_Y.maximum`. Mirrors `BrowserKernel.setInputCanvasDims`.
+   * `ABS_Y.maximum`. The default extent is 65536×65536; display setup,
+   * pane resizing, and guest modesets never overwrite producer bounds.
+   * Mirrors `BrowserKernel.setInputCanvasDims`.
    */
   setInputCanvasDims(width: number, height: number): void {
     this.sendToWorker({ type: "set_input_canvas_dims", width, height });

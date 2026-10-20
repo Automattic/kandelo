@@ -139,12 +139,12 @@ async function waitForNationPicker(page: Page, visible = true) {
     }, png.toString("base64"));
   }, { timeout: 15_000 }).toBe(visible);
 }
-async function waitForTitlebar(page: Page, xOffset: number, yOffset: number, visible = true) {
+async function waitForTitlebar(page: Page, xOffset: number, yOffset: number, visible = true, width = 150) {
   const box = (await canvas(page).boundingBox())!;
   await expect.poll(async () => {
     const png = await page.screenshot({ scale: "css", clip: {
       x: box.x + box.width / 2 + xOffset, y: box.y + box.height / 2 + yOffset,
-      width: 150, height: 1,
+      width, height: 1,
     } });
     return page.evaluate(async encoded => {
       const bitmap = await createImageBitmap(new Blob([
@@ -996,18 +996,17 @@ for (const density of [1, 2]) {
         mouseX += dx; mouseY += dy;
         await page.mouse.move(mouseX, mouseY);
       };
-      const position = () => page.evaluate(() => {
+      const status = await page.getByText(/\d+×\d+ · \d+ flips/).innerText();
+      const [, width, height] = status.match(/(\d+)×(\d+)/)!.map(Number);
+      const position = () => page.evaluate(({ width, height }) => {
         const events = (globalThis as any).__pointerTrace as { ev_type: number; code: number; value: number }[];
         // Decode the stable absolute-device range into the current scanout,
         // as the guest's cached evdev bounds do after a display mode change.
-        const [, w, h] = document.body.innerText.match(/(\d+)×(\d+) · \d+ flips/)!.map(Number);
-        return [w, h].map((extent, code) => {
+        return [width, height].map((extent, code) => {
           const value = events.filter(e => e.ev_type === 3 && e.code === code).at(-1)?.value;
           return value === undefined ? undefined : Math.floor(value * (extent - 1) / 65535);
         });
-      });
-      const status = await page.getByText(/\d+×\d+ · \d+ flips/).innerText();
-      const [, width, height] = status.match(/(\d+)×(\d+)/)!.map(Number);
+      }, { width, height });
       const scale = Math.min(box.width / width, box.height / height);
       // Native relative events must reach the last valid pixel, stay there
       // through overshoot, and reverse immediately in the same guest grid.
@@ -1567,15 +1566,25 @@ for (const density of [1, 2]) {
       await expect(page.getByText("960×540", { exact: false })).toBeVisible();
       const click = async (x: number, y: number) => nativeAction(page,
         async () => canvas(page).click({ position: await nativePosition(page, x, y) }));
+      const titlebar = async (width: number, height: number, y: number, visible = true) => {
+        const box = (await canvas(page).boundingBox())!;
+        await waitForTitlebar(page, -15 * box.width / width,
+          y * box.height / height, visible, 50 * box.width / width);
+      };
+      const closeOptions = async (width: number, height: number) => {
+        await page.keyboard.press("Escape", { delay: 100 });
+        await titlebar(width, height, -148);
+        await page.keyboard.press("Escape", { delay: 100 });
+        await titlebar(width, height, -148, false);
+      };
       const openInterface = async (width: number, height: number, inGame = false) => {
-        await click(inGame ? 10 : width - 100, inGame ? 10 : height - 55);
-        let box = (await canvas(page).boundingBox())!;
-        await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100);
+        await click(inGame ? 16 : width - 100, inGame ? 16 : height - 55);
+        await titlebar(width, height, -148);
         await click(width / 2, height / 2 - 96); // Local options.
-        await waitForPanel(page, box.width / 2 - 145, box.height / 2, false);
+        await titlebar(width, height, -133);
         await click(width / 2, height / 2 + 9); // Interface.
-        await waitForPanel(page, box.width / 2 - 200, box.height / 2);
-        box = (await canvas(page).boundingBox())!;
+        await titlebar(width, height, -178);
+        const box = (await canvas(page).boundingBox())!;
         const thumb = await nativePosition(page, width / 2 + 233, height / 2 - 91);
         const bottom = await nativePosition(page, width / 2 + 233, height / 2 + 137);
         // Wait for the actual resolution field's long horizontal border,
@@ -1626,7 +1635,7 @@ for (const density of [1, 2]) {
       await page.screenshot({ path: `../../.context/freeciv-resolution-800-${density}.png`, scale: "css" });
       // Apply returns to the category picker. Leave both option levels
       // before exercising the relocated main-menu button.
-      for (let i = 0; i < 2; i++) await page.keyboard.press("Escape", { delay: 100 });
+      await closeOptions(800, 600);
       // Reopen settings after the aspect change: this proves pointer
       // coordinates, hit testing and the resized window agree.
       await openInterface(800, 600);
@@ -1635,7 +1644,7 @@ for (const density of [1, 2]) {
       await click(611, 122);
       await expect(page.getByText("1280×720", { exact: false })).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `../../.context/freeciv-resolution-1280-${density}.png`, scale: "css" });
-      for (let i = 0; i < 2; i++) await page.keyboard.press("Escape", { delay: 100 });
+      await closeOptions(1280, 720);
       await click(1180, 665); // Options remains clickable at the new mode.
       const box = (await canvas(page).boundingBox())!;
       await waitForPanel(page, box.width / 2 + 50, box.height / 2 + 50);
@@ -1644,9 +1653,12 @@ for (const density of [1, 2]) {
         'grep "gui_sdl2_screen" "$HOME/.freeciv/freeciv-client-rc-3.2"');
       expect(settings).toMatch(/1280/);
       expect(settings).toMatch(/720/);
+      await showGame(page);
       await multiplayer(page, "local");
       await showGame(page);
       await expect(page.getByText("1280×720", { exact: false })).toBeVisible({ timeout: 30_000 });
+      const restoredMenu = await nativePosition(page, 1250, 690);
+      await waitForPanel(page, restoredMenu.x, restoredMenu.y);
       await page.screenshot({ path: `../../.context/freeciv-resolution-restored-${density}.png`, scale: "css" });
       // Start an actual game at the saved mode, then change resolution
       // while its map and unit panels are live.
@@ -1658,15 +1670,16 @@ for (const density of [1, 2]) {
       await canvas(page).click({ position: { x: lobby.width - 50, y: lobby.height - 24 } });
       await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/rules the/);
       await showGame(page);
+      // The server announces players before the client replaces the lobby.
+      await waitForPanel(page, 60, 80, false);
       await openInterface(1280, 720, true);
       await click(795, 443);
       await click(795, 396); // 960x540, row 14, menu top at 179.
       await click(851, 182);
       await expect(page.getByText("960×540", { exact: false })).toBeVisible({ timeout: 30_000 });
-      for (let i = 0; i < 2; i++) await page.keyboard.press("Escape", { delay: 100 });
-      await click(10, 10);
-      const game = (await canvas(page).boundingBox())!;
-      await waitForPanel(page, game.width / 2 + 50, game.height / 2 + 50);
+      await closeOptions(960, 540);
+      await click(16, 16);
+      await titlebar(960, 540, -148);
       await page.keyboard.press("Escape", { delay: 100 });
       await page.screenshot({ path: `../../.context/freeciv-resolution-game-${density}.png`, scale: "css" });
 

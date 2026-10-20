@@ -30483,9 +30483,9 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Tell the kernel the current host canvas dimensions so EVIOCGABS
-   * on `/dev/input/event1` reports the right `ABS_X.maximum` /
-   * `ABS_Y.maximum`. Idempotent; call again on canvas resize.
+   * Configure the absolute input producer's coordinate extent for
+   * EVIOCGABS on `/dev/input/event1`. Consumers cache these bounds when
+   * opening the device; display geometry changes must not alter them.
    */
   setInputCanvasDims(width: number, height: number): void {
     this.#runOrDeferKernelEntry(
@@ -33292,7 +33292,6 @@ export class CentralizedKernelWorker {
       display.mmHeight = Math.round(physicalMm.height);
     }
     this.kmsDisplaySizes.set(crtc_id, display);
-    this.setInputCanvasDims(ABSOLUTE_POINTER_EXTENT, ABSOLUTE_POINTER_EXTENT);
   }
 
   /** Attach a stats SAB for a CRTC without registering a scanout canvas.

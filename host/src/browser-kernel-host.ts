@@ -1240,7 +1240,8 @@ export class BrowserKernel {
    * Set the absolute input producer's coordinate extent so EVIOCGABS
    * on `/dev/input/event1` reports `ABS_X.maximum = width - 1` and
    * `ABS_Y.maximum = height - 1`. Consumers cache these bounds when
-   * opening the device; KMS uses a fixed 65536×65536 extent across resizes.
+   * opening the device. The default extent is 65536×65536; display setup,
+   * pane resizing, and guest modesets never overwrite producer bounds.
    */
   setInputCanvasDims(width: number, height: number): void {
     this.sendToKernel({ type: "set_input_canvas_dims", width, height });
