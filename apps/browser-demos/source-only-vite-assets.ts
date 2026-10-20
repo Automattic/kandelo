@@ -111,7 +111,10 @@ export function createSourceOnlyPublicSnapshot(
       const destinationPath = join(snapshotPath, relPath);
       mkdirSync(dirname(destinationPath), { recursive: true, mode: 0o700 });
       copyFileSync(sourcePath, destinationPath);
-      chmodSync(destinationPath, 0o600);
+      // Vite preserves these modes when copying public files into the site.
+      // The 0700 parent keeps the snapshot private; deployed files must also
+      // be readable by a web server running as another user.
+      chmodSync(destinationPath, 0o644);
     }
   }
 
