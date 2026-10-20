@@ -84,14 +84,7 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
               await new Promise((resolve) => setTimeout(resolve, delayMs));
             }
             const address = Number.parseInt(rawAddress, 10);
-            const memory = kernel.getProcessMemory(pid);
-            if (
-              !Number.isSafeInteger(address) ||
-              address < 0 ||
-              address % Int32Array.BYTES_PER_ELEMENT !== 0 ||
-              memory === undefined ||
-              address + Int32Array.BYTES_PER_ELEMENT > memory.buffer.byteLength
-            ) {
+            if (!Number.isSafeInteger(address) || address < 0 || address % 4 !== 0) {
               throw new Error(`invalid BrowserKernel ${kind} gate ${rawAddress}`);
             }
             if (
@@ -100,11 +93,7 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
             ) {
               throw new Error(`BrowserKernel rejected ${kind}`);
             }
-            Atomics.store(
-              new Int32Array(memory.buffer),
-              address / Int32Array.BYTES_PER_ELEMENT,
-              1,
-            );
+            kernel.appendStdinData(pid, new TextEncoder().encode(`${address}\n`));
           }).catch((error) => {
             injectionFailure =
               error instanceof Error ? error.message : String(error);
@@ -233,12 +222,13 @@ test("BrowserKernel runs the ppoll/pselect signal matrix and wait4 rejection", a
   };
 
   assertMatrix(result.wasm32);
-  if (browserName === "webkit") {
-    expect(result.memory64Supported).toBe(false);
-    expect(result.wasm64).toBeNull();
-  } else {
-    expect(result.memory64Supported).toBe(true);
+  // WebKit support depends on the bundled engine and fixture feature set.
+  // Exercise the matrix whenever the actual module validates.
+  if (browserName !== "webkit") expect(result.memory64Supported).toBe(true);
+  if (result.memory64Supported) {
     expect(result.wasm64).not.toBeNull();
     assertMatrix(result.wasm64!);
+  } else {
+    expect(result.wasm64).toBeNull();
   }
 });

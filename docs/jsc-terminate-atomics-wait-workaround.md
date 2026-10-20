@@ -105,6 +105,30 @@ The Node host's `handleTerminate` does **not** need this: on V8
 terminate frees the thread. The wake is browser-only by the same platform
 boundary as the rest of this workaround.
 
+## Exec retirement
+
+Successful `exec` also has to unwind the old Worker without issuing `SYS_EXIT`
+for the persistent PID. The kernel completes its old channel with SIGKILL and
+the private `EXEC_RETIRE_SIGNAL_CODE`. The `kernel_exit` import executes a real Wasm trap, leaving that marker
+intact until the Worker
+boundary recognizes it. Import adapters may re-trap and replace the exception
+object, so class identity alone cannot identify retirement.
+
+A JavaScript-thrown `Error` or `WebAssembly.RuntimeError` here is catchable by
+guest exception machinery. The Wasm helper supplies a real uncatchable trap
+for both normal exit and exec retirement.
+In particular, libc++'s `noexcept` handler attempts to print `libc++abi:` with
+`writev` on a channel the host has stopped servicing. This leaves the old
+Worker in `Atomics.wait`, where JSC termination cannot reclaim it. Committed
+normal exit must also bypass guest deallocators, whose syscalls would otherwise
+park on a channel already closed by Rust. Pthread exit still releases host-side
+replication locks needed by the surviving process. Both main
+and pthread worker boundaries recognize terminal traps, avoid executing
+guest deallocators on the retired image, and report `exec_retired` before the
+entry wrapper reports `memory_quiescent`. The containing browser's destroy
+deadline must also cover the worker's cleanup phases; its 15-second bound
+allows the existing exec, process, framebuffer and PCM drains to finish.
+
 ## Participating code sites
 
 All tagged `[JSC-TERMINATE-ATOMICS-WAIT-LEAK]`:
@@ -124,18 +148,34 @@ Note the musl glue change means every program binary must be **relinked** to pic
 up the new `kernel_exit`-on-SIGKILL behavior; CI rebuilds them from source.
 Old-glue binaries degrade gracefully (they still leak on JSC, but do not crash).
 
-## Known limitation
+## Already-exited processes
 
-`killAllBlockedForTeardown` only wakes processes the kernel still reports as
-**live** (`kernel_get_process_exit_status(pid) == -1`). It deliberately skips a
-process that has already `exit_group`'d via one thread while another thread is
-still parked in `Atomics.wait` (e.g. `pthread` calls `exit(0)` while `main` is
-blocked): waking that parked sibling would run our `kernel_exit` and clobber the
-already-recorded exit status (turning a real `exit(0)` into `137`). Such a
-straggler is force-terminated instead. On V8 that reclaims fine; on JSC that one
-stuck worker still leaks — but this is a narrow, unusual case (it also leaks on
-JSC via the normal exit path, independent of teardown), not the dominant
-per-machine-teardown leak this workaround targets.
+A process can already have a recorded exit status while one of its Workers is
+still blocked (for example, after a signal or a sibling's `exit_group`). Wake
+these Workers too, before awaiting their terminal fences. Non-exit requests on
+an exited channel receive EINTR plus SIGKILL and `EXIT_RETIRE_SIGNAL_CODE`.
+The Worker boundary recognizes this host-only marker, skips guest cleanup and
+returns without issuing `SYS_EXIT` or a second exit message. Deferred-signal
+JS imports use the same terminal path even if they throw EINTR before returning
+to Wasm. Rust's recorded status and parent notification remain authoritative.
+
+A genuinely unresponsive guest that never reaches a syscall can still require
+forced termination. This remains an engine boundary on JSC.
+
+## Pending asynchronous futex waits
+
+Waking the guest's syscall channel is only half of futex teardown. The kernel
+worker also owns an `Atomics.waitAsync` on the futex address. Deleting its
+`pendingFutexWaits` entry does not cancel that engine wait: the unresolved
+promise reaction retains the process Memory and can survive termination of
+its owning Worker realm. This exhausts iOS's shared-Wasm reservation pool even
+when OS samples show no leaked guest Worker threads.
+
+Both teardown variants call each selected wait's `retire()` before dropping
+its registration. Retirement wakes the engine waiter and settles its state
+without publishing a guest syscall completion. Per-process teardown preserves
+sibling processes' waits. This is ordinary resource cleanup on every engine,
+not a temporary JavaScriptCore workaround.
 
 ## Removal
 
@@ -146,9 +186,10 @@ the target Safari/Bun versions using the repro above and
 1. Delete the wake/drain phases from both `handleDestroy` (revert to a plain
    terminate loop), the per-pid wake/drain preamble in the browser
    `handleTerminateProcess`, and the `DESTROY_KILL_DRAIN_*` constants.
-2. Delete `killAllBlockedForTeardown()`, `killBlockedProcessForTeardown()`, and
-   `wakeChannelForTeardownExit()` from `kernel-worker.ts` (and the `SIGKILL`
-   constant if unused elsewhere).
+2. Remove the guest-channel wake helpers only after preserving cancellation
+   of asynchronous futex waits in the ordinary teardown path. Do not delete
+   futex retirement, real Wasm exit traps, or exact-generation terminal fences:
+   those enforce portable resource and process-lifecycle contracts.
 3. Delete the `signum == 9` branch in `__deliver_pending_signal`, then rebuild
    musl (`scripts/build-musl.sh`) and relink programs / rebuild VFS images.
 4. Re-run validation on **both** engines: the WordPress boot/destroy loop on

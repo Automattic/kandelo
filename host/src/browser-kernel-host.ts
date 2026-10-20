@@ -1,3 +1,4 @@
+import type { PcmTransportSnapshot } from "./audio/pcm-transport";
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
@@ -61,11 +62,11 @@ import {
 } from "./clipboard";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
-import { pcmControlWords } from "./audio/pcm-transport";
-import type { PcmTransportDescriptor } from "./audio/pcm-transport";
-import { AudioActivityLatch } from "./audio/audio-activity-latch";
 
-const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
+// Allow the worker to drain exec retirement (5s), blocked guests (1.5s),
+// framebuffer acknowledgements and PCM (2s each) before terminating its realm.
+// Cutting cleanup short can strand Atomics.wait-blocked children on JSC.
+const DESTROY_REQUEST_TIMEOUT_MS = 15_000;
 const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
 const MAX_PENDING_PTY_OUTPUT_CHUNKS = 4_096;
 const defaultPcmWorkletUrl = new URL(
@@ -317,10 +318,7 @@ export class BrowserKernel {
    * (host/src/framebuffer/canvas-renderer.ts) reads from here.
    */
   readonly framebuffers = new FramebufferRegistry();
-  private fbMemoryByPid = new Map<
-    number,
-    { generation: number; memory: WebAssembly.Memory }
-  >();
+  private fbBindingGenerationByPid = new Map<number, number>();
   /**
    * Highest framebuffer execution generation observed for each PID.
    * `released` is a short-lived tombstone that rejects a same-generation bind
@@ -340,9 +338,9 @@ export class BrowserKernel {
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
   private destroyProgress = createDestroyProgressFanout();
   private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
-  private pcmTransport: PcmTransportDescriptor | null = null;
+  private pcmPort: MessagePort | null = null;
   private pcmDriver: BrowserPcmDriver | null = null;
-  private audioActivity: AudioActivityLatch | null = null;
+  private audioActivity = false;
   private audioActivityListeners = new Set<(active: boolean) => void>();
 
   constructor(options: BrowserKernelOptions = {}) {
@@ -1340,14 +1338,23 @@ export class BrowserKernel {
     }) as Promise<{ bytes: Uint8Array; sampleRate: number; channels: number }>;
   }
 
+  /** Inspect audio cursors without lending the kernel's shared memory. */
+  async getAudioTransportSnapshot(): Promise<PcmTransportSnapshot> {
+    const requestId = this.nextRequestId++;
+    return this.request(requestId, { type: "audio_snapshot", requestId });
+  }
+
   /** Preload the machine-level PCM sink without attempting user activation. */
   async prepareAudio(): Promise<void> {
-    const transport = this.pcmTransport;
-    if (!transport) throw new Error("PCM transport is not available");
+    const port = this.pcmPort;
+    if (!port) throw new Error("PCM transport is not available");
     const driver = this.pcmDriver ??= new BrowserPcmDriver({
       workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
+      onFatalError: () => {
+        if (this.workerStarted) this.sendToKernel({ type: "pcm_output_failed" });
+      },
     });
-    await driver.prepare(transport);
+    await driver.prepareRemote(port);
   }
 
   /** Resume audible PCM output. Call directly from a trusted user gesture. */
@@ -1363,13 +1370,16 @@ export class BrowserKernel {
 
   getAudioState(): PcmOutputState {
     return this.pcmDriver?.getState() ??
-      (this.pcmTransport ? "unprepared" : "unavailable");
+      (this.pcmPort ? "unprepared" : "unavailable");
   }
 
   onAudioStateChange(listener: (state: PcmOutputState) => void): () => void {
-    if (!this.pcmDriver && this.pcmTransport) {
+    if (!this.pcmDriver && this.pcmPort) {
       this.pcmDriver = new BrowserPcmDriver({
         workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
+        onFatalError: () => {
+          if (this.workerStarted) this.sendToKernel({ type: "pcm_output_failed" });
+        },
       });
     }
     if (!this.pcmDriver) {
@@ -1388,16 +1398,14 @@ export class BrowserKernel {
    * machine about a device it never used.
    */
   getAudioActivity(): boolean {
-    return this.audioActivity?.active ?? false;
+    return this.audioActivity;
   }
 
   onAudioActivityChange(listener: (active: boolean) => void): () => void {
     this.audioActivityListeners.add(listener);
     listener(this.getAudioActivity());
-    this.audioActivity?.start();
     return () => {
       this.audioActivityListeners.delete(listener);
-      if (this.audioActivityListeners.size === 0) this.audioActivity?.stop();
     };
   }
 
@@ -1707,9 +1715,9 @@ export class BrowserKernel {
     await this.pcmDriver?.settleOutputPipeline().catch(() => {});
     await this.pcmDriver?.close().catch(() => {});
     this.pcmDriver = null;
-    this.pcmTransport = null;
-    this.audioActivity?.stop();
-    this.audioActivity = null;
+    this.pcmPort?.close();
+    this.pcmPort = null;
+    this.audioActivity = false;
     this.audioActivityListeners.clear();
     // WHY: process/pthread Workers are owned beneath the kernel worker. After
     // the worker's bounded graceful attempt, terminating this outer realm is
@@ -1731,15 +1739,8 @@ export class BrowserKernel {
     this.lazyDownloadListeners.clear();
     this.destroyProgress.clear();
     this.vfsChangeListeners.clear();
-    // Release every main-thread reference to shared buffers this kernel held.
-    // `fbMemoryByPid`/`framebuffers` retain typed-array views over process
-    // `WebAssembly.Memory` (up to 1 GiB max each) posted from the worker for
-    // framebuffer demos; `pendingPtyOutput` holds buffered PTY chunks. On
-    // WebKit these are reclaimed only when the page drops them — terminating
-    // the worker does not, because the main thread is a co-owner. Leaving
-    // them set makes reclamation depend on the whole BrowserKernel being GC'd
-    // (and pins the memory outright if anything still references this kernel).
-    this.fbMemoryByPid.clear();
+    // Release display storage even if callers retain the destroyed host.
+    this.fbBindingGenerationByPid.clear();
     this.fbGenerationByPid.clear();
     this.framebuffers.clear();
     this.pendingPtyOutput.clear();
@@ -1863,16 +1864,8 @@ export class BrowserKernel {
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
       case "ready": {
-        if (msg.pcmTransport) {
-          this.pcmTransport = msg.pcmTransport;
-          // Demand is a different fact from sink state: this watches whether
-          // anything in the machine ever opens /dev/dsp. It samples the header
-          // the kernel already publishes, and stops for good once it latches.
-          this.audioActivity = new AudioActivityLatch(
-            pcmControlWords(msg.pcmTransport),
-            () => this.emitAudioActivity(),
-          );
-          if (this.audioActivityListeners.size > 0) this.audioActivity.start();
+        if (msg.pcmPort) {
+          this.pcmPort = msg.pcmPort;
           if (
             typeof globalThis.AudioContext === "function" ||
             "webkitAudioContext" in globalThis
@@ -1888,6 +1881,10 @@ export class BrowserKernel {
         }
         break;
       }
+      case "audio_activity":
+        this.audioActivity = true;
+        this.emitAudioActivity();
+        break;
       case "init_error":
         // The temporary boot listener resolves or rejects initialization. The
         // permanent listener also receives this message, so account for it.
@@ -1913,8 +1910,8 @@ export class BrowserKernel {
       }
       case "exit": {
         // WHY: a crashing process may never run munmap/close and therefore
-        // never emit fb_unbind. Drop the main-thread structured-clone Memory
-        // and cached typed views at the authoritative process-exit boundary.
+        // never emit fb_unbind. Drop its display storage
+        // and cached pixel views at the authoritative process-exit boundary.
         this.releaseProcessFramebuffer(msg.pid, msg.generation);
         const resolver = this.exitResolvers.get(msg.pid);
         if (resolver) {
@@ -2039,10 +2036,7 @@ export class BrowserKernel {
           generation: msg.generation,
           released: false,
         });
-        this.fbMemoryByPid.set(msg.pid, {
-          generation: msg.generation,
-          memory: msg.memory,
-        });
+        this.fbBindingGenerationByPid.set(msg.pid, msg.generation);
         this.framebuffers.bind({
           pid: msg.pid,
           addr: msg.addr,
@@ -2051,24 +2045,15 @@ export class BrowserKernel {
           h: msg.h,
           stride: msg.stride,
           fmt: msg.fmt,
+          pixels: msg.pixels,
         });
         break;
       case "fb_unbind":
         this.unbindProcessFramebuffer(msg.pid, msg.generation);
         break;
-      case "fb_rebind_memory": {
-        const binding = this.fbMemoryByPid.get(msg.pid);
-        if (!binding || binding.generation !== msg.generation) break;
-        this.fbMemoryByPid.set(msg.pid, {
-          generation: msg.generation,
-          memory: msg.memory,
-        });
-        this.framebuffers.rebindMemory(msg.pid);
-        break;
-      }
       case "fb_write":
         if (
-          this.fbMemoryByPid.get(msg.pid)?.generation !== msg.generation
+          this.fbBindingGenerationByPid.get(msg.pid) !== msg.generation
         ) {
           break;
         }
@@ -2076,7 +2061,7 @@ export class BrowserKernel {
         break;
       case "fb_release_generation":
         // WHY: the worker's process/threads can be quiescent while this realm
-        // still owns a structured-clone Memory wrapper. Delete only the exact
+        // still displays its pixel mirror. Delete only the exact
         // generation, then acknowledge that browser-main ownership is gone.
         // See docs/measurements/2026-07-28-process-memory-retirement-rss.md.
         this.releaseProcessFramebuffer(msg.pid, msg.generation);
@@ -2114,20 +2099,10 @@ export class BrowserKernel {
     }
   }
 
-  /**
-   * Return the wasm `Memory` for the framebuffer-bound process. Used by
-   * the canvas renderer to build typed-array views over the bound
-   * region. A caller that retains this wrapper becomes an owner outside
-   * BrowserKernel's release-acknowledgement contract.
-   */
-  getProcessMemory(pid: number): WebAssembly.Memory | undefined {
-    return this.fbMemoryByPid.get(pid)?.memory;
-  }
-
   private unbindProcessFramebuffer(pid: number, generation: number): void {
-    const binding = this.fbMemoryByPid.get(pid);
-    if (binding && binding.generation !== generation) return;
-    this.fbMemoryByPid.delete(pid);
+    const binding = this.fbBindingGenerationByPid.get(pid);
+    if (binding !== undefined && binding !== generation) return;
+    this.fbBindingGenerationByPid.delete(pid);
     this.framebuffers.unbind(pid);
   }
 
@@ -2150,7 +2125,7 @@ export class BrowserKernel {
     if (
       observed?.generation === generation
       && observed.released
-      && this.fbMemoryByPid.get(pid)?.generation !== generation
+      && this.fbBindingGenerationByPid.get(pid) !== generation
     ) {
       this.fbGenerationByPid.delete(pid);
     }

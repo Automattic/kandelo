@@ -11,14 +11,6 @@ import type { WasmModuleCacheStats } from "@host/wasm-module-cache";
 import type { BrowserCorsProxyConfig } from "@host/networking/browser-cors-proxy";
 import pcmAudioWorkletUrl from "@host/audio/pcm-audio-worklet.js?url";
 import {
-  pcmControlWords,
-  readConsumerPosition,
-  readDiscardPosition,
-  readPcmConfig,
-  readProducerPosition,
-  type PcmTransportDescriptor,
-} from "@host/audio/pcm-transport";
-import {
   createBuildFsWithEtc,
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
@@ -64,7 +56,6 @@ interface AudioTestResult extends AudioTestSnapshot {
 
 interface AudioTestSession {
   kernel: BrowserKernel;
-  transport: PcmTransportDescriptor;
   stdout: string;
   stderr: string;
   hostDiagnostics: string[];
@@ -113,7 +104,7 @@ declare global {
       argv?: string[],
       timeoutMs?: number,
     ) => Promise<AudioTestSnapshot>;
-    __audioTestSnapshot: () => AudioTestSnapshot;
+    __audioTestSnapshot: () => Promise<AudioTestSnapshot>;
     __waitForAudioTest: () => Promise<AudioTestResult>;
     __suspendAudioTest: () => Promise<AudioTestSnapshot>;
     __finishAudioTest: () => Promise<void>;
@@ -131,20 +122,6 @@ const corsProxy = resolveBrowserCorsProxyConfig({
   pageUrl: window.location.href,
 });
 
-function audioTransportFor(kernel: BrowserKernel): PcmTransportDescriptor {
-  // The transport is intentionally not part of BrowserKernel's public app
-  // API. This test-only page inspects it to prove that the production
-  // AudioWorklet, rather than a main-thread timer or legacy pull drain,
-  // advances the consumer clock.
-  const transport = (
-    kernel as unknown as { pcmTransport: PcmTransportDescriptor | null }
-  ).pcmTransport;
-  if (!transport) {
-    throw new Error("PCM transport was not published by the kernel worker");
-  }
-  return transport;
-}
-
 function safeCursorNumber(value: bigint, label: string): number {
   const number = Number(value);
   if (!Number.isSafeInteger(number)) {
@@ -153,14 +130,10 @@ function safeCursorNumber(value: bigint, label: string): number {
   return number;
 }
 
-function snapshotAudioTest(session = activeAudioTest): AudioTestSnapshot {
+async function snapshotAudioTest(session = activeAudioTest): Promise<AudioTestSnapshot> {
   if (!session) throw new Error("No browser audio test is active");
-  const words = pcmControlWords(session.transport);
-  const producer = readProducerPosition(words);
-  const consumer = readConsumerPosition(words);
-  const discard = readDiscardPosition(words);
+  const { producer, consumer, discard, config } = await session.kernel.getAudioTransportSnapshot();
   const effectiveConsumer = consumer > discard ? consumer : discard;
-  const config = readPcmConfig(words);
   return {
     audioState: session.kernel.getAudioState(),
     audioStates: session.audioStates.slice(),
@@ -301,7 +274,6 @@ async function init() {
       await kernel.initFromImage({ kernelWasm: kernelWasmBytes!, vfsImage });
       session = {
         kernel,
-        transport: audioTransportFor(kernel),
         stdout: "",
         stderr: "",
         hostDiagnostics,
@@ -330,11 +302,11 @@ async function init() {
         kernel.spawn(wasmBytes, argv, { env: ["SDL_AUDIODRIVER=dsp"] }),
         timeoutMs,
         "browser /dev/dsp guest",
-      ).then((exitCode) => {
+      ).then(async (exitCode) => {
         if (!session) throw new Error("Browser audio session disappeared");
         session.settled = true;
         return {
-          ...snapshotAudioTest(session),
+          ...await snapshotAudioTest(session),
           exitCode,
           elapsedMs: performance.now() - startedAt,
         };

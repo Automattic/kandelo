@@ -315,21 +315,22 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
 
 ### Framebuffer (`/dev/fb0`)
 - 640×400 BGRA32 packed-pixel framebuffer; exclusive process owner.
-- The pixel buffer lives in the process's `WebAssembly.Memory` (a `SharedArrayBuffer`); the kernel notifies the host of `(pid, addr, len, w, h, stride, fmt)` on `mmap`, and the host renders via `requestAnimationFrame` + a 2D-canvas `putImageData` per frame.
-- Framebuffer messages are tagged with the process execution generation. Exit
-  and exec wait for `BrowserKernel` to acknowledge removal of its exact-
-  generation memory wrapper and framebuffer-registry views, so a delayed
-  old-image message cannot disturb a successor with the same PID. A caller
-  that retains the wrapper returned by `getProcessMemory()` is outside that
-  acknowledgement; JavaScript cannot prove that arbitrary consumer references
-  have been garbage-collected.
+- The guest pixel buffer lives in its process memory. Browser scanout copies
+  those pixels every 16 ms into a fixed-size shared display buffer; the canvas
+  never receives the process's full address space. Write-based bindings already
+  forward pixel deltas. Node consumers retain direct guest-memory presentation.
+- Framebuffer messages carry an execution generation. Exit and exec stop that
+  generation's scanout copier and await UI removal of its display binding;
+  delayed old-image messages cannot disturb a successor with the same PID.
+  Memory growth needs no UI rebind because the copier reads the current guest
+  buffer on each tick. Browser consumers use the framebuffer handle rather
+  than `getProcessMemory()`.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
 - Keyboard input: the demo page maps focused browser `KeyboardEvent` values to Linux input keycodes, encodes them as MEDIUMRAW bytes, and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software decodes those bytes from the tty. Ctrl+Shift+Esc is reserved as the host escape from keyboard capture.
 - Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via
-  `FBIOPAN_DISPLAY` is a no-op. The current surface still exposes a process
-  `WebAssembly.Memory` to the presentation realm. Device/CRTC-owned bounded
-  shared surfaces, per-handle rights, serialized presentation, and
-  multi-writer/compositor ownership remain follow-up work.
+  `FBIOPAN_DISPLAY` is a no-op. Device/CRTC-owned surfaces, per-handle rights,
+  serialized presentation, and multi-writer/compositor ownership remain
+  follow-up work.
 
 ### Mouse input (`/dev/input/mice`)
 - Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`.
@@ -354,9 +355,16 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
   frame boundaries: later writes continue the same byte stream, while a drain
   pads only a terminal incomplete frame with format-appropriate silence.
 - An `AudioWorkletProcessor`, running on the Web Audio render clock, reads the
-  shared PCM ring directly, advances the kernel-visible consumer cursor, and
-  outputs silence on underrun. There is no main-thread audio-drain timer and no
-  second persistent PCM queue; browser-provided Float32 output buffers are
+  bounded PCM mirror, advances its consumer cursor, and outputs silence on
+  underrun. A relay in the kernel worker copies newly produced bytes and
+  configuration into an independent 65,664-byte shared buffer, and returns
+  worklet consumption, underrun and fatal-error publications to Rust. Absolute
+  cursors, discard floors and generations preserve one queue and its existing
+  capacity; the relay never consumes audio or adds buffering capacity.
+  Neither browser main nor the persistent AudioWorklet receives kernel memory.
+  The mirror travels over a transferred MessagePort directly to the worklet;
+  audio-activity notifications reach the UI as plain messages. The worklet
+  remains the only playback clock. Browser-provided Float32 output buffers are
   transient. Consumption wakes blocked writes, `poll()`, and
   `SNDCTL_DSP_SYNC`/close drain waiters in the kernel worker.
 - The default 4096-byte queue is about 21.3 ms at 48 kHz stereo S16. A normal
@@ -366,8 +374,15 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
   to drain. If the context is running, it then suspends the context so Web
   Audio hands already-rendered blocks to the output device and waits a bounded
   interval covering the reported base/output latency and final render quantum
-  before closing the context. A suspended or interrupted context is never
-  resumed implicitly during teardown.
+  before releasing the machine's worklet processor. The processor drops its
+  shared-memory views, closes its kernel connection, acknowledges release, and
+  returns false from rendering. Disconnecting a processor alone is insufficient:
+  a source processor returning true retains its transport inside the
+  page-wide AudioContext. Isolating that transport also bounds any wrappers
+  awaiting collection in this persistent realm. The shared context stays open to
+  avoid WebKit's per-context rendering-thread leak; explicitly supplied private
+  contexts are closed. A suspended or interrupted context is never resumed
+  implicitly during teardown.
 - **A user gesture is required.** Preparing the PCM driver may leave its
   `AudioContext` suspended. The application must call the session audio-resume
   path from a click, keypress, or other browser-recognized activation. If the
@@ -2708,6 +2723,46 @@ message after worker-main returns. Forced paths drop host aliases without ever
 recycling the backing. Whole-kernel destroy terminates nested process/thread
 Workers before terminating the containing kernel Worker realm, which is the
 final fallback for incomplete graceful detach.
+
+Audio and framebuffer presentation use independent bounded shared buffers.
+A view into kernel or guest memory retains the full address space, even when
+only a tiny ring or pixel window is visible. Persistent page and worklet realms
+must not become owners of those address spaces: dropping a view or disconnecting
+a node does not establish a collection deadline. See the device sections above.
+
+Process exit executes `unreachable` inside a disposable Wasm helper. A
+`WebAssembly.RuntimeError` constructed and thrown in JavaScript is still a
+catchable host exception. Exec retirement pairs the Wasm trap with an exact
+private channel marker. A JS exception can enter libc++'s `noexcept`
+handler, which writes to the already-retired syscall channel and permanently
+parks the discarded Worker. Import adapters can replace a trap's JavaScript
+identity, so the Worker boundary recognizes the marker, skips guest cleanup
+that could issue more syscalls, and publishes `exec_retired` before its terminal
+`memory_quiescent` message. Committed normal exit also bypasses guest cleanup:
+its deallocators cannot use a channel after Rust has recorded exit. The
+disposable realm releases the remaining state; pthread exit still releases host-side replication locks for
+the surviving process. These terminal paths are shared by Node/Bun and browser
+workers.
+Workers parked after Rust has recorded exit are woken too. A private exit
+retirement marker unwinds them without a second exit syscall or exit message,
+preserving the recorded status and parent notification. This covers signal
+exits and blocked siblings after `exit_group`, which forced termination cannot
+reclaim on WebKit.
+Browser main allows up to 15 seconds for the kernel worker's bounded cleanup
+phases before terminating its realm; a two-second outer deadline can interrupt
+exec retirement, process draining, framebuffer release, or PCM draining.
+
+Teardown also retires every pending futex engine wait before deleting its
+registration. Clearing a JavaScript map does not cancel `Atomics.waitAsync`:
+the engine retains its promise reaction and process memory, even after Worker
+termination. Whole-machine teardown retires all waits; per-process teardown
+retires only the selected PID's waits.
+
+Boot image composition loads an image once and reads metadata and capacity from
+that same verified writer before applying runtime patches. Separate full-image
+readers create several Wasm heaps that coexist until garbage collection, which
+is especially costly for the WordPress image on iOS. Composition still runs in
+a disposable Worker and returns transferable bytes.
 
 `maxProcessMemoryBytes` is a sampled allocation-admission budget, not a hard
 aggregate growth cap: direct `WebAssembly.Memory.grow()` has no JavaScript

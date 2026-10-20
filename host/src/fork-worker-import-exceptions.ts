@@ -645,7 +645,9 @@ function buildFatalTrap(): () => never {
   };
 }
 
-const fatalTrap = buildFatalTrap();
+// A trap must originate inside Wasm. Throwing a RuntimeError from JavaScript
+// creates a catchable host exception and can enter a guest noexcept handler.
+export const trapProcessWorker = buildFatalTrap();
 
 export interface ForkWorkerLocalImportExceptionNormalizerOptions {
   readonly onFatal?: (
@@ -757,7 +759,7 @@ export class ForkWorkerLocalImportExceptionNormalizer {
       // A nested Wasm call can surface a trap as a RuntimeError in this JS
       // frame. Re-entering Wasm by throwing that JS object would turn it into
       // a catchable JSTag exception, so preserve trap semantics explicitly.
-      return fatalTrap();
+      return trapProcessWorker();
     }
     // WHY: eager normalization would change ordinary CatchAllRef/rethrow
     // behavior even when fork is never called. The broker normalizes only if

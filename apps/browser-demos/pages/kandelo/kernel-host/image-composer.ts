@@ -211,16 +211,13 @@ export async function composeKandeloImage(
   job: ComposeImageJob,
   tick: (message: string) => void,
 ): Promise<ComposeImageResult> {
-  // BEFORE the first use of the bridge, not before the first WRITE to it:
-  // `readImageMetadata` and `readImageCapacity` instantiate the module to read
-  // the image, because the module is what knows the layout.
   await ensureImageWriterInstalled();
-  // THE ABI CHECK IS THIS READ. `readImageMetadata` loads the image to read
-  // it, and the loader refuses an image declaring an ABI it does not speak
-  // (EPROTO), so a separate assert after it could never fire.
-  let vfsMetadata: ReturnType<typeof KandeloImageFs.readImageMetadata>;
+  // Load once for validation, metadata, capacity, and composition. Each
+  // additional reader instantiates another Wasm heap holding the entire image;
+  // those dropped heaps can coexist until WebKit collects them on iOS.
+  const buildFs = KandeloImageFs.create();
   try {
-    vfsMetadata = KandeloImageFs.readImageMetadata(job.imageBytes);
+    buildFs.loadImage(job.imageBytes);
   } catch (error) {
     if ((error as { errno?: number } | null)?.errno === ERRNO.EPROTO) {
       throw new Error(
@@ -230,12 +227,13 @@ export async function composeKandeloImage(
     }
     throw error;
   }
+  const vfsMetadata = buildFs.getImageMetadata();
   assertVfsImageFitsProfile(
     // `byteLength` is the image as fetched; `maxByteLength` is what it
     // DECLARES it may grow to.
     {
       byteLength: job.imageBytes.byteLength,
-      ...KandeloImageFs.readImageCapacity(job.imageBytes),
+      maxByteLength: buildFs.exportCapacityBytes(),
     },
     job.maxVfsByteLength,
     declaredVfsMaxByteLength(vfsMetadata),
@@ -251,8 +249,6 @@ export async function composeKandeloImage(
   // Seals are verified by the load itself: `loadImage` runs
   // `seal::verify_cohorts` and unloads the image if it fails, so an
   // unverified loaded image is unrepresentable.
-  const buildFs = KandeloImageFs.create();
-  buildFs.loadImage(job.imageBytes);
   buildFs.setImageCapacity(job.maxVfsByteLength);
   const terminalSession = readImageExperimentalTerminalSession(buildFs);
   if (!job.hasCandidateEvidence) {

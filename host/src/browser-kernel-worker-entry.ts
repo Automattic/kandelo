@@ -1,3 +1,7 @@
+import { BrowserPcmMirror } from "./audio/browser-pcm-mirror";
+import { BrowserFramebufferMirrors } from "./framebuffer/browser-mirror";
+import { AudioActivityLatch } from "./audio/audio-activity-latch";
+import { markPcmFatalError, pcmControlWords, snapshotPcmTransport } from "./audio/pcm-transport";
 import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 import { OwnedJobs } from "./owned-jobs";
 /**
@@ -200,7 +204,7 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
   memoryRetirementSafe: boolean;
-  /** True once this generation's Memory was cloned to browser main for fb0. */
+  /** True once this generation published browser display storage. */
   framebufferExposed: boolean;
   /** Exact browser-main alias teardown, shared by competing failure paths. */
   framebufferRelease?: Promise<boolean>;
@@ -302,6 +306,15 @@ const {
  * `intentionallyTerminated` set on the Node host (PR #410).
  */
 const intentionallyTerminated = new WeakSet<object>();
+
+const framebufferMirrors = new BrowserFramebufferMirrors((pid, generation) => {
+  const current = processes.get(pid);
+  return current?.generation === generation ? current.memory : undefined;
+});
+
+let pcmMirror: BrowserPcmMirror | null = null;
+let pcmAudioActivity: AudioActivityLatch | null = null;
+let pcmConnection: MessagePort | null = null;
 
 const MAX_SHEBANG_DEPTH = 4;
 
@@ -612,12 +625,11 @@ function allocateProcessGeneration(): number {
 }
 
 /**
- * Prove that BrowserKernel no longer owns this generation's structured-clone
- * Memory wrapper or framebuffer-registry typed views.
+ * Confirm that BrowserKernel removed this generation's display binding.
  *
- * WHY: Worker quiescence only fences the process and kernel-worker realms.
- * Browser main is an independent owner after fb_bind posts WebAssembly.Memory,
- * so its exact-generation acknowledgement is part of retirement too. A
+ * The main thread owns only independent pixels, never guest Memory. Keep the
+ * exact-generation acknowledgement so delayed old-image messages cannot
+ * disturb a successor's display. A
  * timeout does not pretend success: callers route the lease through forced
  * retirement, which remains safe because process Memory is never reused. The
  * ownership boundary and RSS evidence are recorded in
@@ -627,6 +639,7 @@ function releaseMainFramebufferGeneration(
   pid: number,
   info: ProcessInfo,
 ): Promise<boolean> {
+  framebufferMirrors.unbind(pid, info.generation);
   if (!info.framebufferExposed) return Promise.resolve(true);
   if (info.framebufferRelease) return info.framebufferRelease;
 
@@ -1188,17 +1201,14 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     }
   }
 
-  // /dev/fb0 forwarding: the registry lives in this worker, but the canvas
-  // lives on the main thread. WHY: today's zero-copy fbdev contract therefore
-  // exposes raw process Memory and must pair every bind with the exact release
-  // fence above; see docs/measurements/2026-07-28-process-memory-retirement-rss.md.
+  // Forward bounded pixels, never an entire process address space.
   kernelWorker.framebuffers.onChange((pid, ev) => {
     const processInfo = processes.get(pid);
     if (!processInfo) return;
     if (ev === "bind") {
       if (processInfo.vforkWorkspace && !processInfo.vforkWorkspace.released) {
         const error = new Error(
-          `vfork child ${pid} attempted to expose borrowed Memory to browser main`,
+          `vfork child ${pid} attempted to bind a borrowed framebuffer before exec`,
         );
         if (vforkLifetimes.isActiveBorrower(processInfo)) {
           vforkLifetimes.requireAddressSpaceContainment(processInfo, error);
@@ -1211,8 +1221,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         return;
       }
       const b = kernelWorker.framebuffers.get(pid);
-      const memory = kernelWorker.getProcessMemory(pid);
-      if (!b || !memory) return;
+      if (!b) return;
+      const pixels = framebufferMirrors.bind(b, processInfo.generation);
       processInfo.framebufferExposed = true;
       post({
         type: "fb_bind",
@@ -1224,9 +1234,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         h: b.h,
         stride: b.stride,
         fmt: "BGRA32",
-        memory,
+        pixels,
       });
     } else {
+      framebufferMirrors.unbind(pid, processInfo.generation);
       post({
         type: "fb_unbind",
         pid,
@@ -1234,39 +1245,6 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       });
     }
   });
-  // memory.grow invalidates the previously-shared SAB; forward the new
-  // Memory so the main-thread renderer rebuilds its view.
-  const origRebind = kernelWorker.framebuffers.rebindMemory.bind(
-    kernelWorker.framebuffers,
-  );
-  kernelWorker.framebuffers.rebindMemory = (pid: number) => {
-    origRebind(pid);
-    if (!kernelWorker.framebuffers.get(pid)) return;
-    const memory = kernelWorker.getProcessMemory(pid);
-    const processInfo = processes.get(pid);
-    if (memory && processInfo) {
-      if (processInfo.vforkWorkspace && !processInfo.vforkWorkspace.released) {
-        const error = new Error(
-          `vfork child ${pid} attempted to rebind borrowed Memory in browser main`,
-        );
-        if (vforkLifetimes.isActiveBorrower(processInfo)) {
-          vforkLifetimes.requireAddressSpaceContainment(processInfo, error);
-          reportHostDiagnostic({
-            pid,
-            source: "vfork framebuffer ownership",
-            message: `[vfork] ${error.message}`,
-          });
-        }
-        return;
-      }
-      post({
-        type: "fb_rebind_memory",
-        pid,
-        generation: processInfo.generation,
-        memory,
-      });
-    }
-  };
   // Write-based fb deltas (fbDOOM-style): forward each pixel chunk
   // to the main thread, which mirrors them into its own registry.
   // The bytes here are non-shared (kernel.ts copies from the kernel
@@ -1299,7 +1277,17 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = true;
 
   const pcmTransport = kernelWorker.claimPcmTransport(true);
-  post({ type: "ready", pcmTransport });
+  pcmMirror = new BrowserPcmMirror(pcmTransport);
+  pcmAudioActivity = new AudioActivityLatch(pcmControlWords(pcmTransport), () => {
+    post({ type: "audio_activity" });
+  });
+  pcmAudioActivity.start();
+  const connection = new MessageChannel();
+  pcmConnection = connection.port1;
+  pcmConnection.onmessage = event => {
+    if (event.data?.type === "attach") pcmConnection?.postMessage(pcmMirror?.transport);
+  };
+  post({ type: "ready", pcmPort: connection.port2 }, [connection.port2]);
 }
 
 // ── Spawn ──
@@ -3554,6 +3542,13 @@ async function finishProcessExit(
     // termination is in flight those duplicate exits still need channel
     // completions, otherwise the worker can park in Atomics.wait with no
     // registered listener left to wake it.
+    // Rust exit/signal delivery can precede the Worker observing its wake.
+    // Release parked siblings through the idempotent exited-channel transport.
+    try {
+      await kernelWorker.killBlockedProcessForTeardown(pid);
+    } catch (error) {
+      console.warn(`[kernel-worker] pid=${pid} retirement wake failed: ${String(error)}`);
+    }
     const workerQuiescent = await waitForWorkerQuiescence(
       info.workerQuiescence,
     );
@@ -4201,7 +4196,14 @@ async function performDestroy() {
         "Audio clock did not consume the queued close tail before machine teardown; the remaining tail was discarded.",
     });
   }
+  framebufferMirrors.clear();
   remoteSegmentRuntime.close();
+  pcmMirror?.close();
+  pcmMirror = null;
+  pcmAudioActivity?.stop();
+  pcmAudioActivity = null;
+  pcmConnection?.close();
+  pcmConnection = null;
   kernelWorker.shutdownPcmTransport();
   initReady = false;
   initFailure = "kernel worker destroyed";
@@ -4529,6 +4531,16 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     }
     case "mouse_inject": handleMouseInject(msg); break;
+    case "audio_snapshot":
+      try {
+        respond(msg.requestId, snapshotPcmTransport(kernelWorker.claimPcmTransport(true)));
+      } catch (error) {
+        respondError(msg.requestId, formatError(error));
+      }
+      break;
+    case "pcm_output_failed":
+      markPcmFatalError(pcmControlWords(kernelWorker.claimPcmTransport(true)));
+      break;
     case "audio_drain": handleAudioDrain(msg); break;
     case "enum_procs": {
       // Snapshot the kernel's process table for the Inspector → Procs tab.

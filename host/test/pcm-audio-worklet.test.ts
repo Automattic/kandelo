@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { BrowserPcmMirror } from "../src/audio/browser-pcm-mirror";
+import { describe, expect, it, vi } from "vitest";
 import {
   PCM_CONTROL,
   PcmSampleFormat,
   PcmStreamState,
   PcmTransportFlag,
   pcmControlWords,
+  markPcmFatalError,
+  signalPcmConsumerProgress,
   readConsumerPosition,
   readEffectiveConsumerPosition,
   storeU32,
@@ -352,5 +355,122 @@ describe("Kandelo PCM AudioWorklet", () => {
     Atomics.notify(words, PCM_CONTROL.wakeSeq);
 
     expect(wokeAll).toBe(true);
+  });
+});
+
+
+describe("AudioWorklet memory ownership", () => {
+  it("drops all transport views and stops processing on release", () => {
+    const processor = new KandeloPcmProcessor(processorOptions(createPcmTransport()));
+    expect(processor.words).not.toBeNull();
+    expect(processor.ring).not.toBeNull();
+    const replies: unknown[] = [];
+    processor.port.postMessage = (message: unknown) => replies.push(message);
+    processor.port.onmessage({ data: { type: "release" } });
+    expect(processor.words).toBeNull();
+    expect(processor.ring).toBeNull();
+    expect(replies).toEqual([{ type: "released" }]);
+    const output = new Float32Array([1, 1]);
+    expect(processor.process([], [[output]])).toBe(false);
+    expect([...output]).toEqual([0, 0]);
+  });
+
+  it("attaches kernel memory directly from its transferred connection", async () => {
+    const descriptor = createPcmTransport();
+    const { buffer: _buffer, ...config } = processorOptions(descriptor);
+    const processor = new KandeloPcmProcessor(config);
+    const connection = new MessageChannel();
+    try {
+      const attached = new Promise<void>(resolve => {
+        connection.port1.onmessage = event => {
+          expect(event.data).toEqual({ type: "attach" });
+          connection.port1.postMessage(descriptor);
+          resolve();
+        };
+      });
+      processor.port.onmessage({ data: { type: "attach", port: connection.port2 } });
+      await attached;
+      await expect.poll(() => processor.words !== null).toBe(true);
+      Atomics.store(pcmControlWords(descriptor), PCM_CONTROL.underruns, 77);
+      expect(Atomics.load(processor.words, PCM_CONTROL.underruns)).toBe(77);
+      processor.port.onmessage({ data: { type: "release" } });
+      expect(processor.connection).toBeNull();
+      expect(processor.words).toBeNull();
+    } finally {
+      connection.port1.close();
+      connection.port2.close();
+    }
+  });
+});
+
+
+describe("bounded browser PCM relay", () => {
+  it("returns worklet underruns and permanent sink failures to the kernel", () => {
+    vi.useFakeTimers();
+    const original = createPcmTransport();
+    const mirror = new BrowserPcmMirror(original);
+    const source = pcmControlWords(original), target = pcmControlWords(mirror.transport);
+    try {
+      Atomics.store(target, PCM_CONTROL.underruns, 7);
+      Atomics.or(target, PCM_CONTROL.flags, PcmTransportFlag.UnderrunActive);
+      signalPcmConsumerProgress(target);
+      vi.advanceTimersByTime(2);
+      expect(Atomics.load(source, PCM_CONTROL.underruns)).toBe(7);
+      expect(Atomics.load(source, PCM_CONTROL.flags) & PcmTransportFlag.UnderrunActive).not.toBe(0);
+      markPcmFatalError(target);
+      vi.advanceTimersByTime(2);
+      expect(Atomics.load(source, PCM_CONTROL.flags) & PcmTransportFlag.FatalError).not.toBe(0);
+      expect(readConsumerPosition(source)).toBe(0n);
+    } finally {
+      mirror.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("isolates backing storage and relays the worklet clock through ring wrap and reset", () => {
+    vi.useFakeTimers();
+    const original = createPcmTransport({ format: PcmSampleFormat.U8, channels: 1,
+      frameBytes: 1, activeCapacityBytes: 8, fragmentBytes: 2, fragments: 4 });
+    writeRing(original, 0n, new Uint8Array([128, 255, 0, 192, 128, 128, 128, 128]), 8);
+    writeProducer(original, 8n);
+    const mirror = new BrowserPcmMirror(original);
+    const source = pcmControlWords(original);
+    const target = pcmControlWords(mirror.transport);
+    const processor = new KandeloPcmProcessor(processorOptions(mirror.transport));
+    try {
+      expect(mirror.transport.buffer).not.toBe(original.buffer);
+      expect(mirror.transport.buffer.byteLength).toBe(128 + 65536);
+      const first = new Float32Array(6);
+      processor.process([], [[first]]);
+      expect([...first]).toEqual([0, 127 / 128, -1, 0.5, 0, 0]);
+      expect(readConsumerPosition(source)).toBe(0n);
+      vi.advanceTimersByTime(2);
+      expect(readConsumerPosition(source)).toBe(6n);
+      writeRing(original, 8n, new Uint8Array([255, 0, 192, 128]), 8);
+      writeProducer(original, 12n);
+      vi.advanceTimersByTime(2);
+      const wrapped = new Float32Array(6);
+      processor.process([], [[wrapped]]);
+      expect([...wrapped]).toEqual([0, 0, 127 / 128, -1, 0.5, 0]);
+      vi.advanceTimersByTime(2);
+      expect(readConsumerPosition(source)).toBe(12n);
+
+      writeRing(original, 12n, new Uint8Array([0, 255, 192, 128]), 8);
+      writeProducer(original, 16n);
+      writeDiscard(original, 14n);
+      storeU32(source, PCM_CONTROL.generation, 2);
+      vi.advanceTimersByTime(2);
+      const reset = new Float32Array(2);
+      processor.process([], [[reset]]);
+      expect([...reset]).toEqual([0.5, 0]);
+      vi.advanceTimersByTime(2);
+      expect(readConsumerPosition(source)).toBe(16n);
+      expect(readConsumerPosition(target)).toBe(16n);
+      mirror.close();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      mirror.close();
+      vi.useRealTimers();
+    }
   });
 });

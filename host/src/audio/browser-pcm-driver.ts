@@ -13,6 +13,8 @@ import {
 
 export interface BrowserPcmDriverOptions {
   workletUrl: string | URL;
+  /** Propagate sink failure when only the worker owns the PCM header. */
+  onFatalError?: () => void;
   createContext?: () => AudioContext;
   createNode?: (
     context: AudioContext,
@@ -54,6 +56,7 @@ export class BrowserPcmDriver implements PcmOutputDriver {
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
   private transport: PcmTransportDescriptor | null = null;
+  private remotePrepared = false;
   private state: PcmOutputState = "unprepared";
   private preparing: Promise<void> | null = null;
   /** True when this driver created a private context it must close. */
@@ -63,9 +66,28 @@ export class BrowserPcmDriver implements PcmOutputDriver {
 
   constructor(private readonly options: BrowserPcmDriverOptions) {}
 
+  /** Forward the connection without receiving a kernel-memory wrapper. */
+  prepareRemote(port: MessagePort): Promise<void> {
+    if (this.state === "closed") {
+      return Promise.reject(new Error("PCM output is closed"));
+    }
+    if (this.remotePrepared) return this.preparing ?? Promise.resolve();
+    if (this.transport) {
+      return Promise.reject(new Error("PCM output already has a transport"));
+    }
+    this.remotePrepared = true;
+    this.preparing = this.prepareInner(null, port).finally(() => {
+      this.preparing = null;
+    });
+    return this.preparing;
+  }
+
   prepare(transport: PcmTransportDescriptor): Promise<void> {
     if (this.state === "closed") {
       return Promise.reject(new Error("PCM output is closed"));
+    }
+    if (this.remotePrepared) {
+      return Promise.reject(new Error("PCM output already has a remote transport"));
     }
     validatePcmTransport(transport);
     if (this.transport) {
@@ -169,6 +191,27 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     this.context = null;
     this.transport = null;
     if (node) {
+      // A disconnected source processor that returns true remains alive in
+      // the shared context. Require it to drop its kernel-memory views before
+      // closing the port; disconnect alone leaves every old machine pinned.
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => {
+          console.warn("[BrowserPcmDriver] AudioWorklet memory release acknowledgement timed out");
+          resolve();
+        }, 1_000);
+        node.port.onmessage = event => {
+          if (event.data?.type !== "released") return;
+          clearTimeout(timeout);
+          resolve();
+        };
+        try {
+          node.port.postMessage({ type: "release" });
+        } catch (error) {
+          clearTimeout(timeout);
+          console.warn("[BrowserPcmDriver] AudioWorklet release failed", error);
+          resolve();
+        }
+      });
       node.port.onmessage = null;
       node.onprocessorerror = null;
       node.disconnect();
@@ -201,7 +244,10 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     return () => this.listeners.delete(listener);
   }
 
-  private async prepareInner(transport: PcmTransportDescriptor): Promise<void> {
+  private async prepareInner(
+    transport: PcmTransportDescriptor | null,
+    remotePort?: MessagePort,
+  ): Promise<void> {
     const AudioContextCtor =
       globalThis.AudioContext ??
       (
@@ -284,6 +330,9 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       const node = this.options.createNode
         ? this.options.createNode(context, "kandelo-pcm-output", options)
         : new AudioWorkletNode(context, "kandelo-pcm-output", options);
+      if (remotePort) {
+        node.port.postMessage({ type: "attach", port: remotePort }, [remotePort]);
+      }
       node.port.onmessage = (event: MessageEvent<unknown>) => {
         const message = event.data as { type?: unknown; message?: unknown };
         if (message?.type !== "error") return;
@@ -359,6 +408,7 @@ export class BrowserPcmDriver implements PcmOutputDriver {
   }
 
   private markFatalError(): void {
+    this.options.onFatalError?.();
     if (!this.transport) return;
     markPcmFatalError(pcmControlWords(this.transport));
   }
