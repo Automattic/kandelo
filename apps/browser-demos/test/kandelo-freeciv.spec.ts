@@ -75,6 +75,8 @@ async function gotoMachine(...args: Parameters<typeof gotoDefaultMachine>) {
   if (profile !== "freeciv") return;
   await running(page);
   await showGame(page);
+  const display = (await canvas(page).boundingBox())!;
+  await waitForPanel(page, display.width - 60, display.height - 60);
   await canvas(page).click({ position: await menuPosition(page, "quit") });
   await expect.poll(() => terminalLines(page), { timeout: 30_000 }).toMatch(/kandelo\$\s*$/);
   await guestCommand(page, [
@@ -84,6 +86,9 @@ async function gotoMachine(...args: Parameters<typeof gotoDefaultMachine>) {
   await page.getByRole("button", { name: "Demo", exact: true }).click();
   await multiplayer(page, "local");
   await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 60_000 });
+  // Dispatch completion can leave the previous menu on screen. Observe
+  // the replacement client's selected scanout before sending its input.
+  await expect(page.getByText(/960×540 · \d+ flips/i)).toBeVisible({ timeout: 60_000 });
 }
 
 async function nativeAction(page: Page, action: () => Promise<unknown>) {
@@ -685,7 +690,9 @@ for (const density of [1, 2]) {
           }
         };
       });
-      await gotoMachine(page, "freeciv");
+      // Start fresh: the saved-resolution fixture quits a previous client,
+      // whose already-played audio must not satisfy this acceptance check.
+      await gotoDefaultMachine(page, "freeciv");
       await running(page);
       await showGame(page);
       // A trusted gesture activates the machine's real AudioContext.
@@ -1286,9 +1293,10 @@ for (const density of [1, 2]) {
           await expect.poll(async () => (await page.screenshot({ clip: {
             x: box.x + 40, y: box.y + 60, width: 40, height: 30,
           } })).byteLength, { timeout: 30_000 }).toBeLessThan(300);
-          await canvas(page).focus();
-          await page.keyboard.press("Escape");
-          await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100);
+          // Open the visible game menu: Escape can first cancel a unit
+          // action. Terrain can also satisfy a single warm-pixel check.
+          await canvas(page).click({ position: await nativePosition(page, 16, 16) });
+          await waitForOptions(page);
           await page.screenshot({ path: `../../.context/freeciv-quit-options-${density}.png`, scale: "css" });
           // Click the native settings dialog's bottom Quit entry.
           await canvas(page).click({ position: { x: box.width / 2, y: box.height / 2 + 171 } });
