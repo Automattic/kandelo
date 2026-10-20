@@ -2869,6 +2869,12 @@ cmd_browser() {
 
 cmd_test() {
     local suites=("$@")
+    if [ "$#" -eq 1 ] && [ "$1" = "browser-memory" ]; then
+        # This gate prepares current products before checking runtime behavior,
+        # and owns its declared toolchain even when invoked from a plain shell.
+        exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
+            bash "$REPO_ROOT/scripts/check-browser-memory.sh"
+    fi
     if [ ${#suites[@]} -eq 0 ]; then
         suites=(cargo vitest sdk libc posix)
     fi
@@ -3121,6 +3127,7 @@ cmd_list() {
     echo "  ./run.sh test sortix                 Sortix os-test suite"
     echo "  ./run.sh test browser                Browser E2E tests (fast only)"
     echo "  ./run.sh test browser-all            Browser E2E tests (including slow)"
+    echo "  ./run.sh test browser-memory         Prepare + ownership + Node/Bun + three-engine switching"
     echo "  ./run.sh test mariadb                MariaDB mysql-test suite (Node.js)"
     echo "  ./run.sh test browser-mariadb        MariaDB mysql-test suite (browser)"
     echo "  ./run.sh test nginx                  nginx test suite (32 upstream tests)"

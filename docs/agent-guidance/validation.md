@@ -86,6 +86,54 @@ rustc -vV | awk '/^host/ {print $2}'
 `scripts/ci-run-test-suite.sh` does not currently expose an `abi` suite; run
 `bash scripts/check-abi-version.sh` separately for ABI-adjacent changes.
 
+## Browser memory regression gate
+
+Run `./run.sh test browser-memory` after changing shared-memory ownership,
+memory ceilings, audio, framebuffer/graphics lifecycle, image composition,
+or machine teardown. This standalone suite enters the declared dev shell,
+prepares current browser products through the normal source build graph,
+builds the host, and runs:
+
+- Source-only browser protocol and message-probe checks, including negative
+  cases for whole Wasm memories and tiny views into shared backing storage.
+- The host memory-authority audit, memory budgets, bounded device buffers,
+  futex retirement, exit-trap, generation, and teardown regressions;
+  blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
+- Four Doom → Quake → WordPress cycles in each of Chromium, Firefox, and
+  WebKit, in one page per engine with the constrained memory profile. Games
+  must render and reach running audio through trusted activation. WordPress
+  must serve Hello world. Reloads, runtime errors, forced teardown, unreviewed
+  shared worker messages, and main-thread shared Wasm allocations fail the test.
+
+This gate owns its browser server; set `KANDELO_PLAYWRIGHT_PORT` if the
+default port is occupied. Missing products or the Quake archive fail the
+required run instead of becoming skipped coverage. Initial source builds can
+take longer than ten minutes: use `scripts/agent-job` for the complete gate
+when inputs are not already built. Later runs reuse the normal build cache.
+The command is independent of whether GitHub Actions is enabled. The CI
+browser unit tests run the protocol/probe checks, the shared source-only
+host selection checks ownership and lifecycle, and the routine three-engine
+smoke list includes the fast guest exit-trap regression.
+
+Keep every cycle in the same persistent page and audio realm. Do not use
+fresh contexts, page reloads, forced GC, or a new OS process between cycles:
+those can erase the leak being measured. Declared shared-memory reservation
+and live owners matter; low RSS alone does not establish reclamation. The
+protocol type audit covers declared payloads; the runtime probe covers
+actual messages, including dynamically typed RPC results. Neither replaces
+tests that prove device storage is independent of guest memory.
+
+Playwright WebKit is useful coverage, but is not native iOS Safari evidence.
+For browser memory/lifecycle changes, also repeat the switching sequence in
+native Safari where available, enable audio through real user activation,
+and report the OS/device or simulator plus the exact cycles completed. If a
+graphics branch is integrated afterward, rebuild and rerun against that
+combined tree. Do not carry forward another branch's results as combined
+validation. Extend the repeated sequence to launch any newly introduced
+device consumer: a new KMS application needs a KMS launch in the cycle
+alongside the existing framebuffer and web cases. These checks supplement
+relevant POSIX/conformance suites.
+
 ## Waiting on long builds and suites
 
 `./run.sh setup`, `local-build`, full Vitest, and the conformance suites can

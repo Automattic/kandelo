@@ -48,6 +48,31 @@ Node-first or browser-later host changes.
 
 Before and after host work, ask: "What does this look like on the other host?"
 
+## Persistent browser realms must not own guest address spaces
+
+Browser main and the page-wide AudioContext outlive individual machines.
+Never send them a kernel/process `WebAssembly.Memory`, its shared backing,
+or a view into it. A tiny subarray retains the entire backing reservation;
+nulling a field, disconnecting a node, and low RSS do not prove reclamation.
+Use independent bounded device buffers and copied diagnostic values. Device
+relays must preserve the real audio clock, queue capacity, and backpressure.
+Only disposable workers may retain guest memory. Normal teardown awaits each
+exact retirement fence before terminating its realm. If a fence never
+arrives, keep forced termination/containment visible; do not report proven
+reclamation or reuse the address space on that basis.
+
+Every asynchronous resource needs an explicit end: retire engine futex waits
+before dropping their bookkeeping, release AudioWorklet views/ports and stop
+its processor, and cancel device timers. Exit must escape guest exception
+handlers; a JavaScript-thrown RuntimeError is catchable by Wasm handlers.
+Preserve Rust's exit status and avoid guest deallocators on retired channels.
+
+For ownership, memory-ceiling, audio, framebuffer, graphics-lifecycle, or
+machine-teardown changes, run `./run.sh test browser-memory`. See the
+[validation contract](validation.md#browser-memory-regression-gate) for its
+scope and native Safari follow-up. A clean merge with another graphics branch
+does not replace rerunning this gate on the combined tree and its artifacts.
+
 Keep a command's job ID until its owner confirms release or absence. A caller
 timeout or failed read does not prove that the process family has exited or
 that its workers have detached. If release is refused, retain the ID for
