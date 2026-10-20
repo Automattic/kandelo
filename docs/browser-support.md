@@ -2723,14 +2723,18 @@ games on another list and join the game, with no restart, even though Quake
 was already running when the session started. (Upstream TyrQuake 0.71 never
 registers its network console commands, so New Game could only start a
 one-player game that never listened; the package's
-`0005-register-network-console-commands.patch` registers them.) A LAN game should run as a private server
-(`fbdoom -privateserver`): the browser's internet egress carries TCP only,
-so UDP to Doom's internet master server fails with `EHOSTUNREACH`, and
-fbdoom stops with a fatal error when its registration send fails. The Doom
-machine's **LAN game** dock menu runs these commands for the player: a host
-co-op or deathmatch entry restarts the game as `fbdoom -server
--privateserver -nodes N` (plus `-deathmatch`), so the host plays and the
-game starts once N players have joined; **Join a LAN game** runs `fbdoom
+`0005-register-network-console-commands.patch` registers them.) A LAN game
+should run as a private server (`fbdoom -privateserver`): the browser's
+internet egress carries TCP only, so UDP to Doom's internet master server
+fails with `EHOSTUNREACH`, and fbdoom stops with a fatal error when its
+registration send fails. The Doom machine's **LAN game** dock menu runs
+these commands for the player: a host co-op or deathmatch entry restarts the
+game as `fbdoom -server -privateserver -nodes N` (plus `-deathmatch`), so
+the host plays and the game starts once N players have joined. While it
+waits, each computer shows chocolate-doom's waiting room on its display (who
+has joined, drawn with Doom's font, since fbDOOM lacks the textscreen
+library upstream uses): the host can press Space to start sooner with
+whoever is there, and Esc quits; **Join a LAN game** runs `fbdoom
 -autojoin`, which searches the session by broadcast and stops with "No
 server found on local LAN" when none answers; and **Back to single player**
 restarts the ordinary game without leaving the session. Every player uses
