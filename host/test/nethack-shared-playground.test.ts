@@ -140,8 +140,14 @@ describe.skipIf(!available)("NetHack shared playground (Node host, shell product
       const atMap = await until(() => /Dlvl:?\s*1/.test(screenText(pty)), 60_000, () => key("\x1b"));
       const opening = screenText(pty);
       expect(atMap, `${player.name} reached the map:\n${opening}`).toBe(true);
-      if (restore) expect(opening).toContain("Restoring save file");
-      else expect(opening).not.toContain("Restoring save file");
+      if (restore) {
+        expect(opening).toContain("Restoring save file");
+        // The banner names the Kandelo port, not the OS of the machine that
+        // ran the build's host-side makedefs.
+        expect(opening).toContain("Version 3.6.7 Kandelo");
+      } else {
+        expect(opening).not.toContain("Restoring save file");
+      }
 
       pty = "";
       key("S");

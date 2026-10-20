@@ -62,6 +62,9 @@ NETHACK_HACKDIR="${NETHACK_HACKDIR:-/usr/share/nethack}"
 # install it. The shell image creates it: see installNethackGames() in
 # images/vfs/scripts/shell-lazy-archives.ts.
 NETHACK_VAR_PLAYGROUND="${NETHACK_VAR_PLAYGROUND:-/var/games/nethack}"
+# The platform name in the version banner and help menu. See the
+# include/unixconf.h patch for why it is pinned rather than detected.
+NETHACK_PORT_ID="Kandelo"
 SOURCE_MARKER="$SRC_DIR/.kandelo-nethack-source"
 
 validate_guest_path() {
@@ -118,9 +121,9 @@ export CPPFLAGS="${CPPFLAGS:-} -I$NCURSES_PREFIX/include"
 export LDFLAGS="${LDFLAGS:-} -L$NCURSES_PREFIX/lib"
 
 # --- Stage verified NetHack source ---
-expected_source_marker="$(printf '%s\n%s\n%s\n%s\n%s' \
+expected_source_marker="$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
     "$NETHACK_VERSION" "$SOURCE_URL" "$SOURCE_SHA256" \
-    "$NETHACK_HACKDIR" "$NETHACK_VAR_PLAYGROUND")"
+    "$NETHACK_HACKDIR" "$NETHACK_VAR_PLAYGROUND" "$NETHACK_PORT_ID")"
 if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
     rm -rf "$SRC_DIR" "$BIN_DIR" "$RUNTIME_DIR"
 fi
@@ -187,6 +190,13 @@ fi
 # Override HACKDIR and add VAR_PLAYGROUND so a Formula can compile the exact
 # poured opt-prefix data path while a direct registry build retains its
 # historical /usr/share/nethack default.
+#
+# Pin PORT_ID. NetHack's global.h picks it from the compiler's OS macros
+# unless a *conf.h already set it, and this header is included first. The
+# version banner comes from include/date.h, which the host-built makedefs
+# writes, so without a pinned value the banner named the build machine's OS
+# ("MacOSX" from a Mac, "Unix" from Linux) while the wasm game's own code
+# said "Unix". Both are built from this header, so both now say the same.
 UNIXCONF_H="include/unixconf.h"
 if [ -f "$UNIXCONF_H" ] && ! grep -q "wasm32posix patch" "$UNIXCONF_H"; then
     echo "==> Patching include/unixconf.h..."
@@ -201,6 +211,7 @@ if [ -f "$UNIXCONF_H" ] && ! grep -q "wasm32posix patch" "$UNIXCONF_H"; then
 /* wasm32posix patch */
 #define HACKDIR "$NETHACK_HACKDIR"
 #define VAR_PLAYGROUND "$NETHACK_VAR_PLAYGROUND"
+#define PORT_ID "$NETHACK_PORT_ID"
 EOF
     rm -f "$UNIXCONF_H.bak"
 fi
