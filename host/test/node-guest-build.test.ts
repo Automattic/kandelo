@@ -82,3 +82,55 @@ describe("validateGuestBuildRequest", () => {
       .toThrow(/timeoutMs/);
   });
 });
+
+describe("parseGuestBuildArgs", () => {
+  it("parses the full flag set and the command after --", async () => {
+    const { parseGuestBuildArgs } = await import("../../scripts/guest-build");
+    expect(parseGuestBuildArgs([
+      "--kernel", "/k.wasm",
+      "--image", "/img.vfs.zst",
+      "--workspace", "/w",
+      "--input", "/deps/ncurses=/abs/ncurses",
+      "--input", "/deps/zlib=/abs/zlib",
+      "--env", "CC=cc",
+      "--env", "CFLAGS=-O2 -g",
+      "--timeout-ms", "900000",
+      "--log", "/w/guest.log",
+      "--source-date-epoch", "1704067200",
+      "--", "/bin/sh", "-c", "make -j2",
+    ])).toEqual({
+      kernel: "/k.wasm",
+      image: "/img.vfs.zst",
+      log: "/w/guest.log",
+      request: {
+        workspace: "/w",
+        inputs: [
+          { guestPath: "/deps/ncurses", hostPath: "/abs/ncurses" },
+          { guestPath: "/deps/zlib", hostPath: "/abs/zlib" },
+        ],
+        env: { CC: "cc", CFLAGS: "-O2 -g" },
+        timeoutMs: 900000,
+        sourceDateEpoch: 1704067200,
+        argv: ["/bin/sh", "-c", "make -j2"],
+      },
+    });
+  });
+
+  it("refuses unknown flags, missing values, missing -- and missing required flags", async () => {
+    const { parseGuestBuildArgs } = await import("../../scripts/guest-build");
+    const required = [
+      "--kernel", "/k", "--image", "/i", "--workspace", "/w",
+      "--timeout-ms", "1000", "--source-date-epoch", "0",
+    ];
+    expect(() => parseGuestBuildArgs([...required, "--bogus", "x", "--", "/bin/sh"]))
+      .toThrow(/--bogus/);
+    expect(() => parseGuestBuildArgs([...required, "/bin/sh"])).toThrow(/--/);
+    expect(() => parseGuestBuildArgs(["--kernel"])).toThrow(/--kernel/);
+    expect(() => parseGuestBuildArgs(["--kernel", "/k", "--", "/bin/sh"]))
+      .toThrow(/--image/);
+    expect(() => parseGuestBuildArgs([...required, "--input", "nohost", "--", "/bin/sh"]))
+      .toThrow(/--input/);
+    expect(() => parseGuestBuildArgs([...required.slice(0, 6), "--timeout-ms", "soon",
+      "--source-date-epoch", "0", "--", "/bin/sh"])).toThrow(/--timeout-ms/);
+  });
+});
