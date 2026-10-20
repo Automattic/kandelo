@@ -115,12 +115,18 @@ export async function expectPaired(page: Page, paired: boolean, timeout = 30_000
   await expect(sharingStatus(page)).toHaveCount(paired ? 1 : 0, { timeout });
 }
 
-/** Give the viewer's copy of the session's machine up to watch the host's. */
+/**
+ * Give the viewer's copy of the session's machine up to watch the host's.
+ *
+ * Under a join grant the released page starts its replica at once, so its
+ * idle state can pass between two polls. The idle page and the replica both
+ * hold the viewer role.
+ */
 export async function watchSharer(viewer: Page): Promise<void> {
   await openNetworkPanel(viewer);
   await viewer.getByRole("button", { name: "Watch host's machine", exact: true }).click();
-  await expect(viewer.locator(".kdock-status-text"))
-    .toHaveAttribute("data-status", "idle", { timeout: 60_000 });
+  await expect(viewer.locator(".kdock-status"))
+    .toHaveAttribute("data-role", "viewer", { timeout: 60_000 });
 }
 
 /** Close the network session panel, which covers the page while open. */
