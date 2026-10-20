@@ -49,10 +49,12 @@ export type {
 export { OpfsFileSystem } from "./opfs";
 export { OpfsChannel, OpfsChannelStatus, OpfsOpcode, OPFS_CHANNEL_SIZE } from "./opfs-channel";
 export { NodeTimeProvider, BrowserTimeProvider } from "./time";
+export { HostRandomProvider } from "./random";
 export { ST_NOSUID } from "./types";
 export type {
   FileSystemBackend,
   TimeProvider,
+  RandomProvider,
   MountConfig,
   MountSetIdCapability,
   DirEntry,

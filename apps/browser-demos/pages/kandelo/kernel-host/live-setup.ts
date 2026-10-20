@@ -2,6 +2,9 @@ import { observePreviewRequest } from "../panes/preview-progress";
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
+import type { MachineCheckpoint } from "@host/migration/checkpoint";
+import type { ReplicationLogEntry } from "@host/replication/log";
+import type { ReplicationReplaySpec } from "@host/replication/worker";
 import { setWebMcpSession, type WebMcpIdentity } from "../webmcp/runtime";
 import { detectRuntimeMemoryProfile } from "@host/runtime-memory-profile";
 import { connectorModeSize } from "@host/dri/kms-registry";
@@ -564,6 +567,12 @@ export interface CreateLiveHostOptions {
    * silence isn't mistaken for the script having run.
    */
   legacyScriptIgnored?: boolean;
+  /**
+   * True when the page opens a network session invitation. Joining needs a
+   * running computer, so an invitation asks for a machine even without a
+   * boot query.
+   */
+  invited?: boolean;
 }
 
 export async function createLiveHost(
@@ -626,6 +635,14 @@ export async function createLiveHost(
       },
     };
   }
+  // A page holds a machine at load only once the boot query or an ABI staging
+  // profile asks for one. Booting a default shell for a bare URL spends a
+  // whole image download on a choice the visitor never made, and leaves a page
+  // that came to watch another computer's machine contending with one of its
+  // own. A gallery launch arrives later, through applyBootDescriptor.
+  const machineRequested = protectedProfile !== undefined || opts.invited === true ||
+    Boolean(opts.vfsUrl?.trim()) || Boolean(opts.profile?.trim()) ||
+    (opts.inputs?.length ?? 0) > 0 || opts.parameters != null;
   let host: LiveKernelHost;
   let protectedBoot: Promise<void> | undefined;
   const activateProtectedProfile = (): Promise<void> => {
@@ -639,10 +656,10 @@ export async function createLiveHost(
     return protectedBoot;
   };
   host = new LiveKernelHost({
-    status: "booting",
+    status: machineRequested ? "booting" : "idle",
     descriptor: initialDescriptor,
     galleryItems: localGalleryItems,
-    applyBootDescriptor: async (desc, h) => {
+    applyBootDescriptor: async (desc, h, restore, replay) => {
       if (protectedProfile !== undefined) {
         assertProtectedCandidateDescriptor(desc, protectedProfile.descriptor);
         await activateProtectedProfile();
@@ -651,7 +668,32 @@ export async function createLiveHost(
       // A descriptor applied in place (gallery launch, pasted link) carries
       // its own profile. The page's `&profile=` belongs to the machine the
       // visitor ARRIVED on and must not follow them onto a different image.
-      await startBoot(h, profileForDescriptor(desc, "none", null), desc);
+      //
+      // The session layer carries a checkpoint it never reads, so it names one
+      // by the minimal `MachineCheckpointLike`. This is the layer that knows
+      // the value is the host runtime's own `MachineCheckpoint`, because it is
+      // the layer that hands it back to a kernel of the kind that produced it.
+      await startBoot(
+        h,
+        profileForDescriptor(desc, "none", null),
+        desc,
+        restore as MachineCheckpoint | undefined,
+        // Only the two values the kernel worker runs on. `replay` also carries
+        // the session layer's own way of releasing this replica, which is a
+        // function and cannot be structured-cloned into a worker.
+        replay === undefined
+          ? undefined
+          : {
+            entries: replay.entries as readonly ReplicationLogEntry[],
+            queue: replay.queue,
+          },
+      );
+    },
+    prewarmBootDescriptor: async (desc) => {
+      // A protected page boots the one image that was placed with it. Nothing
+      // another computer names should send this one off to load something.
+      if (protectedProfile !== undefined) return;
+      await prewarmProfileImage(profileForDescriptor(desc, "none", null));
     },
   });
 
@@ -705,12 +747,16 @@ export async function createLiveHost(
   };
 
   if (protectedProfile === undefined) {
-    void startBoot(
-      host,
-      profileForDescriptor(initialDescriptor, opts.fb, opts.profile ?? null),
-      initialDescriptor,
-      opts.legacyScriptIgnored ?? false,
-    );
+    if (machineRequested) {
+      void startBoot(
+        host,
+        profileForDescriptor(initialDescriptor, opts.fb, opts.profile ?? null),
+        initialDescriptor,
+        undefined,
+        undefined,
+        opts.legacyScriptIgnored ?? false,
+      );
+    }
   } else if (candidateVfsPlacement!.pagesLoad === null) {
     void activateProtectedProfile();
   } else {
@@ -726,6 +772,8 @@ export async function createLiveHost(
     h: LiveKernelHost,
     profile: LiveProfile,
     descriptor: BootDescriptor,
+    restoreCheckpoint?: MachineCheckpoint,
+    replicationReplay?: ReplicationReplaySpec,
     legacyScriptIgnored = false,
   ): Promise<void> {
     const seq = ++bootSeq;
@@ -767,6 +815,8 @@ export async function createLiveHost(
         bootStartedAt,
         () => seq === bootSeq,
         requireServiceWorker,
+        restoreCheckpoint,
+        replicationReplay,
         legacyScriptIgnored,
       );
       if (seq !== bootSeq) {
@@ -1105,6 +1155,14 @@ function reportInitError(
   message: string,
   tick: (msg: string) => void,
 ): void {
+  // A machine this page gave up did not fail. Handing one over, halting one and
+  // ending a replication all set the status before they destroy the kernel, and
+  // destroying it is what makes init exit — so init's exit arrives after the
+  // page already said it holds nothing. Reporting it would end a completed
+  // handover in `error`, with the giver showing a broken web preview for a
+  // machine that is running perfectly well on the other computer.
+  const status = host.getStatus();
+  if (status === "idle" || status === "halted") return;
   tick(message);
   if (webPaneLabel !== null) {
     host.setWebPreview({
@@ -1174,6 +1232,8 @@ async function bootProfile(
   requireServiceWorker: (
     tick?: (msg: string) => void,
   ) => Promise<ServiceWorker>,
+  restoreCheckpoint?: MachineCheckpoint,
+  replicationReplay?: ReplicationReplaySpec,
   legacyScriptIgnored = false,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
@@ -1412,6 +1472,10 @@ async function bootProfile(
   // never mount the iframe).
   let machineAppPrefix = APP_PREFIX;
   maybeUpdateWebReadiness = () => {
+    // A replica's preview readiness is not this machinery's to decide: it
+    // went "running" the moment its bridge could pair fetches with replayed
+    // exchanges, and a probe here would consume one.
+    if (replicationReplay !== undefined) return;
     maybeMarkWebReady(
       host,
       machine.web,
@@ -1424,6 +1488,7 @@ async function bootProfile(
       dinitBootTracker,
       tick,
       isCurrent,
+      restoreCheckpoint !== undefined,
     );
   };
   let kernel: BrowserKernel | null = null;
@@ -1495,7 +1560,16 @@ async function bootProfile(
         kernelBytes,
         vfsImageBytes,
       );
-    await kernel.initFromImage(kernelInitOptions);
+    await kernel.initFromImage({
+      ...kernelInitOptions,
+      // A checkpoint reaching this boot came from another computer and is
+      // restored exactly once, so hand its buffers to the worker: cloning a
+      // large machine's checkpoint is an allocation the browser can refuse.
+      ...(restoreCheckpoint === undefined
+        ? {}
+        : { restoreCheckpoint, takeRestoreCheckpointOwnership: true }),
+      ...(replicationReplay === undefined ? {} : { replicationReplay }),
+    });
     assertCurrent();
     host.attachKernel(kernel);
     setWebMcpSession(host, agentIdentity());
@@ -1538,10 +1612,31 @@ async function bootProfile(
           url: appPrefix,
           port: HTTP_PORT,
           status: "starting",
-          message: "Waiting for services",
+          // A replica's bridge never injects: the kernel worker serves its
+          // page from the responses the replayed injections produced, so the
+          // machine only ever sees the connections the other computer's log
+          // carries.
+          message: replicationReplay === undefined
+            ? "Waiting for services"
+            : "Following the other computer's browsing",
         });
         bridgeSent = true;
-        maybeUpdateWebReadiness();
+        if (replicationReplay === undefined) {
+          maybeUpdateWebReadiness();
+        } else {
+          // No probe and no port or service gates: those readiness signals
+          // belong to a machine serving its own requests. This one follows
+          // the other computer's browsing, so its preview is ready as soon
+          // as its bridge can pair the page's fetches with replayed
+          // exchanges.
+          host.setWebPreview({
+            label: machineTitle,
+            url: appPrefix,
+            port: HTTP_PORT,
+            status: "running",
+            message: "Following the other computer's browsing",
+          });
+        }
         // The service worker pushes machine-offline (owning tab closed) and
         // machine-reconnecting (transient SW restart) to viewer clients. React
         // to pushes for THIS machine's SW-minted name only, and let the shared
@@ -1597,7 +1692,12 @@ async function bootProfile(
       );
     }
 
-    if (initLaunch !== null) {
+    // A restored machine arrives with its processes already running, so this
+    // boot starts none of the programs the profile would normally start.
+    // Spawning init or the demo's command again would put a second copy of
+    // each beside the restored one, and the two would fight over the same
+    // console, the same ports, and the same /dev/fb0.
+    if (initLaunch !== null && restoreCheckpoint === undefined) {
       // BOOT IDENTITY COMES FROM THE IMAGE — see resolveInitArgv's doc
       // comment for why a caller-supplied argv is ignored rather than
       // rejected.
@@ -1659,7 +1759,15 @@ async function bootProfile(
       attachDeclaredInputSource(kernel, machine, tick, host);
     }
 
-    if (profile.framebufferTest) {
+    if (restoreCheckpoint !== undefined) {
+      tick(
+        replicationReplay === undefined
+          ? `restored ${restoreCheckpoint.processes.length} process(es) handed `
+            + `over by the other computer`
+          : `replicating ${restoreCheckpoint.processes.length} process(es) from `
+            + `the other computer's decisions`,
+      );
+    } else if (profile.framebufferTest) {
       // `?fb=test` is an APP-LEVEL DEV TOGGLE, deliberately not expressible
       // in demo.json: it spawns a host-fetched framebuffer probe over
       // whatever machine is booting.
@@ -1920,6 +2028,66 @@ type VfsImageProgressReport = (report: {
  * user-supplied `?vfs=` URL has none and falls back to `Content-Length` only
  * when the response is identity-encoded.
  */
+/**
+ * Images fetched before anything asked to boot them, keyed by their URL.
+ *
+ * Only the plain-URL images need this. A canonical Pages product is already
+ * cached by its loader, which is the cache a boot reads too, so prewarming one
+ * is a call and not a copy. An image named by a bare URL has no such cache,
+ * and `loadVfsImage` would fetch it again.
+ *
+ * One entry at a time: a viewer prewarms the one image its peer is running,
+ * and holding others would spend a machine's worth of memory on machines
+ * nobody is offering.
+ */
+const prewarmedVfsImages = new Map<string, Promise<ArrayBuffer>>();
+
+/**
+ * Fetch what booting `profile` would need, so that booting it does not have to.
+ *
+ * Warms exactly the paths `loadVfsImage` and the boot read from, so a prewarm
+ * that succeeded is time the boot no longer spends. Rejects if the image
+ * cannot be loaded; a speculative caller is expected to ignore that, because
+ * nothing has been asked for yet.
+ */
+async function prewarmProfileImage(profile: LiveProfile): Promise<void> {
+  // The kernel is the same Wasm whatever machine arrives, and a computer that
+  // has only ever watched one has never fetched it. Warmed through the HTTP
+  // cache rather than held here: the boot fetches the same URL, and a second
+  // copy of the kernel in memory buys nothing the cache does not.
+  const kernel = fetch(kernelWasmUrl)
+    .then(failOn("kernel.wasm"))
+    .then((r) => r.arrayBuffer())
+    .then(() => undefined);
+
+  if (profile.vfsSource !== undefined && CANONICAL_PAGES_VFS_LOADER !== undefined) {
+    await Promise.all([
+      kernel,
+      CANONICAL_PAGES_VFS_LOADER.activate(profile.vfsSource.productId),
+    ]);
+    return;
+  }
+
+  const vfsUrl = await resolveProfileVfsUrl(profile);
+  if (!prewarmedVfsImages.has(vfsUrl)) {
+    prewarmedVfsImages.clear();
+    prewarmedVfsImages.set(
+      vfsUrl,
+      fetch(vfsUrl)
+        .then(failOn(imageLabel(profile)))
+        .then((r) => r.arrayBuffer()),
+    );
+  }
+  // A failed prewarm must not be remembered as one that worked, or the boot
+  // would wait on a rejected promise instead of fetching for itself.
+  try {
+    await Promise.all([kernel, prewarmedVfsImages.get(vfsUrl)]);
+  } catch (error) {
+    prewarmedVfsImages.delete(vfsUrl);
+    throw error;
+  }
+}
+
 async function loadVfsImage(
   profile: LiveProfile,
   reportProgress: VfsImageProgressReport,
@@ -1955,6 +2123,23 @@ async function loadVfsImage(
     }
   }
   const vfsUrl = await resolveProfileVfsUrl(profile);
+  const prewarmed = prewarmedVfsImages.get(vfsUrl);
+  if (prewarmed !== undefined) {
+    // Taken, not read: this image is being booted, so nothing is waiting for
+    // it any more, and a viewer that keeps a copy of the machine it just
+    // adopted holds that memory for nothing.
+    prewarmedVfsImages.delete(vfsUrl);
+    // Copied for the same reason the canonical loader copies: the caller
+    // assembles the machine out of these bytes, and a buffer handed straight
+    // from a cache would be one a second boot could no longer trust.
+    const bytes = (await prewarmed).slice(0);
+    reportProgress({
+      loadedBytes: bytes.byteLength,
+      totalBytes: bytes.byteLength,
+      status: "complete",
+    });
+    return { imageBytes: bytes };
+  }
   const label = imageLabel(profile);
   try {
     const response = await fetch(vfsUrl).then(failOn(label));
@@ -2068,15 +2253,24 @@ function maybeMarkWebReady(
   dinitBootTracker: DinitBootStatusTracker,
   tick: (msg: string) => void,
   isCurrent: () => boolean,
+  restored: boolean,
 ): void {
   if (web === null) return;
   if (readiness.failed) return;
-  const portsReady = web.requiredPorts.every((p) => seenPorts.has(p));
-  const servicesReady = [...requiredServices].every((serviceName) =>
-    dinitBootTracker.hasSucceeded(serviceName),
-  );
+  // A restored machine bound its ports and booted its services before the
+  // capture, on the computer it came from. Those signals never replay here,
+  // so readiness falls through to the HTTP probe: the one check the restored
+  // machine can still answer.
+  const portsReady =
+    restored || web.requiredPorts.every((p) => seenPorts.has(p));
+  const servicesReady =
+    restored ||
+    [...requiredServices].every((serviceName) =>
+      dinitBootTracker.hasSucceeded(serviceName),
+    );
   if (!portsReady || !servicesReady || !bridgeSent) return;
-  const readyMessage = web.probeHttp
+  const probeHttp = Boolean(web.probeHttp) || restored;
+  const readyMessage = probeHttp
     ? "HTTP bridge ready"
     : "Service stack ready";
   if (readiness.ready) {
@@ -2090,7 +2284,7 @@ function maybeMarkWebReady(
     });
     return;
   }
-  if (!web.probeHttp) {
+  if (!probeHttp) {
     readiness.ready = true;
     tick("Web preview ready");
     host.setWebPreview({

@@ -154,6 +154,22 @@ pub struct Options {
     /// every function import and unresolved reference dispatch becomes a
     /// possible cross-instance fork boundary.
     pub entry_import: String,
+
+    /// A second seed import, added to the closure beside `entry_import` rather
+    /// than replacing it. Format: `module.field` (e.g.
+    /// `kernel.kernel_checkpoint`).
+    ///
+    /// A checkpoint unwinds at a syscall return, so this seed discovers every
+    /// function that can be live there. A program that never forks imports no
+    /// `kernel_fork` and is 0 % instrumented without it.
+    ///
+    /// It must add to the seeds, never replace them. Discovery walks a seed's
+    /// callers and never descends into callees, so an import joins the closure
+    /// only by being a seed itself. Naming the checkpoint import through
+    /// `entry_import` instead would drop `kernel_fork` from the closure, leave
+    /// its call site without unwind transport, and hand the guest the
+    /// ignored-during-unwind fork result, which it reads as the child.
+    pub checkpoint_import: Option<String>,
     /// Stop the unwind at fork boundaries (sinks) and leave the frames above
     /// them uninstrumented; see [`sink`]. `--no-sinks` restores the full
     /// closure (for comparison and diagnosis).
@@ -202,6 +218,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             entry_import: "kernel.kernel_fork".into(),
+            checkpoint_import: None,
             sinks: true,
             facts: true,
             effective_types: true,
@@ -243,8 +260,10 @@ struct SinkDecision {
 }
 
 /// Reduce the fork closure with the sink analysis when the module is in its
-/// supported scope: a main module whose only fork seed is
-/// `kernel.kernel_fork`. With compiler facts ([`facts`]) the analysis also
+/// supported scope: a main module whose only seed is `kernel.kernel_fork`.
+/// A checkpoint seed takes the module out of scope: a restored checkpoint
+/// returns through every frame, so no frame may be left above a boundary.
+/// With compiler facts ([`facts`]) the analysis also
 /// covers modules that can dlopen; without them it does not. Facts the
 /// analysis cannot use fall back to the analysis without facts, never to
 /// anything less sound. Returns the boundary functions.
@@ -252,6 +271,7 @@ fn apply_sink_plan(
     module: &walrus::Module,
     opts: &Options,
     entry_imports: &[walrus::FunctionId],
+    boundary_imports: &[walrus::FunctionId],
     side_boundaries: bool,
     external_dynamic_dispatch: bool,
     facts_section: Option<(&facts::TakenFacts, &[u8])>,
@@ -268,6 +288,7 @@ fn apply_sink_plan(
         || side_boundaries
         || opts.entry_import != "kernel.kernel_fork"
         || entry_imports.len() != 1
+        || boundary_imports != entry_imports
     {
         return decision;
     }
@@ -460,19 +481,25 @@ pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
     legacy_dlopen::lower(&mut module)?;
     let side_boundaries = uses_side_module_boundaries(&module, opts);
     let entry_imports = call_graph::find_import_funcs(&module, &opts.entry_import);
+    let boundary_imports = boundary_seed_imports(&module, opts, &entry_imports);
 
-    if entry_imports.is_empty()
+    if boundary_imports.is_empty()
         && !side_boundaries
         && !call_graph::has_dynamic_linker_imports(&module)
     {
+        let checkpoint = match opts.checkpoint_import.as_deref() {
+            Some(name) => format!(" and checkpoint import `{name}`"),
+            None => String::new(),
+        };
         bail!(
-            "entry import `{}` not found (or not a function) in the module. \
-             If this module does not use fork, there is nothing to instrument.",
+            "entry import `{}`{checkpoint} not found (or not a function) in \
+             the module. If this module does not use fork, there is nothing \
+             to instrument.",
             opts.entry_import
         );
     }
 
-    let seeds = fork_boundary_seeds(&module, &entry_imports, side_boundaries);
+    let seeds = fork_boundary_seeds(&module, &boundary_imports, side_boundaries);
     // The discover-only report is the conservative reaching closure; fork
     // boundaries (sinks) reduce what `instrument` rewrites, not this report.
     let reaching = prepare_fork_path(
@@ -523,6 +550,28 @@ fn ensure_side_module_abi_version(module: &mut walrus::Module, input: &[u8]) -> 
     let function = builder.finish(Vec::new(), &mut module.funcs);
     module.exports.add("__abi_version", function);
     Ok(())
+}
+
+/// The boundary imports that seed discovery: `entry_import`, plus
+/// `checkpoint_import` when one is named.
+///
+/// `entry_imports` is passed in rather than recomputed because the caller also
+/// needs it on its own, to decide the fork capability claim. That claim must
+/// describe the fork boundary only, so it must not see the checkpoint seed.
+fn boundary_seed_imports(
+    module: &walrus::Module,
+    opts: &Options,
+    entry_imports: &[walrus::FunctionId],
+) -> Vec<walrus::FunctionId> {
+    let Some(checkpoint) = opts.checkpoint_import.as_deref() else {
+        return entry_imports.to_vec();
+    };
+
+    let mut imports = entry_imports.to_vec();
+    imports.extend(call_graph::find_import_funcs(module, checkpoint));
+    imports.sort();
+    imports.dedup();
+    imports
 }
 
 fn fork_boundary_seeds(
@@ -833,11 +882,12 @@ fn plan_fork(module: &mut walrus::Module, input: &[u8], opts: &Options) -> Resul
         ensure_side_module_abi_version(module, input)?;
     }
     let entry_imports = call_graph::find_import_funcs(module, &opts.entry_import);
-    let seeds = fork_boundary_seeds(module, &entry_imports, side_boundaries);
+    let boundary_imports = boundary_seed_imports(module, opts, &entry_imports);
+    let seeds = fork_boundary_seeds(module, &boundary_imports, side_boundaries);
     let has_dynamic_linker_imports = call_graph::has_dynamic_linker_imports(module);
     let external_dynamic_dispatch = side_boundaries || has_dynamic_linker_imports;
     reject_reserved_unwind_import(module)?;
-    if entry_imports.is_empty() && !external_dynamic_dispatch {
+    if boundary_imports.is_empty() && !external_dynamic_dispatch {
         return Ok(None);
     }
     let initial_fork_path =
@@ -851,6 +901,7 @@ fn plan_fork(module: &mut walrus::Module, input: &[u8], opts: &Options) -> Resul
         module,
         opts,
         &entry_imports,
+        &boundary_imports,
         side_boundaries,
         external_dynamic_dispatch,
         facts_section.as_ref().map(|taken| (taken, input)),

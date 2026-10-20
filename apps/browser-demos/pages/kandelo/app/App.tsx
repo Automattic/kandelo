@@ -12,6 +12,11 @@ import { descriptorFromGalleryItem } from "../gallery-descriptor";
 import { Gallery } from "../views/Gallery";
 import { EmptyState } from "../views/EmptyState";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
+import { SharedMachine } from "../panes/SharedMachine";
+import { useMachineHandover } from "./machine-handover";
+import { useMachineReplication } from "./machine-replication";
+import { useFramebufferPublisher } from "./shared-framebuffer";
+import { useTerminalPublisher } from "./shared-terminal";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
 import { galleryItemUrl } from "../url-state";
 import { ShareDialog } from "../dialogs/ShareDialog";
@@ -27,6 +32,7 @@ import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
 import { useNetworkSession } from "./use-network-session";
 import { NetworkPanel } from "./NetworkPanel";
+import { SharingSection } from "./SharingSection";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
@@ -94,6 +100,37 @@ export const App: React.FC = () => {
   const nextTerminalIndex = React.useRef(2);
   const webMcpPreview = React.useRef<DisplayHandle | null>(null);
   const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
+
+  // One machine sends one surface: the one the person holding it is looking
+  // at. A machine that published everything it drives would leave the watching
+  // computer with a screen and a shell stacked in one column, with nothing
+  // saying which of them the other person is using.
+  const presenting = surface.status === "running" ? surface.activePrimary : null;
+  const sharingLink = networkSession.partner?.link ?? null;
+  const terminalSharing = useTerminalPublisher(
+    host,
+    sharingLink,
+    terminals.find((terminal) => terminal.id === activeTerminalId)?.path,
+    presenting === "terminal",
+  );
+  const sharingScreen = useFramebufferPublisher(
+    host,
+    sharingLink,
+    presenting === "framebuffer",
+  );
+  // Replication first: a viewer running a replica is still a viewer, and the
+  // handover must not offer that replica as a second machine to take.
+  const replication = useMachineReplication(host, sharingLink);
+  const handover = useMachineHandover(host, sharingLink, replication.replicating);
+
+  const [previewReloadToken, setPreviewReloadToken] = React.useState(0);
+  React.useEffect(() => {
+    if (!replication.publishing) return;
+    // The recording started after the page the user is on was fetched, so
+    // its exchanges are not in the log. A reload re-fetches them through the
+    // bridge, into the recording, so the viewer has something to render.
+    setPreviewReloadToken((token) => token + 1);
+  }, [replication.publishing]);
 
   const desc = host.getBootDescriptor();
   const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
@@ -384,6 +421,37 @@ export const App: React.FC = () => {
         : layout
     ));
   }, []);
+  // Taken at the moment a machine leaves or starts on its way here, and held
+  // until one is drawing again. Reading it on every render would re-join the
+  // screen bytes each time; reading it once, when the move begins, is the only
+  // moment its value can change.
+  //
+  // Both directions need it. The computer giving a machine up keeps the screen
+  // it was showing. The computer taking one keeps the screen it was watching,
+  // because a taker has to boot the image before the checkpoint can restore
+  // into it, and the boot log is not what the person asked to see.
+  const lastSharedScreen = terminalSharing.lastScreen;
+  const moving = handover.handedOver || handover.taking;
+  const held = React.useMemo(
+    () => moving ? lastSharedScreen() : null,
+    [moving, lastSharedScreen],
+  );
+
+  // One landing page, used both on its own and as what a connected computer
+  // shows while the other one is sharing nothing.
+  const emptyState = (
+    <EmptyState
+      onLaunchItem={onLaunchGalleryItem}
+      onBrowseAll={() => setDockPane("gallery")}
+      onApplyDescriptor={applyDescriptor}
+      peerNote={sharingLink
+        ? handover.handedOver
+          ? "You handed this machine over. It is starting on the other computer."
+          : "Connected. Waiting for the other computer to share a screen."
+        : null}
+      watching={sharingLink !== null}
+    />
+  );
 
   return (
     <div className={appClassName} style={appStyle} data-audio-state={audioState} data-audio-active={audioActive ? "true" : "false"}>
@@ -392,12 +460,20 @@ export const App: React.FC = () => {
         {...(machineProgress === null ? {} : { inert: true })}
       >
         <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
-          {isEmpty ? (
-            <EmptyState
-              onLaunchItem={onLaunchGalleryItem}
-              onBrowseAll={() => setDockPane("gallery")}
-              onApplyDescriptor={applyDescriptor}
+          {(isEmpty || handover.taking || replication.joining) && sharingLink ? (
+            // While a machine is arriving, this pane stays up over the boot
+            // that is running behind it. `taking` ends when `adoptMachine`
+            // resolves, and `joining` when `replicateMachine` does — both
+            // after the checkpoint has restored, so the swap happens when
+            // there is a live screen to swap to.
+            <SharedMachine
+              link={sharingLink}
+              moving={moving}
+              held={held}
+              idle={emptyState}
             />
+          ) : isEmpty ? (
+            emptyState
           ) : (
             <MachineView
               webMcpPreviewRef={webMcpPreview}
@@ -411,6 +487,27 @@ export const App: React.FC = () => {
               activeTerminalId={activeTerminalId}
               onActiveTerminalId={setActiveTerminalId}
               onAddTerminal={onAddTerminal}
+              onPreviewPathChange={
+                replication.publishing ? replication.navigation.publish : undefined
+              }
+              previewViewerPath={
+                replication.replicating
+                  ? replication.navigation.viewerPath
+                  : undefined
+              }
+              onPreviewCursorChange={
+                replication.publishing ? replication.cursor.publish : undefined
+              }
+              previewViewerCursor={
+                replication.replicating ? replication.cursor.viewerCursor : null
+              }
+              onPreviewScrollChange={
+                replication.publishing ? replication.scroll.publish : undefined
+              }
+              previewViewerScroll={
+                replication.replicating ? replication.scroll.viewerScroll : null
+              }
+              previewReloadToken={previewReloadToken}
             />
           )}
         </main>
@@ -449,7 +546,28 @@ export const App: React.FC = () => {
 
         {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
 
-        {networkSession.open && <NetworkPanel session={networkSession} running={surface.status === "running"} />}
+        {networkSession.open && (
+          <NetworkPanel
+            session={networkSession}
+            running={surface.status === "running"}
+            sharing={
+              <SharingSection
+                session={networkSession}
+                sharingTerminal={terminalSharing.sharing}
+                sharingScreen={sharingScreen}
+                handover={handover}
+                canTakeMachine={
+                  (isEmpty || replication.replicating)
+                  && !replication.joining
+                  && handover.peerHasMachine
+                }
+                hasMachine={!isEmpty}
+                presenting={presenting}
+                replication={replication}
+              />
+            }
+          />
+        )}
 
         <Dock
           networkPhase={networkSession.state.phase}
@@ -464,10 +582,25 @@ export const App: React.FC = () => {
           guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
           internalsAvailable={!isEmpty && surface.canUseInternals}
           internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
+          // Only in a pair. A computer on its own is neither, and one machine
+          // with one person at it needs no word for that.
+          role={
+            sharingLink === null
+              ? null
+              : isEmpty || replication.replicating
+                ? "viewer"
+                : "user"
+          }
           themeOpen={themeOpen}
           shareAvailable={!isEmpty}
-          status={surface.status}
-          machineTitle={desc.title}
+          // A machine on its way here is booting, whatever the surface it is
+          // replacing happens to be doing. During a take-over the departing
+          // replica still reports "running", and showing that beside a role
+          // that already says "user" would claim a typeable machine before
+          // there is one: the arriving image boots and restores first, and the
+          // dock says "Running" when that machine is the one running.
+          status={handover.taking || replication.joining ? "booting" : surface.status}
+          machineTitle={isEmpty ? "Kandelo" : desc.title}
           viewDisabled={{
             demo: !surface.canOpenDemo,
             terminal: !surface.canUseTerminal,

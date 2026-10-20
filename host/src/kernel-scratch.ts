@@ -151,6 +151,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_drain_audio",
   "kernel_drain_wakeup_events",
   "kernel_enum_procs",
+  "kernel_enumerate_host_handles",
   "kernel_epoll_wake_indices",
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
@@ -265,6 +266,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_drain_audio":
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
+    case "kernel_enumerate_host_handles":
     case "kernel_handle_channel":
     case "kernel_handle_channel_record":
     case "kernel_mq_drain_notification":
@@ -369,6 +371,7 @@ function isKernelScratchExportName(
     case "kernel_drain_audio":
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
+    case "kernel_enumerate_host_handles":
     case "kernel_epoll_wake_indices":
     case "kernel_exec_target_prepare":
     case "kernel_exec_target_read":

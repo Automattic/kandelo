@@ -163,6 +163,7 @@ export class HostFileSystem implements FileSystemBackend {
     }
   }
 
+
   /**
    * Resolve a mount-relative guest path to an absolute host path, ensuring it
    * stays within `rootPath`.

@@ -56,6 +56,14 @@ struct Cli {
     #[arg(long, default_value = "kernel.kernel_fork")]
     entry: String,
 
+    /// The fully-qualified name of a second seed import, added to the closure
+    /// beside `--entry` rather than replacing it. Format: `module.field`.
+    /// Pass `kernel.kernel_checkpoint` to cover every function that can be live
+    /// at a syscall return. That is the only seed available in a program that
+    /// never forks.
+    #[arg(long)]
+    checkpoint_entry: Option<String>,
+
     /// Instrument the full fork closure instead of stopping the unwind at
     /// fork boundaries (sinks). For comparison and diagnosis.
     #[arg(long)]
@@ -221,6 +229,7 @@ fn main() -> Result<()> {
 
     let opts = Options {
         entry_import: cli.entry,
+        checkpoint_import: cli.checkpoint_entry,
         sinks: !cli.no_sinks,
         facts: !cli.no_facts,
         effective_types: !cli.no_effective_types,

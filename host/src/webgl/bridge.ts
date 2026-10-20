@@ -18,7 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
-import type { GlBinding } from "./registry.js";
+import type { GlBinding, GlTextureLevelShape, GlTextureShape } from "./registry.js";
 import * as O from "./ops.js";
 import {
   GL_BACK,
@@ -409,6 +409,27 @@ function validPayload(op: number, v: DataView): boolean {
   }
 }
 
+/** The shape record of the texture on the active unit, made on first touch. */
+function boundTextureShape(b: GlBinding): GlTextureShape | null {
+  const name = b.textureUnitNames.get(b.shadow.activeTexture);
+  if (name === undefined) return null;
+  let shape = b.textureShapes.get(name);
+  if (!shape) {
+    shape = { levels: new Map(), mipmapped: false };
+    b.textureShapes.set(name, shape);
+  }
+  return shape;
+}
+
+function recordTextureLevelShape(
+  b: GlBinding,
+  level: number,
+  levelShape: GlTextureLevelShape,
+): void {
+  const shape = boundTextureShape(b);
+  if (shape) shape.levels.set(level, levelShape);
+}
+
 function dispatch(
   gl: WebGL2RenderingContext,
   b: GlBinding,
@@ -688,6 +709,10 @@ function dispatch(
         if (obj) gl.deleteTexture(obj);
         b.shadow.textureUnits = b.shadow.textureUnits.map(tex => tex === obj ? null : tex);
         b.textures.delete(name);
+        b.textureShapes.delete(name);
+        for (const [unit, unitName] of b.textureUnitNames) {
+          if (unitName === name) b.textureUnitNames.delete(unit);
+        }
       }
       return;
     }
@@ -699,6 +724,8 @@ function dispatch(
       const unit = b.shadow.activeTexture;
       if (unit >= 0 && unit < b.shadow.textureUnits.length) {
         b.shadow.textureUnits[unit] = tex;
+        if (tex) b.textureUnitNames.set(unit, texName);
+        else b.textureUnitNames.delete(unit);
       }
       return;
     }
@@ -722,6 +749,9 @@ function dispatch(
         target, level, normalizeTextureInternalFormat(internalFormat, format, type), width, height, border,
         format, type, data,
       );
+      recordTextureLevelShape(b, level, {
+        internalFormat, width, height, format, type,
+      });
       return;
     }
     // Payload: u32 target, i32 level, i32 xoff, i32 yoff, i32 width,
@@ -763,9 +793,12 @@ function dispatch(
       b.shadow.activeTexture = unit - GL_TEXTURE0;
       return;
     }
-    case O.OP_GENERATE_MIPMAP:
+    case O.OP_GENERATE_MIPMAP: {
       gl.generateMipmap(v.getUint32(p, true));
+      const shape = boundTextureShape(b);
+      if (shape) shape.mipmapped = true;
       return;
+    }
     case O.OP_COMPRESSED_TEX_IMAGE_2D: {
       const dataLen = v.getUint32(p + 24, true);
       const data = copyBytes(v, p + 28, dataLen);

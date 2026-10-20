@@ -15,6 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   ABI_VERSION,
+  WPK_CHECKPOINT_PROCESS_IMPORT,
   WPK_FORK_CAPABILITIES_SECTION,
   WPK_FORK_CAPABILITIES_VERSION,
   WPK_FORK_CAP_ACTIVATION_STATE_SAFE,
@@ -567,6 +568,7 @@ function completeForkWasm(options: {
   abiVersion?: number;
   includeAbiMarker?: boolean;
   omitRuntimeImports?: readonly string[];
+  checkpointImportParams?: ReadonlyArray<readonly ForkArtifactValueType[]>;
 } = {}): ArrayBuffer {
   const pointerWidth = options.pointerWidth ?? 4;
   const exportPointerWidth = options.exportPointerWidth ?? pointerWidth;
@@ -597,6 +599,11 @@ function completeForkWasm(options: {
   const emptyType = internType([], [], pointerWidth);
   const funcImports: FuncImport[] = [
     { module: "kernel", name: "kernel_fork", typeIdx: kernelForkType },
+    ...(options.checkpointImportParams ?? []).map((params) => ({
+      module: WPK_CHECKPOINT_PROCESS_IMPORT.module,
+      name: WPK_CHECKPOINT_PROCESS_IMPORT.name,
+      typeIdx: internType(params, [], pointerWidth),
+    })),
     ...(options.includeLegacyDlopenImport === true
       ? [{
           module: "env",
@@ -1073,6 +1080,31 @@ describe("wasm artifact policy helpers", () => {
     })).toContain(
       "ABI 43 process-fork import kernel.kernel_fork has the wrong "
         + "signature; expected (i32) -> (i32)",
+    );
+  });
+
+  it("accepts a single well-formed process-checkpoint import", () => {
+    const wasm = completeForkWasm({ checkpointImportParams: [[]] });
+    expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: ABI_VERSION }))
+      .toEqual([]);
+  });
+
+  it("rejects a duplicate process-checkpoint import", () => {
+    const wasm = completeForkWasm({ checkpointImportParams: [[], []] });
+    expect(describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: ABI_VERSION,
+    })).toContain(
+      "duplicate ABI 44 process-checkpoint import kernel.kernel_checkpoint",
+    );
+  });
+
+  it("rejects a process-checkpoint import with the wrong signature", () => {
+    const wasm = completeForkWasm({ checkpointImportParams: [["i32"]] });
+    expect(describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: ABI_VERSION,
+    })).toContain(
+      "ABI 44 process-checkpoint import kernel.kernel_checkpoint has the "
+        + "wrong signature; expected () -> ()",
     );
   });
 

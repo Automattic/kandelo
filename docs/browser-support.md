@@ -2613,8 +2613,16 @@ machine profiles. The machine-identity source guard admits only the named
 `PeerNetworkGame` selector type; image-owned machine definitions still belong
 in `/etc/kandelo/demo.json`.
 
-Both use `purpose: "network"` peer connections. The main thread transfers
-framed bytes between RTC channels and bounded native MessagePorts. Guest
+A session also carries machine sharing. Each joiner opens a second peer
+connection to the host, `purpose: "sharing"`, which carries the checkpoint
+handover, the framebuffer and terminal mirrors and the replication log; the
+panel's sharing section shows one machine to one partner, follows it as a
+replica, or takes it over. A joiner gives up its copy of the session's machine
+to watch the host's. A machine switch detaches only that computer's guest
+network: the session and its sharing links stay.
+
+The dock's sessions and `/pages/peer-network/` both carry guest traffic on
+`purpose: "network"` peer connections. The main thread transfers framed bytes between RTC channels and bounded native MessagePorts. Guest
 programs use ordinary IPv4 UDP and TCP sockets; DNS names `host` and
 `peer-N` resolve through the worker's segment membership, and broadcasts
 reach every computer in the session, so LAN discovery works: in Chromium, a

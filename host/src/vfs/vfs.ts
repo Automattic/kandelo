@@ -11,8 +11,10 @@ import {
   ST_NOSUID,
   type FileSystemBackend,
   type MountConfig,
+  type RandomProvider,
   type TimeProvider,
 } from "./types";
+import { HostRandomProvider } from "./random";
 import { AT_FLAGS, FILE_MODES, OPEN_FLAGS } from "../generated/abi";
 
 export function vfsPathIsWithin(prefix: string, path: string): boolean {
@@ -112,6 +114,7 @@ function parentPath(path: string): string {
 export class VirtualPlatformIO implements PlatformIO {
   private mounts: MountEntry[];
   private time: TimeProvider;
+  private random: RandomProvider;
   private fileHandles = new Map<number, HandleInfo>();
   private dirHandles = new Map<number, DirHandleInfo>();
   /**
@@ -128,7 +131,11 @@ export class VirtualPlatformIO implements PlatformIO {
   private nextQualifiedDeviceId = 1n;
   network?: NetworkIO;
 
-  constructor(mounts: MountConfig[], time: TimeProvider) {
+  constructor(
+    mounts: MountConfig[],
+    time: TimeProvider,
+    random: RandomProvider = new HostRandomProvider(),
+  ) {
     // Scope inode numbers to the backend object that owns them. Assigning the
     // id per backend (rather than per mount point) keeps aliases intact when
     // one backend is deliberately exposed at more than one mount point.
@@ -150,6 +157,7 @@ export class VirtualPlatformIO implements PlatformIO {
       })
       .sort((a, b) => b.prefix.length - a.prefix.length);
     this.time = time;
+    this.random = random;
     // ZERO MOUNTS IS LEGITIMATE, not a mistake. The kernel owns `/`, every scratch prefix, and — since POSIX
     // shared memory moved in-kernel — the whole of `/dev`. A host router with
     // nothing left to route is what that looks like from this side, and on
@@ -282,6 +290,14 @@ export class VirtualPlatformIO implements PlatformIO {
       throw error;
     }
     return resolved.backend.preparePath?.(resolved.relativePath) ?? false;
+  }
+
+  reserveHandleFloor(floor: number): void {
+    if (this.nextHandle < floor) this.nextHandle = floor;
+  }
+
+  advanceMonotonicFloor(floorNs: number): void {
+    this.time.advanceMonotonicFloor?.(floorNs);
   }
 
   open(path: string, flags: number, mode: number): number {
@@ -756,8 +772,37 @@ export class VirtualPlatformIO implements PlatformIO {
 
   // --- Time operations ---
 
+  /**
+   * Replace the clock this machine reads.
+   *
+   * The guest clock belongs to the platform, not to the host it happens to
+   * run on: a restored machine already carries a monotonic floor, and a
+   * replicated one takes its readings from a log rather than from its own
+   * host. Swapping the provider is how a machine changes which of those it
+   * is without every syscall path having to know.
+   */
+  setTimeProvider(time: TimeProvider): void {
+    this.time = time;
+  }
+
   clockGettime(clockId: number): { sec: number; nsec: number } {
     return this.time.clockGettime(clockId);
+  }
+
+  /**
+   * Replace the randomness this machine draws.
+   *
+   * The guest's random bytes belong to the platform for the reason the clock
+   * does: a replicated machine takes its draws from a log rather than from
+   * its own host, and swapping the provider is how a machine changes that
+   * without the `getrandom` path or the random devices having to know.
+   */
+  setRandomProvider(random: RandomProvider): void {
+    this.random = random;
+  }
+
+  getRandomBytes(length: number): Uint8Array {
+    return this.random.getRandomBytes(length);
   }
 }
 

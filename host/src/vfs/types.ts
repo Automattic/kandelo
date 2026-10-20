@@ -108,6 +108,31 @@ export type VfsChangeListener = (event: VfsChangeEvent) => void;
 
 export interface TimeProvider {
   clockGettime(clockId: number): { sec: number; nsec: number };
+  /**
+   * Keep every future CLOCK_MONOTONIC reading at or above `floorNs`.
+   *
+   * A restored machine adopts kernel state whose monotonic deadlines were
+   * measured on the captured machine's clock. POSIX also forbids a guest's
+   * monotonic clock from running backwards, and a fresh provider (a new
+   * worker's `performance.now()` origin) starts near zero. The restore
+   * advances this provider to the captured machine's reading, so deadlines
+   * keep their remaining time and guest-visible monotonic time continues.
+   */
+  advanceMonotonicFloor?(floorNs: number): void;
+}
+
+/**
+ * The guest's source of randomness.
+ *
+ * Random bytes are host-produced values the guest consumes, like a clock
+ * reading: two computers never draw the same bytes, so a replica that draws
+ * its own diverges on its first `getrandom`. Every guest draw — the
+ * `getrandom` syscall and a `/dev/urandom` read — crosses this one interface,
+ * so a machine swaps where its randomness comes from without any syscall
+ * path having to know.
+ */
+export interface RandomProvider {
+  getRandomBytes(length: number): Uint8Array;
 }
 
 export interface MountConfig {
