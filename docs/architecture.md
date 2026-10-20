@@ -2686,25 +2686,34 @@ The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, m
    ioctl(FBIOPAN_DISPLAY) ───────►   no-op success                     (no-op)
 ```
 
-The pixel buffer lives **inside the process's wasm `Memory`** — a `SharedArrayBuffer`. The host (browser canvas, Node test, etc.) is told `(pid, addr, len, w, h, stride, fmt)` via the `bind_framebuffer` HostIO callback; it builds a typed-array view directly over that range. There is no separate framebuffer SAB, no per-frame syscall, no copy. The host drives presentation via `requestAnimationFrame`.
+The guest's mmap pixel buffer lives inside its process's Wasm memory. The
+`bind_framebuffer` callback reports `(pid, addr, len, w, h, stride, fmt)` to
+the host. Node consumers can read that range directly. In the browser the
+kernel worker copies it, on a 16 ms presentation timer, into a fixed-size,
+non-growable shared pixel buffer. The UI receives only this display buffer;
+it never receives the guest's `WebAssembly.Memory`. The browser canvas reads
+the display buffer on `requestAnimationFrame`. Write-based bindings already
+send pixel deltas and need no process-memory reference or presentation timer.
+There is no additional guest syscall in either path.
+
+This browser ownership boundary matters on WebKit: a shared Wasm memory's
+maximum spends reservation capacity even when most pages are unused. A clone
+in the persistent UI realm can keep the entire process address space charged
+after its Worker terminates, until that realm's collector runs. Independent
+pixel storage costs only the framebuffer's actual length and cannot retain a
+retired guest address space. Memory growth requires no UI rebind: the worker
+reads the current guest buffer for each copy. Node has no separate browser UI
+realm and retains its direct-mapping presentation path.
 
 Cleanup paths (`munmap`, last `close` once unmapped, process exit, `exec`) clear
-the binding and call `unbind_framebuffer(pid)`. In the browser, every
-framebuffer message carries the process execution generation. Exit and exec
-wait for `BrowserKernel` to acknowledge removal of its generation-specific
-`WebAssembly.Memory` wrapper and framebuffer-registry typed-array views; a
-delayed message from the old image cannot unbind or replace the successor
-image's surface. This acknowledgement does not claim that arbitrary consumers
-have released a wrapper previously returned by `getProcessMemory()`.
-
-This generation fence makes the current process-memory-backed fbdev path safe
-to retire, but it intentionally does not make the process's raw
-`WebAssembly.Memory` the long-term graphics ownership model. A follow-up should
-move scanout storage to a device/CRTC-owned, dynamically sized bounded shared
-surface with per-handle access rights and serialized presentation. That is the
-appropriate foundation for multiple writers and compositor ownership without
-keeping process address-space wrappers in the presentation realm. `fork` does
-not auto-bind the child (one mapping per process; documented limitation).
+the binding and call `unbind_framebuffer(pid)`. Every browser framebuffer
+message carries the process execution generation. Exit and exec stop the
+exact generation's pixel copier and await acknowledgement that the UI removed
+its display binding. Delayed messages from an old generation cannot remove or
+replace a successor's surface. BrowserKernel no longer exposes a framebuffer
+process through `getProcessMemory()`; consumers use `KernelHost`'s framebuffer
+handle. `fork` does not auto-bind the child (one mapping per process;
+documented limitation).
 
 ABI version bumped 5 → 6 to capture the new `repr(C)` structs `FbBitfield`, `FbVarScreenInfo`, `FbFixScreenInfo`. See `crates/shared/src/lib.rs::fbdev` and `abi/snapshot.json`.
 
@@ -2893,8 +2902,10 @@ header in the kernel's shared Wasm memory: 65,664 bytes total. The active queue 
 four 1024-byte fragments (4096 bytes) by default, and `SETFRAGMENT` may select
 another geometry up to the 64 KiB physical bound. At the default 48 kHz,
 stereo S16 configuration, 4096 bytes are about 21.3 ms of queued audio. The
-host receives a descriptor for this same memory; it does not allocate a second
-persistent PCM ring. Browser-engine Float32 render buffers are transient.
+Node's sink receives a descriptor for this same memory. Browser presentation
+uses an independent bounded mirror with the same absolute cursors and queue
+capacity, as described below. Browser-engine Float32 render buffers are
+transient.
 
 Writes form one continuous byte stream and never discard previously queued
 audio. Bytes from an incomplete PCM frame remain queued across later writes.
@@ -2927,15 +2938,29 @@ explicit caller retry.
 
 In browsers an `AudioWorkletProcessor` consumes and converts PCM in render
 quanta (normally 128 output frames), advances the shared consumer cursor, and
-emits silence on underrun. The main thread only creates/resumes the
-`AudioContext` and connects the node; it is not the audio clock and does not
-drain through a timer. At 48 kHz one render quantum is about 2.7 ms; browser
+emits silence on underrun. The main thread creates/resumes the `AudioContext` and forwards a
+MessagePort to its node. The kernel worker sends an independent 65,664-byte
+PCM mirror over that connection. Neither browser main nor the persistent
+AudioWorklet receives the kernel's shared memory (including the filesystem).
+A kernel-worker relay copies newly produced ring bytes and producer metadata
+into the mirror, and returns worklet-owned cursor/error publications to the
+canonical transport. Seqlocks, generation fences and monotonic discard floors
+preserve the single queue's capacity and reset semantics. The relay never
+advances playback; the worklet remains its clock. Audio demand reaches the UI
+as a plain notification sampled in the kernel worker. Main is not the audio
+clock and does not drain through a timer. At 48 kHz one render quantum is about 2.7 ms; browser
 device `baseLatency`/`outputLatency` is additional and platform-dependent.
 After machine teardown drains the shared ring, a running browser context is
 suspended to hand already-rendered blocks to the output device, then retained
-for a bounded base/output-latency-plus-quantum settlement interval before it is
-closed. Teardown never resumes a suspended or interrupted context, preserving
-the browser's user-activation boundary.
+for a bounded base/output-latency-plus-quantum settlement interval. Teardown
+then tells the processor to release its transport: it drops both memory views,
+closes its kernel connection, acknowledges release, and returns false from
+rendering. Disconnecting a source processor that keeps returning true leaves
+it alive in Web Audio. The independent mirror bounds retained wrappers even
+before collection in the persistent worklet realm. The default
+page-wide context stays open to avoid WebKit's context-close thread leak;
+private contexts supplied by embedders are closed. Teardown never resumes a
+suspended or interrupted context, preserving browser user activation.
 Node uses the same cursor and wakeup contract with a wall-clock-paced null sink
 for headless execution, so callbacks cannot run at CPU speed. Its running tick
 follows the negotiated fragment duration, preserves fractional-frame drift,

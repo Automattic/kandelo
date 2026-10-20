@@ -202,6 +202,12 @@ main-thread VFS buffers accumulate across machine boots until Safari throws
 `Out of memory`. Compose images in a worker and hand the main thread plain,
 transferable bytes.
 
+Persistent browser/audio realms must never receive guest `WebAssembly.Memory`
+or views into its backing storage. Use bounded independent device buffers,
+explicitly retire asynchronous owners, and run `./run.sh test browser-memory`
+for memory/device/lifecycle changes. See the host-runtime and validation
+guides for the ownership contract and native Safari follow-up.
+
 Shared files are cross-host changes by default. Changes to
 `host/src/kernel-worker.ts`, `host/src/worker-main.ts`, VFS behavior,
 networking, framebuffer, generated ABI constants, or worker protocol types need

@@ -2823,20 +2823,20 @@ export class LiveKernelHost implements KernelHost {
   // ── KernelHost: framebuffer ──────────────────────────────────────────────
 
   attachFramebuffer(canvas: HTMLCanvasElement): FramebufferHandle {
-    if (!this.kernel?.framebuffers || !this.kernel.getProcessMemory) {
+    if (!this.kernel?.framebuffers) {
       throw new Error(
         "LiveKernelHost.attachFramebuffer: kernel exposes no framebuffer " +
-        "registry. Wire BrowserKernel's `framebuffers` + `getProcessMemory` " +
+        "registry. Wire BrowserKernel's `framebuffers` " +
         "through KernelLike before calling.",
       );
     }
     const registry = this.kernel.framebuffers;
     const kernel = this.kernel;
-    // Narrow the optional-on-interface getProcessMemory down to a concrete
-    // function for the renderer (whose contract requires it to be defined).
-    const getProcessMemoryImpl = kernel.getProcessMemory!.bind(kernel);
+    // Browser registries carry independent pixel storage. Hosts that present
+    // guest mappings directly can still provide their own memory accessor.
+    const getProcessMemoryImpl = kernel.getProcessMemory?.bind(kernel);
     const getMemory = (pid: number): WebAssembly.Memory | undefined =>
-      getProcessMemoryImpl(pid);
+      getProcessMemoryImpl?.(pid);
 
     let stop: (() => void) | null = null;
     let attachedPid: number | null = null;

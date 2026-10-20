@@ -47,25 +47,46 @@ export class KandeloPcmProcessor extends WorkletBase {
     this.flags = config.flags;
     this.outputRate =
       config.outputSampleRate ?? globalThis.sampleRate ?? 48_000;
-    this.words = new Int32Array(
-      config.buffer,
-      config.controlOffset,
-      config.controlBytes / 4,
-    );
-    this.ring = new Uint8Array(
-      config.buffer,
-      config.dataOffset,
-      config.dataBytes,
-    );
+    this.words = null;
+    this.ring = null;
+    this.connection = null;
+    this.closed = false;
+    if (config.buffer) this.attachTransport(config);
     this.generation = -1;
     this.sourcePhase = 0;
     this.lastError = "";
+    this.port.onmessage = event => {
+      if (event.data?.type === "release") {
+        this.closed = true;
+        this.words = null;
+        this.ring = null;
+        if (this.connection) {
+          this.connection.onmessage = null;
+          this.connection.close();
+          this.connection = null;
+        }
+        this.port.postMessage({ type: "released" });
+      } else if (event.data?.type === "attach" && !this.closed) {
+        this.connection = event.data.port;
+        this.connection.onmessage = message => {
+          if (!this.closed) this.attachTransport(message.data);
+        };
+        this.connection.postMessage({ type: "attach" });
+      }
+    };
+  }
+
+  attachTransport(config) {
+    this.words = new Int32Array(config.buffer, config.controlOffset, config.controlBytes / 4);
+    this.ring = new Uint8Array(config.buffer, config.dataOffset, config.dataBytes);
   }
 
   process(_inputs, outputs) {
     const output = outputs[0] ?? [];
     const outputFrames = output[0]?.length ?? 0;
     for (const channel of output) channel.fill(0);
+    if (this.closed) return false;
+    if (!this.words || !this.ring) return true;
     if (outputFrames === 0) return true;
 
     const l = this.layout;

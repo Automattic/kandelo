@@ -269,6 +269,7 @@ host/test/run-example-output.test.ts	source-only
 host/test/run-example-resolver.test.ts	prepared-product
 host/test/run-example-rootfs.test.ts	source-only
 host/test/run-example-vfs.test.ts	source-only
+host/test/runtime-memory-profile.test.ts	source-only
 host/test/sched-getaffinity.test.ts	prepared-product
 host/test/scm-rights-pipe-lifetime.test.ts	prepared-product
 host/test/scm-rights-semantics.test.ts	prepared-product

@@ -252,7 +252,7 @@ import {
 } from "./process-memory";
 import { VforkAddressSpaceBusyError } from "./vfork-lifetime";
 import { readForkContinuationAnchor } from "./fork-continuation";
-import { EXEC_RETIRE_SIGNAL_CODE } from "./worker-protocol";
+import { EXEC_RETIRE_SIGNAL_CODE, EXIT_RETIRE_SIGNAL_CODE } from "./worker-protocol";
 import {
   PCM_CONTROL,
   PCM_CONTROL_BYTES,
@@ -12285,12 +12285,32 @@ export class CentralizedKernelWorker {
       // duplicate into the dead Process or repeat parent/onExit notification.
       this.completeProcessExitHandshake(channel, syscallNr, entry);
     } else {
-      // The process is already dead, so no guest observes a syscall result.
-      // Leave this exact mailbox parked for entry-layer Worker termination.
-      // The handling flag prevents polling hosts from redispatching it.
-      channel.handling = true;
+      // Rust has already committed exit. A parked Worker still needs to
+      // unwind: JSC cannot reclaim it through terminate() while Atomics.wait
+      // is blocked. A private terminal marker unwinds it without another
+      // Rust syscall or a second parent/host exit notification.
+      this.wakeExitedChannelForRetirement(channel, entry);
     }
     return true;
+  }
+
+  private wakeExitedChannelForRetirement(
+    channel: ChannelInfo,
+    entry?: KernelWorkerEntryContext,
+  ): void {
+    const view = new DataView(channel.memory.buffer, channel.channelOffset);
+    view.setUint32(CH_SIG_SIGNUM, SIGKILL, true);
+    view.setUint32(CH_SIG_HANDLER, 0, true);
+    view.setUint32(CH_SIG_SI_CODE, EXIT_RETIRE_SIGNAL_CODE, true);
+    // No Rust entry or syscall marshalling belongs to an exited Process.
+    this.completeChannelRaw(channel, -1, EINTR_ERRNO, entry);
+    // JS-side deferred-signal imports can make one more request before the
+    // glue observes SIGKILL. Keep serving only this exact retired transport.
+    if (entry) {
+      entry.deferProtocolEffect(() => { this.relistenChannel(channel); });
+    } else {
+      this.relistenChannel(channel);
+    }
   }
 
   private completeProcessExitHandshake(
@@ -15602,6 +15622,12 @@ export class CentralizedKernelWorker {
     this.pendingSelectRetries.clear();
     this.pendingSleeps.clear();
     this.pendingSignalWaits.clear();
+    // Removing bookkeeping does not cancel Atomics.waitAsync. Its engine
+    // waiter retains the reaction closure and the entire process Memory,
+    // even after the owning Worker realm terminates on WebKit. Retire each
+    // exact wait before dropping it; retirement wakes without completing a
+    // guest syscall that teardown is about to replace.
+    for (const wait of Array.from(this.pendingFutexWaits.values())) wait.retire();
     this.pendingFutexWaits.clear();
     // Teardown has not yet transitioned these live tasks in Rust. Consume
     // every exact target pin before discarding the immutable host plans.
@@ -15620,13 +15646,10 @@ export class CentralizedKernelWorker {
     const getExitStatus = this.#kernelInstanceIfAvailableForEntry(entry)?.exports
       .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
     for (const registration of this.processes.values()) {
-      // Skip processes that have already exited (kernel state == Exited, i.e.
-      // status != -1). A sibling thread may have called exit_group and set the
-      // process's real exit status while this thread is still parked; forcing
-      // our own kernel_exit on that parked thread would clobber that status
-      // (e.g. a pthread exit(0) turning into 137). Only genuinely-live processes
-      // need waking; already-exited stragglers are reaped/terminated normally.
-      if (getExitStatus && getExitStatus(registration.pid) !== -1) continue;
+      const alreadyExited = this.hostReaped?.has(registration.pid)
+        || (getExitStatus !== undefined && getExitStatus(registration.pid) !== -1);
+      // Exited processes can still own parked Workers. Their duplicate exit
+      // transport preserves Rust's recorded status while those Workers unwind.
       for (const channel of registration.channels) {
         let status: number;
         try {
@@ -15638,7 +15661,7 @@ export class CentralizedKernelWorker {
         } catch { continue; }
         if (status !== CH_PENDING) continue;
         try {
-          this.wakeChannelForTeardownExit(channel, entry);
+          this.wakeChannelForTeardownExit(channel, entry, alreadyExited);
           woken.add(channel.pid);
         } catch (err) {
           this.#rethrowKernelEntryFatal(err);
@@ -15742,8 +15765,10 @@ export class CentralizedKernelWorker {
       if (kept.length) this.pendingPipeWriters.set(pipeIdx, kept);
       else this.pendingPipeWriters.delete(pipeIdx);
     }
-    for (const [channel] of [...this.pendingFutexWaits]) {
-      if (ownsChannel(channel)) this.pendingFutexWaits.delete(channel);
+    for (const [channel, wait] of [...this.pendingFutexWaits]) {
+      if (!ownsChannel(channel)) continue;
+      wait.retire();
+      this.pendingFutexWaits.delete(channel);
     }
     for (const channel of Array.from(this.blockingRetrySnapshots.keys())) {
       if (ownsChannel(channel)) {
@@ -15751,12 +15776,10 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Skip a process the kernel already marked Exited (a sibling thread's
-    // exit_group set the real status); forcing kernel_exit on a still-parked
-    // thread would clobber it. Only genuinely-live processes need waking.
     const getExitStatus = this.#kernelInstanceIfAvailableForEntry(entry)?.exports
       .kernel_get_process_exit_status as ((pid: number) => number) | undefined;
-    if (getExitStatus && getExitStatus(pid) !== -1) return woken;
+    const alreadyExited = this.hostReaped?.has(pid)
+      || (getExitStatus !== undefined && getExitStatus(pid) !== -1);
 
     for (const channel of registration.channels) {
       let status: number;
@@ -15766,7 +15789,7 @@ export class CentralizedKernelWorker {
       } catch { continue; }
       if (status !== CH_PENDING) continue;
       try {
-        this.wakeChannelForTeardownExit(channel, entry);
+        this.wakeChannelForTeardownExit(channel, entry, alreadyExited);
         woken.add(channel.pid);
       } catch (err) {
         this.#rethrowKernelEntryFatal(err);
@@ -15890,7 +15913,12 @@ export class CentralizedKernelWorker {
   private wakeChannelForTeardownExit(
     channel: ChannelInfo,
     entry: KernelWorkerEntryContext,
+    alreadyExited = false,
   ): void {
+    if (alreadyExited || this.hostReaped?.has(channel.pid)) {
+      this.wakeExitedChannelForRetirement(channel, entry);
+      return;
+    }
     const pv = new DataView(channel.memory.buffer, channel.channelOffset);
     // Queue SIGKILL for the glue's post-syscall __deliver_pending_signal. The
     // syscall handlers may have called dequeueSignalForDelivery, but SIGKILL
@@ -24324,13 +24352,14 @@ export class CentralizedKernelWorker {
       // private exit marker. Libc enters kernel_exit before any user
       // instruction can run, the wrapper publishes memory_quiescent, and the
       // original Rust signal status remains authoritative for waitpid().
-      this.wakeChannelForTeardownExit(channel, entry);
-      return;
+      this.wakeChannelForTeardownExit(channel, entry, true);
     }
 
-    // A Worker with no pending channel has no cooperative ownership
-    // fence. Do not wake an ordinary dead process back into C; force its host
-    // teardown, retaining/containing shared Memory when quiescence is unknown.
+    // The terminal marker suppresses a second SYS_EXIT/exit message. Start
+    // exact-generation teardown from Rust's authoritative signal status.
+    // Entry-layer teardown wakes every parked channel through the exited
+    // transport and awaits exact Worker fences. A compute-only straggler
+    // still uses forced termination/containment when no fence arrives.
     entry.deferProtocolEffect(() => {
       this.callbacks.onExit?.(
         exitingPid,

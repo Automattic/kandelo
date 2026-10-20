@@ -511,19 +511,11 @@ const ownershipSeeds: OwnershipSeed[] = [
     why: "This thread ingress carries the owning process's shared linear memory, never kernel scratch.",
   },
   {
-    declaration: "host/src/browser-kernel-protocol.ts::FbBindMessage.memory",
+    declaration: "host/src/browser-kernel-protocol.ts::FbBindMessage.pixels",
     target: "value",
     owner: "framebuffer",
-    form: "memory",
-    why: "This browser message carries a process framebuffer mapping for display binding, not kernel memory.",
-  },
-  {
-    declaration:
-      "host/src/browser-kernel-protocol.ts::FbRebindMemoryMessage.memory",
-    target: "value",
-    owner: "framebuffer",
-    form: "memory",
-    why: "This browser message replaces a framebuffer process-memory binding after growth, not kernel memory.",
+    form: "buffer",
+    why: "The browser receives fixed-size display pixels, independent of guest Wasm memory.",
   },
   {
     declaration: "host/src/wasi-shim.ts::WasiShim.memory",
