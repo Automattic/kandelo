@@ -561,6 +561,7 @@ tests/package-system/dev-lazy-assets.test.ts	source-only
 tests/package-system/espeak-ng-package.test.ts	prepared-product
 tests/package-system/host-package-projection-contract.test.ts	prepared-product
 tests/package-system/installed-host-package.test.ts	prepared-product
+tests/package-system/kandelo-build-image.test.ts	prepared-product
 tests/package-system/kernel-test-fixtures.test.ts	prepared-product
 tests/package-system/local-build-wrapper.test.ts	source-only
 tests/package-system/playwright-server-policy.test.ts	prepared-product

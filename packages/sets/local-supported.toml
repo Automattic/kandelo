@@ -245,6 +245,10 @@ name = "jsoncpp"
 class = "platform"
 
 [[packages]]
+name = "kandelo-build-image"
+class = "platform"
+
+[[packages]]
 name = "kandelo-exchange"
 class = "platform"
 
