@@ -4,6 +4,20 @@ set -e
 export ICU_DATA=/usr/share/icu
 export FREECIV_DATA_PATH=/usr/share/freeciv
 export SDL_AUDIODRIVER=dsp
+# Seed ordinary client settings once; saved settings and explicit option
+# files remain authoritative, including files Freeciv can migrate.
+if [ "${FREECIV_OPT+x}" != x ]; then
+    have_options=no
+    for options in "$HOME"/.freeciv/freeciv-client-rc-* \
+                   "$HOME"/.freeciv-client-rc-* "$HOME"/.civclientrc; do
+        [ ! -e "$options" ] || have_options=yes
+    done
+    if [ "$have_options" = no ]; then
+        mkdir -p "$HOME/.freeciv"
+        cp /usr/share/freeciv-kandelo/client-defaults \
+            "$HOME/.freeciv/freeciv-client-rc-3.2"
+    fi
+fi
 if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -S "$XDG_RUNTIME_DIR/${WAYLAND_DISPLAY:-wayland-0}" ]; then
     export SDL_VIDEODRIVER=kmsdrm
     export SDL_EVDEV_DEVICES=2:/dev/input/event0,1:/dev/input/event1

@@ -83,6 +83,12 @@ shared `sdl2-mixer` package and the shipped `stdsounds`/`stdmusic` Ogg files.
 There is no Freeciv-specific browser audio path. SDL opens `/dev/dsp`; the
 machine's normal PCM transport and AudioWorklet play the result.
 
+The launcher seeds Freeciv's normal **Sound volume** setting at 25% on
+first launch, affecting menu music and sound effects. Change it under
+**Options → Local options → Sound** and save local options to keep your
+choice. Existing settings, legacy settings awaiting migration, and explicit
+`FREECIV_OPT` files are preserved.
+
 Click the graphics pane, or the audio status toast's **Enable** button, to
 satisfy browser audio activation. The standard music set contains menu music
 only; silence between in-game sound effects is expected. Additional in-game
@@ -188,16 +194,17 @@ explicit `--` GUI argument block overrides the fullscreen default.
 
 ## Display and input ownership
 
-The image declares Kandelo's generic `presentation.displayScale: 1.5`.
+The image declares Kandelo's generic `presentation.displayScale: 1`.
 This selects a readable virtual monitor from the pane's CSS size,
 independently of browser density. At a 1440×810 CSS display, Freeciv sees
-960×540 pixels at both 1× and 2× density. Its unmodified fonts, bitmap art,
+1440×810 pixels at both 1× and 2× density. Its unmodified fonts, bitmap art,
 map tiles, widget dimensions, mouse state, and hit targets all use that
-single grid. The browser presents the complete scene at 150% scale.
+single grid. The browser presents the complete scene at 100% CSS scale,
+compensating for the display's physical pixel density.
 
 There is no Freeciv DPI conversion, renderer logical-size transform, font
 point conversion, or compensating font/layout patch. Upstream's theme size
-10 remains size 10 in the guest, displayed at about 15 CSS pixels here.
+10 remains size 10 in the guest, displayed at about 10 CSS pixels here.
 This is bitmap scaling, not independent native-density glyph rasterization.
 The shared connector minimum is 640×480, so smaller panes fit that mode.
 DPI-aware compositor profiles omit `displayScale` and retain native output.
@@ -208,7 +215,8 @@ standard modes from 640×480 to 3840×2160, plus the pane-derived preferred
 mode when its size is not already in that list. Smaller resolutions make
 the whole bitmap UI larger; larger resolutions show more map and smaller
 controls. The browser fits the selected aspect ratio with letterboxing.
-The preferred mode and the default 150% presentation remain unchanged.
+Selecting a mode overrides the preferred mode; the default presentation
+uses one guest pixel per CSS pixel independently of display density.
 
 Freeciv's SDL2 resolution callback originally only rearranged widgets.
 The client correction calls SDL's window/display mode APIs, recreates its

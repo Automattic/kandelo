@@ -17,6 +17,7 @@ for script in freeciv freeciv-server freeciv-play; do
 done
 ln -s freeciv "$STAGE/bin/freeciv-sdl2"
 install -m644 "$HERE/host.serv" "$STAGE/share/freeciv-kandelo/host.serv"
+install -m644 "$HERE/client-defaults" "$STAGE/share/freeciv-kandelo/client-defaults"
 bash "$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh" \
     "$STAGE" "$WORK/freeciv.zip"
 export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
