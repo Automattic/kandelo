@@ -11,6 +11,10 @@
  * and package builds run on the Node host. See docs/package-management.md,
  * "Building inside Kandelo".
  */
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+
+import { NodeKernelHost } from "./node-kernel-host";
 import { KERNEL_TMPFS_OWNED_PREFIXES } from "./vfs/default-mounts";
 
 /** Where the build's workspace appears inside the guest. */
@@ -149,4 +153,71 @@ export function validateGuestBuildRequest(request: GuestBuildRequest): GuestBuil
     env: env.map(([key, value]) => `${key}=${value}`),
     timeoutMs: request.timeoutMs,
   };
+}
+
+export interface GuestBuildRun {
+  /** The kernel Wasm module bytes. */
+  kernelWasm: Uint8Array;
+  /** The build image (`.vfs` or `.vfs.zst`) the machine boots as `/`. */
+  image: Uint8Array;
+  request: GuestBuildRequest;
+  /** Receives guest stdout and stderr, in the order the host sees them. */
+  log: (chunk: Uint8Array) => void;
+}
+
+export interface GuestBuildResult {
+  /** The guest command's exit status; 124 when it timed out. */
+  exitCode: number;
+  timedOut: boolean;
+}
+
+/** Exit status reported for a command stopped by its timeout, as timeout(1) does. */
+export const GUEST_BUILD_TIMEOUT_EXIT = 124;
+
+function arrayBufferOf(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+/** Boot a machine, run the request's command once, and tear the machine down. */
+export async function runGuestBuild(run: GuestBuildRun): Promise<GuestBuildResult> {
+  const plan = validateGuestBuildRequest(run.request);
+  // The guest HOME and TMPDIR are inside the workspace; they must exist before
+  // the command starts, because nothing in the guest creates them.
+  mkdirSync(join(run.request.workspace, ".home"), { recursive: true });
+  mkdirSync(join(run.request.workspace, ".tmp"), { recursive: true });
+
+  const host = new NodeKernelHost({
+    rootfsImage: run.image,
+    extraMounts: plan.mounts,
+    onStdout: (_pid, bytes) => run.log(bytes),
+    onStderr: (_pid, bytes) => run.log(bytes),
+    // WHY no imageBuildDeterminism: its clock restarts at the epoch for every
+    // new process, so a later compiler step can write an output older than the
+    // input it was made from, and make then rebuilds or skips the wrong
+    // targets. Builds stay reproducible because tools take dates from
+    // SOURCE_DATE_EPOCH, and the double-build checks prove it.
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await host.init(arrayBufferOf(run.kernelWasm));
+    const { exit } = await host.spawnFromVfs(plan.argv[0], plan.argv, {
+      env: plan.env,
+      cwd: plan.cwd,
+      uid: 0,
+      gid: 0,
+    });
+    const timedOut = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), plan.timeoutMs);
+    });
+    const outcome = await Promise.race([exit, timedOut]);
+    if (outcome === "timeout") {
+      return { exitCode: GUEST_BUILD_TIMEOUT_EXIT, timedOut: true };
+    }
+    return { exitCode: outcome, timedOut: false };
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    // Destroying the host ends every guest process, including a timed-out
+    // command and anything it left running in the background.
+    await host.destroy().catch(() => {});
+  }
 }

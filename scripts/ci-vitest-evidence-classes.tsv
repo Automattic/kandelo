@@ -158,6 +158,7 @@ host/test/getgroups-large-buffer.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
+host/test/guest-build-run.test.ts	prepared-product
 host/test/guest-sdk-equivalence.test.ts	prepared-product
 host/test/guest-spawn-overlay-program.test.ts	prepared-product
 host/test/heap-safepoint.test.ts	prepared-product
@@ -257,6 +258,7 @@ host/test/nethack-shared-playground.test.ts	prepared-product
 host/test/network-hostname.test.ts	source-only
 host/test/network-readiness-generation.test.ts	source-only
 host/test/node-compat-builtin-exports.test.ts	prepared-product
+host/test/node-guest-build.test.ts	source-only
 host/test/node-host-mounts.test.ts	prepared-product
 host/test/node-host-vfs-only-metadata.test.ts	source-only
 host/test/node-input-source.test.ts	source-only
