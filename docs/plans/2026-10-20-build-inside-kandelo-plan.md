@@ -308,10 +308,11 @@ starts; their exact shape depends on what the Binaryen port surfaces.
   fork-instrumented one) produces bytes identical to host `wasm-opt`
   126. A difference is a blocker to investigate, not to accept.
 
-### Task B2: `fork-instrument` package and `--drop-compiler-facts`
+### Task B2: `fork-instrument` package
 
-- Add `--drop-compiler-facts` to `crates/fork-instrument` (removes
-  `kandelo.calltypes*` sections from the output), with Rust tests.
+- No new option is needed: `instrument()` already removes the
+  `kandelo.calltypes*` sections from every output, and returns a module
+  outside any fork transaction otherwise unchanged and unoptimized.
 - Package the crate for `wasm32-unknown-kandelo-std` with
   `sdk/bin/wasm32posix-cargo`, overriding the workspace default target.
   The tool spawns `wasm-opt`, so it is fork-instrumented on the host.
@@ -321,11 +322,11 @@ starts; their exact shape depends on what the Binaryen port surfaces.
 ### Task B3: Guest wrapper post-link step
 
 - In `sdk/kandelo/bin/wasm32posix-cc`, after `wasm-ld`:
-  - fork-capable output (imports `kernel.kernel_fork`): run
-    `wasm-fork-instrument --drop-compiler-facts` (which runs
-    `wasm-opt -Os`);
-  - other output: run the `wasm-opt` command `sdk/src/bin/cc.ts` runs
-    for the requested `-O` level, then drop facts.
+  - every output: run `wasm-fork-instrument --no-facts`. Fork-capable
+    output is instrumented and optimized with `wasm-opt -Os`; other
+    output only loses its compiler-facts sections;
+  - output that does not fork: then run the `wasm-opt` command
+    `sdk/src/bin/cc.ts` runs for the requested `-O` level.
 - Add `-D__unix__=1 -D__unix=1` to compile flags, matching
   `sdk/src/lib/flags.ts`.
 - Include `wasm-opt` and `wasm-fork-instrument` in `kandelo-sdk.zip`
