@@ -482,6 +482,13 @@ wasm32 sysroot:
 | `sysroot/lib/libEGL.a` | `egl` | EGL setup over `/dev/dri/renderD128` |
 | `sysroot/lib/libGLESv2.a` | `glesv2` | GLES2/3 command-buffer encoder |
 
+GBM surfaces register their native window dimensions for EGL. When a
+program passes that window to `eglCreateWindowSurface`, libEGL forwards
+its real size before the first KMS modeset, including after window or
+renderer replacement. Applications need no Kandelo-specific dimension
+attributes. The private lookup recognizes only live GBM handles and does
+not interpret opaque pointers belonging to another window backend.
+
 Programs should reference these through `wasm32posix-pkg-config`, for example:
 
 ```bash

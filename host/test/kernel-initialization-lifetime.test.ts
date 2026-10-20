@@ -233,3 +233,38 @@ describe("WasmPosixKernel initialization lifetime", () => {
     expect(instantiate).toHaveBeenCalledTimes(2);
   });
 });
+
+
+describe("optional KMS cursor transport negotiation", () => {
+  it("loads older kernels without cursor exports", async () => {
+    const engine = installSuccessfulEngine(4, {}, () => 4096);
+    await expect(kernel(engine.engine).init(memoryImportModule(4))).resolves.toBeUndefined();
+  });
+
+  it("negotiates protocol 1 without a visible display", async () => {
+    const configure = vi.fn(() => 1);
+    const engine = installSuccessfulEngine(4, {
+      kernel_kms_cursor_configure: configure,
+      kernel_kms_cursor_read: vi.fn(() => 0),
+    }, () => 4096);
+    await kernel(engine.engine).init(memoryImportModule(4));
+    expect(configure).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it("rejects an incomplete cursor interface", async () => {
+    const engine = installSuccessfulEngine(4, {
+      kernel_kms_cursor_configure: vi.fn(() => 1),
+    }, () => 4096);
+    await expect(kernel(engine.engine).init(memoryImportModule(4)))
+      .rejects.toThrow("incomplete KMS cursor transport");
+  });
+
+  it("surfaces a rejected protocol instead of claiming support", async () => {
+    const engine = installSuccessfulEngine(4, {
+      kernel_kms_cursor_configure: vi.fn(() => -95),
+      kernel_kms_cursor_read: vi.fn(() => 0),
+    }, () => 4096);
+    await expect(kernel(engine.engine).init(memoryImportModule(4)))
+      .rejects.toThrow("rejected KMS cursor protocol 1");
+  });
+});

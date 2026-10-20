@@ -49,7 +49,7 @@ export function setupMainForward(
         return;
       }
       case "gl_forward_destroy_context": {
-        b.gl = null;
+        reg.destroyContext(pid);
         return;
       }
       case "gl_forward_submit": {

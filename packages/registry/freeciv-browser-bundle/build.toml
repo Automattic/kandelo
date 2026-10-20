@@ -1,0 +1,15 @@
+script_path = "packages/registry/freeciv-browser-bundle/build-freeciv-browser-bundle.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 2
+inputs = [
+  "packages/registry/freeciv-browser-bundle/build-freeciv-browser-bundle.sh",
+  "packages/registry/freeciv-browser-bundle/freeciv",
+  "packages/registry/freeciv-browser-bundle/freeciv-server",
+  "packages/registry/freeciv-browser-bundle/freeciv-play",
+  "packages/registry/freeciv-browser-bundle/host.serv",
+  "packages/registry/freeciv-browser-bundle/client-defaults",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
+]

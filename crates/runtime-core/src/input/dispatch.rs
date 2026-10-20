@@ -35,6 +35,8 @@ pub fn push_event(
     // true key state via EVIOCGKEY after a SYN_DROPPED.
     if ev_type == wasm_posix_shared::input::EV_KEY {
         crate::input::note_key_event(device, code, value);
+    } else if ev_type == wasm_posix_shared::input::EV_ABS {
+        crate::input::note_absolute_event(device, code, value);
     }
     let ev = WpkInputEvent {
         tv_sec,

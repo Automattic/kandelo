@@ -1,0 +1,22 @@
+The first SDL2 launch migrates legacy SDL defaults after parsing GUI command
+line options, silently overwriting --fullscreen with the old default. Migrate
+first so explicit command line options retain their ordinary precedence.
+This is an upstream client initialization bug on every platform.
+
+--- a/client/gui-sdl2/gui_main.c
++++ b/client/gui-sdl2/gui_main.c
+@@ -1041,10 +1041,11 @@
+ {
+   Uint32 flags = 0;
+ 
++  if (!gui_options.gui_sdl2_migrated_from_sdl) {
++    migrate_options_from_sdl();
++  }
++
+   if (parse_options(argc, argv)) {
+-    if (!gui_options.gui_sdl2_migrated_from_sdl) {
+-      migrate_options_from_sdl();
+-    }
+     if (!GUI_SDL_OPTION(default_screen_size_set)) {
+       if (font_size_parameter > 10) {
+         GUI_SDL_OPTION(screen) = VIDEO_MODE(640 * font_size_parameter / 10,

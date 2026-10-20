@@ -42,6 +42,7 @@ depends_on = [
   "elinks@0.20.0",
   "ffmpeg@9.0",
   "vim-browser-bundle@9.1.0900",
+  "freeciv-browser-bundle@3.2.6",
   "nethack-browser-bundle@3.6.7",
   "ruby-browser-bundle@4.0.5",
   "python-browser-bundle@3.13.3",

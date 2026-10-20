@@ -1168,6 +1168,7 @@ fn handle_dri_ioctl(
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             cap.value = match cap.capability {
                 DRM_CAP_DUMB_BUFFER => 1,
+                0x8 | 0x9 => if host.kms_cursor_supported() { 64 } else { 0 },
                 DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
                 _ => 0,
             };
@@ -1743,6 +1744,11 @@ fn handle_dri_card_ioctl(
             if crate::dri::master::drop_master(pid, ofd_idx) {
                 if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
                     kms.holds_master = false;
+                    if let Some(old) = kms.cursor_bo.take() {
+                        if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
+                            host.gbm_bo_destroy(pid, old);
+                        }
+                    }
                 }
                 host.kms_drop_master(pid);
             }
@@ -1847,13 +1853,18 @@ fn handle_dri_card_ioctl(
             if req.connector_id != 1 {
                 return Err(Errno::ENOENT);
             }
-            let modes_ptr = (req.count_modes >= 1 && req.modes_ptr != 0)
+            let modes = crate::dri::modes::connector_modes(host.kms_mode_info(1));
+            let mode_count = modes.len() as u32;
+            // Linux reports the available count on both calls, but copies
+            // the list only if the caller supplied enough capacity. A resize
+            // between the count and fill calls can therefore be retried.
+            let modes_ptr = (req.count_modes >= mode_count && req.modes_ptr != 0)
                 .then(|| {
                     probe_dri_process_pointer(
                         host,
                         pid,
                         req.modes_ptr,
-                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                        modes.len() * core::mem::size_of::<WpkDrmModeModeinfo>(),
                     )
                 })
                 .transpose()?;
@@ -1861,11 +1872,10 @@ fn handle_dri_card_ioctl(
                 .then(|| probe_dri_process_pointer(host, pid, req.encoders_ptr, 4))
                 .transpose()?;
             if let Some(pointer) = modes_ptr {
-                let mode = host.kms_mode_info(1);
                 let mode_bytes = unsafe {
                     core::slice::from_raw_parts(
-                        &mode as *const _ as *const u8,
-                        core::mem::size_of::<WpkDrmModeModeinfo>(),
+                        modes.as_ptr() as *const u8,
+                        modes.len() * core::mem::size_of::<WpkDrmModeModeinfo>(),
                     )
                 };
                 let rc = host.proc_write_bytes(pid, pointer, mode_bytes);
@@ -1888,7 +1898,7 @@ fn handle_dri_card_ioctl(
                 modes_ptr: req.modes_ptr,
                 props_ptr: req.props_ptr,
                 prop_values_ptr: req.prop_values_ptr,
-                count_modes: 1,
+                count_modes: mode_count,
                 count_encoders: 1,
                 encoder_id: 1,
                 connector_id: 1,
@@ -1986,6 +1996,73 @@ fn handle_dri_card_ioctl(
                 host.gbm_bo_destroy(pid, bo_id);
             }
             host.kms_rmfb(pid, fb_id);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_CURSOR | DRM_IOCTL_MODE_CURSOR2 => {
+            let size = if request == DRM_IOCTL_MODE_CURSOR2 { 36 } else { 28 };
+            if buf.len() < size {
+                return Err(Errno::EINVAL);
+            }
+            let word = |i: usize| {
+                u32::from_le_bytes(buf[i * 4..i * 4 + 4].try_into().unwrap())
+            };
+            let flags = word(0);
+            let crtc = word(1);
+            let (x, y) = (word(2) as i32, word(3) as i32);
+            let (width, height, handle) = (word(4), word(5), word(6));
+            let (hot_x, hot_y) = if size == 36 {
+                (word(7) as i32, word(8) as i32)
+            } else {
+                (0, 0)
+            };
+            if flags == 0 || flags & !3 != 0 {
+                return Err(Errno::EINVAL);
+            }
+            if crtc != 1 {
+                return Err(Errno::ENOENT);
+            }
+            if !kms_state(proc, ofd_idx)?.holds_master {
+                return Err(Errno::EACCES);
+            }
+            // WHY: older hosts must instantiate without cursor imports, but
+            // must not accept invisible cursor state or retain its BOs.
+            if !host.kms_cursor_supported() {
+                return Err(Errno::ENOTSUP);
+            }
+            let mut bo_id = 0;
+            if flags & 1 != 0 {
+                if handle != 0 {
+                    if width == 0 || height == 0 || width > 64 || height > 64 {
+                        return Err(Errno::EINVAL);
+                    }
+                    bo_id = *dri_state(proc, ofd_idx)?.handles.get(&handle)
+                        .ok_or(Errno::ENOENT)?;
+                    // Linux legacy cursor images use packed ARGB8888 rows,
+                    // independently of the dumb allocation's original pitch.
+                    let valid = crate::dri::with_registry(|r| {
+                        r.get(bo_id).is_some_and(|bo| {
+                            bo.tier == crate::dri::BoTier::CpuShared
+                                && bo.size >= u64::from(width) * u64::from(height) * 4
+                        })
+                    });
+                    if !valid {
+                        return Err(Errno::EINVAL);
+                    }
+                    crate::dri::with_registry(|r| r.incref(bo_id));
+                }
+                // WHY: cursor scanout outlives its userspace GEM handle.
+                // Swap references only after validating the entire request.
+                let old = core::mem::replace(
+                    &mut kms_state_mut(proc, ofd_idx)?.cursor_bo,
+                    (bo_id != 0).then_some(bo_id),
+                );
+                if let Some(old) = old {
+                    if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
+                        host.gbm_bo_destroy(pid, old);
+                    }
+                }
+            }
+            host.kms_cursor(pid, crtc, flags, bo_id, width, height, x, y, hot_x, hot_y);
             Ok(())
         }
         DRM_IOCTL_MODE_SETCRTC => {
@@ -2168,7 +2245,7 @@ fn handle_input_ioctl(
             let (w, h) = crate::input::canvas_dims();
             let abs = match axis {
                 ABS_X => WpkInputAbsinfo {
-                    value: 0,
+                    value: crate::input::absolute_axis(ABS_X),
                     minimum: 0,
                     maximum: (w as i32) - 1,
                     fuzz: 0,
@@ -2176,7 +2253,7 @@ fn handle_input_ioctl(
                     resolution: 1,
                 },
                 ABS_Y => WpkInputAbsinfo {
-                    value: 0,
+                    value: crate::input::absolute_axis(ABS_Y),
                     minimum: 0,
                     maximum: (h as i32) - 1,
                     fuzz: 0,
@@ -2285,6 +2362,7 @@ pub fn dri_release_ofd_state(
             }
         }
         crate::ofd::DriOfdState::Card { dri, kms } => {
+            if let Some(bo_id) = kms.cursor_bo { release_bo(host, bo_id); }
             // KMS-side cleanup first: release framebuffers (each
             // holds an extra bo refcount) and notify the host so it
             // can drop GL textures / canvases bound to those fbs.
@@ -8646,8 +8724,15 @@ pub fn sys_mkdir(
     path: &[u8],
     mode: u32,
 ) -> Result<(), Errno> {
-    let resolved =
-        resolve_namespace_path(proc, host, path, PathResolveOptions::CREATE_DIRECTORY)?.path;
+    let entry = resolve_namespace_path(proc, host, path, PathResolveOptions::CREATE_DIRECTORY)?;
+    // Resolution has already checked search permission on the ancestors.
+    // An existing final entry needs no parent mutation: report EEXIST before
+    // testing write permission, as for mkfifo and symlink creation. Recursive
+    // mkdir users must be able to traverse existing root-owned ancestors.
+    if entry.stat.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    let resolved = entry.path;
     // In-kernel tmpfs owns the scratch mounts; create the directory in Rust and
     // assign ownership from the caller's credentials directly.
     if crate::tmpfs::claims_path(&resolved) {
@@ -16501,14 +16586,17 @@ pub fn sys_mkdirat(
     path: &[u8],
     mode: u32,
 ) -> Result<(), Errno> {
-    let resolved = resolve_at_path(
+    let entry = resolve_at_path(
         proc,
         host,
         dirfd,
         path,
         PathResolveOptions::CREATE_DIRECTORY,
-    )?
-    .path;
+    )?;
+    if entry.stat.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    let resolved = entry.path;
     if crate::tmpfs::claims_path(&resolved) {
         let effective_mode = mode & !proc.umask;
         check_parent_writable(proc, host, &resolved)?;
@@ -20831,6 +20919,12 @@ mod tests {
 
         let mut user = user_process(2);
         let denied = |r: Result<(), Errno>| r.unwrap_err();
+        // An already occupied name does not create an entry. Searchable,
+        // root-owned ancestors need not be writable for this EEXIST result.
+        for path in [b"/locked".as_slice(), b"/locked/dir", b"/locked/file", b"/tmp/perm-root-owned"] {
+            assert_eq!(denied(sys_mkdir(&mut user, &mut host, path, 0o755)), Errno::EEXIST);
+            assert_eq!(denied(sys_mkdirat(&mut user, &mut host, AT_FDCWD, path, 0o755)), Errno::EEXIST);
+        }
         assert_eq!(denied(sys_unlink(&mut user, &mut host, b"/locked/file")), Errno::EACCES);
         assert_eq!(
             denied(sys_unlinkat(&mut user, &mut host, AT_FDCWD, b"/locked/file", 0)),
@@ -21700,6 +21794,7 @@ mod tests {
         /// Recorded pid for every `gl_unbind` call.
         gl_unbind_calls: Vec<i32>,
         proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
+        cursor_supported: bool,
         /// Simulated guest linear memory for `proc_read_bytes` /
         /// `proc_write_bytes`. Without it every cross-memory call fails with
         /// the trait's `-ENOSYS` default, which would make a test that means
@@ -21851,6 +21946,7 @@ mod tests {
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
                 proc_write_calls: Vec::new(),
+                cursor_supported: false,
                 // 64 KiB — one wasm page, enough for every address these
                 // tests use and small enough that a deliberately-high
                 // address is out of range.
@@ -22281,6 +22377,8 @@ mod tests {
     }
 
     impl HostIO for MockHostIO {
+        fn kms_cursor_supported(&mut self) -> bool { self.cursor_supported }
+
         fn host_udp_source_address(&mut self, _dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
             self.udp_source_result
         }
@@ -26127,6 +26225,7 @@ mod tests {
     fn test_mkdir_delegates_to_host() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.set_missing_path(b"/tmp/newdir");
         sys_mkdir(&mut proc, &mut host, b"/tmp/newdir", 0o755).unwrap();
     }
 
@@ -33673,6 +33772,7 @@ mod tests {
     fn test_mkdirat_at_fdcwd() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.set_missing_path(b"/tmp/newdir");
         let result = sys_mkdirat(&mut proc, &mut host, AT_FDCWD, b"/tmp/newdir", 0o755);
         assert!(result.is_ok());
     }
@@ -37954,6 +38054,7 @@ mod tests {
 
     struct TrackingHostIO {
         next_handle: i64,
+        missing_paths: std::collections::HashSet<Vec<u8>>,
         last_open_path: Vec<u8>,
         last_stat_path: Vec<u8>,
         last_lstat_path: Vec<u8>,
@@ -37984,6 +38085,7 @@ mod tests {
         fn new() -> Self {
             TrackingHostIO {
                 next_handle: 100,
+                missing_paths: std::collections::HashSet::new(),
                 last_open_path: Vec::new(),
                 last_stat_path: Vec::new(),
                 last_lstat_path: Vec::new(),
@@ -38017,6 +38119,9 @@ mod tests {
         }
         fn host_stat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
             self.last_stat_path = path.to_vec();
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
             let mode = test_default_mode(path);
             Ok(WasmStat {
                 st_dev: 0,
@@ -38038,6 +38143,9 @@ mod tests {
         }
         fn host_lstat(&mut self, path: &[u8]) -> Result<WasmStat, Errno> {
             self.last_lstat_path = path.to_vec();
+            if self.missing_paths.contains(path) {
+                return Err(Errno::ENOENT);
+            }
             // Return regular file/dir by default (not symlink) so realpath works
             let mode = test_default_mode(path);
             Ok(WasmStat {
@@ -38060,6 +38168,7 @@ mod tests {
         }
         fn host_mkdir(&mut self, path: &[u8], _mode: u32) -> Result<(), Errno> {
             self.last_mkdir_path = path.to_vec();
+            self.missing_paths.remove(path);
             Ok(())
         }
         fn host_rmdir(&mut self, path: &[u8]) -> Result<(), Errno> {
@@ -38342,6 +38451,7 @@ impl HostIO for TrackingHostIO {
         let mut proc = Process::new(1);
         let mut host = TrackingHostIO::new();
         let dirfd = open_dir_fd(&mut proc, &mut host, b"/home/dir");
+        host.missing_paths.insert(b"/home/dir/newdir".to_vec());
         let result = sys_mkdirat(&mut proc, &mut host, dirfd, b"newdir", 0o755);
         assert!(result.is_ok());
         assert_eq!(host.last_mkdir_path, b"/home/dir/newdir");
@@ -47307,7 +47417,7 @@ impl HostIO for RelSymlinkMock {
 
         let connector = WpkDrmModeGetConnector {
             modes_ptr: 0x0000_0001_0000_5678,
-            count_modes: 1,
+            count_modes: u32::MAX,
             connector_id: 1,
             ..Default::default()
         };
@@ -47328,6 +47438,56 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::EFAULT),
         );
+        assert!(host.proc_write_calls.is_empty());
+    }
+
+    #[test]
+    fn dri_connector_mode_query_respects_capacity_and_validates_all_outputs() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeGetConnector>()];
+        let query = |proc: &mut Process, host: &mut MockHostIO, buf: &mut [u8], req| {
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req); }
+            sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_GETCONNECTOR, buf)
+        };
+        let request = WpkDrmModeGetConnector { connector_id: 1, ..Default::default() };
+        query(&mut proc, &mut host, &mut buf, request).unwrap();
+        let response: WpkDrmModeGetConnector = unsafe {
+            core::ptr::read_unaligned(buf.as_ptr() as *const _)
+        };
+        assert!(response.count_modes > 1);
+        assert!(host.proc_write_calls.is_empty());
+
+        // An insufficient list is left untouched, and the actual count is
+        // returned so libdrm can allocate and retry without a partial list.
+        query(&mut proc, &mut host, &mut buf, WpkDrmModeGetConnector {
+            modes_ptr: 4096, count_modes: 1, ..request
+        }).unwrap();
+        assert!(host.proc_write_calls.is_empty());
+        let full_request = WpkDrmModeGetConnector {
+            modes_ptr: 4096, count_modes: response.count_modes,
+            encoders_ptr: 8192, count_encoders: 1, ..request
+        };
+        query(&mut proc, &mut host, &mut buf, full_request).unwrap();
+        let bytes = &host.proc_write_calls[0].2;
+        assert_eq!(bytes.len(), response.count_modes as usize * 68);
+        assert!(bytes.chunks_exact(68).any(|mode| {
+            u16::from_le_bytes(mode[4..6].try_into().unwrap()) == 1920
+                && u16::from_le_bytes(mode[14..16].try_into().unwrap()) == 1080
+        }));
+        host.proc_write_calls.clear();
+        assert_eq!(query(&mut proc, &mut host, &mut buf, WpkDrmModeGetConnector {
+            encoders_ptr: u64::MAX, ..full_request
+        }), Err(Errno::EFAULT));
+        assert!(host.proc_write_calls.is_empty());
+        // Checking just one mode's range would let the full copy run past
+        // the end of process memory.
+        let near_end = host.proc_memory.len() as u64 - 68;
+        assert_eq!(query(&mut proc, &mut host, &mut buf, WpkDrmModeGetConnector {
+            modes_ptr: near_end, ..full_request
+        }), Err(Errno::EFAULT));
         assert!(host.proc_write_calls.is_empty());
     }
 
@@ -48352,6 +48512,148 @@ impl HostIO for RelSymlinkMock {
             sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETCRTC, &mut buf).unwrap_err(),
             Errno::ENOENT
         );
+    }
+
+    #[test]
+    fn kms_cursor_gates_requests_and_retains_bo_until_hidden_or_closed() {
+        use wasm_posix_shared::dri::*;
+        let _master = crate::dri::master::lock_for_test();
+        let _registry = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for cleanup in ["hide", "drop", "close"] {
+            crate::dri::bo::reset_registry();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            host.cursor_supported = true;
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+            let mut request = [0u8; 36];
+            let fill = |buf: &mut [u8], words: [u32; 9]| {
+                for (chunk, word) in buf.chunks_exact_mut(4).zip(words) {
+                    chunk.copy_from_slice(&word.to_le_bytes());
+                }
+            };
+            fill(&mut request, [1, 1, 0, 0, 64, 64, 1, 0, 0]);
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    DRM_IOCTL_MODE_CURSOR2,
+                    &mut request
+                ),
+                Err(Errno::EACCES)
+            );
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+            let mut create = [0u8; 32];
+            create[4..8].copy_from_slice(&64u32.to_le_bytes());
+            create[0..4].copy_from_slice(&64u32.to_le_bytes());
+            create[8..12].copy_from_slice(&32u32.to_le_bytes());
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_CREATE_DUMB,
+                &mut create,
+            )
+            .unwrap();
+            let handle = u32::from_le_bytes(create[16..20].try_into().unwrap());
+            // An old host has no cursor transport: report no capability and
+            // reject before retaining the otherwise valid image buffer.
+            host.cursor_supported = false;
+            let mut cap = [0u8; 16];
+            cap[..8].copy_from_slice(&8u64.to_le_bytes());
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, &mut cap).unwrap();
+            assert_eq!(u64::from_le_bytes(cap[8..].try_into().unwrap()), 0);
+            fill(&mut request, [3, 1, 30, 40, 64, 64, handle, u32::MAX, 1]);
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR2, &mut request),
+                Err(Errno::ENOTSUP));
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            assert_eq!(proc.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo, None);
+            host.cursor_supported = true;
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, &mut cap).unwrap();
+            assert_eq!(u64::from_le_bytes(cap[8..].try_into().unwrap()), 64);
+
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_CURSOR2,
+                &mut request,
+            )
+            .unwrap();
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            let bo = proc
+                .ofd_table
+                .get(ofd)
+                .unwrap()
+                .kms()
+                .unwrap()
+                .cursor_bo
+                .unwrap();
+            assert_eq!(
+                crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
+                2
+            );
+            fill(&mut request, [1, 1, 0, 0, 65, 64, handle, 0, 0]);
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    DRM_IOCTL_MODE_CURSOR2,
+                    &mut request
+                ),
+                Err(Errno::EINVAL)
+            );
+            assert_eq!(
+                proc.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo,
+                Some(bo)
+            );
+            // Closing the application's GEM handle must not destroy a visible cursor.
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_DESTROY_DUMB,
+                &mut handle.to_le_bytes(),
+            )
+            .unwrap();
+            assert_eq!(
+                crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
+                1
+            );
+            fill(&mut request, [2, 1, u32::MAX, 10, 0, 0, 0, 0, 0]);
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                DRM_IOCTL_MODE_CURSOR,
+                &mut request[..28],
+            )
+            .unwrap();
+            match cleanup {
+                "hide" => {
+                    fill(&mut request, [1, 1, 0, 0, 0, 0, 0, 0, 0]);
+                    sys_ioctl(
+                        &mut proc,
+                        &mut host,
+                        fd,
+                        DRM_IOCTL_MODE_CURSOR2,
+                        &mut request,
+                    )
+                    .unwrap();
+                    sys_close(&mut proc, &mut host, fd).unwrap();
+                }
+                "drop" => {
+                    sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
+                    sys_close(&mut proc, &mut host, fd).unwrap();
+                }
+                "close" => sys_close(&mut proc, &mut host, fd).unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
+        }
     }
 
     #[test]
@@ -52142,6 +52444,26 @@ impl HostIO for RelSymlinkMock {
         // Restore the default so other tests running in parallel see
         // the boot value.
         crate::input::set_canvas_dims(1280, 720);
+    }
+
+    #[test]
+    fn evioc_gabs_reports_device_position_before_and_after_open() {
+        use wasm_posix_shared::input::{ABS_X, ABS_Y, EVIOCGABS_NR_BASE, WpkInputAbsinfo};
+
+        crate::input::dispatch::push_event(1, 3, ABS_X, 317, 0, 0);
+        let (mut proc, mut host, fd) = open_evdev(618, b"/dev/input/event1");
+        crate::input::dispatch::push_event(1, 3, ABS_Y, 219, 0, 0);
+        // Keyboard/unsupported-axis events must not modify pointer state.
+        crate::input::dispatch::push_event(0, 3, ABS_X, 999, 0, 0);
+        for (axis, value) in [(ABS_X, 317), (ABS_Y, 219)] {
+            let mut buf = [0u8; core::mem::size_of::<WpkInputAbsinfo>()];
+            let req = evioc(2, EVIOCGABS_NR_BASE + axis as u32, buf.len() as u32);
+            sys_ioctl(&mut proc, &mut host, fd, req, &mut buf).unwrap();
+            let abs: WpkInputAbsinfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            assert_eq!(abs.value, value);
+        }
+        crate::input::note_absolute_event(1, ABS_X, 0);
+        crate::input::note_absolute_event(1, ABS_Y, 0);
     }
 
     #[test]

@@ -43,6 +43,10 @@
     },
     {
       "product": "browser-main-shell",
+      "profile": "freeciv"
+    },
+    {
+      "product": "browser-main-shell",
       "profile": "modeset"
     },
     {

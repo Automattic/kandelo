@@ -873,7 +873,8 @@ describe("canonical source-rootfs shell", () => {
     });
     const loveProfile = demo!.profiles!.love;
     expect(loveProfile.runtime?.features).toEqual(["kms", "evdev-input"]);
-    expect(loveProfile.presentation?.hostPointer).toBe(true);
+    // SDL now uses the shared KMS cursor rather than a browser pointer.
+    expect(loveProfile.presentation?.hostPointer).toBeUndefined();
     expect(loveProfile.dockActions).toEqual([{
       id: "games", label: "Games",
       description: "Start the selected game. Audio is unavailable in this port.",
@@ -1194,7 +1195,7 @@ describe("canonical source-rootfs shell", () => {
         sourceDateEpoch: "0",
       }),
     ).rejects.toThrow(
-      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffplay, love, modeset, quake, scummvm",
+      "source-rootfs demo profile overlay must contain exactly the image-owned profiles: doom, ffmpeg-fbdev, ffplay, freeciv, love, modeset, quake, scummvm",
     );
   });
 

@@ -19,6 +19,7 @@ export interface DisplayHandle {
 }
 
 export interface DisplayProps extends FramebufferProps {
+  active?: boolean;
   /**
    * Which demo surface the parent decided to mount. The mount is one of
    * "framebuffer" | "web" | "kms" -- Display routes to the matching pane.
@@ -29,10 +30,10 @@ export interface DisplayProps extends FramebufferProps {
   onDockControlsChange?: (controls: React.ReactNode | null) => void;
 }
 
-export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({ surface, onDockControlsChange, ...props }, ref) => {
+export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({ active, surface, onDockControlsChange, ...props }, ref) => {
   const preview = useWebPreview();
 
-  if (surface === "kms") return <Modeset {...props} onDockControlsChange={onDockControlsChange} />;
+  if (surface === "kms") return <Modeset {...props} active={active} onDockControlsChange={onDockControlsChange} />;
   if (surface === "framebuffer") return <Framebuffer {...props} onDockControlsChange={onDockControlsChange} />;
   if (surface === "web" && preview) {
     return <WebPreviewPane ref={ref} preview={preview} onDockControlsChange={onDockControlsChange} {...props} />;

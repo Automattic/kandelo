@@ -24,6 +24,7 @@ Real, unmodified software compiled to WebAssembly:
 | Vim | 9.1 | Full editor with ncurses terminal UI |
 | NetHack | 3.6.7 | Classic roguelike with curses UI |
 | fbDOOM | (maximevince) | id Software's DOOM via the kernel's `/dev/fb0` Linux fbdev surface |
+| [Freeciv](docs/freeciv.md) | 3.2.6 | Native SDL2 client and dedicated server; single player and TCP multiplayer through browser network sessions |
 | espeak-ng | 1.52 | Speech synthesis; plays through upstream pcaudiolib's OSS backend on `/dev/dsp` |
 | Perl | 5.40 | Interpreter with core modules |
 | Ruby | 3.3 | Interpreter with core stdlib |

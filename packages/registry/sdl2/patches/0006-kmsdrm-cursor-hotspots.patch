@@ -1,0 +1,65 @@
+Honor SDL cursor hotspots in KMS image coordinates.
+
+Linux defines DRM cursor x/y as the image origin. cursor2's signed hotspot
+is a virtualization hint and must not change that image position:
+https://www.kernel.org/doc/html/v6.6/gpu/drm-kms.html
+
+Convert SDL pointer coordinates in the KMS backend, including shape changes
+without motion and warps. Otherwise nonzero-hotspot sprites drift away from
+hit targets on a conforming DRM implementation. No application is special.
+
+--- a/src/video/kmsdrm/SDL_kmsdrmmouse.c
++++ b/src/video/kmsdrm/SDL_kmsdrmmouse.c
+@@ -143,6 +143,7 @@
+     SDL_VideoDevice *video_device = SDL_GetVideoDevice();
+     SDL_VideoData *viddata = ((SDL_VideoData *)video_device->driverdata);
+ 
++    SDL_Mouse *mouse = SDL_GetMouse();
+     uint32_t bo_handle;
+     size_t bo_stride;
+     size_t bufsize;
+@@ -195,6 +196,11 @@
+         goto cleanup;
+     }
+ 
++    /* DRM positions the image origin; the hotspot is metadata only.
++       Reposition on shape changes too, even without another motion. */
++    ret = KMSDRM_drmModeMoveCursor(viddata->drm_fd, dispdata->crtc->crtc_id,
++                                  mouse->x - curdata->hot_x,
++                                  mouse->y - curdata->hot_y);
+     if (ret) {
+         ret = SDL_SetError("Failed to reset cursor position.");
+         goto cleanup;
+@@ -377,8 +383,10 @@
+         /* And now update the cursor graphic position on screen. */
+         if (dispdata->cursor_bo) {
+             int ret = 0;
+-
+-            ret = KMSDRM_drmModeMoveCursor(dispdata->cursor_bo_drm_fd, dispdata->crtc->crtc_id, x, y);
++            KMSDRM_CursorData *curdata = (KMSDRM_CursorData *)mouse->cur_cursor->driverdata;
++
++            ret = KMSDRM_drmModeMoveCursor(dispdata->cursor_bo_drm_fd,
++                dispdata->crtc->crtc_id, x - curdata->hot_x, y - curdata->hot_y);
+ 
+             if (ret) {
+                 SDL_SetError("drmModeMoveCursor() failed.");
+@@ -424,6 +432,7 @@
+ static void KMSDRM_MoveCursor(SDL_Cursor *cursor)
+ {
+     SDL_Mouse *mouse = SDL_GetMouse();
++    KMSDRM_CursorData *curdata;
+     int ret = 0;
+ 
+     /* We must NOT call SDL_SendMouseMotion() here or we will enter recursivity!
+@@ -438,7 +447,10 @@
+             return;
+         }
+ 
+-        ret = KMSDRM_drmModeMoveCursor(dispdata->cursor_bo_drm_fd, dispdata->crtc->crtc_id, mouse->x, mouse->y);
++        curdata = (KMSDRM_CursorData *)cursor->driverdata;
++        ret = KMSDRM_drmModeMoveCursor(dispdata->cursor_bo_drm_fd,
++            dispdata->crtc->crtc_id, mouse->x - curdata->hot_x,
++            mouse->y - curdata->hot_y);
+ 
+         if (ret) {
+             SDL_SetError("drmModeMoveCursor() failed.");

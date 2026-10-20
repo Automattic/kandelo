@@ -1,0 +1,19 @@
+Preserve event-loop exit requests when more input is queued.
+
+A click or key press can request exit and be followed by its release in the
+same event batch. Do not let the later handler overwrite that result and
+leave the client running after its menu has been destroyed.
+
+--- a/client/gui-sdl2/gui_main.c
++++ b/client/gui-sdl2/gui_main.c
+@@ -700,7 +700,9 @@
+ 
+     /* ========================================= */
+ 
+-    while (SDL_PollEvent(&main_data.event) == 1) {
++    /* A callback may finish this loop (including a nested widget loop).
++     * Preserve its result: a queued key/button release must not reset ID. */
++    while (ID == ID_ERROR && SDL_PollEvent(&main_data.event) == 1) {
+ 
+       if (main_data.event.type == user_event_type) {
+         switch (main_data.event.user.code) {

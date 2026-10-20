@@ -267,6 +267,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
             >
               <Display
                 ref={displayRef}
+                active={activePrimary === demoSurface}
                 autoFocus={activePrimary === demoSurface}
                 surface={demoSurface ?? undefined}
                 onDockControlsChange={onDemoDockControlsChange}

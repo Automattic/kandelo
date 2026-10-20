@@ -415,9 +415,11 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETENCODER, InOut, 20),
     pointer!(crate::dri::DRM_IOCTL_MODE_PAGE_FLIP, In, 24),
+    pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR, In, 28),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_DUMB, InOut, 32),
     // Linux encodes pointer-sized fields into DRM_IOCTL_VERSION itself.
     pointer!(crate::dri::DRM_IOCTL_VERSION, InOut, wasm32 36),
+    pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR2, In, 36),
     pointer!(crate::dri::DRM_IOCTL_VERSION_WASM64, InOut, wasm64 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETRESOURCES, InOut, 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETCONNECTOR, InOut, 80),

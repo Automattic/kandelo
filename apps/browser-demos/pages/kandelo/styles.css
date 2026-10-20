@@ -1051,6 +1051,17 @@
   background: color-mix(in oklch, red 18%, var(--kdock-bg-sunk));
 }
 
+.kmodeset-pointer-hint {
+  pointer-events: none;
+  font-size: 13px;
+  animation: kmodeset-pointer-hint 4s forwards;
+}
+
+@keyframes kmodeset-pointer-hint {
+  0%, 85% { opacity: 1; }
+  100% { opacity: 0; visibility: hidden; }
+}
+
 .kdemo-toast-dismiss {
   flex: 0 0 auto;
   border: 0;
@@ -4679,3 +4690,13 @@
 }
 .knetwork-members code { font-family: var(--k-font-mono); min-width: 7.5em; }
 .knetwork-members small { margin-left: auto; color: var(--k-text-faint); font-size: 11px; }
+
+/* A hardware cursor is composited independently of the guest's frame. */
+.kmodeset-cursor {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  image-rendering: pixelated;
+}

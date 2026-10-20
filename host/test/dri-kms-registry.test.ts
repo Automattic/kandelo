@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { KmsCursorPlane } from "../src/dri/cursor-plane.js";
 import { GbmBoRegistry } from "../src/dri/registry.js";
 import { KmsRegistry, buildVirtualConnectorMode } from "../src/dri/kms-registry.js";
 
@@ -138,4 +139,134 @@ describe("buildVirtualConnectorMode", () => {
     expect(modeDims(buildVirtualConnectorMode(1, { width: 0, height: 0 })))
       .toEqual({ w: 1920, h: 1080 });
   });
+});
+
+
+it("snapshots premultiplied cursor pixels and moves independently of scanout", () => {
+  const bos = new GbmBoRegistry();
+  bos.create({ pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8 });
+  bos.pixelView(1)!.set([0, 32, 64, 128, 0, 0, 255, 255]);
+  const kms = new KmsRegistry(bos);
+  kms.setMasterPid(7);
+  kms.setCursor(7, 3, 1, 2, 2, 30, 40, 1, 1);
+  const shown = kms.cursorSnapshot();
+  expect(Array.from(shown.pixels!.slice(0, 8))).toEqual([128, 64, 0, 128, 255, 0, 0, 255]);
+  expect(shown).toMatchObject({ x: 30, y: 40, hotX: 1, hotY: 1 });
+  kms.setCursor(7, 2, 0, 0, 0, -5, 70, 0, 0);
+  expect(kms.cursorSnapshot().pixels).toBe(shown.pixels);
+  expect(kms.cursorSnapshot()).toMatchObject({ x: -5, y: 70, hotX: 1, hotY: 1 });
+  bos.pixelView(1)!.fill(0);
+  const updated = kms.cursorSnapshot();
+  expect(updated.pixels).not.toBe(shown.pixels);
+  expect(updated.pixels!.every(value => value === 0)).toBe(true);
+  expect(shown.pixels![0]).toBe(128); // Detached snapshots stay immutable.
+  expect(kms.cursorSnapshot()).toBe(updated);
+  expect(kms.flipCount()).toBe(0);
+  kms.dropMaster();
+  expect(kms.cursorSnapshot().pixels).toBeNull();
+  expect(kms.cursorSnapshot().version).toBeGreaterThan(shown.version);
+});
+
+
+it("presents DRM image origins without applying hotspot hints and erases old positions", () => {
+  vi.stubGlobal("ImageData", class {
+    constructor(public data: Uint8ClampedArray, public width: number, public height: number) {}
+  });
+  try {
+    const context = { putImageData: vi.fn(), clearRect: vi.fn() };
+    const canvas = Object.assign(new EventTarget(), {
+      width: 100, height: 100, getContext: () => context,
+    });
+    const plane = new KmsCursorPlane(canvas as unknown as OffscreenCanvas);
+    const cursor = { version: 1, x: 20, y: 30, hotX: -3, hotY: 4,
+      width: 2, height: 2, pixels: new Uint8ClampedArray(16) };
+    plane.present(cursor, 100, 100);
+    expect(context.putImageData.mock.calls[0].slice(1)).toEqual([20, 30]);
+    canvas.dispatchEvent(new Event("contextrestored"));
+    plane.present(cursor, 100, 100);
+    expect(context.putImageData).toHaveBeenCalledTimes(2);
+    plane.present({ ...cursor, version: 2, x: 40 }, 100, 100);
+    expect(context.clearRect).toHaveBeenLastCalledWith(20, 30, 2, 2);
+    expect(context.putImageData.mock.calls[2].slice(1)).toEqual([40, 30]);
+    plane.present({ ...cursor, version: 3, pixels: null }, 100, 100);
+    expect(context.clearRect).toHaveBeenLastCalledWith(40, 30, 2, 2);
+    expect(context.putImageData).toHaveBeenCalledTimes(3);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+
+it("accepts a kernel-authorized imported cursor BO without an importer mmap", () => {
+  const bos = new GbmBoRegistry();
+  bos.create({ pid: 7, bo_id: 1, size: 4, w: 1, h: 1, stride: 4 });
+  bos.pixelView(1)!.set([0, 0, 255, 255]);
+  expect(bos.get(8, 1)).toBeUndefined();
+  const kms = new KmsRegistry(bos);
+  kms.setCursor(8, 1, 1, 1, 1, 0, 0, 0, 0);
+  expect(Array.from(kms.cursorSnapshot().pixels!)).toEqual([255, 0, 0, 255]);
+});
+
+
+it("reads packed cursor rows independently of the original BO pitch", () => {
+  const bos = new GbmBoRegistry();
+  bos.create({ pid: 7, bo_id: 1, size: 16, w: 4, h: 1, stride: 16 });
+  bos.pixelView(1)!.set([0, 0, 255, 255, 0, 255, 0, 255,
+    255, 0, 0, 255, 255, 255, 255, 255]);
+  const kms = new KmsRegistry(bos);
+  kms.setCursor(7, 3, 1, 2, 2, 10, 20, -3, 1);
+  expect(Array.from(kms.cursorSnapshot().pixels!)).toEqual([
+    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+  ]);
+  expect(kms.cursorSnapshot()).toMatchObject({ x: 10, y: 20, hotX: -3 });
+});
+
+
+it("refreshes the live cursor producer without flushing beyond the packed image", () => {
+  const memory = new WebAssembly.Memory({ initial: 1 });
+  const bos = new GbmBoRegistry({ getProcessMemory: pid => pid === 7 ? memory : undefined });
+  bos.create({ pid: 7, bo_id: 1, size: 4096, w: 32, h: 32, stride: 128 });
+  bos.bind(7, 1, 0, 4096);
+  const mapped = new Uint8Array(memory.buffer);
+  mapped.set([0, 0, 255, 255]);
+  mapped[16] = 42;
+  const kms = new KmsRegistry(bos);
+  kms.setCursor(7, 1, 1, 2, 2, 0, 0, 0, 0);
+  const first = kms.cursorSnapshot();
+  expect(first.pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([255, 0, 0, 255]));
+  expect(bos.pixelView(1)![16]).toBe(0);
+  mapped.set([255, 0, 0, 255]);
+  expect(kms.cursorSnapshot().pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([0, 0, 255, 255]));
+  expect(first.pixels![0]).toBe(255);
+  kms.setCursor(7, 1, 0, 0, 0, 0, 0, 0, 0);
+  mapped.fill(1);
+  expect(kms.cursorSnapshot().pixels).toBeNull();
+});
+
+
+it("consumes full cursor records without recopying motion images or resurrecting retired owners", () => {
+  const bos = new GbmBoRegistry();
+  bos.create({ pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8 });
+  bos.pixelView(1)!.set([0, 0, 255, 255]);
+  const kms = new KmsRegistry(bos);
+  const record = (words: number[]) => {
+    const bytes = new Uint8Array(32);
+    const view = new DataView(bytes.buffer);
+    words.forEach((word, i) => view.setUint32(i * 4, word, true));
+    return bytes;
+  };
+  kms.setMasterPid(7);
+  kms.applyCursorRecord(record([7, 1, 2, 2, 30, 40, -3, 1]));
+  const pixels = kms.cursorSnapshot().pixels;
+  expect(pixels).not.toBeNull();
+  kms.applyCursorRecord(record([7, 1, 2, 2, -5, 70, -3, 1]));
+  expect(kms.cursorSnapshot()).toMatchObject({ x: -5, y: 70, hotX: -3 });
+  expect(kms.cursorSnapshot().pixels).toBe(pixels);
+  kms.dropMaster();
+  bos.destroy(7, 1);
+  kms.applyCursorRecord(record([7, 1, 2, 2, 30, 40, 0, 0]));
+  expect(kms.cursorSnapshot().pixels).toBeNull();
+  kms.setMasterPid(8);
+  kms.applyCursorRecord(record([8, 0, 0, 0, 1, 2, 0, 0]));
+  expect(kms.cursorSnapshot()).toMatchObject({ x: 1, y: 2, pixels: null });
+  kms.applyCursorRecord(record([0, 0, 0, 0, 0, 0, 0, 0]));
+  expect(kms.cursorSnapshot().pixels).toBeNull();
 });

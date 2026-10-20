@@ -1235,10 +1235,11 @@ export class BrowserKernel {
   }
 
   /**
-   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * Set the absolute input producer's coordinate extent so EVIOCGABS
    * on `/dev/input/event1` reports `ABS_X.maximum = width - 1` and
-   * `ABS_Y.maximum = height - 1`. Call once at boot when the canvas
-   * is attached and again on any resize.
+   * `ABS_Y.maximum = height - 1`. Consumers cache these bounds when
+   * opening the device. The default extent is 65536×65536; display setup,
+   * pane resizing, and guest modesets never overwrite producer bounds.
    */
   setInputCanvasDims(width: number, height: number): void {
     this.sendToKernel({ type: "set_input_canvas_dims", width, height });
@@ -1281,11 +1282,11 @@ export class BrowserKernel {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas },
   ): void {
     this.sendToKernel(
       { type: "kms_attach_canvas", crtcId, canvas, stats, opts },
-      [canvas],
+      opts?.cursorCanvas ? [canvas, opts.cursorCanvas] : [canvas],
     );
   }
 

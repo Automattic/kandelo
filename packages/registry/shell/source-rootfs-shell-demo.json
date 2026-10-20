@@ -172,8 +172,7 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "hostPointer": true
+        "internalsAccess": "drawer"
       }
     },
     "wayland": {

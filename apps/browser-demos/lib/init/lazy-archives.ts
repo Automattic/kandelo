@@ -1,5 +1,6 @@
 import loveExamplesZipUrl from "@binaries/programs/wasm32/love/share/love-examples.zip?url";
 import vimZipUrl from "@binaries/programs/vim.zip?url";
+import freecivZipUrl from "@binaries/programs/freeciv.zip?url";
 import nethackZipUrl from "@binaries/programs/nethack.zip?url";
 import rubyZipUrl from "@binaries/programs/ruby.zip?url";
 import pythonZipUrl from "@binaries/programs/python.zip?url";
@@ -13,6 +14,7 @@ import kandeloSdkZipUrl from "@binaries/programs/kandelo-sdk.zip?url";
 export const SHELL_LAZY_ARCHIVES: Record<string, string> = {
   "love-examples.zip": loveExamplesZipUrl,
   "vim.zip": vimZipUrl,
+  "freeciv.zip": freecivZipUrl,
   "kandelo-sdk.zip": kandeloSdkZipUrl,
   "nethack.zip": nethackZipUrl,
   "ruby.zip": rubyZipUrl,

@@ -3330,6 +3330,12 @@ fn render_ts_module() -> String {
     }
     out.push_str("] as const;\n\n");
 
+    out.push_str(&format!(
+        "export const HOST_ADAPTER_KERNEL_EXPORT_LIFECYCLES = {} as const;\n\n",
+        serde_json::to_string_pretty(&host_adapter_kernel_export_lifecycles())
+            .expect("serialize kernel export lifecycles")
+    ));
+
     render_pcm_ts_bindings(&mut out);
 
     render_input_ts_bindings(&mut out);
@@ -4337,7 +4343,9 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
 
     let wasm =
         std::fs::read(kernel_wasm).map_err(|e| format!("read {}: {e}", kernel_wasm.display()))?;
-    root.insert("kernel_exports".into(), kernel_exports(&wasm)?);
+    let exports = kernel_exports(&wasm)?;
+    validate_host_adapter_export_lifecycles(&root["host_adapter"], &exports)?;
+    root.insert("kernel_exports".into(), exports);
 
     Ok(root)
 }
@@ -6233,7 +6241,94 @@ fn host_adapter() -> Value {
                 .collect(),
         ),
     );
+    m.insert(
+        "kernel_export_lifecycles".into(),
+        host_adapter_kernel_export_lifecycles(),
+    );
     Value::Object(m.into_iter().collect())
+}
+
+fn host_adapter_kernel_export_lifecycles() -> Value {
+    Value::Array(
+        shared::abi::HOST_ADAPTER_KERNEL_EXPORTS
+            .iter()
+            .filter_map(|export| match export.policy {
+                shared::abi::HostAdapterExportPolicy::OptionalUntil {
+                    optional_since_abi,
+                    required_from_abi,
+                } => Some(json!({
+                    "name": export.name,
+                    "optional_since_abi": optional_since_abi,
+                    "required_from_abi": required_from_abi,
+                })),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
+/// Schedules must describe a real export and agree with the effective lists.
+/// This also checks snapshots supplied to the compatibility classifier, so
+/// metadata cannot disguise an early requirement as a future-only addition.
+fn validate_host_adapter_export_lifecycles(host: &Value, exports: &Value) -> Result<(), String> {
+    let Some(lifecycles) = host.get("kernel_export_lifecycles") else {
+        return Ok(());
+    };
+    let records = lifecycles
+        .as_array()
+        .ok_or("kernel_export_lifecycles must be an array")?;
+    let abi = host["manifest"]["abi_version"]
+        .as_u64()
+        .ok_or("host manifest ABI must be numeric")?;
+    let required = host["required_kernel_exports"]
+        .as_array()
+        .ok_or("required kernel exports must be an array")?;
+    let optional = host["optional_kernel_exports"]
+        .as_array()
+        .ok_or("optional kernel exports must be an array")?;
+    let exports = exports
+        .as_array()
+        .ok_or("kernel exports must be an array")?;
+    let mut previous = "";
+    for record in records {
+        let name = record["name"]
+            .as_str()
+            .ok_or("kernel export lifecycle name must be a string")?;
+        let since = record["optional_since_abi"]
+            .as_u64()
+            .ok_or("optional_since_abi must be numeric")?;
+        let from = record["required_from_abi"]
+            .as_u64()
+            .ok_or("required_from_abi must be numeric")?;
+        if record.as_object().is_none_or(|fields| fields.len() != 3)
+            || name <= previous
+            || since == 0
+            || since > abi
+            || from <= since
+            || from > u32::MAX as u64
+        {
+            return Err(format!(
+                "invalid or unordered kernel export lifecycle: {record}"
+            ));
+        }
+        if !exports
+            .iter()
+            .any(|export| export["name"].as_str() == Some(name))
+        {
+            return Err(format!(
+                "scheduled kernel export {name:?} is missing from kernel Wasm"
+            ));
+        }
+        let in_required = required.iter().any(|value| value.as_str() == Some(name));
+        let in_optional = optional.iter().any(|value| value.as_str() == Some(name));
+        if in_required != (abi >= from) || in_optional != (abi < from) {
+            return Err(format!(
+                "kernel export {name:?} does not match its ABI {from} promotion deadline"
+            ));
+        }
+        previous = name;
+    }
+    Ok(())
 }
 
 fn syscall_arg_desc_json(desc: &shared::host_abi::SyscallArgDesc) -> Value {
@@ -7619,6 +7714,10 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 
     let mut report = CompatReport::default();
 
+    if let Some(host) = new_obj.get("host_adapter") {
+        validate_host_adapter_export_lifecycles(host, &new["kernel_exports"])?;
+    }
+
     for key in old_obj.keys() {
         if !new_obj.contains_key(key) {
             report
@@ -7765,6 +7864,13 @@ fn classify_host_adapter(
                     })
                 },
             )?;
+        } else if key == "kernel_export_lifecycles" {
+            classify_additive_array_by_name(
+                "host_adapter.kernel_export_lifecycles",
+                &old_obj[key],
+                new_value,
+                report,
+            )?;
         } else if &old_obj[key] != new_value {
             report
                 .breaking
@@ -7774,9 +7880,17 @@ fn classify_host_adapter(
 
     for key in new_obj.keys() {
         if !old_obj.contains_key(key) {
-            report
-                .breaking
-                .push(format!("added host_adapter field {key:?}"));
+            // This field schedules later requirements. Effective requirements
+            // remain checked separately; the binary manifest layout is intact.
+            if key == "kernel_export_lifecycles" {
+                report
+                    .additive
+                    .push(format!("added host_adapter field {key:?}"));
+            } else {
+                report
+                    .breaking
+                    .push(format!("added host_adapter field {key:?}"));
+            }
         }
     }
 
@@ -9384,6 +9498,104 @@ mod tests {
             report.breaking,
             vec!["changed host_adapter field \"required_kernel_exports\""],
         );
+    }
+
+    fn snapshot_with_scheduled_kernel_export() -> Value {
+        let mut snapshot = base_snapshot();
+        snapshot["host_adapter"]["optional_kernel_exports"] = json!(["kernel_existing_helper"]);
+        snapshot["host_adapter"]["kernel_export_lifecycles"] = json!([{
+            "name": "kernel_existing_helper", "optional_since_abi": 10, "required_from_abi": 11,
+        }]);
+        snapshot
+    }
+
+    #[test]
+    fn scheduling_a_future_kernel_export_requirement_is_additive() {
+        let mut old = base_snapshot();
+        old["host_adapter"]["optional_kernel_exports"] = json!(["kernel_existing_helper"]);
+        let new = snapshot_with_scheduled_kernel_export();
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            ["added host_adapter field \"kernel_export_lifecycles\""]
+        );
+    }
+
+    #[test]
+    fn scheduled_promotion_is_enforced_and_remains_an_abi_change() {
+        let old = snapshot_with_scheduled_kernel_export();
+        let mut next = old.clone();
+        next["abi_version"] = json!(11);
+        next["host_adapter"]["manifest"]["abi_version"] = json!(11);
+        // A bumped ABI cannot retain the old optional list past its deadline.
+        assert!(
+            classify_compat_change(&old, &next)
+                .unwrap_err()
+                .contains("promotion deadline")
+        );
+        next["host_adapter"]["required_kernel_exports"] =
+            json!(["__abi_version", "kernel_existing_helper"]);
+        next["host_adapter"]["optional_kernel_exports"] = json!([]);
+        let report = classify_compat_change(&old, &next).unwrap();
+        assert!(
+            report
+                .breaking
+                .contains(&"changed host_adapter field \"required_kernel_exports\"".into())
+        );
+        assert!(
+            report
+                .breaking
+                .contains(&"changed top-level section \"abi_version\"".into())
+        );
+        // An early promotion under the original ABI is equally invalid.
+        next["abi_version"] = json!(10);
+        next["host_adapter"]["manifest"]["abi_version"] = json!(10);
+        assert!(
+            classify_compat_change(&old, &next)
+                .unwrap_err()
+                .contains("promotion deadline")
+        );
+    }
+
+    #[test]
+    fn scheduled_deadlines_cannot_be_silently_postponed_or_removed() {
+        let old = snapshot_with_scheduled_kernel_export();
+        let mut new = old.clone();
+        new["host_adapter"]["kernel_export_lifecycles"][0]["required_from_abi"] = json!(12);
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            ["changed host_adapter.kernel_export_lifecycles entry \"kernel_existing_helper\""]
+        );
+        new["host_adapter"]["kernel_export_lifecycles"] = json!([]);
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(
+            report.breaking,
+            ["removed host_adapter.kernel_export_lifecycles entry \"kernel_existing_helper\""]
+        );
+    }
+
+    #[test]
+    fn scheduled_lifecycles_require_real_exports_and_valid_dates() {
+        let old = base_snapshot();
+        let mut new = snapshot_with_scheduled_kernel_export();
+        new["kernel_exports"] = json!([]);
+        assert!(
+            classify_compat_change(&old, &new)
+                .unwrap_err()
+                .contains("missing from kernel Wasm")
+        );
+        for (since, from) in [(0, 11), (11, 12), (10, 10)] {
+            let mut new = snapshot_with_scheduled_kernel_export();
+            new["host_adapter"]["kernel_export_lifecycles"][0]["optional_since_abi"] = json!(since);
+            new["host_adapter"]["kernel_export_lifecycles"][0]["required_from_abi"] = json!(from);
+            assert!(
+                classify_compat_change(&old, &new)
+                    .unwrap_err()
+                    .contains("invalid or unordered")
+            );
+        }
     }
 
     #[test]

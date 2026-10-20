@@ -694,7 +694,7 @@ export class NodeKernelHost {
     crtcId: number,
     canvas: OffscreenCanvas,
     stats?: SharedArrayBuffer,
-    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas },
   ): void {
     this.sendToWorker({ type: "kms_attach_canvas", crtcId, canvas, stats, opts });
   }
@@ -756,9 +756,11 @@ export class NodeKernelHost {
   }
 
   /**
-   * Tell the kernel the current host canvas dimensions so EVIOCGABS
+   * Set the absolute input producer's coordinate extent so EVIOCGABS
    * on `/dev/input/event1` reports the right `ABS_X.maximum` /
-   * `ABS_Y.maximum`. Mirrors `BrowserKernel.setInputCanvasDims`.
+   * `ABS_Y.maximum`. The default extent is 65536×65536; display setup,
+   * pane resizing, and guest modesets never overwrite producer bounds.
+   * Mirrors `BrowserKernel.setInputCanvasDims`.
    */
   setInputCanvasDims(width: number, height: number): void {
     this.sendToWorker({ type: "set_input_canvas_dims", width, height });

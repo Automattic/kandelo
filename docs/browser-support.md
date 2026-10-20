@@ -339,6 +339,14 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
 - Browser `MouseEvent.button` (0=L, 1=M, 2=R) is mapped to PS/2 button bits (bit0=L, bit1=R, bit2=M). Right-click suppresses the browser context menu via `contextmenu` `preventDefault()`.
 - Single-owner device (one process can hold `/dev/input/mice` open at a time; second open from another pid returns `EBUSY`).
 
+The machine's evdev keyboard source remembers the code delivered for each
+held key and forwards its release even when focus has moved to browser UI.
+Window blur and source shutdown release delivered keys, modifiers, and owned
+pointer buttons; queued paste keys are discarded. A modifier-click reconciles
+the keyboard state before the display forwards its button press. The Modeset
+pane releases both PS/2 and evdev buttons on pointer cancellation, lost pointer
+capture, window blur, and input teardown, retaining the last absolute position.
+
 ### Audio output (`/dev/dsp`)
 
 - The kernel exposes a playback-only OSS `/dev/dsp` frontend over its generic
@@ -456,6 +464,7 @@ Located in `apps/browser-demos/pages/`:
 | sdl2 | SDL2 GLSL playground | dinit | Live-coding shader editor on SDL2's KMSDRM backend: gap-buffer editor left, GLES2 fragment shader on `/dev/dri/card0` right, chip synth / sound shader through `/dev/dsp`. The binary comes from the `sdl2-demo` package as a lazy file in the image, fetched when the profile first runs it; its shader presets are baked into the image. A `BrowserInputSource` feeds the keyboard and wheel into `/dev/input/event{0,1}`; the Modeset pane owns the pointer and injects framebuffer-absolute coordinates via `sendPointerAbs`. |
 | modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
+| freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Multiplayer dock menu hosts or joins the session host on port 5556. Audio and multicast discovery are disabled; see [Freeciv](freeciv.md). |
 | love | Native LÖVE 11.5 games | dinit | KMS/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. Audio output is currently unavailable; Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The image itself is 1.8 MB compressed. |
@@ -1765,6 +1774,13 @@ Browser demos use pre-built **VFS images** — binary snapshots of a filesystem 
    `lazyUrlBase`, and `lazyUrlMap` replaces individual URLs without
    rewriting the image.
 
+Static browser asset tables stay within the package closure they represent.
+The canonical rootfs table follows `images/rootfs/PACKAGES.toml`; optional
+utilities belong to their owning image's table. An unrelated static import
+can prevent a SourceOnly deployment from loading its browser modules before
+the selected image even boots, regardless of whether that image executes
+the optional program.
+
 The canonical package shell has a 512 MiB filesystem ceiling. Products that
 copy that shell and add their own application tree use a separate 768 MiB
 profile: the image writer accounts free data bytes and free inodes
@@ -2148,6 +2164,66 @@ as `/usr/local/bin/modeset`; the VFS image must contain that executable. The
 Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
+
+A bitmap interface can declare `presentation.displayScale` (0.5–4 CSS
+pixels per guest pixel). The browser advertises a virtual display sized
+from the CSS content box divided by that scale, at 96 reference DPI.
+For example, a 1440×810 CSS pane at scale 1.5 advertises 960×540 at both
+1× and 2× browser density. Fonts, artwork, hit targets, cursor hotspots,
+and absolute input all use that one guest grid. The whole bitmap is
+scaled for presentation; this does not give raster fonts native-density
+outlines. The normal connector bounds, 640×480 through 3840×2160, still
+apply. Small panes can therefore fit the minimum mode rather than
+maintaining the requested scale. Set this before launching a graphical
+client; there is no KMS hotplug or automatic client mode switch. The
+virtual connector also lists 17 standard resolutions from 640×480 through
+3840×2160, deduplicating its preferred mode. Applications can select those
+modes through ordinary SDL/libdrm APIs; the browser fits the chosen scanout
+and aspect ratio.
+
+Omitting `displayScale` preserves native device-pixel output and CSS-derived
+physical size, so Wayland compositors and DPI-aware applications retain
+ownership of their scaling. This setting belongs to image presentation
+metadata, not application font, theme, or coordinate patches.
+
+Pointer input waits for the first published scanout size; the canvas's
+initial allocation is not an input coordinate space. Absolute positions
+are confined to valid pixel indices, including captured drags outside
+the pane and subpixel rounding at its edges, then encoded in the fixed
+0–65535 absolute-device range. SDL and libinput can keep their cached
+axis bounds across display mode changes. Sending an out-of-window
+position to SDL's direct-display backend can clear mouse focus, hiding
+its cursor and dropping window focus for subsequent input.
+SDL's evdev adapter also maps inclusive device bounds to inclusive
+display pixels, for both ordinary input and overflow recovery. The
+maximum axis sample reaches the last pixel rather than `width` or
+`height`; out-of-range device samples are confined to the same bounds.
+
+Clicking a KMS surface with a guest-rendered cursor captures the pointer
+when the browser supports it. A brief **Press Esc to release** hint appears;
+there are no pointer-capture dock controls or image-specific settings. Capture
+starts after the click's down/up reach the guest, preserving that first click.
+Touch taps never request capture.
+
+Locked relative mouse motion accumulates in the same fitted scanout grid as
+ordinary absolute input, retaining fractional motion and clamping at the
+edges without hidden overshoot. Both evdev and PS/2 consumers receive that
+position and button state; clicks use the integrated position rather than
+frozen browser client coordinates. Escape, window blur, a hidden document,
+pane changes, and teardown release capture and held buttons. Rejected
+requests surface an error. Surfaces declaring `hostPointer` keep ordinary
+browser pointer handling, since locking would hide their only cursor.
+Node input devices are unchanged: pointer lock is a browser presentation
+facility, with no guest package or device-mode change.
+
+The display also mounts a transparent cursor plane over the scanout.
+Linux `MODE_CURSOR` / `MODE_CURSOR2` requests update its shape, hotspot,
+and position independently of application frames, through SDL or libdrm.
+The worker snapshots cursor pixels and presents changed state at vblank;
+it never paints a cursor into a guest's saved scene or uploads the scene
+on cursor motion. The overlay uses the scanout's fitted coordinate space
+and cannot intercept input. Both Node and browser retain the same cursor
+device state; Node has no visual surface unless the embedder attaches one.
 
 Images can also declare an optional `guide`. When `guide` is absent, Kandelo
 does not render a demo panel; this is the intended shape for demos where the

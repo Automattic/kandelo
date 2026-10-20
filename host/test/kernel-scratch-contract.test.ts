@@ -1038,6 +1038,11 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
+    key: "host/src/kernel.ts::WasmPosixKernel.init::kernel-export-direct-use::configureCursor(1)",
+    disposition: "kernel-control",
+    why: "Startup negotiates a scalar protocol version through the gated instance before publishing the initialized kernel. The call receives no pointer and exposes no memory view; cursor records use the entry-scoped scratch path instead.",
+  },
+  {
     key: 'host/src/browser-process-memory-factory.ts::createProcessMemory::wasm-memory-authority::new WebAssembly.Memory(request.ptrWidth === 8 ? { initial: BigInt(request.initialPages), maximum: BigInt(request.maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor : { initial: request.initialPages, maximum: request.maximumPages, shared: true, })',
     disposition: "non-kernel",
     authorityOwner: "process-memory",

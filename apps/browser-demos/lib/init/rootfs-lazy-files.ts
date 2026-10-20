@@ -2,7 +2,6 @@
 // Focused consumers such as the PHP PHPT runner must not need every optional
 // utility in the interactive shell catalog just to resolve the rootfs entries
 // their VFS image actually carries.
-import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
 import coreutilsWasmUrl from "@binaries/programs/wasm32/coreutils.wasm?url";
 import gawkWasmUrl from "@binaries/programs/wasm32/gawk.wasm?url";
@@ -69,7 +68,6 @@ import sudoLiteWasmUrl from "@binaries/programs/wasm32/sudo-lite.wasm?url";
 import sudoWasmUrl from "@binaries/programs/wasm32/sudo/sudo.wasm?url";
 
 export const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
-  ["binaries/programs/wasm32/dash.wasm", dashWasmUrl],
   ["binaries/programs/wasm32/bash.wasm", bashWasmUrl],
   ["binaries/programs/wasm32/coreutils.wasm", coreutilsWasmUrl],
   ["binaries/programs/wasm32/gawk.wasm", gawkWasmUrl],

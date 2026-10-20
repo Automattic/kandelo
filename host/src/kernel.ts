@@ -802,6 +802,8 @@ export interface KernelCallbacks {
    * for canvases now painted directly by WebGL2. Idempotent.
    */
   markKmsCanvasGlOwned?: (crtcId: number) => void;
+  /** A canvas-backed GL frame has actually been presented on this CRTC. */
+  onKmsGlPresented?: (crtcId: number) => void;
   /**
    * Inverse of `markKmsCanvasGlOwned`: the GL session that claimed the
    * canvas is gone (context destroyed or renderD128 session terminated),
@@ -827,15 +829,8 @@ export interface KernelCallbacks {
   onKmsScanoutActive?: () => void;
   /**
    * A SETCRTC/PAGE_FLIP latched `fbId` onto `crtcId`; `width`/`height`
-   * are that framebuffer's dimensions. The scanout framebuffer defines
-   * the pointer coordinate space — the embedder maps pointer positions
-   * into framebuffer pixels and `sendPointerAbs` forwards them as
-   * `EV_ABS` — so the worker uses this to keep the pointer device's
-   * advertised `EVIOCGABS` range equal to the space those coordinates
-   * are in for consumers that open the device after the modeset. A
-   * consumer that is already running never re-reads the range (libinput
-   * caches absinfo at device open); open-time correctness comes from
-   * `setKmsDisplaySize` advertising the derived connector mode.
+   * are that framebuffer's dimensions. This is scanout state only: the
+   * absolute pointer device retains its fixed range across modesets.
    */
   onKmsScanoutFb?: (crtcId: number, width: number, height: number) => void;
 }
@@ -1040,7 +1035,7 @@ export class WasmPosixKernel {
       // the size the program is about to render at. Skipping that leaves
       // a HiDPI pane on the 1920x1080 default, so the guest renders below
       // the panel's device-pixel count and the browser upscales it.
-      const fb = this.kms.currentFb(crtc)
+      const fb = b.surfaceSize ?? this.kms.currentFb(crtc)
         ?? connectorModeSize(this.callbacks.getKmsDisplaySize?.());
       if (canvas.width !== fb.width || canvas.height !== fb.height) {
         canvas.width = fb.width;
@@ -1091,6 +1086,9 @@ export class WasmPosixKernel {
       // Failure is non-fatal: the session falls back to drawing straight
       // at the canvas.
       ensurePresentTarget(b);
+      // A recreated EGL context retains its per-pid binding object. Its
+      // new default target must still be replayed on the shared context.
+      this.gl_muxers.get(ctx)?.invalidateCurrent();
     }
   }
 
@@ -1098,10 +1096,11 @@ export class WasmPosixKernel {
    * Release every device-side alias owned by one process generation.
    *
    * Normal guest close/unmap paths remain authoritative for device semantics;
-   * this idempotent host backstop covers exec, traps, and forced termination
-   * where those guest hooks may never run.
+   * exec retires address-space aliases while retaining open DRI resources.
+   * The exit backstop also releases ownership for traps or forced termination
+   * where guest cleanup hooks may never run.
    */
-  releaseProcessViews(pid: number): void {
+  releaseProcessViews(pid: number, transition: "exit" | "exec" = "exit"): void {
     this.gl_submit_queue.removePid(pid);
     // Hand a GL-claimed CRTC back to the vblank pump BEFORE unbind, which
     // deletes the binding that holds `claimedKmsCrtc`. Afterwards the claim
@@ -1112,8 +1111,15 @@ export class WasmPosixKernel {
     this.releaseClaimedKmsCanvas(pid);
     this.gl.unbind(pid);
     this.framebuffers.unbind(pid);
-    this.bos.releaseProcess(pid);
-    if (this.kms.isMasterPid(pid)) this.kms.dropMaster();
+    if (transition === "exec") {
+      // WHY: Rust already closed CLOEXEC descriptors. Remaining GEM handles,
+      // scanout and cursor references belong to surviving open descriptions,
+      // not to the old address space. Only their mappings retire here.
+      this.bos.releaseProcessMappings(pid);
+    } else {
+      this.bos.releaseProcess(pid);
+      if (this.kms.isMasterPid(pid)) this.kms.dropMaster();
+    }
   }
 
   /**
@@ -1660,6 +1666,14 @@ export class WasmPosixKernel {
         this.#kernelEntryGate,
       );
       this.#initializationState = "initialized";
+      const exports = this.#instance.exports;
+      const configureCursor = exports.kernel_kms_cursor_configure;
+      const readCursor = exports.kernel_kms_cursor_read;
+      if (typeof configureCursor === "function" && typeof readCursor === "function") {
+        if (configureCursor(1) !== 1) throw new Error("Kernel rejected KMS cursor protocol 1");
+      } else if (configureCursor || readCursor) {
+        throw new Error("Kernel has an incomplete KMS cursor transport");
+      }
       this.#publishHostDirectoryRoots();
     } catch (error) {
       this.#abortInitialization(error);
@@ -2498,9 +2512,8 @@ export class WasmPosixKernel {
           this.releaseClaimedKmsCanvas(pid);
           const b = this.gl.get(pid);
           if (!b) return;
-          b.gl = null;
-          b.contextId = null;
-          b.currentProgram = null;
+          if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+          this.gl.destroyContext(pid);
           if (b.forward) b.forward.onDestroyContext();
         },
         host_gl_create_surface: (
@@ -2527,6 +2540,7 @@ export class WasmPosixKernel {
             const dv = new DataView(attrs.buffer, attrs.byteOffset, 20);
             const w = dv.getUint32(4, true);
             const h = dv.getUint32(8, true);
+            if (w > 0 && h > 0) b.surfaceSize = { width: w, height: h };
             if (b.canvas && w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
               b.canvas.width = w;
               b.canvas.height = h;
@@ -2549,11 +2563,25 @@ export class WasmPosixKernel {
               this.gl.applyRenderTarget(b);
             }
           }
+          if (b.gl && b.claimedKmsCrtc != null) {
+            // Surface recreation can retain the GL context. Build the
+            // replacement drawable before the guest draws: creating it at
+            // SwapBuffers would leave the completed frame on the canvas,
+            // then blit an empty offscreen target on subsequent presents.
+            const previousDefault = b.renderTargetFbo;
+            const previousFramebuffer = b.shadow.fbo;
+            ensurePresentTarget(b);
+            if (previousFramebuffer !== null && previousFramebuffer !== previousDefault) {
+              b.shadow.fbo = previousFramebuffer;
+            }
+            this.gl_muxers.get(b.gl)?.invalidateCurrent();
+          }
         },
         host_gl_destroy_surface: (pid: number, _surfaceId: number): void => {
           const b = this.gl.get(pid);
           if (!b) return;
           b.surfaceId = null;
+          b.surfaceSize = null;
           // Drop the producer render-target reference — the FBO itself is
           // owned by the GPU bo (freed via destroyGpuBo on bo destroy),
           // so never delete it here. Reset shadow.fbo so a subsequent
@@ -2571,6 +2599,7 @@ export class WasmPosixKernel {
           if (b.presentTarget) {
             b.gl?.deleteFramebuffer(b.presentTarget.fbo);
             b.gl?.deleteTexture(b.presentTarget.tex);
+            b.gl?.deleteRenderbuffer(b.presentTarget.depthStencil);
             b.presentTarget = null;
           }
         },
@@ -2693,6 +2722,9 @@ export class WasmPosixKernel {
             // only when one was established before the frame.
             const established = b.presentTarget !== null;
             if (ensurePresentTarget(b) && established) blitPresentTarget(b);
+            if (b.gl && b.canvas && (b.presentTarget !== null || b.renderTargetFbo === null)) {
+              this.callbacks.onKmsGlPresented?.(b.claimedKmsCrtc);
+            }
           }
           return 0;
         },

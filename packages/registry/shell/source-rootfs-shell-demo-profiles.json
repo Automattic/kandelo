@@ -1,6 +1,68 @@
 {
   "version": 1,
   "profiles": {
+    "freeciv": {
+      "identity": {
+        "title": "Freeciv",
+        "summary": "Build a civilization with the SDL2 client and a networked Freeciv server.",
+        "accent": "#51723d",
+        "glyph": "Fc",
+        "packages": [
+          "freeciv@3.2.6",
+          "bash@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "/usr/bin/freeciv-play"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer",
+        "displayScale": 1
+      },
+      "dockActions": [
+        {
+          "id": "multiplayer",
+          "label": "Multiplayer",
+          "description": "Create or join a Network session, then host a game or connect to its host. Each player gets a separate screen name.",
+          "menu": [
+            {
+              "id": "host",
+              "label": "Host a game",
+              "restart": "/usr/bin/freeciv-play host"
+            },
+            {
+              "id": "join",
+              "label": "Join session host",
+              "restart": "/usr/bin/freeciv-play join"
+            },
+            {
+              "id": "local",
+              "label": "Single player / main menu",
+              "restart": "/usr/bin/freeciv-play"
+            }
+          ]
+        }
+      ],
+      "guide": {
+        "title": "Freeciv",
+        "summary": "Use New Game for single player. For multiplayer, create a Network session and choose Multiplayer → Host a game. Friends join the session and choose Join session host. The host starts play after everyone has joined. Automatic LAN discovery is unavailable; connections use host:5556. Save games in your home directory; download the save files to keep them beyond this running machine's lifetime.",
+        "groups": []
+      }
+    },
     "doom": {
       "identity": {
         "title": "fbDOOM",
@@ -429,8 +491,7 @@
           "syslog"
         ],
         "terminalAccess": "drawer",
-        "internalsAccess": "drawer",
-        "hostPointer": true
+        "internalsAccess": "drawer"
       },
       "dockActions": [
         {

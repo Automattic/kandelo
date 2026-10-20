@@ -97,13 +97,14 @@ export interface DrainSyscallTraceMessage {
  *  into this canvas at 60 Hz. The canvas MUST be transferred (the
  *  `transfer` array contains it) — the browser would otherwise refuse
  *  to hand off control. Optional `stats` SAB receives blit/page-flip
- *  telemetry. */
+ *  telemetry. An optional transferred `opts.cursorCanvas` presents the
+ *  virtual hardware cursor independently; omit it on headless hosts. */
 export interface KmsAttachCanvasMessage {
   type: "kms_attach_canvas";
   crtcId: number;
   canvas: OffscreenCanvas;
   stats?: SharedArrayBuffer;
-  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" };
+  opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; cursorCanvas?: OffscreenCanvas };
 }
 
 /** Register a stats SAB for a CRTC without binding a scanout canvas. The

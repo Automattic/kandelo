@@ -862,10 +862,25 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_guest_read",
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
+  "kernel_kms_cursor_configure",
+  "kernel_kms_cursor_read",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
   "kernel_set_max_addr",
   "kernel_set_mmap_base",
+] as const;
+
+export const HOST_ADAPTER_KERNEL_EXPORT_LIFECYCLES = [
+  {
+    "name": "kernel_kms_cursor_configure",
+    "optional_since_abi": 50,
+    "required_from_abi": 51
+  },
+  {
+    "name": "kernel_kms_cursor_read",
+    "optional_since_abi": 50,
+    "required_from_abi": 51
+  }
 ] as const;
 
 export const PCM_TRANSPORT_MAGIC = 827147088 as const;
@@ -2038,8 +2053,10 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   3222299873: { argKind: "pointer", direction: "inout", wasm32Size: 16, wasm64Size: 16 },
   3222561958: { argKind: "pointer", direction: "inout", wasm32Size: 20, wasm64Size: 20 },
   3222824112: { argKind: "pointer", direction: "in", wasm32Size: 24, wasm64Size: 24 },
+  3223086243: { argKind: "pointer", direction: "in", wasm32Size: 28, wasm64Size: 28 },
   3223348402: { argKind: "pointer", direction: "inout", wasm32Size: 32, wasm64Size: 32 },
   3223610368: { argKind: "pointer", direction: "inout", wasm32Size: 36, wasm64Size: null },
+  3223610555: { argKind: "pointer", direction: "in", wasm32Size: 36, wasm64Size: 36 },
   3225445376: { argKind: "pointer", direction: "inout", wasm32Size: null, wasm64Size: 64 },
   3225445536: { argKind: "pointer", direction: "inout", wasm32Size: 64, wasm64Size: 64 },
   3226494119: { argKind: "pointer", direction: "inout", wasm32Size: 80, wasm64Size: 80 },

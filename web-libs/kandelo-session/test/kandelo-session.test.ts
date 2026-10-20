@@ -2805,6 +2805,56 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     }
   };
 
+  it.each([1, 2, 3])("uses the same bitmap grid at browser density %s", (density) => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.setPresentation({ ...host.getPresentation(), displayScale: 1.5 });
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      FakeResizeObserver.instances[0].cb([{
+        devicePixelContentBoxSize: [{ inlineSize: 1440 * density, blockSize: 810 * density }],
+        contentRect: { width: 1440, height: 810 },
+      }]);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenCalledWith(1, 960, 540, mmFor(960, 540));
+      expect(host.getKmsDisplaySize(1)).toEqual({ width: 960, height: 540 });
+    });
+  });
+
+  it("uses the actual bounded mode for virtual DPI and ignores hidden panes", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.setPresentation({ ...host.getPresentation(), displayScale: 1.5 });
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      const ro = FakeResizeObserver.instances[0];
+      fireResize(ro, 500, 320);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenLastCalledWith(1, 640, 480, mmFor(640, 480));
+      fireResize(ro, 0, 0);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenCalledTimes(1);
+      fireResize(ro, 1439, 809);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenLastCalledWith(1, 958, 538, mmFor(958, 538));
+    });
+  });
+
+  it("keeps native device resolution for a compositor without displayScale", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      FakeResizeObserver.instances[0].cb([{
+        devicePixelContentBoxSize: [{ inlineSize: 2880, blockSize: 1620 }],
+        contentRect: { width: 1440, height: 810 },
+      }]);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenCalledWith(1, 2880, 1620, mmFor(1440, 810));
+    });
+  });
+
   it("detachKernel clears the reported sizes and the stale observer stops feeding them", () => {
     withFakeResizeObserver(() => {
       const host = new LiveKernelHost();
@@ -2897,6 +2947,74 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     });
   });
 
+  it("a pointer snapshot releases old buttons before pressing new ones", () => {
+    withFakeResizeObserver(() => {
+      const injectInputEvent = vi.fn();
+      const host = new LiveKernelHost();
+      host.attachKernel({ ...makeKmsKernel(), injectInputEvent } as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      Atomics.store(handle.stats, 2, 960);
+      Atomics.store(handle.stats, 3, 540);
+      handle.sendPointerAbs(100, 100, 2);
+      injectInputEvent.mockClear();
+      handle.sendPointerAbs(120, 100, 1);
+      expect(injectInputEvent.mock.calls.filter(call => call[1] === 1))
+        .toEqual([[1, 1, 0x111, 0], [1, 1, 0x110, 1]]);
+    });
+  });
+
+  it("ignores pointer input before scanout and confines it to valid pixels afterwards", () => {
+    withFakeResizeObserver(() => {
+      const injectInputEvent = vi.fn();
+      const host = new LiveKernelHost();
+      host.attachKernel({ ...makeKmsKernel(), injectInputEvent } as any);
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      // A real browser can enter the canvas during layout, before the
+      // guest's first frame. Guessed dimensions must not reach evdev.
+      handle.sendPointerAbs(1060, 633, 1);
+      expect(injectInputEvent).not.toHaveBeenCalled();
+      Atomics.store(handle.stats, 2, 960);
+      Atomics.store(handle.stats, 3, 540);
+      handle.sendPointerAbs(1060, 633, 1);
+      expect(injectInputEvent.mock.calls).toEqual([
+        [1, 3, 0, 65535], [1, 3, 1, 65535], [1, 0, 0, 0],
+        [1, 1, 0x110, 1], [1, 0, 0, 0],
+      ]);
+      injectInputEvent.mockClear();
+      handle.sendPointerAbs(-10, -2, 0);
+      expect(injectInputEvent.mock.calls).toEqual([
+        [1, 3, 0, 0], [1, 3, 1, 0], [1, 0, 0, 0],
+        [1, 1, 0x110, 0], [1, 0, 0, 0],
+      ]);
+      injectInputEvent.mockClear();
+      handle.sendPointerAbs(NaN, Infinity, 1);
+      expect(injectInputEvent).not.toHaveBeenCalled();
+    });
+  });
+
+  it("encodes changed scanout sizes for clients with cached absolute-device bounds", () => {
+    withFakeResizeObserver(() => {
+      const injectInputEvent = vi.fn();
+      const host = new LiveKernelHost();
+      host.attachKernel({ ...makeKmsKernel(), injectInputEvent } as any);
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      for (const [width, height] of [[960, 540], [800, 600], [1280, 720], [3840, 2160]]) {
+        Atomics.store(handle.stats, 2, width);
+        Atomics.store(handle.stats, 3, height);
+        for (const [x, y] of [[0, 0], [width - 1, height - 1], [123, 234]]) {
+          injectInputEvent.mockClear();
+          handle.sendPointerAbs(x, y, 0);
+          const axes = injectInputEvent.mock.calls.filter(call => call[1] === 3);
+          // Use the consumer's integer-division conversion, retaining the
+          // same absinfo maxima before and after every mode change.
+          expect(axes.map((call, i) => Math.floor(call[3] * ([width, height][i] - 1) / 65535)))
+            .toEqual([x, y]);
+        }
+      }
+    });
+  });
+
   it("kmsDisplayCanvas keeps one canvas per CRTC for the kernel's lifetime", () => {
     // A program's WebGL context is bound to the canvas it was created on,
     // so a remounted pane must get the SAME element back — and the same
@@ -2929,11 +3047,13 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
         const handle = host.attachKmsDisplay(canvas, 1)!;
         handle.close(); // pane unmount
 
-        // Remount: same element, same handle, one transfer.
+        const cursor = host.kmsCursorCanvas(1);
+        // Remount: each plane transfers once, with the same handle.
         expect(host.kmsDisplayCanvas(1, { width: 640, height: 480 })).toBe(canvas);
         expect(canvas.width).toBe(1920); // size applies only at creation
         expect(host.attachKmsDisplay(canvas, 1)).toBe(handle);
-        expect(transfers).toBe(1);
+        expect(transfers).toBe(2);
+        expect(host.kmsCursorCanvas(1)).toBe(cursor);
         expect(kernelA.kmsAttachCanvas).toHaveBeenCalledTimes(1);
 
         // Each CRTC has its own canvas.
@@ -2944,6 +3064,7 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
         host.detachKernel();
         host.attachKernel(makeKmsKernel() as any);
         expect(host.kmsDisplayCanvas(1, size)).not.toBe(canvas);
+        expect(host.kmsCursorCanvas(1)).not.toBe(cursor);
       });
     } finally {
       (globalThis as { document?: unknown }).document = realDocument;

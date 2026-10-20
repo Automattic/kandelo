@@ -2743,6 +2743,46 @@ The kernel buffers raw 3-byte packets — there is no userspace queue until the 
 
 Single-open semantics match real Linux mousedev exclusive-grab. The host inverts browser `deltaY` (browser positive-down → PS/2 positive-up) before injecting, so the kernel queue holds canonical PS/2 sign convention. ABI version bumped 6 → 7 to register the new `kernel_inject_mouse_event(i32, i32, u32) -> ()` export.
 
+Browser input ownership ends on window blur or source shutdown. The evdev
+source tracks delivered presses independently of keys queued behind clipboard
+negotiation, releases actual held keys before their modifiers, and discards
+undelivered queued keys when ownership ends. A keyup for a guest-owned key is
+forwarded using its original keycode even outside the capture gate, without
+preventing browser behavior. Pointer-down modifier flags are reconciled in the
+capture phase before the Modeset pane injects its absolute pointer/button frame.
+The pane owns its own button state and releases both its legacy PS/2 and evdev
+feeds on cancelled gestures, lost capture, blur, or teardown.
+
+Browser pointer adapters reconcile the complete `buttons` snapshot on motion,
+press, release, and KMS re-entry. Overlapping button changes may arrive as
+`pointermove` rather than additional down/up events (see the
+[Pointer Events button rules](https://www.w3.org/TR/pointerevents3/#chorded-button-interactions)).
+A gesture must start on the owned surface before motion can introduce new
+presses; hover entry with a button held does not fabricate a click. A zero
+snapshot repairs missed releases. The Modeset pane tracks the gesture's pointer
+ID so another finger or a hovering mouse cannot clear its button state.
+Full snapshots release old buttons before
+introducing new presses, and both KMS pointer feeds place motion before the
+button edge. Node's translated-event input API and the kernel ABI are unchanged.
+
+SDL2's direct evdev backend merges pending keyboard and pointer records by
+kernel timestamp, retaining a 32-record read batch per device. Reading all
+keyboard records before the pointer could deliver Tab or a modifier before an
+earlier click. The event order fix is inside SDL2 and is shared by its Node
+and browser consumers; it changes neither device records nor the kernel ABI.
+
+Evdev device state is independent of each reader's bounded event ring. The
+kernel retains absolute pointer axes before delivering records, so
+`EVIOCGABS(ABS_X/ABS_Y)` returns the current value as well as its range,
+including after overflow or when the device was not open. `EVIOCGKEY` likewise
+retains held buttons. SDL2's ordinary mouse backend drains stale records after
+`SYN_DROPPED`, waits for a report boundary, and restores position and buttons
+from these queries. It releases old buttons before introducing new presses.
+Relative motion and wheel deltas lost to overflow cannot be reconstructed.
+Keyboard and touchscreen recovery are outside this mouse correction. This
+uses the existing Linux evdev recovery protocol on both hosts; the syscall
+numbers, structures, and ABI version are unchanged.
+
 ## Host clipboard (`/dev/kandelo/clipboard`)
 
 Text the user pastes over a machine reaches the guest the way a VM guest agent
@@ -3033,11 +3073,112 @@ throughput or performance claim.
 
 This section is the implementation walk-through; [Linux-compatible graphics devices](#linux-compatible-graphics-devices) states the device-level contract.
 
-`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (only `DUMB_BUFFER` and `PRIME` report support; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. There is no plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same surface unmodified. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the pane's aspect ratio at a fixed 1080 logical height — `round(1080 × aspect) × 1080`, width clamped to [1440, 3840] — so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The mode is sampled per GETCONNECTOR call but effectively fixed once a client boots; resizing the pane afterwards reintroduces letterboxing rather than switching modes. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (`DUMB_BUFFER`, `PRIME`, and 64×64 cursor dimensions report support after host negotiation; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. `MODE_CURSOR` / `MODE_CURSOR2` provide one virtual cursor plane. There is no general plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same DRM interfaces. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the reported pixel dimensions, even-aligned and clamped to [640, 3840] × [480, 2160], so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The preferred mode is sampled per GETCONNECTOR call and clients generally cache it at startup; resizing the pane afterwards changes presentation rather than switching the guest mode. The kernel also advertises 17 standard 60 Hz modes from 640×480 through 3840×2160, deduplicating the preferred size. Only the host-provided first mode is preferred. Both hosts expose this same catalog through the existing DRM ioctl, without a new host import or ABI layout. A count query reports the full list length; an undersized modes buffer is left untouched so libdrm can retry. The guest can switch modes using ordinary SDL or libdrm APIs, and the browser fits the selected scanout with letterboxing. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
 
 `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
 
 `DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) is the fully GPU-backed tier: the bo is a host `WebGLTexture` plus a color-attachment FBO — no SAB, unmappable on the CPU. WebGL textures are not shareable across contexts, so all GPU-tier bos and every GL client that touches them live on **one** shared multiplexer context: the DRM-master compositor's scanout WebGL2 context. A non-master GL client (which has no display canvas of its own) is routed onto that shared context at `host_gl_create_context`; the existing `GlMuxer` (keyed by the WebGL2 context) multiplexes the compositor and its clients by replaying each binding's shadow state on `switchTo`. A client renders into the bo by targeting its FBO: the bo handle reaches the next `eglCreateWindowSurface`'s `GLIO_CREATE_SURFACE` either explicitly (`libEGL`'s `wpkEglSetWindowSurfaceTarget(handle)`) or, for a libwayland-egl `wl_egl_window`, from the bo that window allocated; the kernel translates the per-fd handle to a global bo id and the host redirects the client's "bind default framebuffer 0" to the bo's FBO (sizing the viewport to the bo). Because a toolkit may create the window surface *before* the GL context, the redirect target is captured at surface creation and (re)applied at whichever of context-creation or surface-creation runs last, since it needs both `b.gl` and the resolved bo. A `wl_egl_window_resize` (a tiling compositor resizes every window it maps) gives the window a new bo at the new size and has `libEGL` destroy and re-create the window surface against it, flushing first so commands already queued land in the old bo; the old buffer is destroyed only after the next `eglSwapBuffers` has attached and committed its successor. As in Mesa, the resize takes effect from the next frame. `eglSwapBuffers` flushes the shared context as the buffer-ready fence before `wl_surface.commit`; command order through the one submit queue gives render-before-sample ordering for free (no explicit sync object in v1). `BIND_FOREIGN_TEXTURE` on a GPU-tier bo then degenerates to returning the texture id — true zero-copy, no upload. Allocation degrades to a CPU-tier dumb bo whenever no shared context exists — headless Node has no WebGL2, and in the browser the compositor must have created its context first — so `libgbm` only requests the GPU tier for render-only bos (RENDERING set, none of SCANOUT/CURSOR/WRITE/LINEAR) and falls back to CREATE_DUMB on any error. This producer path is browser-only. Each GPU-tier bo's FBO has color, 24-bit depth, and 8-bit stencil storage, so default-framebuffer depth testing and stencil clipping work for Wayland clients as well as canvas-backed sessions.
+
+The absolute pointer defaults to a fixed 0–65535 device range on both hosts.
+Display pixels are converted to these device units by the KMS session
+bridge, and SDL/libinput map them into the selected output. Mode changes
+and pane resizing never alter the device range cached by those clients.
+The low-level `setInputCanvasDims` API remains available for embedders
+that explicitly configure a different input producer's coordinate range.
+Display setup, pane resizing, and guest modesets preserve that range too;
+`setInputCanvasDims` is not a scanout-size notification.
+
+Canvas-backed GL sessions draw into a host-owned offscreen framebuffer and
+blit it to the canvas at presentation.
+The SDK's GBM/EGL handoff reads dimensions from a registered live native
+GBM window, without interpreting another backend's opaque window pointer.
+EGL surface dimensions are stored independently of the current CRTC:
+when SDL replaces its context before latching the new scanout, that old
+scanout cannot override the new drawable and clear its completed frame.
+Destroying a guest context retires its owned GL objects and shadow state,
+including its current program, while preserving an independent EGL
+surface and BO-owned GPU textures. The shared native WebGL context can
+then serve a replacement context without replaying deleted objects. Recreating an EGL window surface
+rebuilds that target before the guest's next draw, including when the GL
+context survives. The shared-context multiplexer invalidates its cached
+binding so the next submission binds the replacement target. GPU-backed
+buffer producers retain their own targets. Node has no WebGL context and
+continues to use the CPU scanout path.
+
+The cursor plane accepts Linux's 28-byte `drm_mode_cursor` and 36-byte
+`drm_mode_cursor2` layouts. Requests require DRM master and CRTC 1;
+unknown flags, oversized images, and undersized buffers
+fail before changing state. Images are tightly packed CPU-shared premultiplied ARGB8888
+buffers, up to 64×64, independent of the allocation's original pitch,
+matching [Linux's legacy cursor layout](https://github.com/torvalds/linux/blob/v6.6/drivers/gpu/drm/drm_plane.c#L959). Showing a cursor retains its buffer independently
+of the application's GEM handle. Hiding it, dropping master, or closing
+the owning card descriptor releases that reference. Exec retains it;
+fork children do not inherit the parent's cursor ownership. The internal
+fork-state encoding is version 19, produced and consumed by one kernel
+build. The new ioctl descriptions are additive under ABI 50.
+
+DRM cursor positions locate the image origin. Signed hotspot values are
+virtualization hints and do not offset the image, following the
+[Linux cursor contract](https://www.kernel.org/doc/html/v6.6/gpu/drm-kms.html).
+SDL's KMS backend converts pointer coordinates to image coordinates on
+motion, warp, and shape changes. This keeps nonzero-hotspot cursors aligned
+without changing DRM semantics for other clients.
+
+Cursor transport adds no required Wasm import. The optional
+`kernel_kms_cursor_configure(version)` export accepts protocol 1 and returns
+1, or negative `ENOTSUP` for unknown versions. Until negotiation, cursor
+capabilities report zero and valid master cursor requests that reach the
+kernel fail `ENOTSUP` before retaining a buffer. An older host adapter can
+reject the unknown ioctl earlier with `EINVAL`; the zero capability is the
+supported way to detect the unavailable plane. Both Node and browser hosts
+negotiate support;
+a visible display is not required. The two cursor exports are optional in
+ABI 50 and become required in ABI 51 through the export lifecycle table.
+
+`kernel_kms_cursor_read(out, capacity)` returns 0 when unchanged, 32 after
+copying one complete state, or negative `EINVAL` for invalid output. Its
+32-byte protocol-1 record contains eight little-endian words: owner PID,
+buffer ID, width, height, signed x/y, and signed hotspot x/y. Image and
+motion requests coalesce without losing the image; dropping master clears
+pending state before its buffer can be reused. The host drains this state
+inside the existing vblank kernel entry before reading pixels, using a
+scratch lease and owned copies. Records from retired owners are discarded.
+Older kernels without the exports remain loadable by new hosts.
+
+`KmsRegistry` refreshes the packed cursor image from its producer mapping
+at vblank, using the shared GBM coherence boundary. It retains an owned
+RGBA snapshot until pixels change; position-only updates reuse it. The
+copy is bounded to the cursor image rather than the allocation size.
+The worker composites this state
+on a separate transparent canvas at vblank, independently of CPU, GPU,
+or application-owned scanout. It never reads live guest memory during
+that detached presentation phase and never exposes a partially drawn
+application frame. Node retains the same state without a canvas.
+
+Host address-space retirement distinguishes exec from process exit. Exec
+flushes and removes old buffer mappings but retains buffer ownership and
+DRM master state for open descriptions the kernel kept. The replacement
+can map a retained handle into its new memory and recover its pixels.
+Kernel close-on-exec and final-reference callbacks still destroy buffers
+and release master state; trap/exit cleanup retains its process teardown
+backstop. Both Node and browser use this same path.
+
+The browser's optional image-owned `presentation.displayScale` advertises
+a readable virtual monitor for bitmap interfaces. The guest mode, 96-DPI
+reference dimensions, scanout, input range, and cursor use one grid. Without
+that setting, the existing native-device-pixel and physical-size path is
+preserved for compositors. See [display presentation](browser-support.md)
+for its bounds and resampling limitations.
+
+KMS display stats distinguish scene presentations from page flips. Cursor-plane updates do not increment scene presentation counters. Slot 0 counts
+canvas presentations from the CPU/scanout presenters and successful direct
+GL presents; slot 5 remains the kernel's `MODE_PAGE_FLIP` queue count. A
+first frame drawn during `MODE_SETCRTC` need not issue a page flip. The
+browser's restart indicator therefore samples the live presentation count
+after stopping the old program and completes on a new presentation, including
+for static menus. Cancelled progress subscriptions cannot revive the indicator
+with late terminal output. These are host/UI changes; guest imports, the
+stats buffer layout, and ABI 50 are unchanged.
 
 `MODE_PAGE_FLIP` latches the new framebuffer as the host-side scanout immediately (`host_kms_set_fb`, same call `MODE_SETCRTC` makes) and queues a flip-complete event that `kernel_vblank` — driven by the host's 60 Hz vblank pump — retires into the fd's event ring at the next tick. Two consequences: libdrm's `drmModePageFlip → poll → drmHandleEvent` loop runs at refresh rate rather than ioctl rate, and any host-side consumer of the current scanout (the vblank pump's WebGL2 scanout presenter or the legacy 2D canvas blit used by CPU-rendered demos) always reads the most recently flipped buffer, never a double-buffered client's back buffer. The immediate latch is race-free because a well-behaved client fully paints a bo before flipping to it and only reuses the old bo after the flip-complete event.
 

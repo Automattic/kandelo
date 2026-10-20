@@ -229,6 +229,10 @@ function loadDemoConfig(path: string, label: string): KandeloDemoConfig {
 }
 
 const SOURCE_ROOTFS_DEMO_COMMANDS = {
+  freeciv: {
+    executable: "/usr/bin/freeciv-play",
+    command: "/usr/bin/freeciv-play",
+  },
   love: {
     executable: "/usr/local/bin/love",
     command: "/usr/local/bin/love /usr/share/love/examples/pong",

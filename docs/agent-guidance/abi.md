@@ -31,6 +31,14 @@ A structural additive change may keep the same `ABI_VERSION` only when existing
 binaries remain valid and existing ABI entries are unchanged. Additions still
 require regenerating and committing `abi/snapshot.json`.
 
+Declare host-facing kernel exports once in
+`shared::abi::HOST_ADAPTER_KERNEL_EXPORTS`. Use `optional_until(name,
+introduced_abi, required_abi)` for an explicitly scheduled promotion;
+required/optional lists are derived from `ABI_VERSION` for every consumer.
+Use `optional(name)` when an interface should stay optional indefinitely.
+Keep promotion deadlines after they take effect. This mechanism does not
+make a newly required WebAssembly host import backward-compatible.
+
 The snapshot check is necessary but not sufficient. It catches structural drift
 covered by `xtask dump-abi`; it does not prove semantic compatibility. Changing
 an existing syscall's meaning, errno behavior, blocking behavior, fd

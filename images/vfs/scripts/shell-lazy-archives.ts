@@ -30,6 +30,14 @@ export interface ShellLazyArchiveSpec {
 
 export const SHELL_LAZY_ARCHIVE_SPECS = [
   {
+    id: "freeciv",
+    dependency: "freeciv-browser-bundle",
+    resolverPath: "programs/wasm32/freeciv.zip",
+    archiveUrl: "freeciv.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/freeciv-play",
+  },
+  {
     id: "love-examples",
     dependency: "love",
     resolverPath: "programs/love/share/love-examples.zip",

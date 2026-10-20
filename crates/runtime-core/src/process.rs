@@ -624,6 +624,27 @@ pub trait HostIO {
 
     #[allow(unused_variables)]
     fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {}
+
+    /// True only after the host has negotiated a cursor presentation transport.
+    fn kms_cursor_supported(&mut self) -> bool {
+        false
+    }
+
+    #[allow(unused_variables)]
+    fn kms_cursor(
+        &mut self,
+        pid: i32,
+        crtc_id: u32,
+        flags: u32,
+        bo_id: u32,
+        width: u32,
+        height: u32,
+        x: i32,
+        y: i32,
+        hot_x: i32,
+        hot_y: i32,
+    ) {
+    }
 }
 
 /// Process lifecycle state.
