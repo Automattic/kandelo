@@ -3,6 +3,16 @@ import { FetchNetworkBackend, EagainError } from "../src/networking/fetch-backen
 import { TlsNetworkBackend, type TlsMitmConnection } from "../src/networking/tls-network-backend";
 import { NET_READINESS } from "../src/generated/abi";
 
+// These tests observe the guest's header occurrences as the backends project
+// them: each append, in order and case, which no merged Headers object can
+// show. The proxy session transport copies the projected headers to add its
+// own credential, so here it passes requests straight through; its own tests
+// (cors-proxy-session.test.ts) check that the copy forwards every header.
+vi.mock("../src/networking/cors-proxy-session", () => ({
+  fetchWithProxySession: (url: string, init: RequestInit, send: (url: string, init: RequestInit) => Promise<Response>) =>
+    send(url, init),
+}));
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const MSG_PEEK = 0x0002;

@@ -124,10 +124,9 @@ it("binds one validated worker-owned proxy config to networking and lazy VFS", a
   await bindings.lazyFetcher!("https://releases.example/artifact.tar.gz");
   expect(fetchImpl).toHaveBeenCalledWith(
     "https://proxy.example/?https://releases.example/artifact.tar.gz",
-    {
-      credentials: "omit",
-      referrerPolicy: "no-referrer",
-    },
+    // An external proxy gets no browser credentials and only the
+    // application's origin as Referer (docs/browser-support.md).
+    { credentials: "omit", referrerPolicy: "strict-origin", headers: new Headers() },
   );
 
   tlsOptions?.onCorsProxyDiagnostic?.("omitted x-unsupported");
