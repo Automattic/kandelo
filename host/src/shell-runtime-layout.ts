@@ -11,8 +11,6 @@ export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
     "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
     "/usr/share", "/usr/share/misc", "/usr/share/file",
     "/etc", "/root", "/tmp", "/home", "/home/maker", "/dev", "/usr/sbin",
-    // NetHack VAR_PLAYGROUND — writable saves, scores, and bones.
-    "/home/.nethack",
   ]) {
     ensureDirRecursive(fs, dir);
   }
@@ -20,14 +18,6 @@ export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
   fs.chmod("/tmp", 0o1777);
   fs.chmod("/root", 0o700);
   fs.chown("/home/maker", 1000, 1000);
-
-  fs.chown("/home/.nethack", 1000, 1000);
-  fs.chmod("/home/.nethack", 0o777);
-  for (const file of ["/home/.nethack/perm", "/home/.nethack/record"]) {
-    writeVfsFile(fs, file, "");
-    fs.chown(file, 1000, 1000);
-    fs.chmod(file, 0o666);
-  }
 
   const gitconfig = [
     "[maintenance]",

@@ -11,6 +11,7 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
+  installNethackGames,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerShellProfileScripts,
@@ -76,6 +77,7 @@ export function populateSourceRootfsShellOverlay(
       registerDeclaredShellLazyArchive(fs, spec, resolveArtifact);
     }
   }
+  installNethackGames(fs);
 
   for (const [target, alias] of [
     ["/usr/bin/vim", "/bin/vim"],

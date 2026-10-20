@@ -116,8 +116,7 @@ test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async 
   );
   await runGuideScript(
     page,
-    "touch /home/.nethack/record\n" +
-      "nethack -s all >/tmp/source-rootfs-nethack.out 2>&1\n" +
+    "nethack -s all >/tmp/source-rootfs-nethack.out 2>&1\n" +
       "status=$?\n" +
       "nethack_out=$(</tmp/source-rootfs-nethack.out)\n" +
       "if [[ \"$nethack_out\" == *'Cannot open record file'* ]]; then\n" +

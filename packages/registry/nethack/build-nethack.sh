@@ -57,7 +57,11 @@ SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
 SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 NETHACK_HACKDIR="${NETHACK_HACKDIR:-/usr/share/nethack}"
-NETHACK_VAR_PLAYGROUND="${NETHACK_VAR_PLAYGROUND:-/home/.nethack}"
+# The shared playground (saves, scores, bones, lock file), owned by group
+# `games` and written through the set-group-ID binary, as Debian and Fedora
+# install it. The shell image creates it: see installNethackGames() in
+# images/vfs/scripts/shell-lazy-archives.ts.
+NETHACK_VAR_PLAYGROUND="${NETHACK_VAR_PLAYGROUND:-/var/games/nethack}"
 SOURCE_MARKER="$SRC_DIR/.kandelo-nethack-source"
 
 validate_guest_path() {
@@ -142,10 +146,9 @@ fi
 
 # --- Patch include/config.h ---
 #
-# We want CURSES_GRAPHICS enabled and external COMPRESS disabled. Leaving
-# TTY_GRAPHICS on is harmless — NetHack picks the windowing system at
-# runtime via `windowtype`, and leaving both compiled in gives the user
-# a choice.
+# We want CURSES_GRAPHICS enabled. Leaving TTY_GRAPHICS on is harmless —
+# NetHack picks the windowing system at runtime via `windowtype`, and leaving
+# both compiled in gives the user a choice.
 #
 # SYSCF must be disabled in the header too: Makefile hints leave it off,
 # but config.h `#ifndef SYSCF` then re-enables it and hard-codes an
@@ -159,7 +162,10 @@ if [ -f "$CONFIG_H" ] && ! grep -q "wasm32posix patch" "$CONFIG_H"; then
     sed -i.bak -E 's|^/\* *#define CURSES_GRAPHICS *\*/|#define CURSES_GRAPHICS|' \
         "$CONFIG_H"
 
-    # Disable external COMPRESS calls — we ship nhdat pre-packed by DLB.
+    # Drop config.h's fallback compressor (/usr/bin/compress, which the image
+    # does not ship). hints/linux still defines COMPRESS=/bin/gzip, so save
+    # files are gzipped by forking /bin/gzip with the player's own IDs, as
+    # Debian's build does.
     sed -i.bak -E \
         -e 's|^#define COMPRESS .*|/* COMPRESS disabled for wasm32 */|' \
         -e 's|^#define COMPRESS_EXTENSION .*|/* COMPRESS_EXTENSION disabled */|' \
@@ -396,12 +402,12 @@ if [ -f "$SRC_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$SRC_MAKEFILE"; then
         -e 's|^WINCURSESLIB *=.*|WINCURSESLIB=-lncursesw -ltinfow|' \
         "$SRC_MAKEFILE"
 
-    # Drop -DSYSCF and -DSECURE. Those enable the multi-user / setuid-games
-    # mode that expects a sysconf file under HACKDIR; we ship a single-user
-    # shell-demo build where the compiled HACKDIR is read-only and there is no
-    # sysconf file to consult.
+    # Drop -DSYSCF: the image ships no sysconf file, so the compile-time
+    # defaults apply. Keep -DSECURE: the binary is set-group-ID `games`, and
+    # SECURE makes NetHack give up that group before using a data directory
+    # the player chose with -d.
     sed -i.bak -E \
-        -e 's|^CFLAGS\+=-DSYSCF -DSYSCF_FILE=.*|# -DSYSCF disabled for wasm32 single-user build|' \
+        -e 's|^CFLAGS\+=-DSYSCF -DSYSCF_FILE=.*|CFLAGS+=-DSECURE|' \
         -e 's|^CFLAGS\+=-DCONFIG_ERROR_SECURE=.*|# -DCONFIG_ERROR_SECURE disabled for wasm32|' \
         "$SRC_MAKEFILE"
 
