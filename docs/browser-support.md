@@ -2568,7 +2568,10 @@ Array-valued globs are rejected before Vite because the browser binary scanner
 admits only one exact scalar path per request. SourceOnly also gives Vite a
 private snapshot of the commit-bound authored static-file allowlist in
 `public/`; every other ambient file is denied in development and omitted from
-production regardless of its suffix.
+production regardless of its suffix. The snapshot directory remains owner-only
+(`0700`), while its static files use `0644` because Vite preserves those modes
+when copying them into the production output. This lets a web server running
+as another user read the deployed service worker and other public files.
 
 Native lazy archive activation supports ZIP. Generic gzip, tar and zstd
 activation from the former TypeScript filesystem is not implemented; boot

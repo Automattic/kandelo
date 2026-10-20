@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { build as viteBuild } from "vite";
 import {
   createSourceOnlyPublicSnapshot,
   createSourceOnlyViteAssets,
@@ -264,4 +267,50 @@ describe("SourceOnly Vite asset snapshots", () => {
       rmSync(publicRoot, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "builds publicly readable static files while keeping the snapshot directory private",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "kandelo-public-build-"));
+      const publicRoot = join(root, "public");
+      const outDir = join(root, "dist");
+      let filtered: ReturnType<typeof createSourceOnlyPublicSnapshot> | null = null;
+      const savedUmask = process.umask(0o022);
+      try {
+        mkdirSync(publicRoot);
+        writeFileSync(join(root, "index.html"), "<h1>Kandelo</h1>\n");
+        for (const name of ["service-worker.js", "blob-iframe-interceptor.js"]) {
+          const file = join(publicRoot, name);
+          writeFileSync(file, `// ${name}\n`);
+          chmodSync(file, 0o600);
+        }
+        writeFileSync(join(publicRoot, "ambient.wasm"), "excluded\n");
+        filtered = createSourceOnlyPublicSnapshot(publicRoot);
+
+        await viteBuild({
+          configFile: false,
+          root,
+          publicDir: filtered.path,
+          logLevel: "silent",
+          build: { outDir },
+        });
+
+        expect(statSync(dirname(filtered.path)).mode & 0o777).toBe(0o700);
+        expect(statSync(filtered.path).mode & 0o777).toBe(0o700);
+        expect(statSync(outDir).mode & 0o777).toBe(0o755);
+        for (const name of ["index.html", "service-worker.js", "blob-iframe-interceptor.js"]) {
+          expect(statSync(join(outDir, name)).mode & 0o777, name).toBe(0o644);
+        }
+        expect(readFileSync(join(outDir, "service-worker.js"), "utf8"))
+          .toBe("// service-worker.js\n");
+        expect(existsSync(join(outDir, "ambient.wasm"))).toBe(false);
+        expect(statSync(join(publicRoot, "service-worker.js")).mode & 0o777)
+          .toBe(0o600);
+      } finally {
+        process.umask(savedUmask);
+        filtered?.dispose();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 });
