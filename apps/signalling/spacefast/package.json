@@ -1,0 +1,8 @@
+{
+  "name": "kandelo-spacefast-signalling",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test --test-timeout=30000 --experimental-test-coverage --test-coverage-include='**/signalling/spacefast/handler.ts' --test-coverage-include='**/signalling/spacefast/store.ts' --test-coverage-lines=100 --test-coverage-functions=100 --test-coverage-branches=100 test/*.test.ts"
+  }
+}

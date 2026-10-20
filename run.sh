@@ -14,7 +14,7 @@
 #                                 cache (dry run unless --apply)
 #   ./run.sh run <example> [args] Run a Node.js example
 #   ./run.sh prepare-browser      Build local SourceOnly browser assets
-#   ./run.sh build-browser [--base /p/] [--out DIR]
+#   ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]
 #                                 Build the deployable static browser app
 #   ./run.sh browser [args]       Start the Vite browser dev server
 #   ./run.sh list                 Show available targets and examples
@@ -2775,6 +2775,10 @@ cmd_prepare_browser() {
 cmd_build_browser() {
     local base="/"
     local out="$REPO_ROOT/apps/browser-demos/dist"
+    local cors_proxy="${VITE_CORS_PROXY_URL-}"
+    local signalling_url="${VITE_KANDELO_SIGNALLING_URL-}"
+    local cors_proxy_set="${VITE_CORS_PROXY_URL+1}"
+    local signalling_url_set="${VITE_KANDELO_SIGNALLING_URL+1}"
     while [ $# -gt 0 ]; do
         case "$1" in
             --base) [ $# -ge 2 ] || { err "--base requires a value"; exit 2; }
@@ -2783,8 +2787,18 @@ cmd_build_browser() {
             --out)  [ $# -ge 2 ] || { err "--out requires a directory"; exit 2; }
                     out="$2"; shift 2 ;;
             --out=*) out="${1#--out=}"; shift ;;
+            --cors-proxy) [ $# -ge 2 ] && [ -n "$2" ] || { err "--cors-proxy requires a URL"; exit 2; }
+                          cors_proxy="$2"; cors_proxy_set=1; shift 2 ;;
+            --cors-proxy=*) cors_proxy="${1#--cors-proxy=}"; shift
+                           [ -n "$cors_proxy" ] || { err "--cors-proxy requires a URL"; exit 2; }
+                           cors_proxy_set=1 ;;
+            --signalling-url) [ $# -ge 2 ] && [ -n "$2" ] || { err "--signalling-url requires a URL"; exit 2; }
+                              signalling_url="$2"; signalling_url_set=1; shift 2 ;;
+            --signalling-url=*) signalling_url="${1#--signalling-url=}"; shift
+                               [ -n "$signalling_url" ] || { err "--signalling-url requires a URL"; exit 2; }
+                               signalling_url_set=1 ;;
             *)
-                err "Usage: $0 build-browser [--base /prefix/] [--out DIR]"
+                err "Usage: $0 build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]"
                 exit 2
                 ;;
         esac
@@ -2806,13 +2820,16 @@ cmd_build_browser() {
     step "Building production browser app for $base"
     # Deployment configuration must cross the isolated shell explicitly.
     # Leave an unset URL absent so Vite can still load it from .env files.
-    local signalling_env=()
-    if [ "${VITE_KANDELO_SIGNALLING_URL+x}" = x ]; then
-        signalling_env=(env "VITE_KANDELO_SIGNALLING_URL=$VITE_KANDELO_SIGNALLING_URL")
+    local deployment_env=(env)
+    if [ -n "$cors_proxy_set" ]; then
+        deployment_env+=("VITE_CORS_PROXY_URL=$cors_proxy")
+    fi
+    if [ -n "$signalling_url_set" ]; then
+        deployment_env+=("VITE_KANDELO_SIGNALLING_URL=$signalling_url")
     fi
     # dev-shell.sh does not forward arbitrary caller environment, so the
     # inner script takes the repo root, base, and output as arguments.
-    bash "$REPO_ROOT/scripts/dev-shell.sh" ${signalling_env[@]+"${signalling_env[@]}"} bash -c '
+    bash "$REPO_ROOT/scripts/dev-shell.sh" "${deployment_env[@]}" bash -c '
         set -euo pipefail
         cd "$1"
         export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
@@ -3109,7 +3126,7 @@ cmd_list() {
     echo "${BOLD}Browser:${RESET}"
     echo "  ./run.sh prepare-browser             Build local SourceOnly browser assets"
     echo "  ./run.sh browser                     Build locally and start the Vite dev server"
-    echo "  ./run.sh build-browser [--base /p/] [--out DIR]"
+    echo "  ./run.sh build-browser [--base /p/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]"
     echo "                                       Build the deployable app (default: / into apps/browser-demos/dist)"
     echo ""
     echo "${BOLD}Test suites:${RESET}"

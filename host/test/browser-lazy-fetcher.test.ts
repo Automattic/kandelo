@@ -27,7 +27,7 @@ describe("browser lazy VFS fetch transport", () => {
     expect(fetchImpl).toHaveBeenCalledWith("/assets/runtime.zip");
   });
 
-  it("proxies external lazy assets without browser credentials", async () => {
+  it("authenticates to the deployment's same-origin proxy for external assets", async () => {
     const fetchImpl = vi.fn(async () => new Response("external"));
     const controller = new AbortController();
     const target =
@@ -43,9 +43,38 @@ describe("browser lazy VFS fetch transport", () => {
       `${PROXY_CONFIG.url}${encodeURIComponent(target)}`,
       {
         signal: controller.signal,
-        credentials: "omit",
-        referrerPolicy: "no-referrer",
+        credentials: "same-origin",
+        referrerPolicy: "strict-origin",
+        headers: new Headers(),
       },
+    );
+  });
+
+  it("never sends application credentials to an external proxy", async () => {
+    const fetchImpl = vi.fn(async () => new Response("external"));
+    const fetcher = createBrowserLazyFetcher({
+      ...PROXY_CONFIG, url: "https://proxy.kandelo.test/?url=",
+    }, { fetchImpl, runtimeUrl: RUNTIME_URL });
+
+    await fetcher("https://cdn.example.test/asset", { credentials: "include" });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://proxy.kandelo.test/?url=https%3A%2F%2Fcdn.example.test%2Fasset",
+      { credentials: "omit", referrerPolicy: "strict-origin", headers: new Headers() },
+    );
+  });
+
+  it("resolves relative proxy credentials against the runtime, not the asset", async () => {
+    const fetchImpl = vi.fn(async () => new Response("external"));
+    const fetcher = createBrowserLazyFetcher({
+      ...PROXY_CONFIG, url: "/__proxy?url=",
+    }, { fetchImpl, runtimeUrl: RUNTIME_URL });
+
+    await fetcher("https://cdn.example.test/asset", { credentials: "omit" });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://demo.kandelo.test/__proxy?url=https%3A%2F%2Fcdn.example.test%2Fasset",
+      { credentials: "same-origin", referrerPolicy: "strict-origin", headers: new Headers() },
     );
   });
 

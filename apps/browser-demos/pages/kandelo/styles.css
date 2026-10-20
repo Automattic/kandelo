@@ -4654,6 +4654,7 @@
 .knetwork-status[data-phase="joining"] .knetwork-dot { background: var(--k-warn); }
 .knetwork-status[data-phase="error"] .knetwork-dot { background: var(--k-err); }
 .knetwork-error { color: var(--k-err-ink); font-size: 12.5px; }
+.knetwork-hint { margin-top: 6px; color: var(--k-text-muted); line-height: 1.45; }
 .knetwork-detail { margin-top: 4px; color: var(--k-text-faint); font-family: var(--k-font-mono); font-size: 11px; }
 .knetwork-note { margin: 0; color: var(--k-text-muted); font-size: 12px; line-height: 1.45; }
 .knetwork-field { display: flex; flex-direction: column; gap: 4px; width: 100%; color: var(--k-text-muted); font-size: 12px; }

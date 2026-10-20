@@ -1372,8 +1372,16 @@ satisfy a COEP embedding check, but it does not make an opaque no-CORS response
 body readable to JavaScript. Public release assets do not necessarily grant
 CORS even though an ordinary command-line client can read them. An explicit
 `closedLazyAssets` set remains exhaustive and takes precedence over the network
-proxy. The Node.js host is unaffected and continues to fetch its lazy URLs
-directly.
+proxy. A deployment-configured same-origin proxy uses `credentials: "same-origin"`
+to admit requests on authenticated hosting, including private Spacefast Spaces.
+VFS metadata chooses the artifact target, never this trusted proxy URL. An
+external proxy receives `credentials: "omit"`; proxied requests send only the
+application origin as Referer (`strict-origin`) for approved-origin admission. Service-worker reprojection uses the same credential rule for
+already-proxied requests and automatic cross-origin GET/HEAD wrapping.
+The proxy must strip application cookies before contacting the
+artifact destination. Redirects to another origin cannot carry those cookies.
+Direct same-origin artifact requests keep their caller's credential policy.
+The Node.js host is unaffected and continues to fetch its lazy URLs directly.
 
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
 `Range`, `wp_blog`, and `wp_install`, and copies `Range` into
@@ -1495,6 +1503,14 @@ abort before headers never fired that signal (a plain pass-through
 until it answers. This is a browser boundary, not relay behavior: a direct
 abort of a relay request cancels upstream in both engines.
 
+The 2026-10-19 Playwright Firefox check did not close the upstream transfer
+within ten seconds after aborting a page read after its first body chunk.
+The same failure reproduced using current main's service worker and the
+unchanged development relay; Chromium and WebKit passed that check.
+Service-worker body cancellation propagation is therefore not guaranteed
+on the tested Firefox path either. This does not affect the proxy's
+ability to return range bytes, but an abandoned transfer can remain open.
+
 **Reading an answer.** A `200` answer to a ranged request is legal HTTP: any
 server or relay may ignore `Range`. Kandelo code that issues a ranged read
 must use `fetchByteRange()` from `host/src/networking/byte-range-fetch.ts`.
@@ -1573,7 +1589,7 @@ visible to another machine's requests even though both live under the same
 scope's origin.
 
 Each machine's bridge authority (its live `MessagePort`, session id, and
-cookie jar) is also persisted to Cache Storage under a per-name key as it is
+cookie jar) is also persisted to IndexedDB under a per-name key as it is
 established, independent of the in-memory registry. If the browser
 terminates and restarts the service worker while a machine's host tab is
 still open, the worker has lost every live `MessagePort` but still has each
@@ -2366,16 +2382,59 @@ only when building a deployable directory-scoped distribution.
 
 ### Directory-scoped production hosting
 
+The standalone [`apps/spacefast-cors-proxy`](../apps/spacefast-cors-proxy/README.md)
+implements the Playground proxy protocol for Spacefast Functions,
+including the range alias used by this browser app. Its production entry uses
+ordinary Spacefast Fetch as an explicitly approved workaround: live testing
+on 2026-10-15 found that Spacefast rejects the original pinned TCP transport.
+URL validation still rejects private IP literals, local host names, credentials
+and self-targets, and redirects return through that validation. DNS resolution
+and connection-time private-network protection belong to Spacefast in this
+mode. Kandelo cannot prevent DNS rebinding; the platform's protection has not
+been verified. The optional pinned transport remains available in the core
+and covered by local TCP/TLS fixture tests. The entry uses the Space's database
+for per-identity token buckets matching Playground's 1,000-token capacity and
+100/minute refill. A native PHP Function verifies Spacefast's guest/account
+identity and issues a signed, proxy-scoped quota token. Browser transports
+persist it on the app's origin, so a separate proxy needs no third-party
+cookies. This changes the abuse boundary: new guest identities can get fresh
+budgets, unlike Playground's per-IP policy. SQL and PHP are locally tested;
+a private live diagnostic verified guest issuance and a proxied fetch.
+The existing v9 deployment retains the earlier shared fixed-window limiter.
+The app's build command can select this proxy explicitly, and its packager
+can colocate the app and `/cors-proxy` in one Space. A live Chromium check on 2026-10-15 verified a guest `curl`
+request through the same-origin proxy with HTTP 200 and exit status 0. The live
+serving path requires the range alias, omits HEAD Content-Length, and did not
+preserve the worker's CORS origin grant in private-Space probes. See that app's
+README for commands and the precise scope of validation.
+The packager applies isolation headers to document URLs and worker scripts,
+including clean document aliases. It leaves large binary downloads on
+Spacefast's static serving path: custom isolation headers on files above
+100 MiB cause `response_headers_unservable` during finalization.
+
 A production build owns one normalized absolute deployment prefix. Build and
 host the output with the same value: output built with `VITE_BASE=/a/` must be
 served at `/a/`, and output built with `VITE_BASE=/candidate-b/` must be served
 at `/candidate-b/`. A completed build is not freely relocatable, and
 `base: "./"` is not a supported substitute for choosing its public path.
 
-`./run.sh build-browser [--base /prefix/] [--out DIR]` performs every step
+`./run.sh build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]` performs every step
 below for one prefix (default `/`, output `apps/browser-demos/dist`) and
 fails if the output lacks `index.html`, `service-worker.js`, the VFS
 group, or `signalling/piplet.php`, or contains the private product map.
+
+`--cors-proxy` sets the production `VITE_CORS_PROXY_URL` explicitly inside
+the clean development shell. It accepts an absolute proxy prefix or a
+same-origin prefix such as `/cors-proxy?url=`. Both endpoint flags override
+their exported `VITE_CORS_PROXY_URL` / `VITE_KANDELO_SIGNALLING_URL`
+variables. When neither a flag nor its exported variable is set, Vite can
+load that value from its normal `.env` files. Without a proxy override, the
+existing Playground production default is retained. Spacefast deployment is
+optional: the reusable `node scripts/deploy-spacefast.mjs --space ORIGIN` prepares
+the combined bundle; `--publish` explicitly publishes it and `--dry-run`
+runs local CLI checks instead. The target has no saved default. See the
+[deployment guide](../apps/spacefast-cors-proxy/README.md#combined-kandelo-site).
+A normal build never publishes or signs in.
 
 The SourceOnly local DAG described in
 [Package Management](package-management.md#local-dag-build) is the canonical
@@ -2607,6 +2666,43 @@ with a fresh build clears its active sessions.
 If the endpoint is unavailable, session creation or joining reports the request
 failure in the panel.
 
+The Spacefast combined build includes a TypeScript implementation at
+`/signalling`. Pass `--signalling-url /signalling` to `build-browser` to set
+`VITE_KANDELO_SIGNALLING_URL` inside the clean build shell. Both computers
+must be admitted by the Space's access settings. The endpoint uses MySQL
+conditional updates for atomic matching across workers, preserving the PHP
+session/room protocol and limits. It shares neither state nor request budget
+with `/cors-proxy`. Packaging omits the portable PHP piplet from the
+Spacefast output and leaves the original static build intact for WP Cloud.
+See [Spacefast signalling](../apps/signalling/spacefast/README.md)
+for storage, tests and hosting boundaries. Guest traffic still uses the peer
+link; hosting signalling on Spacefast supplies no TURN relay.
+
+WP Cloud remains a supported static host: build with
+`--signalling-url /signalling/piplet.php` and keep serving the portable PHP
+piplet there. An omitted `--cors-proxy` retains the production Playground
+proxy; an explicit URL can instead select a standalone Spacefast proxy.
+The separate-site layout is experimental: browser tests cover the protocol,
+but Spacefast's live cross-origin serving layer has not been verified.
+Build that separate worker with repeated `--allow-referer` origins for every
+approved app (including a WP Cloud app's origin if desired). It requires actual
+Referer admission as well as CORS grants; absent or unapproved Referers are
+403 before upstream work. Preflight uses the approved Origin. These headers
+are forgeable by non-browser clients, so the admission rule does not replace
+rate limiting or deployment access controls. The worker's durable budget is
+a 1,000-token bucket per verified guest/account identity, refilling 100 per
+minute. Clearing the guest session and token can obtain a fresh identity;
+this is weaker against quota evasion than Playground's IP-based policy.
+Same-origin deployment uses Spacefast cookies to verify identity; a separate
+proxy issues a narrow signed token that persists on the app's origin, so
+third-party cookies are unnecessary. A configured trusted classification
+header can enable Playground's search-engine exclusion; none is assumed.
+See the
+[standalone proxy recipe](../apps/spacefast-cors-proxy/README.md#separate-proxy-site)
+for configuration, cross-origin hosting boundaries and the upstream comparison.
+
+
+
 UDP uses an unordered channel with zero retransmissions; directory control is
 ordered and reliable. The payload cap is the lesser of 65,507 bytes and the
 negotiated SCTP ceiling minus 16 bytes. Oversized sends return EMSGSIZE and a
@@ -2657,6 +2753,17 @@ defaults, and a deployment that wants peers behind symmetric NATs to connect
 names a TURN server there. Missing channel arrival is bounded to 30 seconds after
 ICE connects; the manual answer exchange has no deadline. Cancellation closes
 pending channels and connections.
+
+The network panel adds a short troubleshooting hint to peer connection
+failures and connection timeouts. On detected macOS it points to System
+Settings → Privacy & Security → Local Network; on Windows it points to the
+browser's Windows Firewall entry. Other platforms get a general reminder
+to check both peers' browser permissions, VPNs and firewalls. Platform
+detection is best effort (including iPadOS identifying as a Mac); hints do
+not inspect permission state or establish the cause of a failure. Invalid
+invitations and signalling-server errors retain their own messages without
+these peer-link hints. No permission prompts or media access are requested.
+
 Close and failure subscriptions expose established connection teardown.
 Late failure subscribers receive the recorded connection error once, so an
 ICE failure during an asynchronous consumer handoff is not lost. An orderly

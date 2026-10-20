@@ -39,6 +39,7 @@ import {
   type BrowserBinaryResolution,
 } from "./vite-binary-resolution";
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
+import { createProxySessionTransport } from "../../host/src/networking/cors-proxy-session";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
@@ -305,7 +306,7 @@ function injectCorsProxyConfigPlaceholder(
   return content.replace(
     '"__CORS_PROXY_CONFIG__"',
     JSON.stringify(corsProxyConfig),
-  );
+  ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`);
 }
 
 const blobIframeInterceptorPath = path.resolve(

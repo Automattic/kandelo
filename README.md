@@ -290,6 +290,17 @@ production Vite build, and checks the result. Upload the contents of the
 output directory (default `apps/browser-demos/dist/`) so it is served at
 exactly the chosen base.
 
+WP Cloud can keep serving this static build with the portable PHP signalling
+endpoint (`--signalling-url /signalling/piplet.php`) and its chosen CORS proxy.
+Spacefast is an optional host: package the static build with its Functions
+proxy and database-backed signalling. An experimental separate-proxy layout
+uses an exact approved-Referer list. Either host can select that proxy
+with `--cors-proxy "${SPACEFAST_PROXY_ORIGIN}/?url="`, after setting
+`SPACEFAST_PROXY_ORIGIN` to its canonical origin. See the
+[Spacefast quickstart](#5-deploy-to-spacefast-optional) and
+[deployment recipes](apps/spacefast-cors-proxy/README.md#combined-kandelo-site)
+for both layouts, access requirements and the rate-limit policy.
+
 Production output is bound to the absolute prefix selected at build time. The
 equivalent manual steps, here building separate distributions for `/a/` and
 `/candidate-b/`, are:
@@ -347,6 +358,37 @@ browser requests and Node.js-host networking are not filtered by this profile.
 Browser Kandelo supports local loopback and virtual machine-to-machine UDP/TCP. External raw TCP/UDP sockets are still constrained by the browser sandbox and require fetch, service-worker, proxy, or future WebRTC-backed transports behind the POSIX socket layer.
 
 The browser UI uses pre-built **VFS images** - binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
+
+### 5. Deploy to Spacefast (optional)
+
+The normal build remains suitable for WP Cloud. The reusable
+[`scripts/deploy-spacefast.mjs`](scripts/deploy-spacefast.mjs) script can
+build and host the app, CORS proxy and signalling together on Spacefast.
+Use Node 24 and the normal build prerequisites. For publication, separately
+install the [official Spacefast CLI](https://spacefast.com/docs/cli/),
+sign in with `sf auth login`, and choose an existing Space. See the
+[full deployment guide](apps/spacefast-cors-proxy/README.md#combined-kandelo-site)
+for first-Space setup.
+
+Run from the repository root:
+
+```bash
+# Set KANDELO_SPACE_URL to your selected Space's HTTPS origin, with no
+# trailing slash or path. The target is required; saved selections are ignored.
+node scripts/deploy-spacefast.mjs --space "$KANDELO_SPACE_URL" --publish
+```
+
+Omit `--publish` to prepare a bundle and print its exact publish command.
+Use `--dry-run` instead for the CLI's local checks without upload. These are
+alternative modes; each builds a fresh bundle. The script never installs
+tools, signs in, creates a Space or changes access settings.
+
+Publication updates that Space's live version and preserves its
+access settings. Both clients must have access to a private Space. The
+Space's database is supplied automatically; the services create their tables
+on first use. Reload existing tabs after deploying the new proxy protocol.
+See the full deployment guide for custom approved origins, platform limits
+and the experimental separate proxy.
 
 ## Porting Software
 

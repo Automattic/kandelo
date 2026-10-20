@@ -83,6 +83,7 @@ changes, package artifacts, or performance claims.
 | Browser demos, VFS images, sharing, users | `docs/agent-guidance/browser-and-user.md` | `docs/browser-support.md` |
 | Performance claims and benchmarks | `docs/agent-guidance/performance.md` | `docs/profiling.md` |
 | Dev shell, docs, PR/final reports | `docs/agent-guidance/build-docs-and-prs.md` | `docs/repository-organization.md`, `README.md` |
+| Optional Spacefast deployment, publication and examples | `docs/agent-guidance/spacefast-deployment.md` | `apps/spacefast-cors-proxy/README.md`, `.agents/skills/deploying-kandelo-to-spacefast/SKILL.md` |
 
 ## Validation Contract
 

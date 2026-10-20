@@ -2,6 +2,11 @@
 
 ## Build And Dev Shell
 
+For optional Spacefast packaging or publishing, also read
+[spacefast-deployment.md](spacefast-deployment.md). Use its reusable script
+and explicit target selection; do not place an operator's personal deployment
+URLs or account identifiers in tracked examples, fixtures or agent skills.
+
 The build environment is part of the platform contract. Build and verification
 commands should run from repo-declared tools, not undeclared host state.
 

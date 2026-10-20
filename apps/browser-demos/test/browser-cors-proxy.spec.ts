@@ -4,6 +4,203 @@ import type { AddressInfo } from "node:net";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { resolveBinary } from "../../../host/src/binary-resolver";
+import { createHmac } from "node:crypto";
+import { createCorsProxy } from "../../spacefast-cors-proxy/src/proxy.ts";
+import { createDatabaseRateLimit } from "../../spacefast-cors-proxy/src/rate-limit.ts";
+import { createProxySessionTransport } from "../../../host/src/networking/cors-proxy-session";
+
+test("Spacefast quota sessions survive cookie-free requests, reload and service-worker reprojection", async ({ page }) => {
+  const { build } = await import("esbuild");
+  const client = await build({ stdin: { contents: `export { createBrowserLazyFetcher } from "./host/src/vfs/browser-lazy-fetcher.ts";
+export { BrowserCorsProxy } from "./host/src/networking/browser-cors-proxy.ts";`,
+    resolveDir: fileURLToPath(new URL("../../../", import.meta.url)) }, bundle: true,
+    write: false, format: "esm", platform: "browser" });
+  let appOrigin = "", proxyOrigin = "", issued = 0, spent = 0, remaining = 1000;
+  const secret = "a1".repeat(32);
+  const db = { prepare(sql: string) {
+    const statement = { bind() { return statement; }, async all() {
+      if (sql.startsWith("SELECT secret")) return { results: [{ secret }] };
+      if (sql.startsWith("UPDATE")) return { meta: { changes: remaining-- > 0 ? 1 : 0 } };
+      return { success: true };
+    } }; return statement;
+  } };
+  const proxy = createServer(async (request, response) => {
+    try {
+      expect(request.headers.cookie).toBeUndefined();
+      if (request.url === "/cors-proxy-session") {
+        expect(request.headers.referer).toBe(appOrigin + "/"); issued++;
+        const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+        const unsigned = `v1.${"12".repeat(16)}.${expiresAt}`;
+        const signature = createHmac("sha256", Buffer.from(secret, "hex"))
+          .update(`kandelo-cors-proxy\n${proxyOrigin}\n${unsigned}`).digest("hex");
+        response.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": appOrigin, "Cache-Control": "no-store" });
+        response.end(JSON.stringify({ token: unsigned + "." + signature, expiresAt })); return;
+      }
+      const chunks = []; for await (const chunk of request) chunks.push(chunk);
+      const handler = createCorsProxy({ env: { CORS_PROXY_ALLOWED_REFERER_ORIGINS: appOrigin },
+        rateLimit: createDatabaseRateLimit(db), fetch: async (_url, init) => {
+          expect(new Headers(init.headers).has("X-Kandelo-Proxy-Session")).toBe(false);
+          expect(new Headers(init.headers).has("cookie")).toBe(false); spent++;
+          const body = init.body ? await new Response(init.body).text() : "asset bytes";
+          return new Response(body, { headers: { "X-Kandelo-Proxy-Session": "required" } });
+        } });
+      const result = await handler(new Request(proxyOrigin + request.url, { method: request.method,
+        headers: request.headers as Record<string, string>, ...(chunks.length
+          ? { body: Buffer.concat(chunks), duplex: "half" } : {}) }));
+      response.writeHead(result.status, Object.fromEntries(result.headers)); response.end(Buffer.from(await result.arrayBuffer()));
+    } catch (error) { response.writeHead(500); response.end(String(error)); }
+  });
+  const rawWorker = await readFile(serviceWorkerPath, "utf8");
+  const config = () => ({ url: proxyOrigin + "/cors-proxy?url=", allowedRequestHeaderNames: ["accept", "content-type"], allowAnonymousGetHeaderOmission: true });
+  const app = createServer((request, response) => {
+    if (request.url === "/client.js") { response.writeHead(200, { "Content-Type": "text/javascript" }); response.end(client.outputFiles[0].text); }
+    else if (request.url === "/service-worker.js") {
+      response.writeHead(200, { "Content-Type": "text/javascript" });
+      response.end(rawWorker.replace('"__CORS_PROXY_CONFIG__"', JSON.stringify(config()))
+        .replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`));
+    } else { response.writeHead(200, { "Content-Type": "text/html" }); response.end('<!doctype html><title>Quota session fixture</title>'); }
+  });
+  try {
+    proxyOrigin = await listen(proxy); appOrigin = await listen(app);
+    await page.goto(appOrigin);
+    const exercise = async () => page.evaluate(async ({ proxyUrl }) => {
+      const { createBrowserLazyFetcher, BrowserCorsProxy } = await import("/client.js");
+      const config = { url: proxyUrl, allowedRequestHeaderNames: ["accept", "content-type"], allowAnonymousGetHeaderOmission: true };
+      const lazy = createBrowserLazyFetcher(config);
+      const responses = await Promise.all(Array.from({ length: 4 }, () => lazy("https://public.example/asset")));
+      const http = new BrowserCorsProxy(config);
+      const posted = await http.fetch({ method: "POST", headers: [["Content-Type", "text/plain"]], body: "git upload bytes", targetUrl: "https://public.example/post" });
+      return { bodies: await Promise.all(responses.map(r => r.text())), post: await posted.text() };
+    }, { proxyUrl: config().url });
+    expect(await exercise()).toEqual({ bodies: Array(4).fill("asset bytes"), post: "git upload bytes" });
+    expect(issued).toBe(1); expect(spent).toBe(5);
+    await page.reload();
+    expect(await exercise()).toEqual({ bodies: Array(4).fill("asset bytes"), post: "git upload bytes" });
+    expect(issued).toBe(1); expect(spent).toBe(10);
+    await page.evaluate(async () => {
+      await navigator.serviceWorker.register("/service-worker.js", { scope: "/" }); await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) await new Promise<void>(resolve => navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true }));
+    });
+    expect(await exercise()).toEqual({ bodies: Array(4).fill("asset bytes"), post: "git upload bytes" });
+    expect(issued).toBe(1); expect(spent).toBe(15);
+    remaining = 0;
+    expect(await page.evaluate(async url => { const r = await fetch(url); return { status: r.status, retry: r.headers.get("Retry-After") }; }, config().url + encodeURIComponent("https://public.example/exhausted")))
+      .toEqual({ status: 429, retry: "1" });
+    expect(spent).toBe(15);
+  } finally { await Promise.all([close(app), close(proxy)]); }
+});
+
+test.describe("lazy artifact proxy authentication", () => {
+  test.use({ serviceWorkers: "allow" });
+  test("lazy assets authenticate only to a configured same-origin proxy", async ({ page }) => {
+    const { build } = await import("esbuild");
+    const modulePath = fileURLToPath(new URL("../../../host/src/vfs/browser-lazy-fetcher.ts", import.meta.url));
+    const bundle = await build({ entryPoints: [modulePath], bundle: true, write: false,
+      format: "esm", platform: "browser" });
+    const rawServiceWorker = await readFile(serviceWorkerPath, "utf8");
+    let origin = "";
+    let externalOrigin = "";
+    const browserErrors: string[] = [];
+    page.on("console", message => {
+      if (message.type() === "error") browserErrors.push(message.text());
+    });
+    const observed: Array<{ url: string; cookie?: string; referer?: string }> = [];
+    const proxy = (privateProxy: boolean) => createServer((request, response) => {
+      if (request.url === "/") {
+        response.writeHead(200, { "Content-Type": "text/html",
+          "Set-Cookie": "private-space-session=fixture-session; Path=/; HttpOnly; SameSite=Lax",
+          "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" });
+        response.end('<!doctype html><title>Private proxy fixture</title><link rel="icon" href="data:,">');
+      } else if (request.url === "/fetcher.js") {
+        response.writeHead(200, { "Content-Type": "text/javascript" });
+        response.end(bundle.outputFiles[0].text);
+      } else if (request.url === "/service-worker.js") {
+        response.writeHead(200, { "Content-Type": "text/javascript",
+          "Cross-Origin-Embedder-Policy": "require-corp" });
+        response.end(rawServiceWorker.replace('"__CORS_PROXY_CONFIG__"', JSON.stringify({
+          url: `${origin}/proxy?url=`, allowedRequestHeaderNames: ["accept", "content-type"],
+          allowAnonymousGetHeaderOmission: true,
+        })));
+      } else if (!request.url?.startsWith("/proxy?")) {
+        response.writeHead(404); response.end();
+      } else {
+        const url = new URL(request.url!, privateProxy ? origin : externalOrigin);
+        observed.push({ url: url.href, cookie: request.headers.cookie, referer: request.headers.referer });
+        response.setHeader("Access-Control-Allow-Origin", request.headers.origin ?? origin);
+        response.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        response.setHeader("Cache-Control", "no-store");
+        if (privateProxy && !request.headers.cookie?.includes("private-space-session=fixture-session")) {
+          response.writeHead(403); response.end("private proxy requires a session");
+        } else if (url.searchParams.get("url")?.endsWith("/redirect")) {
+          response.writeHead(302, { Location: `${externalOrigin}/proxy?url=https://cdn.example.test/asset` });
+          response.end();
+        } else {
+          response.end("verified fixture bytes");
+        }
+      }
+    });
+    const sameOriginProxy = proxy(true);
+    const externalProxy = proxy(false);
+    try {
+      origin = await listen(sameOriginProxy);
+      externalOrigin = await listen(externalProxy);
+      await page.goto(origin);
+      const results = await page.evaluate(async ({ origin, externalOrigin }) => {
+        const { createBrowserLazyFetcher } = await import(`${origin}/fetcher.js`);
+        const results = [];
+        for (const [proxyOrigin, asset] of [[origin, "asset"], [externalOrigin, "asset"], [origin, "redirect"]]) {
+          const fetcher = createBrowserLazyFetcher({ url: `${proxyOrigin}/proxy?url=`,
+            allowedRequestHeaderNames: [], allowAnonymousGetHeaderOmission: true });
+          const response = await fetcher(`https://cdn.example.test/${asset}`, { credentials: "omit" });
+          results.push({ status: response.status, body: await response.text() });
+        }
+        return results;
+      }, { origin, externalOrigin }).catch(error => {
+        throw new Error(JSON.stringify({ error: String(error), browserErrors, observed }));
+      });
+      expect(results, JSON.stringify(observed)).toEqual(Array.from({ length: 3 }, () => ({ status: 200, body: "verified fixture bytes" })));
+      expect(observed).toHaveLength(4);
+      for (const request of observed) {
+        expect(request.referer).toBe(origin + "/");
+        if (new URL(request.url).origin === origin) {
+          expect(request.cookie).toContain("private-space-session=fixture-session");
+        } else {
+          expect(request.cookie).toBeUndefined();
+        }
+      }
+      // Production reprojects even already-proxied requests in the service
+      // worker. Exercise that second authority with real cookies too.
+      observed.length = 0;
+      await page.evaluate(async () => {
+        await navigator.serviceWorker.register("/service-worker.js", { scope: "/" });
+        await navigator.serviceWorker.ready;
+        if (!navigator.serviceWorker.controller) {
+          await new Promise<void>(resolve => navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true }));
+        }
+      });
+      const controlledResults = await page.evaluate(async origin => {
+        const { createBrowserLazyFetcher } = await import(`${origin}/fetcher.js`);
+        const fetcher = createBrowserLazyFetcher({ url: `${origin}/proxy?url=`,
+          allowedRequestHeaderNames: [], allowAnonymousGetHeaderOmission: true });
+        const responses = [
+          await fetcher("https://cdn.example.test/asset", { credentials: "omit" }),
+          await fetch("https://cdn.example.test/direct", { credentials: "omit" }),
+          await fetcher("https://cdn.example.test/redirect", { credentials: "omit" }),
+        ];
+        return Promise.all(responses.map(async response => ({ status: response.status, body: await response.text() })));
+      }, origin);
+      expect(controlledResults).toEqual(Array.from({ length: 3 }, () => ({ status: 200, body: "verified fixture bytes" })));
+      expect(observed).toHaveLength(4);
+      for (const request of observed) {
+        expect(request.referer).toBe(origin + "/");
+        expect(request.cookie).toBe(new URL(request.url).origin === origin
+          ? "private-space-session=fixture-session" : undefined);
+      }
+    } finally {
+      await Promise.all([close(sameOriginProxy), close(externalProxy)]);
+    }
+  });
+});
 
 const curlPath = resolveBinary("programs/curl.wasm");
 const wgetPath = resolveBinary("programs/wget.wasm");
@@ -216,6 +413,8 @@ test("Vite serves a service worker with the complete proxy profile", async ({
   const source = await response.text();
   expect(source).not.toContain("__CORS_PROXY_CONFIG__");
   expect(source).not.toContain("__CORS_PROXY_URL__");
+  expect(source).not.toContain("__CORS_PROXY_SESSION_TRANSPORT__");
+  expect(source).toContain("kandelo-proxy-sessions-v1");
   expect(source).toContain(
     '"allowedRequestHeaderNames":["accept","content-type","git-protocol","range","wp_blog","wp_install"]',
   );
@@ -238,7 +437,17 @@ test("service worker projects both configured proxy boundaries", async ({
     url: `${proxyRoot}/?`,
     ...EFFECTIVE_PROXY_CONFIG,
   };
-  const serviceWorker = rawServiceWorker.replace(
+  // Browser protocols differ in whether service-worker console events reach
+  // Playwright. Read this diagnostic from the worker itself in every engine.
+  const diagnosticProbe = `
+var testProxyWarnings = [];
+var testOriginalWarn = console.warn;
+console.warn = function () { testProxyWarnings.push(Array.from(arguments).join(" ")); testOriginalWarn.apply(console, arguments); };
+self.addEventListener("message", function (event) {
+  if (event.data === "test-proxy-warnings" && event.ports[0]) event.ports[0].postMessage(testProxyWarnings);
+});
+`;
+  const serviceWorker = diagnosticProbe + rawServiceWorker.replace(
     '"__CORS_PROXY_CONFIG__"',
     JSON.stringify(config),
   );
@@ -263,10 +472,8 @@ test("service worker projects both configured proxy boundaries", async ({
     </script>`);
   });
   const appRoot = await listen(app);
-  const warnings: string[] = [];
   const corsErrors: string[] = [];
   context.on("console", (message) => {
-    if (message.type() === "warning") warnings.push(message.text());
     if (message.type() === "error" && /cors/i.test(message.text())) {
       corsErrors.push(message.text());
     }
@@ -364,6 +571,11 @@ test("service worker projects both configured proxy boundaries", async ({
     });
     expect(actual[2]?.headers["content-type"]).toBe("application/json");
     expect(actual[3]?.headers["git-protocol"]).toBe("version=2");
+    const warnings = await page.evaluate(() => new Promise<string[]>(resolve => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = event => { channel.port1.close(); resolve(event.data); };
+      navigator.serviceWorker.controller!.postMessage("test-proxy-warnings", [channel.port2]);
+    }));
     expect(
       warnings.filter((message) =>
         message.includes(
