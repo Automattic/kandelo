@@ -2103,10 +2103,13 @@ mounts are `nosuid`. Image origin, mutability, and first-party status do not
 grant or remove authority: root ownership, inode mode, and the mount flag are
 authoritative. A custom image's guest root can therefore install, replace, or
 create set-ID programs without acquiring any host privilege. One rule is
-about the bytes rather than the mount: a deferred file whose bytes arrive
-without a digest to check them against loses its set-ID bits when it is
-materialized, so a fetched binary can never become root on the strength of
-its length alone.
+about the bytes rather than the mount: a deferred file whose bytes nothing
+can check loses its set-ID bits when the image is loaded, so a fetched binary
+can never become root on the strength of its length alone. A file is
+checkable when the image declares its digest or, for a lazy-archive member,
+its archive's digest: the kernel refuses an archive whose fetched bytes fail
+that digest before extracting any member. The shell image's set-group-ID
+`/usr/bin/nethack` is a member of a verified archive.
 
 Guest-visible VFS numbers come from `crates/shared` and are recorded under
 `vfs_metadata` in `abi/snapshot.json`. The generated

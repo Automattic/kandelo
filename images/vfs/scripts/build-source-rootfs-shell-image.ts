@@ -32,6 +32,7 @@ import {
 } from "./vfs-image-helpers";
 import { SHELL_LAZY_BINARY_SPECS } from "../lib/init/shell-binaries";
 import {
+  NETHACK_PLAYGROUND,
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
@@ -1104,16 +1105,22 @@ function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   for (const path of [
     "/etc/gitconfig",
     "/etc/profile",
-    "/home/.nethack/perm",
-    "/home/.nethack/record",
+    `${NETHACK_PLAYGROUND}/perm`,
+    `${NETHACK_PLAYGROUND}/record`,
   ]) {
     fs.stat(path);
   }
-  const playground = fs.stat("/home/.nethack");
+  // Group-owned state written only through the set-group-ID binary, so every
+  // user can save and none can edit another's game.
+  const nethack = fs.stat("/usr/bin/nethack");
+  const playground = fs.stat(NETHACK_PLAYGROUND);
+  const save = fs.stat(`${NETHACK_PLAYGROUND}/save`);
   if (
-    playground.uid !== 1000 ||
-    playground.gid !== 1000 ||
-    (playground.mode & 0o777) !== 0o777
+    nethack.uid !== 0 ||
+    (nethack.mode & 0o7777) !== 0o2755 ||
+    [playground, save].some((dir) =>
+      dir.uid !== 0 || dir.gid !== nethack.gid || (dir.mode & 0o7777) !== 0o2775
+    )
   ) {
     throw new Error("source-rootfs shell lost the NetHack playground contract");
   }

@@ -126,6 +126,14 @@ async function writeRootfs(
   );
   ensureDirRecursive(fs, "/bin");
   ensureDirRecursive(fs, "/etc/kandelo");
+  // The real rootfs group database: the shell composer resolves NetHack's
+  // `games` group from it.
+  writeVfsBinary(
+    fs,
+    "/etc/group",
+    new Uint8Array(readFileSync(join(repoRoot, "images/rootfs/etc/group"))),
+    0o644,
+  );
   fs.symlink("/usr/bin/bash", "/bin/bash");
   // Every Kandelo rootfs also binds bash as /bin/sh (images/rootfs/PACKAGES.toml
   // `aliases`), and the shell image builder asserts all four names.
@@ -804,11 +812,24 @@ describe("canonical source-rootfs shell", () => {
     // 24-bit color keeps ELinks's menus readable under themes that recolor
     // the 16 base palette entries (the default Kandelo theme does).
     expect(elinksConf).toContain("set terminal.xterm-256color.colors = 4");
-    expect(fs.stat("/home/.nethack")).toMatchObject({
-      uid: 1000,
-      gid: 1000,
-    });
-    expect(fs.stat("/home/.nethack").mode & 0o777).toBe(0o777);
+    // NetHack's shared playground, installed as Debian and Fedora do: group
+    // `games` owns the state and the set-group-ID binary is the only writer.
+    const games = text(readVfsFile(fs, "/etc/group"))
+      .split("\n")
+      .find((line) => line.startsWith("games:"));
+    expect(games).toBe("games:x:60:");
+    expect(fs.stat("/usr/bin/nethack")).toMatchObject({ uid: 0, gid: 60 });
+    expect(fs.stat("/usr/bin/nethack").mode & 0o7777).toBe(0o2755);
+    for (const dir of ["/var/games/nethack", "/var/games/nethack/save"]) {
+      expect(fs.stat(dir), dir).toMatchObject({ uid: 0, gid: 60 });
+      expect(fs.stat(dir).mode & 0o7777, dir).toBe(0o2775);
+    }
+    for (const name of ["perm", "record", "logfile", "xlogfile"]) {
+      const file = `/var/games/nethack/${name}`;
+      expect(fs.stat(file), file).toMatchObject({ uid: 0, gid: 60 });
+      expect(fs.stat(file).mode & 0o7777, file).toBe(0o664);
+    }
+    expect(() => fs.stat("/home/.nethack")).toThrow();
 
     // The quake basedir and its id1 game dir must exist and be writable by the
     // unprivileged demo user: the profile stages quake106.zip into the basedir,

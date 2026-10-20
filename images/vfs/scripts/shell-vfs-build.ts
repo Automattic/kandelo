@@ -31,6 +31,7 @@ import {
 } from "../lib/init/shell-binaries";
 import {
   displacePosixUtilsLiteManApplet,
+  installNethackGames,
   populateTerminfoDatabase,
   registerDeclaredShellLazyArchive,
   registerShellProfileScripts,
@@ -486,6 +487,7 @@ export function populateShellEnvironment(
     if (spec.id === "man") displacePosixUtilsLiteManApplet(fs);
     registerDeclaredShellLazyArchive(fs, spec, resolveArtifact);
   }
+  installNethackGames(fs);
   populateDemoExtendedSymlinks(fs);
   if (opts.eagerBinaries) populateDemoExtendedBinaries(fs, resolveArtifact);
 }
