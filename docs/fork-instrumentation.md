@@ -672,8 +672,9 @@ A function whose scalar spill region is at least
 per-activation scratch region carved from the guest shadow stack instead
 of declaring locals:
 
-- Entry: `SP -= scratch_size; base = SP` (one added pointer-width local),
-  the same discipline as `crates/wasm-local-root-spill`. `SP = base +
+- Entry: `SP -= scratch_size; base = SP` (one added pointer-width local,
+  saved in the frame like a user local), the same discipline as
+  `crates/wasm-local-root-spill`. `SP = base +
   scratch_size` is emitted before every function exit — returns, tail
   calls, br-to-entry, and uncaught throws including the postamble's
   private unwind throw — and `SP = base` is reseeded at catch landings to
@@ -685,21 +686,33 @@ of declaring locals:
   byte-for-byte (`scratch_off = node_off - spill_region_start`, offsets
   from `assign_local_offsets`). The postamble publishes the region into
   the reserved node with one `memory.copy` before commit, and the
-  rewind/abort preamble refills the freshly reserved scratch from the
-  selected node with one `memory.copy` after `frame_next`. Node payload
-  bytes are identical to the local-based shape, so the save-buffer format,
-  exports, imports, and host contract are unchanged — no ABI bump.
+  rewind/abort preamble restores `base` from the node and refills that
+  region from the selected node with one `memory.copy` after
+  `frame_next`. The payload is private to the module, so the extra
+  `base` scalar does not change the save-buffer format, exports, imports,
+  or host contract — no ABI bump.
 - Below-threshold functions keep the historical local-based shape;
   reference-typed spills always remain locals (recipe-vector path); the
   per-seq body-input-param locals are unaffected (re-set on every entry).
 
 `__stack_pointer` is a mutable scalar global, so the existing
 `wpk_fork_unwind_begin`/`wpk_fork_rewind_begin` global snapshot already
-captures and restores it; replayed prologues re-reserve fresh scratch
-below the restored fork-time SP exactly as LLVM's own SP-bumping frames
-do during replay, and reloads are base-relative into the refilled fresh
-region. A module without a locatable mutable `__stack_pointer` global of
-the module pointer width falls back to the local-based shape.
+captures and restores it. Replay must reuse the region the capturing
+activation had, not reserve a new one below the restored fork-time SP.
+Replay skips the LLVM prologues before a landing but runs the epilogues
+after it, so when a callee returns, SP is back at the value the
+capturing activation had. A region below the fork-time SP is then below
+SP, and a frame the function reserves after the landing (for example a
+shrink-wrapped prologue in a `_start` with `main` inlined) overlaps it:
+each spill store then overwrites that frame. Bash crashed this way when
+a machine checkpoint was captured during its startup `mmap`. The
+capturing activation's region is above every frame it called, and the
+copied or retained memory still holds it, so the restored `base` is
+valid in a fork child, a checkpoint restore and an abort replay. The
+release at exit then returns SP to the activation's entry value.
+`crates/fork-instrument/tests/scratch_spill_node.rs` covers this shape.
+A module without a locatable mutable `__stack_pointer` global of the
+module pointer width falls back to the local-based shape.
 
 Measured on the CPython stdlib import chain (2026-09-22,
 `KANDELO_NODE_WORKER_STACK_SIZE_MB` sweep): worker-stack requirement

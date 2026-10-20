@@ -11,7 +11,13 @@
 //!    produced (spill values land at their assigned frame offsets);
 //! 4. a fresh child instance replays the continuation from those nodes
 //!    (preamble node→scratch copy + scratch-based arg/carryover reloads)
-//!    and resumes at the fork call site with the correct state.
+//!    and resumes at the fork call site with the correct state;
+//! 5. the replayed caller keeps the scratch region it had when it
+//!    unwound. The callee's epilogue puts the shadow-stack pointer back
+//!    at the caller's capture-time value, so a frame the caller reserves
+//!    after the landing must not overlap the scratch its later spills
+//!    write, and the caller's exit must release the shadow stack to its
+//!    start.
 //!
 //! The callee keeps a below-threshold shape on purpose so the mixed
 //! Locals/Scratch mode interaction is exercised in one continuation.
@@ -34,6 +40,11 @@ const N_ARGS: usize = 33;
 const INPUT_BASE: usize = 0x1000;
 /// Where the fixture publishes its final result (clear of the inputs).
 const RESULT_ADDR: usize = 512;
+/// Bytes of the frame the caller reserves after the first landing, more
+/// than its scratch region and `$work`'s frame together.
+const LATE_FRAME_BYTES: usize = 512;
+/// The byte `run` fills its late frame with.
+const LATE_FRAME_FILL: u8 = 0x5a;
 
 fn scratch_fixture() -> String {
     let mut params = String::new();
@@ -58,14 +69,23 @@ fn scratch_fixture() -> String {
 (module
   (import "kernel" "kernel_fork" (func $fork (result i32)))
   (memory (export "memory") 8)
-  (global (export "__stack_pointer") (mut i32) (i32.const 32768))
+  (global $sp (export "__stack_pointer") (mut i32) (i32.const 32768))
 
   ;; Below-threshold fork-path callee: stays in the local-based shape.
-  (func $work{params} (result i64)
+  ;; Its LLVM-style frame is reserved before the fork and released after
+  ;; it, so replay skips the reserve and runs the release.
+  (func $work{params} (result i64) (local $fp i32)
+    (local.tee $fp (i32.sub (global.get $sp) (i32.const 16)))
+    global.set $sp
 {gets}{adds}
     call $fork
     i64.extend_i32_s
-    i64.add)
+    i64.add
+    (global.set $sp (i32.add (local.get $fp) (i32.const 16))))
+
+  (func $again (result i64)
+    call $fork
+    i64.extend_i32_s)
 
   (func (export "run") (result i64)
     ;; i64 carryover pushed before the call and consumed after it.
@@ -73,15 +93,42 @@ fn scratch_fixture() -> String {
 {args}    call $work
     i64.add
     local.set $total
+    ;; A frame reserved after the landing, as a shrink-wrapped LLVM
+    ;; prologue does, live across the second fork-path call.
+    (local.tee $fp (i32.sub (global.get $sp) (i32.const {late_frame_bytes})))
+    global.set $sp
+    (memory.fill (local.get $fp) (i32.const {late_frame_fill}) (i32.const {late_frame_bytes}))
+    ;; i64 carryover across the second fork-path call.
+    (i64.load (i32.const {carry2_addr}))
+    call $again
+    i64.add
+    local.get $total
+    i64.add
+    local.set $total
+    (block $done
+      (loop $next
+        (br_if $done (i32.ge_u (local.get $i) (i32.const {late_frame_bytes})))
+        (local.set $acc
+          (i64.add
+            (local.get $acc)
+            (i64.load (i32.add (local.get $fp) (local.get $i)))))
+        (local.set $i (i32.add (local.get $i) (i32.const 8)))
+        (br $next)))
+    (global.set $sp (i32.add (local.get $fp) (i32.const {late_frame_bytes})))
+    (local.set $total (i64.add (local.get $total) (local.get $acc)))
     (i64.store (i32.const {result_addr}) (local.get $total))
     local.get $total))
 "#,
         carry_addr = INPUT_BASE + 8 * N_ARGS,
+        carry2_addr = INPUT_BASE + 8 * (N_ARGS + 1),
         result_addr = RESULT_ADDR,
+        late_frame_bytes = LATE_FRAME_BYTES,
+        late_frame_fill = LATE_FRAME_FILL,
     )
     .replace(
         "(func (export \"run\") (result i64)",
-        "(func (export \"run\") (result i64) (local $total i64)",
+        "(func (export \"run\") (result i64) \
+         (local $total i64) (local $acc i64) (local $fp i32) (local $i i32)",
     )
 }
 
@@ -168,6 +215,8 @@ import {{ readFileSync }} from "node:fs";
 const N_ARGS = {N_ARGS};
 const INPUT_BASE = {INPUT_BASE};
 const RESULT_ADDR = {RESULT_ADDR};
+const LATE_FRAME_BYTES = {LATE_FRAME_BYTES};
+const LATE_FRAME_FILL = {LATE_FRAME_FILL}n;
 const ROOT = 0x10000;
 const SP_INIT = 32768n;
 
@@ -214,13 +263,20 @@ function importsFor(role) {{
 function seedInputs(memory) {{
   const view = new DataView(memory.buffer);
   let expected = 0n;
-  for (let i = 0; i <= N_ARGS; i++) {{
-    // Distinct, sign-bit-exercising values; index N_ARGS is the carryover.
+  for (let i = 0; i <= N_ARGS + 1; i++) {{
+    // Distinct, sign-bit-exercising values; indexes N_ARGS and N_ARGS + 1
+    // are the carryovers.
     const value = (BigInt(i + 1) * 0x0101010101n) ^ 0x8000000000000000n;
     view.setBigUint64(INPUT_BASE + 8 * i, value, true);
     expected = BigInt.asIntN(64, expected + BigInt.asIntN(64, value));
   }}
-  return expected; // sum of args + carryover (fork result added separately)
+  let fill = 0n;
+  for (let byte = 0; byte < 8; byte++) fill = (fill << 8n) | LATE_FRAME_FILL;
+  for (let slot = 0; slot < LATE_FRAME_BYTES / 8; slot++) {{
+    expected = BigInt.asIntN(64, expected + BigInt.asIntN(64, fill));
+  }}
+  // Sum of args, carryovers and the late frame; fork results added separately.
+  return expected;
 }}
 
 function spValue(instance) {{
@@ -252,7 +308,7 @@ function spValue(instance) {{
   const expectedSum = seedInputs(instance.exports.memory);
   for (let round = 0; round < 2; round++) {{
     const result = instance.exports.run();
-    const expected = BigInt.asIntN(64, expectedSum + 42n);
+    const expected = BigInt.asIntN(64, expectedSum + 42n + 42n);
     if (result !== expected) {{
       throw new Error(`normal round ${{round}}: got ${{result}}, expected ${{expected}}`);
     }}
@@ -306,11 +362,13 @@ if (frames.length !== 2) {{
 // frames[0] is the callee (leaf commits first); frames[1] is the caller.
 const callerFrame = frames[1];
 const view = new DataView(parent.exports.memory.buffer);
-// Caller payload: 16-byte header, one 8-byte user scalar ($total), then
-// the arg spills in call order, then the carryover — the same offsets
-// assign_local_offsets gives the local-based shape.
+// Caller payload: 16-byte header, the user scalars widest first ($total,
+// $acc, $fp, $i, then the scratch base), then the arg spills in call
+// order, then the carryovers — the same offsets assign_local_offsets
+// gives the local-based shape.
+const SPILLS_START = 16 + 8 * 2 + 4 * 3;
 for (let i = 0; i <= N_ARGS; i++) {{
-  const got = view.getBigUint64(callerFrame.payload + 24 + 8 * i, true);
+  const got = view.getBigUint64(callerFrame.payload + SPILLS_START + 8 * i, true);
   const want = view.getBigUint64(INPUT_BASE + 8 * i, true);
   if (got !== want) {{
     throw new Error(
@@ -341,6 +399,7 @@ const childRole = {{
       throw new Error("child replay must not commit a continuation frame");
     }}
     if (descriptor.module === "kernel" && descriptor.name === "kernel_fork") {{
+      if (child.exports.wpk_fork_state() === 0) return 5;
       if (child.exports.wpk_fork_state() !== 2) {{
         throw new Error("child did not reach fork while replaying");
       }}
@@ -358,7 +417,7 @@ const replayResult = child.exports.run();
 if (served !== frames.length) {{
   throw new Error(`child consumed ${{served}}/${{frames.length}} frames`);
 }}
-const expectedReplay = BigInt.asIntN(64, expectedSum + 7n);
+const expectedReplay = BigInt.asIntN(64, expectedSum + 7n + 5n);
 if (replayResult !== expectedReplay) {{
   throw new Error(`replay returned ${{replayResult}}, expected ${{expectedReplay}}`);
 }}
@@ -366,6 +425,9 @@ const stored = new DataView(child.exports.memory.buffer)
   .getBigUint64(RESULT_ADDR, true);
 if (stored !== BigInt.asUintN(64, expectedReplay)) {{
   throw new Error(`replay stored ${{stored}} at RESULT_ADDR, expected ${{expectedReplay}}`);
+}}
+if (spValue(child) !== SP_INIT) {{
+  throw new Error(`child shadow stack drifted after replay: SP=${{spValue(child)}}`);
 }}
 console.log("scratch spill roundtrip ok");
 "#,
