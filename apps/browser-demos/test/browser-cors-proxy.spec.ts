@@ -264,6 +264,7 @@ type TestRunnerWindow = Window & {
         allowAnonymousGetHeaderOmission: boolean;
         rangeRequestHeaderAlias?: string;
       } | null;
+      dnsAliases?: Record<string, string>;
     },
   ): Promise<TestResult>;
 };
@@ -920,20 +921,15 @@ test("guest HTTP uses the test runner's same-origin CORS proxy", async ({
     response.writeHead(200, { "Content-Type": "text/plain" });
     response.end("Kandelo CORS proxy regression\n");
   });
-  await new Promise<void>((resolve, reject) => {
-    upstream.once("error", reject);
-    upstream.listen(0, "::1", () => {
-      upstream.off("error", reject);
-      resolve();
-    });
-  });
+  const upstreamRoot = await listen(upstream);
 
   try {
-    const { port } = upstream.address() as AddressInfo;
-    // The trailing root dot avoids the guest's /etc/hosts localhost entry, so
-    // Kandelo delegates the connection to its browser backend. Node still
-    // resolves the proxy's upstream target to this test-only ::1 listener.
-    const targetUrl = `http://localhost.:${port}/probe`;
+    // The guest's own 127.0.0.1 is its loopback, so it names the test's
+    // server through a kernel DNS alias. The alias resolves to the server's
+    // literal address, so the proxy's upstream fetch needs no name lookup:
+    // the result cannot depend on the host's resolver, which can stall or
+    // fail while the machine's network configuration changes.
+    const upstreamName = "cors-proxy-upstream.test";
     const wgetBytes = Array.from(await readFile(wgetPath));
 
     await page.goto("/pages/test-runner/?minimal=1", {
@@ -948,13 +944,20 @@ test("guest HTTP uses the test runner's same-origin CORS proxy", async ({
     ).toBeNull();
 
     const result = await page.evaluate(
-      async ({ bytes, url }) =>
+      async ({ bytes, url, aliases }) =>
         (window as unknown as TestRunnerWindow).__runTest(
           new Uint8Array(bytes).buffer,
-          ["wget", "-qO-", url],
+          // -S and --content-on-error put the status line and an error body
+          // in the failure message, so a failure names its cause.
+          ["wget", "-S", "--content-on-error", "-O-", url],
           60_000,
+          { dnsAliases: aliases },
         ),
-      { bytes: wgetBytes, url: targetUrl },
+      {
+        bytes: wgetBytes,
+        url: `http://${upstreamName}/probe`,
+        aliases: { [upstreamName]: upstreamRoot },
+      },
     );
 
     expect(
@@ -964,9 +967,7 @@ test("guest HTTP uses the test runner's same-origin CORS proxy", async ({
     expect(result.stdout).toBe("Kandelo CORS proxy regression\n");
     expect(upstreamRequests).toEqual(["/probe"]);
   } finally {
-    await new Promise<void>((resolve, reject) => {
-      upstream.close((error) => (error ? reject(error) : resolve()));
-    });
+    await close(upstream);
   }
 });
 

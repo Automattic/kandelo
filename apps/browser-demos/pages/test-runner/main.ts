@@ -91,6 +91,9 @@ declare global {
         env?: string[];
         ptyInput?: PtyInput;
         corsProxy?: BrowserCorsProxyConfig | null;
+        /** Guest host names mapped to exact upstream URLs (see
+         *  TlsNetworkBackendOptions.dnsAliases). */
+        dnsAliases?: Record<string, string>;
         /** Read the kernel worker's module cache counters before teardown. */
         wasmModuleCacheStats?: boolean;
       },
@@ -381,6 +384,7 @@ async function init() {
       env?: string[];
       ptyInput?: PtyInput;
       corsProxy?: BrowserCorsProxyConfig | null;
+      dnsAliases?: Record<string, string>;
       wasmModuleCacheStats?: boolean;
     },
   ) => {
@@ -428,6 +432,7 @@ async function init() {
       // this runner's usual explicit proxy, whose requests the service worker
       // must preserve rather than treating them as unwrapped guest traffic.
       corsProxy: options?.corsProxy === null ? undefined : options?.corsProxy ?? corsProxy,
+      dnsAliases: options?.dnsAliases,
       onStdout: (data: Uint8Array) => {
         const text = new TextDecoder().decode(data);
         stdout += text;

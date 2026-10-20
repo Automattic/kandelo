@@ -1491,7 +1491,11 @@ its `Content-Range` would describe bytes the relay does not send. The 100 MiB
 cap bounds the bytes one response actually carries, so a 16-byte slice of a
 4 GiB file is relayed, while an undeclared body that outgrows the cap is cut
 off mid-transfer. A client disconnect cancels the upstream request, before or
-after response headers.
+after response headers. When the upstream fetch itself fails, the `502` body
+names why (for example `getaddrinfo ENOTFOUND` or `connect ECONNREFUSED`) and
+the target's origin, never its path or query, and the dev server logs the same
+line, so a guest's failed download says whether a name, a connection or a
+timeout failed.
 
 **Cancellation through the service worker.** Cancelling a proxied read
 reaches the relay once response headers have arrived: cancelling the body
