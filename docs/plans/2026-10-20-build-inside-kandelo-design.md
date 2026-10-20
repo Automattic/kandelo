@@ -174,16 +174,19 @@ including programs that call `fork()`.
   `wasm32-unknown-kandelo-std` with `sdk/bin/wasm32posix-cargo`. The
   tool starts `wasm-opt` through `std::process`, which imports
   `kernel_fork`, so the tool itself is fork-instrumented on the host when
-  it is packaged. A new `--drop-compiler-facts` option removes
-  `kandelo.calltypes*` sections, replacing the host's `llvm-objcopy`
-  step, which the guest does not have. Acceptance: guest instrumentation
-  of a fixture produces the same bytes as host instrumentation.
+  it is packaged. It already removes the `kandelo.calltypes*` sections
+  from every module it writes, and writes a module that does not fork
+  back unchanged otherwise, so the guest needs no `llvm-objcopy`.
+  Acceptance: guest instrumentation of a fixture produces the same bytes
+  as host instrumentation.
 - **Guest wrapper post-link step.** After `wasm-ld`, the wrapper:
-  - runs `wasm-fork-instrument --drop-compiler-facts` for modules that
-    import `kernel.kernel_fork` (which runs `wasm-opt -Os`, as on the
-    host);
-  - for other modules, runs the `wasm-opt` command the host SDK would
-    run for the requested `-O` level, and drops compiler facts;
+  - runs `wasm-fork-instrument --no-facts` on every output. A module
+    that imports `kernel.kernel_fork` is instrumented and then optimized
+    with `wasm-opt -Os`, as on the host. Any other module only loses its
+    compiler-facts sections. `--no-facts` because the guest compiler
+    writes no code hash, so the facts could never bind;
+  - for modules that do not fork, then runs the `wasm-opt` command the
+    host SDK would run for the requested `-O` level;
   - adds `-D__unix__=1 -D__unix=1` to compiles, matching
     `sdk/src/lib/flags.ts`.
 - **Bundle.** `kandelo-sdk.zip` gains `wasm-opt` and
