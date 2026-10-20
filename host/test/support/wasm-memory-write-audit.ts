@@ -8298,6 +8298,11 @@ function isOrdinaryTestHarness(relativePath: string): boolean {
     return false;
   }
   return (
+    // Test-runner configs extend Vitest/Vite's large configuration graphs;
+    // they are harnesses, not guest-memory consumers. Keep this exact so a
+    // similarly named production module remains inside the ownership audit.
+    relativePath === "host/vitest.config.ts" ||
+    relativePath === "host/vitest.browser-memory.config.ts" ||
     relativePath.startsWith("host/test/") ||
     relativePath.includes("/test/") ||
     /\.(?:test|spec)\.(?:[cm]?[jt]s|[jt]sx)$/.test(relativePath)

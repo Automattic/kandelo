@@ -325,7 +325,7 @@ const ShellTerminalHost: React.FC<{
         <PreBoot status={status} />
       )}
       {attachError && (
-        <div style={{ color: "var(--k-err)", padding: "8px 12px", fontFamily: "var(--k-font-mono)", fontSize: 11 }}>
+        <div style={{ color: "var(--k-err-ink)", padding: "8px 12px", fontFamily: "var(--k-font-mono)", fontSize: 11 }}>
           attachPty failed: {attachError}
         </div>
       )}
@@ -346,7 +346,7 @@ const PreBoot: React.FC<{ status: string }> = ({ status }) => {
     <div className="kshell-placeholder">
       <pre style={{
         margin: "0 0 10px",
-        color: "var(--k-accent-fire)",
+        color: "var(--k-accent-ink)",
         fontFamily: "inherit",
         fontSize: 11,
         lineHeight: 1.1,

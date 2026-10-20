@@ -1,3 +1,4 @@
+import { EXIT_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -13,12 +14,14 @@ import {
 import {
   ABI_SYSCALLS,
   CHANNEL_STATUS_PENDING,
+  CHANNEL_STATUS_COMPLETE,
   CH_ARGS,
   CH_ARGS_COUNT,
   CH_ARG_SIZE,
   CH_ERRNO,
   CH_RETURN,
   CH_SIG_HANDLER,
+  CH_SIG_SI_CODE,
   CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
@@ -90,6 +93,7 @@ function makeHarness(): EntryHarness {
     kernel_get_process_exit_signal: () => 0,
     kernel_get_process_exit_status: () => -1,
     kernel_handle_channel: handleChannel,
+    kernel_drain_wakeup_events: () => 0,
     kernel_inject_mouse_event: () => 0,
     kernel_set_current_tid: () => 0,
   };
@@ -196,6 +200,34 @@ function mutableState(harness: EntryHarness) {
 }
 
 describe("teardown and pipe notifications at the kernel entry gate", () => {
+  it.each(["all", "pid"])("%s teardown releases engine futex waiters before dropping their bookkeeping", async mode => {
+    const harness = makeHarness();
+    const state = harness.worker as unknown as {
+      pendingFutexWaits: Map<TestChannel, { retire: () => void }>;
+    };
+    const words = new Int32Array(harness.channel.memory.buffer);
+    const index = words.length - 1;
+    const wait = Atomics.waitAsync(words, index, 0);
+    expect(wait.async).toBe(true);
+    const retire = vi.fn(() => { Atomics.notify(words, index); });
+    const sibling = { ...harness.channel, pid: PID + 1 };
+    const retireSibling = vi.fn();
+    state.pendingFutexWaits.set(harness.channel, { retire });
+    state.pendingFutexWaits.set(sibling, { retire: retireSibling });
+    try {
+      await (mode === "all"
+        ? harness.worker.killAllBlockedForTeardown()
+        : harness.worker.killBlockedProcessForTeardown(PID));
+      expect(retire).toHaveBeenCalledOnce();
+      expect(retireSibling).toHaveBeenCalledTimes(mode === "all" ? 1 : 0);
+      expect(state.pendingFutexWaits.has(harness.channel)).toBe(false);
+      expect(state.pendingFutexWaits.has(sibling)).toBe(mode === "pid");
+      await expect(wait.value).resolves.toBe("ok");
+    } finally {
+      Atomics.notify(words, index);
+    }
+  });
+
   it("defers teardown behind an active export and resolves after its wake publication", async () => {
     const harness = makeHarness();
     const getExitStatus = vi.fn(() => -1);
@@ -230,6 +262,36 @@ describe("teardown and pipe notifications at the kernel entry gate", () => {
       -1,
       4,
     );
+  });
+
+  it.each(["all", "pid"])("%s teardown wakes an exited process without changing its recorded status", async mode => {
+    const harness = makeHarness();
+    const state = harness.worker as unknown as {
+      hostReaped: Set<number>;
+      processes: Map<number, unknown>;
+      activeChannels: TestChannel[];
+    };
+    state.hostReaped.add(PID);
+    const exitStatus = vi.fn(() => 0);
+    harness.implementations.kernel_get_process_exit_status = exitStatus;
+    const woken = await (mode === "all"
+      ? harness.worker.killAllBlockedForTeardown()
+      : harness.worker.killBlockedProcessForTeardown(PID));
+
+    expect(woken).toEqual(new Set([PID]));
+    expect(harness.channelView.getInt32(CH_STATUS, true)).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(harness.channelView.getBigInt64(CH_RETURN, true)).toBe(-1n);
+    expect(harness.channelView.getInt32(CH_ERRNO, true)).toBe(4);
+    expect(harness.channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    expect(harness.channelView.getUint32(CH_SIG_SI_CODE, true)).toBe(EXIT_RETIRE_SIGNAL_CODE);
+    expect(harness.completeChannel).not.toHaveBeenCalled();
+    expect(harness.handleChannel).not.toHaveBeenCalled();
+    expect(exitStatus()).toBe(0);
+
+    // Release the retired waitAsync listener after its registration disappears.
+    state.processes.clear();
+    state.activeChannels = [];
+    Atomics.notify(harness.channel.i32View, CH_STATUS / 4);
   });
 
   it("serializes interleaved readable and sequential writable retries", async () => {

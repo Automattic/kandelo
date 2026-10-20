@@ -248,6 +248,26 @@ earlier rename hint from accidentally covering the later write. A sentinel
 write can similarly establish that prior hints were delivered before a
 test asserts the absence of an unnecessary refresh.
 
+## Test reclamation in the realm that survives the operation
+
+A small view can keep a large shared Wasm reservation alive. A page-wide
+AudioContext can similarly keep disconnected processors alive after their
+machines exit, and removing a pending-wait map entry does not cancel the
+engine waiter. Counting workers or observing low RSS misses those owners.
+Correct reclamation requires both an ownership boundary and explicit ends
+for processors, waits, ports, and timers.
+
+Keep large guest address spaces inside disposable workers. Persistent
+browser/audio realms receive bounded independent device buffers or copied
+values. Test the actual messages as well as their declared types, and prove
+buffer independence rather than just checking the length of a subarray.
+Then repeat full machine switches in one page with real audio activation.
+Creating a fresh page or forcing GC after every cycle can make precisely
+this class of regression disappear from the test.
+
+The reusable local command and native Safari evidence requirements live in
+the [validation contract](agent-guidance/validation.md#browser-memory-regression-gate).
+
 ## Schedule observer work from real pending state
 
 A subscription says that someone wants updates. It does not mean that every

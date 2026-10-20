@@ -3261,6 +3261,13 @@ async function finishProcessExit(
     // termination is in flight those duplicate exits still need channel
     // completions, otherwise the worker can park in Atomics.wait with no
     // registered listener left to wake it.
+    // Required by JSC/Bun as well as Safari; V8 benefits from the same exact
+    // terminal fence instead of relying on forced Worker termination.
+    try {
+      await kernelWorker.killBlockedProcessForTeardown(pid);
+    } catch (error) {
+      console.warn(`[kernel-worker] pid=${pid} retirement wake failed: ${String(error)}`);
+    }
     const [workerQuiescent, threadsQuiescent] = await Promise.all([
       waitForWorkerQuiescence(
         info.workerQuiescence,

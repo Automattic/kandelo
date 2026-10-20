@@ -901,6 +901,7 @@ case "$suite" in
                     test/vfs-import-seal-boundary.spec.ts \
                     test/wasm-gc-reference-transport.spec.ts \
                     test/wasm-trap-signal.spec.ts \
+                    test/worker-exit-trap.spec.ts \
                     --project=chromium --project=firefox --project=webkit
         )
         ;;

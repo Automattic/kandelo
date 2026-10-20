@@ -101,7 +101,6 @@ import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import type { HostDiagnostic, HostDiagnosticMessage } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
-import type { PcmTransportDescriptor } from "./audio/pcm-transport";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { InputEvent } from "./input/input-source";
 import {
@@ -360,9 +359,9 @@ export interface AudioDrainMessage {
 }
 
 /**
- * Confirms that BrowserKernel dropped its own structured-clone Memory wrapper
+ * Confirms that BrowserKernel dropped its own generation-specific pixel buffer
  * and framebuffer-registry views for one exact execution generation. Callers
- * can retain a wrapper returned by getProcessMemory(), so this is not a
+ * can retain a display buffer, so this is not a
  * JavaScript-realm-wide garbage-collection claim.
  */
 export interface FbReleaseGenerationAckMessage {
@@ -451,6 +450,8 @@ export type MainToKernelMessage =
   | InputEventBatchInjectMessage
   | SetInputCanvasDimsMessage
   | AudioDrainMessage
+  | { type: "pcm_output_failed" }
+  | { type: "audio_snapshot"; requestId: number }
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
   | SetSyscallTraceMessage
@@ -466,8 +467,8 @@ export type MainToKernelMessage =
 
 export interface ReadyMessage {
   type: "ready";
-  /** Versioned PCM-only shared transport claimed by the kernel worker. */
-  pcmTransport?: PcmTransportDescriptor;
+  /** Forward directly to the AudioWorklet; never decode kernel memory here. */
+  pcmPort?: MessagePort;
 }
 
 export interface ExitMessage {
@@ -485,15 +486,7 @@ export interface ListenTcpMessage {
   port: number;
 }
 
-/**
- * Forwarded /dev/fb0 binding. Fired when a process mmaps the
- * framebuffer; the main thread builds a typed-array view over
- * `memory.buffer` at `[addr, addr+len)` and presents it on a canvas.
- *
- * `memory` is the process's WebAssembly.Memory — a SharedArrayBuffer
- * shared with the kernel worker. Sending the Memory across postMessage
- * is fine; both threads see the same SAB.
- */
+/** Display pixels only; guest address spaces stay in disposable Workers. */
 export interface FbBindMessage {
   type: "fb_bind";
   pid: number;
@@ -505,7 +498,7 @@ export interface FbBindMessage {
   h: number;
   stride: number;
   fmt: "BGRA32";
-  memory: WebAssembly.Memory;
+  pixels?: SharedArrayBuffer;
 }
 
 export interface FbUnbindMessage {
@@ -513,19 +506,6 @@ export interface FbUnbindMessage {
   pid: number;
   /** The exact execution generation whose binding was removed. */
   generation: number;
-}
-
-/**
- * Fired when a process's WebAssembly.Memory is replaced (memory.grow,
- * exec). The main-thread renderer must invalidate any cached view; the
- * `memory` reference is the new (post-grow) Memory.
- */
-export interface FbRebindMemoryMessage {
-  type: "fb_rebind_memory";
-  pid: number;
-  /** The exact execution generation whose Memory grew. */
-  generation: number;
-  memory: WebAssembly.Memory;
 }
 
 /**
@@ -546,7 +526,7 @@ export interface FbWriteMessage {
 
 /**
  * A process-generation teardown fence. The main thread first drops its
- * structured-clone Memory wrapper and cached framebuffer views, then replies
+ * generation-specific pixel buffer and cached display views, then replies
  * with FbReleaseGenerationAckMessage. The kernel worker does not classify a
  * framebuffer-exposed generation as exactly retired before this round trip.
  */
@@ -608,6 +588,7 @@ export interface VfsChangeMessage {
 
 export type KernelToMainMessage =
   | ReadyMessage
+  | { type: "audio_activity" }
   | InitErrorMessage
   | KernelFatalMessage
   | ResponseMessage
@@ -619,7 +600,6 @@ export type KernelToMainMessage =
   | ListenTcpMessage
   | FbBindMessage
   | FbUnbindMessage
-  | FbRebindMemoryMessage
   | FbWriteMessage
   | FbReleaseGenerationMessage
   | FbForgetGenerationMessage

@@ -16,7 +16,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { WASM_PAGE_SIZE } from "../src/constants";
 import type { HttpResponse } from "../src/networking";
-import { createPcmTransport } from "./pcm-test-helpers";
 
 const defaultArtifactModuleState = vi.hoisted(() => ({ loads: 0 }));
 vi.mock("../src/browser-kernel-default-artifacts", () => {
@@ -128,6 +127,9 @@ function browserAudioGlobals() {
   const port = {
     onmessage: null as ((event: MessageEvent) => void) | null,
     close: vi.fn(),
+    postMessage: vi.fn((message: { type: string }) => {
+      if (message.type === "release") queueMicrotask(() => port.onmessage?.({ data: { type: "released" } } as MessageEvent));
+    }),
   };
   const node = {
     port,
@@ -1302,11 +1304,7 @@ describe("BrowserKernel", () => {
     worker.simulateMessage({ type: "ready" });
     await initPromise;
 
-    const memory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-      shared: true,
-    });
+    const memory = new SharedArrayBuffer(WASM_PAGE_SIZE);
     (
       kernel as unknown as {
         handleWorkerMessage(message: unknown): void;
@@ -1321,7 +1319,7 @@ describe("BrowserKernel", () => {
       h: 128,
       stride: 512,
       fmt: "BGRA32",
-      memory,
+      pixels: memory,
     });
     (
       kernel as unknown as {
@@ -1340,7 +1338,7 @@ describe("BrowserKernel", () => {
     await destroyPromise;
 
     expect(worker.terminated).toBe(true);
-    expect(kernel.getProcessMemory(41)).toBeUndefined();
+    expect(kernel.framebuffers.get(41)?.hostBuffer?.buffer).toBeUndefined();
     expect(kernel.framebuffers.get(41)).toBeUndefined();
     expect(
       (
@@ -1393,6 +1391,41 @@ describe("BrowserKernel", () => {
     expect(testable.pendingPtyOutputChunks).toBe(0);
   });
 
+  it("allows worker cleanup to finish beyond the old two-second deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const diagnostics: string[] = [];
+      const BrowserKernel = await loadBrowserKernel();
+      const kernel = new BrowserKernel({
+        kernelOwnedFs: true,
+        onHostDiagnostic: diagnostic => diagnostics.push(diagnostic.message),
+      });
+      const testable = kernel as unknown as {
+        workerStarted: boolean;
+        initialized: boolean;
+        kernelWorkerHandle: MockWorker;
+        request(): Promise<{ gracefulDetachComplete: true }>;
+      };
+      const worker = new MockWorker("mock://kernel");
+      testable.workerStarted = true;
+      testable.initialized = true;
+      testable.kernelWorkerHandle = worker;
+      testable.request = vi.fn(() => new Promise(resolve => {
+        setTimeout(() => resolve({ gracefulDetachComplete: true }), 3_500);
+      }));
+
+      const destroyed = kernel.destroy();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(worker.terminated).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_500);
+      await destroyed;
+      expect(worker.terminated).toBe(true);
+      expect(diagnostics).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("bounds graceful destroy wait before terminating the worker realm", async () => {
     vi.useFakeTimers();
     try {
@@ -1417,13 +1450,13 @@ describe("BrowserKernel", () => {
       testable.request = vi.fn(() => new Promise<never>(() => {}));
 
       const destroyPromise = kernel.destroy();
-      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(15_000);
       await destroyPromise;
 
       expect(worker.terminated).toBe(true);
       expect(testable.pendingRequests.size).toBe(0);
       expect(diagnostics).toEqual([
-        expect.stringContaining("timed out after 2000ms"),
+        expect.stringContaining("timed out after 15000ms"),
       ]);
     } finally {
       vi.useRealTimers();
@@ -1466,7 +1499,7 @@ describe("BrowserKernel", () => {
     ]);
   });
 
-  it("drops framebuffer Memory aliases on clean and trap exits", async () => {
+  it("drops framebuffer pixel mirrors on clean and trap exits", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
     const dispatch = (
@@ -1476,11 +1509,7 @@ describe("BrowserKernel", () => {
     ).handleWorkerMessage.bind(kernel);
 
     for (const [pid, status] of [[41, 0], [42, -1]] as const) {
-      const memory = new WebAssembly.Memory({
-        initial: 1,
-        maximum: 1,
-        shared: true,
-      });
+      const memory = new SharedArrayBuffer(WASM_PAGE_SIZE);
       dispatch({
         type: "fb_bind",
         pid,
@@ -1491,13 +1520,13 @@ describe("BrowserKernel", () => {
         h: 128,
         stride: 512,
         fmt: "BGRA32",
-        memory,
+        pixels: memory,
       });
-      expect(kernel.getProcessMemory(pid)).toBe(memory);
+      expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBe(memory);
       expect(kernel.framebuffers.get(pid)).toBeDefined();
 
       dispatch({ type: "exit", pid, generation: pid, status });
-      expect(kernel.getProcessMemory(pid)).toBeUndefined();
+      expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBeUndefined();
       expect(kernel.framebuffers.get(pid)).toBeUndefined();
     }
   });
@@ -1515,20 +1544,12 @@ describe("BrowserKernel", () => {
       }
     ).handleWorkerMessage.bind(kernel);
     const pid = 41;
-    const oldMemory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-      shared: true,
-    });
-    const successorMemory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-      shared: true,
-    });
+    const oldMemory = new SharedArrayBuffer(WASM_PAGE_SIZE);
+    const successorMemory = new SharedArrayBuffer(WASM_PAGE_SIZE);
 
     const bind = (
       generation: number,
-      memory: WebAssembly.Memory,
+      memory: SharedArrayBuffer,
     ) => dispatch({
       type: "fb_bind",
       pid,
@@ -1539,19 +1560,14 @@ describe("BrowserKernel", () => {
       h: 16,
       stride: 64,
       fmt: "BGRA32",
-      memory,
+      pixels: memory,
     });
     bind(1, oldMemory);
     bind(2, successorMemory);
 
     // WHY: exec preserves the PID. Queued teardown from generation 1 must
     // never clear or reinstall its alias after generation 2 is visible.
-    dispatch({
-      type: "fb_rebind_memory",
-      pid,
-      generation: 1,
-      memory: oldMemory,
-    });
+    bind(1, oldMemory);
     dispatch({ type: "fb_unbind", pid, generation: 1 });
     dispatch({ type: "exit", pid, generation: 1, status: 0 });
     dispatch({
@@ -1561,7 +1577,7 @@ describe("BrowserKernel", () => {
       generation: 1,
     });
 
-    expect(kernel.getProcessMemory(pid)).toBe(successorMemory);
+    expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBe(successorMemory);
     expect(kernel.framebuffers.get(pid)).toBeDefined();
     expect(worker.lastMessage("fb_release_generation_ack")).toEqual({
       type: "fb_release_generation_ack",
@@ -1574,7 +1590,7 @@ describe("BrowserKernel", () => {
       pid,
       generation: 2,
     });
-    expect(kernel.getProcessMemory(pid)).toBeUndefined();
+    expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBeUndefined();
     expect(kernel.framebuffers.get(pid)).toBeUndefined();
     expect(worker.lastMessage("fb_release_generation_ack")).toEqual({
       type: "fb_release_generation_ack",
@@ -1584,7 +1600,7 @@ describe("BrowserKernel", () => {
     // A bind from the just-released generation can be queued around teardown.
     // Keep a short terminal tombstone until the worker observes the ACK.
     bind(2, successorMemory);
-    expect(kernel.getProcessMemory(pid)).toBeUndefined();
+    expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBeUndefined();
     expect(kernel.framebuffers.get(pid)).toBeUndefined();
     expect(
       (
@@ -1616,11 +1632,7 @@ describe("BrowserKernel", () => {
       }
     ).handleWorkerMessage.bind(kernel);
     const pid = 51;
-    const memory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-      shared: true,
-    });
+    const memory = new SharedArrayBuffer(WASM_PAGE_SIZE);
     const bind = () => dispatch({
       type: "fb_bind",
       pid,
@@ -1631,17 +1643,17 @@ describe("BrowserKernel", () => {
       h: 16,
       stride: 64,
       fmt: "BGRA32",
-      memory,
+      pixels: memory,
     });
 
     bind();
     dispatch({ type: "fb_unbind", pid, generation: 3 });
-    expect(kernel.getProcessMemory(pid)).toBeUndefined();
+    expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBeUndefined();
     bind();
-    expect(kernel.getProcessMemory(pid)).toBe(memory);
+    expect(kernel.framebuffers.get(pid)?.hostBuffer?.buffer).toBe(memory);
   });
 
-  it("prepares the browser PCM sink from the worker ready transport", async () => {
+  it("forwards the PCM connection without receiving kernel memory", async () => {
     const audio = browserAudioGlobals();
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({
@@ -1654,9 +1666,9 @@ describe("BrowserKernel", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     const worker = MockWorker.instances[0]!;
-    const transport = createPcmTransport();
+    const pcmPort = { close: vi.fn() };
 
-    worker.simulateMessage({ type: "ready", pcmTransport: transport });
+    worker.simulateMessage({ type: "ready", pcmPort });
     await initPromise;
     await vi.waitFor(() => {
       expect(kernel.getAudioState()).toBe("suspended");
@@ -1671,7 +1683,13 @@ describe("BrowserKernel", () => {
       "kandelo-pcm-output",
       expect.any(Object),
     );
-    expect(audio.nodeOptions?.processorOptions).toMatchObject(transport);
+    expect(audio.nodeOptions?.processorOptions.buffer).toBeUndefined();
+    expect(audio.node.port.postMessage).toHaveBeenCalledWith(
+      { type: "attach", port: pcmPort }, [pcmPort],
+    );
+    expect(kernel.getAudioActivity()).toBe(false);
+    worker.simulateMessage({ type: "audio_activity" });
+    expect(kernel.getAudioActivity()).toBe(true);
     expect(audio.node.connect).toHaveBeenCalledWith(audio.context.destination);
   });
 
@@ -1687,7 +1705,7 @@ describe("BrowserKernel", () => {
     const worker = MockWorker.instances[0]!;
     worker.simulateMessage({
       type: "ready",
-      pcmTransport: createPcmTransport(),
+      pcmPort: { close: vi.fn() },
     });
     await initPromise;
     await vi.waitFor(() => {

@@ -149,7 +149,7 @@
 }
 .ksb-item[aria-current="true"] {
   background: color-mix(in oklch, var(--k-accent) 14%, transparent);
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   font-weight: 600;
 }
 .ksb-item svg {
@@ -691,15 +691,15 @@
 }
 
 .kdock-status-text[data-status="running"] {
-  color: var(--k-ok);
+  color: var(--k-ok-ink);
 }
 
 .kdock-status-text[data-status="booting"] {
-  color: var(--k-warn);
+  color: var(--k-warn-ink);
 }
 
 .kdock-status-text[data-status="error"] {
-  color: var(--k-err);
+  color: var(--k-err-ink);
 }
 
 .kdock-status-text[data-status="idle"],
@@ -904,7 +904,7 @@
 .kdemo-surface-badge[data-active="true"] {
   border-color: color-mix(in oklch, var(--kdock-active-bg) 72%, var(--kdock-border));
   background: color-mix(in oklch, var(--kdock-active-bg) 24%, transparent);
-  color: var(--kdock-active-text);
+  color: var(--kdock-text);
 }
 
 /* Pushes everything after the title to the right edge of the dock. */
@@ -918,7 +918,8 @@
   border: 1px solid color-mix(in oklch, var(--kdock-active-bg) 72%, var(--kdock-border));
   border-radius: 5px;
   background: color-mix(in oklch, var(--kdock-active-bg) 24%, transparent);
-  color: var(--kdock-active-text);
+  /* The accent is translucent here; use text for the underlying dock surface. */
+  color: var(--kdock-text);
   font: inherit;
   font-size: 10px;
   font-weight: 700;
@@ -955,6 +956,7 @@
   border: 1px solid var(--kdock-border);
   border-radius: 8px;
   background: var(--kdock-bg-raised);
+  color: var(--kdock-text);
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
 }
 
@@ -964,7 +966,7 @@
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  opacity: 0.7;
+  opacity: 0.8;
 }
 
 .kdemo-dock-menu-item {
@@ -975,7 +977,7 @@
   border: 0;
   border-radius: 5px;
   background: transparent;
-  color: var(--kdock-active-text);
+  color: inherit;
   font: inherit;
   font-size: 12px;
   text-align: left;
@@ -993,7 +995,7 @@
 }
 
 .kdemo-dock-menu-detail {
-  opacity: 0.7;
+  opacity: 0.85;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1015,7 +1017,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: color-mix(in oklch, var(--k-accent) 12%, transparent);
+  background: color-mix(in oklch, var(--k-accent) 12%, var(--k-fb-bg));
   color: var(--k-fb-text);
   font-family: var(--k-font-mono);
   font-size: 12px;
@@ -1315,14 +1317,14 @@
 
 .ktheme-mode-button[data-auto-resolved="true"]:not([aria-pressed="true"]) {
   background: color-mix(in oklch, var(--kdock-active-bg) 16%, var(--k-surface));
-  color: color-mix(in oklch, var(--kdock-active-bg) 76%, var(--k-text));
+  color: var(--k-text);
   box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--kdock-active-bg) 58%, transparent);
 }
 
 .ktheme-mode-button[data-auto-resolved="true"]:not([aria-pressed="true"]):hover,
 .ktheme-mode-button[data-auto-resolved="true"]:not([aria-pressed="true"]):focus-visible {
   background: color-mix(in oklch, var(--kdock-active-bg) 22%, var(--k-surface));
-  color: color-mix(in oklch, var(--kdock-active-bg) 82%, var(--k-text));
+  color: var(--k-text);
 }
 
 .kdock-internals-popover .kinternals-surface {
@@ -1470,7 +1472,7 @@
   border: 1px solid color-mix(in oklch, var(--k-accent) 42%, var(--k-border));
   border-radius: 6px;
   background: color-mix(in oklch, var(--k-accent) 12%, var(--k-surface));
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   cursor: pointer;
   padding: 3px 8px;
 }
@@ -1496,7 +1498,7 @@
 
 .kdownload-toast-progress-label {
   flex-shrink: 0;
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   font-family: var(--k-font-mono);
   font-size: 10px;
   font-weight: 760;
@@ -1505,11 +1507,11 @@
 }
 
 .kdownload-toast-complete .kdownload-toast-progress-label {
-  color: var(--k-ok);
+  color: var(--k-ok-ink);
 }
 
 .kdownload-toast-error .kdownload-toast-progress-label {
-  color: var(--k-err);
+  color: var(--k-err-ink);
 }
 
 .kdownload-toast-close {
@@ -1531,7 +1533,7 @@
 .kdownload-toast-close:hover,
 .kdownload-toast-close:focus-visible {
   border-color: color-mix(in oklch, var(--k-accent) 42%, var(--k-border));
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   outline: none;
 }
 
@@ -1547,7 +1549,7 @@
 }
 
 .kdownload-toast-error .kdownload-toast-detail {
-  color: var(--k-err);
+  color: var(--k-err-ink);
 }
 
 .kdownload-toast-bar {
@@ -1866,7 +1868,7 @@
   border: 1px solid var(--k-border);
   border-radius: var(--k-radius-sm);
   background: var(--k-surface);
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   cursor: pointer;
   font: inherit;
   font-size: 12px;
@@ -1990,8 +1992,8 @@
   flex-shrink: 0;
   border: 1px solid var(--k-accent);
   border-radius: var(--k-radius-sm);
-  background: var(--k-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
   cursor: pointer;
   font: inherit;
   font-size: 12px;
@@ -2005,7 +2007,7 @@
 }
 
 .knew-error {
-  color: var(--k-err);
+  color: var(--k-err-ink);
   font-family: var(--k-font-mono);
   font-size: 11.5px;
 }
@@ -2074,7 +2076,7 @@
   padding: 3px 8px;
   border-radius: 999px;
   background: color-mix(in oklch, var(--k-accent) 12%, transparent);
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -2083,7 +2085,7 @@
 }
 .kurl-state[data-status="booting"] {
   background: color-mix(in oklch, var(--k-warn) 14%, transparent);
-  color: var(--k-warn);
+  color: var(--k-warn-ink);
 }
 .kurl-state[data-status="halted"] {
   background: color-mix(in oklch, var(--k-text-muted) 18%, transparent);
@@ -2120,7 +2122,7 @@
 .kurl-host { color: var(--k-text-muted); font-weight: 600; }
 .kurl-path { color: var(--k-text-faint); }
 .kurl-hash {
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2135,7 +2137,7 @@
   padding: 2px 6px;
   border-radius: 3px;
   background: color-mix(in oklch, var(--k-info) 14%, transparent);
-  color: var(--k-info);
+  color: var(--k-info-ink);
   flex-shrink: 0;
   margin-right: 2px;
 }
@@ -2165,8 +2167,8 @@
   border-color: var(--k-border-strong);
 }
 .kurl-btn-primary {
-  background: var(--k-accent);
-  color: white;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
   border-color: var(--k-accent);
 }
 .kurl-btn-primary:hover {
@@ -2233,7 +2235,7 @@
 }
 .kmachine-switch-btn[aria-current="true"] {
   background: color-mix(in oklch, var(--k-accent) 16%, transparent);
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
 }
 .kmachine-switch-btn:disabled {
   cursor: not-allowed;
@@ -2349,24 +2351,24 @@
 .kdownload-status-started,
 .kdownload-status-progress {
   border-color: color-mix(in oklch, var(--k-accent) 46%, var(--k-border));
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
 }
 
 .kdownload-status-complete {
   border-color: color-mix(in oklch, var(--k-ok) 46%, var(--k-border));
-  color: var(--k-ok);
+  color: var(--k-ok-ink);
 }
 
 .kdownload-status-error {
   border-color: color-mix(in oklch, var(--k-err) 50%, var(--k-border));
-  color: var(--k-err);
+  color: var(--k-err-ink);
 }
 
 .kdownload-error-text {
   display: inline-block;
   max-width: 220px;
   margin-left: 8px;
-  color: var(--k-err);
+  color: var(--k-err-ink);
   overflow: hidden;
   text-overflow: ellipsis;
   vertical-align: bottom;
@@ -2415,7 +2417,7 @@
 }
 
 .kdemo-kicker {
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   font-family: var(--k-font-mono);
   font-size: 10px;
   font-weight: 700;
@@ -2466,7 +2468,7 @@
 .kdemo-close:hover,
 .kdemo-close:focus-visible {
   border-color: color-mix(in oklch, var(--k-accent) 42%, var(--k-border));
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   outline: none;
 }
 
@@ -2587,8 +2589,8 @@
   height: 28px;
   border: 1px solid color-mix(in oklch, var(--k-accent) 48%, transparent);
   border-radius: 6px;
-  background: var(--k-accent);
-  color: #231406;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
   padding: 0 10px;
   font: inherit;
   font-size: 12px;
@@ -2775,14 +2777,16 @@
   height: 48px;
   border-radius: 10px;
   border: 1px solid color-mix(in oklch, var(--k-fb-text) 32%, transparent);
-  background: color-mix(in oklch, var(--k-fb-text) 10%, transparent);
-  color: color-mix(in oklch, var(--k-fb-text) 82%, transparent);
+  /* Guest pixels are arbitrary; an opaque surface owns the label's contrast. */
+  background: var(--k-surface);
+  color: var(--k-text);
   font-size: 14px;
 }
 
 .ktouch-btn:active {
   border-color: color-mix(in oklch, var(--k-accent) 70%, transparent);
-  background: color-mix(in oklch, var(--k-accent) 30%, transparent);
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
 }
 
 .ktouch-menu {
@@ -2853,7 +2857,8 @@
   justify-content: center;
   gap: 5px;
   padding: 24px;
-  color: color-mix(in oklch, var(--k-fb-text) 64%, transparent);
+  background: var(--k-fb-bg);
+  color: var(--k-text-muted);
   font-family: var(--k-font-mono);
   font-size: 11px;
   line-height: 1.35;
@@ -2867,10 +2872,10 @@
   text-overflow: ellipsis;
 }
 .kmodeset-waiting-secondary {
-  color: color-mix(in oklch, var(--k-fb-text) 48%, transparent);
+  color: var(--k-text-faint);
 }
 .kmodeset-waiting code {
-  color: color-mix(in oklch, var(--k-fb-text) 78%, transparent);
+  color: var(--k-fb-text);
   font: inherit;
 }
 
@@ -3044,7 +3049,7 @@
 }
 
 .kdisplay-status.is-error {
-  color: var(--k-err);
+  color: var(--k-err-ink);
 }
 
 .kweb-urlbar {
@@ -3098,7 +3103,7 @@
   align-items: center;
   justify-content: flex-start;
   gap: 6px;
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   font-family: var(--k-font-ui);
   font-size: 11px;
   font-weight: 720;
@@ -3334,10 +3339,10 @@
   padding: 0 4px;
   line-height: 1.4;
 }
-.ksys-lvl-info { color: var(--k-info); background: color-mix(in oklch, var(--k-info) 10%, transparent); }
-.ksys-lvl-warn { color: var(--k-warn); background: color-mix(in oklch, var(--k-warn) 14%, transparent); }
-.ksys-lvl-err  { color: var(--k-err);  background: color-mix(in oklch, var(--k-err) 14%, transparent); }
-.ksys-lvl-ok   { color: var(--k-ok);   background: color-mix(in oklch, var(--k-ok) 12%, transparent); }
+.ksys-lvl-info { color: var(--k-info-ink); background: color-mix(in oklch, var(--k-info) 10%, transparent); }
+.ksys-lvl-warn { color: var(--k-warn-ink); background: color-mix(in oklch, var(--k-warn) 14%, transparent); }
+.ksys-lvl-err  { color: var(--k-err-ink);  background: color-mix(in oklch, var(--k-err) 14%, transparent); }
+.ksys-lvl-ok   { color: var(--k-ok-ink);   background: color-mix(in oklch, var(--k-ok) 12%, transparent); }
 .ksys-lvl-debug { color: var(--k-text-faint); background: color-mix(in oklch, var(--k-text) 6%, transparent); }
 .ksys-msg { color: var(--k-text); white-space: pre-wrap; word-break: break-word; }
 
@@ -3415,7 +3420,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.kvfs-dir { color: var(--k-accent); }
+.kvfs-dir { color: var(--k-accent-ink); }
 .kvfs-file { color: var(--k-text); }
 
 /* ── Gallery ────────────────────────────────────────────────────────────── */
@@ -3656,8 +3661,8 @@
   align-items: center;
   padding: 0 7px;
   border-radius: 999px;
-  background: var(--k-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
   font-size: 10px;
   font-weight: 760;
   letter-spacing: 0.02em;
@@ -3686,7 +3691,7 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   font: inherit;
   font-size: 11px;
   font-weight: 720;
@@ -3694,7 +3699,7 @@
 }
 .kgal-description-toggle:hover,
 .kgal-description-toggle:focus-visible {
-  color: var(--k-accent-fire);
+  color: var(--k-accent-ink);
   outline: none;
 }
 .kgal-url-cell {
@@ -3740,8 +3745,8 @@
   outline: none;
 }
 .kgal-row-btn-primary {
-  background: var(--k-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
   border-color: var(--k-accent);
 }
 .kgal-row-btn-primary:hover,
@@ -3758,12 +3763,12 @@
 .kgal-copy-url-btn.is-copied {
   border-color: color-mix(in oklch, var(--k-ok) 55%, var(--k-border));
   background: color-mix(in oklch, var(--k-ok) 14%, var(--k-surface));
-  color: var(--k-ok);
+  color: var(--k-ok-ink);
 }
 .kgal-copy-url-btn.is-error {
   border-color: color-mix(in oklch, var(--k-err) 48%, var(--k-border));
   background: color-mix(in oklch, var(--k-err) 12%, var(--k-surface));
-  color: var(--k-err);
+  color: var(--k-err-ink);
 }
 .kgal-empty {
   padding: 60px 20px;
@@ -3983,7 +3988,7 @@
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
   background: color-mix(in oklch, var(--k-accent) 14%, transparent);
   padding: 1px 5px;
   border-radius: 3px;
@@ -4021,8 +4026,8 @@
   cursor: not-allowed;
 }
 .kshare-btn-primary {
-  background: var(--k-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
   border-color: var(--k-accent);
   margin-left: auto;
 }
@@ -4065,7 +4070,7 @@
   font-variant-numeric: tabular-nums;
   word-break: break-word;
 }
-.kshare-prev-v .accent { color: var(--k-accent); }
+.kshare-prev-v .accent { color: var(--k-accent-ink); }
 
 .kshare-opts {
   display: flex;
@@ -4113,7 +4118,7 @@
 .kshare-script-err {
   margin-top: 4px;
   font-size: 11px;
-  color: var(--k-err);
+  color: var(--k-err-ink);
 }
 
 /* ── Empty state ────────────────────────────────────────────────────────── */
@@ -4215,7 +4220,7 @@
   align-items: center;
   justify-content: center;
   background: color-mix(in oklch, var(--k-accent) 12%, transparent);
-  color: var(--k-accent);
+  color: var(--k-accent-ink);
 }
 .kempty-door-title {
   font-size: 15px;
@@ -4251,8 +4256,8 @@
   padding: 6px 12px;
   border-radius: var(--k-radius-sm);
   border: 0;
-  background: var(--k-accent);
-  color: #fff;
+  background: var(--kdock-active-fill);
+  color: var(--kdock-active-text);
   font: inherit;
   font-size: 12px;
   font-weight: 600;
@@ -4295,23 +4300,6 @@
     inset 0 -1px 0 rgba(36, 24, 11, 0.16);
   filter: saturate(1.04) brightness(1.03);
   outline: none;
-}
-
-.kdock-header-btn[aria-pressed="true"],
-.kdock-view-tab[aria-selected="true"],
-.kdemo-surface-badge[data-active="true"],
-.ktheme-mode-button[aria-pressed="true"],
-.kdock-item[aria-current="true"],
-.kdock-item[aria-pressed="true"],
-.knew-tab[aria-selected="true"],
-.kinternals-tab[aria-selected="true"],
-.knew-primary,
-.kurl-btn-primary,
-.kdemo-run,
-.kgal-row-btn-primary,
-.kshare-btn-primary,
-.kempty-btn {
-  text-shadow: var(--kdock-active-text-shadow);
 }
 
 .kempty-featured {
@@ -4609,11 +4597,11 @@
 
 .kmprogress-detail {
   margin-top: 8px;
-  color: color-mix(in oklch, var(--k-text) 62%, transparent);
+  color: var(--k-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
-.kmprogress-error .kmprogress-detail { color: var(--k-err); }
+.kmprogress-error .kmprogress-detail { color: var(--k-err-ink); }
 
 /* A dock action's progress: the command's own status line, and a bar when
    the command reports a percentage. */
@@ -4676,7 +4664,8 @@
 .knetwork-status[data-phase="hosting"] .knetwork-dot,
 .knetwork-status[data-phase="joining"] .knetwork-dot { background: var(--k-warn); }
 .knetwork-status[data-phase="error"] .knetwork-dot { background: var(--k-err); }
-.knetwork-error { color: var(--k-err); font-size: 12.5px; }
+.knetwork-error { color: var(--k-err-ink); font-size: 12.5px; }
+.knetwork-hint { margin-top: 6px; color: var(--k-text-muted); line-height: 1.45; }
 .knetwork-detail { margin-top: 4px; color: var(--k-text-faint); font-family: var(--k-font-mono); font-size: 11px; }
 .knetwork-note { margin: 0; color: var(--k-text-muted); font-size: 12px; line-height: 1.45; }
 .knetwork-field { display: flex; flex-direction: column; gap: 4px; width: 100%; color: var(--k-text-muted); font-size: 12px; }

@@ -10,10 +10,13 @@ on:
       - "host/package.json"
       - "host/package-lock.json"
       - "host/src/**"
+      - "host/test/**"
       - "host/tsconfig.json"
+      - "host/vitest*.ts"
       - "host/tsup.config.ts"
       - "package.json"
       - "package-lock.json"
+      - "scripts/ci-vitest-evidence-classes.tsv"
       - "web-libs/**"
   push:
     branches: [main]
@@ -25,10 +28,13 @@ on:
       - "host/package.json"
       - "host/package-lock.json"
       - "host/src/**"
+      - "host/test/**"
       - "host/tsconfig.json"
+      - "host/vitest*.ts"
       - "host/tsup.config.ts"
       - "package.json"
       - "package-lock.json"
+      - "scripts/ci-vitest-evidence-classes.tsv"
       - "web-libs/**"
 
 permissions:
@@ -40,9 +46,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "22"
+          node-version: "24"
           cache: "npm"
           cache-dependency-path: |
             package-lock.json
@@ -79,6 +85,10 @@ jobs:
         working-directory: apps/browser-demos
         run: npm run test:unit
 
+      - name: Check memory ownership and lifecycle without product artifacts
+        working-directory: host
+        run: npx vitest run --config vitest.browser-memory.config.ts
+
       - name: Install Playwright browsers
         working-directory: apps/browser-demos
         run: npx playwright install --with-deps chromium firefox webkit
@@ -91,6 +101,7 @@ jobs:
             test/coi.spec.ts \
             test/vfs-import-seal-boundary.spec.ts \
             test/wasm-trap-signal.spec.ts \
+            test/worker-exit-trap.spec.ts \
             --project=chromium \
             --project=firefox \
             --project=webkit

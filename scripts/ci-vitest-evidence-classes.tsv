@@ -35,6 +35,7 @@ host/test/closed-lazy-assets.test.ts	source-only
 host/test/compiled-worker-entry.test.ts	prepared-product
 host/test/concurrent-launch.test.ts	prepared-product
 host/test/connect-pending-retry.test.ts	source-only
+host/test/cors-proxy-session.test.ts	source-only
 host/test/cpp-throw-test.test.ts	prepared-product
 host/test/datagram-wakeup.test.ts	source-only
 host/test/dbus-smoke.test.ts	prepared-product
@@ -272,6 +273,7 @@ host/test/run-example-output.test.ts	source-only
 host/test/run-example-resolver.test.ts	prepared-product
 host/test/run-example-rootfs.test.ts	source-only
 host/test/run-example-vfs.test.ts	source-only
+host/test/runtime-memory-profile.test.ts	source-only
 host/test/sched-getaffinity.test.ts	prepared-product
 host/test/scm-rights-pipe-lifetime.test.ts	prepared-product
 host/test/scm-rights-semantics.test.ts	prepared-product

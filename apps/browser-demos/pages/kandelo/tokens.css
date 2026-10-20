@@ -17,8 +17,16 @@
 
   /* text */
   --k-text: #1e1e1e;
-  --k-text-muted: #757575;
-  --k-text-faint: #949494;
+
+  /* Text roles stay distinct from decorative fills. Mixing toward the normal
+     text color keeps colored labels readable on plain and tinted surfaces. */
+  --k-text-muted: color-mix(in oklch, var(--k-text) 85%, var(--k-surface));
+  --k-text-faint: color-mix(in oklch, var(--k-text) 80%, var(--k-surface));
+  --k-accent-ink: color-mix(in oklch, var(--k-accent) 40%, var(--k-text));
+  --k-ok-ink: color-mix(in oklch, var(--k-ok) 40%, var(--k-text));
+  --k-warn-ink: color-mix(in oklch, var(--k-warn) 40%, var(--k-text));
+  --k-err-ink: color-mix(in oklch, var(--k-err) 40%, var(--k-text));
+  --k-info-ink: color-mix(in oklch, var(--k-info) 40%, var(--k-text));
 
   /* strokes */
   --k-border: #dddddd;
@@ -42,14 +50,13 @@
   --kdock-bg-sunk: #e0e0e0;
   --kdock-border: #dddddd;
   --kdock-text: #1e1e1e;
-  --kdock-muted: #757575;
-  --kdock-faint: #949494;
+  --kdock-muted: var(--k-text-muted);
+  --kdock-faint: var(--k-text-faint);
   --kdock-accent: #3858e9;
   --kdock-active-bg: var(--kdock-accent);
   --kdock-active-fill: var(--kdock-active-bg);
   --kdock-active-text: #ffffff;
   --kdock-active-ring: transparent;
-  --kdock-active-text-shadow: none;
 
   /* theme switcher swatches */
   --k-theme-swatch-wordpress-1: #f0f0f0;
@@ -115,8 +122,6 @@
   --k-surface-alt: #2f2f2f;
   --k-surface-sunk: #000000;
   --k-text: #ffffff;
-  --k-text-muted: #cccccc;
-  --k-text-faint: #949494;
   --k-border: #2f2f2f;
   --k-border-strong: #757575;
   --k-accent: #3858e9;
@@ -132,8 +137,6 @@
   --kdock-bg-sunk: #000000;
   --kdock-border: #2f2f2f;
   --kdock-text: #ffffff;
-  --kdock-muted: #cccccc;
-  --kdock-faint: #949494;
   --kdock-accent: #3858e9;
   --k-shell-bg: #000000;
   --k-shell-text: #ffffff;
@@ -174,8 +177,6 @@
   --k-surface-alt: #f0dfbd;
   --k-surface-sunk: #e8d3a7;
   --k-text: #24180b;
-  --k-text-muted: #674f29;
-  --k-text-faint: #977c45;
   --k-border: #d9bd81;
   --k-border-strong: #9a7136;
   --k-accent: #c43d18;
@@ -195,14 +196,11 @@
   --kdock-bg-sunk: #f0dfbd;
   --kdock-border: #d9bd81;
   --kdock-text: #24180b;
-  --kdock-muted: #674f29;
-  --kdock-faint: #977c45;
   --kdock-accent: #c43d18;
   --kdock-active-bg: #ff982b;
   --kdock-active-fill: var(--kdock-active-bg);
   --kdock-active-text: #24180b;
   --kdock-active-ring: #b85412;
-  --kdock-active-text-shadow: none;
   --k-shell-bg: #fff8ed;
   --k-shell-text: #211a14;
   --k-shell-prompt: #b83a15;
@@ -244,8 +242,6 @@
   --k-surface-alt: #2b2234;
   --k-surface-sunk: #100d16;
   --k-text: #f8e9cf;
-  --k-text-muted: #d9c8b8;
-  --k-text-faint: #aca0b8;
   --k-border: #362b43;
   --k-border-strong: #5f4d73;
   --k-accent: #f5bd55;
@@ -265,16 +261,11 @@
   --kdock-bg-sunk: #0b0910;
   --kdock-border: #362b43;
   --kdock-text: #f8e9cf;
-  --kdock-muted: #d9c8b8;
-  --kdock-faint: #aca0b8;
   --kdock-accent: #f5bd55;
   --kdock-active-bg: #f5bd55;
   --kdock-active-fill: linear-gradient(180deg, #f7c967 0%, #d99a34 100%);
-  --kdock-active-text: #ffffff;
+  --kdock-active-text: #24180b;
   --kdock-active-ring: #8a5f16;
-  --kdock-active-text-shadow:
-    0 1px 0 rgba(21, 18, 27, 0.42),
-    0 0 1px rgba(21, 18, 27, 0.52);
   --k-shell-bg: #100d16;
   --k-shell-text: #f8e9cf;
   --k-shell-prompt: #f5bd55;
@@ -316,8 +307,6 @@
   --k-surface-alt: #f7f7f7;
   --k-surface-sunk: #eeeeee;
   --k-text: #3d3d3d;
-  --k-text-muted: #5d5d5d;
-  --k-text-faint: #878787;
   --k-border: #d1d1d1;
   --k-border-strong: #aea79f;
   --k-accent: #e95420;
@@ -337,9 +326,8 @@
   --kdock-bg-sunk: #eeeeee;
   --kdock-border: #d1d1d1;
   --kdock-text: #3d3d3d;
-  --kdock-muted: #5d5d5d;
-  --kdock-faint: #878787;
   --kdock-accent: #e95420;
+  --kdock-active-text: #1e1e1e;
   --k-shell-bg: #ffffff;
   --k-shell-text: #1e1e1e;
   --k-shell-prompt: #77216f;
@@ -373,8 +361,6 @@
   --k-surface-alt: #303030;
   --k-surface-sunk: #181818;
   --k-text: #f7f7f7;
-  --k-text-muted: #cccccc;
-  --k-text-faint: #aea79f;
   --k-border: #3d3d3d;
   --k-border-strong: #666666;
   --k-accent: #e95420;
@@ -394,9 +380,8 @@
   --kdock-bg-sunk: #111111;
   --kdock-border: #3d3d3d;
   --kdock-text: #f7f7f7;
-  --kdock-muted: #cccccc;
-  --kdock-faint: #aea79f;
   --kdock-accent: #e95420;
+  --kdock-active-text: #1e1e1e;
   --k-shell-bg: #300a24;
   --k-shell-text: #ffffff;
   --k-shell-prompt: #f99b11;

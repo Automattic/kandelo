@@ -83,6 +83,7 @@ changes, package artifacts, or performance claims.
 | Browser demos, VFS images, sharing, users | `docs/agent-guidance/browser-and-user.md` | `docs/browser-support.md` |
 | Performance claims and benchmarks | `docs/agent-guidance/performance.md` | `docs/profiling.md` |
 | Dev shell, docs, PR/final reports | `docs/agent-guidance/build-docs-and-prs.md` | `docs/repository-organization.md`, `README.md` |
+| Optional Spacefast deployment, publication and examples | `docs/agent-guidance/spacefast-deployment.md` | `apps/spacefast-cors-proxy/README.md`, `.agents/skills/deploying-kandelo-to-spacefast/SKILL.md` |
 
 ## Validation Contract
 
@@ -200,6 +201,12 @@ The main thread must never own a VFS `SharedArrayBuffer`. Only
 main-thread VFS buffers accumulate across machine boots until Safari throws
 `Out of memory`. Compose images in a worker and hand the main thread plain,
 transferable bytes.
+
+Persistent browser/audio realms must never receive guest `WebAssembly.Memory`
+or views into its backing storage. Use bounded independent device buffers,
+explicitly retire asynchronous owners, and run `./run.sh test browser-memory`
+for memory/device/lifecycle changes. See the host-runtime and validation
+guides for the ownership contract and native Safari follow-up.
 
 Shared files are cross-host changes by default. Changes to
 `host/src/kernel-worker.ts`, `host/src/worker-main.ts`, VFS behavior,

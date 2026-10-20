@@ -62,6 +62,9 @@ function browserAudioMocks() {
   const port = {
     onmessage: null as ((event: MessageEvent) => void) | null,
     close: vi.fn(),
+    postMessage: vi.fn((message: { type: string }) => {
+      if (message.type === "release") queueMicrotask(() => port.onmessage?.({ data: { type: "released" } } as MessageEvent));
+    }),
   };
   const node = {
     port,
@@ -92,6 +95,29 @@ function browserAudioMocks() {
 }
 
 describe("BrowserPcmDriver", () => {
+  it("forwards a remote transport without a memory wrapper and propagates sink failure", async () => {
+    const mocks = browserAudioMocks();
+    const onFatalError = vi.fn();
+    const driver = new BrowserPcmDriver({
+      workletUrl: "/assets/kandelo-pcm.js",
+      createContext: () => mocks.context as unknown as AudioContext,
+      createNode: mocks.createNode,
+      onFatalError,
+    });
+    const connection = { close: vi.fn() } as unknown as MessagePort;
+    await driver.prepareRemote(connection);
+    expect(mocks.nodeOptions?.processorOptions.buffer).toBeUndefined();
+    expect(mocks.node.port.postMessage).toHaveBeenCalledWith(
+      { type: "attach", port: connection }, [connection],
+    );
+    await expect(driver.prepare(createPcmTransport())).rejects.toThrow("remote transport");
+    mocks.node.onprocessorerror?.();
+    expect(driver.getState()).toBe("error");
+    expect(onFatalError).toHaveBeenCalledOnce();
+    await driver.close();
+    expect(mocks.node.port.postMessage).toHaveBeenCalledWith({ type: "release" });
+  });
+
   it("loads the packaged worklet with the generated PCM-only transport contract", async () => {
     const mocks = browserAudioMocks();
     const driver = new BrowserPcmDriver({

@@ -994,6 +994,8 @@ if (typeof window !== "undefined") {
 
   // --- Complete CORS proxy profile (injected at build time) ---
   var CORS_PROXY_CONFIG = "__CORS_PROXY_CONFIG__";
+  var proxySessionFactory = "__CORS_PROXY_SESSION_TRANSPORT__";
+  var proxySessionFetch = typeof proxySessionFactory === "function" ? proxySessionFactory() : null;
   var corsProxyWarningKeys = new Set();
 
   function normalizedCorsProxyConfig() {
@@ -1018,6 +1020,11 @@ if (typeof window !== "undefined") {
   function isCorsProxyFetchUrl(targetUrl) {
     var proxyUrl = normalizedCorsProxyUrl();
     return proxyUrl && targetUrl.startsWith(proxyUrl);
+  }
+
+  function isCorsProxySessionUrl(targetUrl) {
+    var proxyUrl = normalizedCorsProxyUrl();
+    return proxyUrl && targetUrl === new URL("/cors-proxy-session", proxyUrl).href;
   }
 
   function corsProxyTargetUrl(fetchUrl) {
@@ -1101,7 +1108,10 @@ if (typeof window !== "undefined") {
     var credential = false;
     request.headers.forEach(function (value, name) {
       var lower = name.toLowerCase();
-      if (allowed.has(lower)) {
+      if (lower === "x-kandelo-proxy-session") {
+        // Reprojection owns quota metadata, just as it owns the range alias.
+        // The session transport reads its own persisted, verified credential.
+      } else if (allowed.has(lower)) {
         headers.append(name, value);
       } else if (lower === "if-range") {
         // The proxy cannot carry it; fetchThroughCorsProxy applies its
@@ -1169,7 +1179,12 @@ if (typeof window !== "undefined") {
     var init = {
       method: request.method,
       headers: headers,
-      credentials: "omit",
+      // The deployment selects this proxy. Authenticate only to its own
+      // origin; the proxy must remove application cookies before forwarding.
+      // Reprojection must not anonymize a private same-origin proxy request.
+      credentials: new URL(outgoingUrl).origin === self.location.origin
+        ? "same-origin" : "omit",
+      referrerPolicy: "strict-origin",
       mode: "cors",
       redirect: request.redirect,
       signal: request.signal,
@@ -1221,7 +1236,20 @@ if (typeof window !== "undefined") {
       : null;
     return projectCorsProxyRequest(request, outgoingUrl, targetUrl).then(function (projected) {
       if (projected instanceof Response) return projected;
-      return fetch(projected).then(function (response) {
+      function send(projected) {
+        if (!proxySessionFetch) return fetch(projected);
+        // Firefox can retain POST bytes internally while Request.body is null.
+        // Read by method instead of using that getter to decide body presence.
+        return (projected.method === "GET" || projected.method === "HEAD"
+          ? Promise.resolve(undefined) : projected.arrayBuffer()).then(function (body) {
+          return proxySessionFetch(projected.url, {
+            method: projected.method, headers: projected.headers, body: body,
+            credentials: projected.credentials, referrerPolicy: projected.referrerPolicy,
+            mode: projected.mode, redirect: projected.redirect, cache: projected.cache, signal: projected.signal,
+          }, function (url, init) { return fetch(new Request(url, init)); });
+        });
+      }
+      return send(projected).then(function (response) {
         if (
           ifRange === null || projected.method !== "GET" ||
           (response.status !== 206 && response.status !== 416) ||
@@ -1235,7 +1263,7 @@ if (typeof window !== "undefined") {
         if (config.rangeRequestHeaderAlias) {
           headers.delete(config.rangeRequestHeaderAlias);
         }
-        return fetch(new Request(projected, { headers: headers, cache: "default" }));
+        return send(new Request(projected, { headers: headers, cache: "default" }));
       });
     });
   }
@@ -1456,6 +1484,8 @@ if (typeof window !== "undefined") {
       "ETag",
       "Expires",
       "Last-Modified",
+      "Retry-After",
+      "X-Kandelo-Proxy-Session",
     ].forEach(function (name) {
       var value = response.headers.get(name);
       if (value) headers.set(name, value);
@@ -1474,6 +1504,8 @@ if (typeof window !== "undefined") {
       "Content-Type",
       "ETag",
       "Last-Modified",
+      "Retry-After",
+      "X-Kandelo-Proxy-Session",
       "X-Playground-Cors-Proxy",
     ].join(", "));
     headers.set("Cross-Origin-Resource-Policy", "cross-origin");
@@ -1500,6 +1532,10 @@ if (typeof window !== "undefined") {
 
   function fetchCrossOrigin(request) {
     var targetUrl = request.url;
+
+    // This fixed endpoint belongs to the configured proxy's quota protocol.
+    // Wrapping it as an asset would recurse into that proxy's self-target ban.
+    if (isCorsProxySessionUrl(targetUrl)) return fetch(request);
 
     // The page and worker runtime may already be deliberately fetching the
     // configured CORS proxy. Do not wrap that request in the same proxy again.

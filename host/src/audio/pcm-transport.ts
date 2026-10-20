@@ -392,3 +392,22 @@ function validateDescriptorBounds(descriptor: PcmTransportDescriptor): void {
     throw new RangeError("PCM transport lies outside shared kernel memory");
   }
 }
+
+
+/** Detached diagnostic values; never exposes the transport backing memory. */
+export interface PcmTransportSnapshot {
+  producer: bigint;
+  consumer: bigint;
+  discard: bigint;
+  config: PcmTransportConfig;
+}
+
+export function snapshotPcmTransport(descriptor: PcmTransportDescriptor): PcmTransportSnapshot {
+  const words = pcmControlWords(descriptor);
+  return {
+    producer: readProducerPosition(words),
+    consumer: readConsumerPosition(words),
+    discard: readDiscardPosition(words),
+    config: readPcmConfig(words),
+  };
+}

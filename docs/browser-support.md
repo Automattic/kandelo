@@ -315,21 +315,22 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
 
 ### Framebuffer (`/dev/fb0`)
 - 640×400 BGRA32 packed-pixel framebuffer; exclusive process owner.
-- The pixel buffer lives in the process's `WebAssembly.Memory` (a `SharedArrayBuffer`); the kernel notifies the host of `(pid, addr, len, w, h, stride, fmt)` on `mmap`, and the host renders via `requestAnimationFrame` + a 2D-canvas `putImageData` per frame.
-- Framebuffer messages are tagged with the process execution generation. Exit
-  and exec wait for `BrowserKernel` to acknowledge removal of its exact-
-  generation memory wrapper and framebuffer-registry views, so a delayed
-  old-image message cannot disturb a successor with the same PID. A caller
-  that retains the wrapper returned by `getProcessMemory()` is outside that
-  acknowledgement; JavaScript cannot prove that arbitrary consumer references
-  have been garbage-collected.
+- The guest pixel buffer lives in its process memory. Browser scanout copies
+  those pixels every 16 ms into a fixed-size shared display buffer; the canvas
+  never receives the process's full address space. Write-based bindings already
+  forward pixel deltas. Node consumers retain direct guest-memory presentation.
+- Framebuffer messages carry an execution generation. Exit and exec stop that
+  generation's scanout copier and await UI removal of its display binding;
+  delayed old-image messages cannot disturb a successor with the same PID.
+  Memory growth needs no UI rebind because the copier reads the current guest
+  buffer on each tick. Browser consumers use the framebuffer handle rather
+  than `getProcessMemory()`.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
 - Keyboard input: the demo page maps focused browser `KeyboardEvent` values to Linux input keycodes, encodes them as MEDIUMRAW bytes, and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software decodes those bytes from the tty. Ctrl+Shift+Esc is reserved as the host escape from keyboard capture.
 - Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via
-  `FBIOPAN_DISPLAY` is a no-op. The current surface still exposes a process
-  `WebAssembly.Memory` to the presentation realm. Device/CRTC-owned bounded
-  shared surfaces, per-handle rights, serialized presentation, and
-  multi-writer/compositor ownership remain follow-up work.
+  `FBIOPAN_DISPLAY` is a no-op. Device/CRTC-owned surfaces, per-handle rights,
+  serialized presentation, and multi-writer/compositor ownership remain
+  follow-up work.
 
 ### Mouse input (`/dev/input/mice`)
 - Demo pages attach `mousemove` / `mousedown` / `mouseup` listeners to the canvas and call `BrowserKernel.injectMouseEvent(dx, dy, buttons)`. The main thread posts a `mouse_inject` message to the kernel worker, which calls the kernel's `kernel_inject_mouse_event` export. The kernel encodes a 3-byte PS/2 frame and queues it on a global ring; user processes drain the queue via `read("/dev/input/mice", …)`.
@@ -362,9 +363,16 @@ capture, window blur, and input teardown, retaining the last absolute position.
   frame boundaries: later writes continue the same byte stream, while a drain
   pads only a terminal incomplete frame with format-appropriate silence.
 - An `AudioWorkletProcessor`, running on the Web Audio render clock, reads the
-  shared PCM ring directly, advances the kernel-visible consumer cursor, and
-  outputs silence on underrun. There is no main-thread audio-drain timer and no
-  second persistent PCM queue; browser-provided Float32 output buffers are
+  bounded PCM mirror, advances its consumer cursor, and outputs silence on
+  underrun. A relay in the kernel worker copies newly produced bytes and
+  configuration into an independent 65,664-byte shared buffer, and returns
+  worklet consumption, underrun and fatal-error publications to Rust. Absolute
+  cursors, discard floors and generations preserve one queue and its existing
+  capacity; the relay never consumes audio or adds buffering capacity.
+  Neither browser main nor the persistent AudioWorklet receives kernel memory.
+  The mirror travels over a transferred MessagePort directly to the worklet;
+  audio-activity notifications reach the UI as plain messages. The worklet
+  remains the only playback clock. Browser-provided Float32 output buffers are
   transient. Consumption wakes blocked writes, `poll()`, and
   `SNDCTL_DSP_SYNC`/close drain waiters in the kernel worker.
 - The default 4096-byte queue is about 21.3 ms at 48 kHz stereo S16. A normal
@@ -374,8 +382,15 @@ capture, window blur, and input teardown, retaining the last absolute position.
   to drain. If the context is running, it then suspends the context so Web
   Audio hands already-rendered blocks to the output device and waits a bounded
   interval covering the reported base/output latency and final render quantum
-  before closing the context. A suspended or interrupted context is never
-  resumed implicitly during teardown.
+  before releasing the machine's worklet processor. The processor drops its
+  shared-memory views, closes its kernel connection, acknowledges release, and
+  returns false from rendering. Disconnecting a processor alone is insufficient:
+  a source processor returning true retains its transport inside the
+  page-wide AudioContext. Isolating that transport also bounds any wrappers
+  awaiting collection in this persistent realm. The shared context stays open to
+  avoid WebKit's per-context rendering-thread leak; explicitly supplied private
+  contexts are closed. A suspended or interrupted context is never resumed
+  implicitly during teardown.
 - **A user gesture is required.** Preparing the PCM driver may leave its
   `AudioContext` suspended. The application must call the session audio-resume
   path from a click, keypress, or other browser-recognized activation. If the
@@ -1315,6 +1330,21 @@ The dock may be collapsed or moved horizontally within the browser viewport;
 that placement is UI-only presentation state and does not alter the running
 machine, boot descriptor, VFS image, or share/export data.
 
+Theme tokens distinguish decorative fills from readable text. `--k-accent` and
+the status colors (`--k-ok`, `--k-warn`, `--k-err`, `--k-info`) supply fills,
+borders, and indicators; their `-ink` counterparts supply colored text on app
+surfaces. Muted and secondary text also derive from the active palette's text
+and surface colors. Solid selected controls pair `--kdock-active-fill` with
+`--kdock-active-text`; menus and translucent accent controls use surface text.
+This applies to the dock, theme picker, gallery, sharing, and inspector UI in
+both light and dark mode. `test/theme-contrast.spec.ts` checks these roles and
+shared controls at a minimum text contrast of 4.5:1 across all six palette/mode
+combinations, including hover, press, and keyboard focus. It also rejects CSS
+that uses decorative hues as text or selected-fill text without its solid fill.
+Touch controls and display prompts own opaque backgrounds so guest pixels
+cannot wash out their labels. Disabled controls and decorative preset glyphs
+are outside that text-contrast check.
+
 Image-declared demo guides from `/etc/kandelo/demo.json` remain part of the
 machine presentation owned by the demo image. Guide actions may run terminal or
 web actions through `KernelHost`, but they do not replace process supervision,
@@ -1366,8 +1396,16 @@ satisfy a COEP embedding check, but it does not make an opaque no-CORS response
 body readable to JavaScript. Public release assets do not necessarily grant
 CORS even though an ordinary command-line client can read them. An explicit
 `closedLazyAssets` set remains exhaustive and takes precedence over the network
-proxy. The Node.js host is unaffected and continues to fetch its lazy URLs
-directly.
+proxy. A deployment-configured same-origin proxy uses `credentials: "same-origin"`
+to admit requests on authenticated hosting, including private Spacefast Spaces.
+VFS metadata chooses the artifact target, never this trusted proxy URL. An
+external proxy receives `credentials: "omit"`; proxied requests send only the
+application origin as Referer (`strict-origin`) for approved-origin admission. Service-worker reprojection uses the same credential rule for
+already-proxied requests and automatic cross-origin GET/HEAD wrapping.
+The proxy must strip application cookies before contacting the
+artifact destination. Redirects to another origin cannot carry those cookies.
+Direct same-origin artifact requests keep their caller's credential policy.
+The Node.js host is unaffected and continues to fetch its lazy URLs directly.
 
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
 `Range`, `wp_blog`, and `wp_install`, and copies `Range` into
@@ -1477,7 +1515,11 @@ its `Content-Range` would describe bytes the relay does not send. The 100 MiB
 cap bounds the bytes one response actually carries, so a 16-byte slice of a
 4 GiB file is relayed, while an undeclared body that outgrows the cap is cut
 off mid-transfer. A client disconnect cancels the upstream request, before or
-after response headers.
+after response headers. When the upstream fetch itself fails, the `502` body
+names why (for example `getaddrinfo ENOTFOUND` or `connect ECONNREFUSED`) and
+the target's origin, never its path or query, and the dev server logs the same
+line, so a guest's failed download says whether a name, a connection or a
+timeout failed.
 
 **Cancellation through the service worker.** Cancelling a proxied read
 reaches the relay once response headers have arrived: cancelling the body
@@ -1488,6 +1530,14 @@ abort before headers never fired that signal (a plain pass-through
 `fetch(event.request)` behaved the same way). The upstream request then runs
 until it answers. This is a browser boundary, not relay behavior: a direct
 abort of a relay request cancels upstream in both engines.
+
+The 2026-10-19 Playwright Firefox check did not close the upstream transfer
+within ten seconds after aborting a page read after its first body chunk.
+The same failure reproduced using current main's service worker and the
+unchanged development relay; Chromium and WebKit passed that check.
+Service-worker body cancellation propagation is therefore not guaranteed
+on the tested Firefox path either. This does not affect the proxy's
+ability to return range bytes, but an abandoned transfer can remain open.
 
 **Reading an answer.** A `200` answer to a ranged request is legal HTTP: any
 server or relay may ignore `Range`. Kandelo code that issues a ranged read
@@ -1567,7 +1617,7 @@ visible to another machine's requests even though both live under the same
 scope's origin.
 
 Each machine's bridge authority (its live `MessagePort`, session id, and
-cookie jar) is also persisted to Cache Storage under a per-name key as it is
+cookie jar) is also persisted to IndexedDB under a per-name key as it is
 established, independent of the in-memory registry. If the browser
 terminates and restarts the service worker while a machine's host tab is
 still open, the worker has lost every live `MessagePort` but still has each
@@ -2427,16 +2477,59 @@ only when building a deployable directory-scoped distribution.
 
 ### Directory-scoped production hosting
 
+The standalone [`apps/spacefast-cors-proxy`](../apps/spacefast-cors-proxy/README.md)
+implements the Playground proxy protocol for Spacefast Functions,
+including the range alias used by this browser app. Its production entry uses
+ordinary Spacefast Fetch as an explicitly approved workaround: live testing
+on 2026-10-15 found that Spacefast rejects the original pinned TCP transport.
+URL validation still rejects private IP literals, local host names, credentials
+and self-targets, and redirects return through that validation. DNS resolution
+and connection-time private-network protection belong to Spacefast in this
+mode. Kandelo cannot prevent DNS rebinding; the platform's protection has not
+been verified. The optional pinned transport remains available in the core
+and covered by local TCP/TLS fixture tests. The entry uses the Space's database
+for per-identity token buckets matching Playground's 1,000-token capacity and
+100/minute refill. A native PHP Function verifies Spacefast's guest/account
+identity and issues a signed, proxy-scoped quota token. Browser transports
+persist it on the app's origin, so a separate proxy needs no third-party
+cookies. This changes the abuse boundary: new guest identities can get fresh
+budgets, unlike Playground's per-IP policy. SQL and PHP are locally tested;
+a private live diagnostic verified guest issuance and a proxied fetch.
+The existing v9 deployment retains the earlier shared fixed-window limiter.
+The app's build command can select this proxy explicitly, and its packager
+can colocate the app and `/cors-proxy` in one Space. A live Chromium check on 2026-10-15 verified a guest `curl`
+request through the same-origin proxy with HTTP 200 and exit status 0. The live
+serving path requires the range alias, omits HEAD Content-Length, and did not
+preserve the worker's CORS origin grant in private-Space probes. See that app's
+README for commands and the precise scope of validation.
+The packager applies isolation headers to document URLs and worker scripts,
+including clean document aliases. It leaves large binary downloads on
+Spacefast's static serving path: custom isolation headers on files above
+100 MiB cause `response_headers_unservable` during finalization.
+
 A production build owns one normalized absolute deployment prefix. Build and
 host the output with the same value: output built with `VITE_BASE=/a/` must be
 served at `/a/`, and output built with `VITE_BASE=/candidate-b/` must be served
 at `/candidate-b/`. A completed build is not freely relocatable, and
 `base: "./"` is not a supported substitute for choosing its public path.
 
-`./run.sh build-browser [--base /prefix/] [--out DIR]` performs every step
+`./run.sh build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]` performs every step
 below for one prefix (default `/`, output `apps/browser-demos/dist`) and
 fails if the output lacks `index.html`, `service-worker.js`, the VFS
 group, or `signalling/piplet.php`, or contains the private product map.
+
+`--cors-proxy` sets the production `VITE_CORS_PROXY_URL` explicitly inside
+the clean development shell. It accepts an absolute proxy prefix or a
+same-origin prefix such as `/cors-proxy?url=`. Both endpoint flags override
+their exported `VITE_CORS_PROXY_URL` / `VITE_KANDELO_SIGNALLING_URL`
+variables. When neither a flag nor its exported variable is set, Vite can
+load that value from its normal `.env` files. Without a proxy override, the
+existing Playground production default is retained. Spacefast deployment is
+optional: the reusable `node scripts/deploy-spacefast.mjs --space ORIGIN` prepares
+the combined bundle; `--publish` explicitly publishes it and `--dry-run`
+runs local CLI checks instead. The target has no saved default. See the
+[deployment guide](../apps/spacefast-cors-proxy/README.md#combined-kandelo-site).
+A normal build never publishes or signs in.
 
 The SourceOnly local DAG described in
 [Package Management](package-management.md#local-dag-build) is the canonical
@@ -2668,6 +2761,43 @@ with a fresh build clears its active sessions.
 If the endpoint is unavailable, session creation or joining reports the request
 failure in the panel.
 
+The Spacefast combined build includes a TypeScript implementation at
+`/signalling`. Pass `--signalling-url /signalling` to `build-browser` to set
+`VITE_KANDELO_SIGNALLING_URL` inside the clean build shell. Both computers
+must be admitted by the Space's access settings. The endpoint uses MySQL
+conditional updates for atomic matching across workers, preserving the PHP
+session/room protocol and limits. It shares neither state nor request budget
+with `/cors-proxy`. Packaging omits the portable PHP piplet from the
+Spacefast output and leaves the original static build intact for WP Cloud.
+See [Spacefast signalling](../apps/signalling/spacefast/README.md)
+for storage, tests and hosting boundaries. Guest traffic still uses the peer
+link; hosting signalling on Spacefast supplies no TURN relay.
+
+WP Cloud remains a supported static host: build with
+`--signalling-url /signalling/piplet.php` and keep serving the portable PHP
+piplet there. An omitted `--cors-proxy` retains the production Playground
+proxy; an explicit URL can instead select a standalone Spacefast proxy.
+The separate-site layout is experimental: browser tests cover the protocol,
+but Spacefast's live cross-origin serving layer has not been verified.
+Build that separate worker with repeated `--allow-referer` origins for every
+approved app (including a WP Cloud app's origin if desired). It requires actual
+Referer admission as well as CORS grants; absent or unapproved Referers are
+403 before upstream work. Preflight uses the approved Origin. These headers
+are forgeable by non-browser clients, so the admission rule does not replace
+rate limiting or deployment access controls. The worker's durable budget is
+a 1,000-token bucket per verified guest/account identity, refilling 100 per
+minute. Clearing the guest session and token can obtain a fresh identity;
+this is weaker against quota evasion than Playground's IP-based policy.
+Same-origin deployment uses Spacefast cookies to verify identity; a separate
+proxy issues a narrow signed token that persists on the app's origin, so
+third-party cookies are unnecessary. A configured trusted classification
+header can enable Playground's search-engine exclusion; none is assumed.
+See the
+[standalone proxy recipe](../apps/spacefast-cors-proxy/README.md#separate-proxy-site)
+for configuration, cross-origin hosting boundaries and the upstream comparison.
+
+
+
 UDP uses an unordered channel with zero retransmissions; directory control is
 ordered and reliable. The payload cap is the lesser of 65,507 bytes and the
 negotiated SCTP ceiling minus 16 bytes. Oversized sends return EMSGSIZE and a
@@ -2718,6 +2848,17 @@ defaults, and a deployment that wants peers behind symmetric NATs to connect
 names a TURN server there. Missing channel arrival is bounded to 30 seconds after
 ICE connects; the manual answer exchange has no deadline. Cancellation closes
 pending channels and connections.
+
+The network panel adds a short troubleshooting hint to peer connection
+failures and connection timeouts. On detected macOS it points to System
+Settings → Privacy & Security → Local Network; on Windows it points to the
+browser's Windows Firewall entry. Other platforms get a general reminder
+to check both peers' browser permissions, VPNs and firewalls. Platform
+detection is best effort (including iPadOS identifying as a Mac); hints do
+not inspect permission state or establish the cause of a failure. Invalid
+invitations and signalling-server errors retain their own messages without
+these peer-link hints. No permission prompts or media access are requested.
+
 Close and failure subscriptions expose established connection teardown.
 Late failure subscribers receive the recorded connection error once, so an
 ICE failure during an asynchronous consumer handoff is not lost. An orderly
@@ -2769,6 +2910,46 @@ message after worker-main returns. Forced paths drop host aliases without ever
 recycling the backing. Whole-kernel destroy terminates nested process/thread
 Workers before terminating the containing kernel Worker realm, which is the
 final fallback for incomplete graceful detach.
+
+Audio and framebuffer presentation use independent bounded shared buffers.
+A view into kernel or guest memory retains the full address space, even when
+only a tiny ring or pixel window is visible. Persistent page and worklet realms
+must not become owners of those address spaces: dropping a view or disconnecting
+a node does not establish a collection deadline. See the device sections above.
+
+Process exit executes `unreachable` inside a disposable Wasm helper. A
+`WebAssembly.RuntimeError` constructed and thrown in JavaScript is still a
+catchable host exception. Exec retirement pairs the Wasm trap with an exact
+private channel marker. A JS exception can enter libc++'s `noexcept`
+handler, which writes to the already-retired syscall channel and permanently
+parks the discarded Worker. Import adapters can replace a trap's JavaScript
+identity, so the Worker boundary recognizes the marker, skips guest cleanup
+that could issue more syscalls, and publishes `exec_retired` before its terminal
+`memory_quiescent` message. Committed normal exit also bypasses guest cleanup:
+its deallocators cannot use a channel after Rust has recorded exit. The
+disposable realm releases the remaining state; pthread exit still releases host-side replication locks for
+the surviving process. These terminal paths are shared by Node/Bun and browser
+workers.
+Workers parked after Rust has recorded exit are woken too. A private exit
+retirement marker unwinds them without a second exit syscall or exit message,
+preserving the recorded status and parent notification. This covers signal
+exits and blocked siblings after `exit_group`, which forced termination cannot
+reclaim on WebKit.
+Browser main allows up to 15 seconds for the kernel worker's bounded cleanup
+phases before terminating its realm; a two-second outer deadline can interrupt
+exec retirement, process draining, framebuffer release, or PCM draining.
+
+Teardown also retires every pending futex engine wait before deleting its
+registration. Clearing a JavaScript map does not cancel `Atomics.waitAsync`:
+the engine retains its promise reaction and process memory, even after Worker
+termination. Whole-machine teardown retires all waits; per-process teardown
+retires only the selected PID's waits.
+
+Boot image composition loads an image once and reads metadata and capacity from
+that same verified writer before applying runtime patches. Separate full-image
+readers create several Wasm heaps that coexist until garbage collection, which
+is especially costly for the WordPress image on iOS. Composition still runs in
+a disposable Worker and returns transferable bytes.
 
 `maxProcessMemoryBytes` is a sampled allocation-admission budget, not a hard
 aggregate growth cap: direct `WebAssembly.Memory.grow()` has no JavaScript

@@ -3,7 +3,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <setjmp.h>
-#include <linux/fb.h>
 #include <poll.h>
 #include <pthread.h>
 #include <sched.h>
@@ -11,11 +10,10 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/select.h>
 #include <sys/syscall.h>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -74,8 +72,7 @@ static char restart_marker[80];
 static size_t restart_marker_len;
 static char deadline_marker[80];
 static size_t deadline_marker_len;
-static int browser_framebuffer_fd = -1;
-static void *browser_framebuffer_mapping = MAP_FAILED;
+static pthread_t browser_gate_thread;
 static int nested_ready_fd = -1;
 static pthread_t nested_target_thread;
 static pthread_t nonlocal_helper_thread;
@@ -106,23 +103,39 @@ enum nested_wait {
     NESTED_WAIT_PAUSE,
 };
 
-static int bind_browser_gate_memory(void)
+/* Coordinate browser tests through stdin, independently of framebuffer storage. */
+static void *read_browser_gates(void *unused)
 {
-    struct fb_fix_screeninfo fixed;
+    (void)unused;
+    char line[64];
+    size_t used = 0;
+    for (;;) {
+        char c;
+        ssize_t n = read(STDIN_FILENO, &c, 1);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return NULL;
+        if (c == '\n') {
+            line[used] = 0;
+            uintptr_t address = (uintptr_t)strtoull(line, NULL, 10);
+            if (address == (uintptr_t)&host_gate ||
+                address == (uintptr_t)&restart_gate ||
+                address == (uintptr_t)&deadline_gate)
+                atomic_store_explicit((_Atomic uint32_t *)address, 1, memory_order_release);
+            used = 0;
+        } else if (used + 1 < sizeof(line)) line[used++] = c;
+        else return NULL;
+    }
+}
 
-    browser_framebuffer_fd = open("/dev/fb0", O_RDWR);
-    if (browser_framebuffer_fd < 0 ||
-        ioctl(browser_framebuffer_fd, FBIOGET_FSCREENINFO, &fixed) != 0)
-        return -1;
-    browser_framebuffer_mapping = mmap(
-        NULL,
-        fixed.smem_len,
-        PROT_READ | PROT_WRITE,
-        MAP_SHARED,
-        browser_framebuffer_fd,
-        0
-    );
-    return browser_framebuffer_mapping == MAP_FAILED ? -1 : 0;
+static int start_browser_gates(void)
+{
+    sigset_t all, previous;
+    sigfillset(&all);
+    int error = pthread_sigmask(SIG_SETMASK, &all, &previous);
+    if (error) return error;
+    error = pthread_create(&browser_gate_thread, NULL, read_browser_gates, NULL);
+    int restored = pthread_sigmask(SIG_SETMASK, &previous, NULL);
+    return error ? error : restored;
 }
 
 static const char *api_name(enum wait_api api)
@@ -1556,7 +1569,7 @@ int main(int argc, char **argv)
         strcmp(argv[1], "--browser-gate") == 0;
 
     if ((argc != 1 && !use_browser_gate) ||
-        (use_browser_gate && bind_browser_gate_memory() != 0) ||
+        (use_browser_gate && start_browser_gates() != 0) ||
         check_wait4_unknown_option() != 0 ||
         check_ppoll_invalid_timeout() != 0)
         return 2;
