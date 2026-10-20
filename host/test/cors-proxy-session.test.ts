@@ -21,6 +21,27 @@ describe("CORS proxy quota session transport", () => {
     expect(send).toHaveBeenCalledOnce();
   });
 
+  it("forwards every caller header unchanged and adds only its credential, without touching the caller's headers", async () => {
+    const identity = session();
+    const caller = new Headers({ Accept: "application/json", "X-Kandelo-Proxy-Session": "guest:forged" });
+    caller.append("X-Repeat", "first");
+    caller.append("X-Repeat", "second");
+    const before = [...caller];
+    const forwarded: Array<Array<[string, string]>> = [];
+    const send = async (target: string, init: RequestInit) => {
+      if (target === origin + "/cors-proxy-session") return Response.json(identity);
+      forwarded.push([...new Headers(init.headers)]);
+      return new Headers(init.headers).get("X-Kandelo-Proxy-Session") === identity.token ? new Response("ok") : required();
+    };
+    const fetch = createProxySessionTransport(null);
+    expect((await fetch(url, { headers: caller }, send)).status).toBe(200);
+    // The first try carries no credential (the forged one is dropped), the
+    // retry carries the issued one; every other header is the caller's.
+    const others = before.filter(([name]) => name !== "x-kandelo-proxy-session");
+    expect(forwarded).toEqual([others, [...others, ["x-kandelo-proxy-session", identity.token]].sort()]);
+    expect([...caller]).toEqual(before);
+  });
+
   it("bootstraps only the configured proxy origin, serializes concurrent first use, and replays POST bytes once", async () => {
     const identity = session(); let issued = 0; let upstream = 0;
     vi.stubGlobal("location", new URL("https://kandelo.example/app"));
