@@ -299,6 +299,19 @@ dominant load error, or skips.
 - **Keep if:** at least 80% of the first 20 warnings are real.
 - **Remove if:** precision is below 80% after one revision.
 
+When a run has failures, the reporter also prints `info:` lines with the
+machine's load at the start and end of the run, the other `agent-job` jobs
+still running, and each failed test's duration. They state facts and never
+excuse a failure.
+
+- **Measure:** for failures whose line shows high load or other jobs, how
+  often a quiet rerun passed, and whether a transcript used the line to
+  decide on that rerun.
+- **Keep if:** the line marks most load-caused failures, which then pass when
+  rerun quietly, and real regressions under load are still investigated.
+- **Remove if:** readers start dismissing failures because of it, or it never
+  changes a decision.
+
 ### 5. Conformance XFAIL reason check
 
 Every expected failure (XFAIL) in the libc, POSIX, and Sortix suites carries
