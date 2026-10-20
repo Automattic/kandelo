@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { gotoMachine } from "./support/kandelo-machine";
+import { gotoMachine as gotoDefaultMachine } from "./support/kandelo-machine";
 import { writeFileSync } from "node:fs";
 import { buildTerminalCommand, parseTerminalCommandResult } from "./support/terminal-command";
 
@@ -64,6 +64,26 @@ async function guestCommand(page: Page, command: string) {
   const result = parseTerminalCommandResult(await transcript(), protocol)!;
   expect(result.exitCode, result.output).toBe(0);
   return result.output;
+}
+
+// Keep native widget regressions at their explicit saved 960x540 mode.
+// The separate fresh-profile case below checks the product's 100% default.
+// Configure this through the real guest settings file and normal relaunch.
+async function gotoMachine(...args: Parameters<typeof gotoDefaultMachine>) {
+  await gotoDefaultMachine(...args);
+  const [page, profile] = args;
+  if (profile !== "freeciv") return;
+  await running(page);
+  await showGame(page);
+  await canvas(page).click({ position: await menuPosition(page, "quit") });
+  await expect.poll(() => terminalLines(page), { timeout: 30_000 }).toMatch(/kandelo\$\s*$/);
+  await guestCommand(page, [
+    'mkdir -p "$HOME/.freeciv"',
+    'printf "[client]\\nmigration_sdl2_from_sdl=TRUE\\nflag_sdl2_default_screen_size_set=TRUE\\ngui_sdl2_screen.width=960\\ngui_sdl2_screen.height=540\\nsound_effects_volume=25\\n" > "$HOME/.freeciv/freeciv-client-rc-3.2"',
+  ].join("\n"));
+  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  await multiplayer(page, "local");
+  await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 60_000 });
 }
 
 async function nativeAction(page: Page, action: () => Promise<unknown>) {
@@ -561,6 +581,36 @@ for (const density of [1, 2]) {
           await browser.close();
         }
       },
+    });
+    test("fresh profile uses CSS resolution and quiet first-run sound", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "graphical acceptance targets Chromium");
+      test.setTimeout(180_000);
+      await gotoDefaultMachine(page, "freeciv");
+      await running(page);
+      await showGame(page);
+      await expect(page.getByText("1440×810", { exact: false })).toBeVisible();
+      const box = (await canvas(page).boundingBox())!;
+      expect(box.width).toBeCloseTo(1440, 0);
+      expect(box.height).toBeCloseTo(810, 0);
+      expect(await page.evaluate(() => devicePixelRatio)).toBe(density);
+      await canvas(page).click({ position: await menuPosition(page, "options") });
+      await waitForTitlebar(page, -15, -148, true, 50);
+      const settings = await guestCommand(page,
+        'cat "$HOME/.freeciv/freeciv-client-rc-3.2"');
+      expect(settings).toMatch(/sound_effects_volume\s*=\s*25\b/);
+      const preserved = await guestCommand(page, [
+        'sed -i "s/^sound_effects_volume=.*/sound_effects_volume=40/" "$HOME/.freeciv/freeciv-client-rc-3.2"',
+        '/usr/bin/freeciv --version',
+        'grep "sound_effects_volume" "$HOME/.freeciv/freeciv-client-rc-3.2"',
+        'mkdir -p /tmp/explicit-home',
+        'HOME=/tmp/explicit-home FREECIV_OPT=/tmp/chosen-options /usr/bin/freeciv --version',
+        'test ! -e /tmp/explicit-home/.freeciv/freeciv-client-rc-3.2 || exit 1',
+        'mkdir -p /tmp/legacy-home/.freeciv',
+        'printf "[client]\\nsound_effects_volume=70\\n" > /tmp/legacy-home/.freeciv/freeciv-client-rc-3.1',
+        'HOME=/tmp/legacy-home /usr/bin/freeciv --version',
+        'test ! -e /tmp/legacy-home/.freeciv/freeciv-client-rc-3.2',
+      ].join("\n"));
+      expect(preserved).toMatch(/sound_effects_volume\s*=\s*40\b/);
     });
     test("pointer capture beyond display edges preserves cursor and menu clicks", async ({ page, browserName }) => {
       test.skip(browserName !== "chromium", "direct-display input regression targets Chromium");
