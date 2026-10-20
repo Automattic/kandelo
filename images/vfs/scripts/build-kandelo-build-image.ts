@@ -119,8 +119,9 @@ async function main(argv: string[]): Promise<void> {
       kernelAbi: ABI_VERSION,
       createdBy: "build-kandelo-build-image",
     },
+    // No materializeAll: installGuestToolchain already refused a base with
+    // deferred files, so every byte is resident in the tree being saved.
     normalizeTimestampsMs: Number(epoch) * 1000,
-    materializeAll: true,
   });
 }
 

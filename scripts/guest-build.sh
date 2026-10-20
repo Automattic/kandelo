@@ -35,7 +35,7 @@ kandelo_guest_build() {
         return 2
     fi
     local kernel="$kernel_dir/kandelo-kernel.wasm"
-    local image="$image_dir/kandelo-build.vfs.zst"
+    local image="$image_dir/kandelo-build-image.vfs.zst"
     [ -f "$kernel" ] || { echo "kandelo_guest_build: $kernel not found" >&2; return 2; }
     [ -f "$image" ] || { echo "kandelo_guest_build: $image not found" >&2; return 2; }
     if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then

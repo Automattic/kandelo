@@ -102,7 +102,7 @@ of PR #1548. C needs A, B and #1548.
 ### PR A: runner and build image
 
 **Build image.** A new package, `kandelo-build-image`, produces
-`kandelo-build.vfs.zst`: the rootfs with every lazy tool materialized
+`kandelo-build-image.vfs.zst`: the rootfs with every lazy tool materialized
 eagerly from its package output, plus the contents of `kandelo-sdk.zip`
 expanded under `/usr`. It is a build-time artifact, never shipped to
 browsers. Making it fully eager means a recipe needs only

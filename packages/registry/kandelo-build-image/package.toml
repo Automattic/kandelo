@@ -44,4 +44,4 @@ script_path = "packages/registry/kandelo-build-image/build-kandelo-build-image.s
 
 [[outputs]]
 name = "kandelo-build-image"
-wasm = "kandelo-build.vfs.zst"
+wasm = "kandelo-build-image.vfs.zst"
