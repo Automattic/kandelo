@@ -44,9 +44,9 @@ TSX_TMP="$(mktemp -d /tmp/kandelo-build-image.XXXXXX)"
 trap 'rm -rf -- "$TSX_TMP"' EXIT
 TMPDIR="$TSX_TMP" node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
     "$REPO_ROOT/images/vfs/scripts/build-kandelo-build-image.ts" \
-    "$EAGER_ROOTFS" "$SDK_ZIP" "$OUT_DIR/kandelo-build.vfs.zst"
+    "$EAGER_ROOTFS" "$SDK_ZIP" "$OUT_DIR/kandelo-build-image.vfs.zst"
 
-[ -f "$OUT_DIR/kandelo-build.vfs.zst" ] || {
-    echo "ERROR: kandelo-build.vfs.zst was not produced" >&2
+[ -f "$OUT_DIR/kandelo-build-image.vfs.zst" ] || {
+    echo "ERROR: kandelo-build-image.vfs.zst was not produced" >&2
     exit 1
 }

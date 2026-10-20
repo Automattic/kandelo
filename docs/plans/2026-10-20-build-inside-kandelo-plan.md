@@ -171,7 +171,7 @@ memory.
   - `scripts/guest-build.sh` defines `kandelo_guest_build <workspace>
     <timeout-ms> [--input g=h ...] -- <argv...>`. It takes the kernel
     from `$WASM_POSIX_DEP_KERNEL_DIR/kandelo-kernel.wasm` and the image
-    from `$WASM_POSIX_DEP_KANDELO_BUILD_IMAGE_DIR/kandelo-build.vfs.zst`,
+    from `$WASM_POSIX_DEP_KANDELO_BUILD_IMAGE_DIR/kandelo-build-image.vfs.zst`,
     writes the log to `$WASM_POSIX_DEP_WORK_DIR/guest-build.log`, and
     runs `node node_modules/tsx/dist/cli.mjs` with a short `TMPDIR`, as
     `packages/registry/coreutils-docs/build-coreutils-docs.sh:42-51`
@@ -204,7 +204,7 @@ memory.
 - [ ] **Step 4: Write the package**
   - `depends_on`: `rootfs@0.1.0`, `kandelo-sdk-browser-bundle@21.1.7`,
     and every package `images/rootfs/PACKAGES.toml` lists.
-  - Output `kandelo-build.vfs.zst`.
+  - Output `kandelo-build-image.vfs.zst`.
   - `build.toml` `inputs`: the recipe, the composer and its runtime
     imports, `images/rootfs/PACKAGES.toml`,
     `images/vfs/lib/kandelo-image-fs.ts`, `cargo:kandelo-image-module`,
