@@ -10,6 +10,7 @@ type TestableCentralizedKernelWorker = CentralizedKernelWorker & {
   releaseProcessViews(
     pid: number,
     expectedMemory: WebAssembly.Memory,
+    transition?: "exit" | "exec",
   ): boolean;
 };
 
@@ -72,6 +73,12 @@ describe("process-owned device view teardown", () => {
     expect(releaseProcessViews).not.toHaveBeenCalled();
 
     expect(testable.releaseProcessViews(41, newMemory)).toBe(true);
-    expect(releaseProcessViews).toHaveBeenCalledWith(41);
+    expect(releaseProcessViews).toHaveBeenCalledWith(41, "exit");
+
+    releaseProcessViews.mockClear();
+    expect(testable.releaseProcessViews(41, oldMemory, "exec")).toBe(false);
+    expect(releaseProcessViews).not.toHaveBeenCalled();
+    expect(testable.releaseProcessViews(41, newMemory, "exec")).toBe(true);
+    expect(releaseProcessViews).toHaveBeenCalledWith(41, "exec");
   });
 });
