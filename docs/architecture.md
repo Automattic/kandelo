@@ -2147,7 +2147,11 @@ kernel verifies the cohort digests when it loads the image.
 
 Relative URIs are resolved against the deployment at fetch time: the browser
 uses `BrowserKernel`'s `lazyUrlBase`, Node the peer
-`NodeKernelHost.rootfsLazyUrlBase`. The image itself is never rewritten.
+`NodeKernelHost.rootfsLazyUrlBase`. Image-owned tokens such as
+`kandelo-lazy:programs/php/php.wasm` can be mapped to transport URLs with
+`BrowserKernel.lazyUrlMap` or `NodeKernelHost.rootfsLazyUrlMap`; explicit
+mappings take precedence over the base on both hosts. The image itself is
+never rewritten.
 Closed/offline acceptance can bind resolved URLs to exact caller-owned bytes
 through the closed-lazy-asset transport
 (`host/src/vfs/closed-lazy-assets.ts`), which verifies each declared byte
