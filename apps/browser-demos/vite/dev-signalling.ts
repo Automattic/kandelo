@@ -40,11 +40,10 @@ export async function findSignallingPhp(repoRoot: string): Promise<string> {
     const candidate = path.join(dir, "php");
     if (dir && fs.existsSync(candidate)) return candidate;
   }
-  // The dev shell exports the Nix it was entered with; tools.nix reads the
-  // repository flake, so it needs impure evaluation.
+  // The dev shell exports the Nix it was entered with.
   const nix = process.env.KANDELO_NIX_BIN ?? "nix";
   const { stdout } = await promisify(execFile)(
-    nix, ["build", "--impure", "--no-link", "--print-out-paths", "-f", path.join(repoRoot, "apps/signalling/tools.nix")],
+    nix, ["build", "--no-link", "--print-out-paths", "-f", path.join(repoRoot, "apps/signalling/tools.nix")],
     { maxBuffer: 1024 * 1024 },
   );
   const php = path.join(stdout.trim().split("\n").at(-1)!, "bin/php");
