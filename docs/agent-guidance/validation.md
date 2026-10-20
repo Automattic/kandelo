@@ -141,6 +141,18 @@ device consumer: a new KMS application needs a KMS launch in the cycle
 alongside the existing framebuffer and web cases. These checks supplement
 relevant POSIX/conformance suites.
 
+## Local browser peer connections
+
+The Chromium loopback WebRTC fixture needs both its launch flags and a
+test-only microphone permission grant in every browser context. Include
+the default page's context and each context created for an invitation.
+The flag permits loopback candidates, while Chromium's permission filter
+determines whether it exposes that interface. No media capture is needed.
+Before changing signalling or guest sockets after a connection failure,
+inspect the exchanged candidates and check the fixture's permissions.
+Keep this grant in the local tests. Loopback checks prove local transport
+and guest behavior; cross-computer and NAT routing need separate evidence.
+
 ## Node process-memory reclamation measurements
 
 Resident set size (RSS) measures the whole Node process, including its

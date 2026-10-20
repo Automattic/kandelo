@@ -279,6 +279,19 @@ See [the measured comparison](measurements/2026-10-20-process-memory-rss-window.
 The reusable local command and native Safari evidence requirements live in
 the [validation contract](agent-guidance/validation.md#browser-memory-regression-gate).
 
+## Declare permissions in every local peer-test context
+
+A browser launch flag can permit an interface without making that
+interface visible to a page. Chromium's local peer tests need both the
+loopback flag and a test-only microphone permission grant. Omitting the
+grant from a new context advertised only LAN/public routes on the test
+machine, so successful signalling still led to a failed connection.
+Declare the same permissions on the initial page and every invited
+computer. Inspect the exchanged connection candidates before changing
+guest sockets or adding a relay. This fixture captures no media and
+establishes local connectivity only; real network paths need their own
+tests.
+
 ## Schedule observer work from real pending state
 
 A subscription says that someone wants updates. It does not mean that every

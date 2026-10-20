@@ -6,7 +6,12 @@ import { runTerminalCommand } from "./support/terminal-command";
 // open its link and join, and real guest programs talk over the session.
 // The dev server relays the real piplet, so this needs PHP (see
 // vite/dev-signalling.ts). The local ICE fixture relies on Chromium's
-// loopback-candidate flag.
+// loopback-candidate flag and a test-only microphone permission grant.
+// WHY: the flag permits loopback, but Chromium's candidate filtering omits
+// that interface without the grant. Every context needs it, including the
+// default page and computers opened from invite links. No media is captured.
+const localIceContextOptions = { permissions: ["microphone"] };
+test.use(localIceContextOptions);
 
 const running = (page: Page) =>
   expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
@@ -50,7 +55,7 @@ async function host(page: Page, name: string, profile = "shell"): Promise<string
 }
 
 async function join(browser: Browser, link: string, expected: string) {
-  const context = await browser.newContext();
+  const context = await browser.newContext(localIceContextOptions);
   const page = await context.newPage();
   await page.goto(link, { waitUntil: "domcontentloaded" });
   await running(page);
@@ -133,7 +138,7 @@ test("a joiner can pick a different computer before joining", async ({ browser, 
   test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
   test.setTimeout(480_000);
   const link = await host(page, "Mixed machines");
-  const context = await browser.newContext();
+  const context = await browser.newContext(localIceContextOptions);
   const joiner = await context.newPage();
   try {
     await joiner.goto(link, { waitUntil: "domcontentloaded" });
