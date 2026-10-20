@@ -327,8 +327,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   );
   await runGuideScript(
     page,
-    "touch /home/.nethack/record\n" +
-      "nethack -s all >/tmp/kandelo-nethack.out 2>&1\n" +
+    "nethack -s all >/tmp/kandelo-nethack.out 2>&1\n" +
       "status=$?\n" +
       "if (( status == 0 )); then\n" +
       "  printf 'KANDELO_NETHACK_OK:%s\\n' \"$status\"\n" +

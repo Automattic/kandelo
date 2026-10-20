@@ -188,6 +188,7 @@ host/test/mouse-integration.test.ts	source-only
 host/test/mtdev-smoke.test.ts	prepared-product
 host/test/multi-worker.test.ts	prepared-product
 host/test/native-open-create-race.test.ts	source-only
+host/test/nethack-shared-playground.test.ts	prepared-product
 host/test/network-hostname.test.ts	source-only
 host/test/node-demo-workspace.test.ts	prepared-product
 host/test/node-host-mounts.test.ts	prepared-product

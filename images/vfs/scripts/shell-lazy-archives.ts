@@ -438,6 +438,83 @@ export function registerDeclaredShellLazyArchive(
   return archive;
 }
 
+// ── NetHack's shared game state ────────────────────────────────────
+//
+// NetHack keeps saves, scores, bones and its lock file in one directory shared
+// by every player (its compiled-in VAR_PLAYGROUND). Distributions make that
+// work for any user without letting users touch each other's games: the
+// directory and its files belong to group `games`, players cannot write them,
+// and the game binary is set-group-ID `games`. This is the layout Debian's
+// nethack-common/nethack-console tmpfiles.d entries and Fedora's spec install,
+// and it is upstream's own `make install`, which creates `save/` — the step
+// whose absence made every save fail with "Cannot open save file.".
+//
+// Applied after the archive is registered because `/usr/bin/nethack` is one of
+// its members. Its set-group-ID bit is honoured because the archive declares a
+// digest the kernel checks before serving any member.
+
+/** Must match NETHACK_VAR_PLAYGROUND in packages/registry/nethack/build-nethack.sh. */
+export const NETHACK_PLAYGROUND = "/var/games/nethack";
+const NETHACK_BINARY = "/usr/bin/nethack";
+
+/** Install NetHack's playground and binary ownership into the shell image. */
+export function installNethackGames(fs: VfsImageFilesystem): void {
+  if (!fs.isPathDeferred(NETHACK_BINARY)) {
+    throw new Error(`${NETHACK_BINARY} must be registered before its game state`);
+  }
+  const games = groupId(fs, "games");
+
+  ensureDirRecursive(fs, "/var/games");
+  for (const dir of [NETHACK_PLAYGROUND, `${NETHACK_PLAYGROUND}/save`]) {
+    ensureDirRecursive(fs, dir);
+    fs.chown(dir, 0, games);
+    fs.chmod(dir, 0o2775);
+  }
+  // `perm` must exist: NetHack locks by hard-linking to it. The others are
+  // pre-created as Debian does so a fresh image already shows their owner.
+  for (const name of ["perm", "record", "logfile", "xlogfile"]) {
+    const file = `${NETHACK_PLAYGROUND}/${name}`;
+    writeVfsFile(fs, file, "", 0o664);
+    fs.chown(file, 0, games);
+    fs.chmod(file, 0o664);
+  }
+  // chown before chmod: a chown may clear set-ID, and the chmod restates it.
+  fs.chown(NETHACK_BINARY, 0, games);
+  fs.chmod(NETHACK_BINARY, 0o2755);
+}
+
+function groupId(fs: VfsImageFilesystem, name: string): number {
+  let content: string;
+  try {
+    content = readVfsText(fs, "/etc/group");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot read /etc/group for group ${name}: ${message}`);
+  }
+  for (const line of content.split("\n")) {
+    const [group, , gid] = line.split(":");
+    if (group === name && /^[0-9]+$/.test(gid ?? "")) return Number(gid);
+  }
+  throw new Error(`/etc/group has no ${name} group`);
+}
+
+function readVfsText(fs: VfsImageFilesystem, path: string): string {
+  const size = fs.stat(path).size;
+  const fd = fs.open(path, 0, 0);
+  try {
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fs.read(fd, bytes.subarray(offset), null, bytes.length - offset);
+      if (count <= 0) break;
+      offset += count;
+    }
+    return new TextDecoder().decode(bytes.subarray(0, offset));
+  } finally {
+    fs.close(fd);
+  }
+}
+
 // ── Shared runtime terminfo database ───────────────────────────────
 //
 // Unlike the archives above, the terminfo database is not fetched lazily on

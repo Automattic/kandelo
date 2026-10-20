@@ -84,5 +84,5 @@ Systems software to port to Kandelo, prioritized by POSIX depth and browser util
 - GNU sed 4.9 — stream editing
 - Redis 7.2 — threads, sockets, signals, event loop
 - CPython 3.13.3 — mmap, signals, fork, file I/O, REPL + script runner
-- NetHack 3.6.7 — curses UI, DLB-packed data archive, /home/.nethack saves; shipped via the shell demo as a lazy archive
+- NetHack 3.6.7 — curses UI, DLB-packed data archive, shared saves and scores in /var/games/nethack through a set-group-ID `games` binary (the Debian/Fedora layout); shipped via the shell demo as a lazy archive
 - Rust `std` (`wasm32-unknown-kandelo`) — generic Rust programs with full std: fs, args/env, time, HashMap, `std::thread`+`Mutex`, `std::net` TCP, `std::process` (fork+exec, instrumented). Built with `wasm32posix-cargo`; see `docs/rust-target.md`.

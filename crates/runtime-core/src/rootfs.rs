@@ -2360,19 +2360,37 @@ where
 /// still runs, as the calling user. Refusing would make every image that
 /// predates digests unbootable, and the truthful statement is not "these bytes
 /// are wrong" — it is that nothing here can tell you they are right.
+///
+/// A lazy-archive member is verifiable by its archive's digest as well as by
+/// its own. `ensure_archive_member` is the only path to a member's bytes, and
+/// it refuses (EIO) and never caches an archive that fails that digest, so a
+/// member extracted from it is the bytes the image named. Counting only the
+/// member's own digest stripped setgid from `/usr/bin/nethack`, whose archive
+/// the kernel checks on every fetch.
 fn demote_unverifiable_setid() {
     ROOTFS.with(|state| {
+        let verified_archives: alloc::collections::BTreeSet<u32> = state
+            .archives
+            .iter()
+            .filter(|(_, archive)| archive.digest != crate::sdef::DIGEST_NONE)
+            .map(|(id, _)| *id)
+            .collect();
         for slot in state.inodes.iter_mut() {
             let Some(inode) = slot.as_mut() else { continue };
-            let deferred = matches!(inode.kind, InodeKind::LazyMember { .. })
-                || (matches!(
-                    inode.kind,
-                    InodeKind::BaseRegular {
-                        source: BaseSource::Host,
-                        ..
-                    }
-                ) && inode.deferred_base);
-            if deferred && inode.deferred_digest == crate::sdef::DIGEST_NONE {
+            let (deferred, archive_verified) = match &inode.kind {
+                InodeKind::LazyMember { archive_id, .. } => {
+                    (true, verified_archives.contains(archive_id))
+                }
+                InodeKind::BaseRegular {
+                    source: BaseSource::Host,
+                    ..
+                } => (inode.deferred_base, false),
+                _ => (false, false),
+            };
+            if deferred
+                && !archive_verified
+                && inode.deferred_digest == crate::sdef::DIGEST_NONE
+            {
                 inode.demote_setid_unverified();
             }
         }
@@ -5810,6 +5828,64 @@ mod tests {
             0o6755,
             "a declared digest keeps the bits: these bytes can be checked",
         );
+    }
+
+    /// An image carrying one setgid lazy-archive member, its archive's digest
+    /// declared or not, and no digest of the member's own: the shape the shell
+    /// image's `/usr/bin/nethack` takes.
+    fn setgid_archive_member_image(archive_digest: &[u8]) -> alloc::vec::Vec<u8> {
+        let mut w =
+            crate::kandelo_image_write::KandeloImageWriter::mkfs(crate::kandelo_image_write::KandeloImageConfig::fixed(128 * 1024))
+                .expect("mkfs");
+        let root = w.root();
+        w.declare_lazy_archive(3, 4_096, b"nethack.zip", archive_digest, b"")
+            .expect("declare archive");
+        let ino = w
+            .create_deferred_file(root, b"nethack", 0o2755, 2_048, 3, b"bin/nethack", b"", b"", b"")
+            .expect("a setgid member addressed by its archive");
+        w.set_owner(ino, 0, 60).expect("root:games");
+        w.set_mode(ino, 0o2755).expect("setgid survives a trailing chmod");
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::kandelo_image_write::NoContent)
+            .expect("materialize");
+        let sections = crate::vfsi_container::ContainerSections {
+            lazy_json: b"",
+            archive_json: None,
+            metadata_json: None,
+            kernel_lazy: None,
+        };
+        let mut image = crate::vfsi_container::header(body.len(), sections.flags())
+            .expect("header")
+            .to_vec();
+        image.extend_from_slice(&body);
+        image.extend_from_slice(&crate::vfsi_container::trailer(&sections).expect("trailer"));
+        image
+    }
+
+    #[test]
+    fn setid_survives_on_a_member_of_an_archive_the_image_can_verify() {
+        let _guard = TestGuard::acquire();
+        // The member declares no digest of its own; its archive does, and
+        // `ensure_archive_member` refuses archive bytes that fail it before any
+        // member is extracted. That verifies the member's bytes too.
+        let image = setgid_archive_member_image(&[0x5Au8; crate::sdef::DIGEST_LEN]);
+        load_image(image.len() as u64, image_host(&image)).expect("load image");
+        let st = lstat(b"/nethack").expect("stat");
+        assert_eq!(st.st_mode & 0o7777, 0o2755, "the archive's digest vouches for the member");
+        assert_eq!((st.st_uid, st.st_gid), (0, 60));
+    }
+
+    #[test]
+    fn setid_is_demoted_on_a_member_of_an_archive_nothing_can_verify() {
+        let _guard = TestGuard::acquire();
+        // The control: neither the member nor its archive names a digest, so
+        // the archive digest above is what kept the bits.
+        let image = setgid_archive_member_image(b"");
+        load_image(image.len() as u64, image_host(&image)).expect("load image");
+        assert_eq!(lstat(b"/nethack").expect("stat").st_mode & 0o7777, 0o0755);
+        assert_eq!(lstat(b"/nethack").expect("stat").st_size, 2_048);
     }
 
     #[test]
