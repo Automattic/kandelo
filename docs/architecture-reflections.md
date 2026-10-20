@@ -333,3 +333,16 @@ omitted Ruby cases whose titles use imported constants. Its runtime collector
 still found and ran them. Exact case inventories must use runtime collection;
 a short list is not proof that the omitted tests do not exist. Keep the
 one-to-one case comparison rather than weakening it to accept an empty list.
+
+## Test HTTP requests after session wrapping
+
+A proxy session wrapper copies the browser's `Headers` object before
+adding its own credential. The copy preserves header values, including
+the order of repeated values. It does not replay calls recorded by a test
+subclass of `Headers`. An assertion about that call history can fail even
+when Fetch receives the correct request.
+
+Assert the complete request at the Fetch boundary: URL, final header
+fields, credential policy, and referrer policy. Keep explicit assertions
+for omitted guest fields and repeated-value order. These checks continue
+to protect the HTTP behavior when another wrapper copies the request.

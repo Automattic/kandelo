@@ -31,6 +31,12 @@ production source. Report authorized deferred tests and unsupported cases
 separately from failures; never silently narrow the enabled inventory to
 make a suite pass. See [the validation reflection](../architecture-reflections.md#make-validation-observe-real-completion-and-policy).
 
+Check HTTP requests where they reach Fetch. A wrapper that attaches a
+proxy session can copy the browser's `Headers` object. Check final URLs,
+header values, credentials, and referrer policy; copies do not replay a
+test subclass's `append` calls. Preserve checks for dropped fields and
+the order of repeated values.
+
 ## Validation scope and suite selection
 
 Do not use a narrow check to support a broad claim. A passing unit test does
