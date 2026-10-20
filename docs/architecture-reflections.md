@@ -323,6 +323,13 @@ Its [official compatibility package](https://devblogs.microsoft.com/typescript/a
 keeps the TypeScript 6 API available to audits, declaration generation and
 documentation tools while `tsc` selects the native compiler.
 
+Compiler configuration has its own compatibility boundary. TypeScript 7
+removed `baseUrl`; the browser app's explicit `@host/*` mapping continued
+to resolve relative to its configuration after that unused option was
+removed. Exercise real project configurations during an upgrade. If the
+old compiler already reports type errors, compare their locations and
+codes with the new compiler and report the existing errors explicitly.
+
 Parser options also define which source a build can see. Enabling JSX for
 all files made Babel 8 treat an ordinary `.ts` generic function as JSX.
 Select language options by filename and keep parse failures visible. Exercise
