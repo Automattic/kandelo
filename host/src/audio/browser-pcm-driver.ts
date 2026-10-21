@@ -45,6 +45,16 @@ export interface BrowserPcmDriverOptions {
  */
 let sharedAudioContext: AudioContext | null = null;
 const sharedRegisteredWorklets = new Set<string>();
+/**
+ * True while the shared context is suspended only because a machine's
+ * teardown settled its output, not because the user or the browser paused it.
+ * The next machine resumes it, so the activation the user gave the page
+ * outlives the machine switch instead of leaving the new machine's PCM ring
+ * without a consumer until the next gesture.
+ */
+let sharedContextSuspendedByTeardown = false;
+/** Drivers whose worklet node is connected to the shared context. */
+const sharedContextDrivers = new Set<BrowserPcmDriver>();
 
 const DEFAULT_RENDER_QUANTUM_FRAMES = 128;
 const UNREPORTED_OUTPUT_LATENCY_FALLBACK_MS = 100;
@@ -161,11 +171,19 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     if (!context || !this.node || context.state !== "running") return;
 
     const startedAt = performance.now();
-    await waitForPromiseWithin(
-      context.suspend(),
-      MAX_OUTPUT_PIPELINE_SETTLE_MS,
-    );
-    this.syncContextState();
+    // Another machine's worklet still renders through the shared context, so
+    // the context keeps running and carries this machine's tail out with it.
+    const shared = !this.ownsContext;
+    const otherMachineAttached = shared
+      && [...sharedContextDrivers].some((driver) => driver !== this);
+    if (!otherMachineAttached) {
+      if (shared) sharedContextSuspendedByTeardown = true;
+      await waitForPromiseWithin(
+        context.suspend(),
+        MAX_OUTPUT_PIPELINE_SETTLE_MS,
+      );
+      this.syncContextState();
+    }
 
     if ((context.state as string) === "closed" || context !== this.context) {
       return;
@@ -187,6 +205,7 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     if (this.preparing) await this.preparing.catch(() => {});
     const node = this.node;
     const context = this.context;
+    sharedContextDrivers.delete(this);
     this.node = null;
     this.context = null;
     this.transport = null;
@@ -276,6 +295,7 @@ export class BrowserPcmDriver implements PcmOutputDriver {
             latencyHint: "interactive",
           });
           sharedRegisteredWorklets.clear();
+          sharedContextSuspendedByTeardown = false;
         }
         context = sharedAudioContext;
         this.ownsContext = false;
@@ -350,6 +370,7 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       };
       node.connect(context.destination);
       this.node = node;
+      if (!this.ownsContext) sharedContextDrivers.add(this);
       this.syncContextState();
     } catch (error) {
       this.markFatalError();
@@ -372,6 +393,11 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       }
       this.setState("error");
       throw error;
+    }
+    if (!this.ownsContext && sharedContextSuspendedByTeardown) {
+      sharedContextSuspendedByTeardown = false;
+      await context.resume().catch(() => {});
+      this.syncContextState();
     }
   }
 
