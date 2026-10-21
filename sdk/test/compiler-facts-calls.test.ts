@@ -26,3 +26,24 @@ it('keeps a virtual call typed after inlining it into a try region', async () =>
     rmSync(root, { recursive: true, force: true });
   }
 }, 120_000);
+
+it('keeps the facts and names of an optimized program that does not fork', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'kandelo-checkpoint-facts-'));
+  try {
+    const source = join(root, 'foo.c');
+    const program = join(root, 'foo.wasm');
+    writeFileSync(source, [
+      '#include <unistd.h>',
+      'int main(void) { char bar; return (int)read(0, &bar, 1); }',
+    ].join('\n'));
+    await promisify(execFile)('wasm32posix-cc', ['-O2', source, '-o', program]);
+    const module = new WebAssembly.Module(readFileSync(program));
+    const imports = WebAssembly.Module.imports(module).map((entry) => `${entry.module}.${entry.name}`);
+    expect(imports).toContain('kernel.kernel_checkpoint');
+    expect(imports).not.toContain('kernel.kernel_fork');
+    expect(WebAssembly.Module.customSections(module, 'kandelo.calltypes')).toHaveLength(1);
+    expect(WebAssembly.Module.customSections(module, 'name')).toHaveLength(1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 120_000);

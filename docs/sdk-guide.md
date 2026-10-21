@@ -292,9 +292,11 @@ which would move call sites to other functions and make per-function facts
 describe the wrong code. So the SDK holds that step back and inspects the
 linked module:
 
-- A module that imports `kernel.kernel_fork` (it can fork) keeps its
-  `kandelo.calltypes` section and is left as wasm-ld wrote it. It must be
-  fork-instrumented next; the instrumenter runs `wasm-opt -O2` itself after
+- A module that imports `kernel.kernel_fork` (it can fork) or
+  `kernel.kernel_checkpoint` (it can take part in a machine checkpoint)
+  keeps its `kandelo.calltypes` section and its name section and is left
+  as wasm-ld wrote it. It must be fork-instrumented next; the instrumenter
+  selects checkpoint frames by name, and runs `wasm-opt` itself after
   instrumenting.
 - Any other module loses the section and then gets exactly the `wasm-opt`
   command clang scheduled.
@@ -685,9 +687,11 @@ export legacy `asyncify_*` symbols.
 # Compile normally
 wasm32posix-cc program.c -o program.wasm
 
-# Do not run wasm-opt here. The SDK leaves a fork-capable link unoptimized
-# on purpose: its kandelo.calltypes facts describe the functions as linked
-# (see "Compiler facts for fork instrumentation").
+# Do not run wasm-opt here. The SDK leaves a link that imports
+# kernel.kernel_fork or kernel.kernel_checkpoint unoptimized on purpose: its
+# kandelo.calltypes facts describe the functions as linked, and its name
+# section lets the instrumenter select checkpoint frames (see "Compiler facts
+# for fork instrumentation").
 
 # Apply fork instrumentation. Auto-discovers fork-path functions via
 # call-graph analysis from the kernel.kernel_fork import — no onlylist

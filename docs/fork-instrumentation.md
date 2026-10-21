@@ -774,8 +774,10 @@ that produced it; see `crates/fork-instrument/src/size_attribution.rs`.
 
 A fork-using program goes through Binaryen's `wasm-opt` twice:
 
-1. **Before instrumentation.** The SDK's `-O` link runs `wasm-opt` (clang
-   schedules it after `wasm-ld`), and some recipes run their own pass.
+1. **Before instrumentation.** Some recipes run their own pass. The SDK
+   holds back the `wasm-opt` that clang schedules after `wasm-ld` for a
+   module the instrumenter will see, so its facts keep describing the
+   linked functions.
    Inlining, dead-function removal and identical-function merging shrink
    the call graph the instrumenter has to cover. Quickshell's raw link has
    108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
@@ -1512,9 +1514,10 @@ find them. From each root:
    are added.
 
 A module without a name section cannot be selected. It keeps the whole
-checkpoint closure and no fork sinks. The SDK keeps the facts only in a module
-that imports `kernel.kernel_fork`, so a program that never forks is selected
-without them.
+checkpoint closure and no fork sinks. The SDK keeps the facts and the names in
+every module that imports `kernel.kernel_fork` or `kernel.kernel_checkpoint`.
+A recipe that runs its own `wasm-opt` before instrumenting drops the names, so
+its module keeps the whole checkpoint closure.
 
 **The run-time check.** A covered function reads the exported global
 `__wpk_checkpoint_cover` into a local at entry and clears it; before a call to
