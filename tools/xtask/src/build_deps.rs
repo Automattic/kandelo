@@ -14147,9 +14147,9 @@ fn build_into_cache(
         // resolve to THIS worktree's SDK source — not whatever a global
         // `npm link` last pointed at. Without this, a sibling worktree's
         // SDK + sysroot can leak into the build, producing binaries with
-        // a foreign ABI. The shape of `<repo>/sdk/bin/` is committed
-        // symlinks pointing at `_wasm-posix-dispatch`; see
-        // `docs/package-management.md` "SDK toolchain invocation".
+        // a foreign ABI. `<repo>/sdk/bin/` holds committed wrapper
+        // scripts that run this worktree's SDK driver; see
+        // `docs/package-management.md` "Toolchain on PATH".
         let sdk_bin = crate::repo_root().join("sdk").join("bin");
         let path_var = match std::env::var_os("PATH") {
             Some(existing) => {

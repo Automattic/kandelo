@@ -132,11 +132,18 @@ wasm32posix-c++ program.cpp -o program.wasm
 
 C++ programs link against libc++ + libc++abi. Both are produced by
 the libcxx package (`packages/registry/libcxx/`) and resolved automatically
-by `cargo xtask build-deps resolve libcxx`. LLVM libunwind is statically
-bundled into `libc++abi.a`, so:
+by `cargo xtask build-deps resolve libcxx`. POSIX specifies no C++
+compiler; like every Unix C++ driver (`g++`, `clang++`), `wasm32posix-c++`
+links the C++ library into an executable by default, adding `-lc++
+-lc++abi` after the caller's inputs and before libc, as clang would for
+this target. `-nostdlib`, `-nodefaultlibs` and `-nostdlib++` turn that
+off; a shared library (`-shared`) takes the C++ library from the program
+that loads it. So the libcxx package must be in the sysroot of any build
+that links with `wasm32posix-c++`, including a configure check. LLVM
+libunwind is statically bundled into `libc++abi.a`, so:
 
 ```bash
-wasm32posix-c++ -fwasm-exceptions main.cpp -lc++ -lc++abi -o app.wasm
+wasm32posix-c++ -fwasm-exceptions main.cpp -o app.wasm
 ```
 
 works out of the box — `_Unwind_*` symbols resolve internally, no
@@ -779,10 +786,13 @@ and SHA-256 are recorded in the shell image and verified on download.
 
 The ZIP is the declared output of `kandelo-sdk-browser-bundle@21.1.7`.
 It contains the source-built `clang@21.1.7` tools, matching Clang resource
-headers, musl and libc++ sysroot, syscall glue, and guest shell wrappers.
-The five tools live in `/usr/lib/llvm/bin`; wrappers and the `cc` and
-`c++` aliases live in `/usr/bin`. This delivery uses the base shell's
-existing lazy archive mechanism and requires no separate compiler image.
+headers, musl and libc++ sysroot, syscall glue, the SDK driver
+(`kandelo-cc`), Binaryen's `wasm-opt` and `wasm-fork-instrument`. The five
+LLVM tools live in `/usr/lib/llvm/bin`. The driver lives in `/usr/bin`
+under every SDK tool name (`wasm32posix-cc`, `wasm32posix-c++`,
+`wasm32posix-ar`, ..., `wasm32posix-configure`) and as `cc`, `c89`, `c99`
+and `c++`. This delivery uses the base shell's existing lazy archive
+mechanism and requires no separate compiler image.
 
 In a shell session:
 
@@ -795,15 +805,22 @@ cc /tmp/hello.c -o /tmp/hello
 /tmp/hello
 ```
 
-Use `c++ hello.cpp -o hello` for C++. The guest wrapper runs clang's
-integrated compiler and then `wasm-ld` as separate processes. It supplies
-the Kandelo target, sysroot, host import allowlist, memory layout, and
-libc/glue inputs. Invoke `cc` or `c++` for the supported compilation and
-linking path. The LLVM tools receive the normal host-side continuation
-instrumentation before packaging: their linked code imports `fork`, so
-untransformed tools fail the runtime's executable admission checks.
-The recipe runs Binaryen's full post-instrumentation optimization on one
-core, avoiding the small native worker stacks on macOS.
+Use `c++ hello.cpp -o hello` for C++. The driver is the build machine's
+SDK driver (`crates/kandelo-cc`) built for Kandelo, so a command runs the
+same compiler, linker and post-link jobs it would on the build machine:
+the Kandelo target flags, the glue compiled into each executable, the
+link layout, the compiler facts, and clang's post-link `wasm-opt` for
+modules that do not fork. Only toolchain discovery differs: inside
+Kandelo the driver uses the fixed `/usr` layout above (overridable with
+the same `WASM_POSIX_*` variables), and clang has the facts plugin
+compiled in (see [Compiler facts for fork instrumentation](#compiler-facts-for-fork-instrumentation)).
+`host/test/guest-sdk-equivalence.test.ts` builds one set of commands with
+both SDKs and requires identical bytes. The LLVM tools receive the normal
+host-side continuation instrumentation before packaging: their linked
+code imports `fork`, so untransformed tools fail the runtime's executable
+admission checks. The recipe runs Binaryen's full post-instrumentation
+optimization on one core, avoiding the small native worker stacks on
+macOS.
 
 The `clang` recipe uses the Kandelo CMake platform, a private sysroot,
 and verified LLVM sources in resolver-owned work directories. Its
@@ -812,19 +829,24 @@ LLVM's BSD-specific filesystem locality probe. It uses normal libc++
 `std::random_device` backed by `/dev/urandom` and normal LLVM file output;
 it does not replace entropy with fixed seeds or patch out mmap writeback.
 
-This is an in-guest compiler for ordinary programs that do not require
-fork continuation instrumentation. A fully native SDK remains future
-work: the guest pipeline does not yet run the host SDK's compiler fact
-plugin, Binaryen transforms, or `wasm-fork-instrument`. Porting those
-components is required before programs compiled here that call `fork`
-can run through the normal continuation path. See
-[the saved self-hosting work items](superpowers/specs/2026-08-26-in-kandelo-clang-toolchain-design.md#future-work-recorded-explicitly).
+A program that calls `fork` is instrumented after linking, as on the
+build machine (see [Fork instrumentation](#fork-instrumentation-wasm-fork-instrument)):
 
-Guest-linked outputs also lack the `kandelo.abi.contract` digest stamp
-added by package admission. The current host accepts an absent stamp
-with a warning during the digest rollout; a present mismatched digest
-still fails. Adding digest stamping to guest compilation is remaining
-native SDK work.
+```sh
+cc fork.c -o fork
+wasm-fork-instrument fork -o fork
+./fork
+```
+
+Programs compiled here, like programs compiled ad hoc with the build
+machine's SDK, lack the `kandelo.abi.contract` digest stamp added by
+package admission. The current host accepts an absent stamp with a
+warning during the digest rollout; a present mismatched digest still
+fails.
+
+DWARF from `-g` builds records clang's resource directory, which is
+`/usr/lib/llvm/lib/clang/21` here and a different path on the build
+machine, so `-g` outputs are not byte-identical between the two SDKs.
 
 Node and Chromium pass the full sequential compiler acceptance. Firefox
 passes the C++ containers/entropy case in a fresh shell, but repeated LLVM
