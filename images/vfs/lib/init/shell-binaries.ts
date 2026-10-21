@@ -273,7 +273,8 @@ export const SHELL_LAZY_BINARY_SPECS = [
     vfsPath: "/usr/local/bin/sdl2",
     symlinks: [],
   },
-  { id: "fbdoom", resolverPath: "programs/fbdoom.wasm", vfsPath: "/usr/local/bin/fbdoom", symlinks: [] },
+  // /usr/local/bin/fbdoom is the image's launch wrapper (build-source-rootfs-shell-image.ts).
+  { id: "fbdoom", resolverPath: "programs/fbdoom.wasm", vfsPath: "/usr/bin/fbdoom", symlinks: [] },
   { id: "modeset", resolverPath: "programs/modeset.wasm", vfsPath: "/usr/local/bin/modeset", symlinks: [] },
   {
     id: "espeak-ng",

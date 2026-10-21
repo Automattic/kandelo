@@ -674,7 +674,7 @@ describe("canonical source-rootfs shell", () => {
     // (sdl2 and espeak-ng were once fetched by the page and written into the
     // image at browser boot; the image must not depend on that.)
     for (const [guest, url] of [
-      ["/usr/local/bin/fbdoom", "kandelo-lazy:programs/fbdoom.wasm"],
+      ["/usr/bin/fbdoom", "kandelo-lazy:programs/fbdoom.wasm"],
       ["/usr/local/bin/modeset", "kandelo-lazy:programs/modeset.wasm"],
       ["/usr/local/bin/sdl2", "kandelo-lazy:programs/sdl2.wasm"],
       ["/usr/bin/espeak-ng", "kandelo-lazy:programs/espeak-ng/espeak-ng.wasm"],
@@ -746,6 +746,12 @@ describe("canonical source-rootfs shell", () => {
     expect(text(readVfsFile(fs, "/usr/local/bin/scummvm"))).toContain(
       `trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; exit 130' INT TERM`,
     );
+    // Doom's wrapper seeds a missing user config with the full-width view
+    // and execs the lazy engine, so the engine stays the display's owner.
+    const fbdoomWrapper = text(readVfsFile(fs, "/usr/local/bin/fbdoom"));
+    expect(fs.stat("/usr/local/bin/fbdoom").mode & 0o777).toBe(0o755);
+    expect(fbdoomWrapper).toContain(`printf 'screenblocks 10\\n' > "$HOME/.fdoom.tar/default.cfg"`);
+    expect(fbdoomWrapper).toContain('exec /usr/bin/fbdoom "$@"');
     // The desktops' launchers are eager scripts on PATH (the programs they
     // exec are the lazy files above), and wlcompositor's statically linked
     // libinput finds its device quirks at LIBINPUT_QUIRKS_DIR.

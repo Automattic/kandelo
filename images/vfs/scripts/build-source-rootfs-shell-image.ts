@@ -295,6 +295,30 @@ exec /usr/bin/quake -basedir "$BASE" "$@"
 `;
 
 /**
+ * fbDOOM's launch wrapper, written eagerly to /usr/local/bin/fbdoom; the
+ * engine is the lazy /usr/bin/fbdoom. Doom keeps its settings in the user's
+ * config file ($HOME/.fdoom.tar/default.cfg, read at startup and saved again
+ * when Doom quits; fbdoom's 0009 patch restores both) and has no system-wide
+ * one, and the home directory is an empty tmpfs on every boot. So, as a distribution's skeleton files would, the wrapper writes
+ * this machine's defaults into a missing config on first launch:
+ *
+ * - screenblocks 10: the full-width view with the status bar. Doom's own
+ *   default, 9, insets the view inside a tiled border; 11 hides the status
+ *   bar. Doom's menu (Options, Screen Size) still changes it, and the choice
+ *   is saved like any other setting.
+ *
+ * Keys missing from the file keep Doom's defaults, and an existing config is
+ * never touched. exec keeps the process the display's owner, so the machine's
+ * dock and "Load WAD" signal Doom itself.
+ */
+const FBDOOM_LAUNCH_SCRIPT = `#!/bin/sh
+if [ -n "\${HOME:-}" ] && [ ! -e "$HOME/.fdoom.tar/default.cfg" ]; then
+    mkdir -p "$HOME/.fdoom.tar" && printf 'screenblocks 10\\n' > "$HOME/.fdoom.tar/default.cfg"
+fi
+exec /usr/bin/fbdoom "$@"
+`;
+
+/**
  * The ScummVM demo's launch wrapper, written eagerly to /usr/local/bin/scummvm.
  * It execs the lazy engine at /usr/bin/scummvm (an absolute path, so PATH
  * cannot recurse into this wrapper) after two pieces of setup:
@@ -1488,6 +1512,13 @@ export async function buildSourceRootfsShellImage(
   // wlcompositor's statically linked libinput reads its device quirks from
   // LIBINPUT_QUIRKS_DIR, compiled in as /usr/share/libinput.
   unpackDataZip(fs, "/usr/share/libinput", libinputQuirks);
+  // fbDOOM is a lazy /usr/bin binary; only its launch wrapper is eager.
+  writeVfsBinary(
+    fs,
+    "/usr/local/bin/fbdoom",
+    new TextEncoder().encode(FBDOOM_LAUNCH_SCRIPT),
+    0o755,
+  );
   // The Quake engine, unzip, and lha are lazy /usr/bin binaries; only this
   // small extraction+launch wrapper is written eagerly.
   writeVfsBinary(

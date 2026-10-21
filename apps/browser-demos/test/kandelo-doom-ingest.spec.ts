@@ -191,3 +191,21 @@ test("dock buttons stay put when the game gains or loses focus", async ({ page }
   expect(focused?.x).toBe(unfocused?.x);
   expect(opened?.x).toBe(focused?.x);
 });
+
+test("the Doom machine starts with the full-width view and its status bar", async ({ page }) => {
+  test.setTimeout(300_000);
+  await bootDoomOrSkip(page);
+  // Doom's own terminal is in raw mode while it plays; read the config it
+  // started with from a shell of its own.
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  await page.getByRole("button", { name: "New terminal", exact: true }).click();
+  const shell = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows");
+  const shellText = () => shell.evaluate((node) => node.textContent ?? "");
+  await expect.poll(shellText, { timeout: 60_000 }).toMatch(/kandelo\$\s*$/);
+  await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-screen").click();
+  await page.keyboard.insertText("cat ~/.fdoom.tar/default.cfg");
+  await page.keyboard.press("Enter");
+  // screenblocks 10 is the full-width view with the status bar; Doom's own
+  // default, 9, insets the view in a tiled border.
+  await expect.poll(shellText, { timeout: 30_000 }).toContain("screenblocks 10");
+});
