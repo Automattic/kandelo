@@ -52,6 +52,9 @@
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendPluginRegistry.h"
+#ifdef KANDELO_CALLTYPES_STATIC
+#include "llvm/Passes/PassBuilder.h"
+#endif
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/raw_ostream.h"
@@ -61,6 +64,10 @@
 #include <string>
 
 using namespace clang;
+
+#ifdef KANDELO_CALLTYPES_STATIC
+void kandeloRegisterCallTypesPasses(llvm::PassBuilder &PB); // KandeloCallTypes.cpp
+#endif
 
 std::string &kandeloAstFacts() {
   static std::string s;
@@ -918,6 +925,14 @@ private:
 class Action : public PluginASTAction {
 protected:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, llvm::StringRef) override {
+#ifdef KANDELO_CALLTYPES_STATIC
+    // Compiled into clang (Kandelo's own clang cannot load the plugin
+    // library, so there is no -fpass-plugin): activating this action
+    // schedules the LLVM half too. Clang applies these callbacks right after
+    // -fpass-plugin plugins (clang/lib/CodeGen/BackendUtil.cpp), so the
+    // passes run exactly where the library's would.
+    CI.getCodeGenOpts().PassBuilderCallbacks.push_back(kandeloRegisterCallTypesPasses);
+#endif
     return std::make_unique<Consumer>(static_cast<bool>(CI.getCodeGenOpts().RelaxedAliasing), CI);
   }
   bool ParseArgs(const CompilerInstance &, const std::vector<std::string> &) override { return true; }

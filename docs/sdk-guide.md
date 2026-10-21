@@ -300,6 +300,14 @@ from `scripts/calltypes-plugin.sh <clang>`. A compile that requests a CFI
 sanitizer itself is left without the plugin, which would otherwise delete
 the checks it asked for.
 
+Kandelo's own clang cannot load a native shared library, so the `clang`
+package compiles the same plugin sources into it (`KANDELO_CALLTYPES_STATIC`).
+There the SDK passes the same flags without `-load` and `-fpass-plugin`:
+activating `kandelo-fncasts` also registers the LLVM passes, through
+`CodeGenOptions::PassBuilderCallbacks`, which clang applies immediately after
+`-fpass-plugin` plugins. A plugin library built that way and loaded with
+`-load` alone produces the same object bytes as the normal library with
+`-fpass-plugin`.
 
 **Links.** clang runs Binaryen's `wasm-opt` after wasm-ld when it finds it
 and an optimization level is set. Binaryen inlines and merges functions,
