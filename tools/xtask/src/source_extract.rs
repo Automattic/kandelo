@@ -28,6 +28,7 @@ pub enum ArchiveFormat {
     TarZst,
     Zip,
     Tar,
+    Phar,
 }
 
 impl ArchiveFormat {
@@ -51,6 +52,8 @@ impl ArchiveFormat {
             Ok(Self::TarZst)
         } else if lc.ends_with(".zip") {
             Ok(Self::Zip)
+        } else if lc.ends_with(".phar") {
+            Ok(Self::Phar)
         } else if lc.ends_with(".tar") || lc.ends_with(".gem") {
             // RubyGems packages are tar containers. Treat the pinned outer
             // container like any tar input; recipes unpack data.tar.gz only
@@ -60,7 +63,7 @@ impl ArchiveFormat {
             Err(format!(
                 "could not detect archive format from URL extension: {url:?} \
                  (supported: .tar.gz, .tgz, .tar.xz, .txz, .tar.bz2, .tbz2, .tbz, \
-                  .tar.zst, .tzst, .zip, .tar, .gem)"
+                  .tar.zst, .tzst, .zip, .tar, .gem, .phar)"
             ))
         }
     }
@@ -109,6 +112,9 @@ pub fn extract_verified_archive_with_excluded_members(
 ) -> Result<(), String> {
     let format = ArchiveFormat::from_url(source_url)?;
     let excluded_members = validate_excluded_members(excluded_members)?;
+    if matches!(format, ArchiveFormat::Phar) && !excluded_members.is_empty() {
+        return Err("PHAR archives are preserved intact; member exclusions are unsupported".into());
+    }
     let archive_metadata = fs::symlink_metadata(archive)
         .map_err(|error| format!("inspect verified archive {}: {error}", archive.display()))?;
     if archive_metadata.file_type().is_symlink() || !archive_metadata.file_type().is_file() {
@@ -159,6 +165,11 @@ pub fn extract_verified_archive_with_excluded_members(
     set_private_directory_permissions(destination)?;
 
     match format {
+        ArchiveFormat::Phar => {
+            // PHP verifies and opens its executable archive at runtime. Unpacking
+            // here would discard the stub and invalidate the archive signature.
+            preserve_phar(input, destination)?;
+        }
         ArchiveFormat::TarGz => extract_tar_reader_with_excluded_members(
             flate2::read::GzDecoder::new(input),
             destination,
@@ -692,9 +703,28 @@ fn validate_extracted_tree(root: &Path, directory: &Path) -> Result<(), String> 
     Ok(())
 }
 
+fn preserve_phar(mut input: impl Read, destination: &Path) -> Result<(), String> {
+    let output = destination.join("source.phar");
+    let mut target = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output)
+        .map_err(|error| format!("create {}: {error}", output.display()))?;
+    let copied = io::copy(
+        &mut input.by_ref().take(MAX_DECOMPRESSED_BYTES + 1),
+        &mut target,
+    )
+    .map_err(|error| format!("copy PHAR: {error}"))?;
+    if copied > MAX_DECOMPRESSED_BYTES {
+        return Err("PHAR exceeds source-output size limit".into());
+    }
+    Ok(())
+}
+
 fn extract(bytes: &[u8], format: ArchiveFormat, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
     match format {
+        ArchiveFormat::Phar => preserve_phar(bytes, dest)?,
         ArchiveFormat::TarGz => {
             let r = flate2::read::GzDecoder::new(bytes);
             let bounded = r.take(MAX_DECOMPRESSED_BYTES);
@@ -875,6 +905,10 @@ mod tests {
     #[test]
     fn from_url_detects_known_extensions() {
         assert!(matches!(
+            ArchiveFormat::from_url("https://x/tool.PHAR?download=1#release").unwrap(),
+            ArchiveFormat::Phar
+        ));
+        assert!(matches!(
             ArchiveFormat::from_url("https://x/p.tar.gz").unwrap(),
             ArchiveFormat::TarGz
         ));
@@ -994,6 +1028,42 @@ mod tests {
         let url = format!("file://{}", archive.display());
         fetch_and_extract(&url, &sha_hex, &dest).unwrap();
         assert!(dest.join("README").is_file());
+    }
+
+    #[test]
+    fn phar_source_preserves_signed_bytes_in_both_resolver_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"#!/usr/bin/env php\n<?php __HALT_COMPILER(); ?>\0\xffGBMB";
+        let archive = dir.path().join("tool.phar");
+        fs::write(&archive, bytes).unwrap();
+        let digest = crate::util::hex(&Sha256::digest(bytes));
+        let url = format!("file://{}", archive.display());
+
+        let default_dest = dir.path().join("default");
+        fetch_and_extract(&url, &digest, &default_dest).unwrap();
+        assert_eq!(fs::read(default_dest.join("source.phar")).unwrap(), bytes);
+
+        let source_only_dest = dir.path().join("source-only");
+        extract_verified_archive(&archive, &url, &source_only_dest).unwrap();
+        assert_eq!(
+            fs::read(source_only_dest.join("source.phar")).unwrap(),
+            bytes
+        );
+
+        let bad_digest_dest = dir.path().join("bad-digest");
+        assert!(fetch_and_extract(&url, &"0".repeat(64), &bad_digest_dest).is_err());
+        assert!(!bad_digest_dest.exists());
+
+        let excluded_dest = dir.path().join("excluded");
+        let error = extract_verified_archive_with_excluded_members(
+            &archive,
+            &url,
+            &excluded_dest,
+            &["member.php".to_string()],
+        )
+        .unwrap_err();
+        assert!(error.contains("preserved intact"), "{error}");
+        assert!(!excluded_dest.exists());
     }
 
     fn wrapper_tar() -> Vec<u8> {

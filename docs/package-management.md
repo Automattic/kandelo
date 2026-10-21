@@ -582,6 +582,8 @@ files = ["share/runtime-data.bin"]                   # other runtime data
 
 - `archive` requires a nonzero 64-character lowercase SHA-256 and a supported
   archive suffix. Query strings and fragments do not affect suffix detection.
+  Executable PHP archives (`.phar`) are staged intact as `source.phar` so
+  PHP can verify their signatures at runtime; member exclusions are unsupported.
 - `repository` requires the all-zero SHA sentinel. Its source-only identity is
   the declared `build.toml.inputs` closure from the current repository, not a
   Git branch, `HEAD`, or `build.toml.commit`.

@@ -39,6 +39,7 @@ import {
   sep,
 } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeImageOwnedLazyReference } from "./vfs/vfs-asset-group-reference";
 import { describeWasmArtifactPolicyFailures } from "./constants";
 import {
   ABI_VERSION,
@@ -850,8 +851,11 @@ function withFreshProgramIndexes<T>(
   relPaths: readonly string[],
   operation: () => T,
 ): T {
+  // SourceOnly's emitted projection owns freshness. Regenerating the default
+  // registry here cannot validate it and can outlast a deferred-read timeout.
   if (
-    programIndexFreshnessBoundaryDepth > 0
+    sourceOnlyPolicyEnabled()
+    || programIndexFreshnessBoundaryDepth > 0
     || !relPaths.some((relPath) => relPath.startsWith("programs/"))
   ) {
     return operation();
@@ -3520,11 +3524,15 @@ export const LAZY_BINARIES_URL_PREFIX = "binaries/";
  */
 function decodedLazyAssetRelPath(url: string): string | null {
   const relative = url.replace(/^\/+/, "");
-  if (!relative.startsWith(LAZY_BINARIES_URL_PREFIX)) return null;
   let decoded: string;
   try {
-    decoded = relative
-      .slice(LAZY_BINARIES_URL_PREFIX.length)
+    // Shell files and archives use the same image-owned reference grammar
+    // as browser deployments. Resolve that identity without rewriting the
+    // image or falling back to an unrelated literal checkout file.
+    const encoded = relative.startsWith(LAZY_BINARIES_URL_PREFIX)
+      ? relative.slice(LAZY_BINARIES_URL_PREFIX.length)
+      : normalizeImageOwnedLazyReference(relative).slice("assets/".length);
+    decoded = encoded
       .split("/")
       .map(decodeURIComponent)
       .join("/");

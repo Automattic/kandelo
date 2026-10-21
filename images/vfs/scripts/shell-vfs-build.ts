@@ -651,6 +651,7 @@ function populateDemoExtendedSymlinks(fs: KandeloImageFs): void {
   symlink(fs, "/usr/bin/unzip", "/bin/funzip");
 
   symlink(fs, "/usr/bin/nano", "/bin/nano");
+  symlink(fs, "/usr/bin/composer", "/bin/composer");
   symlink(fs, "/usr/bin/vim", "/bin/vim");
   symlink(fs, "/usr/bin/vim", "/usr/bin/vi");
   symlink(fs, "/usr/bin/vim", "/bin/vi");

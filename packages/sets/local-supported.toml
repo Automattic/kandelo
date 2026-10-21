@@ -83,6 +83,10 @@ name = "coreutils"
 class = "user-software"
 
 [[packages]]
+name = "composer"
+class = "user-software"
+
+[[packages]]
 name = "coreutils-docs"
 class = "browser-product"
 

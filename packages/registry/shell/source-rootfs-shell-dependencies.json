@@ -82,6 +82,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "composer",
+      "version": "2.10.3",
+      "role": "lazy-archive"
+    },
+    {
       "name": "gzip",
       "version": "1.13",
       "role": "lazy-file"

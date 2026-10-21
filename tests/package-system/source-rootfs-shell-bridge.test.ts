@@ -637,6 +637,9 @@ describe("canonical source-rootfs shell", () => {
     expect(fs.stat("/usr/bin/php").mode & 0o777).toBe(0o755);
     expect(fs.readlink("/bin/php")).toBe("/usr/bin/php");
     expect(fs.stat("/bin/php").ino).toBe(fs.stat("/usr/bin/php").ino);
+    expect(fs.isPathDeferred("/usr/bin/composer")).toBe(true);
+    expect(fs.readlink("/bin/composer")).toBe("/usr/bin/composer");
+    expect(fs.stat("/bin/composer").ino).toBe(fs.stat("/usr/bin/composer").ino);
     // FFmpeg's three programs are lazy files provided by the ffmpeg package.
     for (const id of ["ffmpeg", "ffprobe", "ffplay"]) {
       const spec = SHELL_LAZY_BINARY_SPECS.find((candidate) => candidate.id === id);
@@ -883,7 +886,7 @@ describe("canonical source-rootfs shell", () => {
     expect(loveProfile.presentation?.hostPointer).toBeUndefined();
     expect(loveProfile.dockActions).toEqual([{
       id: "games", label: "Games",
-      description: "Start the selected game. Audio is unavailable in this port.",
+      description: "Start the selected game. Enable audio to hear sound.",
       menu: [
         ["pong", "Pong"], ["snake", "Snake"], ["breakout", "Breakout"],
         ["asteroids", "Asteroids"], ["bytepath", "BYTEPATH"], ["snkrx", "SNKRX"],
