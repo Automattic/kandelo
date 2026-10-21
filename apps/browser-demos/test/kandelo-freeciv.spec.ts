@@ -587,6 +587,50 @@ for (const density of [1, 2]) {
         }
       },
     });
+    test("quitting returns focus to the terminal and a new client reopens the display", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "direct-display handoff targets Chromium");
+      test.setTimeout(180_000);
+      await gotoDefaultMachine(page, "freeciv");
+      await running(page);
+      await showGame(page, { pointerLock: true });
+      const display = page.locator(".kmodeset-surface");
+      const firstOwner = await display.getAttribute("data-kms-owner-pid");
+      const box = (await canvas(page).boundingBox())!;
+      await waitForPanel(page, box.width - 60, box.height - 60);
+
+      const expectTerminalHandoff = async () => {
+        // No Terminal click or focus repair: the real lifecycle must hand
+        // the selected pane and keyboard back to the existing shell.
+        await expect(page.getByRole("button", { name: "Terminal", exact: true }))
+          .toHaveAttribute("aria-current", "true", { timeout: 30_000 });
+        await expect(canvas(page)).toHaveCount(0);
+        await expect.poll(() => page.evaluate(() => document.pointerLockElement === null)).toBe(true);
+        await expect.poll(() => page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea")))
+          .toBe(true);
+        const terminal = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows");
+        await expect(terminal).toBeVisible();
+        await expect.poll(() => terminal.innerText()).toMatch(/kandelo\$\s*$/);
+        return terminal;
+      };
+
+      await canvas(page).click({ position: await menuPosition(page, "quit") });
+      const terminal = await expectTerminalHandoff();
+      const releasedFrame = Number(await display.getAttribute("data-kms-present-count"));
+      await page.keyboard.insertText('printf "FIRST_FREECIV_EXIT=%s\\n" "$?"; /usr/bin/freeciv');
+      await page.keyboard.press("Enter");
+      await expect.poll(() => terminal.innerText()).toMatch(/^FIRST_FREECIV_EXIT=0$/m);
+      await expect(canvas(page)).toBeVisible({ timeout: 60_000 });
+      await expect.poll(() => display.getAttribute("data-kms-owner-pid")).not.toBe(firstOwner);
+      await expect.poll(async () => Number(await display.getAttribute("data-kms-present-count")))
+        .toBeGreaterThan(releasedFrame);
+      await canvas(page).click({ position: await menuPosition(page, "quit") });
+      await expectTerminalHandoff();
+      await page.keyboard.insertText('printf "SECOND_FREECIV_EXIT=%s\\n" "$?"');
+      await page.keyboard.press("Enter");
+      await expect.poll(() => terminal.innerText()).toMatch(/^SECOND_FREECIV_EXIT=0$/m);
+      await page.screenshot({ path: `../../.context/freeciv-auto-terminal-${density}.png`, scale: "css" });
+    });
+
     test("fresh profile uses CSS resolution and quiet first-run sound", async ({ page, browserName }) => {
       test.skip(browserName !== "chromium", "graphical acceptance targets Chromium");
       test.setTimeout(180_000);

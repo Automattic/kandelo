@@ -2165,6 +2165,15 @@ Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
 
+Display capability and active display ownership are separate. The KMS
+canvas stays mounted and measurable while the terminal is selected, so
+the next graphical application can discover its display size. The UI
+offers the live graphics surface while a process holds DRM master. When
+that ownership ends, the selected graphics pane returns to the terminal
+and releases pointer capture and held buttons. A later graphical owner
+reopens the surface. Exiting an unrelated process leaves it unchanged;
+a Wayland client exiting does not close its compositor's display.
+
 A bitmap interface can declare `presentation.displayScale` (0.5–4 CSS
 pixels per guest pixel). The browser advertises a virtual display sized
 from the CSS content box divided by that scale, at 96 reference DPI.

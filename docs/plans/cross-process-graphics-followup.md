@@ -91,7 +91,7 @@ newer allocator pixels when it submits the cursor. Both tests currently
 fail for the defects they are meant to protect; they must pass after
 repair before this draft can merge.
 
-No runtime repair is implemented in this investigation draft.
+Neither cross-process buffer-sharing repair is implemented yet.
 
 ## Additional Freeciv browser investigation
 
@@ -118,3 +118,29 @@ game-menu button and observes the actual titlebar before clicking Quit.
 That stricter check passed at ordinary density but still failed at
 Retina density. The latter remains unresolved; no runtime repair is
 claimed. Keep actual canvas and guest behavior as acceptance evidence.
+
+## Terminal handoff after graphical applications exit
+
+The shared KMS presentation now separates display capability from active
+ownership. The kernel worker publishes its DRM master PID in the existing
+independent display statistics buffer, including zero when no process
+owns the display. The browser continues mounting and measuring that
+capability while hidden, but only selects the graphics pane for an
+active owner. Release returns the selected pane and keyboard focus to
+the terminal and releases pointer capture and held buttons. A new owner
+can reopen the same display. No Freeciv changes or guest ABI changes are
+needed.
+
+A real Node guest verifies explicit master release, normal exit, forced
+termination, and ownership surviving an unrelated child's exit. The
+focused 15-case Node run passes. Browser regressions verify native
+Freeciv Quit, automatic selection and focus of the existing terminal, typed
+relaunch without a focus click, and a second successful Quit at both
+ordinary and Retina densities. A separate SDL application also exits to
+the focused terminal. All three Chromium cases pass; the Freeciv handoff
+regression fails against the previous preview.
+
+These results protect the presentation handoff. The original imported
+buffer lifetime and importer-written cursor defects above remain
+unfixed, and the complete port browser suite and multi-engine memory
+gate are not established by these focused checks.

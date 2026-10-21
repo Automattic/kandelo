@@ -678,6 +678,7 @@ export type MachineAudioState =
  *   7: renderer that owns the canvas (1 = 2d blit, 2 = webgl2 scanout,
  *      3 = a GL program claimed the canvas and paints it directly;
  *      0 = nothing painting)
+ *   8: current DRM master PID (0 = no display owner)
  */
 export interface KmsDisplayHandle {
   /** CRTC the canvas is bound to (matches what the wasm process passes
@@ -3116,7 +3117,7 @@ export class LiveKernelHost implements KernelHost {
       this.kmsResizeObservers.get(canvas)?.observe(canvas);
       return cached;
     }
-    // 8 i32 slots × 4 bytes = 32 bytes; align to 64 so atomics are happy.
+    // Reserve 64 bytes for bounded display counters and ownership metadata.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
     const mode = opts.mode ?? this.kmsDisplayModeDefault ?? "webgl2";

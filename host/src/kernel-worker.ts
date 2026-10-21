@@ -33510,6 +33510,7 @@ export class CentralizedKernelWorker {
           ((id: number) => bigint) | undefined;
         const statsSnapshots: Array<{
           stats: Int32Array;
+          ownerPid: number;
           width: number | null;
           height: number | null;
           commits: number;
@@ -33525,6 +33526,7 @@ export class CentralizedKernelWorker {
             : Number((lastFrameUs?.(crtcId) ?? 0n) & 0x7fffffffn);
           statsSnapshots.push({
             stats,
+            ownerPid: this.#kernel.kms.getMasterPid() ?? 0,
             width: fb?.width ?? null,
             height: fb?.height ?? null,
             commits,
@@ -33613,6 +33615,11 @@ export class CentralizedKernelWorker {
             }
           }
           for (const snapshot of statsSnapshots) {
+            // Display capability outlives applications. Publish ownership
+            // even without a framebuffer so consumers can observe release.
+            if (snapshot.stats.length > 8) {
+              Atomics.store(snapshot.stats, 8, snapshot.ownerPid);
+            }
             if (snapshot.width !== null && snapshot.height !== null) {
               Atomics.store(snapshot.stats, 2, snapshot.width);
               Atomics.store(snapshot.stats, 3, snapshot.height);

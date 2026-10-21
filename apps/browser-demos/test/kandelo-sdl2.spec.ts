@@ -107,10 +107,15 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
     ).toBeGreaterThan(3_000);
   }
 
-  /* ESC is the only exit path. Click body to take focus off the
-   * canvas, then dispatch Escape to BrowserInputSource → SDL_evdev. */
-  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  /* ESC exits through the ordinary keyboard source. */
+  await canvas.focus();
   await page.keyboard.press("Escape");
+
+  await expect(page.getByRole("button", { name: "Terminal", exact: true }))
+    .toHaveAttribute("aria-current", "true", { timeout: 30_000 });
+  await expect(canvas).toBeHidden();
+  await expect.poll(() => page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea")))
+    .toBe(true);
 
   await openInternals(page);
   await expect
@@ -119,10 +124,8 @@ test("Kandelo sdl2 demo (editor left + shader right, ESC quits)", async ({ page 
   expect(await syslogText(page), "sdl2 reported failure")
     .not.toMatch(/sdl2 failed/);
 
-  /* The dock shows one computer view at a time and this demo boots into
-   * "Demo" (the Modeset framebuffer pane), which leaves the shell's xterm
-   * unmounted. Switch to "Terminal" before reading the breadcrumb sdl2
-   * printed on the way out, or `.xterm-rows` is simply not in the DOM. */
+  /* Return from the explicit Internals inspection above. The automatic
+   * handoff was already checked before that manual navigation. */
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 30_000,
