@@ -1476,6 +1476,68 @@ libc output. The broader "instrument every address-taken function" rule from
 the original C3 plan was not needed for this PR and was not added; K-01, K-02,
 K-04, and K-07 cover the current behavior.
 
+## Checkpoint coverage
+
+The checkpoint seed reaches almost every function of a large program: any
+function that can make a syscall can be live at a syscall return. A machine
+checkpoint does not need every syscall return. It waits until every thread
+idles, so it needs only the frames of the stacks a thread idles on.
+`crates/fork-instrument/src/checkpoint_cover.rs` selects those frames and
+instruments the checkpoint closure only where it meets them. The fork closure
+keeps its sinks.
+
+**Selection.** The call graph holds direct calls, indirect calls the compiler
+facts resolve to at most 8 targets (same-signature table members without
+facts), every indirect call in a thread root with all its targets (the
+dispatch that picks the thread's body, such as `QThread::run`), and the C
+runtime's call from `__libc_start_main` to `main`. Calls into a registered
+signal handler are not edges. Functions whose every path ends in process or
+thread exit are removed, `__pthread_exit` by name: its loop over the cleanup
+handlers, which can park, would otherwise read as a wait loop, and the walk
+below a park function would follow a cancellation through every handler. The
+park functions are the blocking calls a thread idles in (`poll`, `ppoll`, `select`, `epoll_wait`, `nanosleep`, `read`,
+`accept`, `wait4`, `sigsuspend`, ...), and `__pthread_cond_timedwait` below a
+thread root. The roots are `_start`, musl's thread entries `start` and
+`start_c11` (the host calls one for each new thread, and it calls the start
+routine), and every `pthread_create` start routine the facts name. The facts
+bind the thread entries to musl's source file; without facts, their names
+find them. From each root:
+
+1. the entry segment follows calls outside wait loops, up to 8 calls deep,
+   through functions that can reach a park function (a wait loop is a loop
+   with a call that can reach one);
+2. the descent follows each call inside a wait loop of the entry segment to a
+   park function, along paths at most one call longer than the shortest;
+3. below every park function, the frames down to `kernel.kernel_checkpoint`
+   are added.
+
+A module without a name section cannot be selected. It keeps the whole
+checkpoint closure and no fork sinks. The SDK keeps the facts only in a module
+that imports `kernel.kernel_fork`, so a program that never forks is selected
+without them.
+
+**The run-time check.** A covered function reads the exported global
+`__wpk_checkpoint_cover` into a local at entry and clears it; before a call to
+a covered callee it writes that local back (for an indirect call, only when
+the table slot holds a covered function). Each call to the import
+`kernel.kernel_checkpoint_covered` becomes the calling frame's local, or 0 in
+an uncovered frame. The host writes 1 into the global before it enters
+`_start` or a thread entry. An uncovered `_start` or thread entry clears the
+global at entry, so the host's 1 never reaches a covered function below an
+uncovered frame. libc takes a checkpoint only when the
+answer is 1; otherwise the request stays pending, and the freeze sweeps parked
+syscalls again every 50 ms until every thread unwound or the freeze timed out.
+A thread that idles on an uncovered stack therefore makes the freeze time out:
+the truthful failure. A thread or process on its way out runs uncovered to its
+end; the freeze stops waiting for it and reads the machine without it, and the
+kernel keeps the exit for the parent. Only one that ends after it unwound fails
+the freeze, because its frames were already counted.
+
+**Fork boundaries.** A checkpoint restore returns through every frame, so a
+fork boundary does not stop a checkpoint unwind: the host's
+`env.__wpk_fork_boundary` throws the unwind tag on during a checkpoint
+capture, and the covered callers above the boundary record their frames.
+
 ## Fork sinks and compiler facts
 
 The closure above is the conservative fork path. By default the instrumenter

@@ -33,6 +33,7 @@ use wasm_posix_shared::abi::{
 use wasmparser::{Parser, Payload};
 
 pub mod call_graph;
+pub mod checkpoint_cover;
 pub mod contract_inventory;
 pub mod facts;
 pub mod instrument;
@@ -260,10 +261,10 @@ struct SinkDecision {
 }
 
 /// Reduce the fork closure with the sink analysis when the module is in its
-/// supported scope: a main module whose only seed is `kernel.kernel_fork`.
-/// A checkpoint seed takes the module out of scope: a restored checkpoint
-/// returns through every frame, so no frame may be left above a boundary.
-/// With compiler facts ([`facts`]) the analysis also
+/// supported scope: a main module whose only fork seed is
+/// `kernel.kernel_fork`. A whole checkpoint closure takes the module out of
+/// scope: a restored checkpoint returns through every frame, so no frame may
+/// be left above a boundary. With compiler facts ([`facts`]) the analysis also
 /// covers modules that can dlopen; without them it does not. Facts the
 /// analysis cannot use fall back to the analysis without facts, never to
 /// anything less sound. Returns the boundary functions.
@@ -271,7 +272,7 @@ fn apply_sink_plan(
     module: &walrus::Module,
     opts: &Options,
     entry_imports: &[walrus::FunctionId],
-    boundary_imports: &[walrus::FunctionId],
+    whole_checkpoint_closure: bool,
     side_boundaries: bool,
     external_dynamic_dispatch: bool,
     facts_section: Option<(&facts::TakenFacts, &[u8])>,
@@ -288,7 +289,7 @@ fn apply_sink_plan(
         || side_boundaries
         || opts.entry_import != "kernel.kernel_fork"
         || entry_imports.len() != 1
-        || boundary_imports != entry_imports
+        || whole_checkpoint_closure
     {
         return decision;
     }
@@ -893,20 +894,67 @@ fn plan_fork(module: &mut walrus::Module, input: &[u8], opts: &Options) -> Resul
     let initial_fork_path =
         prepare_fork_path(module, &seeds, external_dynamic_dispatch).activations;
     legacy_eh::normalize_fork_path(module, &initial_fork_path)?;
+    let checkpoint_imports: Vec<walrus::FunctionId> = boundary_imports
+        .iter()
+        .copied()
+        .filter(|import| !entry_imports.contains(import))
+        .collect();
+    // Coverage instruments its call sites before the closures below are
+    // computed, so the tail-site coordinates they record name the final IR.
+    let covered = if checkpoint_imports.is_empty() {
+        None
+    } else if module.funcs.iter().any(|function| function.name.is_some()) {
+        // Facts that do not describe this code (a tool rewrote it after the
+        // link) would select the wrong functions; select without them.
+        let facts = facts_section
+            .as_ref()
+            .filter(|taken| facts::verify_code_hash(taken, input).is_ok());
+        let covered = checkpoint_cover::plan(module, &checkpoint_imports, facts);
+        checkpoint_cover::inject(module, &covered)?;
+        Some(covered)
+    } else {
+        // Without names nothing can be selected: the whole checkpoint
+        // closure stays instrumented and every stack is covered.
+        checkpoint_cover::cover_every_stack(module);
+        None
+    };
     // Legacy EH normalization can replace instruction sequences. Recompute
     // the semantic closure afterwards so the exact fork-reaching tail-site
     // coordinates used by private-tag transport name the normalized IR.
-    let mut reaching = prepare_fork_path(module, &seeds, external_dynamic_dispatch);
+    let whole_checkpoint_closure = !checkpoint_imports.is_empty() && covered.is_none();
+    let fork_seeds = fork_boundary_seeds(module, &entry_imports, side_boundaries);
+    let mut reaching = prepare_fork_path(
+        module,
+        if whole_checkpoint_closure { &seeds } else { &fork_seeds },
+        external_dynamic_dispatch,
+    );
     let decision = apply_sink_plan(
         module,
         opts,
         &entry_imports,
-        &boundary_imports,
+        whole_checkpoint_closure,
         side_boundaries,
         external_dynamic_dispatch,
         facts_section.as_ref().map(|taken| (taken, input)),
         &mut reaching,
     );
+    if let Some(covered) = covered {
+        // A checkpoint unwinds the covered frames only. Fork boundaries do not
+        // stop it: the host continues a checkpoint unwind past a boundary.
+        let checkpoint = prepare_fork_path(module, &seeds, external_dynamic_dispatch);
+        let kept = |function: &walrus::FunctionId| {
+            covered.contains(function) || checkpoint_imports.contains(function)
+        };
+        reaching.activations.extend(checkpoint.activations.into_iter().filter(kept));
+        reaching.control_reachable.extend(checkpoint.control_reachable.into_iter().filter(kept));
+        reaching.tail_call_landings.extend(
+            checkpoint.tail_call_landings.into_iter().filter(|site| covered.contains(&site.caller)),
+        );
+        reaching.tail_call_landings.sort_by_key(|site| {
+            (site.caller.index(), site.sequence.index(), site.instruction_index, site.kind)
+        });
+        reaching.tail_call_landings.dedup();
+    }
     Ok(Some(ForkPlan { side_boundaries, entry_imports, reaching, decision }))
 }
 

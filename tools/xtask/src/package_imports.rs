@@ -153,7 +153,11 @@ fn record_glue_imports(contract: &mut KernelContract) {
         abi::ProgramArtifactValueType::I64 => wasmparser::ValType::I64,
         _ => unreachable!("the glue's kernel imports have scalar arguments"),
     };
-    for import in [abi::WPK_FORK_PROCESS_IMPORT, abi::WPK_CHECKPOINT_PROCESS_IMPORT] {
+    for import in [
+        abi::WPK_FORK_PROCESS_IMPORT,
+        abi::WPK_CHECKPOINT_PROCESS_IMPORT,
+        abi::WPK_CHECKPOINT_COVERED_PROCESS_IMPORT,
+    ] {
         contract.entry(import.name.into()).or_default().insert((
             import.params.iter().map(value).collect(),
             import.results.iter().map(value).collect(),
@@ -429,6 +433,7 @@ mod tests {
             Some(&BTreeSet::from([(vec![], vec![])])),
         );
         assert!(contract.contains_key("kernel_fork"));
+        assert!(contract.contains_key("kernel_checkpoint_covered"));
         let checkpoint = Imports {
             entries: vec![("kernel".into(), "kernel_checkpoint".into(), TypeRef::Func(0))],
             types: vec![FuncType::new([], [])],

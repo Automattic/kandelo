@@ -74,6 +74,7 @@ import {
   WPK_FORK_BOUNDARY_IMPORT,
   WPK_FORK_BOUNDARIES_SECTION,
   WPK_FORK_RESUME_SINK_EXPORT,
+  WPK_CHECKPOINT_COVER_EXPORT,
   type ProcessForkMode,
 } from "./generated/abi";
 import { assertDeclaredEnvImports } from "./env-imports";
@@ -266,6 +267,19 @@ function continuationMmap(
     );
   }
   return result;
+}
+
+/**
+ * Mark the bottom frame of a fresh entry as unwindable by a checkpoint.
+ *
+ * wasm-fork-instrument passes coverage from each covered caller to its
+ * covered callee through this exported token. The host is the caller of
+ * `_start` and of a thread's start function, so it writes the first token.
+ * A rewound frame restores its coverage with its other locals and gets none.
+ */
+function coverCheckpointEntry(instance: WebAssembly.Instance): void {
+  const token = instance.exports[WPK_CHECKPOINT_COVER_EXPORT];
+  if (token instanceof WebAssembly.Global) token.value = 1;
 }
 
 function continuationMunmap(
@@ -597,6 +611,12 @@ function buildKernelImports(
         "kernel_checkpoint reached before the process continuation exists.",
       );
     },
+
+    // wasm-fork-instrument answers this inside every module it instruments,
+    // from the calling frame's coverage. Only a module that was never
+    // instrumented reaches the host; it answers yes, so that module's
+    // kernel_checkpoint reports the refusal instead of waiting silently.
+    kernel_checkpoint_covered: (): number => 1,
 
     // Fork dispatches through the mode's dedicated channel syscall.
     kernel_fork: (rawMode: number): number => {
@@ -4366,7 +4386,10 @@ export async function centralizedWorkerMain(
             resumeThread(fnIdx, threadArg);
           };
         } else {
-          lexicalEntry = start;
+          lexicalEntry = () => {
+            coverCheckpointEntry(instance);
+            start();
+          };
           replayEntry = resumeStart;
         }
 
@@ -6464,10 +6487,11 @@ export async function centralizedThreadWorkerMain(
       for (;;) {
         let transportedForkUnwind = false;
         try {
-          const raw =
-            threadProcessContinuation.phaseName() === "idle"
-              ? threadFn(...threadArgs)
-              : resumeThread!(fnPtr, threadArg);
+          const fresh = threadProcessContinuation.phaseName() === "idle";
+          if (fresh) coverCheckpointEntry(instance);
+          const raw = fresh
+            ? threadFn(...threadArgs)
+            : resumeThread!(fnPtr, threadArg);
           result = Number(raw);
         } catch (e) {
           if (isForkUnwindException(e, threadForkUnwindTag)) {

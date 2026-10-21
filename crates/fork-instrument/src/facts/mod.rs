@@ -205,6 +205,52 @@ fn bind_defined(defined: &[(u32, String, &[walrus::ValType])], parsed: &side::Si
 /// Compute the facts-derived inputs of the sink analysis for `module` from
 /// the payload of its [`SECTION`]. Fails, so the caller can fall back to
 /// the analysis without facts, on anything this version cannot read.
+/// The callbacks the program passes to standard registration APIs, as
+/// `(registry, function)` pairs from the plugin's `R` lines (`thread` for a
+/// `pthread_create` start routine, `signal` for a signal handler, ...). A
+/// callback the plugin could not name (`*` or `?`) is left out.
+pub fn registrations(section: &[u8]) -> Result<Vec<(String, String)>> {
+    let mut found = Vec::new();
+    codec::visit_chunks(section, |_, chunk| {
+        for line in chunk.lines() {
+            let mut fields = line.split('\t');
+            if fields.next() != Some("R") {
+                continue;
+            }
+            let (Some(registry), Some(function)) = (fields.next(), fields.next()) else { continue };
+            if function == "*" || function == "?" || function.starts_with('%') {
+                continue;
+            }
+            found.push((registry.to_string(), function.to_string()));
+        }
+        Ok(())
+    })?;
+    Ok(found)
+}
+
+/// The defined functions that dispatch `registry`'s callbacks, as function
+/// indices: for `thread`, musl's `start` and `start_c11`, the functions a new
+/// thread enters before its start routine. A hub counts only when its one
+/// definition is bound to the source file the hub table names.
+pub fn hubs(module: &Module, section: &[u8], registry: &str) -> Result<Vec<u32>> {
+    let mut sigs = side::Interner::default();
+    let parsed = parse(section, &mut sigs, true)?;
+    let defined = targets::defined_functions(module);
+    let bound = bind_defined(&defined, &parsed);
+    Ok(defined
+        .iter()
+        .zip(&bound)
+        .filter(|((_, name, _), bound)| {
+            let [(chunk, definition)] = bound.as_slice() else { return false };
+            let source = &parsed.modules.names[parsed.chunks[*chunk][*definition].1.module as usize];
+            side::HUBS.iter().any(|(suffix, hub, _, registries)| {
+                registries.contains(&registry) && (*hub == "*" || name == hub) && source.ends_with(suffix)
+            })
+        })
+        .map(|((function, _, _), _)| *function)
+        .collect())
+}
+
 pub fn call_facts(module: &Module, section: &[u8], opts: FactsOptions) -> Result<(CallFacts, FactsReport)> {
     let mut sigs = side::Interner::default();
     let parsed = parse(section, &mut sigs, opts.effective_types)?;

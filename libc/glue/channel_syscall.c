@@ -626,6 +626,15 @@ _Noreturn void kernel_exit(int32_t status);
 __attribute__((import_module("kernel"), import_name("kernel_checkpoint")))
 void kernel_checkpoint(void);
 
+/* Whether every frame on this thread's stack can be unwound.
+ *
+ * wasm-fork-instrument replaces each call with the calling frame's own
+ * answer, so the host import is only reached by a module that was never
+ * instrumented. The host answers 1, and that module's kernel_checkpoint
+ * refuses. */
+__attribute__((import_module("kernel"), import_name("kernel_checkpoint_covered")))
+int kernel_checkpoint_covered(void);
+
 /*
  * Complete one ordinary guest-owned channel request after a host import that
  * performed channel work in JavaScript. Those host-owned completions leave
@@ -1597,7 +1606,11 @@ static uint32_t __take_pending_checkpoint(uintptr_t base)
      * returning, so a clear placed after it never runs, and the restored
      * process would read the request again and checkpoint itself forever. */
     *request_ptr = 0;
-    if ((request & CH_CHECKPOINT_REQUEST_UNWIND) != 0) kernel_checkpoint();
+    /* A stack with a frame the capture cannot rebuild waits for a later
+     * syscall: the kernel publishes the request again at every completion
+     * while the freeze is armed. */
+    if ((request & CH_CHECKPOINT_REQUEST_UNWIND) != 0 && kernel_checkpoint_covered())
+        kernel_checkpoint();
     return request;
 }
 
