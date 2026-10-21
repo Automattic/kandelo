@@ -291,63 +291,82 @@ int main(void) {
 
 ---
 
-## PR B: fork instrumentation and Binaryen inside Kandelo
+## PR B: a guest compiler equivalent to the host SDK
 
-Expand each task into test/implement/verify/commit steps when the PR
-starts; their exact shape depends on what the Binaryen port surfaces.
+Goal: for the same sources and flags, the compiler inside Kandelo
+produces the same bytes as the host SDK, compiler facts and fork
+instrumentation included. Expand each task into test/implement/verify/
+commit steps when the PR starts; their exact shape depends on what the
+Binaryen and plugin work surfaces.
 
-### Task B1: `binaryen@126` package
+### Task B1: Equivalence audit and harness
+
+- Tabulate every step `sdk/src/bin/cc.ts` and `sdk/src/lib/flags.ts`
+  take (compile flags, glue objects, link flags, the relink with
+  `--keep-section=target_features`, code hash, facts stripping,
+  `wasm-opt`) against `sdk/kandelo/bin/wasm32posix-cc`. Record the table
+  in `docs/sdk-guide.md` ("Compile inside the base shell").
+- Write the acceptance harness first: compile C and C++ fixtures (one
+  that forks, one that does not) at `-O0`, `-O2` and `-Os` with the host
+  SDK and inside the build image from PR A, and compare bytes. It fails
+  until B2-B5 land; every remaining difference must be named.
+
+### Task B2: `binaryen@126` package
 
 - Recipe modelled on `packages/registry/clang/build-clang.sh`: Kandelo
-  CMake platform (`CMAKE_SYSTEM_NAME=Kandelo`,
-  `CMAKE_MODULE_PATH=$REPO_ROOT/sdk/cmake`), private sysroot with
-  `libcxx`, static libc++, `BUILD_TESTS=OFF`, single-threaded.
-- Decide exception handling from Binaryen's source: `-fwasm-exceptions`
-  if its parsers throw.
-- **Gate:** guest `wasm-opt -Os` on three fixture modules (including a
-  fork-instrumented one) produces bytes identical to host `wasm-opt`
-  126. A difference is a blocker to investigate, not to accept.
+  CMake platform, private sysroot with `libcxx`, static libc++,
+  `-fwasm-exceptions` (Binaryen reports bad input by throwing),
+  `BUILD_TESTS=OFF`, single-threaded at run time.
+- **Gate:** guest `wasm-opt -O2`/`-Os` on fixture modules, including a
+  fork-instrumented one, produces bytes identical to host `wasm-opt` 126.
 
-### Task B2: `fork-instrument` package
+### Task B3: `fork-instrument` package and the code-hash mode
 
-- No new option is needed: `instrument()` already removes the
-  `kandelo.calltypes*` sections from every output, and returns a module
-  outside any fork transaction otherwise unchanged and unoptimized.
-- Package the crate for `wasm32-unknown-kandelo-std` with
-  `sdk/bin/wasm32posix-cargo`, overriding the workspace default target.
-  The tool spawns `wasm-opt`, so it is fork-instrumented on the host.
-- **Gate:** inside a guest, instrumenting a fixture with no compiler
-  facts produces bytes identical to the host tool's output.
+- Add a mode to `crates/fork-instrument` that writes the
+  `kandelo.calltypes.code-sha256` section exactly as
+  `withCodeHashSection` (`sdk/src/lib/calltypes-plugin.ts`) does, with a
+  Rust test comparing it against the TypeScript writer's output.
+- Package the crate for `wasm32-unknown-kandelo-std` in a two-member
+  workspace under the work dir, crates vendored from `Cargo.lock`. The
+  tool spawns `wasm-opt`, so it is fork-instrumented on the host.
+- **Gate:** inside a guest, instrumenting a fixture with facts produces
+  bytes identical to the host tool's output, and `--sink-report` shows
+  the facts were used.
 
-### Task B3: Guest wrapper post-link step
+### Task B4: Compiler facts in the guest clang
 
-- In `sdk/kandelo/bin/wasm32posix-cc`, after `wasm-ld`:
-  - every output: run `wasm-fork-instrument --no-facts`. Fork-capable
-    output is instrumented and optimized with `wasm-opt -Os`; other
-    output only loses its compiler-facts sections;
-  - output that does not fork: then run the `wasm-opt` command
-    `sdk/src/bin/cc.ts` runs for the requested `-O` level.
-- Add `-D__unix__=1 -D__unix=1` to compile flags, matching
-  `sdk/src/lib/flags.ts`.
+- Statically link `sdk/src/plugin/KandeloCallTypes.cpp` and
+  `KandeloFnCasts.cpp` into the clang package build: register the pass
+  half through LLVM's static plugin mechanism, gated on the SDK's flags;
+  force-link the `kandelo-fncasts` frontend plugin registration.
+- `LLVM_ENABLE_ZLIB=ON` against the `zlib` package; add it to the clang
+  package's `depends_on`. Add the plugin sources to its `build.toml`
+  inputs. Bump its revision.
+- **Gate:** guest clang compiling a fixture with the SDK's plugin flags
+  emits a `kandelo.calltypes` section byte-identical to host clang's.
+
+### Task B5: Guest wrapper equivalence
+
+- In `sdk/kandelo/bin/wasm32posix-cc`: add the plugin flags and
+  `-D__unix__=1 -D__unix=1` to compiles; link with
+  `--keep-section=target_features` when `wasm-opt` will run; after
+  linking, a fork-capable module gets its code hash, then
+  `wasm-fork-instrument` (facts on, `wasm-opt -Os`); any other module
+  has its facts removed, then `wasm-opt <out> -O<n> -o <out>` for `-O1`
+  and above.
 - Include `wasm-opt` and `wasm-fork-instrument` in `kandelo-sdk.zip`
   (`images/vfs/scripts/build-kandelo-sdk-zip.sh`).
 
-### Task B4: Acceptance
+### Task B6: Acceptance and documentation
 
-- Extend `host/test/fixtures/in-guest-compiler.ts` with a program that
-  forks, waits and checks its child's exit status.
+- The B1 harness passes with no recorded differences.
 - Node (`host/test/clang-in-guest.test.ts`) and Chromium
-  (`apps/browser-demos/test/kandelo-compiler.spec.ts`): it compiles in
-  the guest, passes `describeWasmArtifactPolicyFailures` with no
-  failures, contains no `kandelo.calltypes` sections, and runs `fork()`
-  correctly.
-- Update `docs/sdk-guide.md` ("Compile inside the base shell") and mark
-  future-work item 2 done in
+  (`apps/browser-demos/test/kandelo-compiler.spec.ts`): a program that
+  forks, waits and checks its child's status compiles in the guest,
+  passes `describeWasmArtifactPolicyFailures` with no failures, and runs
+  `fork()` correctly.
+- Update `docs/sdk-guide.md` and mark future-work item 2 done in
   `docs/superpowers/specs/2026-08-26-in-kandelo-clang-toolchain-design.md`.
-  State the remaining gaps: no compiler facts, no ABI stamp for ad-hoc
-  programs.
-
----
 
 ## PR C: NetHack built inside Kandelo
 
@@ -401,8 +420,9 @@ Starts after A, B and #1548 merge. Expand tasks into steps when it starts.
   `apps/browser-demos/test/kandelo-source-rootfs-shell.spec.ts`.
 - Browser check with `./run.sh browser`: save, restore, banner.
 - Record the build time and `nethack.wasm` size against the host-built
-  baseline. The size is expected to grow, because there are no compiler
-  facts in the guest.
+  baseline. With an equivalent guest compiler, `nethack.wasm` should
+  match a host build of the same sources; any difference is a PR B
+  equivalence bug.
 
 ### Task C5: Documentation
 
