@@ -135,9 +135,10 @@ const sharedLaunchArgs =
 // Chromium also replaces host ICE candidates with mDNS names, which headless
 // test contexts cannot resolve, so a loopback WebRTC link between two
 // contexts never connects unless that is disabled too. Chromium honors only
-// one --disable-features switch, so both features share it. Allow loopback
-// candidates where Chromium enumerates them; it may still choose LAN
-// interfaces, so peer tests retain real ICE routing requirements.
+// one --disable-features switch, so both features share it. Local peer specs
+// also grant microphone permission in every context, exposing the loopback
+// interface without capturing media. This permits loopback candidates but
+// does not force ICE to select one; peers still need a viable route.
 const chromiumLaunchArgs = [
   ...sharedLaunchArgs,
   // Mute the browser's physical output; keep Web Audio processing and

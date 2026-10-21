@@ -2812,7 +2812,12 @@ bindings and routes. Local Chromium checks demonstrate actual guest Netcat
 messages in both directions and between joiners, plus two-player Doom and
 TyrQuake with both players behind a separate forwarding host. Visible Chromium
 checks used the normal browser launch and real PHP signalling server. These
-runs require the local loopback ICE fixture; default ICE failed to find a direct
+runs require the local loopback ICE fixture: Chromium's loopback launch
+flag plus a test-only microphone permission grant in every browser
+context, including contexts opened from invitation links. The flag alone
+does not expose the loopback interface through Chromium's candidate
+filter. No media is captured, and the app does not request this grant.
+These checks enable local loopback routes; default ICE failed to find a direct
 route in the first visible check and reported that boundary. A Linux network lab
 verifies a computer on another network joining with STUN only
 (`apps/browser-demos/test/network-lab/`, run with its `run.sh`; it needs Docker,

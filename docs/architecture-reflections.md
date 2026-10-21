@@ -265,8 +265,32 @@ Then repeat full machine switches in one page with real audio activation.
 Creating a fresh page or forcing GC after every cycle can make precisely
 this class of regression disappear from the test.
 
+Choose a long enough observation window to separate startup growth from
+continued retention. In the Node spawn-churn measurement, the same host
+exceeded its limits at 48 children and then leveled off when continued to
+256. Weak retirement records showed collection of old generations. A
+control that deliberately kept the memories alive continued growing and
+failed the original limits. Preserve that distinction: extending one
+persistent workload observes more history; restarting after a failure
+throws that history away. Total resident memory is useful supporting
+evidence, but cannot identify an owner or promise a collection deadline.
+See [the measured comparison](measurements/2026-10-20-process-memory-rss-window.md).
+
 The reusable local command and native Safari evidence requirements live in
 the [validation contract](agent-guidance/validation.md#browser-memory-regression-gate).
+
+## Declare permissions in every local peer-test context
+
+A browser launch flag can permit an interface without making that
+interface visible to a page. Chromium's local peer tests need both the
+loopback flag and a test-only microphone permission grant. Omitting the
+grant from a new context advertised only LAN/public routes on the test
+machine, so successful signalling still led to a failed connection.
+Declare the same permissions on the initial page and every invited
+computer. Inspect the exchanged connection candidates before changing
+guest sockets or adding a relay. This fixture captures no media and
+establishes local connectivity only; real network paths need their own
+tests.
 
 ## Schedule observer work from real pending state
 
@@ -313,3 +337,43 @@ conversion, because two incorrect offsets can cancel in an application
 screenshot. Keep genuine upstream input defects at their owning layer:
 changing a platform API's documented queue semantics to suit one client
 would make the next client wrong. See [Freeciv](freeciv.md) for this split.
+
+## Keep source audits effective when compiler tooling changes
+
+A compiler executable and a compiler's JavaScript API serve different users.
+Kandelo's build can pass while its audits lose the API they need to inspect
+source code. TypeScript 7 currently supplies the executable without that API.
+Its [official compatibility package](https://devblogs.microsoft.com/typescript/announcing-typescript-7-0/)
+keeps the TypeScript 6 API available to audits, declaration generation and
+documentation tools while `tsc` selects the native compiler.
+
+Compiler configuration has its own compatibility boundary. TypeScript 7
+removed `baseUrl`; the browser app's explicit `@host/*` mapping continued
+to resolve relative to its configuration after that unused option was
+removed. Exercise real project configurations during an upgrade. If the
+old compiler already reports type errors, compare their locations and
+codes with the new compiler and report the existing errors explicitly.
+
+Parser options also define which source a build can see. Enabling JSX for
+all files made Babel 8 treat an ordinary `.ts` generic function as JSX.
+Select language options by filename and keep parse failures visible. Exercise
+both plain TypeScript and JSX files before trusting an upgraded source audit.
+
+Test discovery is part of the evidence too. Vitest 5's default static listing
+omitted Ruby cases whose titles use imported constants. Its runtime collector
+still found and ran them. Exact case inventories must use runtime collection;
+a short list is not proof that the omitted tests do not exist. Keep the
+one-to-one case comparison rather than weakening it to accept an empty list.
+
+## Test HTTP requests after session wrapping
+
+A proxy session wrapper copies the browser's `Headers` object before
+adding its own credential. The copy preserves header values, including
+the order of repeated values. It does not replay calls recorded by a test
+subclass of `Headers`. An assertion about that call history can fail even
+when Fetch receives the correct request.
+
+Assert the complete request at the Fetch boundary: URL, final header
+fields, credential policy, and referrer policy. Keep explicit assertions
+for omitted guest fields and repeated-value order. These checks continue
+to protect the HTTP behavior when another wrapper copies the request.

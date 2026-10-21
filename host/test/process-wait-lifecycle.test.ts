@@ -9,6 +9,7 @@ import {
   CH_RETURN,
   CH_SIG_FLAGS,
   CH_SIG_SIGNUM,
+  CH_SIG_SI_CODE,
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
@@ -57,6 +58,7 @@ import {
 } from "../src/kernel-entry-gate";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
+import { EXIT_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 
 const SIGCHLD = 17;
 const SIGCONT = 18;
@@ -2308,9 +2310,15 @@ describe("Rust-owned process wait lifecycle", () => {
         true,
       ),
     ).toBe(9);
-    // The guest's kernel_exit import and terminal memory_quiescent message,
-    // rather than forced Worker termination, now own final host teardown.
-    expect(onExit).not.toHaveBeenCalled();
+    expect(
+      new DataView(memory.buffer, channel.channelOffset).getUint32(
+        CH_SIG_SI_CODE,
+        true,
+      ),
+    ).toBe(EXIT_RETIRE_SIGNAL_CODE);
+    // The terminal marker suppresses another guest exit notification. The
+    // host must start teardown with Rust's original signal-derived status.
+    expect(onExit).toHaveBeenCalledExactlyOnceWith(42, 137);
   });
 
   it("settles only the exit handshake after Rust has reaped a process", () => {
@@ -2353,7 +2361,7 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(handleChannel).not.toHaveBeenCalled();
   });
 
-  it("parks non-exit syscalls from a process Rust has already reaped", () => {
+  it("retires non-exit syscalls without re-entering a process Rust has reaped", () => {
     const memory = createSharedMemory();
     const channel = createChannel(42, memory);
     markPending(channel);
@@ -2374,9 +2382,18 @@ describe("Rust-owned process wait lifecycle", () => {
 
     worker.handleSyscall(channel);
 
-    expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
-    expect(channel.handling).toBe(true);
-    expect(relistenChannel).not.toHaveBeenCalled();
+    expect(readCompletion(channel)).toEqual({
+      retVal: -1,
+      errVal: 4,
+      status: CHANNEL_STATUS_COMPLETE,
+    });
+    const processView = new DataView(memory.buffer, channel.channelOffset);
+    expect(processView.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    expect(processView.getUint32(CH_SIG_SI_CODE, true))
+      .toBe(EXIT_RETIRE_SIGNAL_CODE);
+    // An exited worker may make a final deferred-signal request before
+    // observing the marker; keep only its retired transport listening.
+    expect(relistenChannel).toHaveBeenCalledExactlyOnceWith(channel);
     expect(setCurrentTid).not.toHaveBeenCalled();
     expect(handleChannel).not.toHaveBeenCalled();
   });

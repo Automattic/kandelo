@@ -58,13 +58,24 @@ function normalizeBinariesRel(rel) {
   return `programs/wasm32/${tail}`;
 }
 
+/** Select the source language the filename admits, as Vite does.
+ * Babel 8 treats <T> as JSX when JSX is enabled; ordinary .ts generic
+ * functions must be parsed without JSX. Never omit a file on parse errors.
+ */
+export function browserSourceParserPlugins(file) {
+  const filename = file.split("?", 1)[0];
+  return /\.[jt]sx$/.test(filename)
+    ? ["jsx", "typescript", "importAttributes"]
+    : ["typescript", "importAttributes"];
+}
+
 function staticModuleReferences(text, file) {
   let ast;
   try {
     ast = parse(text, {
       sourceType: "unambiguous",
       sourceFilename: file,
-      plugins: ["jsx", "typescript", "importAttributes"],
+      plugins: browserSourceParserPlugins(file),
     });
   } catch (error) {
     throw new Error(`browser source failed to parse: ${file}: ${error.message}`, {
