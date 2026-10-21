@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
-# Thin SDK wrapper: invokes this worktree's TypeScript source for
-# wasm64posix-strip. Self-contained — no symlinks, no central
-# dispatcher. The arch is fixed at the script level, the env var lets
-# detectArch (sdk/src/lib/arch.ts) see what we were invoked as.
-set -e
-WASM_POSIX_INVOKED_AS=wasm64posix-strip \
-  exec node --experimental-strip-types "$(dirname "$0")/../src/bin/strip.ts" "$@"
+# SDK wrapper: runs this worktree's SDK driver (crates/kandelo-cc) as
+# wasm64posix-strip. The name tells the driver which tool to be.
+WASM_POSIX_INVOKED_AS=wasm64posix-strip
+export WASM_POSIX_INVOKED_AS
+# Follow an `npm link` symlink back to this file in the checkout.
+__kandelo_self="$0"
+while [ -L "$__kandelo_self" ]; do
+    __kandelo_link="$(readlink "$__kandelo_self")"
+    case "$__kandelo_link" in
+        /*) __kandelo_self="$__kandelo_link" ;;
+        *) __kandelo_self="$(dirname "$__kandelo_self")/$__kandelo_link" ;;
+    esac
+done
+. "$(dirname "$__kandelo_self")/../src/kandelo-cc.sh"

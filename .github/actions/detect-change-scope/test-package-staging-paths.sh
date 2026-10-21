@@ -58,9 +58,11 @@ assert_not_selected \
   "abi/snapshot.json" \
   "abi/snapshot.json"
 
-assert_selected "sdk/src/lib/flags.ts" "sdk/src/lib/flags.ts"
+assert_selected "crates/kandelo-cc/src/flags.rs" "crates/kandelo-cc/src/flags.rs"
+assert_selected "sdk/src/kandelo-cc.sh" "sdk/src/kandelo-cc.sh"
 assert_selected "sdk/bin/wasm32posix-cc" "sdk/bin/wasm32posix-cc"
-assert_not_selected "sdk/test/cc.test.ts" "sdk/test/cc.test.ts"
+assert_not_selected "sdk/test/integration.test.ts" "sdk/test/integration.test.ts"
+assert_not_selected "crates/kandelo-cc/tests/driver.rs" "crates/kandelo-cc/tests/driver.rs"
 
 assert_selected "tools/xtask/src/build_deps.rs" "tools/xtask/src/build_deps.rs"
 assert_selected "tools/xtask/src/publication_policy.rs" "tools/xtask/src/publication_policy.rs"

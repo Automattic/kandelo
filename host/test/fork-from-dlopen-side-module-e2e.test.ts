@@ -30,8 +30,8 @@ const repoRoot = join(__dirname, "../..");
 const sysroot = join(repoRoot, "sysroot");
 const glueDir = join(repoRoot, "libc", "glue");
 // Every artifact in this file is built by the SDK driver. The SDK owns both
-// link contracts involved: linkFlags() for the main program and
-// SHARED_LINK_FLAGS for the side modules. This file used to carry its own
+// link contracts involved: link_flags() for the main program and
+// shared_link_flags() for the side modules. This file used to carry its own
 // copy of each, and the main-program copy had drifted -- no
 // -z stack-size=8388608, so the program ran on wasm-ld's ~64 KiB default
 // shadow stack instead of the SDK's 8 MiB.
@@ -78,14 +78,14 @@ function instrumentInPlace(wasmPath: string, entry?: string): void {
 /**
  * Build a side module.
  *
- * `-shared -fPIC` selects the SDK's side-module link (SHARED_LINK_FLAGS:
+ * `-shared -fPIC` selects the SDK's side-module link (shared_link_flags():
  * -nostdlib, --experimental-pic, --shared, --shared-memory, --export-all,
  * --allow-undefined), straight from the .c with no intermediate object.
  *
  * `--Bdynamic` and its dependency list are caller inputs: for a shared link
- * buildClangArgsInternal() in sdk/src/bin/cc.ts leaves
- * `deferExecutableInputs` false, so it pushes the caller's arguments verbatim
- * and appends SHARED_LINK_FLAGS after them. That
+ * build_clang_args_internal() in crates/kandelo-cc/src/driver.rs leaves
+ * `defer_executable_inputs` false, so it pushes the caller's arguments verbatim
+ * and appends shared_link_flags() after them. That
  * ordering is what puts a `needed_dynlibs` entry in the consumer's dylink.0
  * section for the DT_NEEDED closure test below.
  *
@@ -128,7 +128,7 @@ function buildMainProgram(source: string): string {
   // The driver supplies the target, the sysroot, -nostdlib, the codegen
   // flags, the syscall glue, compiler_rt.c, cxxrt.c, crt1.o, libc.a and every
   // -Wl, flag. `-ldl` is how it spells the dlopen glue this program needs
-  // (parseArgs/linkDl, sdk/src/bin/cc.ts). `-Wl,--export-all` stays: it is
+  // (parse_args/link_dl, crates/kandelo-cc/src/driver.rs). `-Wl,--export-all` stays: it is
   // this fixture's own requirement, not part of the platform contract.
   execFileSync(cc, [
     "-O2",

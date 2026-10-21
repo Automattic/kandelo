@@ -1,0 +1,34 @@
+[package]
+name = "kandelo-cc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Kandelo SDK compiler driver (wasm32posix-cc, wasm32posix-c++), shared by the build machine and Kandelo itself"
+publish = false
+
+# One driver, two builds: a native executable the build machine's SDK runs,
+# and a Kandelo program (wasm32-unknown-kandelo-std) the guest SDK ships.
+# Both must turn the same command into the same compiler and linker jobs,
+# so there is exactly one implementation of that logic. Keep the dependency
+# set small: every crate here is compiled into the guest program too.
+[[bin]]
+name = "kandelo-cc"
+path = "src/main.rs"
+
+[lib]
+name = "kandelo_cc"
+path = "src/lib.rs"
+
+# The Kandelo target (sdk/rust/wasm32-unknown-kandelo-std.json) is a custom
+# target, so rustc does not know its os name.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("kandelo"))'] }
+
+[dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+# The fork instrumenter is the reader of the code-hash section this driver
+# writes; the tests check the instrumenter accepts it.
+fork-instrument = { path = "../fork-instrument" }
+wat = "1"

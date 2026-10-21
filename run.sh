@@ -2972,6 +2972,10 @@ cmd_test() {
                 if ! cargo test -p kandelo --target aarch64-apple-darwin --lib; then
                     failed=1
                 fi
+                # The SDK driver behind every sdk/bin tool.
+                if ! cargo test -p kandelo-cc --target "$verify_fresh_host_target"; then
+                    failed=1
+                fi
                 ;;
             vitest)
                 step "Running vitest"

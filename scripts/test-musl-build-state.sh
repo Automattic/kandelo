@@ -37,7 +37,7 @@ mkdir -p "$input_repo/libc/musl"
 for path in scripts/build-musl.sh scripts/musl-build-state.sh \
     scripts/musl-input-hash.mjs scripts/musl-output-state.mjs \
     scripts/build-step-input-hash.sh scripts/install-overlay-headers.sh \
-    libc/musl/Makefile sdk/src/lib/calltypes-plugin.ts; do
+    libc/musl/Makefile scripts/calltypes-plugin.sh crates/kandelo-cc/src/plugin.rs; do
     mkdir -p "$input_repo/$(dirname "$path")"
     printf 'input %s\n' "$path" > "$input_repo/$path"
 done

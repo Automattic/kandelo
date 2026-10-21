@@ -7245,6 +7245,13 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "sdk/package.json",
     "sdk/package-lock.json",
     "sdk/src",
+    // The SDK driver behind every sdk/bin tool (its tests excluded), its
+    // build, and the helper that hands its compiler plugin to builds that
+    // call clang directly.
+    "crates/kandelo-cc/Cargo.toml",
+    "crates/kandelo-cc/src",
+    "scripts/build-kandelo-cc.sh",
+    "scripts/calltypes-plugin.sh",
 ];
 
 /// The full input closure of the wasm-fork-instrument tool: the crate's
@@ -25667,6 +25674,7 @@ spdx = "TestLicense"
             "libc/musl-overlay",
             "sdk/bin",
             "sdk/src",
+            "crates/kandelo-cc/src",
         ];
         for input in GLOBAL_PACKAGE_TOOLCHAIN_INPUTS {
             if *input == "libc/musl" {

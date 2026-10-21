@@ -112,9 +112,10 @@ function updateFramed(
  * The source trees every SDK-built test program depends on.
  *
  * WHY libc/glue: the SDK compiles that glue into each program at link time
- * (sdk/src/bin/cc.ts), so a glue change alters every fixture even though the
- * SDK, its version string and the sysroot are untouched. Without it a fixed
- * glue bug survived in stale test binaries.
+ * (crates/kandelo-cc/src/driver.rs), so a glue change alters every fixture
+ * even though the SDK, its version string and the sysroot are untouched.
+ * Without it a fixed glue bug survived in stale test binaries. The driver
+ * itself (crates/kandelo-cc) decides every compile and link job.
  */
 export function sdkProgramBuildInputs(
   repoRoot: string,
@@ -123,6 +124,8 @@ export function sdkProgramBuildInputs(
   return [
     join(repoRoot, "sdk/bin"),
     join(repoRoot, "sdk/src"),
+    join(repoRoot, "crates/kandelo-cc/Cargo.toml"),
+    join(repoRoot, "crates/kandelo-cc/src"),
     join(repoRoot, "sdk/package.json"),
     join(repoRoot, "sdk/package-lock.json"),
     join(repoRoot, "libc/glue"),
