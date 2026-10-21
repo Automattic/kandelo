@@ -19,6 +19,12 @@ finish later under full-suite load; a spawn assertion should observe the
 channel completion before checking its result. Keep a timeout so a missing
 completion remains a visible failure.
 
+Select the intended terminal and observe its visible repaint before reading
+rendered output. A hidden xterm can parse new output while its DOM still
+shows old rows. For graphical Quit checks, verify automatic terminal
+handoff, the launching foreground job's exit status, and process cleanup;
+a prompt alone does not establish that contract.
+
 A fixture that tests a particular resolution policy must select that policy
 explicitly and restore every changed environment setting in `finally`.
 Run it under the normal suite environment as well as in isolation. A legacy
@@ -105,11 +111,12 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → WordPress cycles in each of Chromium, Firefox, and
-  WebKit, in one page per engine with the constrained memory profile. Games
-  must render and reach running audio through trusted activation. WordPress
-  must serve Hello world. Reloads, runtime errors, forced teardown, unreviewed
-  shared worker messages, and main-thread shared Wasm allocations fail the test.
+- Four Doom → Quake → Freeciv → WordPress cycles in each of Chromium,
+  Firefox, and WebKit, in one page per engine with the constrained memory
+  profile. Games must render and reach running audio through trusted
+  activation. WordPress must serve Hello world. Reloads, runtime errors,
+  forced teardown, unreviewed shared worker messages, and main-thread
+  shared Wasm allocations fail the test.
 
 This gate owns its browser server; set `KANDELO_PLAYWRIGHT_PORT` if the
 default port is occupied. Missing products or the Quake archive fail the

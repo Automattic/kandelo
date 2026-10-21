@@ -2166,7 +2166,7 @@ then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
 
 Display capability and active display ownership are separate. The KMS
-canvas stays mounted and measurable while the terminal is selected, so
+surface stays mounted and measurable while the terminal is selected, so
 the next graphical application can discover its display size. The UI
 offers the live graphics surface while a process holds DRM master. When
 that ownership ends, the selected graphics pane returns to the terminal

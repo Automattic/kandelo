@@ -1,8 +1,9 @@
 # Cross-process graphics follow-up
 
 The initial findings below record the failing baseline. Repairs are now
-implemented and validated on rebuilt products; see the implementation
-section at the end. Broader port and native Safari gaps remain explicit.
+implemented and validated on rebuilt products. The final validation
+section distinguishes current passes from historical failures and the
+remaining validation limits.
 
 The Freeciv port does not currently demonstrate these two failures
 during ordinary play. The follow-up protects general device sharing
@@ -243,3 +244,63 @@ The current app typecheck has 129 diagnostics both here and in the
 origin/main comparison tree, with no new diagnostic messages. The full
 browser-memory gate was not rerun for this menu/API cleanup. This change
 modifies neither the kernel nor package artifacts.
+
+## Final validation after integrating main (2026-10-21)
+
+Main's compiler/test-tool update at `88b119483fbf` is integrated. Normal
+SourceOnly preparation passed all 186 nodes and eight products, with
+178 verified cache hits and eight rebuilt nodes. The kernel and shell
+image hashes match the products used for the native checks below.
+
+The complete 36-case Freeciv Chromium suite now passes without retries
+or skips. It includes a two-player local network game, both display
+densities, visible cursor pixels and real menu targets while fitting the
+viewport up/down, pointer edge recovery, focus changes, nation-picker
+drags, map orders, both Quit paths, resolution changes, font input, and
+audio. All 15 independent cursor pixel/exec probes pass across Chromium,
+Firefox, and WebKit. The original offset after changing the removed
+preference was not reproduced; its original root cause remains
+unconfirmed, and menu removal is not claimed as a cursor repair.
+
+The remaining Quit failure was an observation defect: the helper read
+stale DOM rows from a hidden terminal rather than the selected terminal's
+painted screen. It now selects and observes the intended terminal. The
+Quit assertion also verifies automatic terminal handoff, executes a real
+command in the launching shell, checks status zero, and verifies that
+client and server processes are gone. Six additional active-game Quit
+repetitions passed, three at each density. No additional cursor or Quit
+runtime workaround was added in this validation pass.
+
+Fresh checks also pass: 2,914 Rust tests across 44 test/doc binaries;
+299 host/session checks across 13 files; 204 browser unit tests; ABI 50
+snapshot/generated bindings; production browser and host declaration
+builds; 24 Sortix process and 13 selected descriptor/memory cases; and
+eight selected Open POSIX cases with two existing expected failures.
+
+The full browser-memory gate passes on this combined tree: seven source
+protocol/probe checks, 162 host checks, three teardown cases on each of
+Node and Bun, and all nine browser cases without skips or retries. Each
+engine completes four Doom → Quake → Freeciv → WordPress cycles in one
+persistent page/audio realm, with real frames, trusted audio activation,
+WordPress responses, and memory-boundary/retirement checks.
+
+Native Brave 155.1.97.57 on macOS 27.0.1 passed trusted audio activation,
+menu/options clicks, pointer capture/release, focus out/back, and an
+active hosted game. Clicking Quit restored the terminal automatically;
+a real shell command reported exit status zero. A too-fast recapture
+surfaced the browser's cooldown error and a later click worked.
+
+Native Safari 27.0.1 on macOS 27.0.1 completed four constrained-budget
+Doom → Quake → Freeciv → WordPress sequences through the gallery in the
+same page, with trusted audio activation and Hello world observed on
+each cycle. Native capture omitted central game, terminal, and gallery
+pixels even while the user confirmed the game was visible. These native
+checks establish control/switching observations, not pixel sampling.
+The earlier native-control failures stopped after unlocking the screen.
+Only the owned Safari test window was closed afterward.
+
+Browser app typechecking remains failing: 129 current diagnostics versus
+131 on main with the same compiler and zero new diagnostic messages.
+This is a baseline comparison, not a passing typecheck. Native iOS,
+full libc/Sortix, cross-computer routing, and general performance were
+not validated in this pass.

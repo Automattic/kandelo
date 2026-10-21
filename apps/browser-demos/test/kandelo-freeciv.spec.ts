@@ -43,7 +43,13 @@ async function showGame(page: Page, { pointerLock = false } = {}) {
 }
 async function terminalLines(page: Page) {
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
-  const output = await page.locator(".xterm-rows").first().evaluate(
+  // Dock commands run in TTY1. A hidden xterm keeps parsing output but
+  // does not necessarily repaint its DOM, so reading the first terminal's
+  // hidden rows can mistake an old server log for a still-running process.
+  await page.getByRole("tab", { name: "TTY1", exact: true }).click();
+  const screen = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-screen");
+  await screen.screenshot(); // Observe its painted screen before hiding it again.
+  const output = await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").evaluate(
     node => [...node.children].map(row => row.textContent).join("\n"));
   const demo = page.getByRole("button", { name: "Demo", exact: true });
   if (await demo.isEnabled()) await demo.click();
@@ -1416,9 +1422,14 @@ for (const density of [1, 2]) {
           await canvas(page).click({ position: await menuPosition(page, "quit") });
         }
         await page.screenshot({ path: `../../.context/freeciv-quit-after-${density}-${inGame}.png`, scale: "css" });
-        await expect.poll(() => terminalLines(page), { timeout: 20_000 })
-          .toMatch(/kandelo\$\s*$/);
-        await page.getByRole("button", { name: "Terminal", exact: true }).click();
+        // Require the actual display release and automatic terminal handoff.
+        // A prompt in hidden xterm DOM is stale, and a background server can
+        // also print after a prompt. Execute a real command in the launching
+        // terminal to prove that its foreground job returned successfully.
+        await expect(page.getByRole("button", { name: "Terminal", exact: true }))
+          .toHaveAttribute("aria-current", "true", { timeout: 20_000 });
+        await expect(canvas(page)).toHaveCount(0);
+        await page.getByRole("tab", { name: inGame ? "TTY1" : "TTY2", exact: true }).click();
         const slot = page.locator(".kshell-terminal-slot:not([hidden])");
         await slot.locator(".xterm-screen").click();
         await page.keyboard.insertText('printf "FREECIV_EXIT=%s\\n" "$?"');
