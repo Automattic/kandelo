@@ -145,7 +145,16 @@ test("LÖVE menu launches all six games through the native renderer @slow", asyn
     await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);
     await canvas.screenshot({ path: resolve(screenshotDir, `${id}.png`) });
     // Mount the terminal view so guest stderr is available for inspection.
-    const terminal = await terminalText(page, id);
+    await terminalText(page, id);
+    // Terminal replay is incremental. Wait for this command's audio line,
+    // rather than an earlier renderer line or the previous game's output.
+    const currentOutput = () => page.locator(".xterm-rows").allTextContents()
+      .then(rows => {
+        const text = rows.join("\n");
+        return text.slice(text.lastIndexOf(`/usr/share/love/examples/${id}`));
+      });
+    await expect.poll(currentOutput).toContain("love: audio output via SDL2/dsp on /dev/dsp");
+    const terminal = await currentOutput();
     expect(terminal, id).toContain(`/usr/share/love/examples/${id}`);
     expect(terminal, id).toContain("love: audio output via SDL2/dsp on /dev/dsp");
     expect(terminal, id).not.toMatch(/lovefb:.*(?:error|main\.lua:)|configured command failed/);
@@ -261,10 +270,12 @@ test("LÖVE pointer tracks device coordinates across the playfield and CSS resiz
 test("LÖVE audio source controls and stream boundaries @slow", async ({ page }) => {
   test.setTimeout(180_000);
   const fragment = await scriptFragment(
-    `/usr/local/bin/love /usr/share/love/examples/audio-check
+    `for attempt in 1 2; do
+/usr/local/bin/love /usr/share/love/examples/audio-check
 love_status=$?
-echo "love: audio fixture exited $love_status"
-exit "$love_status"
+echo "love: audio fixture $attempt exited $love_status"
+if [ "$love_status" != 0 ]; then exit "$love_status"; fi
+done
 `,
     "love-audio-api-check",
   );
@@ -277,9 +288,11 @@ exit "$love_status"
       await page.locator(".kpcm-audio-enable").click();
     }
     return output();
-  }, { timeout: 120_000 }).toContain("love: audio fixture exited 0");
+  }, { timeout: 120_000 }).toContain("love: audio fixture 2 exited 0");
+  expect(await output()).toContain("love: audio fixture 1 exited 0");
   expect(await output()).toContain("love: audio API checks passed");
-  await expect(page.locator('[data-audio-active="true"]')).toHaveCount(0, { timeout: 10_000 });
+  // Audio activity is latched for the machine's lifetime. A second clean run
+  // proves that the first process released the exclusive /dev/dsp device.
   expect(await output()).not.toMatch(/lovefb:.*error|configured command failed/);
 });
 
