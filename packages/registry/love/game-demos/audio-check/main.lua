@@ -16,6 +16,7 @@ local function waitFor(predicate)
 end
 
 function love.run()
+  assert(love.graphics == nil and love.window == nil)
   local root = love.filesystem.getSource() .. "/.."
   local original = love.audio.newSource(root .. "/sounds/score.wav", "static")
   local source = original:clone()

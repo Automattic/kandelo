@@ -741,6 +741,25 @@ uint64 Channel::push(const Variant &) {
 
 }  // namespace love
 
+// These upstream modules do not need a display. Keep audio-only programs on
+// the same filesystem/data implementations as graphical games.
+extern "C" bool kandelo_love_register_native_modules(lua_State *L, const char *root) {
+  gNative.root = root ? root : ".";
+  try {
+    installFilesystem();
+  } catch (love::Exception &e) {
+    std::fprintf(stderr, "love: native filesystem setup failed: %s\n", e.what());
+    return false;
+  }
+  if (!callLuaOpen(L, "love.filesystem", love::filesystem::luaopen_love_filesystem)) return false;
+  if (!callLuaOpen(L, "love.data", love::data::luaopen_love_data)) return false;
+  if (!callLuaOpen(L, "love.image", love::image::luaopen_love_image)) return false;
+  if (!callLuaOpen(L, "love.font", love::font::luaopen_love_font)) return false;
+  if (!callLuaOpen(L, "love.math", love::math::luaopen_love_math)) return false;
+  if (!callLuaOpen(L, "love.physics", love::physics::box2d::luaopen_love_physics)) return false;
+  return true;
+}
+
 extern "C" bool kandelo_love_register_native_renderer(lua_State *L, const char *root,
                                                        int width, int height,
                                                        int pixelWidth, int pixelHeight,
@@ -755,22 +774,17 @@ extern "C" bool kandelo_love_register_native_renderer(lua_State *L, const char *
   gNative.desktopHeight = desktopHeight > 0 ? desktopHeight : gNative.pixelHeight;
   gNative.swap = swap;
 
+  if (!kandelo_love_register_native_modules(L, root)) return false;
+
   try {
-    installFilesystem();
     installWindow();
   } catch (love::Exception &e) {
     std::fprintf(stderr, "love: native backend setup failed: %s\n", e.what());
     return false;
   }
 
-  if (!callLuaOpen(L, "love.filesystem", love::filesystem::luaopen_love_filesystem)) return false;
-  if (!callLuaOpen(L, "love.data", love::data::luaopen_love_data)) return false;
-  if (!callLuaOpen(L, "love.image", love::image::luaopen_love_image)) return false;
-  if (!callLuaOpen(L, "love.font", love::font::luaopen_love_font)) return false;
-  if (!callLuaOpen(L, "love.math", love::math::luaopen_love_math)) return false;
   if (!callLuaOpen(L, "love.window", love::window::luaopen_love_window)) return false;
   if (!callLuaOpen(L, "love.graphics", love::graphics::luaopen_love_graphics)) return false;
-  if (!callLuaOpen(L, "love.physics", love::physics::box2d::luaopen_love_physics)) return false;
 
   auto *window = love::Module::getInstance<love::window::Window>(love::Module::M_WINDOW);
   if (window != nullptr && !window->isOpen()) {

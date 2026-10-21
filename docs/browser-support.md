@@ -1295,14 +1295,15 @@ lazily when launched. The LÖVE audio source now mixes static Vorbis/WAV effects
 and streamed Vorbis music through SDL2's OSS driver on `/dev/dsp`, including
 pitch, volume, looping, and independent clones. Core games have generated
 sound effects and an M-key mute toggle; BYTEPATH and SNKRX use upstream audio.
-The wasm32 package and shell image have been rebuilt; Chromium tests observed
-nonzero audio output from all six games, and the source-control/streaming
-fixture passed in Chromium. Pointer tracking passed in Chromium, Firefox,
-and Playwright WebKit. Native Safari activated LÖVE audio, but its repeated
-switching check remains incomplete. A direct Node LÖVE run exited during
-renderer initialization before reaching the audio fixture; Node LÖVE audio
-is unverified. Older binaries may still be silent. Browser playback requires
-user activation. SDL2 KMSDRM has no system cursor themes; SNKRX keeps the
+The wasm32 package and shell image have been rebuilt. Headless browser tests
+check nonzero audio output from all six games, source controls and streaming,
+pointer tracking, and repeated machine switching in Chromium, Firefox, and
+Playwright WebKit. They require no desktop-control permission. The full native
+Safari repeated-switch follow-up remains incomplete. Audio-only programs can
+disable both graphics and window modules through `conf.lua` and use Node's
+paced headless audio sink; graphical games require an OpenGL ES context that
+Node does not provide. Older binaries may still be silent. Browser playback
+requires user activation. SDL2 KMSDRM has no system cursor themes; SNKRX keeps the
 default pointer when its optional hand cursor is unavailable. Cursor sizing
 on high-density displays remains deferred to compositor work.
 See `packages/registry/love/README.md` for its compatibility boundaries.

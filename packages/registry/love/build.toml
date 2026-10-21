@@ -9,5 +9,5 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 12
+revision = 14
 publication_state = "pending"

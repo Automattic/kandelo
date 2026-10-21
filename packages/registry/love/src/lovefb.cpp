@@ -53,6 +53,8 @@ extern "C" {
 #define lua_objlen lua_rawlen
 #endif
 
+extern "C" bool kandelo_love_register_native_modules(lua_State *L, const char *root);
+
 extern "C" bool kandelo_love_register_native_renderer(lua_State *L, const char *root,
                                                        int width, int height,
                                                        int pixelWidth, int pixelHeight,
@@ -229,6 +231,9 @@ struct Runtime {
   std::string windowTitle = "LÖVE";
   bool fullscreen = false;
   bool nativeRenderer = false;
+  bool graphicsModule = true;
+  bool windowModule = true;
+  bool createWindow = true;
   bool legacyColorRange = false;
   std::string configuredVersion;
   int windowW = kLogicalWidth;
@@ -3111,7 +3116,18 @@ void maybeRunConf(lua_State *L) {
   }
   G.legacyColorRange = versionUsesLegacyColorRange(G.configuredVersion);
 
+  lua_getfield(L, configIdx, "modules");
+  if (lua_istable(L, -1)) {
+    lua_getfield(L, -1, "graphics");
+    G.graphicsModule = !(lua_isboolean(L, -1) && !lua_toboolean(L, -1));
+    lua_pop(L, 1);
+    lua_getfield(L, -1, "window");
+    G.windowModule = !(lua_isboolean(L, -1) && !lua_toboolean(L, -1));
+    lua_pop(L, 1);
+  }
+  lua_pop(L, 1);
   lua_getfield(L, configIdx, "window");
+  G.createWindow = !(lua_isboolean(L, -1) && !lua_toboolean(L, -1));
   if (lua_istable(L, -1)) {
     lua_getfield(L, -1, "title");
     if (lua_isstring(L, -1)) G.windowTitle = lua_tostring(L, -1);
@@ -3183,25 +3199,50 @@ int runLove(lua_State *L) {
   configureLuaPath(L);
   installLoveHandlers(L);
   maybeRunConf(L);
-  resizeSoftwareScreen(G.windowW, G.windowH);
-  if (openPresenter() != 0) return 1;
-  if (G.presenter != Presenter::SdlGl) {
-    fprintf(stderr, "love: native EGL rendering is required by this port\n");
-    return 1;
-  }
-  if (G.presenter == Presenter::SdlGl) {
-    int pixelW = G.windowW, pixelH = G.windowH;
-    if (G.window) SDL_GL_GetDrawableSize(G.window, &pixelW, &pixelH);
-    G.nativeRenderer = kandelo_love_register_native_renderer(
-        L, G.root.c_str(), G.windowW, G.windowH, pixelW, pixelH,
-        G.desktopW, G.desktopH,
-        nativeSwapBuffers);
-    if (G.nativeRenderer) {
-      fprintf(stderr, "love: using upstream LÖVE OpenGL renderer on Kandelo %s/EGL\n",
-              std::string(SDL_GetCurrentVideoDriver()) == "wayland" ? "Wayland" : "KMS");
-    } else {
-      fprintf(stderr, "love: upstream renderer unavailable on Kandelo KMS/EGL\n");
+  if (!G.graphicsModule && !G.windowModule) {
+    // This is the ordinary LÖVE conf.lua module boundary, not a host-name
+    // check. Node has no GL context; audio-only programs need none.
+    if (SDL_Init(SDL_INIT_EVENTS) != 0) {
+      fprintf(stderr, "love: SDL2 event initialization failed: %s\n", SDL_GetError());
       return 1;
+    }
+    if (!kandelo_love_register_native_modules(L, G.root.c_str())) return 1;
+    lua_getglobal(L, "love");
+    lua_pushnil(L); lua_setfield(L, -2, "graphics");
+    lua_pushnil(L); lua_setfield(L, -2, "window");
+    lua_pop(L, 1);
+    fprintf(stderr, "love: graphics and window modules disabled by conf.lua\n");
+  } else if (!G.graphicsModule || !G.windowModule || !G.createWindow) {
+    fprintf(stderr, "love: this port requires graphics and window modules together; "
+                    "disable both for a headless program\n");
+    return 1;
+  } else {
+    resizeSoftwareScreen(G.windowW, G.windowH);
+    if (openPresenter() != 0) return 1;
+    // SDL can establish an EGL transport on a headless host even when no
+    // renderer exists. Do not pass a null GL version to upstream GL setup.
+    if (!glGetString(GL_VERSION)) {
+      fprintf(stderr, "love: an active OpenGL ES context is required for graphics\n");
+      return 1;
+    }
+    if (G.presenter != Presenter::SdlGl) {
+      fprintf(stderr, "love: native EGL rendering is required by this port\n");
+      return 1;
+    }
+    if (G.presenter == Presenter::SdlGl) {
+      int pixelW = G.windowW, pixelH = G.windowH;
+      if (G.window) SDL_GL_GetDrawableSize(G.window, &pixelW, &pixelH);
+      G.nativeRenderer = kandelo_love_register_native_renderer(
+          L, G.root.c_str(), G.windowW, G.windowH, pixelW, pixelH,
+          G.desktopW, G.desktopH,
+          nativeSwapBuffers);
+      if (G.nativeRenderer) {
+        fprintf(stderr, "love: using upstream LÖVE OpenGL renderer on Kandelo %s/EGL\n",
+                std::string(SDL_GetCurrentVideoDriver()) == "wayland" ? "Wayland" : "KMS");
+      } else {
+        fprintf(stderr, "love: upstream renderer unavailable on Kandelo KMS/EGL\n");
+        return 1;
+      }
     }
   }
 

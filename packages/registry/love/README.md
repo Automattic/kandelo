@@ -71,18 +71,32 @@ The physical OSS output is exclusive, so simultaneous audio clients can fail
 with a busy device; the backend reports device/decode failures as Lua errors.
 
 The wasm32 package and shell demo image have been rebuilt with this backend.
-Chromium tests observed nonzero Web Audio output from all six games. Older
+Browser tests observe actual Web Audio samples from all six games. Older
 binaries may still use the silent backend. Run
 `love /usr/share/love/examples/audio-check` to exercise source controls,
 cloning, garbage collection, streaming/loop boundaries, and failure reporting.
 The repeated browser-memory switching test also includes LÖVE as an audio
-consumer. The source API fixture passed in Chromium, and pointer tracking
-passed in Chromium, Firefox, and Playwright WebKit at two CSS viewport sizes.
-A native Safari session activated LÖVE audio, but its repeated-switch check
-remains incomplete after the page became unobservable following a switch.
-A direct Node LÖVE run exited with status 132 during renderer initialization,
-before loading the audio fixture; Node LÖVE audio is therefore unverified.
-Node's headless audio sink must not be mistaken for physical playback.
+consumer. These automated checks use headless Chromium, Firefox, and
+Playwright WebKit; they do not require desktop-control permission. Playwright
+WebKit coverage does not establish native Safari support. The full native
+Safari repeated-switch follow-up remains incomplete. The same source API
+fixture also runs through Node's paced headless audio sink, which does not
+output to physical speakers.
+
+Audio-only programs can disable the window and graphics modules in `conf.lua`:
+
+```lua
+function love.conf(t)
+  t.window = false
+  t.modules.graphics = false
+  t.modules.window = false
+end
+```
+
+This uses the same audio, timer, filesystem and data paths on both hosts.
+Graphical games require an active OpenGL ES context, which Node does not
+provide. The port supports the window and graphics modules together or both
+disabled; other windowless graphics configurations fail explicitly.
 
 ## Compatibility boundaries
 

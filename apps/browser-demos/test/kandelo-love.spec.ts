@@ -261,7 +261,11 @@ test("LÖVE pointer tracks device coordinates across the playfield and CSS resiz
 test("LÖVE audio source controls and stream boundaries @slow", async ({ page }) => {
   test.setTimeout(180_000);
   const fragment = await scriptFragment(
-    "exec /usr/local/bin/love /usr/share/love/examples/audio-check\n",
+    `/usr/local/bin/love /usr/share/love/examples/audio-check
+love_status=$?
+echo "love: audio fixture exited $love_status"
+exit "$love_status"
+`,
     "love-audio-api-check",
   );
   await gotoMachine(page, "love", { hash: fragment });
@@ -273,7 +277,9 @@ test("LÖVE audio source controls and stream boundaries @slow", async ({ page })
       await page.locator(".kpcm-audio-enable").click();
     }
     return output();
-  }, { timeout: 120_000 }).toContain("love: audio API checks passed");
+  }, { timeout: 120_000 }).toContain("love: audio fixture exited 0");
+  expect(await output()).toContain("love: audio API checks passed");
+  await expect(page.locator('[data-audio-active="true"]')).toHaveCount(0, { timeout: 10_000 });
   expect(await output()).not.toMatch(/lovefb:.*error|configured command failed/);
 });
 
