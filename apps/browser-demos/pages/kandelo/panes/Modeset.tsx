@@ -19,7 +19,6 @@ import { pointerButtons } from "@host/input/pointer-buttons";
 import { DemoSurfaceDockControls, IngestControl } from "./Framebuffer";
 import { useDockActions } from "./DockActions";
 import { useFittedCanvasStyle } from "./canvasFit";
-import { DisplayScaleControl } from "./DisplayScaleControl";
 
 // modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
 // auto-attach resizes the OffscreenCanvas drawing buffer to match the
@@ -79,7 +78,6 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
   const host = useKernelHost();
   const status = useStatus();
   const presentation = usePresentation();
-  const scalePreference = host.getDisplayScalePreference();
   const ingest = useDemoIngest();
   const [ingestPhase, setIngestPhase] = React.useState<IngestPhase | null>(null);
   const [ingestName, setIngestName] = React.useState<string | null>(null);
@@ -537,7 +535,6 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       status={statusLabel}
       active={hasFrame}
     >
-      <DisplayScaleControl preference={scalePreference} onChange={scale => host.setDisplayScaleOverride(scale)} />
       {dockActions.controls}
       {ingest && status === "running" && (
         <IngestControl
@@ -550,7 +547,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
         />
       )}
     </DemoSurfaceDockControls>
-  ), [busy, crtcId, dockActions.controls, hasFrame, host, ingest, ingestFile, ingestName, scalePreference.override, scalePreference.defaultScale, status, statusLabel]);
+  ), [busy, crtcId, dockActions.controls, hasFrame, host, ingest, ingestFile, ingestName, status, statusLabel]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;

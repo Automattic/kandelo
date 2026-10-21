@@ -1821,7 +1821,7 @@ function attachDeclaredInputSource(
   tick("attaching input source...");
   kernel.attachInputSource(
     // Bound to the window for global reach; `shouldCapture` is what keeps the
-    // host controls usable, including a zoomed display's scroll viewport.
+    // host controls usable outside the rendering canvas.
     // KMS captures the canvas rather than its surrounding UI. See
     // demoSurfaceCaptureGate.
     new BrowserInputSource(window, {

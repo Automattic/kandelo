@@ -638,64 +638,62 @@ for (const density of [1, 2]) {
       await page.screenshot({ path: `../../.context/freeciv-auto-terminal-${density}.png`, scale: "css" });
     });
 
-    test("preferred display scale keeps output fitted and survives relaunch", async ({ page, browserName }) => {
-      test.skip(browserName !== "chromium", "direct-display scaling acceptance targets Chromium");
+    test("cursor pixels and menu targets stay aligned as the viewport fits down and up", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "direct-display cursor acceptance targets Chromium");
       test.setTimeout(180_000);
       await gotoMachine(page, "freeciv");
       await running(page);
       await showGame(page);
-      await expect(page.getByText(/960×540 · \d+ flips/)).toBeVisible();
-      await page.getByRole("button", { name: "Display settings", exact: true }).click();
-      const scale = page.getByRole("combobox", { name: "Preferred display scale", exact: true });
-      await expect(scale).toHaveValue("default");
-      await expect(scale.getByRole("option", { name: /Use demo default/ })).toHaveCount(1);
-      await scale.selectOption("1.25");
-      // The preferred mode must never override an application's saved mode
-      // with bitmap zoom. Always show its entire display and cursor together.
-      await expect(page.getByText(/960×540 · \d+ flips/)).toBeVisible();
-      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
-      await expect.poll(async () => (await canvas(page).boundingBox())!.height).toBeCloseTo(810, 0);
-      const cursor = page.locator(".kmodeset-cursor");
-      expect(await cursor.boundingBox()).toEqual(await canvas(page).boundingBox());
-      await page.screenshot({ path: `../../.context/freeciv-display-scale-${density}.png`, scale: "css" });
-      await page.keyboard.press("Escape");
-      await canvas(page).click({ position: await menuPosition(page, "quit") });
-      await expect(page.getByRole("button", { name: "Terminal", exact: true })).toHaveAttribute("aria-current", "true");
-      await page.keyboard.insertText("/usr/bin/freeciv");
-      await page.keyboard.press("Enter");
-      // Freeciv saves its resolution automatically on exit. Preserve that
-      // application choice while keeping the machine's preferred scale.
-      await expect(page.getByText(/960×540 · \d+ flips/)).toBeVisible({ timeout: 60_000 });
-      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
-      await page.getByRole("button", { name: "Display settings", exact: true }).click();
-      await expect(scale).toHaveValue("1.25");
-      await scale.selectOption("2");
-      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
-      await page.keyboard.press("Escape");
-      const viewport = page.getByRole("region", { name: "Graphics viewport" });
-      const expectNoOverflow = async () => {
-        await expect.poll(() => viewport.evaluate(el => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight))
+      for (const viewport of [{ width: 1440, height: 1000 }, { width: 800, height: 700 },
+        { width: 650, height: 1000 }, { width: 1440, height: 1000 }]) {
+        await page.setViewportSize(viewport);
+        const surface = canvas(page);
+        await expect.poll(async () => (await surface.boundingBox())!.width).toBeCloseTo(viewport.width, 0);
+        await expect.poll(async () => (await surface.boundingBox())!.height).toBeCloseTo(Math.floor(viewport.width * 9 / 16), 0);
+        const box = (await surface.boundingBox())!;
+        const fit = Math.min(box.width / 960, box.height / 540);
+        const offset = { x: (box.width - 960 * fit) / 2, y: (box.height - 540 * fit) / 2 };
+        const point = { x: offset.x + 700 * fit, y: offset.y + 380 * fit };
+        await page.mouse.move(box.x + point.x, box.y + point.y);
+        // Isolate the real cursor canvas in the screenshot. A bounding-box
+        // comparison alone misses a stretched bitmap inside an aligned box.
+        const visibleCursorOrigin = async () => {
+          const png = await page.screenshot({ clip: box, scale: "css", style: `
+            .kmodeset-canvas, .kdemo-toast { visibility: hidden !important; }
+            .kmodeset-canvas-slot { background: #ff00ff !important; }
+          ` });
+          return page.evaluate(async encoded => {
+            const bitmap = await createImageBitmap(new Blob([
+              Uint8Array.from(atob(encoded), c => c.charCodeAt(0)),
+            ], { type: "image/png" }));
+            const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+            ctx.drawImage(bitmap, 0, 0); bitmap.close();
+            const { width, height, data } = ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height);
+            let x = width, y = height;
+            for (let row = 2; row < height - 2; row++) for (let column = 2; column < width - 2; column++) {
+              const i = (row * width + column) * 4;
+              if (data[i] < 250 || data[i + 1] > 5 || data[i + 2] < 250) {
+                x = Math.min(x, column); y = Math.min(y, row);
+              }
+            }
+            return { x, y };
+          }, png.toString("base64"));
+        };
+        await expect.poll(async () => {
+          const origin = await visibleCursorOrigin();
+          return Math.hypot(origin.x - point.x, origin.y - point.y);
+        }).toBeLessThan(4);
+        const viewportElement = page.getByRole("region", { name: "Graphics viewport" });
+        expect(await viewportElement.evaluate(el => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight))
           .toBe(true);
-        expect(await cursor.boundingBox()).toEqual(await canvas(page).boundingBox());
-      };
-      await expectNoOverflow();
-      // Fit down when the guest is larger than the viewport, then up again.
-      await page.setViewportSize({ width: 800, height: 700 });
-      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(800, 0);
-      await expectNoOverflow();
-      await page.setViewportSize({ width: 1440, height: 1000 });
-      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
-      await expectNoOverflow();
-      await canvas(page).click({ position: await menuPosition(page, "quit") });
-      await expect(page.getByRole("button", { name: "Terminal", exact: true })).toHaveAttribute("aria-current", "true");
-      await page.keyboard.insertText("/usr/bin/freeciv");
-      await page.keyboard.press("Enter");
-      await expect(page.getByText(/960×540 · \d+ flips/)).toBeVisible({ timeout: 60_000 });
-      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
-      await page.getByRole("button", { name: "Display settings", exact: true }).click();
-      await scale.selectOption("default");
-      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
-      await expectNoOverflow();
+        // Click the visible native Options target after each resize, then
+        // observe its painted panel. Cursor coordinates alone do not prove
+        // that the scene and hit testing agree.
+        await surface.click({ position: await menuPosition(page, "options") });
+        await waitForPanel(page, box.width / 2 + 60 * fit, box.height / 2 + 60 * fit);
+        await page.keyboard.press("Escape");
+        await waitForPanel(page, box.width / 2 + 60 * fit, box.height / 2 + 60 * fit, false);
+      }
     });
 
     test("fresh profile uses CSS resolution and quiet first-run sound", async ({ page, browserName }) => {
@@ -705,12 +703,8 @@ for (const density of [1, 2]) {
       await running(page);
       await showGame(page);
       writeFileSync("../../.context/freeciv-scaled-demo-url.txt", page.url());
-      await page.getByRole("button", { name: "Display settings", exact: true }).click();
-      const scale = page.getByRole("combobox", { name: "Preferred display scale", exact: true });
-      await expect(scale).toHaveValue("default");
-      await expect(scale.getByRole("option", { name: "Use demo default (150%)", exact: true })).toHaveCount(1);
+      await expect(page.getByRole("button", { name: "Display settings", exact: true })).toHaveCount(0);
       await page.screenshot({ path: `../../.context/freeciv-scale-default-${density}.png`, scale: "css" });
-      await page.keyboard.press("Escape");
       await expect(page.getByText("960×540", { exact: false })).toBeVisible();
       const box = (await canvas(page).boundingBox())!;
       expect(box.width).toBeCloseTo(1440, 0);

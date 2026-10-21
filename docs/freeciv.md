@@ -209,16 +209,12 @@ This is bitmap scaling, not independent native-density glyph rasterization.
 The shared connector minimum is 640×480, so smaller panes fit that mode.
 DPI-aware compositor profiles omit `displayScale` and retain native output.
 
-The graphics dock's **Display settings → Preferred display scale** control
-offers 100%, 125%, 150%, 175%, and 200%, plus **Use demo default (150%)**.
-It sets the preferred resolution for future graphical launches. The complete
-scene and cursor always fit the pane, scaling up or down without clipping
-or scrollbars. Freeciv can retain its saved resolution instead of selecting
-the preferred mode; use its Screen resolution option in that case. There is
-no live KMS hotplug or forced application resize. The choice survives application
-restarts and rebooting the same machine session, but does not persist across
-page reloads or launching a different machine.
-
+There is no host-side scaling menu. A preferred monitor resolution does
+not resize a running SDL application, and Freeciv can reuse its saved mode
+on relaunch. Presenting that preference as adjustable UI scaling was
+misleading. The whole scene and cursor fit the pane up or down without
+clipping or scrollbars. Use the game's resolution option to change the UI
+size; the 150% image preference remains the first-launch default.
 
 The normal game menu exposes resolutions under **Options → Local options →
 Interface → Screen resolution**. Kandelo's virtual monitor advertises 17

@@ -4701,17 +4701,6 @@
   image-rendering: pixelated;
 }
 
-/* Display preferences belong to the machine, alongside its graphics dock. */
-.kdisplay-settings-panel {
-  position: fixed; inset: auto; margin: 0; font: 13px var(--k-font-ui);
-  width: min(360px, 80vw); padding: 16px;
-  background: var(--k-bg); color: var(--k-text); border: 1px solid var(--k-border);
-  border-radius: 8px; box-shadow: 0 6px 24px #0004;
-}
-.kdisplay-settings-panel label { display: flex; flex-direction: column; gap: 8px; }
-.kdisplay-settings-panel select { max-width: 100%; font: inherit; padding: 6px; }
-.kdisplay-settings-panel p { line-height: 1.5; margin: 12px 0 0; }
-
 /* Scene and cursor always fit this viewport, regardless of preferred mode. */
 .kmodeset-viewport {
   flex: 1; align-self: stretch; min-width: 0; min-height: 0;

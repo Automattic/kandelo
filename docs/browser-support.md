@@ -2191,22 +2191,15 @@ virtual connector also lists 17 standard resolutions from 640×480 through
 modes through ordinary SDL/libdrm APIs; the browser fits the chosen scanout
 and aspect ratio.
 
-The KMS graphics dock exposes **Display settings → Preferred display scale**, with
-100%, 125%, 150%, 175%, and 200%, plus the image default (native output
-when no default is declared). A per-machine session override immediately
-updates the virtual monitor's preferred mode using the last measured pane
-size. Presentation always fits the complete selected scanout and cursor
-inside the viewport, scaling up or down while preserving aspect ratio.
-The preference never adds bitmap zoom, cropping, or scrollbars. Only the
+Presentation fits the complete selected scanout and cursor inside the
+viewport, scaling up or down while preserving aspect ratio. Only the
 rendering canvas captures guest keys, leaving host controls usable.
-Applications discover the preferred mode at initialization; existing KMS
-clients receive no hotplug or forced mode change. A saved application
-resolution can override this preference. Use the application's display
-options when it retains a different mode. Resetting to the image default
-restores its preferred-mode policy, with the same automatic fitting.
-The override survives application and same-machine restarts;
-new machine identity or a page reload resets it. It is not stored in shared
-URLs, snapshots, or browser storage.
+There is no host-side scaling control: changing the preferred mode does
+not resize an existing KMS client, and a saved application resolution can
+override the preference on relaunch. Applications with display options
+can change their selected resolution through those options. A live UI
+scaling control needs application-supported relayout or a working display
+resize notification path before it can offer a reliable size change.
 
 Omitting `displayScale` preserves native device-pixel output and CSS-derived
 physical size, so Wayland compositors and DPI-aware applications retain

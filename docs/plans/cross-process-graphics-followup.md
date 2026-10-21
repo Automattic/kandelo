@@ -168,17 +168,15 @@ Snapshots are bounded by each mapping and BO size, remain worker-local, and
 retire with their mappings. Wasm memories still do not live-alias; applications
 must synchronize overlapping writers.
 
-The graphics dock now exposes a preferred display scale, including the
-image default. The initial implementation also zoomed the current bitmap,
-which overflowed the viewport. After user testing, that zoom was removed:
-the complete scene and cursor always fit up or down inside the viewport.
-Changing the preference advertises the next preferred mode without silently
-changing the guest's selected mode. KMS has no live hotplug/client-resize path;
-saved application modes can override the preference. The control states that
-limit and points users to application display options. The override lasts for the
-machine session and survives same-machine restarts; changing machine identity
-or reloading the page resets it. Freeciv's image default is 150%. A saved application
-resolution can override that preferred mode.
+The preferred-display-scale menu was removed after user testing showed
+that it did not reliably change UI size. It changed connector preferences,
+but an already-running client or a saved resolution could ignore it. The
+session override API and its state were removed with the menu. Freeciv's
+image still prefers 150% on first launch; its own Screen resolution option
+changes the actual render resolution. Whole-display fitting remains.
+The reported cursor offset after changing preferences is still under
+investigation; canvas bounding-box checks alone did not establish correct
+visible cursor placement or hit testing.
 
 Early validation: the Rust workspace passed 2,914 tests. The focused
 source selection passed 248 tests, including shared-memory publication
@@ -198,11 +196,12 @@ through the normal completed projection, alongside the four lifetime cases,
 exec, shared-memory publication and session checks: 261 pass across nine files.
 
 All 15 cursor pixel/exec browser probes pass across Chromium, Firefox and
-WebKit. The final fitted UI passes 15 Chromium checks on the rebuilt image:
+WebKit. The earlier fitted UI passed 15 Chromium checks on the rebuilt image:
 both densities, preference changes, fitting down/up with viewport changes,
 cursor alignment, picker drags, font input, resolution changes, saved modes,
-terminal handoff and a separate SDL application. These supersede the early
-baseline-image UI evidence above. There is no explicit bitmap zoom or overflow.
+terminal handoff and a separate SDL application. These superseded the early
+baseline-image UI evidence above but did not establish live scaling or
+exclude the subsequently reported cursor mismatch.
 
 Conformance checks pass: 24 Sortix process cases, 13 selected descriptor/memory
 cases, and eight Open POSIX mapping/sync cases with two existing expected
@@ -231,3 +230,16 @@ after its writer unmapped, exited, or replaced its address space. All three
 cases failed before pending-reader tracking and now pass. Pending readers
 retire with their mapping or after consuming the published bytes; their
 refresh eligibility does not depend on another writer remaining mapped.
+
+After removing the ineffective scale control, 146 session tests pass.
+Four Chromium checks pass at 1× and 2× density, covering fresh 150%
+defaults, visible cursor pixels, actual Options clicks, and fitting down
+and up without overflow. Two additional active-game checks pass, including
+cursor shape/hotspot changes, losing and restoring pane focus, unit cycling,
+and end-turn controls. These checks do not reproduce the user's reported
+offset. Native Brave control failed with cgWindowNotFound, so that report
+remains open; no cursor repair is claimed by the menu removal.
+The current app typecheck has 129 diagnostics both here and in the
+origin/main comparison tree, with no new diagnostic messages. The full
+browser-memory gate was not rerun for this menu/API cleanup. This change
+modifies neither the kernel nor package artifacts.
