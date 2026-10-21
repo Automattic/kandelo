@@ -21,8 +21,15 @@ wasm_is_binary() {
 # export section; run-wasm-fork-instrument.sh rebuilds it when its sources
 # changed, and honors WASM_POSIX_FORK_INSTRUMENT.
 _wasm_legacy_asyncify_exports() {
+    # The tool's own diagnostics (including a failed rebuild of the tool)
+    # are shown only when it fails, so a refusal names its cause.
+    local errors status=0
+    errors="$(mktemp)"
     bash "$_WASM_ARTIFACT_GUARDS_DIR/run-wasm-fork-instrument.sh" \
-        --legacy-asyncify-exports "$1" 2>/dev/null
+        --legacy-asyncify-exports "$1" 2>"$errors" || status=$?
+    [ "$status" -eq 0 ] || cat "$errors" >&2
+    rm -f "$errors"
+    return "$status"
 }
 
 # Returns 0 when the module exports `asyncify_*`, 1 when it does not, and 2

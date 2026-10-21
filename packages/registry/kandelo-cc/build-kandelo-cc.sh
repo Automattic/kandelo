@@ -16,7 +16,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/package-build-roots.sh"
-kandelo_package_load_source_metadata "$SCRIPT_DIR"
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 TRIPLE="wasm32-unknown-kandelo-std"
@@ -45,21 +44,25 @@ cp "$REPO_ROOT/Cargo.lock" "$SRC_DIR/Cargo.lock"
 # Private Rust sysroot (prebuilt std for the Kandelo target).
 RUST_DIR="$WORK_DIR/rust"
 KANDELO_RUST_DIR="$RUST_DIR" bash "$REPO_ROOT/scripts/build-rust-sysroot.sh"
-export RUSTC="$RUST_DIR/rustc-kandelo"
-export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1
-[ -x "$RUSTC" ] || { echo "ERROR: rustc wrapper missing at $RUSTC" >&2; exit 1; }
+KANDELO_RUSTC="$RUST_DIR/rustc-kandelo"
+[ -x "$KANDELO_RUSTC" ] || { echo "ERROR: rustc wrapper missing at $KANDELO_RUSTC" >&2; exit 1; }
 
-# A private CARGO_HOME, so the vendored-source config below cannot leak into
-# the repository's own cargo invocations (install_local_binary runs xtask).
-export CARGO_HOME="$WORK_DIR/cargo-home"
-mkdir -p "$CARGO_HOME"
+# A private CARGO_HOME holding the vendored-source config. It and the Kandelo
+# rustc apply to the two cargo commands below only: install_local_binary
+# later runs the repository's own host tools through cargo.
+PACKAGE_CARGO_HOME="$WORK_DIR/cargo-home"
+mkdir -p "$PACKAGE_CARGO_HOME"
 VENDOR_DIR="$WORK_DIR/vendor"
 echo "==> Vendoring crates from Cargo.lock..."
-(cd "$SRC_DIR" && cargo vendor --versioned-dirs "$VENDOR_DIR" > "$CARGO_HOME/config.toml")
+(cd "$SRC_DIR" && CARGO_HOME="$PACKAGE_CARGO_HOME" cargo vendor --versioned-dirs "$VENDOR_DIR" \
+    > "$PACKAGE_CARGO_HOME/config.toml")
 
 TARGET_DIR="$WORK_DIR/target"
+# The private sysroot's prebuilt std carries no LLVM bitcode, so the
+# workspace release profile's LTO cannot run for this target.
 echo "==> Building kandelo-cc for $TRIPLE..."
-(cd "$SRC_DIR" && cargo build --offline --release \
+(cd "$SRC_DIR" && CARGO_HOME="$PACKAGE_CARGO_HOME" RUSTC="$KANDELO_RUSTC" \
+    RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 CARGO_PROFILE_RELEASE_LTO=false cargo build --offline --release \
     --target "$TRIPLE" --target-dir "$TARGET_DIR" \
     -p kandelo-cc --bin kandelo-cc)
 OUT_BIN="$TARGET_DIR/$TRIPLE/release/kandelo-cc.wasm"
