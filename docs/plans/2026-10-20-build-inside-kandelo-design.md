@@ -158,55 +158,72 @@ generator writes `sizeof(long)`, so the test proves the helper ran on
 the target (`4`), not the build machine (`8`). The fixture's program does
 not call `fork()`, so PR A does not depend on PR B.
 
-### PR B: fork instrumentation and Binaryen inside Kandelo
+### PR B: a guest compiler equivalent to the host SDK
 
-PR B makes the guest wrapper produce artifacts the runtime admits,
-including programs that call `fork()`.
+PR B makes the compiler that runs inside Kandelo produce exactly what the
+host SDK (`wasm32posix-cc` on the build machine) produces for the same
+sources and flags: the same bytes, including compiler facts and fork
+instrumentation. Anything less would make a package's output depend on
+where it was built, which is the problem this work exists to remove.
 
 - **`binaryen@126` package.** Builds `wasm-opt` with the Kandelo SDK
   through the Kandelo CMake platform, modelled on
   `packages/registry/clang/build-clang.sh`. Version 126 matches the host
   pin (`pkgs.binaryen` in `flake.nix`). It runs single-threaded
-  (`BINARYEN_CORES=1`). The acceptance test is byte equality: guest
-  `wasm-opt -Os` must produce the same bytes as host `wasm-opt` 126 on
-  the same input.
+  (`BINARYEN_CORES=1`). Acceptance: guest `wasm-opt` produces the same
+  bytes as host `wasm-opt` 126 on the same input.
 - **`fork-instrument` package.** Builds `crates/fork-instrument` for
-  `wasm32-unknown-kandelo-std` with `sdk/bin/wasm32posix-cargo`. The
-  tool starts `wasm-opt` through `std::process`, which imports
-  `kernel_fork`, so the tool itself is fork-instrumented on the host when
-  it is packaged. It already removes the `kandelo.calltypes*` sections
-  from every module it writes, and writes a module that does not fork
-  back unchanged otherwise, so the guest needs no `llvm-objcopy`.
+  `wasm32-unknown-kandelo-std`. The tool starts `wasm-opt` through
+  `std::process`, which imports `kernel_fork`, so the tool itself is
+  fork-instrumented on the host when it is packaged. It already removes
+  the `kandelo.calltypes*` sections from every module it writes, so the
+  guest needs no `llvm-objcopy`. A new mode writes the
+  `kandelo.calltypes.code-sha256` section, which the host SDK writes in
+  TypeScript (`withCodeHashSection` in `sdk/src/lib/calltypes-plugin.ts`).
   Acceptance: guest instrumentation of a fixture produces the same bytes
   as host instrumentation.
-- **Guest wrapper post-link step.** After `wasm-ld`, the wrapper:
-  - runs `wasm-fork-instrument --no-facts` on every output. A module
-    that imports `kernel.kernel_fork` is instrumented and then optimized
-    with `wasm-opt -Os`, as on the host. Any other module only loses its
-    compiler-facts sections. `--no-facts` because the guest compiler
-    writes no code hash, so the facts could never bind;
-  - for modules that do not fork, then runs the `wasm-opt` command the
-    host SDK would run for the requested `-O` level;
-  - adds `-D__unix__=1 -D__unix=1` to compiles, matching
-    `sdk/src/lib/flags.ts`.
+- **Compiler facts in the guest clang.** The facts plugin
+  (`sdk/src/plugin/KandeloCallTypes.cpp`, `KandeloFnCasts.cpp`) is a
+  native shared library that host clang loads at startup. The guest
+  `clang.wasm` is built without plugin support, PIC or shared
+  libraries, so it is statically linked in instead:
+  - the optimization-pass half is registered through LLVM's static
+    plugin mechanism, and runs only when the SDK's flags request it;
+  - the AST-plugin registration is force-linked, so
+    `-add-plugin kandelo-fncasts` finds it;
+  - `LLVM_ENABLE_ZLIB=ON` against the `zlib` package, because the
+    plugin refuses to emit fact chunks of 1 MiB or more without zlib;
+  - the clang package lists the plugin sources as build inputs, so a
+    plugin change rebuilds clang.
+  Loading the plugin as a wasm side module was rejected: clang would have
+  to become a dlopen-capable program that exports LLVM's C++ symbols.
+- **Guest wrapper equivalence.** `sdk/kandelo/bin/wasm32posix-cc` is
+  audited against `sdk/src/bin/cc.ts` and `sdk/src/lib/flags.ts`, and every
+  difference is either removed or recorded with its reason:
+  - compile flags: the plugin flags (CFI in trap mode, `-flto-unit`,
+    `-fwhole-program-vtables`, `-add-plugin`, `-fpass-plugin`),
+    `-D__unix__=1 -D__unix=1`, and anything else the host passes;
+  - link: `--keep-section=target_features` whenever `wasm-opt` will run,
+    as the host relinks;
+  - after linking, as the host: a module that imports
+    `kernel.kernel_fork` gets its code-hash section and is then
+    fork-instrumented with its facts and optimized with `wasm-opt -Os`;
+    any other module has its facts removed and then gets the
+    `wasm-opt <out> -O<n> -o <out>` pass clang schedules for `-O1` and
+    above.
 - **Bundle.** `kandelo-sdk.zip` gains `wasm-opt` and
   `wasm-fork-instrument`.
+- **Acceptance.** For C and C++ fixtures, one that forks and one that
+  does not, at `-O0`, `-O2` and `-Os`: the guest output is
+  byte-identical to the host SDK's, the instrumenter reports that it used
+  compiler facts rather than falling back, the runtime admits the
+  program, and the forking program forks correctly on Node and in a
+  browser.
 
-Two pieces are deferred, with reasons:
-
-- **Compiler facts in the guest.** The facts plugin is a native shared
-  library loaded into host clang. The guest `clang.wasm` is built without
-  plugin support, so it would have to be statically linked into clang,
-  with zlib enabled in the guest LLVM build. Without facts the
-  instrumenter falls back to its conservative analysis. That is sound
-  but larger: for example, git is 5.84 MB without facts against 3.32 MB
-  with them (`docs/plans/2026-10-02-fork-sinks.md`). bash, cpython,
-  php, ruby and vim already ship from the host without facts.
-- **ABI contract stamp in the guest.** The package system stamps
-  `kandelo.abi.contract` on every published program output at cache
-  store time, and refuses a second stamp. Package builds therefore must
-  not stamp in the guest. Ad-hoc programs compiled in the shell keep
-  today's behavior: an absent stamp produces a warning, not a refusal.
+The ABI contract stamp is not part of the compiler on either side. The
+host SDK's `cc` does not stamp; the package system stamps every published
+program output at cache-store time and refuses a second stamp. The guest
+compiler matches that.
 
 ### PR C: NetHack built inside Kandelo
 
@@ -258,9 +275,9 @@ Acceptance:
    breaks `make`.
 3. **Eager build image.** The image is larger, but a recipe needs two
    dependencies instead of a lazy-asset binding for every rootfs tool.
-4. **No compiler facts in the guest at first.** Guest-built
-   fork-capable programs, including NetHack, are larger than host-built
-   ones until the facts plugin is statically linked into `clang.wasm`.
+4. **The guest compiler is equivalent to the host SDK.** Same bytes for
+   the same sources and flags, compiler facts included. Built inside or
+   outside Kandelo, a package comes out the same.
 5. **ABI stamping stays in the package system.** It is publication
    metadata applied to every package. "Entirely inside Kandelo" covers
    compiling, linking, helpers, instrumentation and optimization, not
@@ -280,6 +297,10 @@ Acceptance:
   under the 1 GiB process ceiling are unproven.
 - **`wasm-fork-instrument` in the guest.** walrus holds the whole module
   in memory; very large inputs may exceed the ceiling.
+- **Facts plugin in `clang.wasm`.** How LLVM 21 statically registers
+  both plugin halves in this build is unconfirmed, the plugin and CFI
+  flags raise compile memory under the 1 GiB process ceiling, and every
+  plugin change now rebuilds clang (about 1.5 hours).
 - **Build time.** clang running as wasm is slower than native clang.
   Neither the in-guest NetHack build nor the cost of the per-helper
   alternative has been measured.
@@ -289,7 +310,6 @@ Acceptance:
 
 ## Future work
 
-- Statically link the compiler-facts plugin into `clang.wasm`.
 - A deterministic guest clock that is safe for `make` (one logical clock
   shared by all processes).
 - Build-inside-Kandelo for packages beyond NetHack, and an in-guest
