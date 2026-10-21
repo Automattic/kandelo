@@ -1,0 +1,15 @@
+script_path = "packages/registry/kandelo-cc/build-kandelo-cc.sh"
+inputs = [
+  "packages/registry/kandelo-cc/build-kandelo-cc.sh",
+  "crates/kandelo-cc/Cargo.toml",
+  "crates/kandelo-cc/src",
+  "Cargo.lock",
+  "Cargo.toml",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/build-rust-sysroot.sh",
+  "sdk/rust",
+]
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1

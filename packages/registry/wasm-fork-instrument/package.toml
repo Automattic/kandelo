@@ -1,0 +1,29 @@
+kind = "program"
+
+# wasm-fork-instrument as a Kandelo program, so a program compiled inside
+# Kandelo can be fork-instrumented there instead of on the build machine.
+# Built from this repository's crates/fork-instrument for
+# wasm32-unknown-kandelo-std. The tool runs wasm-opt through std::process,
+# so its own output is fork-instrumented on the host when it is packaged.
+name = "wasm-fork-instrument"
+version = "0.1.0"
+kernel_abi = 50
+arches = ["wasm32"]
+depends_on = []
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/wasm-fork-instrument/build-wasm-fork-instrument.sh"
+
+[[outputs]]
+name = "wasm-fork-instrument"
+wasm = "wasm-fork-instrument.wasm"
+fork_instrumentation = "auto"
