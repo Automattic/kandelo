@@ -21,3 +21,13 @@ it("preserves open cursor buffers and their pixels across a real guest exec", as
   expect(result.exitCode, result.stderr + result.stdout).toBe(0);
   expect(result.stdout).toContain("kms-cursor-exec: ok");
 }, 30_000);
+
+it("preserves the parent's cursor across child CLOEXEC and a failed spawn launch", async () => {
+  const programPath = fileURLToPath(new URL("./fixtures/kms-cursor.wasm", import.meta.url));
+  const result = await runCentralizedProgram({
+    programPath, argv: ["kms-cursor", "spawn"], uid: 1000, gid: 1000,
+    execPrograms: new Map([["/bin/kms-cursor", programPath]]),
+  });
+  expect(result.exitCode, result.stderr + result.stdout).toBe(0);
+  expect(result.stdout).toContain("kms-cursor-spawn: ok");
+}, 30_000);

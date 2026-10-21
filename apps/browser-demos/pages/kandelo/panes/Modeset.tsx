@@ -10,6 +10,7 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
   runDemoIngest,
+  stopDeviceOwner,
   type IngestPhase,
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { describeClipboardPasteFailure } from "../../../../../web-libs/kandelo-session/src/clipboard-paste";
@@ -44,9 +45,11 @@ export interface ModesetProps {
   /** CRTC to bind the canvas to. Defaults to 1 (the single CRTC the
    *  kernel currently advertises via MODE_GETRESOURCES). */
   crtcId?: number;
+  onOwnerChange?: (pid: number | null) => void;
 }
 
 interface KmsStats {
+  ownerPid: number | null;
   width: number;
   height: number;
   commitCount: number;
@@ -60,6 +63,7 @@ interface KmsStats {
 }
 
 const ZERO_STATS: KmsStats = {
+  ownerPid: null,
   width: 0,
   height: 0,
   commitCount: 0,
@@ -70,7 +74,7 @@ const ZERO_STATS: KmsStats = {
 
 const RENDERER_LABELS: Record<number, string> = { 1: "2d", 2: "webgl2", 3: "webgl2-gl" };
 
-export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PRIMARY_CRTC, onDockControlsChange }) => {
+export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PRIMARY_CRTC, onDockControlsChange, onOwnerChange }) => {
   const host = useKernelHost();
   const status = useStatus();
   const presentation = usePresentation();
@@ -98,6 +102,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
   // (the stats drain); input callbacks read handleRef.
   const [handle, setHandle] = React.useState<KmsDisplayHandle | null>(null);
   const [canvas, setCanvas] = React.useState<HTMLCanvasElement | null>(null);
+  const releaseInputRef = React.useRef<(() => void) | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [stats, setStats] = React.useState<KmsStats>(ZERO_STATS);
   // The flip counter tells a dock action when its replacement is drawing.
@@ -105,8 +110,16 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     const counters = handleRef.current?.stats;
     return counters ? Atomics.load(counters, 0) : 0;
   }, []);
+  const stopDisplayProgram = React.useCallback(async () => {
+    const counters = handleRef.current?.stats;
+    const owner = counters && counters.length > 8 ? Atomics.load(counters, 8) : 0;
+    // The display may belong to a program launched from another terminal.
+    // Interrupting the primary shell cannot stop that device owner.
+    if (owner) await stopDeviceOwner(host, owner, { timeoutMs: 10_000 });
+    else await host.interruptShellForeground({ timeoutMs: 10_000 });
+  }, [host]);
   const dockActions = useDockActions("kms", status === "running" ? stats.presentCount : null,
-    undefined, readPresentCount);
+    stopDisplayProgram, readPresentCount);
 
   // Mount the host's display canvas for this CRTC rather than rendering one:
   // a program's WebGL context is bound to that canvas for good, so a
@@ -408,9 +421,11 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     window.addEventListener("blur", releaseLock);
     canvas.addEventListener("contextmenu", onContextMenu);
     canvas.addEventListener("click", onClick);
+    releaseInputRef.current = releaseLock;
     return () => {
       closed = true;
       releaseLock();
+      if (releaseInputRef.current === releaseLock) releaseInputRef.current = null;
       setPointerLocked(false);
       canvas.removeEventListener("pointerenter", onPointerEnter);
       canvas.removeEventListener("pointermove", onPointerMove);
@@ -433,7 +448,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
 
   React.useEffect(() => {
     if (active && !presentation.hostPointer) return;
-    if (canvas && canvas.ownerDocument.pointerLockElement === canvas) canvas.ownerDocument.exitPointerLock();
+    releaseInputRef.current?.();
   }, [active, presentation.hostPointer, canvas]);
 
   // Drain the stats SAB at 4 Hz. The numbers are advisory; rAF would
@@ -443,6 +458,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     const tick = () => {
       const s = handle.stats;
       setStats({
+        ownerPid: s.length > 8 ? Atomics.load(s, 8) || null : null,
         width: Atomics.load(s, 2),
         height: Atomics.load(s, 3),
         commitCount: Atomics.load(s, 5),
@@ -455,6 +471,10 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     const id = window.setInterval(tick, 250);
     return () => window.clearInterval(id);
   }, [handle]);
+
+  React.useEffect(() => {
+    onOwnerChange?.(stats.ownerPid);
+  }, [onOwnerChange, stats.ownerPid]);
 
   // Laid out whenever it is attached (booting too): its ResizeObserver is how
   // the display reports its size before the machine's command picks a video
@@ -527,7 +547,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
         />
       )}
     </DemoSurfaceDockControls>
-  ), [busy, crtcId, dockActions.controls, hasFrame, ingest, ingestFile, ingestName, status, statusLabel]);
+  ), [busy, crtcId, dockActions.controls, hasFrame, host, ingest, ingestFile, ingestName, status, statusLabel]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -536,15 +556,16 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
   }, [dockControls, onDockControlsChange]);
 
   return (
-    <div className="kmodeset-surface">
-      <div className="kmodeset-stage" ref={stageRef}>
-        {/* Holds the host's display canvas (mounted above); `contents`
-            keeps the canvas a direct flex item of the stage. */}
-        <div
-          ref={slotRef}
-          className="kmodeset-canvas-slot"
-          style={{ display: showCanvas ? "contents" : "none" }}
-        />
+    <div className="kmodeset-surface" data-kms-owner-pid={stats.ownerPid ?? 0}
+      data-kms-present-count={stats.presentCount}>
+      <div className="kmodeset-stage">
+        {/* Always fit the selected guest mode, including cursor and input.
+            Preferred render scale must never turn into clipped bitmap zoom. */}
+        <div className="kmodeset-viewport" ref={stageRef}
+          role="region" aria-label="Graphics viewport">
+          <div ref={slotRef} className="kmodeset-canvas-slot"
+            style={{ display: showCanvas ? "block" : "none", ...canvasStyle }} />
+        </div>
         {showCanvas && !hasFrame && (
           <div className="kmodeset-waiting" role="status" aria-live="polite">
             <div className="kmodeset-waiting-line">Waiting for PAGE_FLIP on CRTC {crtcId}</div>

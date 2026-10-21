@@ -19,6 +19,12 @@ finish later under full-suite load; a spawn assertion should observe the
 channel completion before checking its result. Keep a timeout so a missing
 completion remains a visible failure.
 
+Select the intended terminal and observe its visible repaint before reading
+rendered output. A hidden xterm can parse new output while its DOM still
+shows old rows. For graphical Quit checks, verify automatic terminal
+handoff, the launching foreground job's exit status, and process cleanup;
+a prompt alone does not establish that contract.
+
 A fixture that tests a particular resolution policy must select that policy
 explicitly and restore every changed environment setting in `finally`.
 Run it under the normal suite environment as well as in isolation. A legacy
@@ -30,6 +36,12 @@ worktrees. Exclude those evidence directories explicitly while retaining
 production source. Report authorized deferred tests and unsupported cases
 separately from failures; never silently narrow the enabled inventory to
 make a suite pass. See [the validation reflection](../architecture-reflections.md#make-validation-observe-real-completion-and-policy).
+
+Check HTTP requests where they reach Fetch. A wrapper that attaches a
+proxy session can copy the browser's `Headers` object. Check final URLs,
+header values, credentials, and referrer policy; copies do not replay a
+test subclass's `append` calls. Preserve checks for dropped fields and
+the order of repeated values.
 
 ## Validation scope and suite selection
 
@@ -99,11 +111,12 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → WordPress cycles in each of Chromium, Firefox, and
-  WebKit, in one page per engine with the constrained memory profile. Games
-  must render and reach running audio through trusted activation. WordPress
-  must serve Hello world. Reloads, runtime errors, forced teardown, unreviewed
-  shared worker messages, and main-thread shared Wasm allocations fail the test.
+- Four Doom → Quake → Freeciv → LÖVE → WordPress cycles in each of Chromium,
+  Firefox, and WebKit, in one page per engine with the constrained memory
+  profile. Games must render and reach running audio through trusted
+  activation. WordPress must serve Hello world. Reloads, runtime errors,
+  forced teardown, unreviewed shared worker messages, and main-thread
+  shared Wasm allocations fail the test.
 
 This gate owns its browser server; set `KANDELO_PLAYWRIGHT_PORT` if the
 default port is occupied. Missing products or the Quake archive fail the
@@ -123,6 +136,7 @@ protocol type audit covers declared payloads; the runtime probe covers
 actual messages, including dynamically typed RPC results. Neither replaces
 tests that prove device storage is independent of guest memory.
 
+
 Playwright WebKit is useful coverage, but is not native iOS Safari evidence.
 For browser memory/lifecycle changes, also repeat the switching sequence in
 native Safari where available, enable audio through real user activation,
@@ -133,6 +147,32 @@ validation. Extend the repeated sequence to launch any newly introduced
 device consumer: a new KMS application needs a KMS launch in the cycle
 alongside the existing framebuffer and web cases. These checks supplement
 relevant POSIX/conformance suites.
+
+## Local browser peer connections
+
+The Chromium loopback WebRTC fixture needs both its launch flags and a
+test-only microphone permission grant in every browser context. Include
+the default page's context and each context created for an invitation.
+The flag permits loopback candidates, while Chromium's permission filter
+determines whether it exposes that interface. No media capture is needed.
+Before changing signalling or guest sockets after a connection failure,
+inspect the exchanged candidates and check the fixture's permissions.
+Keep this grant in the local tests. Loopback checks prove local transport
+and guest behavior; cross-computer and NAT routing need separate evidence.
+
+## Node process-memory reclamation measurements
+
+Resident set size (RSS) measures the whole Node process, including its
+workers, compiled code, and allocator pages. A short rising window alone
+does not identify a retained guest memory. For a reclamation failure, keep
+the original samples and continue the workload in the same host. Compare
+that trend with exact ownership and weak finalization records. Do not
+clear a failure by restarting the host, forcing garbage collection, or
+retrying until green. Check
+that a deliberately retained-memory control still fails before changing
+the measurement window or limits. The Node spawn-churn test uses 256
+children with unchanged 2 MiB-per-child and 64 MiB late-growth limits.
+See [the window calibration](../measurements/2026-10-20-process-memory-rss-window.md).
 
 ## Waiting on long builds and suites
 
@@ -375,3 +415,27 @@ tests where possible and manually verify user-visible browser demo fixes with:
 ```bash
 ./run.sh browser
 ```
+
+## Preserve compiler APIs during tooling upgrades
+
+Some source audits inspect syntax trees through TypeScript's JavaScript API.
+A working command-line compiler does not prove that API is available.
+Before a major compiler or parser upgrade, check the upstream migration guide
+and run the source audits as well as type checks and browser builds. Use the
+upstream compatibility package when an API consumer still needs it. Select
+parser language options from each file's extension: a `.ts` generic function
+is not JSX, while `.tsx` admits JSX. Never skip source files that fail to parse
+just to make an upgrade pass.
+
+Run the upgraded compiler on each project's real configuration to catch
+removed options. After changing a path setting, verify that its explicit
+aliases still resolve. When a project already has type errors, compare
+diagnostic locations and codes with the old compiler and original
+configuration. Report the remaining errors separately from new ones.
+
+When a test inventory proves exact case coverage, collect the tests at
+runtime. Vitest 5's static listing can omit titles built from imported
+constants and cases generated by `test.each`. Use `vitest list
+--no-static-parse` for case inventories and retain the one-to-one comparison
+with the enabled cases. Listing filenames statically is still suitable when
+only the file inventory is being checked.

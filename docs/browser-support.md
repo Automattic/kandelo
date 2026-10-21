@@ -2178,6 +2178,16 @@ Kandelo app attaches the KMS canvas through the generic KMS surface plumbing,
 then runs the image-declared command. Do not add browser-loader branches that
 import or spawn a specific `modeset.wasm` file.
 
+Display capability and active display ownership are separate. The KMS
+surface stays mounted and measurable while the terminal is selected, so
+the next graphical application can discover its display size. The UI
+offers the live graphics surface while a process holds DRM master. When
+that ownership ends, the selected graphics pane returns to the terminal
+and releases pointer capture and held buttons. A later graphical owner
+reopens the surface. Dock replacements stop the actual display owner, even
+when it was launched from a second terminal. Exiting an unrelated process
+leaves it unchanged; a Wayland client exiting does not close its compositor's display.
+
 A bitmap interface can declare `presentation.displayScale` (0.5–4 CSS
 pixels per guest pixel). The browser advertises a virtual display sized
 from the CSS content box divided by that scale, at 96 reference DPI.
@@ -2193,6 +2203,16 @@ virtual connector also lists 17 standard resolutions from 640×480 through
 3840×2160, deduplicating its preferred mode. Applications can select those
 modes through ordinary SDL/libdrm APIs; the browser fits the chosen scanout
 and aspect ratio.
+
+Presentation fits the complete selected scanout and cursor inside the
+viewport, scaling up or down while preserving aspect ratio. Only the
+rendering canvas captures guest keys, leaving host controls usable.
+There is no host-side scaling control: changing the preferred mode does
+not resize an existing KMS client, and a saved application resolution can
+override the preference on relaunch. Applications with display options
+can change their selected resolution through those options. A live UI
+scaling control needs application-supported relayout or a working display
+resize notification path before it can offer a reliable size change.
 
 Omitting `displayScale` preserves native device-pixel output and CSS-derived
 physical size, so Wayland compositors and DPI-aware applications retain
@@ -2239,6 +2259,24 @@ it never paints a cursor into a guest's saved scene or uploads the scene
 on cursor motion. The overlay uses the scanout's fitted coordinate space
 and cannot intercept input. Both Node and browser retain the same cursor
 device state; Node has no visual surface unless the embedder attaches one.
+
+DRI pixel backing belongs to kernel buffer references, including unmapped
+PRIME imports, framebuffers, and cursor selections. Retiring a process's
+host mappings cannot destroy it. Normal close, forced removal, and failed
+spawn cleanup release the same kernel references; only the final-reference
+notification destroys host storage and derived GPU textures. Spawn also
+retains inherited cursor references, balancing its later close/exec path.
+
+CPU-backed mappings publish only bytes changed since each mapping's last
+snapshot. Map/unmap, cursor and scanout presentation, foreign-texture
+submission, and imported-buffer readiness synchronize through the same
+canonical backing. Importers may write; unchanged readers cannot erase
+newer pixels. This is boundary synchronization, not live memory aliasing;
+applications must synchronize overlapping writers. Each live mapping uses
+at most one BO-sized private snapshot inside the disposable kernel worker,
+released on unmap, exec, or exit. Neither snapshots nor guest memory views
+are sent to persistent browser realms.
+
 
 Images can also declare an optional `guide`. When `guide` is absent, Kandelo
 does not render a demo panel; this is the intended shape for demos where the
@@ -2738,14 +2776,18 @@ games on another list and join the game, with no restart, even though Quake
 was already running when the session started. (Upstream TyrQuake 0.71 never
 registers its network console commands, so New Game could only start a
 one-player game that never listened; the package's
-`0005-register-network-console-commands.patch` registers them.) A LAN game should run as a private server
-(`fbdoom -privateserver`): the browser's internet egress carries TCP only,
-so UDP to Doom's internet master server fails with `EHOSTUNREACH`, and
-fbdoom stops with a fatal error when its registration send fails. The Doom
-machine's **LAN game** dock menu runs these commands for the player: a host
-co-op or deathmatch entry restarts the game as `fbdoom -server
--privateserver -nodes N` (plus `-deathmatch`), so the host plays and the
-game starts once N players have joined; **Join a LAN game** runs `fbdoom
+`0005-register-network-console-commands.patch` registers them.) A LAN game
+should run as a private server (`fbdoom -privateserver`): the browser's
+internet egress carries TCP only, so UDP to Doom's internet master server
+fails with `EHOSTUNREACH`, and fbdoom stops with a fatal error when its
+registration send fails. The Doom machine's **LAN game** dock menu runs
+these commands for the player: a host co-op or deathmatch entry restarts the
+game as `fbdoom -server -privateserver -nodes N` (plus `-deathmatch`), so
+the host plays and the game starts once N players have joined. While it
+waits, each computer shows chocolate-doom's waiting room on its display (who
+has joined, drawn with Doom's font, since fbDOOM lacks the textscreen
+library upstream uses): the host can press Space to start sooner with
+whoever is there, and Esc quits; **Join a LAN game** runs `fbdoom
 -autojoin`, which searches the session by broadcast and stops with "No
 server found on local LAN" when none answers; and **Back to single player**
 restarts the ordinary game without leaving the session. Every player uses
@@ -2827,7 +2869,12 @@ bindings and routes. Local Chromium checks demonstrate actual guest Netcat
 messages in both directions and between joiners, plus two-player Doom and
 TyrQuake with both players behind a separate forwarding host. Visible Chromium
 checks used the normal browser launch and real PHP signalling server. These
-runs require the local loopback ICE fixture; default ICE failed to find a direct
+runs require the local loopback ICE fixture: Chromium's loopback launch
+flag plus a test-only microphone permission grant in every browser
+context, including contexts opened from invitation links. The flag alone
+does not expose the loopback interface through Chromium's candidate
+filter. No media is captured, and the app does not request this grant.
+These checks enable local loopback routes; default ICE failed to find a direct
 route in the first visible check and reported that boundary. A Linux network lab
 verifies a computer on another network joining with STUN only
 (`apps/browser-demos/test/network-lab/`, run with its `run.sh`; it needs Docker,

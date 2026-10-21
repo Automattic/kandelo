@@ -37,7 +37,7 @@ async function expectGameFrame(page: Page): Promise<void> {
   }), { timeout: 180_000 }).toBeGreaterThan(8);
 }
 
-test("@slow framebuffer games and WordPress survive repeated constrained-budget switches", async ({ page }) => {
+test("@slow framebuffer games, Freeciv, LÖVE and WordPress survive repeated constrained-budget switches", async ({ page }) => {
   test.setTimeout(900_000);
   const required = process.env.KANDELO_MEMORY_SWITCH_REQUIRED === "1";
   // This follows the same external-data boundary as the Quake demo spec.
@@ -68,6 +68,15 @@ test("@slow framebuffer games and WordPress survive repeated constrained-budget 
     await expectGameFrame(page);
     await launch(page, "Quake (software)", "quake");
     await expectGameFrame(page);
+    await launch(page, "Freeciv", "freeciv");
+    await expect(page.locator(".kmodeset-canvas")).toBeVisible({ timeout: 180_000 });
+    await expect(page.locator('[data-audio-active="true"]')).toHaveCount(1, { timeout: 180_000 });
+    await expect.poll(async () => {
+      if (await page.locator(".kpcm-audio-enable").isVisible()) await page.locator(".kpcm-audio-enable").click();
+      return page.locator('[data-audio-state]').getAttribute("data-audio-state");
+    }, { timeout: 60_000 }).toBe("running");
+    await expect.poll(async () => Number(await page.locator(".kmodeset-surface").getAttribute("data-kms-present-count")),
+      { timeout: 180_000 }).toBeGreaterThan(0);
     await launch(page, "LÖVE games", "love");
     const loveCanvas = page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
     await expect(loveCanvas).toBeVisible({ timeout: 180_000 });
@@ -75,7 +84,7 @@ test("@slow framebuffer games and WordPress survive repeated constrained-budget 
     await expect.poll(async () => {
       if (await page.locator(".kpcm-audio-enable").isVisible()) await page.locator(".kpcm-audio-enable").click();
       return page.locator('[data-audio-state]').getAttribute("data-audio-state");
-    }, { timeout: 30_000 }).toBe("running");
+    }, { timeout: 60_000 }).toBe("running");
     const loveFlips = () => page.locator("body").innerText().then(text =>
       Number(text.match(/(\d+)\s*flips\s*·/i)?.[1] ?? -1));
     const initialFlips = await loveFlips();

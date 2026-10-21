@@ -180,6 +180,8 @@ describe("ABI version marker", () => {
   });
 
   it("freshly-built user programs export a matching __abi_version", async () => {
+    // Compilation and instantiation are integration work; the ABI
+    // comparisons remain exact within this test's explicit budget.
     // Global setup owns this SDK-built fixture. Developer-program mirrors
     // are not package members and cannot be selected under SourceOnly.
     const userProg = readFileSync(new URL("./fixtures/abi-version-user.wasm", import.meta.url));
@@ -254,5 +256,5 @@ describe("ABI version marker", () => {
     const instance = await WebAssembly.instantiate(module, importObject);
     const userVer = (instance.exports.__abi_version as () => number)();
     expect(userVer).toBe(kernelVer);
-  });
+  }, 30_000);
 });

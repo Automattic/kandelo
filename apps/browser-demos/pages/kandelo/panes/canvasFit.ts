@@ -18,7 +18,9 @@ export function useFittedCanvasStyle(
     if (!container || !canvas) return;
 
     const update = () => {
-      const rect = container.getBoundingClientRect();
+      // Fit inside the drawable viewport, excluding borders and scrollbars.
+      // A border-box measurement can keep both scrollbars alive after reset.
+      const rect = { width: container.clientWidth, height: container.clientHeight };
       if (rect.width <= 0 || rect.height <= 0) return;
       const aspect = canvasAspect(canvas, fallbackAspect);
       const containerAspect = rect.width / rect.height;

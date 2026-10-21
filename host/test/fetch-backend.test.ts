@@ -432,9 +432,10 @@ describe("FetchNetworkBackend", () => {
       ["X-Blocked", "direct-only"],
     ]);
     expect(fetchMock.mock.calls[1][0]).toBe("https://proxy.example/?http://example.com/fallback");
-    expectAppendCalls((fetchMock.mock.calls[1][1] as RequestInit).headers as Headers, [
-      ["X-Repeat", "first"],
-      ["x-repeat", "second"],
+    // The session transport clones Headers before Fetch. Inspect the fields
+    // sent over that boundary: cloning preserves values, not append history.
+    expect(Array.from((fetchMock.mock.calls[1][1] as RequestInit).headers as Headers)).toEqual([
+      ["x-repeat", "first, second"],
     ]);
   });
 });
@@ -706,9 +707,8 @@ describe("TlsNetworkBackend HTTP proxy path", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe("https://proxy.example/?http://example.com/proxy");
     for (const call of fetchMock.mock.calls) {
-      expectAppendCalls((call[1] as RequestInit).headers as Headers, [
-        ["X-Allowed", "one"],
-        ["x-allowed", "two"],
+      expect(Array.from((call[1] as RequestInit).headers as Headers)).toEqual([
+        ["x-allowed", "one, two"],
       ]);
     }
     expect(onCorsProxyDiagnostic).toHaveBeenCalledTimes(1);
@@ -941,9 +941,8 @@ describe("TlsNetworkBackend TLS MITM path", () => {
     await waitForReadable(backend, 3);
 
     expect(fetchMock.mock.calls[0][0]).toBe("https://proxy.example/?https://example.com/secure");
-    expectAppendCalls((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers, [
-      ["X-Allowed", "first"],
-      ["x-allowed", "second"],
+    expect(Array.from((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers)).toEqual([
+      ["x-allowed", "first, second"],
     ]);
   });
 });

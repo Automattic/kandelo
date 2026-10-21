@@ -2930,6 +2930,8 @@ pub extern "C" fn kernel_process_metadata_cancel(pid: u32, token: u32) -> i32 {
 fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
     use core::sync::atomic::Ordering;
 
+    syscalls::apply_dri_release_effects(pid as i32, result.dri_effects, &mut WasmHostIO);
+
     // A process removed without reaching sys_exit (worker crash or explicit
     // host termination) can still own host-side VFS handles. Close directory
     // iterators before their backing file handles, matching

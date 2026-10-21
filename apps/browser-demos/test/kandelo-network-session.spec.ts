@@ -6,7 +6,12 @@ import { runTerminalCommand } from "./support/terminal-command";
 // open its link and join, and real guest programs talk over the session.
 // The dev server relays the real piplet, so this needs PHP (see
 // vite/dev-signalling.ts). The local ICE fixture relies on Chromium's
-// loopback-candidate flag.
+// loopback-candidate flag and a test-only microphone permission grant.
+// WHY: the flag permits loopback, but Chromium's candidate filtering omits
+// that interface without the grant. Every context needs it, including the
+// default page and computers opened from invite links. No media is captured.
+const localIceContextOptions = { permissions: ["microphone"] };
+test.use(localIceContextOptions);
 
 const running = (page: Page) =>
   expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
@@ -32,8 +37,17 @@ async function pressKeys(page: Page, keys: string[]) {
 async function terminalLines(page: Page): Promise<string> {
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   const text = await page.locator(".xterm-rows").first().evaluate((node) => [...node.children].map((row) => row.textContent).join("\n"));
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  // With no program on the display the Demo view is unavailable.
+  const demo = page.getByRole("button", { name: "Demo", exact: true });
+  if (await demo.isEnabled()) await demo.click();
   return text;
+}
+/** Type a command at the machine's shell prompt, as a person would. */
+async function typeAtPrompt(page: Page, command: string) {
+  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  await page.locator(".kshell-host").first().click();
+  await page.keyboard.insertText(command);
+  await page.keyboard.press("Enter");
 }
 const members = (page: Page) => page.getByRole("list", { name: "Computers in this session" }).getByRole("listitem");
 
@@ -50,7 +64,7 @@ async function host(page: Page, name: string, profile = "shell"): Promise<string
 }
 
 async function join(browser: Browser, link: string, expected: string) {
-  const context = await browser.newContext();
+  const context = await browser.newContext(localIceContextOptions);
   const page = await context.newPage();
   await page.goto(link, { waitUntil: "domcontentloaded" });
   await running(page);
@@ -133,7 +147,7 @@ test("a joiner can pick a different computer before joining", async ({ browser, 
   test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
   test.setTimeout(480_000);
   const link = await host(page, "Mixed machines");
-  const context = await browser.newContext();
+  const context = await browser.newContext(localIceContextOptions);
   const joiner = await context.newPage();
   try {
     await joiner.goto(link, { waitUntil: "domcontentloaded" });
@@ -186,6 +200,35 @@ test("the Doom machine's LAN menu starts a two-player game across the session", 
     await pickLanEntry(joiner, "single");
     await expect.poll(() => doomGame(joiner), { timeout: 60_000 }).toBe("player 1 of 1 (1 nodes)");
     await expect(joiner.getByRole("button", { name: "Network session: connected", exact: true })).toBeAttached();
+  } finally {
+    await context.close();
+  }
+});
+
+test("a Doom host starts a LAN game before every player has joined", async ({ browser, page, browserName }) => {
+  test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
+  test.setTimeout(480_000);
+  const link = await host(page, "Doom night", "doom");
+  await closePanel(page);
+  // Room for four; only one other computer comes.
+  await pickLanEntry(page, "coop-4");
+  const { page: joiner, context } = await join(browser, link, "10.89.0.2");
+  try {
+    await closePanel(joiner);
+    await pickLanEntry(joiner, "join");
+    await expect.poll(() => terminalLines(page), { timeout: 90_000 }).toContain("2 of 4 players have joined");
+    await page.screenshot({ path: "../../.context/doom-lan-waiting-room.png" });
+    // Esc leaves the waiting room; the host's room sees the player go.
+    await pressKeys(joiner, ["Escape"]);
+    await expect.poll(() => terminalLines(joiner), { timeout: 30_000 }).toContain("NET_WaitForLaunch: cancelled.");
+    await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/1 of 4 players have joined\.\s*$/);
+    // Quitting Doom leaves the shell; the player starts it again there.
+    await typeAtPrompt(joiner, "/usr/local/bin/fbdoom -iwad /doom1.wad -autojoin");
+    await expect.poll(() => terminalLines(page), { timeout: 90_000 }).toMatch(/2 of 4 players have joined\.\s*$/);
+    // The waiting room starts the game with Space, as chocolate-doom's does.
+    await pressKeys(page, ["Space"]);
+    await expect.poll(() => doomGame(page), { timeout: 60_000 }).toBe("player 1 of 2 (2 nodes)");
+    await expect.poll(() => doomGame(joiner), { timeout: 30_000 }).toBe("player 2 of 2 (2 nodes)");
   } finally {
     await context.close();
   }

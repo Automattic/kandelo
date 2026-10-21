@@ -31,7 +31,7 @@
         ],
         "terminalAccess": "drawer",
         "internalsAccess": "drawer",
-        "displayScale": 1
+        "displayScale": 1.5
       },
       "dockActions": [
         {
@@ -103,7 +103,7 @@
         {
           "id": "lan",
           "label": "LAN game",
-          "description": "Play with the other computers in this network session: host a game that starts once every player has joined, or join one hosted on the session. Everyone plays the shareware WAD.",
+          "description": "Play with the other computers in this network session: host a game that starts once every player has joined (or press Space in its waiting room to start sooner), or join one hosted on the session. Everyone plays the shareware WAD.",
           "menu": [
             { "id": "coop-2", "label": "2 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 2" },
             { "id": "coop-3", "label": "3 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 3" },

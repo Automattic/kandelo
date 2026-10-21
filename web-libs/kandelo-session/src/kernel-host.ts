@@ -678,6 +678,7 @@ export type MachineAudioState =
  *   7: renderer that owns the canvas (1 = 2d blit, 2 = webgl2 scanout,
  *      3 = a GL program claimed the canvas and paints it directly;
  *      0 = nothing painting)
+ *   8: current DRM master PID (0 = no display owner)
  */
 export interface KmsDisplayHandle {
   /** CRTC the canvas is bound to (matches what the wasm process passes
@@ -3116,7 +3117,7 @@ export class LiveKernelHost implements KernelHost {
       this.kmsResizeObservers.get(canvas)?.observe(canvas);
       return cached;
     }
-    // 8 i32 slots × 4 bytes = 32 bytes; align to 64 so atomics are happy.
+    // Reserve 64 bytes for bounded display counters and ownership metadata.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
     const mode = opts.mode ?? this.kmsDisplayModeDefault ?? "webgl2";
@@ -3140,19 +3141,13 @@ export class LiveKernelHost implements KernelHost {
       typeof ResizeObserver !== "undefined"
     ) {
       const resizeObserver = new ResizeObserver((entries) => {
-        // Bound to the kernel that attached this canvas. Once that kernel
-        // is detached (reboot), stop for good — otherwise this closure
-        // would keep re-populating kmsDisplaySizes (which detachKernel
-        // just cleared) with the dead session's size and pushing sizes
-        // into the dead kernel. The next boot's pane remount attaches a
-        // fresh canvas with its own observer.
         if (this.kernel !== kernel) {
           resizeObserver.disconnect();
           return;
         }
         const entry = entries[entries.length - 1];
         const dp = entry.devicePixelContentBoxSize?.[0];
-        const scale = this.presentation.displayScale;
+        const scale = this.getPresentation().displayScale;
         // WHY: bitmap clients must see one readable pixel grid, including
         // hit testing and device state. Enlarging only fonts breaks their
         // theme geometry. Compositors keep native output when unset.
