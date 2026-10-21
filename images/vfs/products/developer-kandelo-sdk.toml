@@ -5,8 +5,8 @@ output = "kandelo-sdk.vfs.zst"
 builder = "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh"
 
 [[composition.repository]]
-id = "sdk-wrappers"
-paths = ["sdk/config.site", "sdk/kandelo/bin"]
+id = "sdk-config"
+paths = ["sdk/config.site"]
 role = "runtime"
 materialization = "embedded"
 
@@ -30,6 +30,27 @@ materialization = "embedded"
 [[software.package]]
 name = "libcxx"
 outputs = ["libcxx"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "kandelo-cc"
+outputs = ["kandelo-cc"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "binaryen"
+outputs = ["wasm-opt"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "wasm-fork-instrument"
+outputs = ["wasm-fork-instrument"]
 source_roles = []
 role = "runtime"
 materialization = "embedded"

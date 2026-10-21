@@ -8,14 +8,8 @@ inputs = [
   "scripts/install-local-binary.sh",
   "scripts/package-build-roots.sh",
   "sdk/activate.sh",
-  "sdk/bin",
   "sdk/config.site",
-  "sdk/kandelo/bin",
   "sdk/kandelo/licenses",
-  "sdk/package.json",
-  "sdk/package-lock.json",
-  "sdk/src",
-  "sdk/tsconfig.json",
   "host/src/constants.ts",
   "host/src/file-offset.ts",
   "host/src/generated/abi.ts",
@@ -41,4 +35,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 6
+revision    = 7
