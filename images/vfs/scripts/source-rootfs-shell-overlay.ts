@@ -80,6 +80,7 @@ export function populateSourceRootfsShellOverlay(
   installNethackGames(fs);
 
   for (const [target, alias] of [
+    ["/usr/bin/composer", "/bin/composer"],
     ["/usr/bin/vim", "/bin/vim"],
     ["/usr/bin/vim", "/usr/bin/vi"],
     ["/usr/bin/vim", "/bin/vi"],

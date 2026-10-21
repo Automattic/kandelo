@@ -397,6 +397,7 @@ host/test/wpkdraw-smoke.test.ts	prepared-product
 host/test/zip.test.ts	source-only
 packages/registry/bash/test/bash.test.ts	prepared-product
 packages/registry/bzip2/test/bzip2.test.ts	prepared-product
+packages/registry/composer/test/composer-shell.test.ts	prepared-product
 packages/registry/coreutils/test/coreutils.test.ts	prepared-product
 packages/registry/curl/test/curl.test.ts	prepared-product
 packages/registry/dash/test/dash-signal-regression.test.ts	prepared-product
@@ -443,6 +444,7 @@ tests/package-system/binary-dev-access.test.ts	prepared-product
 tests/package-system/browser-binary-dependencies.test.ts	prepared-product
 tests/package-system/build-input-crate-closure.test.ts	source-only
 tests/package-system/build-input-import-closure.test.ts	prepared-product
+tests/package-system/composer-package.test.ts	source-only
 tests/package-system/configure-prefix-paths.test.ts	source-only
 tests/package-system/espeak-ng-package.test.ts	prepared-product
 tests/package-system/host-package-projection-contract.test.ts	prepared-product

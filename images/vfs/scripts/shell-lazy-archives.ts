@@ -30,6 +30,14 @@ export interface ShellLazyArchiveSpec {
 
 export const SHELL_LAZY_ARCHIVE_SPECS = [
   {
+    id: "composer",
+    dependency: "composer",
+    resolverPath: "programs/wasm32/composer.zip",
+    archiveUrl: "composer.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/composer",
+  },
+  {
     id: "freeciv",
     dependency: "freeciv-browser-bundle",
     resolverPath: "programs/wasm32/freeciv.zip",
