@@ -467,7 +467,7 @@
     "love": {
       "identity": {
         "title": "LÖVE games",
-        "summary": "Play Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX. Choose a game from the Games menu. Audio and Steam features are unavailable in this port.",
+        "summary": "Play Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX. Choose a game from the Games menu and enable audio to hear sound. Steam features are unavailable in this port.",
         "accent": "#ec75b8",
         "glyph": "L",
         "packages": [
@@ -497,7 +497,7 @@
         {
           "id": "games",
           "label": "Games",
-          "description": "Start the selected game. Audio is unavailable in this port.",
+          "description": "Start the selected game. Enable audio to hear sound.",
           "menu": [
             {
               "id": "pong",

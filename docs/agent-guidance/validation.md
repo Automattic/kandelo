@@ -111,7 +111,7 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → Freeciv → WordPress cycles in each of Chromium,
+- Four Doom → Quake → Freeciv → LÖVE → WordPress cycles in each of Chromium,
   Firefox, and WebKit, in one page per engine with the constrained memory
   profile. Games must render and reach running audio through trusted
   activation. WordPress must serve Hello world. Reloads, runtime errors,
@@ -139,9 +139,15 @@ tests that prove device storage is independent of guest memory.
 
 Playwright WebKit is useful coverage, but is not native iOS Safari evidence.
 For browser memory/lifecycle changes, also repeat the switching sequence in
-native Safari where available, enable audio through real user activation,
-and report the OS/device or simulator plus the exact cycles completed. If a
-graphics branch is integrated afterward, rebuild and rerun against that
+native Safari when the user explicitly requests native desktop testing.
+Computer-control permission and an installed browser alone do not authorize
+agents to operate the user's desktop alongside them. Prefer the headless
+Playwright gate by default; it requires no desktop-control permission. If
+native testing is not requested, report that follow-up as not completed,
+without treating desktop access as a merge prerequisite. For a native run,
+enable audio through real user activation and report the OS/device or
+simulator plus the exact cycles completed. If a graphics branch is
+integrated afterward, rebuild and rerun against that
 combined tree. Do not carry forward another branch's results as combined
 validation. Extend the repeated sequence to launch any newly introduced
 device consumer: a new KMS application needs a KMS launch in the cycle

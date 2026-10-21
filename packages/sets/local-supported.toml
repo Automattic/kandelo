@@ -3,6 +3,7 @@ policy = "source-only-v1"
 dependency_only = [
   "bytepath-source",
   "snkrx-source",
+  "stb-source",
   "libyaml-source",
   "netsurf-buildsystem-source",
   "pcaudiolib-source",
