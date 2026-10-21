@@ -161,6 +161,11 @@ struct Prog<'a> {
     /// Constant slot -> function for table 0 when the table is immutable.
     slots: Option<HashMap<i64, u32>>,
     dyn_link: bool,
+    /// Under the load-time dlopen contract (`assume_dlopen_contract`), which
+    /// clears `dyn_link`: an indirect call may still enter a side module.
+    /// The contract says such a call never returns through a fork child, not
+    /// that it never returns: it returns, and may throw anything.
+    side_entries: bool,
     callers: Vec<Vec<u32>>,
     /// Functions containing call_indirect of a given signature key.
     icallers: HashMap<u32, Vec<u32>>,
@@ -327,6 +332,7 @@ impl<'a> Prog<'a> {
             escapes: vec![false; n],
             slots: None,
             dyn_link: crate::call_graph::has_dynamic_linker_imports(m),
+            side_entries: false,
             callers: vec![vec![]; n],
             icallers: HashMap::new(),
             tag_bit: HashMap::new(),
@@ -811,44 +817,47 @@ impl<'a, 'b> Walk<'a, 'b> {
         s
     }
 
-    fn icall_targets(&mut self, key: u32, table: usize, idx: V, signal: bool) -> (Vec<u32>, bool) {
+    /// The call's in-module targets, whether it may enter a side module that
+    /// may fork (`external`), and whether it may enter one that returns
+    /// (`side`, under the dlopen contract).
+    fn icall_targets(&mut self, key: u32, table: usize, idx: V, signal: bool) -> (Vec<u32>, bool, bool) {
         let p = self.cx.p;
         if signal && p.sig_handler_keys.contains(&key) {
             match p.sig_policy {
                 Policy::Sig => {}
-                Policy::NoThrow => return (vec![u32::MAX], false),
+                Policy::NoThrow => return (vec![u32::MAX], false, false),
                 Policy::List => {
                     let v: Vec<u32> = p
                         .members
                         .get(&(table, key))
                         .map(|m| m.iter().copied().filter(|f| p.sig_list.contains(f)).collect())
                         .unwrap_or_default();
-                    return (v, false);
+                    return (v, false, false);
                 }
             }
         }
         if let (V::C(k), Some(slots)) = (idx, &p.slots) {
             if table == 0 {
                 return match slots.get(&k) {
-                    Some(&f) if p.skey[f as usize] == key => (vec![f], false),
-                    _ => (vec![], false),
+                    Some(&f) if p.skey[f as usize] == key => (vec![f], false, false),
+                    _ => (vec![], false, false),
                 };
             }
         }
         if let (V::P(q), true) = (idx, p.use_param) {
             if let Some(v) = param_targets(self.cx, self.f, q, 0) {
                 let v: Vec<u32> = v.into_iter().filter(|&f| p.skey[f as usize] == key).collect();
-                return (v, false);
+                return (v, false, false);
             }
         }
         if let Some(v) = p.itargets.get(&(self.f, key)) {
-            return (v.clone(), p.dyn_link);
+            return (v.clone(), p.dyn_link, p.side_entries);
         }
         let v = p.members.get(&(table, key)).cloned().unwrap_or_default();
-        (v, p.dyn_link)
+        (v, p.dyn_link, p.side_entries)
     }
 
-    fn call(&mut self, st: &mut St, mut targets: Vec<u32>, external: bool, nparams: usize, nres: usize, tail: bool, why: String) {
+    fn call(&mut self, st: &mut St, mut targets: Vec<u32>, external: bool, side: bool, nparams: usize, nres: usize, tail: bool, why: String) {
         // pthread_cleanup_pop runs the handler of the caller's own lexical
         // pthread_cleanup_push (POSIX pairs them in one scope).
         if targets.len() == 1 && self.cx.p.cleanup_pop.contains(&targets[0]) {
@@ -924,7 +933,19 @@ impl<'a, 'b> Walk<'a, 'b> {
             // Value-only pass (param refinement): every call returns.
             Summ { ret: true, thr: 0 }
         } else {
-            self.effect(&targets, external)
+            let mut s = self.effect(&targets, external);
+            if side {
+                // WHY: the in-module targets of a call through a pointer
+                // `dlsym` returned are empty, and an empty target set sums
+                // to "never returns", which made everything after the call
+                // dead -- a fork after it vanished from the plan, and the
+                // child trapped. A side-module function returns normally
+                // and may throw any tag; it never returns through a fork
+                // child (the load-time contract), so it adds no fork path.
+                s.ret = true;
+                s.thr = TAGS_ALL;
+            }
+            s
         };
         // A longjmp on a named buffer throws that buffer's bit.
         s.thr = self.cx.p.lj_remap(self.f, &targets, s.thr);
@@ -1315,13 +1336,13 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let (pa, ra) = m.types.params_results(m.funcs.get(c.func).ty());
                 let (pa, ra) = (pa.len(), ra.len());
                 let why = p.names[c.func.index()].clone();
-                self.call(&mut st, vec![c.func.index() as u32], false, pa, ra, false, why);
+                self.call(&mut st, vec![c.func.index() as u32], false, false, pa, ra, false, why);
             }
             Instr::ReturnCall(c) => {
                 let (pa, ra) = m.types.params_results(m.funcs.get(c.func).ty());
                 let (pa, ra) = (pa.len(), ra.len());
                 let why = p.names[c.func.index()].clone();
-                self.call(&mut st, vec![c.func.index() as u32], false, pa, ra, true, why);
+                self.call(&mut st, vec![c.func.index() as u32], false, false, pa, ra, true, why);
             }
             Instr::CallIndirect(c) => {
                 let idx = popn!(1)[0];
@@ -1329,17 +1350,17 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let (pa, ra) = (pa.len(), ra.len());
                 let key = p.tkey[&c.ty];
                 let signal = p.signal_fns.contains(&self.f);
-                let (t, ext) = self.icall_targets(key, table_ix(m, c.table), idx, signal);
+                let (t, ext, side) = self.icall_targets(key, table_ix(m, c.table), idx, signal);
                 let why = format!("call_indirect {:?}{} ({} targets)", m.types.get(c.ty).params(), if signal { " [signal]" } else { "" }, t.len());
-                self.call(&mut st, t, ext, pa, ra, false, why);
+                self.call(&mut st, t, ext, side, pa, ra, false, why);
             }
             Instr::ReturnCallIndirect(c) => {
                 let idx = popn!(1)[0];
                 let (pa, ra) = m.types.params_results(c.ty);
                 let (pa, ra) = (pa.len(), ra.len());
                 let key = p.tkey[&c.ty];
-                let (t, ext) = self.icall_targets(key, table_ix(m, c.table), idx, false);
-                self.call(&mut st, t, ext, pa, ra, true, "return_call_indirect".into());
+                let (t, ext, side) = self.icall_targets(key, table_ix(m, c.table), idx, false);
+                self.call(&mut st, t, ext, side, pa, ra, true, "return_call_indirect".into());
             }
             Instr::CallRef(c) => {
                 popn!(1);
@@ -1347,7 +1368,7 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let (pa, ra) = (pa.len(), ra.len());
                 let key = p.tkey[&c.ty];
                 let t: Vec<u32> = (0..p.n as u32).filter(|&f| p.escapes[f as usize] && p.skey[f as usize] == key).collect();
-                self.call(&mut st, t, p.dyn_link, pa, ra, false, "call_ref".into());
+                self.call(&mut st, t, p.dyn_link, p.side_entries, pa, ra, false, "call_ref".into());
             }
             Instr::ReturnCallRef(c) => {
                 popn!(1);
@@ -1355,7 +1376,7 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let (pa, ra) = (pa.len(), ra.len());
                 let key = p.tkey[&c.ty];
                 let t: Vec<u32> = (0..p.n as u32).filter(|&f| p.escapes[f as usize] && p.skey[f as usize] == key).collect();
-                self.call(&mut st, t, p.dyn_link, pa, ra, true, "return_call_ref".into());
+                self.call(&mut st, t, p.dyn_link, p.side_entries, pa, ra, true, "return_call_ref".into());
             }
             Instr::LocalGet(l) => {
                 let i = self.info.lidx[&l.local];
@@ -2087,10 +2108,14 @@ pub struct CallFacts {
     /// setjmp/longjmp buffer identity, the plugin's `JS`/`JL` lines verbatim
     /// (`JS\t<function>\t<buffer>`; buffer `*` is unknown).
     pub jmp: Vec<String>,
-    /// Research only: assume the load-time dlopen contract
+    /// Assume the load-time dlopen contract
     /// (`docs/plans/2026-10-02-fork-sinks.md`, "Fork sinks in programs that
-    /// can dlopen") and ignore side-module entries. Unsound until the host
-    /// enforces that contract; the instrumenter never sets it.
+    /// can dlopen"): no side module returns through a fork child into this
+    /// module's frames, so side-module entries add no fork path. Side-module
+    /// code is still called, returns and may throw (`Prog::side_entries`).
+    /// Sound only because the hosts refuse, at `dlopen`, a side module that
+    /// would break the contract (host/src/fork-side-module-contract.ts); the
+    /// instrumenter sets it for `--side-modules=traced-entries`.
     pub assume_dlopen_contract: bool,
 }
 
@@ -2132,6 +2157,7 @@ pub fn plan_with_facts(
     if let Some(facts) = facts {
         apply_call_facts(&mut p, facts);
         if facts.assume_dlopen_contract {
+            p.side_entries = p.dyn_link;
             p.dyn_link = false;
         }
     }
