@@ -2460,6 +2460,12 @@ PHP 8.5.12's CLI is also a lazy executable at `/usr/bin/php` (with a
 first use. PHP 8.5 includes OPcache in the executable; caching stays disabled
 by default. The PHP-FPM images explicitly enable its file-cache-only mode
 because cross-process shared-memory caching remains unsupported.
+Their cache tree is owned by the PHP-FPM worker account (`nobody`), so
+workers can update prewarmed entries and cache new scripts. CLI caching
+stays disabled in these images: terminal commands run as `maker`, which
+does not own the server cache. To enable CLI caching, explicitly select
+a separate writable directory with `-d opcache.enable_cli=1` and
+`-d opcache.file_cache=/path/to/your/cache`.
 Composer 2.10.3 is a separate lazy archive at `/usr/bin/composer`
 (also `/bin/composer`). Its package pins the upstream signed PHAR by SHA-256
 and carries the PHAR, curl, and zip PHP extensions. The launcher enables those

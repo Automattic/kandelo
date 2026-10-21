@@ -131,7 +131,8 @@ request_slowlog_trace_depth = 0
 // the demo terminal are reflected after a browser reload.
 const PHP_INI = `[opcache]
 opcache.enable=1
-opcache.enable_cli=1
+; Terminal commands run as maker; FPM owns the server cache.
+opcache.enable_cli=0
 opcache.file_cache=/var/cache/opcache
 opcache.file_cache_only=1
 opcache.validate_timestamps=1
@@ -421,6 +422,7 @@ export async function buildNginxPhpVfsImage(
   await prewarmOpcache(fs, {
     sourceRoots: ["/var/www"],
     label: "nginx-php",
+    cacheOwner: { uid: 65534, gid: 65534 }, // FPM's nobody account.
     programs: inputs.buildPrograms,
   });
 

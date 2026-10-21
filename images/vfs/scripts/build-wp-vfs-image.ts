@@ -218,7 +218,8 @@ openssl.cafile=/etc/ssl/certs/ca-certificates.crt
 
 [opcache]
 opcache.enable=1
-opcache.enable_cli=1
+; Terminal commands run as maker; FPM owns the server cache.
+opcache.enable_cli=0
 opcache.file_cache=/var/cache/opcache
 opcache.file_cache_only=1
 opcache.validate_timestamps=0
@@ -426,6 +427,7 @@ export async function buildWordPressVfsImage(
   await prewarmOpcache(fs, {
     sourceRoots: ["/var/www"],
     label: "wp",
+    cacheOwner: { uid: PHP_FPM_UID, gid: PHP_FPM_GID },
     programs: inputs.buildPrograms,
     excludePaths: [
       "/var/www/html/wp-config.php",

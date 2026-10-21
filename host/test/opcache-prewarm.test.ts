@@ -96,6 +96,47 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
     }
   }, 60_000);
 
+  it("lets the unprivileged FPM owner read prewarmed entries and cache new scripts", async () => {
+    const previousSkip = process.env.KANDELO_NO_OPCACHE_PREWARM;
+    delete process.env.KANDELO_NO_OPCACHE_PREWARM;
+    try {
+      const fs = createPrewarmFs();
+      writeVfsFile(fs, "/var/www/hit.php", "<?php echo 'cached-ok:';\n");
+      const written = await prewarmOpcache(fs, {
+        sourceRoots: ["/var/www"],
+        label: "fpm-cache-owner-test",
+        cacheOwner: { uid: 65534, gid: 65534 },
+      });
+      expect(written).toBeGreaterThanOrEqual(1);
+      writeVfsFile(fs, "/var/www/hit.php", "<?php this is invalid php ;\n");
+      writeVfsFile(fs, "/var/www/new.php", "<?php echo 'new';\n");
+      const { exitCode, stdout, stderr } = await runPhpFromImage(
+        await fs.saveImage(),
+        `require '/var/www/hit.php';
+         if (!opcache_compile_file('/var/www/new.php')) { exit(2); }
+         $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator('/var/cache/opcache'));
+         foreach ($files as $file) {
+             if ($file->getFilename() === 'new.php.bin') {
+                 echo 'new-cache-owner=', $file->getOwner();
+                 exit(0);
+             }
+         }
+         exit(3);`,
+        ["-d", "opcache.file_update_protection=0"],
+        { uid: 65534, gid: 65534 },
+      );
+      expect(stderr).toBe("");
+      expect(stdout).toBe("cached-ok:new-cache-owner=65534");
+      expect(exitCode).toBe(0);
+    } finally {
+      if (previousSkip === undefined) {
+        delete process.env.KANDELO_NO_OPCACHE_PREWARM;
+      } else {
+        process.env.KANDELO_NO_OPCACHE_PREWARM = previousSkip;
+      }
+    }
+  }, 60_000);
+
   // The nginx-php image keeps opcache.validate_timestamps=1, so its runtime
   // discards (and unlinks) any entry whose recorded source mtime differs
   // from the shipped file's. The shipped mtime is SOURCE_DATE_EPOCH — set
@@ -230,6 +271,7 @@ async function runPhpFromImage(
   imageBytes: Uint8Array,
   script: string,
   extraIniArgs: string[] = [],
+  identity: { uid?: number; gid?: number } = {},
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const phpBytes = readFileSync(phpPath!);
   const programBytes = phpBytes.buffer.slice(
@@ -250,7 +292,7 @@ async function runPhpFromImage(
     const exitCode = await host.spawn(
       programBytes,
       ["php", ...PHP_RUNTIME_INI_ARGS, ...extraIniArgs, "-r", script],
-      { env: ["HOME=/tmp", "TMPDIR=/tmp"] },
+      { env: ["HOME=/tmp", "TMPDIR=/tmp"], ...identity },
     );
     return {
       exitCode,
