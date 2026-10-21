@@ -1753,4 +1753,97 @@ describe("BrowserKernel", () => {
     expect(audio.node.port.close).toHaveBeenCalledOnce();
     expect(kernel.getAudioState()).toBe("unavailable");
   });
+
+  async function bootAudioMachine(
+    BrowserKernel: Awaited<ReturnType<typeof loadBrowserKernel>>,
+  ) {
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances.at(-1)!;
+    worker.simulateMessage({
+      type: "ready",
+      pcmTransport: createPcmTransport(),
+    });
+    await initPromise;
+    await kernel.prepareAudio();
+    return { kernel, worker };
+  }
+
+  async function destroyAudioMachine(machine: {
+    kernel: InstanceType<Awaited<ReturnType<typeof loadBrowserKernel>>>;
+    worker: MockWorker;
+  }) {
+    const destroyPromise = machine.kernel.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    machine.worker.simulateMessage({
+      type: "response",
+      requestId: machine.worker.lastMessage("destroy").requestId,
+      result: { gracefulDetachComplete: true },
+    });
+    await destroyPromise;
+  }
+
+  it("hands the next machine the shared context running when teardown suspended it", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const first = await bootAudioMachine(BrowserKernel);
+    await first.kernel.resumeAudio();
+    await destroyAudioMachine(first);
+    expect(audio.context.state).toBe("suspended");
+
+    // The user started this context for the page. A machine switch suspends
+    // it to settle the old machine's tail, and the new machine's ring needs a
+    // consumer: without one its first full /dev/dsp write blocks for good.
+    const second = await bootAudioMachine(BrowserKernel);
+
+    expect(audio.context.resume).toHaveBeenCalledTimes(2);
+    expect(audio.context.state).toBe("running");
+    expect(second.kernel.getAudioState()).toBe("running");
+  });
+
+  it("leaves a shared context the user never started suspended for the next machine", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const first = await bootAudioMachine(BrowserKernel);
+    await destroyAudioMachine(first);
+
+    const second = await bootAudioMachine(BrowserKernel);
+
+    expect(audio.context.resume).not.toHaveBeenCalled();
+    expect(second.kernel.getAudioState()).toBe("suspended");
+  });
+
+  it("leaves a replacement context suspended after the browser closed the one teardown suspended", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const first = await bootAudioMachine(BrowserKernel);
+    await first.kernel.resumeAudio();
+    await destroyAudioMachine(first);
+    await audio.context.close();
+
+    const replacement = browserAudioGlobals();
+    const second = await bootAudioMachine(BrowserKernel);
+
+    expect(replacement.AudioContextCtor).toHaveBeenCalledOnce();
+    expect(replacement.context.resume).not.toHaveBeenCalled();
+    expect(second.kernel.getAudioState()).toBe("suspended");
+  });
+
+  it("keeps the shared context running while another machine renders through it", async () => {
+    const audio = browserAudioGlobals();
+    const BrowserKernel = await loadBrowserKernel();
+    const first = await bootAudioMachine(BrowserKernel);
+    await first.kernel.resumeAudio();
+    const second = await bootAudioMachine(BrowserKernel);
+
+    await destroyAudioMachine(first);
+
+    expect(audio.context.suspend).not.toHaveBeenCalled();
+    expect(audio.context.state).toBe("running");
+    expect(second.kernel.getAudioState()).toBe("running");
+  });
 });
