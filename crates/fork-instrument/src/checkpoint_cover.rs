@@ -798,6 +798,25 @@ pub fn plan(module: &Module, checkpoints: &[FunctionId], facts: Option<&facts::T
         .collect()
 }
 
+/// Whether instrumenting `instrumented` leaves enough of `closure`
+/// uninstrumented to pay for the coverage token, measured in instructions.
+/// The fork path of bash, vim and php spans 98% or more of the closure, and
+/// the token made them grow; fbDOOM, nginx and dash instrument 29% or less.
+pub fn pays_off(module: &Module, instrumented: &HashSet<FunctionId>, closure: &HashSet<FunctionId>) -> bool {
+    let size = |functions: &HashSet<FunctionId>| -> usize {
+        functions
+            .iter()
+            .filter_map(|function| match &module.funcs.get(*function).kind {
+                FunctionKind::Local(local) => {
+                    Some(sequences(local).iter().map(|seq| local.block(*seq).instrs.len()).sum::<usize>())
+                }
+                _ => None,
+            })
+            .sum()
+    };
+    size(instrumented) * 10 < size(closure) * 9
+}
+
 /// Answer every `kernel_checkpoint_covered()` with 1, for a module whose whole
 /// checkpoint closure is instrumented.
 pub fn cover_every_stack(module: &mut Module) {

@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use fork_instrument::checkpoint_cover::{inject, plan};
+use fork_instrument::checkpoint_cover::{inject, pays_off, plan};
 use walrus::ir::{Instr, Value};
 use walrus::{FunctionId, FunctionKind, Module};
 
@@ -275,4 +275,21 @@ fn a_thread_root_reaches_every_body_its_dispatch_can_pick() {
     // a thread idles on.
     let bodies = names(&module, &covered).into_iter().filter(|name| name.starts_with("body")).count();
     assert_eq!(bodies, 9);
+}
+
+const SHARES: &str = r#"
+(module
+  (import "kernel" "kernel_checkpoint" (func $checkpoint))
+  (func $eight (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint))
+  (func $nine (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint) (call $checkpoint))
+  (func $one (call $checkpoint))
+  (func $two (call $checkpoint) (call $checkpoint)))
+"#;
+
+#[test]
+fn coverage_pays_off_below_nine_tenths_of_the_closure_instructions() {
+    let module = Module::from_buffer(&wat::parse_str(SHARES).expect("wat parse")).expect("parse");
+    let set = |names: &[&str]| -> HashSet<FunctionId> { names.iter().map(|name| id(&module, name)).collect() };
+    assert!(pays_off(&module, &set(&["eight", "checkpoint"]), &set(&["eight", "two", "checkpoint"])));
+    assert!(!pays_off(&module, &set(&["nine", "checkpoint"]), &set(&["nine", "one", "checkpoint"])));
 }
