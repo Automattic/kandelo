@@ -46,6 +46,28 @@ describe("checkpoint freeze gate", () => {
     );
   });
 
+  it("arms the next freeze only once the woken thread closed its gate", async () => {
+    const coordinator = new CheckpointFreezeGateCoordinator("pid=12");
+    coordinator.arm();
+    coordinator.unwound();
+    await coordinator.waitUntilUnwound();
+    coordinator.resume();
+
+    // The thread has not run since the resume. Arming now would let it pass
+    // its next park without being read.
+    expect(() => coordinator.arm()).toThrow("gate was left at state 1");
+    let pending = false;
+    const settled = coordinator.untilGatesPending().then(() => {
+      pending = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(pending).toBe(false);
+
+    waitForCheckpointFreezeResume(coordinator.gate, "pid=12");
+    await settled;
+    expect(() => coordinator.arm()).not.toThrow();
+  });
+
   it("keeps the gate closed across the unwound report, then reopens it", async () => {
     const coordinator = new CheckpointFreezeGateCoordinator("pid=11");
     expect(coordinator.currentPhase).toBe("idle");
@@ -183,7 +205,7 @@ describe("checkpoint freeze gate", () => {
     expect(coordinator.currentPhase).toBe("unwound");
   });
 
-  it("fails a freeze that is still waiting on a thread that exits", async () => {
+  it("settles a freeze that is still waiting on a thread that exits", async () => {
     const coordinator = new CheckpointFreezeGateCoordinator("pid=24");
     coordinator.registerThread(2);
     coordinator.arm();
@@ -191,10 +213,34 @@ describe("checkpoint freeze gate", () => {
     coordinator.unwound();
     coordinator.unregisterThread(2);
 
-    await expect(waiter).rejects.toThrow(
-      "pid=24: tid=2 ended during the checkpoint freeze",
-    );
+    // A thread on its way out is not instrumented to unwind; the machine the
+    // keeper reads is the one without it.
+    await expect(waiter).resolves.toBeUndefined();
+    expect(coordinator.currentPhase).toBe("unwound");
+  });
+
+  it("settles a freeze when the process ends before it unwinds", async () => {
+    const coordinator = new CheckpointFreezeGateCoordinator("pid=25");
+    coordinator.registerThread(2);
+    coordinator.arm();
+    const waiter = coordinator.waitUntilUnwound();
+    coordinator.unwound(2);
+    coordinator.end();
+
+    await expect(waiter).resolves.toBeUndefined();
+    expect(coordinator.currentPhase).toBe("ended");
+  });
+
+  it("fails a freeze when the process ends after it unwound", () => {
+    const coordinator = new CheckpointFreezeGateCoordinator("pid=27");
+    coordinator.arm();
+    coordinator.unwound();
+    coordinator.end();
+
     expect(coordinator.currentPhase).toBe("abandoned");
+    expect(coordinator.abandonReason?.message).toBe(
+      "pid=27: the process ended during the checkpoint freeze",
+    );
   });
 
   it("fails a freeze when a thread that already parked exits", () => {

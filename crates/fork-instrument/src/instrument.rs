@@ -1619,7 +1619,7 @@ fn instrument_one_function_switch(
         }
     }
     let (locals_with_offsets, spill_storage) =
-        plan_frame_layout(module, runtime.buf_type, &frame_scalars, user_scalar_locals.len());
+        plan_frame_layout(module, runtime.buf_type, &mut frame_scalars, user_scalar_locals.len());
     let ordinary_scalar_end = HEADER_SIZE + user_locals_size(&frame_scalars);
     let catch_scalar_frame = plan_plain_catch_scalar_frame(&plain_catch_state, ordinary_scalar_end);
     let scalar_end = catch_scalar_frame.frame_end(ordinary_scalar_end);
@@ -4173,10 +4173,19 @@ const RESTORE_HELPER_RESULTS: usize = 1;
 /// after the 16-byte header). Scratch-resident spills must stay contiguous
 /// after the user locals because one `memory.copy` moves them, so in scratch
 /// mode only the user locals are grouped.
+///
+/// In scratch mode the scratch base joins the user locals in `frame_scalars`.
+/// WHY: replay skips the LLVM prologues before each landing but runs the
+/// epilogues after it, so once a callee returns, the shadow-stack pointer is
+/// back at the value the capturing activation had. A region reserved again
+/// below the restored fork-time pointer then lies below that pointer, and the
+/// next deep call overwrites the spills it holds. Only the capturing
+/// activation's own region is above every live frame, so replay must reuse
+/// that address.
 fn plan_frame_layout(
     module: &mut Module,
     ptr_ty: ValType,
-    frame_scalars: &[(LocalId, ValType)],
+    frame_scalars: &mut Vec<(LocalId, ValType)>,
     user_count: usize,
 ) -> (Vec<(LocalId, ValType, u32)>, SpillStorage) {
     fn rank(ty: ValType) -> u8 {
@@ -4194,20 +4203,31 @@ fn plan_frame_layout(
         .iter()
         .map(|&(_, ty)| scalar_size(ty))
         .sum();
-    let scratch = spill_bytes >= SCRATCH_SPILL_THRESHOLD_BYTES
-        && find_stack_pointer(module, ptr_ty).is_some();
-    let mut ordered = frame_scalars.to_vec();
-    if scratch {
-        ordered[..user_count].sort_by_key(|&(_, ty)| rank(ty));
+    let stack_pointer = if spill_bytes >= SCRATCH_SPILL_THRESHOLD_BYTES {
+        find_stack_pointer(module, ptr_ty)
     } else {
-        ordered.sort_by_key(|&(_, ty)| rank(ty));
-    }
-    let locals_with_offsets = assign_local_offsets(&ordered, LOCALS_START_OFFSET);
-    let storage = if scratch {
-        build_spill_storage(module, ptr_ty, &locals_with_offsets, user_count)
-    } else {
-        SpillStorage::Locals
+        None
     };
+    let Some(stack_pointer) = stack_pointer else {
+        let mut ordered = frame_scalars.clone();
+        ordered.sort_by_key(|&(_, ty)| rank(ty));
+        return (
+            assign_local_offsets(&ordered, LOCALS_START_OFFSET),
+            SpillStorage::Locals,
+        );
+    };
+    let base = module.locals.add(ptr_ty);
+    frame_scalars.insert(user_count, (base, ptr_ty));
+    let user_count = user_count + 1;
+    let mut ordered = frame_scalars.clone();
+    ordered[..user_count].sort_by_key(|&(_, ty)| rank(ty));
+    let locals_with_offsets = assign_local_offsets(&ordered, LOCALS_START_OFFSET);
+    let storage = build_spill_storage(
+        module,
+        stack_pointer,
+        base,
+        &locals_with_offsets[user_count..],
+    );
     (locals_with_offsets, storage)
 }
 
@@ -4965,7 +4985,8 @@ fn populate_inline_frame_restore(
 
     // Restore scalar user locals (includes local-resident arg-spill locals).
     // Scratch-resident spills are restored below with one bulk copy into the
-    // freshly reserved scratch region instead of one load/set pair each.
+    // capturing activation's scratch region, whose base is one of these
+    // locals, instead of one load/set pair each.
     let restore_attr = attr::scope(Attr::PreambleRestoreScalars);
     for &(lid, ty, off) in locals_with_offsets {
         if storage.is_scratch_resident(lid) {
@@ -5870,9 +5891,10 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
 // Layout: the scratch region mirrors the frame-node payload's spill
 // region byte-for-byte (`scratch_off = node_off - node_spill_start`).
 // On UNWIND the postamble copies scratch→node with one `memory.copy`
-// before commit; on REWIND/abort-replay the preamble copies node→scratch
-// after `frame_next`. Normal-path spill/reload sites store/load
-// `base + off` directly. The node payload layout, exports, imports, and
+// before commit; on REWIND/abort-replay the preamble restores `base` from
+// the node and copies node→scratch after `frame_next`. Normal-path
+// spill/reload sites store/load `base + off` directly. The node payload
+// carries `base` as one more user scalar; exports, imports, and the
 // host-visible contract are unchanged.
 //
 // The reserve/exit discipline matches `crates/wasm-local-root-spill`:
@@ -5900,7 +5922,8 @@ enum SpillStorage {
 
 struct ScratchFrame {
     stack_pointer: GlobalId,
-    /// Pointer-typed local holding the scratch base (== SP inside the body).
+    /// Pointer-typed frame local holding the scratch base (== SP inside the
+    /// body until a replay restores the capturing activation's base).
     base: LocalId,
     /// 16-byte-aligned reserve size.
     size: u32,
@@ -5956,31 +5979,18 @@ fn find_stack_pointer(module: &Module, ptr_ty: ValType) -> Option<GlobalId> {
     (global.ty == ptr_ty && global.mutable).then_some(id)
 }
 
-/// Decide the spill storage for one function and, when scratch mode is
-/// selected, allocate its base/tmp locals. `locals_with_offsets` must be
-/// ordered user-locals-first (the `assign_local_offsets` contract);
-/// `user_count` is the number of leading user entries.
+/// Build the scratch storage for one function's spill region and allocate
+/// its tmp locals. `spill_entries` are the frame entries after the user
+/// locals, in `assign_local_offsets` order.
 fn build_spill_storage(
     module: &mut Module,
-    ptr_ty: ValType,
-    locals_with_offsets: &[(LocalId, ValType, u32)],
-    user_count: usize,
+    stack_pointer: GlobalId,
+    base: LocalId,
+    spill_entries: &[(LocalId, ValType, u32)],
 ) -> SpillStorage {
-    let spill_entries = &locals_with_offsets[user_count.min(locals_with_offsets.len())..];
-    let (first, last) = match (spill_entries.first(), spill_entries.last()) {
-        (Some(first), Some(last)) => (first, last),
-        _ => return SpillStorage::Locals,
-    };
-    let node_spill_start = first.2;
-    let spill_bytes = last.2 + scalar_size(last.1) - node_spill_start;
-    if spill_bytes < SCRATCH_SPILL_THRESHOLD_BYTES {
-        return SpillStorage::Locals;
-    }
-    let Some(stack_pointer) = find_stack_pointer(module, ptr_ty) else {
-        return SpillStorage::Locals;
-    };
-
-    let base = module.locals.add(ptr_ty);
+    let node_spill_start = spill_entries[0].2;
+    let (_, last_ty, last_offset) = spill_entries[spill_entries.len() - 1];
+    let spill_bytes = last_offset + scalar_size(last_ty) - node_spill_start;
     let mut offsets = HashMap::new();
     let mut tmps = HashMap::new();
     for &(lid, ty, off) in spill_entries {
@@ -6102,7 +6112,8 @@ fn emit_spill_load(
 }
 
 /// REWIND/abort-replay: copy the committed node's spill region into the
-/// freshly reserved scratch (`memory.copy [dst=base, src=node+start, len]`).
+/// capturing activation's scratch region, at the base the preamble restored
+/// (`memory.copy [dst=base, src=node+start, len]`).
 fn emit_scratch_restore_copy(
     out: &mut Vec<(Instr, InstrLocId)>,
     frame: &ScratchFrame,
@@ -9398,7 +9409,7 @@ fn instrument_one_function_nested_switch(
     }
 
     let (locals_with_offsets, spill_storage) =
-        plan_frame_layout(module, runtime.buf_type, &frame_scalars, user_scalar_locals.len());
+        plan_frame_layout(module, runtime.buf_type, &mut frame_scalars, user_scalar_locals.len());
     let ordinary_scalar_end = HEADER_SIZE + user_locals_size(&frame_scalars);
     let catch_scalar_frame = plan_plain_catch_scalar_frame(&plain_catch_state, ordinary_scalar_end);
     let scalar_end = catch_scalar_frame.frame_end(ordinary_scalar_end);

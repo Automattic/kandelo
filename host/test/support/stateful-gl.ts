@@ -44,10 +44,14 @@ import {
 import { GL_READ_FRAMEBUFFER } from "../../src/webgl/shadow.js";
 
 const GL_FRAMEBUFFER = 0x8d40;
+const GL_DRAW_FRAMEBUFFER = 0x8ca9;
+const GL_DRAW_FRAMEBUFFER_BINDING = 0x8ca6;
 const GL_ARRAY_BUFFER = 0x8892;
 const GL_ELEMENT_ARRAY_BUFFER = 0x8893;
 const GL_COPY_WRITE_BUFFER = 0x8f37;
 const GL_TEXTURE0 = 0x84c0;
+const GL_ACTIVE_TEXTURE = 0x84e0;
+const GL_TEXTURE_BINDING_2D = 0x8069;
 const GL_PACK_ALIGNMENT = 0x0d05;
 const GL_UNPACK_ALIGNMENT = 0x0cf5;
 const GL_COMPILE_STATUS = 0x8b81;
@@ -132,6 +136,24 @@ export function fakeProgram(): FakeProgram {
 }
 
 export class StatefulGl {
+  readonly TEXTURE0 = GL_TEXTURE0;
+  readonly ACTIVE_TEXTURE = GL_ACTIVE_TEXTURE;
+  readonly TEXTURE_BINDING_2D = GL_TEXTURE_BINDING_2D;
+  readonly RGBA = 0x1908;
+  readonly UNSIGNED_BYTE = 0x1401;
+  readonly LINEAR = 0x2601;
+  readonly CLAMP_TO_EDGE = 0x812f;
+  readonly TEXTURE_MIN_FILTER = 0x2801;
+  readonly TEXTURE_MAG_FILTER = 0x2800;
+  readonly TEXTURE_WRAP_S = 0x2802;
+  readonly TEXTURE_WRAP_T = 0x2803;
+  readonly TEXTURE_2D = 0x0de1;
+  readonly COLOR_ATTACHMENT0 = GL_COLOR_ATTACHMENT0;
+  readonly RENDERBUFFER = GL_RENDERBUFFER_OBJECT;
+  readonly RENDERBUFFER_BINDING = GL_RENDERBUFFER_BINDING;
+  readonly DEPTH24_STENCIL8 = 0x88f0;
+  readonly DEPTH_STENCIL_ATTACHMENT = 0x821a;
+  readonly FRAMEBUFFER_COMPLETE = GL_FRAMEBUFFER_COMPLETE;
   copyReadBuffer: FakeBuffer | null = null;
   copyWriteBuffer: FakeBuffer | null = null;
   arrayBuffer: FakeBuffer | null = null;
@@ -165,6 +187,10 @@ export class StatefulGl {
   bindFramebuffer(target: number, fbo: FakeFbo | null): void {
     if (target === GL_READ_FRAMEBUFFER) {
       this.readFbo = fbo;
+      return;
+    }
+    if (target === GL_DRAW_FRAMEBUFFER) {
+      this.drawFbo = fbo;
       return;
     }
     if (target === GL_FRAMEBUFFER) {
@@ -249,6 +275,7 @@ export class StatefulGl {
   createTexture(): FakeTexture {
     return fakeTexture();
   }
+  deleteTexture(_texture: FakeTexture): void {}
   activeTexture(unit: number): void {
     this.activeUnit = unit - GL_TEXTURE0;
   }
@@ -285,6 +312,19 @@ export class StatefulGl {
     }
     texture.levelRgba.set(level, rgba);
   }
+  texSubImage2D(
+    target: number,
+    level: number,
+    _x: number,
+    _y: number,
+    width: number,
+    height: number,
+    format: number,
+    type: number,
+    data: Float32Array | Uint8Array,
+  ): void {
+    this.texImage2D(target, level, format, width, height, 0, format, type, data);
+  }
   texParameteri(_target: number, pname: number, value: number): void {
     this.unitTextures.get(this.activeUnit)?.params.set(pname, value);
   }
@@ -301,6 +341,7 @@ export class StatefulGl {
   createRenderbuffer(): FakeRbo {
     return { kind: "rbo", internalFormat: 0, width: 0, height: 0 };
   }
+  deleteRenderbuffer(_rbo: FakeRbo): void {}
   bindRenderbuffer(_target: number, rbo: FakeRbo | null): void {
     this.renderbuffer = rbo;
   }
@@ -537,11 +578,14 @@ export class StatefulGl {
     switch (pname) {
       case GL_COPY_READ_BUFFER: return this.copyReadBuffer;
       case GL_READ_FRAMEBUFFER_BINDING: return this.readFbo;
+      case GL_DRAW_FRAMEBUFFER_BINDING: return this.drawFbo;
       case GL_RENDERBUFFER_BINDING: return this.renderbuffer;
       case GL_ARRAY_BUFFER_BINDING: return this.arrayBuffer;
       case GL_ELEMENT_ARRAY_BUFFER_BINDING: return this.boundVao.element;
       case GL_MAX_VERTEX_ATTRIBS: return 16;
       case GL_LINE_WIDTH: return this.currentLineWidth;
+      case GL_ACTIVE_TEXTURE: return GL_TEXTURE0 + this.activeUnit;
+      case GL_TEXTURE_BINDING_2D: return this.unitTextures.get(this.activeUnit) ?? null;
       default: return 0;
     }
   }

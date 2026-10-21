@@ -339,26 +339,6 @@ const STARTUP_EFAULT = 14;
 const STARTUP_EINVAL = 22;
 const STARTUP_ERANGE = 34;
 
-/**
- * How long a checkpoint may wait for the dynamic-loader archive writer.
- *
- * A freeze parks every thread of the process holding an archive reader, and a
- * reader outstanding is exactly what the writer waits behind. A thread whose
- * table replica is behind therefore asks for a writer no peer can give back
- * until the freeze gives up. The bound is long enough for a peer that is
- * genuinely mid-dlopen to finish and short enough that the capture fails while
- * the caller is still waiting on it.
- */
-const CHECKPOINT_ARCHIVE_WRITER_WAIT_MS = 250;
-
-/**
- * The dynamic-loader archive writer stayed held for a whole bounded wait.
- *
- * Only a bounded acquisition raises this. An unbounded one blocks, which is
- * the POSIX loader serialization every non-checkpoint caller needs.
- */
-class ArchiveWriterUnavailableError extends Error {}
-
 function processForkMode(value: number): ProcessForkMode | null {
   if (value === PROCESS_FORK_MODE_FORK) return PROCESS_FORK_MODE_FORK;
   if (value === PROCESS_FORK_MODE_VFORK) return PROCESS_FORK_MODE_VFORK;
@@ -694,14 +674,6 @@ export interface DlopenSupport {
   /** Release one reader token acquired by this Worker. */
   releaseArchiveReader(): void;
   withArchiveWriter<T>(operation: () => T): T;
-  /**
-   * Run an operation whose writer acquisitions may not wait past a deadline.
-   *
-   * A wait that runs out raises `ArchiveWriterUnavailableError` and leaves the
-   * archive untouched. The bound applies to nested acquisitions too, which is
-   * how a reconcile reaches it.
-   */
-  withArchiveWriterWaitBound<T>(timeoutMs: number, operation: () => T): T;
   withArchiveReader<T>(operation: () => T): T;
   writerOwned(): boolean;
   /** Run after a fresh writer acquisition and before the protected operation. */
@@ -1294,43 +1266,6 @@ export function buildDlopenImports(
     | null = null;
   let writerAcquireObserver: (() => void) | null = null;
   let operationAbortObserver: (() => void) | null = null;
-  let writerWaitBound: { readonly deadline: number; readonly ms: number } | null =
-    null;
-  const withArchiveWriterWaitBound = <T>(
-    timeoutMs: number,
-    operation: () => T,
-  ): T => {
-    const previous = writerWaitBound;
-    writerWaitBound = { deadline: Date.now() + timeoutMs, ms: timeoutMs };
-    try {
-      return operation();
-    } finally {
-      writerWaitBound = previous;
-    }
-  };
-  /**
-   * Wait for one writer turn, honouring a bound the caller put on this scope.
-   *
-   * Every call site holds no lock word, so raising here leaves the archive
-   * exactly as it was found.
-   */
-  const awaitWriterTurn = (word: Int32Array, expected: number): void => {
-    const bound = writerWaitBound;
-    if (bound === null) {
-      Atomics.wait(word, 0, expected);
-      return;
-    }
-    const remaining = bound.deadline - Date.now();
-    if (
-      remaining > 0
-      && Atomics.wait(word, 0, expected, remaining) !== "timed-out"
-    ) {
-      return;
-    }
-    throw new ArchiveWriterUnavailableError(
-      `the dynamic-loader archive writer stayed held for ${bound.ms} ms`,
-    );
-  };
   const finishFreshWriterAcquisition = (): void => {
     mainDlopenDepth = 1;
     try {
@@ -1425,7 +1360,7 @@ export function buildDlopenImports(
     for (;;) {
       const transactionOwner = foreignLoaderOwner();
       if (transactionOwner !== DLOPEN_OWNER_IDLE) {
-        awaitWriterTurn(loaderOwner, transactionOwner);
+        Atomics.wait(loaderOwner, 0, transactionOwner);
         continue;
       }
       const owner = Atomics.compareExchange(
@@ -1438,10 +1373,10 @@ export function buildDlopenImports(
         const racedTransactionOwner = foreignLoaderOwner();
         if (racedTransactionOwner === DLOPEN_OWNER_IDLE) break;
         releaseRawWriterLock();
-        awaitWriterTurn(loaderOwner, racedTransactionOwner);
+        Atomics.wait(loaderOwner, 0, racedTransactionOwner);
         continue;
       }
-      awaitWriterTurn(archiveLock, owner);
+      Atomics.wait(archiveLock, 0, owner);
     }
     finishFreshWriterAcquisition();
   };
@@ -2398,7 +2333,6 @@ export function buildDlopenImports(
     acquireArchiveReader,
     releaseArchiveReader,
     withArchiveWriter,
-    withArchiveWriterWaitBound,
     withArchiveReader,
     writerOwned: () => mainDlopenDepth > 0,
     setWriterAcquireObserver: (observer) => {
@@ -2728,6 +2662,17 @@ interface ProcessTableReplicationOwner extends ForkActivationTableReplication {
   reconcileNow(): number;
   /** Check the archive fence while the caller already excludes writers. */
   isCurrentUnderLock(): boolean;
+  /**
+   * Bring this Worker to the latest generation while the caller holds a reader.
+   *
+   * A held reader excludes every writer, so the archive cannot change and no
+   * dlopen transaction is in flight. Adopting it then reads the archive and
+   * writes only this Worker's table: the one start function a replay runs is
+   * wasm-ld's `__wasm_init_memory`, which the publisher already completed.
+   * A checkpoint needs this. Its peers park holding readers, so a thread that
+   * is behind can never take the writer that `reconcileNow` waits for.
+   */
+  reconcileUnderLock(): number;
   /** Release any mutation writer depths unwound by a Wasm trap. */
   abortActiveMutations(): void;
 }
@@ -2953,6 +2898,7 @@ function createProcessTableReplicationOwner(options: {
     reconcileNow,
     isCurrentUnderLock: () =>
       replica.generation() === options.dlopen.archive.generation(),
+    reconcileUnderLock: reconcileLocked,
     abortActiveMutations,
   };
 }
@@ -3652,23 +3598,6 @@ export async function centralizedWorkerMain(
         processForkArchiveReaderHeld = false;
         processDlopenSupport?.releaseArchiveReader();
       };
-      /**
-       * Take the fork reader under a bound, which only a checkpoint wants.
-       *
-       * A peer parked in the same freeze holds an archive reader, so a replica
-       * that is behind asks for a writer nobody can give back until the freeze
-       * ends. Bounding it lets the capture fail instead of stalling the thread
-       * for the whole unwind deadline.
-       */
-      const acquireCheckpointProcessForkArchiveReader = (): void => {
-        if (!processDlopenSupport) {
-          throw new Error(`pid=${pid}: fork archive owner is not initialized`);
-        }
-        processDlopenSupport.withArchiveWriterWaitBound(
-          CHECKPOINT_ARCHIVE_WRITER_WAIT_MS,
-          acquireCurrentProcessForkArchiveReader,
-        );
-      };
       const acquireCurrentProcessForkArchiveReader = (): void => {
         if (!processDlopenSupport || !processTableReplication) {
           throw new Error(`pid=${pid}: fork archive owner is not initialized`);
@@ -3679,18 +3608,21 @@ export async function centralizedWorkerMain(
         // lock words, and would leak a reader into the parent if this child
         // died mid-capture.
         if (borrowedForkChild) return;
-        // A checkpoint freeze has every thread of the process holding one of
-        // these readers until the freeze resumes, and reconcileNow needs the
-        // writer, which cannot be taken while a peer holds a reader.
-        // Reconciling only when the replica is actually behind keeps that
-        // writer out of the common path.
         for (;;) {
+          processTableReplication.reconcileNow();
           processDlopenSupport.acquireArchiveReader();
           processForkArchiveReaderHeld = true;
           if (processTableReplication.isCurrentUnderLock()) return;
           releaseProcessForkArchiveReader();
-          processTableReplication.reconcileNow();
         }
+      };
+      const acquireCheckpointProcessForkArchiveReader = (): void => {
+        if (!processDlopenSupport || !processTableReplication) {
+          throw new Error(`pid=${pid}: fork archive owner is not initialized`);
+        }
+        processDlopenSupport.acquireArchiveReader();
+        processForkArchiveReaderHeld = true;
+        processTableReplication.reconcileUnderLock();
       };
 
       // Seal the captured continuation, issue SYS_FORK or SYS_VFORK, and begin
@@ -3839,18 +3771,7 @@ export async function centralizedWorkerMain(
         }
         captureReason = "checkpoint";
 
-        try {
-          acquireCheckpointProcessForkArchiveReader();
-        } catch (error) {
-          if (!(error instanceof ArchiveWriterUnavailableError)) throw error;
-          releaseProcessForkArchiveReader();
-          port.postMessage({
-            type: "checkpoint_refused",
-            pid,
-            reason: error.message,
-          } satisfies WorkerToHostMessage);
-          return;
-        }
+        acquireCheckpointProcessForkArchiveReader();
         const arena = newModuleStateArena();
         try {
           arena.begin();
@@ -5832,12 +5753,12 @@ export async function centralizedThreadWorkerMain(
         threadCaptureReason = "fork";
 
         try {
-          // Take the long-lived fork reader and verify no publication won the
-          // handoff race before capturing activation state. Reconciliation may
-          // instantiate a missing side module and execute its start function,
-          // so it requires writer ownership, which no peer's reader may be
-          // outstanding for; ask for it only when the replica is behind.
+          // Reconciliation may instantiate a missing side module and execute
+          // its start function, so it requires writer ownership. Afterward,
+          // acquire the long-lived fork reader and verify no publication won
+          // the handoff race before capturing activation state.
           for (;;) {
+            threadTableReplication?.reconcileNow();
             acquirePthreadForkLock();
             if (
               !threadTableReplication ||
@@ -5846,7 +5767,6 @@ export async function centralizedThreadWorkerMain(
               break;
             }
             releasePthreadForkLock();
-            threadTableReplication.reconcileNow();
           }
         } catch (error) {
           releasePthreadForkLock();
@@ -5895,38 +5815,8 @@ export async function centralizedThreadWorkerMain(
         }
         threadCaptureReason = "checkpoint";
 
-        try {
-          // A peer parked in this same freeze holds an archive reader, and a
-          // reader outstanding is what the writer waits behind. Bound the wait
-          // so a replica that is behind fails the capture rather than stalling
-          // here for the whole unwind deadline.
-          threadDlopenSupport.withArchiveWriterWaitBound(
-            CHECKPOINT_ARCHIVE_WRITER_WAIT_MS,
-            () => {
-              for (;;) {
-                acquirePthreadForkLock();
-                if (
-                  !threadTableReplication ||
-                  threadTableReplication.isCurrentUnderLock()
-                ) {
-                  break;
-                }
-                releasePthreadForkLock();
-                threadTableReplication.reconcileNow();
-              }
-            },
-          );
-        } catch (error) {
-          releasePthreadForkLock();
-          if (!(error instanceof ArchiveWriterUnavailableError)) throw error;
-          port.postMessage({
-            type: "checkpoint_refused",
-            pid,
-            tid,
-            reason: error.message,
-          } satisfies WorkerToHostMessage);
-          return;
-        }
+        acquirePthreadForkLock();
+        threadTableReplication?.reconcileUnderLock();
 
         // The process image is shared, so the main thread writes the sparse
         // table state and every pthread leaves it alone.
@@ -6354,16 +6244,14 @@ export async function centralizedThreadWorkerMain(
       );
     }
     // A thread can start while its peers are parked in a checkpoint freeze
-    // holding archive readers, and reconcileNow needs the writer. Check the
-    // replica under a reader first so a thread with nothing to adopt reaches
-    // its first syscall, sees the pending unwind request, and reports.
+    // holding archive readers, and reconcileNow needs the writer, so it adopts
+    // the latest generation under a reader of its own.
     if (threadTableReplication) {
-      for (;;) {
-        acquirePthreadForkLock();
-        const behind = !threadTableReplication.isCurrentUnderLock();
+      acquirePthreadForkLock();
+      try {
+        threadTableReplication.reconcileUnderLock();
+      } finally {
         releasePthreadForkLock();
-        if (!behind) break;
-        threadTableReplication.reconcileNow();
       }
     }
 
@@ -6443,6 +6331,10 @@ export async function centralizedThreadWorkerMain(
       // Child attach restores __tls_base/__stack_pointer from the captured
       // activation state and puts the coordinator in child-replay, so the run
       // loop below selects wpk_fork_resume_thread instead of a fresh entry.
+      // The capturing pthread left the shared tables to the main thread, so
+      // the restore must read the same ownership answer the save read; the
+      // replay's end re-elects the owner.
+      threadProcessContinuation.releaseProcessTableStateOwnership();
       threadProcessContinuation.attachChild(
         restoredArena,
         adoptEarlyReferences,

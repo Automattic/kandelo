@@ -479,6 +479,11 @@ export type ReplicationSealResponse =
       readonly status: "sealed";
       /** The log position of the seal: the sequence the next entry would take. */
       readonly seq: number;
+      /**
+       * The log position at which the seal's freeze began. The entries from
+       * here to `seq` are that freeze's own work.
+       */
+      readonly armSeq: number;
       readonly hash: MachineStateHash;
     }
   | { readonly status: "refused"; readonly reason: string };
@@ -491,11 +496,17 @@ export type ReplicationSealResponse =
  * replaying at all. The freeze is what pins the position: the check runs
  * while every process is parked, so no read can move the replica between
  * the check and the read.
+ *
+ * A replica that has not reached `armSeq` is refused without a freeze. Its
+ * freeze would do the seal freeze's work at the wrong place in the log: the
+ * syscalls it unwinds at would take the turns of syscalls the primary made,
+ * and the replica would run on out of step with the log.
  */
 export interface ReplicationHashReplicaMessage {
   type: "replication_hash_replica";
   requestId: number;
   seq: number;
+  armSeq: number;
   unwindTimeoutMs: number;
   vforkTimeoutMs: number;
 }
@@ -532,6 +543,12 @@ export interface ReplicationReplayProgress {
    * `ReplicationLogReader.scannedAheadClockReadings`.
    */
   readonly scannedAheadClockReadings: number;
+  /**
+   * Whether the replica stopped following the primary's dispatch order
+   * because the dispatch the log named next never ran. See
+   * `ReplicationLogReader.dispatchOrderAbandoned`.
+   */
+  readonly dispatchOrderAbandoned: boolean;
 }
 
 export type MainToKernelMessage =

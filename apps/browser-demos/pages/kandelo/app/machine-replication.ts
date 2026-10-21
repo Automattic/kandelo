@@ -403,6 +403,7 @@ export function useMachineReplication(
       // this machine is released only when the drained replica matches it.
       let sealedForTake: {
         seq: number;
+        armSeq: number;
         hash: MachineStateHash;
       } | null = null;
       const stopPromotions = wire.servePromotion({
@@ -414,6 +415,7 @@ export function useMachineReplication(
           if (sealed.status === "refused") return { refused: sealed.reason };
           sealedForTake = {
             seq: sealed.seq,
+            armSeq: sealed.armSeq,
             hash: sealed.hash as MachineStateHash,
           };
           return sealedForTake;
@@ -574,14 +576,14 @@ export function useMachineReplication(
         try {
           const sealed = await wire.requestPromotion(PROMOTE_SEAL_TIMEOUT_MS);
           const deadline = Date.now() + PROMOTE_DRAIN_LIMIT_MS;
-          let hashed = await host.hashReplicaAtSeal(sealed.seq);
+          let hashed = await host.hashReplicaAtSeal(sealed.seq, sealed.armSeq);
           while (hashed !== null && hashed.status === "refused") {
             if (Date.now() > deadline || gone || left || !replica) {
               return false;
             }
             host.drainReplicationReplay();
             await pause(50);
-            hashed = await host.hashReplicaAtSeal(sealed.seq);
+            hashed = await host.hashReplicaAtSeal(sealed.seq, sealed.armSeq);
           }
           if (hashed === null || !replica || gone || left) return false;
           const report = comparePromotionStateHashes(

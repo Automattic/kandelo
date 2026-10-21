@@ -1030,6 +1030,27 @@ describe("LiveKernelHost: machine handover", () => {
     expect(ptyWrite).not.toHaveBeenCalled();
   });
 
+  // The pointer over the display is this computer's too. The display appears
+  // under a resting pointer when the join ends, and the position it reports
+  // would reach the compositor here and nowhere on the machine it copies.
+  it("refuses the pointer on a machine it is only replicating", async () => {
+    const { host, kernel } = taker([7]);
+    const injectInputEvent = vi.fn();
+    Object.assign(kernel, { kmsAttachCanvas: vi.fn(), injectInputEvent });
+    await host.replicateMachine(
+      DUMMY_DESCRIPTOR,
+      FROZEN,
+      [],
+      { entries: [], queue: new SharedArrayBuffer(1024), release: vi.fn() },
+    );
+
+    const display = host.attachKmsDisplay(
+      { transferControlToOffscreen: () => ({}) } as unknown as HTMLCanvasElement,
+    );
+    display!.sendPointerAbs(981, 643, 1);
+    expect(injectInputEvent).not.toHaveBeenCalled();
+  });
+
   // A window change is a decision too: it delivers SIGWINCH and a new
   // TIOCGWINSZ, so a program that redraws on it takes a turn the primary's
   // program never took. The emulator here is a different size from the one the

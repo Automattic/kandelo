@@ -34,7 +34,29 @@ function makeFakeCanvas(
 }
 
 function fakeWebgl2Context(): WebGL2RenderingContext {
-  return { getExtension: () => null } as unknown as WebGL2RenderingContext;
+  // A GL-owned canvas renders into an offscreen present target
+  // (host/src/webgl/present-target.ts), so the context needs the few calls
+  // that target makes. None of them is under test here; they only have to
+  // succeed.
+  return {
+    getExtension: () => null,
+    getParameter: () => null,
+    createTexture: () => ({}),
+    createFramebuffer: () => ({}),
+    createRenderbuffer: () => ({}),
+    deleteRenderbuffer: () => {},
+    deleteTexture: () => {},
+    deleteFramebuffer: () => {},
+    bindRenderbuffer: () => {},
+    renderbufferStorage: () => {},
+    framebufferRenderbuffer: () => {},
+    bindTexture: () => {},
+    bindFramebuffer: () => {},
+    texImage2D: () => {},
+    texParameteri: () => {},
+    framebufferTexture2D: () => {},
+    checkFramebufferStatus: () => 0x8cd5, // FRAMEBUFFER_COMPLETE
+  } as unknown as WebGL2RenderingContext;
 }
 
 function makeKernel(canvas: OffscreenCanvas | undefined): {

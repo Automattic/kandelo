@@ -1805,3 +1805,53 @@ fn node_fresh_instance_reimports_concrete_gc_global_before_const_initializers() 
         String::from_utf8_lossy(&output.stderr),
     );
 }
+
+#[test]
+fn transport_helpers_reconcile_the_process_table_after_replay_routing() {
+    let bytes = instrument_wat(
+        r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (param i32) (result i32)))
+          (import "env" "__wasm_dlopen"
+            (func (param i32 i32 i32 i32) (result i32)))
+          (memory 1)
+          (type $callback (func (result i32)))
+          (table $callbacks (export "__indirect_function_table") 1 funcref)
+          (func $callee (type $callback) (call $fork (i32.const 0)))
+          (elem (i32.const 0) $callee)
+          (func (export "_start")
+            (drop (call_indirect $callbacks (type $callback) (i32.const 0)))))
+        "#,
+    );
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).expect("parse");
+    let guard = module
+        .funcs
+        .iter()
+        .find(|function| function.name.as_deref() == Some("__wpk_fork_table_generation_guard"))
+        .expect("table generation guard")
+        .id();
+    let helper = module
+        .funcs
+        .iter()
+        .find(|function| {
+            function
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("__wpk_fork_unwind_transport_indirect_"))
+        })
+        .expect("indirect transport helper")
+        .id();
+    let helper = local(&module, helper);
+    let entry = &helper.block(helper.entry_block()).instrs;
+    let position = |matches: &dyn Fn(&Instr) -> bool| {
+        entry.iter().position(|(instr, _)| matches(instr)).expect("instruction in the helper entry")
+    };
+    let routing = position(&|instr| matches!(instr, Instr::IfElse(_)));
+    let reconcile = position(&|instr| matches!(instr, Instr::Call(call) if call.func == guard));
+    let dispatch = position(&|instr| matches!(instr, Instr::CallIndirect(_)));
+    assert!(
+        routing < reconcile && reconcile < dispatch,
+        "a replay routed through the resume table must not reconcile the guest table",
+    );
+}

@@ -75,7 +75,9 @@ export function collectStdout(): {
 
 /** The seconds a `date +%s` transcript printed, in order. */
 export function printedSeconds(stdout: string): number[] {
-  return stdout.trim().split("\n").map((line) => Number(line.trim()));
+  const transcript = stdout.trim();
+  if (transcript === "") return [];
+  return transcript.split("\n").map((line) => Number(line.trim()));
 }
 
 /** Run the clock-reading guest to completion. */

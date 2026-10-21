@@ -5,19 +5,19 @@
  * (host/test/migration/machine-checkpoint.test.ts). One thread loads the side
  * module after the other thread already exists, so the other thread's copy of
  * the dynamic-loader archive is one generation old when the freeze arrives. It
- * has to adopt the newer generation before it can capture, and adopting needs
- * the archive writer, which no thread can take while a peer parked in the same
- * freeze holds a reader.
+ * has to adopt the newer generation before it can capture, while a peer parked
+ * in the same freeze holds an archive reader.
  *
  * The naps are the ordering. The loader wakes every millisecond and reaches
  * the freeze first, so it is the peer holding the reader. The other thread
- * wakes every fifty, so it asks for the writer with the loader already parked.
+ * wakes every fifty, so it adopts the generation with the loader already
+ * parked.
  *
  * The first argument is the path of the side module. The second selects the
  * loader: absent or "main" makes the main thread load, so the pthread is the
- * thread that refuses; "thread" makes the pthread load, so the refusal runs on
- * the main thread instead. The fixture never exits on its own. Its test
- * destroys the machine.
+ * thread that is behind; "thread" makes the pthread load, so the main thread
+ * is behind instead. The fixture never exits on its own. Its test destroys the
+ * machine.
  */
 #include <dlfcn.h>
 #include <pthread.h>

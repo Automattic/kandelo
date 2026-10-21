@@ -52,6 +52,12 @@ const WAIT_SLICE_MS = 1000;
 /** How long the writer waits before retrying a ring that had no room. */
 const RETRY_SLICE_MS = 4;
 
+/**
+ * How long an ended writer keeps offering pending entries to a reader that
+ * takes none of them.
+ */
+const ENDED_DRAIN_LIMIT_MS = 30_000;
+
 function ringOf(buffer: SharedArrayBuffer): {
   header: Int32Array;
   ring: Uint8Array;
@@ -93,6 +99,8 @@ export class ReplicationLogQueueWriter {
   readonly #pending: Uint8Array[] = [];
   #retry: ReturnType<typeof setTimeout> | null = null;
   #ended = false;
+  /** When the ring last took a frame, for an ended writer's drain limit. */
+  #wroteAt = Date.now();
 
   constructor(buffer: SharedArrayBuffer) {
     const { header, ring, capacity } = ringOf(buffer);
@@ -133,19 +141,19 @@ export class ReplicationLogQueueWriter {
    *
    * A replica blocked on a log that has ended would sit there, so the state
    * word carries the end and the waiters are woken to read it. Entries still
-   * pending are flushed first: the end is a boundary, not a reason to drop
-   * what was already recorded.
+   * pending go in first: the end is a boundary, not a reason to drop what was
+   * already recorded. A replica reads the end only once the ring is empty, so
+   * publishing it with entries still pending would end that replica short of
+   * the primary.
    *
-   * Retrying stops here. A replica that has not drained the ring by the time
-   * the recording ends is not following it any more, and a writer that kept
-   * polling for room would poll for as long as the page is open. What never
-   * reached it stays readable as `pending` rather than being retried forever.
+   * A replica that takes nothing for `ENDED_DRAIN_LIMIT_MS` is not following
+   * any more, and a writer that kept polling for room would poll for as long
+   * as the page is open. The end is published then, and what never reached
+   * the ring stays readable as `pending`.
    */
   end(): void {
     this.#ended = true;
     this.#flush();
-    Atomics.store(this.#header, STATE, ENDED);
-    Atomics.notify(this.#header, AVAILABLE);
   }
 
   #flush(): void {
@@ -155,6 +163,13 @@ export class ReplicationLogQueueWriter {
       if (free < frameBytes.byteLength) break;
       this.#write(frameBytes);
       this.#pending.shift();
+    }
+    const stalled = Date.now() - this.#wroteAt >= ENDED_DRAIN_LIMIT_MS;
+    if (this.#ended && (this.#pending.length === 0 || stalled)) {
+      Atomics.store(this.#header, STATE, ENDED);
+      Atomics.notify(this.#header, AVAILABLE);
+      this.#clearRetry();
+      return;
     }
     this.#scheduleRetry();
   }
@@ -172,12 +187,17 @@ export class ReplicationLogQueueWriter {
     // writer has not finished laying down.
     Atomics.add(this.#header, AVAILABLE, frameBytes.byteLength);
     Atomics.notify(this.#header, AVAILABLE);
+    this.#wroteAt = Date.now();
+  }
+
+  #clearRetry(): void {
+    if (this.#retry !== null) clearTimeout(this.#retry);
+    this.#retry = null;
   }
 
   #scheduleRetry(): void {
-    if (this.#pending.length === 0 || this.#ended) {
-      if (this.#retry !== null) clearTimeout(this.#retry);
-      this.#retry = null;
+    if (this.#pending.length === 0) {
+      this.#clearRetry();
       return;
     }
     if (this.#retry !== null) return;
@@ -240,6 +260,22 @@ export class ReplicationLogQueueReader {
         Math.min(WAIT_SLICE_MS, remaining),
       );
     }
+  }
+
+  /**
+   * Settle once the ring holds a frame or the recording ended.
+   *
+   * For the kernel worker's dispatch order, which must not block: a task the
+   * log has not named yet waits parked, and is served when the primary's next
+   * decision lands here. Frames are published whole, so an empty ring is
+   * exactly the zero this waits on.
+   */
+  arrival(): Promise<void> {
+    if (Atomics.load(this.#header, STATE) === ENDED) return Promise.resolve();
+    const waited = Atomics.waitAsync(this.#header, AVAILABLE, 0);
+    return waited.async
+      ? waited.value.then(() => undefined)
+      : Promise.resolve();
   }
 
   /**

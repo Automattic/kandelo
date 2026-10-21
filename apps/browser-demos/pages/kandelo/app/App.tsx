@@ -382,6 +382,7 @@ export const App: React.FC = () => {
   }, [terminals]);
 
   const isEmpty = surface.status === "idle";
+  const arriving = (handover.taking || replication.joining) && sharingLink !== null;
   // Only in a pair. A computer on its own is neither, and one machine with
   // one person at it needs no word for that. A replica parked by a dropped
   // link is the exception: the machine here is still the other computer's,
@@ -491,8 +492,8 @@ export const App: React.FC = () => {
         data-machine-content
         {...(machineProgress === null ? {} : { inert: true })}
       >
-        <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
-          {(isEmpty || handover.taking || replication.joining) && sharingLink ? (
+        <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}${arriving ? " kmain-arriving" : ""}`}>
+          {(isEmpty || arriving) && sharingLink !== null ? (
             // While a machine is arriving, this pane stays up over the boot
             // that is running behind it. `taking` ends when `adoptMachine`
             // resolves, and `joining` when `replicateMachine` does — both
@@ -506,41 +507,50 @@ export const App: React.FC = () => {
             />
           ) : isEmpty ? (
             emptyState
-          ) : (
-            <MachineView
-              webMcpPreviewRef={webMcpPreview}
-              surface={surface}
-              demoGuideOpen={demoGuideOpen}
-              onDemoGuideOpenChange={setDemoGuideOpen}
-              onDemoDockControlsChange={setDemoDockControls}
-              onDemoGuidePopupChange={setDemoGuidePopup}
-              internalsTab={internalsTab}
-              terminals={terminals}
-              activeTerminalId={activeTerminalId}
-              onActiveTerminalId={setActiveTerminalId}
-              onAddTerminal={onAddTerminal}
-              onPreviewPathChange={
-                replication.publishing ? replication.navigation.publish : undefined
-              }
-              previewViewerPath={
-                replication.replicating
-                  ? replication.navigation.viewerPath
-                  : undefined
-              }
-              onPreviewCursorChange={
-                replication.publishing ? replication.cursor.publish : undefined
-              }
-              previewViewerCursor={
-                replication.replicating ? replication.cursor.viewerCursor : null
-              }
-              onPreviewScrollChange={
-                replication.publishing ? replication.scroll.publish : undefined
-              }
-              previewViewerScroll={
-                replication.replicating ? replication.scroll.viewerScroll : null
-              }
-              previewReloadToken={previewReloadToken}
-            />
+          ) : null}
+          {!isEmpty && (
+            // The machine behind an arriving one is laid out, so its display
+            // gives the restored GL contexts their canvas. Its processes are
+            // running already, and one that draws waits for that canvas.
+            <div
+              className={`kmachine-host${arriving ? " is-arriving" : ""}`}
+              {...(arriving ? { inert: true } : {})}
+            >
+              <MachineView
+                webMcpPreviewRef={webMcpPreview}
+                surface={surface}
+                demoGuideOpen={demoGuideOpen}
+                onDemoGuideOpenChange={setDemoGuideOpen}
+                onDemoDockControlsChange={setDemoDockControls}
+                onDemoGuidePopupChange={setDemoGuidePopup}
+                internalsTab={internalsTab}
+                terminals={terminals}
+                activeTerminalId={activeTerminalId}
+                onActiveTerminalId={setActiveTerminalId}
+                onAddTerminal={onAddTerminal}
+                onPreviewPathChange={
+                  replication.publishing ? replication.navigation.publish : undefined
+                }
+                previewViewerPath={
+                  replication.replicating
+                    ? replication.navigation.viewerPath
+                    : undefined
+                }
+                onPreviewCursorChange={
+                  replication.publishing ? replication.cursor.publish : undefined
+                }
+                previewViewerCursor={
+                  replication.replicating ? replication.cursor.viewerCursor : null
+                }
+                onPreviewScrollChange={
+                  replication.publishing ? replication.scroll.publish : undefined
+                }
+                previewViewerScroll={
+                  replication.replicating ? replication.scroll.viewerScroll : null
+                }
+                previewReloadToken={previewReloadToken}
+              />
+            </div>
           )}
         </main>
 

@@ -164,15 +164,15 @@ export function rebuildGlContext(
   }
 
   for (const carried of context.vaos) {
-    let vao: WebGLVertexArrayObject | null = null;
-    if (carried.name !== 0) {
-      vao = gl.createVertexArray();
-      if (!vao) {
-        boundaries.push(`vertex array ${carried.name} could not be created`);
-        continue;
-      }
-      b.vaos.set(carried.name, vao);
+    const vao = gl.createVertexArray();
+    if (!vao) {
+      boundaries.push(`vertex array ${carried.name} could not be created`);
+      continue;
     }
+    // Vertex array 0 is the binding's own stand-in, not WebGL's default
+    // (see `GlShadowState.defaultVao`).
+    if (carried.name === 0) b.shadow.defaultVao = vao;
+    else b.vaos.set(carried.name, vao);
     gl.bindVertexArray(vao);
     gl.bindBuffer(
       GL_ELEMENT_ARRAY_BUFFER,
@@ -260,6 +260,23 @@ export function rebuildGlContext(
       }])),
     });
   }
+
+  for (const carried of context.foreignTextures) {
+    const tex = b.textures.get(carried.name);
+    const shape = b.textureShapes.get(carried.name)?.levels.get(0);
+    if (!tex || !shape) {
+      boundaries.push(`bo ${carried.boId}'s texture ${carried.name} was not rebuilt`);
+      continue;
+    }
+    b.foreignTextures.set(carried.boId, {
+      tex,
+      texId: carried.name,
+      w: shape.width,
+      h: shape.height,
+      scratch: null,
+    });
+  }
+  b.nextForeignTexId = context.nextForeignTexId;
 
   if (context.state) applyPipelineState(gl, b, context.state);
   return boundaries;
@@ -432,13 +449,14 @@ function applyPipelineState(
   b.currentProgram = program;
 
   const vao = state.vaoName === 0 ? null : b.vaos.get(state.vaoName) ?? null;
-  gl.bindVertexArray(vao);
-  const fbo = state.fboName === 0 ? null : b.fbos.get(state.fboName) ?? null;
+  gl.bindVertexArray(vao ?? b.shadow.defaultVao);
+  // Name 0 is the window, which a canvas-backed session draws through its
+  // present target, exactly as `OP_BIND_FRAMEBUFFER` redirects it.
+  const framebuffer = (name: number): WebGLFramebuffer | null =>
+    name === 0 ? b.renderTargetFbo : b.fbos.get(name) ?? null;
+  const fbo = framebuffer(state.fboName);
   gl.bindFramebuffer(GL_FRAMEBUFFER, fbo);
-  gl.bindFramebuffer(
-    GL_READ_FRAMEBUFFER,
-    state.readFboName === 0 ? null : b.fbos.get(state.readFboName) ?? null,
-  );
+  gl.bindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer(state.readFboName));
   gl.bindBuffer(
     GL_ARRAY_BUFFER,
     state.arrayBufferName === null
@@ -467,6 +485,7 @@ function applyPipelineState(
   shadow.polygonOffsetFillEnabled = state.polygonOffsetFillEnabled;
   shadow.currentProgram = program;
   shadow.vao = vao;
+  shadow.defaultVao = b.shadow.defaultVao;
   shadow.fbo = fbo;
   shadow.activeTexture = state.activeTexture;
   shadow.unpackAlignment = state.unpackAlignment;

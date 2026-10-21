@@ -259,7 +259,7 @@ export interface CheckpointProcessBucket {
  * refuses a checkpoint whose format it does not know rather than guessing at
  * the missing or extra fields.
  */
-export const MACHINE_CHECKPOINT_FORMAT = 8;
+export const MACHINE_CHECKPOINT_FORMAT = 9;
 
 export interface MachineCheckpoint {
   readonly format: typeof MACHINE_CHECKPOINT_FORMAT;
@@ -480,6 +480,15 @@ export interface CheckpointFreezeOptions {
    * the log. Throwing here fails the capture, and the machine still resumes.
    */
   readonly onRead?: () => void;
+  /**
+   * Run once the freeze has the machine, just before it asks any process to
+   * unwind.
+   *
+   * What the machine records from here on is the freeze's own work — the
+   * syscall each process unwinds at, and the capture arena it maps — so a
+   * replica that is to repeat this freeze has to stand here when it does.
+   */
+  readonly onArm?: () => void;
 }
 
 class CheckpointTimeout extends Error {}
@@ -610,6 +619,9 @@ export async function captureMachineCheckpointSummary(
   };
 }
 
+/** How often a freeze frees parks that began after its previous sweep. */
+const UNWIND_RESWEEP_INTERVAL_MS = 50;
+
 async function freezeAndRead(
   machine: CheckpointMachine,
   options: CheckpointFreezeOptions,
@@ -649,21 +661,42 @@ async function freezeAndRead(
     // parent's address space, so "one memory per execution generation" only
     // holds here.
     sources = machine.liveProcesses();
+    await withTimeout(
+      Promise.all(
+        sources.map((source) => source.checkpointFreeze.untilGatesPending()),
+      ),
+      options.unwindTimeoutMs,
+      "a thread never took back its gate from the previous checkpoint freeze",
+    );
+    options.onArm?.();
     for (const source of sources) {
       source.checkpointFreeze.arm();
       armed.push(source);
     }
     machine.armUnwindRequests();
-    await withTimeout(
-      Promise.race([
-        Promise.all(
-          armed.map((source) => source.checkpointFreeze.waitUntilUnwound()),
-        ),
-        queuedLaunch,
-      ]),
-      options.unwindTimeoutMs,
-      () => describeUnwindStragglers(armed),
+    // A thread unwinds only from a stack whose every frame is instrumented
+    // for it. One that was elsewhere at the first sweep resubmits its call and
+    // may park again before it reaches such a stack, and a park that begins
+    // after a sweep has no completion to carry the request. Sweeping again
+    // frees those parks until every thread has unwound.
+    const resweep = setInterval(
+      () => machine.armUnwindRequests(),
+      UNWIND_RESWEEP_INTERVAL_MS,
     );
+    try {
+      await withTimeout(
+        Promise.race([
+          Promise.all(
+            armed.map((source) => source.checkpointFreeze.waitUntilUnwound()),
+          ),
+          queuedLaunch,
+        ]),
+        options.unwindTimeoutMs,
+        () => describeUnwindStragglers(armed),
+      );
+    } finally {
+      clearInterval(resweep);
+    }
     unwound = true;
 
     // Every process is parked with its frames in its own linear memory. Leg 1
@@ -671,13 +704,13 @@ async function freezeAndRead(
     // completion the kernel prepared meanwhile — before any byte is read.
     machine.holdProcessDispatch();
     held = true;
-    checkpoint = readMachine(machine, armed);
+    checkpoint = readMachine(machine, present(armed));
     options.onRead?.();
   } finally {
     offQueuedLaunch?.();
     machine.disarmUnwindRequests();
     if (held) unreleased = await machine.releaseProcessDispatch();
-    for (const source of armed) {
+    for (const source of present(armed)) {
       const freeze = source.checkpointFreeze;
       // A process can die between its unwind report and this line, which
       // abandons its coordinator from the teardown path. Resume only what is
@@ -691,7 +724,7 @@ async function freezeAndRead(
   // read — a thread that dies there is the known case. Nothing rejects in that
   // window, so the torn attempt is only visible as a coordinator that never
   // reached `resumed`.
-  const torn = armed.filter(
+  const torn = present(armed).filter(
     (source) => source.checkpointFreeze.currentPhase !== "resumed",
   );
   if (torn.length > 0) {
@@ -718,6 +751,15 @@ async function freezeAndRead(
     };
   }
   return { status: "captured", checkpoint: checkpoint! };
+}
+
+/** The processes still in the machine: one that ended during the freeze is gone. */
+function present(
+  sources: readonly CheckpointProcessSource[],
+): CheckpointProcessSource[] {
+  return sources.filter(
+    (source) => source.checkpointFreeze.currentPhase !== "ended",
+  );
 }
 
 /**

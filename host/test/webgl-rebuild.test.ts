@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bindForeignTexture } from "../src/webgl/foreign-texture.js";
 import { GlContextRegistry, type GlBinding } from "../src/webgl/registry.js";
 import { rebuildGlContext } from "../src/webgl/rebuild.js";
 import {
@@ -15,6 +16,12 @@ import {
   GL_UNSIGNED_BYTE,
   type CheckpointGlContext,
 } from "../src/webgl/snapshot.js";
+import {
+  ABI_SYSCALLS,
+  CHANNEL_STATUS_PENDING,
+  CH_STATUS,
+  CH_SYSCALL,
+} from "../src/generated/abi";
 import { createCentralizedKernelWorkerTestDouble } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
@@ -23,8 +30,10 @@ import {
   fakeProgram,
   fakeTexture,
   StatefulGl,
+  type FakeBuffer,
   type FakeFbo,
   type FakeRbo,
+  type FakeTexture,
   type FakeShader,
   type FakeUniform,
   type FakeVao,
@@ -243,6 +252,58 @@ describe("rebuildGlContext", () => {
     expect(b2.shadow.blendEnabled).toBe(true);
   });
 
+  it("carries the binding's own vertex array 0, not WebGL's default", () => {
+    const original = populatedContext();
+    const own: FakeVao = {
+      kind: "vao",
+      element: null,
+      attribs: new Map([[0, {
+        enabled: true,
+        buffer: original.b.buffers.get(30) as unknown as FakeBuffer,
+        size: 2,
+        type: GL_FLOAT,
+        normalized: false,
+        stride: 0,
+        offset: 0,
+      }]]),
+    };
+    original.b.shadow.defaultVao = own as unknown as WebGLVertexArrayObject;
+    original.b.shadow.vao = null;
+    const captured = captureGlContext(original.b, 7);
+
+    // The guest keeps drawing with its own vertex array after the read.
+    expect(original.gl.boundVao).toBe(own);
+    expect(captured.vaos.find((vao) => vao.name === 0)!.attribs)
+      .toEqual([expect.objectContaining({ index: 0, enabled: true, bufferName: 30 })]);
+
+    const gl2 = new StatefulGl();
+    gl2.uniformDeclarationsBySource.set(VERTEX_SOURCE, uniformDeclarations());
+    const b2 = makeBinding(gl2);
+    rebuildGlContext(gl2 as unknown as WebGL2RenderingContext, b2, captured);
+
+    const rebuilt = b2.shadow.defaultVao as unknown as FakeVao;
+    expect(rebuilt).not.toBe(gl2.defaultVao);
+    expect(gl2.boundVao).toBe(rebuilt);
+    expect(rebuilt.attribs.get(0)).toMatchObject({ enabled: true, size: 2 });
+  });
+
+  it("binds the window's present target where the guest bound the window", () => {
+    const original = populatedContext();
+    original.b.shadow.fbo = null;
+    const captured = captureGlContext(original.b, 7);
+
+    const gl2 = new StatefulGl();
+    gl2.uniformDeclarationsBySource.set(VERTEX_SOURCE, uniformDeclarations());
+    const b2 = makeBinding(gl2);
+    const target = gl2.createFramebuffer();
+    b2.renderTargetFbo = target as unknown as WebGLFramebuffer;
+    rebuildGlContext(gl2 as unknown as WebGL2RenderingContext, b2, captured);
+
+    expect(gl2.drawFbo).toBe(target);
+    expect(gl2.readFbo).toBe(target);
+    expect(b2.shadow.fbo).toBe(target);
+  });
+
   it("names a uniform a fresh link no longer answers", () => {
     const original = populatedContext();
     const captured = captureGlContext(original.b, 7);
@@ -269,6 +330,28 @@ describe("rebuildGlContext", () => {
       uniform: "uOptimizedOut",
     });
   });
+
+  it("carries a bo's texture so the guest's next upload refreshes it", () => {
+    const gl = new StatefulGl();
+    const b = makeBinding(gl);
+    const pixels = Uint8Array.from({ length: 8 }, (_, index) => index + 1);
+    const name = bindForeignTexture(b, 55, pixels, { w: 2, h: 1, stride: 8 });
+    const captured = captureGlContext(b, 7);
+
+    const gl2 = new StatefulGl();
+    const b2 = makeBinding(gl2);
+    const boundaries = rebuildGlContext(
+      gl2 as unknown as WebGL2RenderingContext,
+      b2,
+      captured,
+    );
+
+    // A compositor uploads its wallpaper once and draws that name ever after.
+    expect(boundaries).toEqual([]);
+    expect((b2.textures.get(name) as unknown as FakeTexture).levelRgba.get(0)).toEqual(pixels);
+    expect(bindForeignTexture(b2, 55, pixels, { w: 2, h: 1, stride: 8 })).toBe(name);
+    expect(bindForeignTexture(b2, 56, pixels, { w: 2, h: 1, stride: 8 })).not.toBe(name);
+  });
 });
 
 describe("CentralizedKernelWorker GL restore", () => {
@@ -281,12 +364,12 @@ describe("CentralizedKernelWorker GL restore", () => {
     vi.useRealTimers();
   });
 
-  function makeWorker() {
+  function makeWorker(kernelExports: Readonly<Record<string, unknown>> = {}) {
     const worker = createCentralizedKernelWorkerTestDouble({
       config: { maxWorkers: 1, dataBufferSize: 65_536, useSharedMemory: true },
       io: new NodePlatformIO(),
     });
-    const implementations = { kernel_vblank: () => 0 };
+    const implementations = { kernel_vblank: () => 0, ...kernelExports };
     installKernelWorkerTestScratch(
       worker,
       new WebAssembly.Memory({ initial: 2 }),
@@ -307,8 +390,8 @@ describe("CentralizedKernelWorker GL restore", () => {
 
   function makeGlCanvas(gl: StatefulGl | null): OffscreenCanvas {
     return {
-      width: 0,
-      height: 0,
+      width: 64,
+      height: 48,
       getContext: (kind: string) => (kind === "webgl2" ? gl : null),
     } as unknown as OffscreenCanvas;
   }
@@ -343,6 +426,10 @@ describe("CentralizedKernelWorker GL restore", () => {
     expect(binding.gl).not.toBeNull();
     expect(worker.glOwnedCrtcs()).toEqual([1]);
     expect([...binding.programs.keys()]).toEqual([20]);
+    // Each present flips the window's present target onto the canvas,
+    // exactly as on the machine that was captured.
+    expect(binding.claimedKmsCrtc).toBe(1);
+    expect(binding.presentTarget).not.toBeNull();
     const recaptured = worker.captureGlContextsForCheckpoint();
     expect(recaptured).toEqual([{ ...context, crtcId: 1 }]);
   });
@@ -360,6 +447,77 @@ describe("CentralizedKernelWorker GL restore", () => {
     expect(reported.some((line) => line.includes("refuses a WebGL2"))).toBe(true);
     expect(worker.gl.get(7)!.gl).toBeNull();
     expect(worker.captureGlContextsForCheckpoint()).toEqual([context]);
+  });
+
+  it("holds the restored process's syscalls until its canvas arrives", () => {
+    const handleChannel = vi.fn(() => 0);
+    const worker = makeWorker({
+      kernel_dequeue_signal: () => 0,
+      kernel_get_process_exit_signal: () => -1,
+      kernel_handle_channel: handleChannel,
+      kernel_set_current_tid: () => 0,
+    });
+    worker.testAuthority.configureScratchBoundaryHooksForTest({
+      completeChannel: vi.fn(),
+      completeChannelRaw: vi.fn(),
+      relistenChannel: vi.fn(),
+      synchronizeSharedMemoryForBoundary: vi.fn(),
+    });
+    worker.restoreGlContextsFromCheckpoint([capturedContext(1)], () => {});
+    const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
+    const [channel] =
+      worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+        pid: 7,
+        memory,
+        channelOffsets: [0],
+        pointerWidth: 4,
+      });
+    const view = new DataView(memory.buffer);
+    view.setUint32(CH_SYSCALL, ABI_SYSCALLS.Getpid, true);
+    view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+
+    worker.handleSyscall(channel);
+    // Served now, a GL call would meet a binding with no context, which the
+    // captured machine never answered.
+    expect(handleChannel).not.toHaveBeenCalled();
+
+    const gl2 = new StatefulGl();
+    gl2.uniformDeclarationsBySource.set(VERTEX_SOURCE, uniformDeclarations());
+    worker.attachKmsCanvas(1, makeGlCanvas(gl2), undefined, { mode: "webgl2" });
+    expect(handleChannel).toHaveBeenCalledTimes(1);
+  });
+
+  it("serves the held syscalls when the canvas refuses WebGL2", () => {
+    const handleChannel = vi.fn(() => 0);
+    const worker = makeWorker({
+      kernel_dequeue_signal: () => 0,
+      kernel_get_process_exit_signal: () => -1,
+      kernel_handle_channel: handleChannel,
+      kernel_set_current_tid: () => 0,
+    });
+    worker.testAuthority.configureScratchBoundaryHooksForTest({
+      completeChannel: vi.fn(),
+      completeChannelRaw: vi.fn(),
+      relistenChannel: vi.fn(),
+      synchronizeSharedMemoryForBoundary: vi.fn(),
+    });
+    worker.restoreGlContextsFromCheckpoint([capturedContext(1)], () => {});
+    const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
+    const [channel] =
+      worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+        pid: 7,
+        memory,
+        channelOffsets: [0],
+        pointerWidth: 4,
+      });
+    const view = new DataView(memory.buffer);
+    view.setUint32(CH_SYSCALL, ABI_SYSCALLS.Getpid, true);
+    view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+    worker.handleSyscall(channel);
+
+    // The boundary is reported and the machine runs on with a dark screen.
+    worker.attachKmsCanvas(1, makeGlCanvas(null), undefined, { mode: "webgl2" });
+    expect(handleChannel).toHaveBeenCalledTimes(1);
   });
 
   it("rebuilds a context-less binding at once with nothing pending", () => {

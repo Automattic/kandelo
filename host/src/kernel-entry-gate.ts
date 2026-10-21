@@ -297,6 +297,13 @@ export class KernelEntryGate {
     return this.#shouldDeferVoidIngress();
   }
 
+  /** Whether `runImmediateVoidIngress` would run now rather than refuse. */
+  get acceptsImmediateVoidIngress(): boolean {
+    return this.#fatalError === null
+      && !this.#runningProtocolTransactionStart
+      && !this.#shouldDeferVoidIngress();
+  }
+
   #shouldDeferVoidIngress(): boolean {
     if (this.#runningProtocolTransactionStart) {
       // The transaction start itself may invoke reviewed public worker roots.

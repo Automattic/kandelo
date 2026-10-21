@@ -9,7 +9,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const examplesDir = resolve(__dirname, "../../../examples");
 
 interface MachineCheckpointThreadsSummary {
-  mounts: string[];
   unreadableMounts: string[];
   pids: number[];
   threads: { pid: number; tids: number[]; activeCount: number }[];
@@ -80,19 +79,8 @@ test("restores a checkpointed process that keeps running", async ({
 
   expect(result.signaled, result.output).toBe(true);
   expect(result.recaptured!.pids).toEqual(result.captured.pids);
-  // The browser backs every mount with a MemoryFileSystem, so a browser
-  // machine moves whole. Node backs all but `/` with a host directory and
-  // records the seven it left behind. Same code, different mount topology.
-  expect(result.captured.mounts).toEqual([
-    "/",
-    "/tmp",
-    "/var/tmp",
-    "/var/log",
-    "/var/run",
-    "/home/maker",
-    "/root",
-    "/srv",
-  ]);
+  // The kernel holds `/` and every scratch mount, and the browser mounts no
+  // host directory, so a browser machine moves whole.
   expect(result.captured.unreadableMounts).toEqual([]);
   expect(result.hostDiagnostics.filter((d) => d.startsWith("checkpoint restore")))
     .toEqual([]);
@@ -143,8 +131,7 @@ test("restores a file mid-write, a directory mid-iteration, and a pending alarm"
     {
       readyMarker: "READY",
       finishMarker: "ALARM OK",
-      // The fixture needs a writable root: a checkpoint carries the
-      // image-backed root filesystem, and scratch mounts do not travel.
+      // The fixture writes its files under a writable `/`.
       rootfsMountSpec: [{ path: "/", source: "image", readonly: false }],
     },
   );

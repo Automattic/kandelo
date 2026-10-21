@@ -179,7 +179,7 @@ test("unsupported browsers retain the manual terminal workflow", async ({ baseUR
   const browser = await chromium.launch({ channel: "chrome", args: [] });
   try {
     const page = await browser.newPage();
-    await page.goto(new URL("/", baseURL).href, { waitUntil: "domcontentloaded" });
+    await page.goto(new URL("/?profile=shell", baseURL).href, { waitUntil: "domcontentloaded" });
     expect(await page.evaluate(() => typeof (document as any).modelContext)).toBe("undefined");
     await expect(page.getByRole("tab", { name: "TTY1", exact: true })).toBeVisible({ timeout: 120_000 });
     await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 120_000 }).toMatch(/\$\s|#\s/);

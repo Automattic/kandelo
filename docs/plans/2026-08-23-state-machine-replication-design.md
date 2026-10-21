@@ -114,18 +114,23 @@ Everything a guest can observe that is not already a function of its
 own memory:
 
 - **Syscall order.** Which process's syscall the kernel served, and in
-  what order. Today that follows the host OS's scheduling of the
-  process workers, which differs on every machine.
+  what order. That follows the host OS's scheduling of the process
+  workers, which differs on every machine. Since 2026-10-16 the log
+  carries it as `kind: "dispatch"`, one entry per channel the kernel
+  serves, and one per host entry the kernel runs for a process on the
+  host's own schedule (an exec step, an exited process's deactivation).
+  A replica serves a channel only when the log names its task next and
+  parks the rest; it refuses an out-of-turn host entry, whose caller
+  retries. See "Dispatch order, measured again" below.
 - **Time.** Every `clock_gettime`, `gettimeofday` and `times` result.
   The guest clock becomes a value the log carries, not a value the host
   reads. `MachineCheckpoint.monotonicNs` and the monotonic-floor work
   already establish that the guest clock is something the platform
   owns. Every reading also carries the process it was handed to, and a
-  replica serves each process its own readings. Syscall order is the
-  item above this one and is not in the log yet, so a machine with more
-  than one process reads its clocks in an order the two computers never
-  share; without the reader's identity such a machine diverges on its
-  first reading. Threads of one process are the same boundary one level
+  replica serves each process its own readings. Before syscall order
+  entered the log, a machine with more than one process read its clocks
+  in an order the two computers never shared; without the reader's
+  identity such a machine diverged on its first reading. Threads of one process are the same boundary one level
   down, and closed the same way since 2026-09-09: the kernel worker binds
   the channel's thread before every dispatch, so readings and random
   draws carry the tid alongside the pid and every task replays its own
@@ -213,7 +218,7 @@ recover from divergence even before it is good at avoiding it.
 | Roles | `apps/browser-demos/pages/kandelo/app/machine-replication.ts` | User publishes, viewer replicates |
 | Screen | `migration/mirror-local.ts` | Fallback mode only |
 | Ownership | `migration/transport-local.ts` | Becomes primary election |
-| Dispatch order | host scheduling | Logical clock in the kernel worker |
+| Dispatch order | host scheduling | Log-ordered in the kernel worker (`kind: "dispatch"`) |
 | Clock, random, host I/O | host adapters | Log-sourced |
 
 The log has a wire. `LocalReplicationLog` (`host/src/replication/log-local.ts`)
@@ -351,6 +356,12 @@ tried again:
 The duration is what makes the rule safe. A wait longer than the gap is one the
 primary had not finished, so the replica keeps waiting; the readiness check
 itself is untouched, and the wait still ends on whatever the kernel reports.
+
+Since the log carries the dispatch order (2026-10-16), a replica that follows
+it does not shorten readiness waits this way: it makes the primary's retries
+when the log names them, and the replayed clock ends the wait on the same
+retry. See "Dispatch order, measured again". The rule still applies to sleeps
+and to a replay that abandoned the order.
 
 Zero names the machine rather than a process, for a host wait that belongs to
 no guest — the audio backlog discard and the vblank pump — and answers whether
@@ -601,6 +612,42 @@ two browser-only findings made that true:
   question: should the wire answer the release before the keeper stops its
   recording instead? The current order keeps the one-owner invariant, and
   the taker-side guard compensates.
+
+**A replica behind the seal is refused before it freezes (2026-10-18).** The
+hash's refusal was meant to cost nothing: the taker drains and asks again.
+It cost the replica. The seal's freeze leaves entries of its own at the end
+of the log — the syscall each process unwinds at, the capture arena it maps
+— and a replica repeats them only when its own freeze runs at the same place.
+A replica still behind froze early instead. Its unwind took the log turns of
+syscalls the primary made, the blocked call the freeze interrupted came back
+as a call the primary never made, and the replica ran on one syscall ahead
+until it parked on the order with no entry left. A task parked on the order
+has no syscall in flight, so no later freeze could reach it, and every hash
+timed out. In the browser this was the intermittent "hands a taken machine
+back … on disconnect" failure: about one run in a hundred under load,
+whenever the hand back's first hash found the replica behind. The seal now
+also reports `armSeq`, the log position where its freeze began, and a
+replica short of it is refused without a freeze. `promotion.test.ts`
+"refuses a replica short of the seal's freeze without freezing it" fails
+without the check, with the browser's symptom.
+
+**A replica holds at the seal's arm until its own freeze (2026-10-18).**
+The pre-check covered a replica behind the seal, not one ahead of it. The
+keeper posts `promotion_sealed` after the entries, so a live replica
+replayed the seal freeze's entries before it heard of the seal, without a
+freeze of its own. Measured on Node with two subshells looping on
+`: >/dev/null`: the seal reported `armSeq` 65289 and `seq` 65298, the
+replica stood at 65291 before its first hash, its loopers took the turns
+of their own unwind work, and the hash timed out with both loopers armed.
+The timed-out freeze also killed the replica's parent shell: its fork
+arena release failed with `munmap(...) failed errno=4` (EINTR). The seal's
+arm is now an entry of its own: the keeper records the `"replication seal"`
+host entry at `armSeq`, a replay holds every task there, the stall watch
+does not abandon the order for it, and the replica's freeze takes it once
+its unwind requests are armed. `promotion.test.ts` "hashes a replica sealed
+while two processes make syscalls" fails without the entry, with that
+timeout. Other captures of a recording machine record no such entry: no
+replica freeze repeats them.
 
 A taker that clicks **Disconnect** in the panel's sharing section, or leaves
 the session, hands the machine back first. The
@@ -954,6 +1001,141 @@ This measurement is for one guest: a single-process, single-threaded shell that
 reads the clock and nothing else. It says dispatch order does not diverge that
 workload. It does not say the kernel is deterministic, which is what step 10's
 conformance suite is for.
+
+### Dispatch order, measured again
+
+**Measured on 2026-10-16.** The filesystems now live in kernel memory, so the
+guest's shell and the `date` children it forks allocate in one kernel heap.
+Two replicas replaying one log then differed above the stack line in every
+pair measured: 1 to 147 bytes, in the heap around `0x195350` and `0x197070`.
+One differing word sat just before a dlmalloc free-chunk header, so the
+allocator's own state followed the order the syscalls were served in.
+
+A log of every host-to-kernel export call on each replica showed the same
+calls in a different order: the parent shell's syscalls interleaved with its
+child's exec and exit at different points. Recording the order closed it in
+three steps, each measured with that call log:
+
+1. Channel dispatches (`#runOrDeferChannelKernelEntry`). The children's exec
+   loading and exit cleanup still moved against the parent.
+2. Process deactivation, which the host runs when a process worker exits.
+3. Exec target prepare, size, read, and commit, which the host runs while it
+   loads a child's program.
+
+A fourth entry joined them on the Omarchy desktop: the vblank tick. Each tick
+moves the page flips the guests queued into their DRM fds' event rings, and a
+compositor reads that completion and answers its clients. The log names every
+tick of the primary's pump, and a replica runs a tick only where the log names
+one; its own pump's ticks do nothing.
+
+After the third step the call logs agree except for the reap query of a
+guest-owned child, which reads its parent pid and changes nothing. Kernel
+memory above the stack line matched in 5 of 5 runs of
+`replay-determinism.test.ts`, where it had differed in 6 of 6 before.
+
+Machine-level host queries (process enumeration, filesystem inspection) stay
+unordered: their callers need an answer at once, and a replica asks them at
+its own times. An entry that a caller needs at once and that changes the
+kernel heap is the next thing to order if a measurement finds one.
+
+Some dispatches are the host's own timing, and a replica cannot repeat them.
+The order treats each one as follows:
+
+- **Retries.** The host retries a blocked syscall on its own timers and
+  wakeups, and on readiness it does not share with a replica, such as a lazy
+  file arriving. The log marks them `retry: true`. A replica makes the logged
+  retry itself when the log names it: a wait parked on a host timer runs at
+  once, so the replica neither keeps the primary's pace nor waits for a
+  wakeup that a task held behind the retry would cause. A timed wait then ends
+  on the retry whose replayed clock reading passes its deadline, as it did on
+  the primary; the `aheadMs` shortcut applies only once the order is
+  abandoned. A replica passes over a logged retry for a task that has no
+  syscall in flight, because that task finished the syscall in fewer tries.
+  The exception is a task's first dispatch after the restore, which is the
+  syscall the capture caught in flight, issued afresh. A replica runs a retry
+  of its own without a turn when the task's next logged dispatch is a new
+  syscall, including when that syscall's turn is the one the log names next:
+  a retry never takes a turn the log records as a fresh dispatch.
+- **Host entries the log does not hold.** The replica runs them at once and
+  passes over the matching entry if it arrives later.
+- **Dispatches into an exited process.** musl's `SYS_EXIT` after
+  `SYS_EXIT_GROUP` only settles a transport handshake, and whether it lands
+  before the process is deactivated is a race. It is neither logged nor
+  ordered.
+- **Trailing host work at stop.** When the replay stops, retries and host
+  entries after the last logged syscall are passed over. The replica does that
+  work unordered once the order no longer applies.
+
+When the dispatch the log names next does not run for 5 s, the replica stops
+following the order for the rest of the replay and logs why. The replay stop
+result reports it as `dispatchOrderAbandoned`.
+
+The Omarchy replication spec reached that fallback within seconds of every
+join. The stall named Quickshell inside `posix_spawn`, but the spawn was a
+consequence. A per-syscall result log of Quickshell on both computers found
+four earlier differences, each closed at its own layer:
+
+1. **The GL context arrived after the restored process ran.** A restored
+   binding gets its WebGL2 context only when the embedder attaches the CRTC's
+   canvas. Quickshell's first `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` after the
+   restore returned 0 on the primary and `EIO` on the replica. The kernel
+   worker now holds the syscalls of a process whose captured context painted
+   a canvas until that context is rebuilt; a canvas that refuses WebGL2
+   releases them, with the boundary reported. The browser app showed the
+   arriving pane instead of the machine view while a replica joined, so the
+   canvas came only after the boot's 5 s display-size wait; the machine view
+   now stays laid out, hidden and inert, behind the arriving pane.
+2. **The viewer's own pointer reached its replica.** `sendPointerAbs` lacked
+   the replica guard `sendMouseEvent` has, and the display appeared under a
+   resting pointer when the join ended.
+3. **Pushed input arrived early.** A task's clock, random, GL or accept read
+   delivered every pushed decision up to that task's own next entry, which can
+   sit far past the dispatch the replica is serving, and moved the delivery
+   cursor there. The primary's `Ctrl+K` reached Quickshell 16 syscalls after
+   the restore instead of about 1,270. While the order holds, only the
+   dispatches deliver pushed decisions, between the same two dispatches as on
+   the primary.
+4. **Vblank ticks**, ordered as above.
+
+With the four closed, Quickshell's syscalls and their results match the
+primary's one for one, and the spec asserts that the viewer never stops
+following the order. The single-shell replay above and the Node live joins
+keep the order to the end.
+
+**Measured again on 2026-10-17.** Under load — six spec runs in parallel —
+the replica still left the order, in about one run in six, always inside
+Quickshell's `posix_spawn`. The same per-syscall result log found two more
+differences:
+
+5. **A retry took a fresh syscall's turn.** Quickshell's `poll` ended on a
+   logged retry on the primary and needed one try more on the replica. That
+   extra retry matched the task's next turn by pid and tid alone, so it took
+   the turn of the syscall after the `poll`, and every later Quickshell
+   syscall ran one turn early, until the spawn's resolution found its turn
+   gone. A retry now takes only a turn the log records as a retry, and runs
+   without a turn otherwise.
+6. **A keystroke arrived one dispatch late.** The replica delivers a pushed
+   decision when it takes the turn of the dispatch the decision preceded, and
+   that happens inside the dispatch's kernel entry, so the injection was
+   queued behind the dispatch itself. Quickshell's `read` of its keyboard
+   returned the `K` press and release together on the primary and one at a
+   time on the replica, so the replica made one `read` more. A dispatch whose
+   turn delivered decisions now queues itself behind their injections, on
+   the turn it already took.
+
+With both closed, the spec passed 12 of 12 runs one at a time and 36 of 36
+runs six at a time. The join stall recorded here before, a viewer left
+booting with no output, did not appear in about 250 runs on 2026-10-17.
+Under six-at-a-time load the viewer's boot failed three times: twice with
+"Timed out waiting for service worker control", a boot step of the page and
+not of replication, and once ending idle with no cause recorded.
+
+The cost is one log entry per syscall. A live replica's queue ring filled up
+with them, which exposed a writer defect: `ReplicationLogQueueWriter.end()`
+published the end with entries still pending, so a replica behind the primary
+read the end early. The writer now keeps offering pending entries after the
+end and publishes it once they are in the ring, or once the replica has taken
+nothing for 30 s.
 
 ## What a checkpoint carries across its mounts
 
