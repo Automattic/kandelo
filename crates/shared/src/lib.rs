@@ -215,7 +215,11 @@ pub mod process_layout;
 ///     guest resubmits it after the rewind. Machine restore uses the
 ///     host-handle enumerate and remap, host-timer re-arm, and PTY-index
 ///     kernel exports. docs/abi-versioning.md ("ABI 51") lists each.
-pub const ABI_VERSION: u32 = 51;
+/// 52: checkpoint coverage. Freshly built programs import
+///     `kernel.kernel_checkpoint_covered() -> i32`, which libc asks before it
+///     takes a checkpoint, and instrumented modules export the mutable `i32`
+///     global `__wpk_checkpoint_cover`. docs/abi-versioning.md ("ABI 52").
+pub const ABI_VERSION: u32 = 52;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -2950,6 +2954,23 @@ pub mod abi {
         params: &[],
         results: &[],
     };
+
+    /// Process-worker import the glue asks before it takes a checkpoint:
+    /// whether every frame on the calling thread's stack can be unwound.
+    ///
+    /// wasm-fork-instrument replaces each call with the calling frame's own
+    /// coverage, so only a module it never instrumented reaches the host.
+    pub const WPK_CHECKPOINT_COVERED_PROCESS_IMPORT: ProgramArtifactImport = ProgramArtifactImport {
+        module: "kernel",
+        name: "kernel_checkpoint_covered",
+        params: &[],
+        results: &[I32],
+    };
+
+    /// Mutable `i32` global an instrumented module exports to pass checkpoint
+    /// coverage from a covered caller to its covered callee. The host writes
+    /// 1 into it before it enters `_start` or a thread's start function.
+    pub const WPK_CHECKPOINT_COVER_EXPORT: &str = "__wpk_checkpoint_cover";
 
     pub const WPK_FORK_REQUIRED_IMPORTS: &[ProgramArtifactImport] = &[
         ProgramArtifactImport {

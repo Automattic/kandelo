@@ -33,6 +33,7 @@ use wasm_posix_shared::abi::{
 use wasmparser::{Parser, Payload};
 
 pub mod call_graph;
+pub mod checkpoint_cover;
 pub mod contract_inventory;
 pub mod facts;
 pub mod instrument;
@@ -260,10 +261,10 @@ struct SinkDecision {
 }
 
 /// Reduce the fork closure with the sink analysis when the module is in its
-/// supported scope: a main module whose only seed is `kernel.kernel_fork`.
-/// A checkpoint seed takes the module out of scope: a restored checkpoint
-/// returns through every frame, so no frame may be left above a boundary.
-/// With compiler facts ([`facts`]) the analysis also
+/// supported scope: a main module whose only fork seed is
+/// `kernel.kernel_fork`. A whole checkpoint closure takes the module out of
+/// scope: a restored checkpoint returns through every frame, so no frame may
+/// be left above a boundary. With compiler facts ([`facts`]) the analysis also
 /// covers modules that can dlopen; without them it does not. Facts the
 /// analysis cannot use fall back to the analysis without facts, never to
 /// anything less sound. Returns the boundary functions.
@@ -271,7 +272,7 @@ fn apply_sink_plan(
     module: &walrus::Module,
     opts: &Options,
     entry_imports: &[walrus::FunctionId],
-    boundary_imports: &[walrus::FunctionId],
+    whole_checkpoint_closure: bool,
     side_boundaries: bool,
     external_dynamic_dispatch: bool,
     facts_section: Option<(&facts::TakenFacts, &[u8])>,
@@ -288,7 +289,7 @@ fn apply_sink_plan(
         || side_boundaries
         || opts.entry_import != "kernel.kernel_fork"
         || entry_imports.len() != 1
-        || boundary_imports != entry_imports
+        || whole_checkpoint_closure
     {
         return decision;
     }
@@ -628,19 +629,19 @@ fn prepare_fork_path(
 /// tables, and segment lifetimes remain part of the child process image.
 pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     #[cfg(feature = "size-attribution")]
-    let mut module =
-        size_attribution::parse_for_report(input).context("failed to parse input wasm module")?;
+    let parse = size_attribution::parse_for_report;
     #[cfg(not(feature = "size-attribution"))]
-    let mut module =
-        walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
+    let parse = walrus::Module::from_buffer;
     #[cfg(feature = "size-attribution")]
-    let original_locals: Vec<FunctionId> = module
+    let original_locals: Vec<FunctionId> = parse(input)
+        .context("failed to parse input wasm module")?
         .funcs
         .iter()
         .filter(|function| matches!(function.kind, walrus::FunctionKind::Local(_)))
         .map(|function| function.id())
         .collect();
-    let Some(planned) = plan_fork(&mut module, input, opts)? else {
+    let (mut module, planned) = plan(input, opts, parse)?;
+    let Some(planned) = planned else {
         // WHY: this is a standalone executable with no route into fork or a
         // process-wide dynamic activation. Keeping the linker bytes avoids
         // imposing ABI 43's GC/exnref replay types on non-forking software
@@ -864,10 +865,44 @@ struct ForkPlan {
     decision: SinkDecision,
 }
 
+/// What [`plan_fork`] decided.
+enum Planned {
+    /// The module takes no part in a fork transaction.
+    Outside,
+    Fork(ForkPlan),
+    /// The covered frames span nearly the whole checkpoint closure: cover
+    /// every stack instead.
+    CoverEveryStack,
+}
+
+/// Parse `input` with `parse` and decide its fork path. `None`: the module
+/// takes no part in a fork transaction. Coverage rewrites the module, so a
+/// selection that does not pay off is planned again on a fresh parse.
+fn plan(
+    input: &[u8],
+    opts: &Options,
+    parse: fn(&[u8]) -> Result<walrus::Module>,
+) -> Result<(walrus::Module, Option<ForkPlan>)> {
+    for select_cover in [true, false] {
+        let mut module = parse(input).context("failed to parse input wasm module")?;
+        match plan_fork(&mut module, input, opts, select_cover)? {
+            Planned::Outside => return Ok((module, None)),
+            Planned::Fork(planned) => return Ok((module, Some(planned))),
+            Planned::CoverEveryStack => {}
+        }
+    }
+    unreachable!("a plan that covers every stack never falls back")
+}
+
 /// Validate `module`, remove its compiler facts, lower legacy dlopen and EH,
-/// and decide the instrumented set. `None`: the module takes no part in a
-/// fork transaction.
-fn plan_fork(module: &mut walrus::Module, input: &[u8], opts: &Options) -> Result<Option<ForkPlan>> {
+/// and decide the instrumented set. `select_cover`: select the covered
+/// frames when the module has names.
+fn plan_fork(
+    module: &mut walrus::Module,
+    input: &[u8],
+    opts: &Options,
+    select_cover: bool,
+) -> Result<Planned> {
     // The facts are a build input: never shipped, whatever the analysis uses.
     let facts_section = facts::take_section(module);
     reject_preinstrumented_artifact(module)?;
@@ -888,26 +923,78 @@ fn plan_fork(module: &mut walrus::Module, input: &[u8], opts: &Options) -> Resul
     let external_dynamic_dispatch = side_boundaries || has_dynamic_linker_imports;
     reject_reserved_unwind_import(module)?;
     if boundary_imports.is_empty() && !external_dynamic_dispatch {
-        return Ok(None);
+        return Ok(Planned::Outside);
     }
     let initial_fork_path =
         prepare_fork_path(module, &seeds, external_dynamic_dispatch).activations;
     legacy_eh::normalize_fork_path(module, &initial_fork_path)?;
+    let checkpoint_imports: Vec<walrus::FunctionId> = boundary_imports
+        .iter()
+        .copied()
+        .filter(|import| !entry_imports.contains(import))
+        .collect();
+    // Coverage instruments its call sites before the closures below are
+    // computed, so the tail-site coordinates they record name the final IR.
+    let covered = if checkpoint_imports.is_empty() {
+        None
+    } else if select_cover && module.funcs.iter().any(|function| function.name.is_some()) {
+        // Facts that do not describe this code (a tool rewrote it after the
+        // link) would select the wrong functions; select without them.
+        let facts = facts_section
+            .as_ref()
+            .filter(|taken| facts::verify_code_hash(taken, input).is_ok());
+        let covered = checkpoint_cover::plan(module, &checkpoint_imports, facts);
+        checkpoint_cover::inject(module, &covered)?;
+        Some(covered)
+    } else {
+        // Without names nothing can be selected, and a selection that does
+        // not pay off is not made: the whole checkpoint closure stays
+        // instrumented and every stack is covered.
+        checkpoint_cover::cover_every_stack(module);
+        None
+    };
     // Legacy EH normalization can replace instruction sequences. Recompute
     // the semantic closure afterwards so the exact fork-reaching tail-site
     // coordinates used by private-tag transport name the normalized IR.
-    let mut reaching = prepare_fork_path(module, &seeds, external_dynamic_dispatch);
+    let whole_checkpoint_closure = !checkpoint_imports.is_empty() && covered.is_none();
+    let fork_seeds = fork_boundary_seeds(module, &entry_imports, side_boundaries);
+    let mut reaching = prepare_fork_path(
+        module,
+        if whole_checkpoint_closure { &seeds } else { &fork_seeds },
+        external_dynamic_dispatch,
+    );
     let decision = apply_sink_plan(
         module,
         opts,
         &entry_imports,
-        &boundary_imports,
+        whole_checkpoint_closure,
         side_boundaries,
         external_dynamic_dispatch,
         facts_section.as_ref().map(|taken| (taken, input)),
         &mut reaching,
     );
-    Ok(Some(ForkPlan { side_boundaries, entry_imports, reaching, decision }))
+    if let Some(covered) = covered {
+        // A checkpoint unwinds the covered frames only. Fork boundaries do not
+        // stop it: the host continues a checkpoint unwind past a boundary.
+        let checkpoint = prepare_fork_path(module, &seeds, external_dynamic_dispatch);
+        let closure = checkpoint.activations.clone();
+        let kept = |function: &walrus::FunctionId| {
+            covered.contains(function) || checkpoint_imports.contains(function)
+        };
+        reaching.activations.extend(checkpoint.activations.into_iter().filter(kept));
+        reaching.control_reachable.extend(checkpoint.control_reachable.into_iter().filter(kept));
+        reaching.tail_call_landings.extend(
+            checkpoint.tail_call_landings.into_iter().filter(|site| covered.contains(&site.caller)),
+        );
+        reaching.tail_call_landings.sort_by_key(|site| {
+            (site.caller.index(), site.sequence.index(), site.instruction_index, site.kind)
+        });
+        reaching.tail_call_landings.dedup();
+        if !checkpoint_cover::pays_off(module, &reaching.activations, &closure) {
+            return Ok(Planned::CoverEveryStack);
+        }
+    }
+    Ok(Planned::Fork(ForkPlan { side_boundaries, entry_imports, reaching, decision }))
 }
 
 /// What [`instrument`] would instrument, without rewriting the module.
@@ -927,8 +1014,8 @@ pub struct SinkReport {
 /// Decide the instrumented set as [`instrument`] does and report it. A
 /// module outside any fork transaction reports an empty set.
 pub fn sink_report(input: &[u8], opts: &Options) -> Result<SinkReport> {
-    let mut module = walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
-    let Some(planned) = plan_fork(&mut module, input, opts)? else {
+    let (module, planned) = plan(input, opts, walrus::Module::from_buffer)?;
+    let Some(planned) = planned else {
         return Ok(SinkReport {
             source: PlanSource::Closure,
             instrumented: vec![],

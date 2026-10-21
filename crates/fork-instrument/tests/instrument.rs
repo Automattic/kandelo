@@ -2537,6 +2537,31 @@ fn fixed_main_and_pthread_resume_boundaries_dispatch_inside_wasm() {
 }
 
 #[test]
+fn pthread_resume_boundary_widens_the_slot_for_a_64_bit_table() {
+    let wat = r#"
+        (module
+          (import "kernel" "kernel_fork" (func $fork (result i32)))
+          (type $thread_ty (func (param i64) (result i64)))
+          (table $functions (export "__indirect_function_table") i64 1 1 funcref)
+          (elem (i64.const 0) $thread)
+          (func $thread (type $thread_ty) (param $arg i64) (result i64)
+            local.get $arg)
+          (func $_start (export "_start")
+            call $fork
+            drop)
+          (memory i64 1))
+    "#;
+    let bytes = instrument_wat(wat);
+    validate(&bytes);
+    let module = Module::from_buffer(&bytes).expect("instrumented module");
+    let thread_wrapper = func_by_name(&module, "wpk_fork_resume_thread");
+    let thread_ty = module.types.get(module.funcs.get(thread_wrapper).ty());
+    // The host passes the slot as an i32 whatever the table's index type.
+    assert_eq!(thread_ty.params(), &[ValType::I32, ValType::I64]);
+    assert_eq!(thread_ty.results(), &[ValType::I64]);
+}
+
+#[test]
 fn references_outside_the_fork_closure_remain_legal() {
     let bytes = instrument_wat(
         r#"

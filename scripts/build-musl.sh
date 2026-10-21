@@ -365,7 +365,7 @@ make install
 # ---------------------------------------------------------------
 echo "==> Building __main_void wrapper..."
 "$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS -c \
-    "$OVERLAY_DIR/src/env/__main_void.c" \
+    src/env/__main_void.c \
     -o "$SYSROOT/lib/__main_void.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/__main_void.o"
 
@@ -373,7 +373,7 @@ echo "==> Building __main_void wrapper..."
 # when __main_void is undefined (a non-standard `void main()`), keeping its
 # void-typed `main` reference out of every int-main program's link.
 "$CC" --target=$TARGET -O2 -c \
-    "$OVERLAY_DIR/src/env/__main_void_adapter.c" \
+    src/env/__main_void_adapter.c \
     -o "$SYSROOT/lib/__main_void_adapter.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/__main_void_adapter.o"
 
@@ -384,7 +384,7 @@ echo "==> Building setjmp runtime..."
 "$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS \
     -fwasm-exceptions -matomics -mbulk-memory \
     -I"$SYSROOT/include" \
-    -c "$OVERLAY_DIR/src/setjmp/$SETJMP_DIR/rt.c" \
+    -c "src/setjmp/$SETJMP_DIR/rt.c" \
     -o "$SYSROOT/lib/wasm_setjmp_rt.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/wasm_setjmp_rt.o"
 
@@ -395,7 +395,7 @@ echo "==> Building sigsetjmp helpers..."
 "$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS \
     -matomics -mbulk-memory \
     -I"$SYSROOT/include" \
-    -c "$OVERLAY_DIR/src/signal/$SIGSETJMP_DIR/sigsetjmp.c" \
+    -c "src/signal/$SIGSETJMP_DIR/sigsetjmp.c" \
     -o "$SYSROOT/lib/sigsetjmp_helpers.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/sigsetjmp_helpers.o"
 
@@ -421,6 +421,13 @@ rm -f "$SYSROOT/lib/ucontext_unsupported.o"
 # ---------------------------------------------------------------
 echo "==> Installing override headers..."
 bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$SYSROOT"
+
+# Every object's `kandelo.calltypes` facts name its source file, and every
+# program links them. Compile from the private tree with relative paths.
+if grep -aFq "$REPO_ROOT" "$SYSROOT/lib/libc.a"; then
+    echo "ERROR: libc.a contains producer path: $REPO_ROOT" >&2
+    exit 1
+fi
 
 # Do not label an output current if its sources changed during compilation.
 if [ "$INPUT_HASH" != "$(kandelo_musl_input_hash "$REPO_ROOT" "$ARCH" "$CC" "$CALLTYPES_PLUGIN")" ]; then

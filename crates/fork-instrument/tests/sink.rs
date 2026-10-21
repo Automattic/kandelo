@@ -250,3 +250,86 @@ fn vfork_caller_is_a_boundary_by_contract() {
     assert!(is_instrumented(&out, "spawn"));
     assert!(!is_instrumented(&out, "main"));
 }
+
+const SINK_EXIT_WITH_CHECKPOINT: &str = r#"
+(module
+  (import "kernel" "kernel_fork" (func $kernel_fork (param i32) (result i32)))
+  (import "kernel" "kernel_checkpoint" (func $kernel_checkpoint))
+  (memory 1)
+  (func $syscall (call $kernel_checkpoint))
+  (func $flush (call $syscall) (call $syscall) (call $syscall) (call $syscall))
+  (func $_exit (param i32) (call $flush) (call $syscall) (loop $l (br $l)))
+  (func $fork (result i32) (call $syscall) (call $kernel_fork (i32.const 0)))
+  (func $spawn (result i32) (local $pid i32)
+    (local.set $pid (call $fork))
+    (if (i32.eqz (local.get $pid)) (then (call $_exit (i32.const 127))))
+    (local.get $pid))
+  (func $read (call $syscall))
+  (func $main (export "_start") (call $read) (drop (call $spawn))))
+"#;
+
+fn checkpoint_options() -> Options {
+    Options { checkpoint_import: Some("kernel.kernel_checkpoint".into()), ..Options::default() }
+}
+
+fn exports_cover_token(bytes: &[u8]) -> bool {
+    Module::from_buffer(bytes)
+        .expect("parse")
+        .exports
+        .iter()
+        .any(|export| export.name == "__wpk_checkpoint_cover")
+}
+
+#[test]
+fn a_checkpoint_seed_covers_the_idle_path_and_keeps_the_sinks() {
+    let input = wat::parse_str(SINK_EXIT_WITH_CHECKPOINT).expect("wat parse");
+    let out = instrument(&input, &checkpoint_options()).expect("instrument");
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&out)
+        .expect("instrumented module validates");
+    assert_eq!(boundary_ordinals(&out).len(), 1, "spawn stays the fork boundary");
+    assert!(exports_cover_token(&out));
+    for name in ["main", "read", "syscall", "spawn", "fork"] {
+        assert!(is_instrumented(&out, name), "{name} is on the idle path or the fork path");
+    }
+}
+
+#[test]
+fn a_module_without_names_keeps_its_whole_checkpoint_closure() {
+    let mut module = Module::from_buffer(&wat::parse_str(SINK_EXIT_WITH_CHECKPOINT).expect("wat parse"))
+        .expect("parse");
+    for function in module.funcs.iter_mut() {
+        function.name = None;
+    }
+    let input = module.emit_wasm();
+    let out = instrument(&input, &checkpoint_options()).expect("instrument");
+    assert!(boundary_ordinals(&out).is_empty(), "a restored checkpoint returns through every frame");
+    assert!(!has_boundary_import(&out));
+    assert!(!has_sink_entry(&out));
+    assert!(!exports_cover_token(&out));
+}
+
+#[test]
+fn a_fork_path_that_spans_the_checkpoint_closure_covers_every_stack() {
+    let input = wat::parse_str(
+        r#"
+(module
+  (import "kernel" "kernel_fork" (func $kernel_fork (param i32) (result i32)))
+  (import "kernel" "kernel_checkpoint" (func $kernel_checkpoint))
+  (memory 1)
+  (func $syscall (call $kernel_checkpoint))
+  (func $fork (result i32) (call $syscall) (call $kernel_fork (i32.const 0)))
+  (func $read (call $syscall))
+  (func $main (export "_start") (call $read) (drop (call $fork))))
+"#,
+    )
+    .expect("wat parse");
+    let out = instrument(&input, &checkpoint_options()).expect("instrument");
+    wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
+        .validate_all(&out)
+        .expect("instrumented module validates");
+    assert!(!exports_cover_token(&out), "coverage would leave no frame uninstrumented");
+    for name in ["main", "read", "syscall", "fork"] {
+        assert!(is_instrumented(&out, name), "{name} is in the checkpoint closure");
+    }
+}

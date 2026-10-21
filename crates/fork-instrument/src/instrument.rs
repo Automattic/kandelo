@@ -5801,6 +5801,14 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
         let mut builder =
             FunctionBuilder::new(&mut module.types, &[ValType::I32, ptr_ty], &[ptr_ty]);
         builder.name(RESUME_THREAD_EXPORT.into());
+        // The host passes an i32 slot whatever the table's index type; a
+        // 64-bit table's call_indirect takes the slot as an i64.
+        let table64 = module.tables.get(function_table).table64;
+        let (call_index, call_index_ty) = if table64 {
+            (module.locals.add(ValType::I64), ValType::I64)
+        } else {
+            (table_index, ValType::I32)
+        };
         let wrapper = builder.finish(vec![table_index, argument], &mut module.funcs);
         let entry = local_mut(module, wrapper).entry_block();
         emit_resume_selected_call(
@@ -5816,14 +5824,25 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
                 // call_indirect consumes function parameters first and its
                 // table index last; the public wrapper keeps the ergonomic
                 // host ABI `(table_index, arg)`.
-                locals: vec![argument, table_index],
-                types: vec![ptr_ty, ValType::I32],
+                locals: vec![argument, call_index],
+                types: vec![ptr_ty, call_index_ty],
             },
             &no_scratch,
             memory,
             runtime,
             0,
         );
+        if table64 {
+            let widen = [
+                Instr::LocalGet(LocalGet { local: table_index }),
+                Instr::Unop(walrus::ir::Unop { op: UnaryOp::I64ExtendUI32 }),
+                Instr::LocalSet(LocalSet { local: call_index }),
+            ];
+            let instrs = &mut local_mut(module, wrapper).block_mut(entry).instrs;
+            for (at, instr) in widen.into_iter().enumerate() {
+                instrs.insert(at, (instr, InstrLocId::default()));
+            }
+        }
         module.exports.add(RESUME_THREAD_EXPORT, wrapper);
     }
 }

@@ -2612,6 +2612,10 @@ fn render_ts_module() -> String {
         render_ts_program_artifact_types(process_checkpoint_import.params),
         render_ts_program_artifact_types(process_checkpoint_import.results),
     ));
+    out.push_str(&format!(
+        "export const WPK_CHECKPOINT_COVER_EXPORT = {:?} as const;\n",
+        shared::abi::WPK_CHECKPOINT_COVER_EXPORT,
+    ));
     out.push_str(
         "/** The `env` imports the host supplies to user programs (besides the fork runtime's). */\n",
     );

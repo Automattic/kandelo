@@ -585,8 +585,11 @@ export async function prepareExecutableLinker(
   };
 }
 
-/** The import whose presence makes a module fork-capable (wasm-fork-instrument's default entry). */
-export const FORK_ENTRY_IMPORT = { module: 'kernel', field: 'kernel_fork' } as const;
+/** The imports that seed wasm-fork-instrument: the fork entry and the checkpoint entry. */
+const MIGRATION_SEED_IMPORTS = [
+  { module: 'kernel', field: 'kernel_fork' },
+  { module: 'kernel', field: 'kernel_checkpoint' },
+] as const;
 
 const KEEP_TARGET_FEATURES = '--keep-section=target_features';
 
@@ -623,26 +626,28 @@ function comparableLinker(jobs: string[][], linker: string[]): string[] {
 }
 
 /**
- * Does the linked module import the fork entry? Such a link skips clang's
- * scheduled post-link wasm-opt and keeps its facts.
+ * Does the linked module import a migration seed? Such a link skips clang's
+ * scheduled post-link wasm-opt and keeps its facts and names.
  *
- * WHY: a fork-capable module is instrumented next, and the instrumenter
- * analyses it with the per-function facts in its `kandelo.calltypes`
- * section. Binaryen's inlining would move call sites between functions and
- * make those facts describe the wrong functions, so the module must reach
- * the instrumenter as wasm-ld wrote it. The instrumenter runs wasm-opt
- * itself after instrumenting (wasm-fork-instrument --post-optimize). Any
- * other module needs no facts: it loses the section and gets exactly the
- * optimization clang would have run.
+ * WHY: a module that imports the fork or the checkpoint entry is
+ * instrumented next, and the instrumenter analyses it with the per-function
+ * facts in its `kandelo.calltypes` section and selects checkpoint frames by
+ * function name. Binaryen's inlining would move call sites between functions
+ * and make those facts describe the wrong functions, and without `-g` it
+ * drops the name section, so the module must reach the instrumenter as
+ * wasm-ld wrote it. The instrumenter runs wasm-opt itself after
+ * instrumenting (wasm-fork-instrument --post-optimize). Any other module
+ * needs no facts: it loses the section and gets exactly the optimization
+ * clang would have run.
  */
-export function isForkCapable(module: Uint8Array): boolean {
-  return importsFunction(module, FORK_ENTRY_IMPORT.module, FORK_ENTRY_IMPORT.field);
+function importsMigrationSeed(module: Uint8Array): boolean {
+  return MIGRATION_SEED_IMPORTS.some((seed) => importsFunction(module, seed.module, seed.field));
 }
 
 /**
  * Run the compiler driver. Compile-only invocations pass straight through.
  * A link is run with clang's post-link wasm-opt (if clang schedules one)
- * held back, then finished per isForkCapable().
+ * held back, then finished per importsMigrationSeed().
  */
 export async function runCompilerDriver(compiler: string, args: string[], linking: boolean): Promise<number> {
   if (!linking || args.includes('-###')) return runPassthrough(compiler, args);
@@ -698,7 +703,7 @@ export async function runCompilerDriver(compiler: string, args: string[], linkin
     // No readable output (e.g. -o /dev/null on some hosts): nothing to inspect.
   }
   const isWasm = module !== null && module.length >= 8 && module[0] === 0 && module[1] === 0x61;
-  if (isWasm && isForkCapable(module!)) {
+  if (isWasm && importsMigrationSeed(module!)) {
     writeFileSync(output, withCodeHashSection(module!));
     return 0;
   }
