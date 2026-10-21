@@ -3,7 +3,7 @@
 //! leaves each module with exactly the facts and optimization it needs.
 
 use crate::Result;
-use crate::arch::{WasmArch, target_triple};
+use crate::arch::{Language, WasmArch, target_triple};
 use crate::exec::{run, run_passthrough, run_without_env};
 use crate::flags::{
     MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
@@ -417,10 +417,26 @@ fn is_assembly_input(arg: &str) -> bool {
             .any(|ext| arg.ends_with(ext))
 }
 
+/// Does this executable link get the C++ standard library?
+///
+/// POSIX specifies no C++ compiler; every Unix C++ driver (g++, clang++)
+/// links the C++ library into C++ programs unless the caller opts out with
+/// `-nostdlib`, `-nodefaultlibs` or `-nostdlib++`. Clang would add exactly
+/// `-lc++ -lc++abi` for this target; the SDK's own `-nostdlib` (which owns
+/// the libc and CRT order) suppresses that, so the SDK adds them itself.
+fn links_cxx_stdlib(language: Language, filtered: &[String]) -> bool {
+    language == Language::Cxx
+        && !filtered
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "-nostdlib" | "-nodefaultlibs" | "-nostdlib++"))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn build_clang_args_internal(
     user_args: &[String],
     toolchain: &Toolchain,
     arch: WasmArch,
+    language: Language,
     executable_linker: Option<Preparation>,
     report_warnings: bool,
     classify_link: bool,
@@ -565,6 +581,12 @@ fn build_clang_args_internal(
             args.push(join(&lib, "crt1.o"));
             args.extend(parsed.forwarded_args.iter().cloned());
             args.extend(sdk_compile_args);
+            // Where clang puts the C++ library: after the caller's inputs,
+            // before libc. Side modules (above) take it from the program
+            // that loads them.
+            if links_cxx_stdlib(language, &filtered) {
+                args.extend(["-lc++", "-lc++abi"].map(String::from));
+            }
             args.push(join(&lib, "libc.a"));
             // LLD 22 made --stack-first the default; LLD 21 neither defaults to
             // it nor accepts --no-stack-first. Preserve Kandelo's established
@@ -587,6 +609,7 @@ pub fn build_clang_args(
     user_args: &[String],
     toolchain: &Toolchain,
     arch: WasmArch,
+    language: Language,
     executable_linker: Option<LinkerPreparation>,
     glue_objects: Option<&[String]>,
 ) -> Result<Vec<String>> {
@@ -594,6 +617,7 @@ pub fn build_clang_args(
         user_args,
         toolchain,
         arch,
+        language,
         executable_linker.map(Preparation::Prepared),
         true,
         false,
@@ -705,6 +729,7 @@ pub fn prepare_executable_linker(
     user_args: &[String],
     toolchain: &mut Toolchain,
     arch: WasmArch,
+    language: Language,
     compiler: &str,
 ) -> Result<Option<LinkerPreparation>> {
     let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
@@ -712,8 +737,9 @@ pub fn prepare_executable_linker(
         return Ok(None);
     }
 
-    let classification_args =
-        build_clang_args_internal(user_args, toolchain, arch, None, false, true, None)?;
+    let classification_args = build_clang_args_internal(
+        user_args, toolchain, arch, language, None, false, true, None,
+    )?;
     let classification = run(compiler, &with_trace_flag(&classification_args), None);
     if classification.exit_code != 0 {
         return Err(format!(
@@ -736,6 +762,7 @@ pub fn prepare_executable_linker(
         user_args,
         toolchain,
         arch,
+        language,
         Some(Preparation::MeasureOnly),
         false,
         false,
@@ -936,22 +963,23 @@ pub fn may_compile(user_args: &[String], arch: WasmArch) -> Result<bool> {
 }
 
 /// The shared entry of wasm{32,64}posix-cc and -c++: the exit status.
-pub fn compiler_main(
-    arch: WasmArch,
-    select_compiler: fn(&Toolchain) -> String,
-    user_args: &[String],
-) -> Result<i32> {
+pub fn compiler_main(arch: WasmArch, language: Language, user_args: &[String]) -> Result<i32> {
     let mut toolchain = crate::toolchain::resolve_toolchain(arch)?;
-    let compiler = select_compiler(&toolchain);
+    let compiler = match language {
+        Language::C => toolchain.cc.clone(),
+        Language::Cxx => toolchain.cxx.clone(),
+    };
     if may_compile(user_args, arch)? {
         toolchain.calltypes_plugin = Some(crate::plugin::ensure_calltypes_plugin(&toolchain.cc)?);
     }
-    let executable_linker = prepare_executable_linker(user_args, &mut toolchain, arch, &compiler)?;
+    let executable_linker =
+        prepare_executable_linker(user_args, &mut toolchain, arch, language, &compiler)?;
     let glue = compile_executable_glue(user_args, &toolchain, arch, executable_linker)?;
     let args = build_clang_args(
         user_args,
         &toolchain,
         arch,
+        language,
         executable_linker,
         glue.as_ref().map(|(objects, _)| objects.as_slice()),
     )?;

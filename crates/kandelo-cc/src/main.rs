@@ -10,11 +10,10 @@
 //!                                         building it if needed (used by
 //!                                         builds that call clang directly)
 
-use kandelo_cc::arch::{WasmArch, detect};
+use kandelo_cc::arch::{Language, WasmArch, detect};
 use kandelo_cc::driver::compiler_main;
 use kandelo_cc::flags::CallTypesPlugin;
 use kandelo_cc::plugin::ensure_calltypes_plugin;
-use kandelo_cc::toolchain::Toolchain;
 use kandelo_cc::{Result, tools};
 use std::process::ExitCode;
 
@@ -37,11 +36,9 @@ fn tool_name(name: &str) -> &str {
 }
 
 fn run_tool(tool: &str, arch: WasmArch, args: &[String]) -> Option<Result<i32>> {
-    let cc: fn(&Toolchain) -> String = |toolchain| toolchain.cc.clone();
-    let cxx: fn(&Toolchain) -> String = |toolchain| toolchain.cxx.clone();
     Some(match tool {
-        "cc" => compiler_main(arch, cc, args),
-        "c++" => compiler_main(arch, cxx, args),
+        "cc" => compiler_main(arch, Language::C, args),
+        "c++" => compiler_main(arch, Language::Cxx, args),
         "ar" => tools::llvm_passthrough("llvm-ar", args),
         "ranlib" => tools::llvm_passthrough("llvm-ranlib", args),
         "nm" => tools::llvm_passthrough("llvm-nm", args),

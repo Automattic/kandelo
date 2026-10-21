@@ -2,7 +2,7 @@
 //! `-###` traces and LLVM response files. Ported from sdk/test/cc.test.ts.
 
 use kandelo_cc::Result;
-use kandelo_cc::arch::WasmArch;
+use kandelo_cc::arch::{Language, WasmArch};
 use kandelo_cc::driver::{
     LinkerPreparation, build_clang_args, build_glue_compile_args, decode_llvm_response_file,
     glue_sources, linker_args_from_clang_trace, working_directory_from_clang_trace,
@@ -40,6 +40,7 @@ fn try_build_with(user_args: &[&str], toolchain: &Toolchain, stack: u64) -> Resu
         &strings(user_args),
         toolchain,
         WasmArch::Wasm32,
+        Language::C,
         executable_link(stack),
         None,
     )
@@ -212,6 +213,7 @@ fn links_precompiled_glue_objects_in_place_of_the_glue_sources() {
         &strings(&["main.o", "-o", "out.wasm"]),
         &toolchain(),
         WasmArch::Wasm32,
+        Language::C,
         executable_link(8 * MIB),
         Some(&objects),
     )
@@ -336,6 +338,7 @@ fn uses_an_architecture_specific_stable_identity_for_the_wasm64_sysroot() {
         &strings(&["-c", "foo.c", "-o", "foo.o"]),
         &toolchain(),
         WasmArch::Wasm64,
+        Language::C,
         None,
         None,
     )
@@ -359,6 +362,7 @@ fn preserves_pthread_compiler_semantics_while_filtering_lpthread() {
         &strings(&["-c", "-pthread", "-lpthread", "-fPIC", "foo.c"]),
         &toolchain(),
         WasmArch::Wasm32,
+        Language::C,
         None,
         None,
     )
@@ -375,6 +379,7 @@ fn honors_an_authoritative_no_link_trace_for_direct_and_response_file_inputs() {
             &strings(user_args),
             &toolchain(),
             WasmArch::Wasm32,
+            Language::C,
             Some(LinkerPreparation::NoLink),
             None,
         )
@@ -432,6 +437,7 @@ fn rejects_executable_link_arguments_before_wasm_ld_is_versioned() {
         &strings(&["foo.c", "-o", "foo.wasm"]),
         &unversioned,
         WasmArch::Wasm32,
+        Language::C,
         None,
         None,
     )
@@ -445,6 +451,7 @@ fn rejects_executable_links_without_the_matching_clang_trace_preparation() {
         &strings(&["foo.c", "-o", "foo.wasm"]),
         &toolchain(),
         WasmArch::Wasm32,
+        Language::C,
         None,
         None,
     )
@@ -629,4 +636,68 @@ fn uses_lld_21_defaults_without_passing_its_unsupported_negative_option() {
     let args = try_build_with(&["foo.c", "-o", "foo.wasm"], &lld_21, 8 * MIB).unwrap();
 
     assert!(!has(&args, "-Wl,--no-stack-first"));
+}
+
+fn build_cxx(user_args: &[&str]) -> Vec<String> {
+    build_clang_args(
+        &strings(user_args),
+        &toolchain(),
+        WasmArch::Wasm32,
+        Language::Cxx,
+        executable_link(8 * MIB),
+        None,
+    )
+    .unwrap()
+}
+
+fn position(args: &[String], value: &str) -> usize {
+    args.iter()
+        .position(|a| a == value)
+        .unwrap_or_else(|| panic!("{value} missing from {args:?}"))
+}
+
+#[test]
+fn cxx_executable_links_get_the_cxx_library_between_the_callers_inputs_and_libc() {
+    // POSIX names no C++ compiler; every Unix C++ driver links its C++
+    // library by default, and clang's choice for this target is these two.
+    let args = build_cxx(&["main.cpp", "-lfoo", "-o", "app.wasm"]);
+    let (lcxx, lcxxabi) = (position(&args, "-lc++"), position(&args, "-lc++abi"));
+    assert_eq!(lcxxabi, lcxx + 1);
+    assert!(position(&args, "-lfoo") < lcxx);
+    assert!(lcxxabi < position(&args, "/tmp/sysroot/lib/libc.a"));
+}
+
+#[test]
+fn cxx_library_is_not_added_to_c_links_side_modules_or_opted_out_links() {
+    assert!(!has(&build(&["main.c", "-o", "app.wasm"]), "-lc++"));
+    for opt_out in ["-nostdlib", "-nodefaultlibs", "-nostdlib++"] {
+        assert!(
+            !has(
+                &build_cxx(&["main.cpp", opt_out, "-o", "app.wasm"]),
+                "-lc++"
+            ),
+            "{opt_out}"
+        );
+    }
+    let side = build_clang_args(
+        &strings(&["-shared", "-fPIC", "lib.cpp", "-o", "lib.so"]),
+        &toolchain(),
+        WasmArch::Wasm32,
+        Language::Cxx,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(!has(&side, "-lc++"));
+    // Compile-only invocations link nothing.
+    let compile = build_clang_args(
+        &strings(&["-c", "a.cpp"]),
+        &toolchain(),
+        WasmArch::Wasm32,
+        Language::Cxx,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(!has(&compile, "-lc++"));
 }
