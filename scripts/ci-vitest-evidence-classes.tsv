@@ -158,6 +158,7 @@ host/test/getgroups-large-buffer.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
+host/test/guest-sdk-equivalence.test.ts	prepared-product
 host/test/guest-spawn-overlay-program.test.ts	prepared-product
 host/test/heap-safepoint.test.ts	prepared-product
 host/test/host-adapter-manifest.test.ts	source-only
