@@ -180,7 +180,6 @@ ${extraLocations}
 
 function populatePhpFpmConfig(
   fs: VfsImageFilesystem,
-  opcache: Uint8Array,
 ): void {
   ensureDirRecursive(fs, "/etc/php-fpm.d");
   ensureDirRecursive(fs, "/var/log");
@@ -214,14 +213,7 @@ request_slowlog_trace_depth = 0
   // validate_timestamps=0 is safe because VFS files don't change at
   // runtime.
   ensureDirRecursive(fs, "/usr/lib/php/extensions");
-  writeVfsBinary(
-    fs,
-    "/usr/lib/php/extensions/opcache.so",
-    opcache,
-  );
-  const phpIni = `zend_extension=/usr/lib/php/extensions/opcache.so
-
-curl.cainfo=/etc/ssl/certs/ca-certificates.crt
+  const phpIni = `curl.cainfo=/etc/ssl/certs/ca-certificates.crt
 openssl.cafile=/etc/ssl/certs/ca-certificates.crt
 
 [opcache]
@@ -343,7 +335,6 @@ export interface WordPressVfsImageBuildInputs {
   sqliteDirectory: string;
   nginx: Uint8Array;
   phpFpm: Uint8Array;
-  opcache: Uint8Array;
   msmtpd: Uint8Array;
   dinit?: DinitBinaryInputs;
   buildPrograms?: {
@@ -366,7 +357,7 @@ export async function buildWordPressVfsImage(
 
   console.log("Populating WordPress service configs...");
   populateNginxConfig(fs);
-  populatePhpFpmConfig(fs, inputs.opcache);
+  populatePhpFpmConfig(fs);
   populateSmtpCaptureConfig(fs);
   populateWordPressFirstBootSecrets(fs);
 
@@ -467,9 +458,6 @@ async function main(): Promise<void> {
     phpFpm: new Uint8Array(readFileSync(phpRoot === undefined
       ? resolveBinary("programs/php/php-fpm.wasm")
       : join(phpRoot, "php-fpm.wasm"))),
-    opcache: new Uint8Array(readFileSync(phpRoot === undefined
-      ? resolveBinary("programs/php/opcache.so")
-      : join(phpRoot, "opcache.so"))),
     msmtpd: new Uint8Array(readFileSync(msmtpdRoot === undefined
       ? resolveBinary("programs/msmtpd.wasm")
       : join(msmtpdRoot, "msmtpd.wasm"))),

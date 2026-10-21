@@ -236,6 +236,14 @@ if ! grep -q 'ZEND_USE_ASM_ARITHMETIC 0' Zend/zend_multiply.h 2>/dev/null; then
     fi
 fi
 
+# PHP 8.5's pcntl header embeds siginfo_t but does not include its owner.
+# musl exposes that type with the feature macros supplied to every build below.
+if ! grep -q 'kandelo-pcntl-siginfo' ext/pcntl/php_pcntl.h; then
+    sed -i.bak '/#include "php_version.h"/a\
+#include <signal.h> /* kandelo-pcntl-siginfo */' ext/pcntl/php_pcntl.h
+    rm -f ext/pcntl/php_pcntl.h.bak
+fi
+
 # When ZEND_MAX_EXECUTION_TIMERS is enabled, zend_executor_globals embeds a
 # `struct sigaction`. Some translation units include zend_globals.h without
 # having included <signal.h> first, leaving that struct incomplete. Include the
@@ -307,7 +315,9 @@ s = s.replace(
 )
 s = s.replace(
     "#elif defined(ZEND_MAX_EXECUTION_TIMERS)\n"
-    "\tzend_max_execution_timer_settime(seconds);\n",
+    "\tif (seconds > 0) {\n"
+    "\t\tzend_max_execution_timer_settime(seconds);\n"
+    "\t}\n",
     "#elif defined(ZEND_MAX_EXECUTION_TIMERS)\n"
     "# if defined(__wasm32__) || defined(__wasm64__)\n"
     "\t/*\n"
@@ -322,7 +332,9 @@ s = s.replace(
     "\t\t__wasm_posix_vm_interrupt_after(&EG(timed_out), &EG(vm_interrupt), seconds);\n"
     "\t}\n"
     "# endif\n"
-    "\tzend_max_execution_timer_settime(seconds);\n",
+    "\tif (seconds > 0) {\n"
+    "\t\tzend_max_execution_timer_settime(seconds);\n"
+    "\t}\n",
 )
 s = s.replace(
     "#else\n"
@@ -496,7 +508,9 @@ replace_once(
     "\t\t__wasm_posix_vm_interrupt_after(&EG(timed_out), &EG(vm_interrupt), seconds);\n"
     "\t}\n"
     "# endif\n"
-    "\tzend_max_execution_timer_settime(seconds);\n",
+    "\tif (seconds > 0) {\n"
+    "\t\tzend_max_execution_timer_settime(seconds);\n"
+    "\t}\n",
     "#elif defined(ZEND_MAX_EXECUTION_TIMERS)\n"
     "# if defined(__wasm32__) || defined(__wasm64__)\n"
     "\t/*\n"
@@ -513,7 +527,9 @@ replace_once(
     "\t\t__wasm_posix_vm_interrupt_after(&EG(timed_out), &EG(vm_interrupt), seconds);\n"
     "\t}\n"
     "# endif\n"
-    "\tzend_max_execution_timer_settime(seconds);\n",
+    "\tif (seconds > 0) {\n"
+    "\t\tzend_max_execution_timer_settime(seconds);\n"
+    "\t}\n",
     "wasm timeout scheduling",
 )
 
@@ -558,11 +574,15 @@ replace_once(
 )
 
 replace_once(
-    "#elif ZEND_MAX_EXECUTION_TIMERS\n"
-    "\tzend_max_execution_timer_settime(0);\n"
+    "#elif defined(ZEND_MAX_EXECUTION_TIMERS)\n"
+    "\tif (EG(timeout_seconds)) {\n"
+    "\t\tzend_max_execution_timer_settime(0);\n"
+    "\t}\n"
     "#elif defined(HAVE_SETITIMER)\n",
-    "#elif ZEND_MAX_EXECUTION_TIMERS\n"
-    "\tzend_max_execution_timer_settime(0);\n"
+    "#elif defined(ZEND_MAX_EXECUTION_TIMERS)\n"
+    "\tif (EG(timeout_seconds)) {\n"
+    "\t\tzend_max_execution_timer_settime(0);\n"
+    "\t}\n"
     "# if defined(__wasm32__) || defined(__wasm64__)\n"
     "\tzend_wasm_clear_timeout_deadlines();\n"
     "\t__wasm_posix_vm_interrupt_after(&EG(timed_out), &EG(vm_interrupt), 0);\n"
@@ -610,117 +630,41 @@ p.write_text(s.replace(block, replacement, 1))
 PY
 fi
 
-# PHP's DBA extension keeps an in-process lock guard because some platforms
-# allow same-process read/write opens that the extension wants to reject. For
-# DB-lock mode, upstream replaces info->path with the stream's opened_path only
-# after the first guard check. On wasm-posix this means a later relative-path
-# open can miss an already-open canonical-path handle and report "Read during
-# write: allowed" for the built-in flatfile/inifile handlers. Repeat the guard
-# after DB-lock path canonicalization, before taking the stream lock.
+# Upstream DBA canonicalizes a DB-lock path after its initial same-file lock
+# check. Recheck the resolved path before acquiring the lock, retaining the
+# existing Kandelo fix against PHP 8.5's object-based connection representation.
+# This repairs the upstream path comparison, not the kernel's locking behavior.
 if [ -f ext/dba/dba.c ] \
    && ! grep -q "wasm-dba-db-lock-path-conflict patch applied" ext/dba/dba.c; then
     python3 - <<'PY'
 from pathlib import Path
-
 p = Path("ext/dba/dba.c")
 s = p.read_text()
-
-find_func = '''static dba_info *php_dba_find(const zend_string *path)
+anchor = "static zend_always_inline zend_string *php_dba_zend_string_dup_safe("
+helper = '''static bool php_dba_lock_conflicts(const dba_info *info, int lock_mode)
 {
-\tzend_resource *le;
-\tdba_info *info;
-\tzend_long numitems, i;
-
-\tnumitems = zend_hash_next_free_element(&EG(regular_list));
-\tfor (i=1; i<numitems; i++) {
-\t\tif ((le = zend_hash_index_find_ptr(&EG(regular_list), i)) == NULL) {
-\t\t\tcontinue;
-\t\t}
-\t\tif (le->type == le_db || le->type == le_pdb) {
-\t\t\tinfo = (dba_info *)(le->ptr);
-\t\t\tif (zend_string_equals(path, info->path)) {
-\t\t\t\treturn (dba_info *)(le->ptr);
-\t\t\t}
-\t\t}
-\t}
-
-\treturn NULL;
-}
-/* }}} */
-'''
-
-helper = find_func + '''
-
-static bool php_dba_lock_conflicts(const dba_info *info, int lock_mode)
-{
-\tdba_info *other;
-
-\tif ((other = php_dba_find(info->path)) == NULL) {
+\tdba_info *other = php_dba_find(info->path);
+\tif (other == NULL) {
 \t\treturn false;
 \t}
-
-\treturn ( (lock_mode&LOCK_EX)        && (other->lock.mode&(LOCK_EX|LOCK_SH)) )
-\t    || ( (other->lock.mode&LOCK_EX) && (lock_mode&(LOCK_EX|LOCK_SH))        );
+\treturn ((lock_mode & LOCK_EX) && (other->lock.mode & (LOCK_EX | LOCK_SH)))
+\t    || ((other->lock.mode & LOCK_EX) && (lock_mode & (LOCK_EX | LOCK_SH)));
 }
 /* wasm-dba-db-lock-path-conflict patch applied */
+
 '''
-
-if find_func not in s:
-    raise SystemExit("DBA lock patch: could not find php_dba_find")
-s = s.replace(find_func, helper, 1)
-
-s = s.replace(
-    "\tdba_info *info, *other;\n",
-    "\tdba_info *info;\n",
-    1,
+if s.count(anchor) != 1:
+    raise SystemExit("DBA lock patch: connection helper anchor not found")
+s = s.replace(anchor, helper + anchor, 1)
+anchor = "\t\tif (!error && !php_stream_supports_lock(connection->info->lock.fp)) {\n"
+recheck = (
+    "\t\tif (!error && is_db_lock && (hptr->flags & DBA_LOCK_ALL) && php_dba_lock_conflicts(connection->info, lock_mode)) {\n"
+    "\t\t\terror = \"Unable to establish lock (database file already open)\";\n"
+    "\t\t}\n"
 )
-
-old_check = '''\tif (hptr->flags & DBA_LOCK_ALL) {
-\t\tif ((other = php_dba_find(info->path)) != NULL) {
-\t\t\tif (   ( (lock_mode&LOCK_EX)        && (other->lock.mode&(LOCK_EX|LOCK_SH)) )
-\t\t\t    || ( (other->lock.mode&LOCK_EX) && (lock_mode&(LOCK_EX|LOCK_SH))        )
-\t\t\t   ) {
-\t\t\t\terror = "Unable to establish lock (database file already open)"; /* force failure exit */
-\t\t\t}
-\t\t}
-\t}
-'''
-
-new_check = '''\tif ((hptr->flags & DBA_LOCK_ALL) && php_dba_lock_conflicts(info, lock_mode)) {
-\t\terror = "Unable to establish lock (database file already open)"; /* force failure exit */
-\t}
-'''
-
-if old_check not in s:
-    raise SystemExit("DBA lock patch: could not find initial conflict check")
-s = s.replace(old_check, new_check, 1)
-
-old_after_stream_open = '''\t\tif (!info->lock.fp) {
-\t\t\tdba_close(info);
-\t\t\t/* stream operation already wrote an error message */
-\t\t\tFREE_PERSISTENT_RESOURCE_KEY();
-\t\t\tRETURN_FALSE;
-\t\t}
-\t\tif (!error && !php_stream_supports_lock(info->lock.fp)) {
-'''
-
-new_after_stream_open = '''\t\tif (!info->lock.fp) {
-\t\t\tdba_close(info);
-\t\t\t/* stream operation already wrote an error message */
-\t\t\tFREE_PERSISTENT_RESOURCE_KEY();
-\t\t\tRETURN_FALSE;
-\t\t}
-\t\tif (!error && is_db_lock && (hptr->flags & DBA_LOCK_ALL) && php_dba_lock_conflicts(info, lock_mode)) {
-\t\t\terror = "Unable to establish lock (database file already open)"; /* force failure exit */
-\t\t}
-\t\tif (!error && !php_stream_supports_lock(info->lock.fp)) {
-'''
-
-if old_after_stream_open not in s:
-    raise SystemExit("DBA lock patch: could not find post-stream-open lock block")
-s = s.replace(old_after_stream_open, new_after_stream_open, 1)
-
-p.write_text(s)
+if s.count(anchor) != 1:
+    raise SystemExit("DBA lock patch: post-stream-open lock block not found")
+p.write_text(s.replace(anchor, recheck + anchor, 1))
 PY
 fi
 
@@ -760,6 +704,23 @@ if marker not in s:
     raise SystemExit("opcache file-cache-only guard: startup marker not found")
 p.write_text(s.replace(marker, guard, 1))
 PY
+fi
+
+# PHP 8.5 always includes OPcache. Keep caching opt-in on Kandelo because
+# its default shared-memory backend requires unsupported cross-process
+# MAP_SHARED. Images explicitly enable the supported file-cache-only backend;
+# the startup guard above still rejects an explicitly enabled SHM backend.
+if ! grep -q 'kandelo-opcache-opt-in' ext/opcache/zend_accelerator_module.c; then
+    python3 - <<'PY_DEFAULT'
+from pathlib import Path
+p = Path("ext/opcache/zend_accelerator_module.c")
+s = p.read_text()
+old = 'STD_PHP_INI_BOOLEAN("opcache.enable"             , "1",'
+if s.count(old) != 1:
+    raise SystemExit("OPcache default patch: enable directive not found")
+s = s.replace(old, '/* kandelo-opcache-opt-in */\n\t' + old.replace('"1"', '"0"'), 1)
+p.write_text(s)
+PY_DEFAULT
 fi
 
 # Upstream reproducibility defect (not a Kandelo gap): opcache's file-cache
@@ -814,14 +775,85 @@ p.write_text(s)
 PY
 fi
 
+# User-function defaults live in ZEND_RECV_INIT opcodes, not arg_info's
+# default_value member (which is for internal functions). The compiler leaves
+# that unused member uninitialized. Clear it only in the serialized op_array
+# copy so allocator free-list bytes cannot enter reproducible cache files.
+if ! grep -q 'kandelo-opcache-user-arg-default' ext/opcache/zend_file_cache.c; then
+    python3 - <<'PY_ARG_INFO'
+from pathlib import Path
+p = Path("ext/opcache/zend_file_cache.c")
+s = p.read_text()
+old = "\t\t\t\tzend_file_cache_serialize_type(&p->type, script, info, buf);\n\t\t\t\tp++;"
+new = (
+    "\t\t\t\tp->default_value = NULL; /* kandelo-opcache-user-arg-default */\n" + old
+)
+if s.count(old) != 1:
+    raise SystemExit("OPcache argument metadata patch: serializer anchor not found")
+p.write_text(s.replace(old, new, 1))
+PY_ARG_INFO
+fi
+
+# Upstream's shared-memory persistence path zeroes its arena, but the
+# file-cache path does not. PHP 8.5's allocator leaves nonzero free-list state
+# in alignment gaps, which is then copied into .bin files. Initialize the
+# file-cache arena too: these unused bytes have no runtime meaning and must
+# not make identical prewarmed images differ between processes.
+if ! grep -q 'kandelo-opcache-zero-file-arena' ext/opcache/ZendAccelerator.c; then
+    python3 - <<'PY_ARENA'
+from pathlib import Path
+p = Path("ext/opcache/ZendAccelerator.c")
+s = p.read_text()
+old = "\tzend_shared_alloc_clear_xlat_table();\n\n\t/* Copy into memory block */"
+new = (
+    "\t/* kandelo-opcache-zero-file-arena: match the SHM persistence path. */\n"
+    "\tmemset(ZCG(mem), 0, memory_used);\n\n" + old
+)
+if s.count(old) != 1:
+    raise SystemExit("OPcache file arena patch: persistence anchor not found")
+p.write_text(s.replace(old, new, 1))
+PY_ARENA
+fi
+
 # PHP's configure enables Zend max-execution timers only on Linux hosts even
 # when --enable-zend-max-execution-timers is explicitly requested. Allow Wasm
 # through that compile-time gate because the target-specific implementation
 # above replaces Linux SIGEV_THREAD_ID with Kandelo's cooperative host hook;
 # this does not claim that native thread-targeted timer delivery is available.
 if [ -f configure ] && ! grep -q "wasm-zend-max-execution-timers patch applied" configure; then
-    perl -i.bak -0pe "s/  \\*linux\\*\\) :\\n     ;; #\\(\\n  \\*\\) :\\n    ZEND_MAX_EXECUTION_TIMERS='no' ;;/  *linux*|wasm32*|wasm64*) :\\n     ;; #(\\n  *) :\\n    ZEND_MAX_EXECUTION_TIMERS='no' ;; # wasm-zend-max-execution-timers patch applied/" configure
-    rm -f configure.bak
+    python3 - <<'PY'
+from pathlib import Path
+p = Path("configure")
+s = p.read_text()
+old = "  *linux*|*freebsd*) :\n     ;; #(\n  *) :\n    ZEND_MAX_EXECUTION_TIMERS=no ;;\nesac\n"
+new = old.replace("*linux*|*freebsd*", "*linux*|*freebsd*|wasm32*")
+if s.count(old) != 1:
+    raise SystemExit("Zend timer configure patch: platform gate not found")
+p.write_text(s.replace(old, new + "# wasm-zend-max-execution-timers patch applied\n", 1))
+PY
+fi
+
+# PHP 8.5's packet-socket branches use sockaddr_ll whenever AF_PACKET is
+# defined, but only include Linux's UAPI header. Musl owns the same declaration
+# in <netpacket/packet.h>; include that available header without claiming Linux
+# target identity. Unsupported socket families still fail through socket().
+if ! grep -q "kandelo-sockets-netpacket" ext/sockets/sockets.c; then
+    python3 - <<'PY_PACKET'
+from pathlib import Path
+p = Path("ext/sockets/sockets.c")
+s = p.read_text()
+old = "#  include <linux/if_packet.h>\n# endif\n"
+new = """#  include <linux/if_packet.h>
+# elif defined(__has_include)
+#  if __has_include(<netpacket/packet.h>)
+#   include <netpacket/packet.h> /* kandelo-sockets-netpacket */
+#  endif
+# endif
+"""
+if s.count(old) != 1:
+    raise SystemExit("Sockets packet header patch: include anchor not found")
+p.write_text(s.replace(old, new, 1))
+PY_PACKET
 fi
 
 # ext/sockets gates its Linux classic-BPF socket option implementation only on
@@ -897,23 +929,15 @@ if [ ! -f Makefile ]; then
     # and the whole PHP build aborted at "Package requirements
     # (libxml-2.0 >= 2.9.0) were not met").
     #
-    # -ldl: pulls libc/glue/dlopen.c into the link, providing the `dlopen`
-    # symbol PHP uses to load Zend extensions like opcache.so. Without
-    # this, PHP runs but reports "Dynamic loading not supported" when
-    # `zend_extension=opcache` is set.
+    # -ldl: pulls libc/glue/dlopen.c into the link so normal shared PHP
+    # extensions can load through extension=... INI directives.
     #
-    # -Wl,--export-all: exports every defined symbol from php.wasm so
-    # opcache.so (a side module loaded via dlopen) can resolve its
-    # imports against PHP main. Without this only the SDK's hand-picked
-    # `__heap_base`/`__tls_base`/etc. are exported and opcache.so fails
-    # to instantiate ("Import #N env.<sym>: function import requires a
-    # callable"). The size cost (~5 MB) is worth the runtime correctness.
+    # -Wl,--export-all: exposes PHP's defined symbols to curl.so, phar.so,
+    # zip.so, zend_test.so, and intl.so. Each module resolves its imports
+    # against the executable so libraries share one process-global state.
     #
-    # -u<sym>: force the linker to pull these libc symbols out of
-    # libc.a even though PHP itself doesn't call them. opcache.so
-    # imports them (some are sandbox/security helpers it never actually
-    # invokes on our wasm port — but the import has to resolve at
-    # instantiation time).
+    # -u<sym>: preserve the existing libc export closure that shared
+    # extensions need even when the executable does not call every symbol.
     #
     # curl.so absorbs libcurl.a but deliberately leaves libc, zlib, and
     # OpenSSL unresolved so the process keeps one copy of each library's
@@ -1014,7 +1038,6 @@ if [ ! -f Makefile ]; then
         --disable-phpdbg \
         --enable-cli \
         --enable-fpm \
-        --enable-opcache \
         --enable-intl=shared \
         --enable-mbstring \
         --disable-mbregex \
@@ -1117,12 +1140,12 @@ if [ ! -f Makefile ]; then
     # Patch libtool to allow shared-library builds. PHP's configure
     # detects our wasm cross-compile target as not supporting shared
     # libraries (`build_libtool_libs=no`) — when libtool then sees
-    # `-shared` in opcache's link command it calls
+    # `-shared` in an extension's link command it calls
     # `func_fatal_configuration` which is not even defined in this
     # libtool variant, so the make rule dies with
     # `func_fatal_configuration: command not found`. Flip the flag so
     # libtool emits PIC-compiled `.libs/*.o` objects from the
-    # opcache `.lo` rules; we then link `opcache.so` directly with
+    # extension `.lo` rules; we then link the modules directly with
     # `wasm32posix-cc -shared` after `make`.
     echo "==> Patching libtool to enable shared-library mode..."
     sed -i.bak 's/^build_libtool_libs=no$/build_libtool_libs=yes/' libtool \
@@ -1208,7 +1231,7 @@ fi
 # pkg-config Cflags via `EXTRA_CFLAGS`, which the per-file rules append
 # last. With libxml2's upstream layout that is `-I…/include/libxml2`,
 # the directory PHP's `#include <libxml/parser.h>` resolves against.
-EXTRA_INC_LIBXML="-I${LIBXML2_PREFIX}/include/libxml2"
+EXTRA_INC_LIBXML="-D_GNU_SOURCE -I${LIBXML2_PREFIX}/include/libxml2"
 
 echo "==> Building PHP CLI..."
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" EXTRA_CFLAGS="$EXTRA_INC_LIBXML" cli
@@ -1220,52 +1243,8 @@ echo "==> Both PHP binaries built successfully!"
 
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
-# Build opcache as a shared Zend extension (.so side module).
-# PHP's `make` produces PIC-compiled `.libs/ext/opcache/*.o` because
-# opcache's `[[outputs]]` config is "always shared", but the bundled
-# libtool refuses to emit the final `.so` on this target (see the
-# build_libtool_libs patch above). Skip libtool's link step entirely
-# and feed the PIC objects to the SDK's `wasm32posix-cc -shared`,
-# which routes through `wasm-ld --shared --experimental-pic`.
-echo "==> Building opcache.so (Zend extension)..."
-FORK_SIDE_MODULE_ABI_OBJECT="$WORK_DIR/fork-side-module-abi.o"
-wasm32posix-cc -fPIC -O2 -I"$REPO_ROOT/libc/glue" -c \
-    "$SCRIPT_DIR/fork-side-module-abi.c" \
-    -o "$FORK_SIDE_MODULE_ABI_OBJECT"
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
-    EXTRA_CFLAGS="$EXTRA_INC_LIBXML" \
-    ext/opcache/ZendAccelerator.lo \
-    ext/opcache/zend_accelerator_blacklist.lo \
-    ext/opcache/zend_accelerator_debug.lo \
-    ext/opcache/zend_accelerator_hash.lo \
-    ext/opcache/zend_accelerator_module.lo \
-    ext/opcache/zend_persist.lo \
-    ext/opcache/zend_persist_calc.lo \
-    ext/opcache/zend_file_cache.lo \
-    ext/opcache/zend_shared_alloc.lo \
-    ext/opcache/zend_accelerator_util_funcs.lo \
-    ext/opcache/shared_alloc_shm.lo \
-    ext/opcache/shared_alloc_mmap.lo \
-    ext/opcache/shared_alloc_posix.lo
-wasm32posix-cc -shared -fPIC -o "$BIN_DIR/opcache.so" \
-    ext/opcache/.libs/ZendAccelerator.o \
-    ext/opcache/.libs/zend_accelerator_blacklist.o \
-    ext/opcache/.libs/zend_accelerator_debug.o \
-    ext/opcache/.libs/zend_accelerator_hash.o \
-    ext/opcache/.libs/zend_accelerator_module.o \
-    ext/opcache/.libs/zend_persist.o \
-    ext/opcache/.libs/zend_persist_calc.o \
-    ext/opcache/.libs/zend_file_cache.o \
-    ext/opcache/.libs/zend_shared_alloc.o \
-    ext/opcache/.libs/zend_accelerator_util_funcs.o \
-    ext/opcache/.libs/shared_alloc_shm.o \
-    ext/opcache/.libs/shared_alloc_mmap.o \
-    ext/opcache/.libs/shared_alloc_posix.o \
-    "$FORK_SIDE_MODULE_ABI_OBJECT"
-echo "==> Applying fork instrumentation to opcache.so side module..."
-"$FORK_INSTRUMENT" "$BIN_DIR/opcache.so" -o "$BIN_DIR/opcache.so.instr" --entry env.fork
-mv "$BIN_DIR/opcache.so.instr" "$BIN_DIR/opcache.so"
-echo "==> opcache.so: $(wc -c < "$BIN_DIR/opcache.so") bytes"
+# PHP 8.5 builds OPcache into CLI/FPM. Their normal fork instrumentation
+# covers its code; there is no separate opcache.so to link or load.
 
 # Build ext/curl as a normal shared PHP extension. libcurl.a is PIC and is
 # absorbed into curl.so; libc, zlib, and OpenSSL remain imports from php.wasm
@@ -1319,13 +1298,22 @@ echo "==> phar.so: $(wc -c < "$BIN_DIR/phar.so") bytes"
 # as an opt-in module keeps the PHP runtime general-purpose while letting the
 # PHPT harness run those tests without pretending the extension is present.
 echo "==> Building zend_test.so (extension)..."
+# Use the configured source list: PHP 8.5 adds its custom allocator handlers.
+ZEND_TEST_LO_TARGETS_RAW="$(make -s --no-print-directory -f Makefile -f - print-zend_test-objects <<'MAKE'
+.PHONY: print-zend_test-objects
+print-zend_test-objects:
+	@printf '%s\n' $(shared_objects_zend_test)
+MAKE
+)"
+mapfile -t ZEND_TEST_LO_TARGETS <<< "$ZEND_TEST_LO_TARGETS_RAW"
+[ "${#ZEND_TEST_LO_TARGETS[@]}" -gt 0 ] || {
+    echo "ERROR: PHP Makefile did not declare shared_objects_zend_test" >&2
+    exit 1
+}
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
     EXTRA_CFLAGS="$EXTRA_INC_LIBXML" \
-    ext/zend_test/test.lo \
-    ext/zend_test/observer.lo \
-    ext/zend_test/fiber.lo \
-    ext/zend_test/iterators.lo \
-    ext/zend_test/object_handlers.lo
+    "${ZEND_TEST_LO_TARGETS[@]}"
+
 wasm32posix-cc -shared -fPIC -o "$BIN_DIR/zend_test.so" \
     ext/zend_test/.libs/*.o
 echo "==> zend_test.so: $(wc -c < "$BIN_DIR/zend_test.so") bytes"
@@ -1345,7 +1333,7 @@ wasm32posix-cc -shared -fPIC -o "$BIN_DIR/zip.so" \
     "$LIBZIP_PREFIX/lib/libzip.a"
 echo "==> zip.so: $(wc -c < "$BIN_DIR/zip.so") bytes"
 
-# Build intl as a shared .so, same libtool workaround as opcache: make compiles
+# Build intl as a shared .so, using the shared-extension libtool workaround: make compiles
 # the PIC objects under ext/intl/**/.libs/ but the bundled libtool can't emit the
 # final .so on this target, so we link it with `wasm32posix-cc -shared`. intl
 # statically absorbs ICU and libc++/libc++abi so neither enters php.wasm; the ICU
@@ -1439,7 +1427,7 @@ ls -la "$BIN_DIR/php.wasm" "$BIN_DIR/php-fpm.wasm"
 # Direct developer builds preserve the existing local-binaries mirror.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    for artifact in php.wasm php-fpm.wasm opcache.so curl.so phar.so \
+    for artifact in php.wasm php-fpm.wasm curl.so phar.so \
         zend_test.so zip.so intl.so; do
         WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
         WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
@@ -1451,7 +1439,6 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
 else
     install_local_binary php "$BIN_DIR/php.wasm" php.wasm
     install_local_binary php "$BIN_DIR/php-fpm.wasm" php-fpm.wasm
-    install_local_binary php "$BIN_DIR/opcache.so"
     install_local_binary php "$BIN_DIR/curl.so"
     install_local_binary php "$BIN_DIR/phar.so"
     install_local_binary php "$BIN_DIR/zend_test.so"

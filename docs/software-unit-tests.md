@@ -5,6 +5,9 @@ large guest software on both Node.js and browser hosts where possible.
 
 Status date: 2026-06-16.
 
+The PHP package was updated to **8.5.12** on 2026-10-21. The dated PHP
+results and inventory totals below remain historical **8.3.15** evidence.
+
 > **PHP evidence provenance:** the PHP counts in this document were imported
 > from the pre-split source PR at commit `bc13ad8631a2`, based on the older
 > platform stack. They combine chronological chunks with targeted reruns and

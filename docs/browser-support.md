@@ -2455,9 +2455,12 @@ The command set includes jq 1.8.2 at `/usr/bin/jq` (also `/bin/jq`),
 with its bundled Oniguruma regular expressions and decimal-number support.
 Its executable stays lazy until first use, including for commands such as
 `printf '%s\n' '{"answer":42}' | jq '.answer'`.
-PHP 8.3.15's CLI is also a lazy executable at `/usr/bin/php` (with a
+PHP 8.5.12's CLI is also a lazy executable at `/usr/bin/php` (with a
 `/bin/php` alias). Running `php -r 'echo 6 * 7, PHP_EOL;'` fetches it on
-first use. Composer 2.10.3 is a separate lazy archive at `/usr/bin/composer`
+first use. PHP 8.5 includes OPcache in the executable; caching stays disabled
+by default. The PHP-FPM images explicitly enable its file-cache-only mode
+because cross-process shared-memory caching remains unsupported.
+Composer 2.10.3 is a separate lazy archive at `/usr/bin/composer`
 (also `/bin/composer`). Its package pins the upstream signed PHAR by SHA-256
 and carries the PHAR, curl, and zip PHP extensions. The launcher enables those
 extensions for Composer only; invoking `php` keeps its normal configuration.

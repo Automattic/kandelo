@@ -330,16 +330,7 @@ async function collectNodeApplicationArtifacts(
           resolverSelectedPath: inputs.phpResolverSelectedPath ?? undefined,
         },
       );
-      files["node.wordpress.opcache"] = fingerprintSelectedFile(
-        inputs.opcacheResolverRequest,
-        inputs.opcachePath,
-        {
-          required: false,
-          used: inputs.opcacheUsed,
-          resolverRequest: inputs.opcacheResolverRequest,
-          resolverSelectedPath: inputs.opcachePath ?? undefined,
-        },
-      );
+      // PHP 8.5 includes OPcache in the fingerprinted PHP executable.
       files["node.wordpress.config"] = fingerprintSelectedFile(
         repoRelativePath(inputs.wpConfigPath),
         inputs.wpConfigPath,

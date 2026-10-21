@@ -83,7 +83,6 @@ interface PhpTestFingerprintInputs {
   phpPath: string;
   phpFpmPath?: string;
   extensionDirectories: readonly string[];
-  opcachePath?: string;
   intlPath?: string;
   icuPath?: string;
   runtimeContract?: {
@@ -116,7 +115,6 @@ function phpTestVfsFingerprint(inputs: PhpTestFingerprintInputs): string {
   for (const [index, extensionDir] of inputs.extensionDirectories.entries()) {
     hashInputPath(hash, `extensions-${index}`, extensionDir);
   }
-  hashInputPath(hash, "opcache", inputs.opcachePath);
   hashInputPath(hash, "intl", inputs.intlPath);
   hashInputPath(hash, "intl-icu-data", inputs.icuPath);
   if (inputs.runtimeContract !== undefined) {
@@ -423,8 +421,6 @@ async function main(): Promise<void> {
   ];
   const phpFpmPath = process.env.PHP_FPM_WASM ??
     runtime?.closureHostPaths.get("php/php-fpm.wasm");
-  const opcachePath = process.env.PHP_OPCACHE_SO ??
-    runtime?.closureHostPaths.get("php/opcache.so");
   const intlPath = runtime?.closureHostPaths.get("php/intl.so") ??
     [...extensionDirectories].reverse().map((dir) => join(dir, "intl.so"))
       .find((path) => existsSync(path));
@@ -445,7 +441,6 @@ async function main(): Promise<void> {
     phpPath,
     ...(phpFpmPath === undefined ? {} : { phpFpmPath }),
     extensionDirectories,
-    ...(opcachePath === undefined ? {} : { opcachePath }),
     ...(intlPath === undefined ? {} : { intlPath }),
     ...(runtime === undefined ? {} : { icuPath: runtime.hostPath }),
     ...(runtime === undefined
@@ -471,9 +466,6 @@ async function main(): Promise<void> {
         extensions[entry] = new Uint8Array(readFileSync(join(directory, entry)));
       }
     }
-  }
-  if (opcachePath !== undefined) {
-    extensions["opcache.so"] = new Uint8Array(readFileSync(opcachePath));
   }
   if (intlPath !== undefined) {
     if (runtime === undefined) {

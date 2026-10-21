@@ -29,7 +29,6 @@ describe("package runtime-file closure metadata", () => {
     expect(contract.closureMirrorPaths).toEqual([
       "php/php.wasm",
       "php/php-fpm.wasm",
-      "php/opcache.so",
       "php/curl.so",
       "php/phar.so",
       "php/zend_test.so",

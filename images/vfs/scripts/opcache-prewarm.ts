@@ -66,7 +66,6 @@ const LIST_END = "===PHPLIST_END===\n";
 
 const PHP_INI_ARGS = [
   "-d", "extension_dir=/usr/lib/php/extensions",
-  "-d", "zend_extension=opcache",
   "-d", "opcache.enable=1",
   "-d", "opcache.enable_cli=1",
   "-d", "opcache.file_cache_only=1",
