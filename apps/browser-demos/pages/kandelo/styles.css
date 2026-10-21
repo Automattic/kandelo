@@ -4700,3 +4700,11 @@
   pointer-events: none;
   image-rendering: pixelated;
 }
+
+/* Scene and cursor always fit this viewport, regardless of preferred mode. */
+.kmodeset-viewport {
+  flex: 1; align-self: stretch; min-width: 0; min-height: 0;
+  display: flex; overflow: hidden; align-items: center; justify-content: center;
+}
+.kmodeset-canvas-slot { position: relative; flex: 0 0 auto; }
+.kmodeset-canvas { display: block; }

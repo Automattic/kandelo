@@ -28,12 +28,13 @@ export interface DisplayProps extends FramebufferProps {
    */
   surface?: PrimarySurface;
   onDockControlsChange?: (controls: React.ReactNode | null) => void;
+  onKmsOwnerChange?: (pid: number | null) => void;
 }
 
-export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({ active, surface, onDockControlsChange, ...props }, ref) => {
+export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({ active, surface, onDockControlsChange, onKmsOwnerChange, ...props }, ref) => {
   const preview = useWebPreview();
 
-  if (surface === "kms") return <Modeset {...props} active={active} onDockControlsChange={onDockControlsChange} />;
+  if (surface === "kms") return <Modeset {...props} active={active} onDockControlsChange={onDockControlsChange} onOwnerChange={onKmsOwnerChange} />;
   if (surface === "framebuffer") return <Framebuffer {...props} onDockControlsChange={onDockControlsChange} />;
   if (surface === "web" && preview) {
     return <WebPreviewPane ref={ref} preview={preview} onDockControlsChange={onDockControlsChange} {...props} />;

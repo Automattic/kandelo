@@ -953,10 +953,8 @@ export class WasmPosixKernel {
    * A bo owns the foreign textures bound from it (see shared's
    * BIND_FOREIGN_TEXTURE doc), so they die with the bo however it goes:
    * the guest's GEM_CLOSE (`host_gbm_bo_destroy`) or a process teardown that
-   * releases the bo's last owner (`releaseProcessViews` → `releaseProcess`,
-   * the path a crashed or force-terminated client takes). Hooking only the
-   * GEM_CLOSE import left every crashed client's textures alive in the
-   * compositor's GL context for the rest of the session.
+   * releases the kernel's last reference. Forced removal drains the same
+   * DRI close effects; host mapping retirement must never infer BO lifetime.
    */
   private readonly offBoTextureCleanup = this.bos.onChange((_pid, bo_id, event) => {
     if (event !== "destroy") return;
@@ -2805,9 +2803,9 @@ export class WasmPosixKernel {
           const dims = this.bos.dims(boId);
           const bytes = this.bos.pixelView(boId);
           if (!dims || !bytes) return -2;                       // ENOENT
-          // The SAB is bind-boundary-synced; pull the producer's live
-          // mapping in first so the texture sees its latest commit.
-          this.bos.syncCreatorToSab(boId);
+          // Publish all writers at this submission boundary. Allocation
+          // identity does not tell us which process wrote the pixels.
+          this.bos.syncToSab(boId);
           return bindForeignTexture(b, boId, bytes, dims);
         },
         host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },

@@ -43,22 +43,28 @@ export interface MachineSurfaceController {
   chooseView: (view: MachineSurfaceView) => void;
   followDemoSurface: () => void;
   focusInternals: () => void;
+  onKmsOwnerChange: (pid: number | null) => void;
 }
 
 export function useMachineSurfaceController(): MachineSurfaceController {
   const status = useStatus();
   const presentation = usePresentation();
   const rawAvailability = useSurfaceAvailability();
+  const [kmsOwnerPid, onKmsOwnerChange] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    if (!rawAvailability.kms) onKmsOwnerChange(null);
+  }, [rawAvailability.kms]);
   const webPreview = useWebPreview();
   const availability = React.useMemo<SurfaceAvailability>(() => ({
     ...rawAvailability,
+    kms: rawAvailability.kms && kmsOwnerPid !== null,
     // Keep the web surface mounted while a machine is offline/reconnecting so
     // its pane can show that state instead of the view falling back elsewhere.
     web: rawAvailability.web &&
       (webPreview?.status === "running" ||
         webPreview?.status === "offline" ||
         webPreview?.status === "reconnecting"),
-  }), [rawAvailability, webPreview?.status]);
+  }), [rawAvailability, kmsOwnerPid, webPreview?.status]);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
   const [primaryMode, setPrimaryMode] = React.useState<"following-demo" | "pinned">("following-demo");
   const previousAvailability = React.useRef(availability);
@@ -119,7 +125,9 @@ export function useMachineSurfaceController(): MachineSurfaceController {
   const shouldMountDemoSurface =
     demoSurface !== null &&
     (status === "running" || (demoSurface === "kms" && status === "booting")) &&
-    isSurfaceAvailable(demoSurface, availability);
+    // Keep the capability mounted for display sizing and future owners,
+    // including while the shell is visible after a graphical app exits.
+    isSurfaceAvailable(demoSurface, demoSurface === "kms" ? rawAvailability : availability);
   const canUseInternals = status !== "idle" && isSurfaceAvailable("syslog", availability);
 
   const chooseView = React.useCallback((view: MachineSurfaceView) => {
@@ -164,6 +172,7 @@ export function useMachineSurfaceController(): MachineSurfaceController {
     chooseView,
     followDemoSurface,
     focusInternals,
+    onKmsOwnerChange,
   };
 }
 
@@ -271,6 +280,7 @@ export const MachineView: React.FC<MachineViewProps> = ({
                 autoFocus={activePrimary === demoSurface}
                 surface={demoSurface ?? undefined}
                 onDockControlsChange={onDemoDockControlsChange}
+                onKmsOwnerChange={surface.onKmsOwnerChange}
               />
             </PrimarySurfaceSlot>
           )}

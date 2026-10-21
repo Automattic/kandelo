@@ -1805,13 +1805,13 @@ function attachDeclaredInputSource(
   host: Pick<LiveKernelHost, "reportClipboardPasteFailure">,
 ): void {
   const displaySelector = machine.runtime.features.includes("kms")
-    ? ".kmodeset-surface"
+    ? ".kmodeset-canvas"
     : machine.runtime.features.includes("framebuffer")
     ? ".kframebuffer-surface"
     : null;
   // KMS uses a stable virtual-tablet range, independent of display pixels.
   // Consumers cache absinfo at open; changing it on resize breaks input.
-  const kms = displaySelector === ".kmodeset-surface";
+  const kms = displaySelector === ".kmodeset-canvas";
   const dims = () => kms
     ? { width: ABSOLUTE_POINTER_EXTENT, height: ABSOLUTE_POINTER_EXTENT }
     : {
@@ -1821,7 +1821,8 @@ function attachDeclaredInputSource(
   tick("attaching input source...");
   kernel.attachInputSource(
     // Bound to the window for global reach; `shouldCapture` is what keeps the
-    // out-of-stage chrome (the "New" menu, dialogs) usable. See
+    // host controls usable outside the rendering canvas.
+    // KMS captures the canvas rather than its surrounding UI. See
     // demoSurfaceCaptureGate.
     new BrowserInputSource(window, {
       ...(displaySelector === null ? {} : { pointer: false }),

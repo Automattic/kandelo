@@ -1,60 +1,16 @@
+import { mergeChangedByteRuns } from "../shared-byte-runs";
+
 /**
- * Tracks live GBM buffer objects (`bo`) reported by the kernel on
- * `/dev/dri/renderD128`. v1 CpuShared tier only.
+ * The kernel owns BO lifetime through GEM, PRIME, framebuffer and cursor
+ * references. This worker-local store owns bounded independent pixel backing.
+ * Address-space retirement removes mappings only; only the kernel's final
+ * destroy notification releases storage.
  *
- * Each bo owns a host-side `SharedArrayBuffer` of `size` bytes — the
- * canonical pixel storage. Per-process wasm `Memory` mmaps are
- * synchronized to that SAB on bind-boundary transitions so that
- * cross-process pixel sharing (e.g. PRIME export → fork → PRIME
- * import) actually delivers bytes from the writer to subsequent
- * readers:
- *
- *   - On `bind(new_pid, …)`, every OTHER currently-bound pid's
- *     mmapped region is flushed into the SAB (snapshot of latest
- *     writes), then the SAB is copied into `new_pid`'s region.
- *   - On `unbind(pid, …)`, that pid's region is flushed into the
- *     SAB so a future re-bind (or another pid binding) sees the
- *     latest bytes.
- *
- * The semantics are "snapshot at every bind/unbind boundary," not
- * true live aliasing. Concurrent writers each holding a live
- * mapping are not coherent until one of them un/rebinds. This is
- * sufficient for milestone (A) — the demo pattern is
- * write-then-export-then-fork-then-import — and trades a small
- * cost (one memcpy per bind) for portability across browsers that
- * do not allow re-pointing a `WebAssembly.Memory`'s backing SAB.
- *
- * Lifecycle reported by the kernel:
- *   - `create(pid, bo_id, size, w, h, stride)` — DRM_IOCTL_MODE_CREATE_DUMB.
- *     Allocates the bo's SAB lazily on first create.
- *   - `bind(pid, bo_id, addr, len)` — mmap of bo offset minted by
- *     DRM_IOCTL_MODE_MAP_DUMB. Pixel storage now reflected in process
- *     Memory at `[addr, addr+len)`. Auto-registers the pid as a
- *     consumer of the bo if it wasn't already — covers the PRIME
- *     import path, where the kernel hands a fresh local handle to
- *     a child process without firing `gbm_bo_create` (the bo's
- *     metadata is already in the registry from the creator's
- *     CREATE_DUMB).
- *   - `unbind(pid, bo_id, addr, len)` — munmap. Last-writer state is
- *     flushed back into the SAB.
- *   - `destroy(pid, bo_id)` — bo's global refcount reached zero
- *     (last GEM_CLOSE or process-exit). The entry + SAB are dropped.
- *
- * Internally keyed by `bo_id` (the kernel-global monotonic id) — the
- * earlier `(pid, bo_id)` key broke PRIME imports because a child's
- * mmap fires `bind(child_pid, bo_id, …)` for a bo whose entry was
- * only ever created under the parent's pid. The public API still
- * takes `(pid, bo_id)` and projects per-pid views for backward compat
- * with the existing dri-smoke + browser-mirror tests.
- *
- * The SAB-sync requires per-pid access to `WebAssembly.Memory`.
- * Callers that drive the bind/unbind path (the in-worker
- * `host_gbm_bo_*` import handlers) inject this via the
- * `processMemoryResolver` option at construction time. Consumers
- * with no resolver (the main-thread mirror in browser-kernel-host,
- * unit tests that only check metadata) get pure-metadata behavior
- * — bind/unbind still record the binding but don't touch any
- * Memory.
+ * Wasm memories cannot alias the same bytes. At map/unmap, device submission,
+ * cursor/scanout presentation and imported-read readiness boundaries, merge
+ * changed bytes from each mapping's private snapshot into canonical storage.
+ * An unchanged reader cannot overwrite a newer writer. Overlapping unsynchronized
+ * writes have no ordering guarantee; applications must synchronize their writers.
  */
 export type GbmBoCreateInput = {
   pid: number;
@@ -94,34 +50,27 @@ export type GbmBoChangeListener = (
   ev: GbmBoChangeEvent,
 ) => void;
 
-/** `creatorPid` of a bo whose creating process has exited. Never a pid. */
-const NO_CREATOR = -1;
-
 type InternalEntry = {
   bo_id: number;
   size: number;
   w: number;
   h: number;
   stride: number;
-  /** The pid whose DRM_IOCTL_MODE_CREATE_DUMB minted the bo. In the
-   *  PRIME sharing pattern this is the writer: the exporting client
-   *  draws into its own mapping, importers only read. Used by
-   *  `syncImportsForPid` to pick the flush direction. `NO_CREATOR` once
-   *  that process is gone: pids are recycled, and a later process that
-   *  reuses the number and imports this bo is an importer, not its
-   *  writer. */
-  creatorPid: number;
   /** Canonical pixel storage. Pre-`mmap_shared`, this is also the
    *  authoritative buffer that bind/unbind syncs each pid's wasm
    *  Memory against. Allocated on the first `create` for the bo. */
   sab: SharedArrayBuffer;
-  /** Every pid currently holding a handle to this bo (creator +
-   *  any PRIME importers). A pid lands here on `create` or on its
-   *  first `bind` — see the import-path note in the file header. */
+  /** Observed pids, registered by create or first bind. Unmapped imports
+   * are not visible here; this set is never a kernel reference count. */
   pids: Set<number>;
   /** Per-pid bindings. A pid has at most one bo mmap in v1 (the
    *  shim always maps the whole bo). */
   bindingsByPid: Map<number, GbmBoBinding>;
+  // At most min(mapping length, BO size) bytes per live mapping, owned only
+  // by the disposable kernel worker. Never retains guest Memory or a view.
+  snapshotsByPid: Map<number, Uint8Array>;
+  /** Readers still awaiting published bytes, even after the writer retires. */
+  pendingReaders: Set<number>;
 };
 
 /** Per-pid Memory resolver. Returning `undefined` for a pid that
@@ -156,6 +105,8 @@ export class GbmBoRegistry {
 
   private deleteBinding(e: InternalEntry, pid: number): void {
     if (!e.bindingsByPid.delete(pid)) return;
+    e.snapshotsByPid.delete(pid);
+    e.pendingReaders.delete(pid);
     const n = (this.bindingCounts.get(pid) ?? 1) - 1;
     if (n > 0) this.bindingCounts.set(pid, n);
     else this.bindingCounts.delete(pid);
@@ -185,10 +136,11 @@ export class GbmBoRegistry {
         w: b.w,
         h: b.h,
         stride: b.stride,
-        creatorPid: b.pid,
         sab: new SharedArrayBuffer(b.size),
         pids: new Set([b.pid]),
         bindingsByPid: new Map(),
+        snapshotsByPid: new Map(),
+        pendingReaders: new Set(),
       });
     }
     for (const l of this.listeners) l(b.pid, b.bo_id, "create");
@@ -214,6 +166,9 @@ export class GbmBoRegistry {
     // our primed bytes.
     e.pids.add(pid);
     this.setBinding(e, pid, { addr, len });
+    // mmap is zero-filled then primed after the syscall. primeBindFromSab
+    // replaces this initial baseline once the actual memory exists.
+    e.snapshotsByPid.set(pid, new Uint8Array(Math.min(len, e.size)));
     for (const l of this.listeners) l(pid, bo_id, "bind");
     return 0;
   }
@@ -242,12 +197,9 @@ export class GbmBoRegistry {
   }
 
   /**
-   * Remove every binding and handle owned by one process.
-   *
-   * WHY: a trapped/force-terminated Worker cannot run the normal GEM_CLOSE and
-   * munmap hooks. Flush its last visible pixels while the process Memory
-   * resolver is still valid, then remove only that pid's ownership. Shared
-   * bos survive while another process still owns them.
+   * Retire a process's observed mappings and metadata. Flush while the old
+   * address space is still resolvable. Kernel handles (including unmapped
+   * imports) determine storage lifetime; only destroy() can release a BO.
    */
   releaseProcess(pid: number): void {
     for (const [bo_id, e] of Array.from(this.bos)) {
@@ -258,12 +210,9 @@ export class GbmBoRegistry {
         for (const l of this.listeners) l(pid, bo_id, "unbind");
       }
       if (!e.pids.delete(pid)) continue;
-      // The SAB now holds the creator's last pixels (flushed above); no
-      // live process writes this bo any more.
-      if (e.creatorPid === pid) e.creatorPid = NO_CREATOR;
-      if (e.pids.size !== 0) continue;
-      this.bos.delete(bo_id);
-      for (const l of this.listeners) l(pid, bo_id, "destroy");
+      // pids records observed mappings, not all kernel references. An
+      // importer may hold a valid GEM/cursor/PRIME reference without mapping.
+      // Storage dies only on destroy(), driven by the kernel's last ref.
     }
   }
 
@@ -301,6 +250,8 @@ export class GbmBoRegistry {
     const dst = new Uint8Array(memory.buffer, binding.addr, copyLen);
     const src = new Uint8Array(e.sab, 0, copyLen);
     dst.set(src);
+    e.snapshotsByPid.get(pid)?.set(src);
+    e.pendingReaders.delete(pid);
   }
 
   private flushMemoryToSab(
@@ -317,7 +268,16 @@ export class GbmBoRegistry {
     if (binding.addr + copyLen > mem.buffer.byteLength) return;
     const dst = new Uint8Array(e.sab, 0, copyLen);
     const src = new Uint8Array(mem.buffer, binding.addr, copyLen);
-    dst.set(src);
+    const snapshot = e.snapshotsByPid.get(pid);
+    if (!snapshot) throw new Error("DRI mapping has no publication snapshot");
+    if (mergeChangedByteRuns(src, 0, snapshot, 0, dst, 0, copyLen)) {
+      // A reader must consume the final publication even if this writer's
+      // mapping disappears before the reader's next poll/epoll/select return.
+      for (const reader of e.bindingsByPid.keys()) {
+        if (reader !== pid) e.pendingReaders.add(reader);
+      }
+    }
+    snapshot.set(src);
   }
 
   get(pid: number, bo_id: number): GbmBoEntry | undefined {
@@ -351,16 +311,13 @@ export class GbmBoRegistry {
     return { w: e.w, h: e.h, stride: e.stride };
   }
 
-  /** Flush ONLY the creator's live mapping into the SAB. The foreign-
-   *  texture upload path calls this before reading the SAB so a texture
-   *  bind sees the producer's latest pixels. Unlike `syncFromMemory`,
-   *  consumers' (possibly stale) mappings are left out — flushing an
-   *  importer after the creator would clobber fresh bytes. */
-  syncCreatorToSab(bo_id: number, byteLimit = Infinity): void {
+  /** Publish every writer, preserving bytes untouched by stale readers. */
+  syncToSab(bo_id: number, byteLimit = Infinity): void {
     const e = this.bos.get(bo_id);
     if (!e) return;
-    const binding = e.bindingsByPid.get(e.creatorPid);
-    if (binding) this.flushMemoryToSab(e, e.creatorPid, binding, byteLimit);
+    for (const [pid, binding] of e.bindingsByPid) {
+      this.flushMemoryToSab(e, pid, binding, byteLimit);
+    }
   }
 
   /** Flush each bound pid's Memory into the SAB (KMS scanout calls this
@@ -368,25 +325,18 @@ export class GbmBoRegistry {
   syncFromMemory(bo_id: number): void {
     const e = this.bos.get(bo_id);
     if (!e) return;
-    for (const [pid, binding] of e.bindingsByPid) {
-      this.flushMemoryToSab(e, pid, binding);
-    }
+    this.syncToSab(bo_id);
   }
 
-  /** True when `pid` holds a live mapping of a bo it did not create
-   *  while the creator also holds one — i.e. imported pixels that go
-   *  stale whenever the creator keeps drawing (wl_shm's compositor
-   *  side). Cheap gate for the kernel-worker's post-poll coherence
-   *  hook: O(live bos), no copies. */
+  /** O(1) for processes without BO mappings. A mapping can be stale when
+   * another process maps that BO or its final publication is still pending. */
   hasStaleableImports(pid: number): boolean {
     // A process that maps no bo imports none: O(1) for everything but the
     // few processes taking part in buffer sharing.
     if (!this.bindingCounts.has(pid)) return false;
     for (const e of this.bos.values()) {
       if (
-        e.creatorPid !== pid &&
-        e.bindingsByPid.has(pid) &&
-        e.bindingsByPid.has(e.creatorPid)
+        e.bindingsByPid.has(pid) && (e.bindingsByPid.size > 1 || e.pendingReaders.has(pid))
       ) {
         return true;
       }
@@ -394,26 +344,20 @@ export class GbmBoRegistry {
     return false;
   }
 
-  /** Coherence pass for `pid`'s imported bos: flush the creator's
-   *  current mapping into the SAB, then copy the SAB into `pid`'s
-   *  mapping. The kernel-worker calls this when `pid` returns from a
-   *  poll-family syscall — the moment a compositor-style importer is
-   *  about to read buffers a client just committed. Without it, an
-   *  importer only ever sees the snapshot taken by `primeBindFromSab`
-   *  at mmap time (the registry is bind-boundary-synced, not live —
-   *  see the file header), which for a long-lived wl_shm mapping means
-   *  a permanently stale first frame. */
+  /** Publish changed bytes from every writer, then refresh this process's
+   * view and baseline at a readiness boundary. */
   syncImportsForPid(pid: number, memory: WebAssembly.Memory): void {
     for (const e of this.bos.values()) {
-      if (e.creatorPid === pid) continue;
       const binding = e.bindingsByPid.get(pid);
       if (!binding) continue;
-      const creatorBinding = e.bindingsByPid.get(e.creatorPid);
-      if (creatorBinding) this.flushMemoryToSab(e, e.creatorPid, creatorBinding);
+      // Publish all writers before refreshing this reader's mapping.
+      this.syncToSab(e.bo_id);
       const copyLen = Math.min(binding.len, e.size);
       if (binding.addr + copyLen > memory.buffer.byteLength) continue;
       const dst = new Uint8Array(memory.buffer, binding.addr, copyLen);
       dst.set(new Uint8Array(e.sab, 0, copyLen));
+      e.snapshotsByPid.get(pid)?.set(dst);
+      e.pendingReaders.delete(pid);
     }
   }
 

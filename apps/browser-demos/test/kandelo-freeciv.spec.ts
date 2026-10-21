@@ -43,7 +43,13 @@ async function showGame(page: Page, { pointerLock = false } = {}) {
 }
 async function terminalLines(page: Page) {
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
-  const output = await page.locator(".xterm-rows").first().evaluate(
+  // Dock commands run in TTY1. A hidden xterm keeps parsing output but
+  // does not necessarily repaint its DOM, so reading the first terminal's
+  // hidden rows can mistake an old server log for a still-running process.
+  await page.getByRole("tab", { name: "TTY1", exact: true }).click();
+  const screen = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-screen");
+  await screen.screenshot(); // Observe its painted screen before hiding it again.
+  const output = await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").evaluate(
     node => [...node.children].map(row => row.textContent).join("\n"));
   const demo = page.getByRole("button", { name: "Demo", exact: true });
   if (await demo.isEnabled()) await demo.click();
@@ -67,7 +73,7 @@ async function guestCommand(page: Page, command: string) {
 }
 
 // Keep native widget regressions at their explicit saved 960x540 mode.
-// The separate fresh-profile case below checks the product's 100% default.
+// The separate fresh-profile case below checks the product's 150% default.
 // Configure this through the real guest settings file and normal relaunch.
 async function gotoMachine(...args: Parameters<typeof gotoDefaultMachine>) {
   await gotoDefaultMachine(...args);
@@ -75,15 +81,27 @@ async function gotoMachine(...args: Parameters<typeof gotoDefaultMachine>) {
   if (profile !== "freeciv") return;
   await running(page);
   await showGame(page);
+  const display = (await canvas(page).boundingBox())!;
+  await waitForPanel(page, display.width - 60, display.height - 60);
   await canvas(page).click({ position: await menuPosition(page, "quit") });
-  await expect.poll(() => terminalLines(page), { timeout: 30_000 }).toMatch(/kandelo\$\s*$/);
+  await expect(page.getByRole("button", { name: "Terminal", exact: true }))
+    .toHaveAttribute("aria-current", "true", { timeout: 30_000 });
+  await expect.poll(() => page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").innerText())
+    .toMatch(/kandelo\$\s*$/);
   await guestCommand(page, [
     'mkdir -p "$HOME/.freeciv"',
     'printf "[client]\\nmigration_sdl2_from_sdl=TRUE\\nflag_sdl2_default_screen_size_set=TRUE\\ngui_sdl2_screen.width=960\\ngui_sdl2_screen.height=540\\nsound_effects_volume=25\\n" > "$HOME/.freeciv/freeciv-client-rc-3.2"',
   ].join("\n"));
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
-  await multiplayer(page, "local");
-  await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 60_000 });
+  // With no display owner the Demo tab is correctly unavailable. Relaunch
+  // from the real shell rather than trying to open the old preview's controls.
+  // This second terminal also verifies dock replacements follow the actual
+  // display owner instead of assuming the primary terminal owns every game.
+  await page.keyboard.insertText("/usr/bin/freeciv");
+  await page.keyboard.press("Enter");
+  await expect(canvas(page)).toBeVisible({ timeout: 60_000 });
+  // Dispatch completion can leave the previous menu on screen. Observe
+  // the replacement client's selected scanout before sending its input.
+  await expect(page.getByText(/960×540 · \d+ flips/i)).toBeVisible({ timeout: 60_000 });
 }
 
 async function nativeAction(page: Page, action: () => Promise<unknown>) {
@@ -582,19 +600,124 @@ for (const density of [1, 2]) {
         }
       },
     });
+    test("quitting returns focus to the terminal and a new client reopens the display", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "direct-display handoff targets Chromium");
+      test.setTimeout(180_000);
+      await gotoDefaultMachine(page, "freeciv");
+      await running(page);
+      await showGame(page, { pointerLock: true });
+      const display = page.locator(".kmodeset-surface");
+      const firstOwner = await display.getAttribute("data-kms-owner-pid");
+      const box = (await canvas(page).boundingBox())!;
+      await waitForPanel(page, box.width - 60, box.height - 60);
+
+      const expectTerminalHandoff = async () => {
+        // No Terminal click or focus repair: the real lifecycle must hand
+        // the selected pane and keyboard back to the existing shell.
+        await expect(page.getByRole("button", { name: "Terminal", exact: true }))
+          .toHaveAttribute("aria-current", "true", { timeout: 30_000 });
+        await expect(canvas(page)).toHaveCount(0);
+        await expect.poll(() => page.evaluate(() => document.pointerLockElement === null)).toBe(true);
+        await expect.poll(() => page.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea")))
+          .toBe(true);
+        const terminal = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows");
+        await expect(terminal).toBeVisible();
+        await expect.poll(() => terminal.innerText()).toMatch(/kandelo\$\s*$/);
+        return terminal;
+      };
+
+      await canvas(page).click({ position: await menuPosition(page, "quit") });
+      const terminal = await expectTerminalHandoff();
+      const releasedFrame = Number(await display.getAttribute("data-kms-present-count"));
+      await page.keyboard.insertText('printf "FIRST_FREECIV_EXIT=%s\\n" "$?"; /usr/bin/freeciv');
+      await page.keyboard.press("Enter");
+      await expect.poll(() => terminal.innerText()).toMatch(/^FIRST_FREECIV_EXIT=0$/m);
+      await expect(canvas(page)).toBeVisible({ timeout: 60_000 });
+      await expect.poll(() => display.getAttribute("data-kms-owner-pid")).not.toBe(firstOwner);
+      await expect.poll(async () => Number(await display.getAttribute("data-kms-present-count")))
+        .toBeGreaterThan(releasedFrame);
+      await canvas(page).click({ position: await menuPosition(page, "quit") });
+      await expectTerminalHandoff();
+      await page.keyboard.insertText('printf "SECOND_FREECIV_EXIT=%s\\n" "$?"');
+      await page.keyboard.press("Enter");
+      await expect.poll(() => terminal.innerText()).toMatch(/^SECOND_FREECIV_EXIT=0$/m);
+      await page.screenshot({ path: `../../.context/freeciv-auto-terminal-${density}.png`, scale: "css" });
+    });
+
+    test("cursor pixels and menu targets stay aligned as the viewport fits down and up", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "direct-display cursor acceptance targets Chromium");
+      test.setTimeout(180_000);
+      await gotoMachine(page, "freeciv");
+      await running(page);
+      await showGame(page);
+      for (const viewport of [{ width: 1440, height: 1000 }, { width: 800, height: 700 },
+        { width: 650, height: 1000 }, { width: 1440, height: 1000 }]) {
+        await page.setViewportSize(viewport);
+        const surface = canvas(page);
+        await expect.poll(async () => (await surface.boundingBox())!.width).toBeCloseTo(viewport.width, 0);
+        await expect.poll(async () => (await surface.boundingBox())!.height).toBeCloseTo(Math.floor(viewport.width * 9 / 16), 0);
+        const box = (await surface.boundingBox())!;
+        const fit = Math.min(box.width / 960, box.height / 540);
+        const offset = { x: (box.width - 960 * fit) / 2, y: (box.height - 540 * fit) / 2 };
+        const point = { x: offset.x + 700 * fit, y: offset.y + 380 * fit };
+        await page.mouse.move(box.x + point.x, box.y + point.y);
+        // Isolate the real cursor canvas in the screenshot. A bounding-box
+        // comparison alone misses a stretched bitmap inside an aligned box.
+        const visibleCursorOrigin = async () => {
+          const png = await page.screenshot({ clip: box, scale: "css", style: `
+            .kmodeset-canvas, .kdemo-toast { visibility: hidden !important; }
+            .kmodeset-canvas-slot { background: #ff00ff !important; }
+          ` });
+          return page.evaluate(async encoded => {
+            const bitmap = await createImageBitmap(new Blob([
+              Uint8Array.from(atob(encoded), c => c.charCodeAt(0)),
+            ], { type: "image/png" }));
+            const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+            ctx.drawImage(bitmap, 0, 0); bitmap.close();
+            const { width, height, data } = ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height);
+            let x = width, y = height;
+            for (let row = 2; row < height - 2; row++) for (let column = 2; column < width - 2; column++) {
+              const i = (row * width + column) * 4;
+              if (data[i] < 250 || data[i + 1] > 5 || data[i + 2] < 250) {
+                x = Math.min(x, column); y = Math.min(y, row);
+              }
+            }
+            return { x, y };
+          }, png.toString("base64"));
+        };
+        await expect.poll(async () => {
+          const origin = await visibleCursorOrigin();
+          return Math.hypot(origin.x - point.x, origin.y - point.y);
+        }).toBeLessThan(4);
+        const viewportElement = page.getByRole("region", { name: "Graphics viewport" });
+        expect(await viewportElement.evaluate(el => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight))
+          .toBe(true);
+        // Click the visible native Options target after each resize, then
+        // observe its painted panel. Cursor coordinates alone do not prove
+        // that the scene and hit testing agree.
+        await surface.click({ position: await menuPosition(page, "options") });
+        await waitForPanel(page, box.width / 2 + 60 * fit, box.height / 2 + 60 * fit);
+        await page.keyboard.press("Escape");
+        await waitForPanel(page, box.width / 2 + 60 * fit, box.height / 2 + 60 * fit, false);
+      }
+    });
+
     test("fresh profile uses CSS resolution and quiet first-run sound", async ({ page, browserName }) => {
       test.skip(browserName !== "chromium", "graphical acceptance targets Chromium");
       test.setTimeout(180_000);
       await gotoDefaultMachine(page, "freeciv");
       await running(page);
       await showGame(page);
-      await expect(page.getByText("1440×810", { exact: false })).toBeVisible();
+      writeFileSync("../../.context/freeciv-scaled-demo-url.txt", page.url());
+      await expect(page.getByRole("button", { name: "Display settings", exact: true })).toHaveCount(0);
+      await page.screenshot({ path: `../../.context/freeciv-scale-default-${density}.png`, scale: "css" });
+      await expect(page.getByText("960×540", { exact: false })).toBeVisible();
       const box = (await canvas(page).boundingBox())!;
       expect(box.width).toBeCloseTo(1440, 0);
       expect(box.height).toBeCloseTo(810, 0);
       expect(await page.evaluate(() => devicePixelRatio)).toBe(density);
       await canvas(page).click({ position: await menuPosition(page, "options") });
-      await waitForTitlebar(page, -15, -148, true, 50);
+      await waitForOptions(page);
       const settings = await guestCommand(page,
         'cat "$HOME/.freeciv/freeciv-client-rc-3.2"');
       expect(settings).toMatch(/sound_effects_volume\s*=\s*25\b/);
@@ -685,7 +808,9 @@ for (const density of [1, 2]) {
           }
         };
       });
-      await gotoMachine(page, "freeciv");
+      // Start fresh: the saved-resolution fixture quits a previous client,
+      // whose already-played audio must not satisfy this acceptance check.
+      await gotoDefaultMachine(page, "freeciv");
       await running(page);
       await showGame(page);
       // A trusted gesture activates the machine's real AudioContext.
@@ -1286,9 +1411,10 @@ for (const density of [1, 2]) {
           await expect.poll(async () => (await page.screenshot({ clip: {
             x: box.x + 40, y: box.y + 60, width: 40, height: 30,
           } })).byteLength, { timeout: 30_000 }).toBeLessThan(300);
-          await canvas(page).focus();
-          await page.keyboard.press("Escape");
-          await waitForPanel(page, box.width / 2 + 100, box.height / 2 + 100);
+          // Open the visible game menu: Escape can first cancel a unit
+          // action. Terrain can also satisfy a single warm-pixel check.
+          await canvas(page).click({ position: await nativePosition(page, 16, 16) });
+          await waitForOptions(page);
           await page.screenshot({ path: `../../.context/freeciv-quit-options-${density}.png`, scale: "css" });
           // Click the native settings dialog's bottom Quit entry.
           await canvas(page).click({ position: { x: box.width / 2, y: box.height / 2 + 171 } });
@@ -1296,9 +1422,14 @@ for (const density of [1, 2]) {
           await canvas(page).click({ position: await menuPosition(page, "quit") });
         }
         await page.screenshot({ path: `../../.context/freeciv-quit-after-${density}-${inGame}.png`, scale: "css" });
-        await expect.poll(() => terminalLines(page), { timeout: 20_000 })
-          .toMatch(/kandelo\$\s*$/);
-        await page.getByRole("button", { name: "Terminal", exact: true }).click();
+        // Require the actual display release and automatic terminal handoff.
+        // A prompt in hidden xterm DOM is stale, and a background server can
+        // also print after a prompt. Execute a real command in the launching
+        // terminal to prove that its foreground job returned successfully.
+        await expect(page.getByRole("button", { name: "Terminal", exact: true }))
+          .toHaveAttribute("aria-current", "true", { timeout: 20_000 });
+        await expect(canvas(page)).toHaveCount(0);
+        await page.getByRole("tab", { name: inGame ? "TTY1" : "TTY2", exact: true }).click();
         const slot = page.locator(".kshell-terminal-slot:not([hidden])");
         await slot.locator(".xterm-screen").click();
         await page.keyboard.insertText('printf "FREECIV_EXIT=%s\\n" "$?"');

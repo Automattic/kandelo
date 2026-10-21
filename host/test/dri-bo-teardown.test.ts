@@ -1,10 +1,8 @@
 /*
  * A GBM bo owns the foreign textures a compositor bound from it, so they
  * must be dropped however the bo is destroyed: the guest's GEM_CLOSE
- * (`host_gbm_bo_destroy`) or a process teardown releasing its last owner
- * (`releaseProcessViews`, the crash / force-terminate path). Only the first
- * was wired, so every crashed client leaked its textures into the
- * compositor's GL context.
+ * (`host_gbm_bo_destroy`) or the same final-reference notification during
+ * forced removal. Retiring host mappings alone cannot prove last ownership.
  */
 import { describe, expect, it, vi } from "vitest";
 
@@ -43,21 +41,26 @@ describe("GBM bo teardown drops the bo's foreign textures", () => {
   });
 
   it("when a crashed or force-terminated process releases the last owner", () => {
-    const { kernel } = harness();
+    const { kernel, imports } = harness();
     const drop = vi.spyOn(kernel.gl, "dropForeignTexturesForBo");
     kernel.bos.create(bo(10, 1));
     kernel.releaseProcessViews(10);
+    expect(drop).not.toHaveBeenCalled();
+    // Rust removal closes the final kernel reference, then notifies the host.
+    imports.env.host_gbm_bo_destroy(10, 1);
     expect(drop).toHaveBeenCalledWith(1);
   });
 
-  it("not while another process still owns the bo", () => {
-    const { kernel } = harness();
+  it("not until the kernel releases references, including unmapped importers", () => {
+    const { kernel, imports } = harness();
     const drop = vi.spyOn(kernel.gl, "dropForeignTexturesForBo");
     kernel.bos.create(bo(10, 1));
     kernel.bos.bind(20, 1, 0, 4096);   // an importer holds it too
     kernel.releaseProcessViews(10);
     expect(drop).not.toHaveBeenCalled();
     kernel.releaseProcessViews(20);
+    expect(drop).not.toHaveBeenCalled();
+    imports.env.host_gbm_bo_destroy(20, 1);
     expect(drop).toHaveBeenCalledWith(1);
   });
 });

@@ -2339,49 +2339,82 @@ pub fn dri_release_ofd_state(
     ofd_idx: usize,
     state: Option<alloc::boxed::Box<crate::ofd::DriOfdState>>,
 ) {
+    apply_dri_release_effects(pid, collect_dri_release_effects(pid, ofd_idx, state), host);
+}
+
+/// Kernel reference changes happen immediately, even on forced process removal.
+/// Host notifications are drained by the caller that owns its host adapter.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DriReleaseEffect {
+    DestroyBo(u32),
+    RemoveFramebuffer(u32),
+    DropMaster,
+    UnbindGl,
+}
+
+pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host: &mut dyn HostIO) {
+    for effect in effects {
+        match effect {
+            DriReleaseEffect::DestroyBo(bo) => host.gbm_bo_destroy(pid, bo),
+            DriReleaseEffect::RemoveFramebuffer(fb) => host.kms_rmfb(pid, fb),
+            DriReleaseEffect::DropMaster => host.kms_drop_master(pid),
+            DriReleaseEffect::UnbindGl => host.gl_unbind(pid),
+        }
+    }
+}
+
+pub fn collect_dri_release_effects(
+    pid: i32,
+    ofd_idx: usize,
+    state: Option<alloc::boxed::Box<crate::ofd::DriOfdState>>,
+) -> Vec<DriReleaseEffect> {
+    let mut effects = Vec::new();
     let Some(state) = state else {
-        return;
+        return effects;
     };
     // Helper: decref a bo, destroy host backing on the last drop.
-    let release_bo = |host: &mut dyn HostIO, bo_id: u32| {
+    let release_bo = |effects: &mut Vec<DriReleaseEffect>, bo_id: u32| {
         let new_count = crate::dri::with_registry(|r| r.decref(bo_id));
         if new_count == Some(0) {
-            host.gbm_bo_destroy(pid, bo_id);
+            effects.push(DriReleaseEffect::DestroyBo(bo_id));
         }
     };
     match *state {
         crate::ofd::DriOfdState::PrimeBo(p) => {
-            release_bo(host, p.bo_id);
+            release_bo(&mut effects, p.bo_id);
         }
         crate::ofd::DriOfdState::RenderNode(dri) => {
             if dri.gl.is_some() {
-                host.gl_unbind(pid);
+                effects.push(DriReleaseEffect::UnbindGl);
             }
             for (_handle, bo_id) in dri.handles.into_iter() {
-                release_bo(host, bo_id);
+                release_bo(&mut effects, bo_id);
             }
         }
         crate::ofd::DriOfdState::Card { dri, kms } => {
-            if let Some(bo_id) = kms.cursor_bo { release_bo(host, bo_id); }
+            if let Some(bo_id) = kms.cursor_bo { release_bo(&mut effects, bo_id); }
             // KMS-side cleanup first: release framebuffers (each
             // holds an extra bo refcount) and notify the host so it
             // can drop GL textures / canvases bound to those fbs.
             for (fb_id, fb) in kms.fbs.into_iter() {
-                release_bo(host, fb.bo_id);
-                host.kms_rmfb(pid, fb_id);
+                release_bo(&mut effects, fb.bo_id);
+                effects.push(DriReleaseEffect::RemoveFramebuffer(fb_id));
             }
             // Drop master if this OFD held it — otherwise a
             // dangling holder would block future SET_MASTER calls
             // by other processes.
-            crate::dri::master::release_if_held(kms.holds_master, pid, ofd_idx, host);
+            if kms.holds_master && crate::dri::master::drop_master(pid, ofd_idx) {
+                effects.push(DriReleaseEffect::DropMaster);
+            }
             if dri.gl.is_some() {
-                host.gl_unbind(pid);
+                effects.push(DriReleaseEffect::UnbindGl);
             }
             for (_handle, bo_id) in dri.handles.into_iter() {
-                release_bo(host, bo_id);
+                release_bo(&mut effects, bo_id);
             }
         }
     }
+    effects
 }
 
 /// Build a synthetic WasmStat for a virtual device.

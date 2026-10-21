@@ -134,6 +134,22 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     expect(() => vi.advanceTimersByTime(17)).not.toThrow();
   });
 
+  it("publishes ownership and release without requiring a framebuffer or a scene flip", () => {
+    const kernel = makeKernel();
+    const stats = new Int32Array(new SharedArrayBuffer(64));
+    kernel.attachKmsStats(1, stats.buffer as SharedArrayBuffer);
+    kernel.kms.setMasterPid(123);
+    vi.advanceTimersByTime(17);
+    expect(Atomics.load(stats, 8)).toBe(123);
+    expect(Atomics.load(stats, 0)).toBe(0);
+    kernel.kms.dropMaster();
+    vi.advanceTimersByTime(17);
+    expect(Atomics.load(stats, 8)).toBe(0);
+    kernel.kms.setMasterPid(456);
+    vi.advanceTimersByTime(17);
+    expect(Atomics.load(stats, 8)).toBe(456);
+  });
+
   it("tickVblank fills slots 5/6 from kernel kms_commit_count + kms_last_frame_us when SAB is sized for them", () => {
     const kernel = makeKernel({
       kernel_kms_commit_count: (_crtc: number) => 42n,

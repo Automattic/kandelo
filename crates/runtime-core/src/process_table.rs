@@ -129,6 +129,8 @@ pub struct RemoveProcessResult {
     /// this kernel-side bookkeeping intentionally doesn't touch the
     /// host trait so `process_table.rs` stays host-agnostic.
     pub host_net_closes: Vec<i32>,
+    /// DRI reference retirement effects, including final BO destruction.
+    pub dri_effects: Vec<crate::syscalls::DriReleaseEffect>,
 }
 
 /// Subset of parent state inherited by a `posix_spawn` child. Captured up
@@ -398,6 +400,9 @@ fn bump_inherited_dri_bos(child: &Process) {
                 for fb in kms.fbs.values() {
                     reg.incref(fb.bo_id);
                 }
+                if let Some(bo) = kms.cursor_bo {
+                    reg.incref(bo);
+                }
             }
         });
     }
@@ -608,6 +613,16 @@ impl ProcessTable {
         let mut host_closes: Vec<i64> = Vec::new();
         let mut host_dir_closes: Vec<i64> = Vec::new();
         let mut host_net_closes: Vec<i32> = Vec::new();
+        // A trapped process or failed launch may never execute close().
+        // Retire the same kernel references as close, before discarding OFDs.
+        let mut dri_effects = Vec::new();
+        let dri_ofds: Vec<_> = proc.ofd_table.iter()
+            .filter_map(|(idx, ofd)| ofd.dri_state.as_ref().map(|_| idx)).collect();
+        for idx in dri_ofds {
+            let state = proc.ofd_table.get_mut(idx).unwrap().dri_state.take();
+            dri_effects.extend(crate::syscalls::collect_dri_release_effects(pid as i32, idx, state));
+        }
+
 
         // Keep the global pipe-table borrow in a strict lexical scope. Closing
         // a final read end can drop queued SCM_RIGHTS entries, whose Drop impl
@@ -874,6 +889,7 @@ impl ProcessTable {
             host_closes,
             host_dir_closes,
             host_net_closes,
+            dri_effects,
         })
     }
 
@@ -1392,6 +1408,7 @@ impl ProcessTable {
         // any newly-opened fds, queues last-ref host net handles for close).
         if let Err(e) = self.apply_spawn_file_actions(child_pid, file_actions, host) {
             if let Some(removed) = self.remove_process(child_pid) {
+                crate::syscalls::apply_dri_release_effects(child_pid as i32, removed.dri_effects, host);
                 for dir_handle in removed.host_dir_closes {
                     let _ = host.host_close(dir_handle);
                 }
