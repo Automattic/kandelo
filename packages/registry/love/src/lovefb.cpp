@@ -1,9 +1,9 @@
 // Kandelo native runtime for LÖVE-style Lua demos.
 //
 // This is a native POSIX/Wasm executable. It does not use Emscripten or a
-// browser canvas API directly: rendering uses SDL2 Wayland/EGL within a
-// desktop session, or /dev/dri/card0 KMS/EGL/GLES page flips with evdev
-// keyboard and pointer input on a standalone display.
+// browser canvas API directly: SDL2 owns Wayland/EGL windows within a
+// desktop session and KMSDRM/EGL windows on a standalone display. SDL
+// delivers keyboard and pointer events in window coordinates on both.
 //
 // The upstream LÖVE 11.x graphics path is OpenGL/SDL-oriented. For Kandelo's
 // native surface this file provides a compact Lua compatibility layer and
@@ -19,15 +19,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
-#include <EGL/egl.h>
 #include <exception>
 #include <fcntl.h>
-#include <gbm.h>
 #include <GLES2/gl2.h>
-#include <drm/drm.h>
-#include <drm/drm_fourcc.h>
-#include <linux/fb.h>
-#include <linux/input.h>
 #include <map>
 #include <memory>
 #include <new>
@@ -35,15 +29,11 @@
 #include <signal.h>
 #include <sstream>
 #include <string>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
-#include <xf86drm.h>
-#include <xf86drmMode.h>
 
 extern "C" {
 #include "lua.h"
@@ -57,6 +47,7 @@ extern "C" {
 #include "common/Module.h"
 #include "modules/window/Window.h"
 #include "native_window.h"
+#include "native_audio.h"
 
 #if LUA_VERSION_NUM >= 502
 #define lua_objlen lua_rawlen
@@ -72,14 +63,11 @@ namespace {
 
 constexpr int kLogicalWidth = 960;
 constexpr int kLogicalHeight = 540;
-constexpr int kKmsBoCount = 2;
 constexpr double kPi = 3.14159265358979323846;
 
 enum class Presenter {
   None,
-  Framebuffer,
-  KmsGl,
-  WaylandGl,
+  SdlGl,
 };
 
 struct Color {
@@ -136,28 +124,6 @@ struct Mesh {
   std::vector<double> points;
 };
 
-struct Source {
-  double volume = 1.0;
-  double pitch = 1.0;
-  double x = 0.0;
-  double y = 0.0;
-  double z = 0.0;
-  double fx = 0.0;
-  double fy = 0.0;
-  double fz = -1.0;
-  double ux = 0.0;
-  double uy = 1.0;
-  double uz = 0.0;
-  double duration = 1.0;
-  double attenuationRef = 0.0;
-  double attenuationMax = 0.0;
-  int channelCount = 1;
-  bool looping = false;
-  bool playing = false;
-  bool relative = false;
-  double cursor = 0.0;
-};
-
 struct FileHandle {
   std::string path;
   FILE *fp = nullptr;
@@ -198,20 +164,6 @@ struct Fixture {
   double restitution = 0.0;
 };
 
-struct KeyEvent {
-  std::string key;
-  std::string text;
-  bool pressed = false;
-  bool repeat = false;
-};
-
-struct MouseButtonEvent {
-  int x = 0;
-  int y = 0;
-  int button = 0;
-  bool pressed = false;
-};
-
 struct EventArg {
   enum class Type {
     String,
@@ -244,33 +196,8 @@ struct Runtime {
   Presenter presenter = Presenter::None;
   SDL_Window *window = nullptr;
   SDL_GLContext windowContext = nullptr;
-  int fbFd = -1;
-  int pointerFd = -1;
-  int keyboardFd = -1;
-  int fbW = kLogicalWidth;
-  int fbH = kLogicalHeight;
-  size_t fbLen = 0;
-  uint32_t *fb = nullptr;
-
-  int drmFd = -1;
-  gbm_device *gbm = nullptr;
-  gbm_bo *kmsBos[kKmsBoCount]{};
-  uint32_t kmsFbIds[kKmsBoCount]{};
-  uint32_t kmsCrtcId = 0;
-  uint32_t kmsConnId = 0;
-  drmModeModeInfo kmsMode{};
   int desktopW = kLogicalWidth;
   int desktopH = kLogicalHeight;
-  int kmsCurrentFb = 0;
-  EGLDisplay eglDisplay = EGL_NO_DISPLAY;
-  EGLContext eglContext = EGL_NO_CONTEXT;
-  EGLSurface eglSurface = EGL_NO_SURFACE;
-  GLuint glProgram = 0;
-  GLuint glTexture = 0;
-  GLuint glBuffer = 0;
-  GLint glPositionLoc = -1;
-  GLint glTexcoordLoc = -1;
-  GLint glSamplerLoc = -1;
 
   Surface screen;
   Surface *target = nullptr;
@@ -291,27 +218,12 @@ struct Runtime {
   int sh = kLogicalHeight;
 
   std::set<std::string> keys;
-  std::vector<KeyEvent> keyEvents;
   std::vector<LoveEvent> queuedEvents;
   int mouseX = kLogicalWidth / 2;
   int mouseY = kLogicalHeight / 2;
   int mouseButtons = 0;
   int mouseDx = 0;
   int mouseDy = 0;
-  int wheelX = 0;
-  int wheelY = 0;
-  std::vector<MouseButtonEvent> mouseEvents;
-  bool mouseVisible = false;
-  bool mouseRelativeMode = false;
-  double audioX = 0.0;
-  double audioY = 0.0;
-  double audioZ = 0.0;
-  double audioFx = 0.0;
-  double audioFy = 0.0;
-  double audioFz = -1.0;
-  double audioUx = 0.0;
-  double audioUy = 1.0;
-  double audioUz = 0.0;
   bool textInputEnabled = true;
   bool keyRepeat = false;
   std::string windowTitle = "LÖVE";
@@ -343,29 +255,6 @@ int scanoutHeight() {
   return std::max(1, G.windowH);
 }
 
-uint16_t clampModeU16(int value) {
-  return uint16_t(std::max(1, std::min(0xffff, value)));
-}
-
-void setKmsModeDimensions(drmModeModeInfo &mode, int width, int height) {
-  const int w = std::max(1, width);
-  const int h = std::max(1, height);
-  mode.hdisplay = clampModeU16(w);
-  mode.hsync_start = clampModeU16(w + 16);
-  mode.hsync_end = clampModeU16(w + 48);
-  mode.htotal = clampModeU16(w + 160);
-  mode.hskew = 0;
-  mode.vdisplay = clampModeU16(h);
-  mode.vsync_start = clampModeU16(h + 3);
-  mode.vsync_end = clampModeU16(h + 8);
-  mode.vtotal = clampModeU16(h + 45);
-  mode.vscan = 0;
-  mode.vrefresh = mode.vrefresh > 0 ? mode.vrefresh : 60;
-  mode.clock = uint32_t(std::max(1.0, std::round(double(mode.htotal) * double(mode.vtotal) *
-                                                 double(mode.vrefresh) / 1000.0)));
-  std::snprintf(mode.name, sizeof(mode.name), "%dx%d", w, h);
-}
-
 void resizeSoftwareScreen(int width, int height) {
   const int w = std::max(1, width);
   const int h = std::max(1, height);
@@ -387,7 +276,6 @@ const char *MT_TEXT = "lovefb.Text";
 const char *MT_FILE = "lovefb.File";
 const char *MT_VIDEO = "lovefb.Video";
 const char *MT_MESH = "lovefb.Mesh";
-const char *MT_SOURCE = "lovefb.Source";
 const char *MT_SHADER = "lovefb.Shader";
 const char *MT_WORLD = "lovefb.World";
 const char *MT_BODY = "lovefb.Body";
@@ -971,47 +859,6 @@ bool readFile(const std::string &path, std::vector<uint8_t> &out) {
   return true;
 }
 
-uint16_t readLe16(const std::vector<uint8_t> &bytes, size_t offset) {
-  if (offset + 2 > bytes.size()) return 0;
-  return uint16_t(bytes[offset]) | (uint16_t(bytes[offset + 1]) << 8);
-}
-
-uint32_t readLe32(const std::vector<uint8_t> &bytes, size_t offset) {
-  if (offset + 4 > bytes.size()) return 0;
-  return uint32_t(bytes[offset]) | (uint32_t(bytes[offset + 1]) << 8) |
-         (uint32_t(bytes[offset + 2]) << 16) | (uint32_t(bytes[offset + 3]) << 24);
-}
-
-void readWavSourceInfo(const char *path, Source &source) {
-  std::vector<uint8_t> bytes;
-  if (!path || !readFile(path, bytes) || bytes.size() < 12) return;
-  if (std::memcmp(bytes.data(), "RIFF", 4) != 0 || std::memcmp(bytes.data() + 8, "WAVE", 4) != 0) return;
-
-  uint16_t channels = 0;
-  uint32_t sampleRate = 0;
-  uint16_t bitsPerSample = 0;
-  uint32_t dataSize = 0;
-  for (size_t offset = 12; offset + 8 <= bytes.size();) {
-    const uint8_t *chunk = bytes.data() + offset;
-    uint32_t size = readLe32(bytes, offset + 4);
-    size_t payload = offset + 8;
-    if (payload + size > bytes.size()) break;
-    if (std::memcmp(chunk, "fmt ", 4) == 0 && size >= 16) {
-      channels = readLe16(bytes, payload + 2);
-      sampleRate = readLe32(bytes, payload + 4);
-      bitsPerSample = readLe16(bytes, payload + 14);
-    } else if (std::memcmp(chunk, "data", 4) == 0) {
-      dataSize = size;
-    }
-    offset = payload + size + (size & 1);
-  }
-  if (channels > 0) source.channelCount = channels;
-  if (channels > 0 && sampleRate > 0 && bitsPerSample > 0 && dataSize > 0) {
-    double bytesPerSample = double(channels) * double(bitsPerSample) / 8.0;
-    if (bytesPerSample > 0) source.duration = double(dataSize) / bytesPerSample / double(sampleRate);
-  }
-}
-
 bool loadPng(const std::string &path, ImageData &img) {
   std::vector<uint8_t> bytes;
   if (!readFile(path, bytes)) return false;
@@ -1254,462 +1101,10 @@ void drawSurfaceToTarget(const Surface &src, int srcX, int srcY, int srcW, int s
   }
 }
 
-void flushFramebuffer() {
-  if (!G.fb || !G.target) return;
-  const Surface &src = G.screen;
-  for (int y = 0; y < G.fbH; ++y) {
-    int sy = y * src.h / G.fbH;
-    for (int x = 0; x < G.fbW; ++x) {
-      int sx = x * src.w / G.fbW;
-      G.fb[size_t(y) * G.fbW + x] = src.bgra[size_t(sy) * src.w + sx];
-    }
-  }
-}
-
-void drawSoftwareCursor() {
-  if (G.presenter == Presenter::KmsGl) return;
-  if (!G.mouseVisible || !G.target) return;
-  const int x = G.mouseX;
-  const int y = G.mouseY;
-  const std::vector<int> pts = {
-    x, y,
-    x, y + 24,
-    x + 7, y + 18,
-    x + 11, y + 27,
-    x + 16, y + 25,
-    x + 12, y + 16,
-    x + 20, y + 16,
-  };
-  auto stroke = [&](Color c) {
-    for (size_t i = 0; i + 3 < pts.size(); i += 2)
-      drawLine(*G.target, pts[i], pts[i + 1], pts[i + 2], pts[i + 3], c);
-    drawLine(*G.target, pts[pts.size() - 2], pts[pts.size() - 1], pts[0], pts[1], c);
-  };
-  int oldLineWidth = G.lineWidth;
-  G.lineWidth = 3;
-  stroke(Color{0, 0, 0, 235});
-  fillPolygon(*G.target, pts, Color{255, 255, 255, 245});
-  G.lineWidth = 1;
-  stroke(Color{0, 0, 0, 255});
-  G.lineWidth = oldLineWidth;
-}
-
-void cleanupKmsGl() {
-  if (G.glBuffer) {
-    glDeleteBuffers(1, &G.glBuffer);
-    G.glBuffer = 0;
-  }
-  if (G.glTexture) {
-    glDeleteTextures(1, &G.glTexture);
-    G.glTexture = 0;
-  }
-  if (G.glProgram) {
-    glDeleteProgram(G.glProgram);
-    G.glProgram = 0;
-  }
-  if (G.eglDisplay != EGL_NO_DISPLAY) {
-    eglMakeCurrent(G.eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-    if (G.eglSurface != EGL_NO_SURFACE) eglDestroySurface(G.eglDisplay, G.eglSurface);
-    if (G.eglContext != EGL_NO_CONTEXT) eglDestroyContext(G.eglDisplay, G.eglContext);
-    eglTerminate(G.eglDisplay);
-  }
-  G.eglDisplay = EGL_NO_DISPLAY;
-  G.eglSurface = EGL_NO_SURFACE;
-  G.eglContext = EGL_NO_CONTEXT;
-
-  for (int i = 0; i < kKmsBoCount; ++i) {
-    if (G.kmsFbIds[i] != 0 && G.drmFd >= 0) {
-      drmModeRmFB(G.drmFd, G.kmsFbIds[i]);
-      G.kmsFbIds[i] = 0;
-    }
-    if (G.kmsBos[i]) {
-      gbm_bo_destroy(G.kmsBos[i]);
-      G.kmsBos[i] = nullptr;
-    }
-  }
-  if (G.gbm) {
-    gbm_device_destroy(G.gbm);
-    G.gbm = nullptr;
-  }
-  if (G.drmFd >= 0) {
-    close(G.drmFd);
-    G.drmFd = -1;
-  }
-}
-
-bool compileShader(GLenum type, const char *source, GLuint *out) {
-  GLuint shader = glCreateShader(type);
-  glShaderSource(shader, 1, &source, nullptr);
-  glCompileShader(shader);
-
-  GLint ok = GL_FALSE;
-  glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
-  if (ok != GL_TRUE) {
-    char log[512];
-    GLsizei len = 0;
-    glGetShaderInfoLog(shader, sizeof(log), &len, log);
-    fprintf(stderr, "love: GLES shader compile failed: %.*s\n", int(len), log);
-    glDeleteShader(shader);
-    return false;
-  }
-  *out = shader;
-  return true;
-}
-
-bool buildPresenterProgram() {
-  static const char *vertexSource =
-      "attribute vec2 a_position;\n"
-      "attribute vec2 a_texcoord;\n"
-      "varying vec2 v_texcoord;\n"
-      "void main() {\n"
-      "  gl_Position = vec4(a_position, 0.0, 1.0);\n"
-      "  v_texcoord = a_texcoord;\n"
-      "}\n";
-  static const char *fragmentSource =
-      "precision mediump float;\n"
-      "uniform sampler2D u_frame;\n"
-      "varying vec2 v_texcoord;\n"
-      "void main() {\n"
-      "  vec4 c = texture2D(u_frame, v_texcoord);\n"
-      "  gl_FragColor = vec4(c.b, c.g, c.r, c.a);\n"
-      "}\n";
-
-  GLuint vs = 0;
-  GLuint fs = 0;
-  if (!compileShader(GL_VERTEX_SHADER, vertexSource, &vs)) return false;
-  if (!compileShader(GL_FRAGMENT_SHADER, fragmentSource, &fs)) {
-    glDeleteShader(vs);
-    return false;
-  }
-
-  G.glProgram = glCreateProgram();
-  glAttachShader(G.glProgram, vs);
-  glAttachShader(G.glProgram, fs);
-  glLinkProgram(G.glProgram);
-  glDeleteShader(vs);
-  glDeleteShader(fs);
-
-  GLint ok = GL_FALSE;
-  glGetProgramiv(G.glProgram, GL_LINK_STATUS, &ok);
-  if (ok != GL_TRUE) {
-    char log[512];
-    GLsizei len = 0;
-    glGetProgramInfoLog(G.glProgram, sizeof(log), &len, log);
-    fprintf(stderr, "love: GLES program link failed: %.*s\n", int(len), log);
-    glDeleteProgram(G.glProgram);
-    G.glProgram = 0;
-    return false;
-  }
-
-  G.glPositionLoc = glGetAttribLocation(G.glProgram, "a_position");
-  G.glTexcoordLoc = glGetAttribLocation(G.glProgram, "a_texcoord");
-  G.glSamplerLoc = glGetUniformLocation(G.glProgram, "u_frame");
-  return G.glPositionLoc >= 0 && G.glTexcoordLoc >= 0 && G.glSamplerLoc >= 0;
-}
-
-int setupKmsGl() {
-  const int scanoutW = scanoutWidth();
-  const int scanoutH = scanoutHeight();
-  G.drmFd = open("/dev/dri/card0", O_RDWR | O_NONBLOCK);
-  if (G.drmFd < 0) {
-    perror("open /dev/dri/card0");
-    return 1;
-  }
-  if (drmSetMaster(G.drmFd) != 0) {
-    perror("drmSetMaster");
-    cleanupKmsGl();
-    return 1;
-  }
-
-  drmModeResPtr res = drmModeGetResources(G.drmFd);
-  if (!res || res->count_crtcs < 1 || res->count_connectors < 1) {
-    fprintf(stderr, "love: drmModeGetResources returned no usable CRTC/connector\n");
-    if (res) drmModeFreeResources(res);
-    cleanupKmsGl();
-    return 1;
-  }
-  G.kmsCrtcId = res->crtcs[0];
-  G.kmsConnId = res->connectors[0];
-
-  drmModeConnectorPtr conn = drmModeGetConnector(G.drmFd, G.kmsConnId);
-  if (!conn || conn->connection != DRM_MODE_CONNECTED || conn->count_modes < 1) {
-    fprintf(stderr, "love: drmModeGetConnector returned no connected mode\n");
-    if (conn) drmModeFreeConnector(conn);
-    drmModeFreeResources(res);
-    cleanupKmsGl();
-    return 1;
-  }
-  G.kmsMode = conn->modes[0];
-  G.desktopW = std::max(1, int(G.kmsMode.hdisplay));
-  G.desktopH = std::max(1, int(G.kmsMode.vdisplay));
-  setKmsModeDimensions(G.kmsMode, scanoutW, scanoutH);
-  drmModeFreeConnector(conn);
-  drmModeFreeResources(res);
-
-  G.gbm = gbm_create_device(G.drmFd);
-  if (!G.gbm) {
-    perror("gbm_create_device");
-    cleanupKmsGl();
-    return 1;
-  }
-
-  for (int i = 0; i < kKmsBoCount; ++i) {
-    G.kmsBos[i] = gbm_bo_create(G.gbm, scanoutW, scanoutH,
-                                GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT);
-    if (!G.kmsBos[i]) {
-      perror("gbm_bo_create");
-      cleanupKmsGl();
-      return 1;
-    }
-
-    uint32_t handle = gbm_bo_get_handle(G.kmsBos[i]).u32;
-    uint32_t stride = gbm_bo_get_stride(G.kmsBos[i]);
-    uint32_t handles[4] = {handle, 0, 0, 0};
-    uint32_t pitches[4] = {stride, 0, 0, 0};
-    uint32_t offsets[4] = {0, 0, 0, 0};
-    if (drmModeAddFB2(G.drmFd, scanoutW, scanoutH,
-                      DRM_FORMAT_XRGB8888, handles, pitches, offsets,
-                      &G.kmsFbIds[i], 0) != 0) {
-      perror("drmModeAddFB2");
-      cleanupKmsGl();
-      return 1;
-    }
-  }
-
-  int primeFd = gbm_bo_get_fd(G.kmsBos[0]);
-  if (primeFd >= 0) close(primeFd);
-
-  if (drmModeSetCrtc(G.drmFd, G.kmsCrtcId, G.kmsFbIds[0],
-                     0, 0, &G.kmsConnId, 1, &G.kmsMode) != 0) {
-    perror("drmModeSetCrtc");
-    cleanupKmsGl();
-    return 1;
-  }
-
-  G.eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-  EGLint major = 0;
-  EGLint minor = 0;
-  if (!eglInitialize(G.eglDisplay, &major, &minor)) {
-    fprintf(stderr, "love: eglInitialize failed: 0x%x\n", unsigned(eglGetError()));
-    cleanupKmsGl();
-    return 1;
-  }
-
-  EGLint cfgAttribs[] = {
-      EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-      EGL_RED_SIZE, 8,
-      EGL_GREEN_SIZE, 8,
-      EGL_BLUE_SIZE, 8,
-      EGL_ALPHA_SIZE, 8,
-      EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-      EGL_NONE,
-  };
-  EGLConfig cfg = nullptr;
-  EGLint numCfg = 0;
-  if (!eglChooseConfig(G.eglDisplay, cfgAttribs, &cfg, 1, &numCfg) || numCfg < 1) {
-    fprintf(stderr, "love: eglChooseConfig failed: 0x%x\n", unsigned(eglGetError()));
-    cleanupKmsGl();
-    return 1;
-  }
-  if (!eglBindAPI(EGL_OPENGL_ES_API)) {
-    fprintf(stderr, "love: eglBindAPI failed: 0x%x\n", unsigned(eglGetError()));
-    cleanupKmsGl();
-    return 1;
-  }
-
-  EGLint ctxAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
-  G.eglContext = eglCreateContext(G.eglDisplay, cfg, EGL_NO_CONTEXT, ctxAttribs);
-  if (G.eglContext == EGL_NO_CONTEXT) {
-    fprintf(stderr, "love: eglCreateContext failed: 0x%x\n", unsigned(eglGetError()));
-    cleanupKmsGl();
-    return 1;
-  }
-  G.eglSurface = eglCreateWindowSurface(G.eglDisplay, cfg, 0, nullptr);
-  if (G.eglSurface == EGL_NO_SURFACE) {
-    fprintf(stderr, "love: eglCreateWindowSurface failed: 0x%x\n", unsigned(eglGetError()));
-    cleanupKmsGl();
-    return 1;
-  }
-  if (!eglMakeCurrent(G.eglDisplay, G.eglSurface, G.eglSurface, G.eglContext)) {
-    fprintf(stderr, "love: eglMakeCurrent failed: 0x%x\n", unsigned(eglGetError()));
-    cleanupKmsGl();
-    return 1;
-  }
-
-  if (!buildPresenterProgram()) {
-    cleanupKmsGl();
-    return 1;
-  }
-
-  glGenTextures(1, &G.glTexture);
-  glBindTexture(GL_TEXTURE_2D, G.glTexture);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, G.screen.w, G.screen.h, 0,
-               GL_RGBA, GL_UNSIGNED_BYTE, G.screen.bgra.data());
-
-  const GLfloat verts[] = {
-      -1.0f, -1.0f, 0.0f, 1.0f,
-       1.0f, -1.0f, 1.0f, 1.0f,
-      -1.0f,  1.0f, 0.0f, 0.0f,
-       1.0f,  1.0f, 1.0f, 0.0f,
-  };
-  glGenBuffers(1, &G.glBuffer);
-  glBindBuffer(GL_ARRAY_BUFFER, G.glBuffer);
-  glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
-  glViewport(0, 0, scanoutW, scanoutH);
-  glDisable(GL_DEPTH_TEST);
-  glDisable(GL_STENCIL_TEST);
-  glDisable(GL_BLEND);
-  G.presenter = Presenter::KmsGl;
-  fprintf(stderr, "love: using KMS/EGL/GLES presenter on /dev/dri/card0\n");
-  return 0;
-}
-
-int kmsPageflipWait() {
-  int nextFb = G.kmsCurrentFb ^ 1;
-  if (drmModePageFlip(G.drmFd, G.kmsCrtcId, G.kmsFbIds[nextFb],
-                      DRM_MODE_PAGE_FLIP_EVENT, nullptr) != 0) {
-    perror("drmModePageFlip");
-    return 1;
-  }
-
-  struct drm_event_vblank ev{};
-  for (;;) {
-    ssize_t n = read(G.drmFd, &ev, sizeof(ev));
-    if (n == ssize_t(sizeof(ev))) break;
-    if (n < 0 && errno == EAGAIN) {
-      usleep(1000);
-      continue;
-    }
-    fprintf(stderr, "love: DRM event read failed: n=%zd errno=%d\n", n, errno);
-    return 1;
-  }
-  G.kmsCurrentFb = nextFb;
-  return 0;
-}
-
-int resizeKmsScanout(int width, int height) {
-  if (G.presenter != Presenter::KmsGl || G.drmFd < 0 || G.gbm == nullptr) return 0;
-
-  const int w = std::max(1, width);
-  const int h = std::max(1, height);
-  if (G.kmsMode.hdisplay == w && G.kmsMode.vdisplay == h) return 0;
-
-  gbm_bo *newBos[kKmsBoCount]{};
-  uint32_t newFbIds[kKmsBoCount]{};
-
-  for (int i = 0; i < kKmsBoCount; ++i) {
-    newBos[i] = gbm_bo_create(G.gbm, w, h, GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT);
-    if (!newBos[i]) {
-      perror("gbm_bo_create resize");
-      for (int j = 0; j < i; ++j) {
-        if (newFbIds[j]) drmModeRmFB(G.drmFd, newFbIds[j]);
-        if (newBos[j]) gbm_bo_destroy(newBos[j]);
-      }
-      return 1;
-    }
-
-    uint32_t handle = gbm_bo_get_handle(newBos[i]).u32;
-    uint32_t stride = gbm_bo_get_stride(newBos[i]);
-    uint32_t handles[4] = {handle, 0, 0, 0};
-    uint32_t pitches[4] = {stride, 0, 0, 0};
-    uint32_t offsets[4] = {0, 0, 0, 0};
-    if (drmModeAddFB2(G.drmFd, w, h, DRM_FORMAT_XRGB8888, handles, pitches, offsets,
-                      &newFbIds[i], 0) != 0) {
-      perror("drmModeAddFB2 resize");
-      for (int j = 0; j <= i; ++j) {
-        if (newFbIds[j]) drmModeRmFB(G.drmFd, newFbIds[j]);
-        if (newBos[j]) gbm_bo_destroy(newBos[j]);
-      }
-      return 1;
-    }
-  }
-
-  drmModeModeInfo newMode = G.kmsMode;
-  setKmsModeDimensions(newMode, w, h);
-  if (drmModeSetCrtc(G.drmFd, G.kmsCrtcId, newFbIds[0], 0, 0, &G.kmsConnId, 1,
-                     &newMode) != 0) {
-    perror("drmModeSetCrtc resize");
-    for (int i = 0; i < kKmsBoCount; ++i) {
-      if (newFbIds[i]) drmModeRmFB(G.drmFd, newFbIds[i]);
-      if (newBos[i]) gbm_bo_destroy(newBos[i]);
-    }
-    return 1;
-  }
-
-  for (int i = 0; i < kKmsBoCount; ++i) {
-    if (G.kmsFbIds[i]) drmModeRmFB(G.drmFd, G.kmsFbIds[i]);
-    if (G.kmsBos[i]) gbm_bo_destroy(G.kmsBos[i]);
-    G.kmsBos[i] = newBos[i];
-    G.kmsFbIds[i] = newFbIds[i];
-  }
-  G.kmsMode = newMode;
-  G.kmsCurrentFb = 0;
-  glViewport(0, 0, w, h);
-  return 0;
-}
-
-void flushKmsGl() {
-  if (G.presenter != Presenter::KmsGl) return;
-  glViewport(0, 0, scanoutWidth(), scanoutHeight());
-  glUseProgram(G.glProgram);
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D, G.glTexture);
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, G.screen.w, G.screen.h,
-                  GL_RGBA, GL_UNSIGNED_BYTE, G.screen.bgra.data());
-  glUniform1i(G.glSamplerLoc, 0);
-  glBindBuffer(GL_ARRAY_BUFFER, G.glBuffer);
-  glEnableVertexAttribArray(GLuint(G.glPositionLoc));
-  glEnableVertexAttribArray(GLuint(G.glTexcoordLoc));
-  glVertexAttribPointer(GLuint(G.glPositionLoc), 2, GL_FLOAT, GL_FALSE,
-                        4 * sizeof(GLfloat), reinterpret_cast<void *>(0));
-  glVertexAttribPointer(GLuint(G.glTexcoordLoc), 2, GL_FLOAT, GL_FALSE,
-                        4 * sizeof(GLfloat), reinterpret_cast<void *>(2 * sizeof(GLfloat)));
-  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-  if (!eglSwapBuffers(G.eglDisplay, G.eglSurface)) {
-    fprintf(stderr, "love: eglSwapBuffers failed: 0x%x\n", unsigned(eglGetError()));
-    gRunning = 0;
-    return;
-  }
-  if (kmsPageflipWait() != 0) gRunning = 0;
-}
-
-int openFramebuffer() {
-  G.fbFd = open("/dev/fb0", O_RDWR);
-  if (G.fbFd < 0) {
-    perror("open /dev/fb0");
-    return 1;
-  }
-  fb_var_screeninfo v{};
-  fb_fix_screeninfo f{};
-  if (ioctl(G.fbFd, FBIOGET_VSCREENINFO, &v) == 0) {
-    G.fbW = int(v.xres);
-    G.fbH = int(v.yres);
-  }
-  if (ioctl(G.fbFd, FBIOGET_FSCREENINFO, &f) == 0) {
-    G.fbLen = f.smem_len;
-  } else {
-    G.fbLen = size_t(G.fbW) * G.fbH * 4;
-  }
-  G.fb = static_cast<uint32_t *>(
-    mmap(nullptr, G.fbLen, PROT_READ | PROT_WRITE, MAP_SHARED, G.fbFd, 0));
-  if (G.fb == MAP_FAILED) {
-    G.fb = nullptr;
-    perror("mmap /dev/fb0");
-    return 1;
-  }
-  G.presenter = Presenter::Framebuffer;
-  fprintf(stderr, "love: using /dev/fb0 presenter\n");
-  return 0;
-}
-
 int openPresenter() {
-  // A desktop client must leave DRM master and physical input to its
-  // compositor. Explicit Wayland requests fail if the session is broken.
+  // Use SDL's ordinary window and input backends on both displays. In a
+  // desktop session SDL leaves DRM/input ownership to the compositor; on
+  // KMSDRM SDL owns the display and scales evdev axes using EVIOCGABS.
   const char *driver = getenv("SDL_VIDEODRIVER");
   const char *display = getenv("WAYLAND_DISPLAY");
   const char *runtimeDir = getenv("XDG_RUNTIME_DIR");
@@ -1719,69 +1114,51 @@ int openPresenter() {
   struct stat st{};
   bool wayland = driver ? std::string(driver) == "wayland"
       : (display && *display) || (stat(socket.c_str(), &st) == 0 && S_ISSOCK(st.st_mode));
-  if (wayland) {
-    SDL_SetHint(SDL_HINT_VIDEODRIVER, "wayland");
-    SDL_SetHint(SDL_HINT_APP_NAME, "LÖVE");
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
-      fprintf(stderr, "love: Wayland initialization failed: %s\n", SDL_GetError());
-      return 1;
-    }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-    G.window = SDL_CreateWindow(G.windowTitle.c_str(), SDL_WINDOWPOS_UNDEFINED,
-        SDL_WINDOWPOS_UNDEFINED, G.windowW, G.windowH,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
-    if (G.window) G.windowContext = SDL_GL_CreateContext(G.window);
-    if (!G.window || !G.windowContext) {
-      fprintf(stderr, "love: Wayland EGL window failed: %s\n", SDL_GetError());
-      if (G.window) SDL_DestroyWindow(G.window);
-      G.window = nullptr;
-      SDL_Quit();
-      return 1;
-    }
-    SDL_DisplayMode mode{};
-    if (SDL_GetDesktopDisplayMode(0, &mode) == 0) {
-      G.desktopW = mode.w;
-      G.desktopH = mode.h;
-    }
-    SDL_GetWindowSize(G.window, &G.windowW, &G.windowH);
-    SDL_StartTextInput();
-    G.mouseVisible = SDL_ShowCursor(SDL_QUERY) == SDL_ENABLE;
-    G.presenter = Presenter::WaylandGl;
-    fprintf(stderr, "love: using SDL2 Wayland/EGL presenter\n");
-    return 0;
+  if (!driver) SDL_SetHint(SDL_HINT_VIDEODRIVER, wayland ? "wayland" : "kmsdrm");
+  if (!wayland && !getenv("SDL_EVDEV_DEVICES")) {
+    // This build has no udev. SDL's supported device-list override lets its
+    // evdev backend discover the kernel's keyboard and absolute pointer.
+    setenv("SDL_EVDEV_DEVICES", "2:/dev/input/event0,1:/dev/input/event1", 0);
   }
-  if (setupKmsGl() == 0) return 0;
-  fprintf(stderr, "love: falling back to /dev/fb0 presenter\n");
-  return openFramebuffer();
-}
-
-void presentFrame() {
-  if (G.presenter == Presenter::KmsGl) flushKmsGl();
-  else flushFramebuffer();
+  SDL_SetHint(SDL_HINT_APP_NAME, "LÖVE");
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
+    fprintf(stderr, "love: SDL2 video initialization failed: %s\n", SDL_GetError());
+    return 1;
+  }
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+  G.window = SDL_CreateWindow(G.windowTitle.c_str(), SDL_WINDOWPOS_UNDEFINED,
+      SDL_WINDOWPOS_UNDEFINED, G.windowW, G.windowH,
+      SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+  if (G.window) G.windowContext = SDL_GL_CreateContext(G.window);
+  if (!G.window || !G.windowContext) {
+    fprintf(stderr, "love: SDL2 EGL window failed: %s\n", SDL_GetError());
+    if (G.window) SDL_DestroyWindow(G.window);
+    G.window = nullptr;
+    SDL_Quit();
+    return 1;
+  }
+  SDL_DisplayMode mode{};
+  if (SDL_GetDesktopDisplayMode(0, &mode) == 0) {
+    G.desktopW = mode.w;
+    G.desktopH = mode.h;
+  }
+  SDL_GetWindowSize(G.window, &G.windowW, &G.windowH);
+  SDL_StartTextInput();
+  G.presenter = Presenter::SdlGl;
+  fprintf(stderr, "love: using SDL2 %s/EGL presenter\n", wayland ? "Wayland" : "KMSDRM");
+  return 0;
 }
 
 bool nativeSwapBuffers() {
-  if (G.presenter == Presenter::WaylandGl) {
-    SDL_ClearError();
-    SDL_GL_SwapWindow(G.window);
-    if (*SDL_GetError()) {
-      fprintf(stderr, "love: Wayland swap failed: %s\n", SDL_GetError());
-      gRunning = 0;
-      return false;
-    }
-    return true;
-  }
-  if (G.presenter != Presenter::KmsGl) return false;
-  if (!eglSwapBuffers(G.eglDisplay, G.eglSurface)) {
-    fprintf(stderr, "love: eglSwapBuffers failed: 0x%x\n", unsigned(eglGetError()));
-    gRunning = 0;
-    return false;
-  }
-  if (kmsPageflipWait() != 0) {
+  if (!G.window) return false;
+  SDL_ClearError();
+  SDL_GL_SwapWindow(G.window);
+  if (*SDL_GetError()) {
+    fprintf(stderr, "love: SDL2 swap failed: %s\n", SDL_GetError());
     gRunning = 0;
     return false;
   }
@@ -1791,79 +1168,10 @@ bool nativeSwapBuffers() {
 void cleanupPresenter() {
   if (G.windowContext) SDL_GL_DeleteContext(G.windowContext);
   if (G.window) SDL_DestroyWindow(G.window);
-  if (G.presenter == Presenter::WaylandGl) SDL_Quit();
+  SDL_Quit();
   G.windowContext = nullptr;
   G.window = nullptr;
-  if (G.presenter == Presenter::KmsGl) cleanupKmsGl();
-  if (G.fb) {
-    munmap(G.fb, G.fbLen);
-    G.fb = nullptr;
-  }
-  if (G.fbFd >= 0) {
-    close(G.fbFd);
-    G.fbFd = -1;
-  }
   G.presenter = Presenter::None;
-}
-
-std::string keyName(int code) {
-  static const std::map<int, std::string> names = {
-    {1, "escape"}, {14, "backspace"}, {15, "tab"}, {28, "return"},
-    {57, "space"}, {103, "up"}, {108, "down"}, {105, "left"},
-    {106, "right"}, {102, "home"}, {107, "end"}, {110, "insert"},
-    {111, "delete"}, {104, "pageup"}, {109, "pagedown"},
-    {42, "lshift"}, {54, "rshift"}, {29, "lctrl"}, {97, "rctrl"},
-    {56, "lalt"}, {100, "ralt"},
-    {2, "1"}, {3, "2"}, {4, "3"}, {5, "4"}, {6, "5"},
-    {7, "6"}, {8, "7"}, {9, "8"}, {10, "9"}, {11, "0"},
-    {16, "q"}, {17, "w"}, {18, "e"}, {19, "r"}, {20, "t"},
-    {21, "y"}, {22, "u"}, {23, "i"}, {24, "o"}, {25, "p"},
-    {30, "a"}, {31, "s"}, {32, "d"}, {33, "f"}, {34, "g"},
-    {35, "h"}, {36, "j"}, {37, "k"}, {38, "l"},
-    {44, "z"}, {45, "x"}, {46, "c"}, {47, "v"}, {48, "b"},
-    {49, "n"}, {50, "m"}, {12, "-"}, {13, "="}, {26, "["},
-    {27, "]"}, {39, ";"}, {40, "'"}, {41, "`"}, {43, "\\"},
-    {51, ","}, {52, "."}, {53, "/"},
-  };
-  auto it = names.find(code);
-  return it == names.end() ? "" : it->second;
-}
-
-bool shiftDown() {
-  return G.keys.count("lshift") || G.keys.count("rshift");
-}
-
-std::string textForKeyCode(int code, bool shifted) {
-  if (code >= 16 && code <= 25) {
-    const char *row = "qwertyuiop";
-    char c = row[code - 16];
-    if (shifted) c = char(c - 'a' + 'A');
-    return std::string(1, c);
-  }
-  if (code >= 30 && code <= 38) {
-    const char *row = "asdfghjkl";
-    char c = row[code - 30];
-    if (shifted) c = char(c - 'a' + 'A');
-    return std::string(1, c);
-  }
-  if (code >= 44 && code <= 50) {
-    const char *row = "zxcvbnm";
-    char c = row[code - 44];
-    if (shifted) c = char(c - 'a' + 'A');
-    return std::string(1, c);
-  }
-
-  static const std::map<int, std::pair<char, char>> printable = {
-    {2, {'1', '!'}}, {3, {'2', '@'}}, {4, {'3', '#'}}, {5, {'4', '$'}},
-    {6, {'5', '%'}}, {7, {'6', '^'}}, {8, {'7', '&'}}, {9, {'8', '*'}},
-    {10, {'9', '('}}, {11, {'0', ')'}}, {12, {'-', '_'}}, {13, {'=', '+'}},
-    {26, {'[', '{'}}, {27, {']', '}'}}, {39, {';', ':'}}, {40, {'\'', '"'}},
-    {41, {'`', '~'}}, {43, {'\\', '|'}}, {51, {',', '<'}}, {52, {'.', '>'}},
-    {53, {'/', '?'}}, {57, {' ', ' '}},
-  };
-  auto it = printable.find(code);
-  if (it == printable.end()) return "";
-  return std::string(1, shifted ? it->second.second : it->second.first);
 }
 
 EventArg stringArg(const std::string &value);
@@ -1909,7 +1217,7 @@ std::string sdlScancodeName(SDL_Scancode scancode) {
   return name;
 }
 
-void pollWaylandInput() {
+void pollSdlInput() {
   SDL_Event event;
   while (SDL_PollEvent(&event)) {
     switch (event.type) {
@@ -2004,74 +1312,15 @@ void pollWaylandInput() {
 }
 
 void pollInput() {
-  G.keyEvents.clear();
-  G.mouseEvents.clear();
   G.mouseDx = 0;
   G.mouseDy = 0;
-  G.wheelX = G.wheelY = 0;
   // Signals cannot allocate Lua events in their handler. Deliver the request
   // here so custom love.run loops receive the same quit event as other loops.
   if (gQuitRequested || !gRunning) {
-    LoveEvent quit;
-    quit.name = "quit";
-    G.queuedEvents.push_back(std::move(quit));
+    G.queuedEvents.push_back({"quit", {}});
     gQuitRequested = 0;
   }
-  if (G.presenter == Presenter::WaylandGl) {
-    pollWaylandInput();
-    return;
-  }
-
-  input_event events[32];
-  for (;;) {
-    ssize_t n = read(G.keyboardFd, events, sizeof(events));
-    if (n <= 0) break;
-    for (ssize_t i = 0; i < n / ssize_t(sizeof(input_event)); ++i) {
-      if (events[i].type != EV_KEY) continue;
-      bool pressed = events[i].value != 0;
-      int code = events[i].code;
-      std::string key = keyName(code);
-      if (key.empty()) continue;
-      if (pressed) G.keys.insert(key);
-      else G.keys.erase(key);
-      std::string text = pressed && G.textInputEnabled ? textForKeyCode(code, shiftDown()) : "";
-      bool repeat = events[i].value == 2;
-      if (repeat && !G.keyRepeat) {
-        if (!text.empty()) G.queuedEvents.push_back({"textinput", {stringArg(text)}});
-        continue;
-      }
-      G.keyEvents.push_back({key, text, pressed, repeat});
-    }
-  }
-
-  for (;;) {
-    ssize_t n = read(G.pointerFd, events, sizeof(events));
-    if (n <= 0) break;
-    for (ssize_t i = 0; i < n / ssize_t(sizeof(input_event)); ++i) {
-      const auto &event = events[i];
-      if (event.type == EV_ABS && event.code == ABS_X) {
-        int x = clampInt(event.value, 0, std::max(1, G.windowW) - 1);
-        G.mouseDx += x - G.mouseX;
-        G.mouseX = x;
-      } else if (event.type == EV_ABS && event.code == ABS_Y) {
-        int y = clampInt(event.value, 0, std::max(1, G.windowH) - 1);
-        G.mouseDy += y - G.mouseY;
-        G.mouseY = y;
-      } else if (event.type == EV_KEY) {
-        int button = event.code == BTN_LEFT ? 1 : event.code == BTN_RIGHT ? 2 : event.code == BTN_MIDDLE ? 3 : 0;
-        if (!button) continue;
-        int bit = 1 << (button - 1);
-        bool pressed = event.value != 0;
-        if (((G.mouseButtons & bit) != 0) == pressed) continue;
-        if (pressed) G.mouseButtons |= bit;
-        else G.mouseButtons &= ~bit;
-        G.mouseEvents.push_back({G.mouseX, G.mouseY, button, pressed});
-      } else if (event.type == EV_REL) {
-        if (event.code == REL_WHEEL) G.wheelY += event.value;
-        else if (event.code == REL_HWHEEL) G.wheelX += event.value;
-      }
-    }
-  }
+  pollSdlInput();
 }
 
 EventArg stringArg(const std::string &value) {
@@ -2109,56 +1358,6 @@ void pushEventArg(lua_State *L, const EventArg &arg) {
   }
 }
 
-void queueNativeInputEvents() {
-  // SDL events already carry their ordered key/text/mouse sequence. Folding
-  // them into the evdev frame aggregates would reorder console text input.
-  if (G.presenter == Presenter::WaylandGl) return;
-  if (G.wheelX || G.wheelY) {
-    LoveEvent wheel;
-    wheel.name = "wheelmoved";
-    wheel.args.push_back(numberArg(G.wheelX));
-    wheel.args.push_back(numberArg(G.wheelY));
-    G.queuedEvents.push_back(std::move(wheel));
-  }
-  for (const KeyEvent &e : G.keyEvents) {
-    LoveEvent ev;
-    ev.name = e.pressed ? "keypressed" : "keyreleased";
-    ev.args.push_back(stringArg(e.key));
-    ev.args.push_back(stringArg(e.key));
-    if (e.pressed) ev.args.push_back(booleanArg(e.repeat));
-    G.queuedEvents.push_back(std::move(ev));
-
-    if (e.pressed && !e.text.empty()) {
-      LoveEvent text;
-      text.name = "textinput";
-      text.args.push_back(stringArg(e.text));
-      G.queuedEvents.push_back(std::move(text));
-    }
-  }
-
-  if (G.mouseDx || G.mouseDy) {
-    LoveEvent ev;
-    ev.name = "mousemoved";
-    ev.args.push_back(numberArg(G.mouseX));
-    ev.args.push_back(numberArg(G.mouseY));
-    ev.args.push_back(numberArg(G.mouseDx));
-    ev.args.push_back(numberArg(G.mouseDy));
-    ev.args.push_back(booleanArg(false));
-    G.queuedEvents.push_back(std::move(ev));
-  }
-
-  for (const MouseButtonEvent &e : G.mouseEvents) {
-    LoveEvent ev;
-    ev.name = e.pressed ? "mousepressed" : "mousereleased";
-    ev.args.push_back(numberArg(e.x));
-    ev.args.push_back(numberArg(e.y));
-    ev.args.push_back(numberArg(e.button));
-    ev.args.push_back(booleanArg(false));
-    if (e.pressed) ev.args.push_back(numberArg(1));
-    G.queuedEvents.push_back(std::move(ev));
-  }
-}
-
 void signalHandler(int) {
   gQuitRequested = 1;
 }
@@ -2169,7 +1368,6 @@ int gcCanvas(lua_State *L) { delete checkObj<Surface>(L, 1, MT_CANVAS); return 0
 int gcQuad(lua_State *L) { delete checkObj<Quad>(L, 1, MT_QUAD); return 0; }
 int gcText(lua_State *L) { delete checkObj<Text>(L, 1, MT_TEXT); return 0; }
 int gcMesh(lua_State *L) { delete checkObj<Mesh>(L, 1, MT_MESH); return 0; }
-int gcSource(lua_State *L) { delete checkObj<Source>(L, 1, MT_SOURCE); return 0; }
 int gcFile(lua_State *L) {
   FileHandle *f = checkObj<FileHandle>(L, 1, MT_FILE);
   if (f->fp) fclose(f->fp);
@@ -2519,8 +1717,8 @@ int l_g_getSystemLimits(lua_State *L) {
 int l_g_getSupported(lua_State *L) { lua_newtable(L); return 1; }
 int l_g_getRendererInfo(lua_State *L) {
   lua_pushstring(L, "Kandelo");
-  lua_pushstring(L, G.presenter == Presenter::KmsGl ? "love-kms-gles" : "lovefb");
-  lua_pushstring(L, G.presenter == Presenter::KmsGl ? "GLES2" : "software");
+  lua_pushstring(L, G.presenter == Presenter::SdlGl ? "love-kms-gles" : "lovefb");
+  lua_pushstring(L, G.presenter == Presenter::SdlGl ? "GLES2" : "software");
   lua_pushstring(L, "1.0");
   return 4;
 }
@@ -2540,7 +1738,7 @@ int l_g_setDepthMode(lua_State *L) {
   const char *mode = luaL_optstring(L, 1, "always");
   G.depthCompare = mode ? mode : "always";
   G.depthWrite = lua_toboolean(L, 2) != 0;
-  if (G.presenter == Presenter::KmsGl) {
+  if (G.presenter == Presenter::SdlGl) {
     if (G.depthCompare == "always" && !G.depthWrite) {
       glDisable(GL_DEPTH_TEST);
     } else {
@@ -2570,7 +1768,7 @@ int l_g_getDepthMode(lua_State *L) {
 int l_g_setMeshCullMode(lua_State *L) {
   const char *mode = luaL_optstring(L, 1, "none");
   G.meshCullMode = mode ? mode : "none";
-  if (G.presenter == Presenter::KmsGl) {
+  if (G.presenter == Presenter::SdlGl) {
     if (G.meshCullMode == "none") {
       glDisable(GL_CULL_FACE);
     } else {
@@ -3140,39 +2338,6 @@ int l_key_hasScreenKeyboard(lua_State *L) {
   return 1;
 }
 
-int l_mouse_getPosition(lua_State *L) { lua_pushinteger(L, G.mouseX); lua_pushinteger(L, G.mouseY); return 2; }
-int l_mouse_getX(lua_State *L) { lua_pushinteger(L, G.mouseX); return 1; }
-int l_mouse_getY(lua_State *L) { lua_pushinteger(L, G.mouseY); return 1; }
-int l_mouse_setPosition(lua_State *L) {
-  G.mouseX = clampInt(int(luaL_checknumber(L, 1)), 0, std::max(1, G.windowW) - 1);
-  G.mouseY = clampInt(int(luaL_checknumber(L, 2)), 0, std::max(1, G.windowH) - 1);
-  return 0;
-}
-int l_mouse_isDown(lua_State *L) {
-  int b = int(luaL_checkinteger(L, 1));
-  int bit = b == 1 ? 0 : (b == 2 ? 1 : 2);
-  lua_pushboolean(L, (G.mouseButtons & (1 << bit)) != 0);
-  return 1;
-}
-int l_mouse_setVisible(lua_State *L) {
-  G.mouseVisible = lua_toboolean(L, 1);
-  if (G.window) SDL_ShowCursor(G.mouseVisible ? SDL_ENABLE : SDL_DISABLE);
-  return 0;
-}
-int l_mouse_isVisible(lua_State *L) { lua_pushboolean(L, G.mouseVisible); return 1; }
-int l_mouse_setRelativeMode(lua_State *L) {
-  bool enabled = lua_toboolean(L, 1) != 0;
-  bool ok = !G.window || SDL_SetRelativeMouseMode(enabled ? SDL_TRUE : SDL_FALSE) == 0;
-  if (ok) G.mouseRelativeMode = enabled;
-  lua_pushboolean(L, ok);
-  return 1;
-}
-int l_mouse_getRelativeMode(lua_State *L) { lua_pushboolean(L, G.mouseRelativeMode); return 1; }
-int l_mouse_newCursor(lua_State *L) { lua_newtable(L); return 1; }
-int l_mouse_setCursor(lua_State *) { return 0; }
-int l_mouse_setGrabbed(lua_State *) { return 0; }
-int l_mouse_getSystemCursor(lua_State *L) { lua_newtable(L); return 1; }
-
 int l_timer_getTime(lua_State *L) { lua_pushnumber(L, nowSeconds() - G.start); return 1; }
 int l_timer_getDelta(lua_State *L) { lua_pushnumber(L, G.dt); return 1; }
 int l_timer_getFPS(lua_State *L) { lua_pushinteger(L, G.fps); return 1; }
@@ -3242,117 +2407,6 @@ int l_window_getDesktopDimensions(lua_State *L) {
 int l_window_getDisplayCount(lua_State *L) { lua_pushinteger(L, 1); return 1; }
 
 // ── audio, math, event, system compatibility ─────────────────────────────
-
-int l_audio_newSource(lua_State *L) {
-  Source *s = new Source;
-  if (lua_type(L, 1) == LUA_TSTRING) readWavSourceInfo(lua_tostring(L, 1), *s);
-  pushObj(L, s, MT_SOURCE);
-  return 1;
-}
-int l_source_clone(lua_State *L) {
-  Source *src = checkObj<Source>(L, 1, MT_SOURCE);
-  pushObj(L, new Source(*src), MT_SOURCE);
-  return 1;
-}
-int l_source_setVolume(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->volume = luaL_optnumber(L, 2, 1); return 0; }
-int l_source_getVolume(lua_State *L) { lua_pushnumber(L, checkObj<Source>(L, 1, MT_SOURCE)->volume); return 1; }
-int l_source_setPitch(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->pitch = luaL_optnumber(L, 2, 1); return 0; }
-int l_source_getPitch(lua_State *L) { lua_pushnumber(L, checkObj<Source>(L, 1, MT_SOURCE)->pitch); return 1; }
-int l_source_setPosition(lua_State *L) {
-  Source *s = checkObj<Source>(L, 1, MT_SOURCE);
-  s->x = luaL_optnumber(L, 2, 0);
-  s->y = luaL_optnumber(L, 3, 0);
-  s->z = luaL_optnumber(L, 4, 0);
-  return 0;
-}
-int l_source_getPosition(lua_State *L) {
-  Source *s = checkObj<Source>(L, 1, MT_SOURCE);
-  lua_pushnumber(L, s->x);
-  lua_pushnumber(L, s->y);
-  lua_pushnumber(L, s->z);
-  return 3;
-}
-int l_source_setOrientation(lua_State *L) {
-  Source *s = checkObj<Source>(L, 1, MT_SOURCE);
-  s->fx = luaL_optnumber(L, 2, 0);
-  s->fy = luaL_optnumber(L, 3, 0);
-  s->fz = luaL_optnumber(L, 4, -1);
-  s->ux = luaL_optnumber(L, 5, 0);
-  s->uy = luaL_optnumber(L, 6, 1);
-  s->uz = luaL_optnumber(L, 7, 0);
-  return 0;
-}
-int l_source_getOrientation(lua_State *L) {
-  Source *s = checkObj<Source>(L, 1, MT_SOURCE);
-  lua_pushnumber(L, s->fx);
-  lua_pushnumber(L, s->fy);
-  lua_pushnumber(L, s->fz);
-  lua_pushnumber(L, s->ux);
-  lua_pushnumber(L, s->uy);
-  lua_pushnumber(L, s->uz);
-  return 6;
-}
-int l_source_setRelative(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->relative = lua_toboolean(L, 2); return 0; }
-int l_source_isRelative(lua_State *L) { lua_pushboolean(L, checkObj<Source>(L, 1, MT_SOURCE)->relative); return 1; }
-int l_source_setAttenuationDistances(lua_State *L) {
-  Source *s = checkObj<Source>(L, 1, MT_SOURCE);
-  s->attenuationRef = luaL_optnumber(L, 2, 0);
-  s->attenuationMax = luaL_optnumber(L, 3, 0);
-  return 0;
-}
-int l_source_getDuration(lua_State *L) { lua_pushnumber(L, checkObj<Source>(L, 1, MT_SOURCE)->duration); return 1; }
-int l_source_getChannelCount(lua_State *L) { lua_pushinteger(L, checkObj<Source>(L, 1, MT_SOURCE)->channelCount); return 1; }
-int l_source_setLooping(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->looping = lua_toboolean(L, 2); return 0; }
-int l_source_isLooping(lua_State *L) { lua_pushboolean(L, checkObj<Source>(L, 1, MT_SOURCE)->looping); return 1; }
-int l_source_play(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->playing = false; lua_pushboolean(L, 0); return 1; }
-int l_source_pause(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->playing = false; return 0; }
-int l_source_stop(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->playing = false; return 0; }
-int l_source_isPlaying(lua_State *L) { lua_pushboolean(L, checkObj<Source>(L, 1, MT_SOURCE)->playing); return 1; }
-int l_source_isStopped(lua_State *L) { lua_pushboolean(L, !checkObj<Source>(L, 1, MT_SOURCE)->playing); return 1; }
-int l_source_seek(lua_State *L) { checkObj<Source>(L, 1, MT_SOURCE)->cursor = luaL_optnumber(L, 2, 0); return 0; }
-int l_source_setEffect(lua_State *) { return 0; }
-int l_audio_setEffect(lua_State *) { return 0; }
-int l_audio_play(lua_State *L) {
-  int top = lua_gettop(L);
-  for (int i = 1; i <= top; ++i) {
-    if (luaL_testudata(L, i, MT_SOURCE)) {
-      checkObj<Source>(L, i, MT_SOURCE)->playing = false;
-    }
-  }
-  return 0;
-}
-int l_audio_setVolume(lua_State *) { return 0; }
-int l_audio_setPosition(lua_State *L) {
-  G.audioX = luaL_optnumber(L, 1, 0);
-  G.audioY = luaL_optnumber(L, 2, 0);
-  G.audioZ = luaL_optnumber(L, 3, 0);
-  return 0;
-}
-int l_audio_getPosition(lua_State *L) {
-  lua_pushnumber(L, G.audioX);
-  lua_pushnumber(L, G.audioY);
-  lua_pushnumber(L, G.audioZ);
-  return 3;
-}
-int l_audio_setOrientation(lua_State *L) {
-  G.audioFx = luaL_optnumber(L, 1, 0);
-  G.audioFy = luaL_optnumber(L, 2, 0);
-  G.audioFz = luaL_optnumber(L, 3, -1);
-  G.audioUx = luaL_optnumber(L, 4, 0);
-  G.audioUy = luaL_optnumber(L, 5, 1);
-  G.audioUz = luaL_optnumber(L, 6, 0);
-  return 0;
-}
-int l_audio_getOrientation(lua_State *L) {
-  lua_pushnumber(L, G.audioFx);
-  lua_pushnumber(L, G.audioFy);
-  lua_pushnumber(L, G.audioFz);
-  lua_pushnumber(L, G.audioUx);
-  lua_pushnumber(L, G.audioUy);
-  lua_pushnumber(L, G.audioUz);
-  return 6;
-}
-int l_audio_setDistanceModel(lua_State *) { return 0; }
 
 int l_math_random(lua_State *L) {
   int top = lua_gettop(L);
@@ -3428,7 +2482,6 @@ int l_event_push(lua_State *L) {
 }
 int l_event_pump(lua_State *) {
   pollInput();
-  queueNativeInputEvents();
   return 0;
 }
 
@@ -3775,21 +2828,6 @@ void registerLove(lua_State *L) {
   const luaL_Reg text[] = {{"getWidth", l_text_getWidth}, {"getHeight", l_text_getHeight}, {nullptr, nullptr}};
   const luaL_Reg file[] = {{"open", l_file_open}, {"read", l_file_read}, {"close", l_file_close}, {nullptr, nullptr}};
   const luaL_Reg video[] = {{"getWidth", l_video_getWidth}, {"getHeight", l_video_getHeight}, {"play", l_video_play}, {"pause", l_video_pause}, {"isPlaying", l_video_isPlaying}, {"seek", l_video_seek}, {"tell", l_video_tell}, {"getSource", l_video_getSource}, {nullptr, nullptr}};
-  const luaL_Reg source[] = {
-    {"clone", l_source_clone},
-    {"setVolume", l_source_setVolume}, {"getVolume", l_source_getVolume},
-    {"setPitch", l_source_setPitch}, {"getPitch", l_source_getPitch},
-    {"setPosition", l_source_setPosition}, {"getPosition", l_source_getPosition},
-    {"setOrientation", l_source_setOrientation}, {"getOrientation", l_source_getOrientation},
-    {"setRelative", l_source_setRelative}, {"isRelative", l_source_isRelative},
-    {"setAttenuationDistances", l_source_setAttenuationDistances},
-    {"getDuration", l_source_getDuration}, {"getChannelCount", l_source_getChannelCount},
-    {"setLooping", l_source_setLooping}, {"isLooping", l_source_isLooping},
-    {"play", l_source_play}, {"pause", l_source_pause}, {"stop", l_source_stop},
-    {"isPlaying", l_source_isPlaying}, {"isStopped", l_source_isStopped},
-    {"seek", l_source_seek}, {"setEffect", l_source_setEffect},
-    {nullptr, nullptr}
-  };
   const luaL_Reg shader[] = {{"send", l_shader_send}, {nullptr, nullptr}};
   const luaL_Reg mesh[] = {{"setTexture", l_mesh_setTexture}, {"setVertices", l_mesh_setVertices}, {"release", l_mesh_release}, {nullptr, nullptr}};
   const luaL_Reg world[] = {{"update", l_world_update}, {"setGravity", l_world_setGravity}, {"setCallbacks", l_world_setCallbacks}, {"getBodies", l_world_getBodies}, {"destroy", l_world_destroy}, {"rayCast", l_world_rayCast}, {nullptr, nullptr}};
@@ -3806,7 +2844,6 @@ void registerLove(lua_State *L) {
   createMeta(L, MT_FILE, file, gcFile);
   createMeta(L, MT_VIDEO, video, gcVideo);
   createMeta(L, MT_MESH, mesh, gcMesh);
-  createMeta(L, MT_SOURCE, source, gcSource);
   createMeta(L, MT_SHADER, shader);
   createMeta(L, MT_WORLD, world);
   createMeta(L, MT_BODY, body);
@@ -3857,25 +2894,9 @@ void registerLove(lua_State *L) {
     {"hasScreenKeyboard", l_key_hasScreenKeyboard},
     {nullptr, nullptr},
   };
-  const luaL_Reg mouse[] = {
-    {"getPosition", l_mouse_getPosition}, {"getX", l_mouse_getX}, {"getY", l_mouse_getY},
-    {"setPosition", l_mouse_setPosition}, {"isDown", l_mouse_isDown},
-    {"setVisible", l_mouse_setVisible}, {"isVisible", l_mouse_isVisible},
-    {"setRelativeMode", l_mouse_setRelativeMode}, {"getRelativeMode", l_mouse_getRelativeMode},
-    {"newCursor", l_mouse_newCursor}, {"setCursor", l_mouse_setCursor},
-    {"setGrabbed", l_mouse_setGrabbed}, {"getSystemCursor", l_mouse_getSystemCursor}, {nullptr, nullptr},
-  };
   const luaL_Reg timer[] = {{"getTime", l_timer_getTime}, {"getDelta", l_timer_getDelta}, {"getFPS", l_timer_getFPS}, {"sleep", l_timer_sleep}, {"step", l_timer_step}, {nullptr, nullptr}};
   const luaL_Reg window[] = {{"setTitle", l_window_setTitle}, {"setMode", l_window_setMode}, {"getMode", l_window_getMode}, {"setFullscreen", l_window_setFullscreen}, {"getFullscreen", l_window_getFullscreen}, {"setIcon", l_window_setIcon}, {"getFullscreenModes", l_window_getFullscreenModes}, {"getDesktopDimensions", l_window_getDesktopDimensions}, {"getDisplayCount", l_window_getDisplayCount}, {nullptr, nullptr}};
   const luaL_Reg physics[] = {{"setMeter", l_phys_setMeter}, {"newWorld", l_phys_newWorld}, {"newBody", l_phys_newBody}, {"newRectangleShape", l_phys_newRectangleShape}, {"newEdgeShape", l_phys_newEdgeShape}, {"newCircleShape", l_phys_newCircleShape}, {"newPolygonShape", l_phys_newPolygonShape}, {"newChainShape", l_phys_newChainShape}, {"newRevoluteJoint", l_phys_newRevoluteJoint}, {"newFixture", l_phys_newFixture}, {nullptr, nullptr}};
-  const luaL_Reg audio[] = {
-    {"newSource", l_audio_newSource}, {"play", l_audio_play},
-    {"setEffect", l_audio_setEffect}, {"setVolume", l_audio_setVolume},
-    {"setPosition", l_audio_setPosition}, {"getPosition", l_audio_getPosition},
-    {"setOrientation", l_audio_setOrientation}, {"getOrientation", l_audio_getOrientation},
-    {"setDistanceModel", l_audio_setDistanceModel},
-    {nullptr, nullptr}
-  };
   const luaL_Reg mathMod[] = {{"random", l_math_random}, {"setRandomSeed", l_math_setRandomSeed}, {"atan2", l_math_atan2}, {"isConvex", l_math_isConvex}, {"triangulate", l_math_triangulate}, {"newRandomGenerator", l_math_newRandomGenerator}, {nullptr, nullptr}};
   const luaL_Reg event[] = {{"quit", l_event_quit}, {"push", l_event_push}, {"pump", l_event_pump}, {"poll", l_event_poll}, {nullptr, nullptr}};
   const luaL_Reg system[] = {{"openURL", l_system_openURL}, {nullptr, nullptr}};
@@ -3885,11 +2906,10 @@ void registerLove(lua_State *L) {
   setModule(L, "filesystem", fs);
   setModule(L, "image", imageMod);
   setModule(L, "keyboard", keyboard);
-  setModule(L, "mouse", mouse);
   setModule(L, "timer", timer);
   setModule(L, "window", window);
   setModule(L, "physics", physics);
-  setModule(L, "audio", audio);
+  kandelo_love_register_audio(L, G.root.c_str());
   setModule(L, "math", mathMod);
   setModule(L, "event", event);
   setModule(L, "system", system);
@@ -4022,43 +3042,6 @@ void dispatchQueuedEvents(lua_State *L) {
 }
 
 void dispatchInput(lua_State *L) {
-  if (G.presenter == Presenter::WaylandGl) {
-    dispatchQueuedEvents(L);
-    return;
-  }
-  if (G.wheelX || G.wheelY) {
-    lua_pushinteger(L, G.wheelX);
-    lua_pushinteger(L, G.wheelY);
-    callLove(L, "wheelmoved", 2);
-  }
-  for (const KeyEvent &e : G.keyEvents) {
-    lua_pushstring(L, e.key.c_str());
-    lua_pushstring(L, e.key.c_str());
-    if (e.pressed) {
-      lua_pushboolean(L, e.repeat);
-      callLove(L, "keypressed", 3);
-      if (!e.text.empty()) {
-        lua_pushlstring(L, e.text.data(), e.text.size());
-        callLove(L, "textinput", 1);
-      }
-    } else {
-      callLove(L, "keyreleased", 2);
-    }
-  }
-  if (G.mouseDx || G.mouseDy) {
-    lua_pushinteger(L, G.mouseX);
-    lua_pushinteger(L, G.mouseY);
-    lua_pushinteger(L, G.mouseDx);
-    lua_pushinteger(L, G.mouseDy);
-    callLove(L, "mousemoved", 4);
-  }
-  for (const MouseButtonEvent &e : G.mouseEvents) {
-    lua_pushinteger(L, e.x);
-    lua_pushinteger(L, e.y);
-    lua_pushinteger(L, e.button);
-    lua_pushboolean(L, 0);
-    callLove(L, e.pressed ? "mousepressed" : "mousereleased", 4);
-  }
   dispatchQueuedEvents(L);
 }
 
@@ -4195,7 +3178,6 @@ bool runGameProvidedLoop(lua_State *L) {
 }
 
 int runLove(lua_State *L) {
-  fprintf(stderr, "love: audio output is unavailable in this port; running silently\n");
   registerLove(L);
   love::luax_insistpinnedthread(L);
   configureLuaPath(L);
@@ -4203,11 +3185,11 @@ int runLove(lua_State *L) {
   maybeRunConf(L);
   resizeSoftwareScreen(G.windowW, G.windowH);
   if (openPresenter() != 0) return 1;
-  if (G.presenter != Presenter::KmsGl && G.presenter != Presenter::WaylandGl) {
+  if (G.presenter != Presenter::SdlGl) {
     fprintf(stderr, "love: native EGL rendering is required by this port\n");
     return 1;
   }
-  if (G.presenter == Presenter::KmsGl || G.presenter == Presenter::WaylandGl) {
+  if (G.presenter == Presenter::SdlGl) {
     int pixelW = G.windowW, pixelH = G.windowH;
     if (G.window) SDL_GL_GetDrawableSize(G.window, &pixelW, &pixelH);
     G.nativeRenderer = kandelo_love_register_native_renderer(
@@ -4216,18 +3198,9 @@ int runLove(lua_State *L) {
         nativeSwapBuffers);
     if (G.nativeRenderer) {
       fprintf(stderr, "love: using upstream LÖVE OpenGL renderer on Kandelo %s/EGL\n",
-              G.window ? "Wayland" : "KMS");
+              std::string(SDL_GetCurrentVideoDriver()) == "wayland" ? "Wayland" : "KMS");
     } else {
       fprintf(stderr, "love: upstream renderer unavailable on Kandelo KMS/EGL\n");
-      return 1;
-    }
-  }
-
-  if (!G.window) {
-    G.keyboardFd = open("/dev/input/event0", O_RDONLY | O_NONBLOCK);
-    G.pointerFd = open("/dev/input/event1", O_RDONLY | O_NONBLOCK);
-    if (G.keyboardFd < 0 || G.pointerFd < 0) {
-      perror("love: open physical input devices");
       return 1;
     }
   }
@@ -4267,34 +3240,11 @@ int runLove(lua_State *L) {
     lua_pushnumber(L, G.dt);
     callLove(L, "update", 1);
 
-    if (G.nativeRenderer) {
-      callLoveModule(L, "graphics", "origin", 0);
-      clearNativeBackground(L);
-      callLove(L, "draw", 0);
-      drawNativeError(L);
-      callLoveModule(L, "graphics", "present", 0);
-    } else {
-      G.target = &G.screen;
-      G.transform = Transform{};
-      G.transformStack.clear();
-      G.scissor = false;
-      clearSurface(G.screen, G.background);
-      callLove(L, "draw", 0);
-      if (!G.lastError.empty()) {
-        Font *savedFont = G.font;
-        Color savedColor = G.color;
-        Transform savedTransform = G.transform;
-        G.font = &G.defaultFont;
-        G.color = Color{255, 80, 80, 255};
-        G.transform = Transform{};
-        drawText(G.screen, G.lastError, 12, 12);
-        G.transform = savedTransform;
-        G.color = savedColor;
-        G.font = savedFont;
-      }
-      drawSoftwareCursor();
-      presentFrame();
-    }
+    callLoveModule(L, "graphics", "origin", 0);
+    clearNativeBackground(L);
+    callLove(L, "draw", 0);
+    drawNativeError(L);
+    callLoveModule(L, "graphics", "present", 0);
 
     double frame = nowSeconds() - t;
     if (frame < 1.0 / 60.0) usleep(useconds_t((1.0 / 60.0 - frame) * 1000000.0));
@@ -4327,7 +3277,6 @@ extern "C" void kandelo_love_set_native_window_size(int width, int height) {
   }
   G.mouseX = clampInt(G.mouseX, 0, std::max(1, G.windowW) - 1);
   G.mouseY = clampInt(G.mouseY, 0, std::max(1, G.windowH) - 1);
-  if (resizeKmsScanout(G.windowW, G.windowH) != 0) gRunning = 0;
 }
 
 int main(int argc, char **argv) {
@@ -4356,9 +3305,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "love: unhandled native exception\n");
     rc = 1;
   }
+  kandelo_love_shutdown_audio();
   lua_close(L);
   cleanupPresenter();
-  close(G.keyboardFd);
-  close(G.pointerFd);
   return rc;
 }

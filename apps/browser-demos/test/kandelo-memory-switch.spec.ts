@@ -68,6 +68,18 @@ test("@slow framebuffer games and WordPress survive repeated constrained-budget 
     await expectGameFrame(page);
     await launch(page, "Quake (software)", "quake");
     await expectGameFrame(page);
+    await launch(page, "LÖVE games", "love");
+    const loveCanvas = page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
+    await expect(loveCanvas).toBeVisible({ timeout: 180_000 });
+    await expect(page.locator('[data-audio-active="true"]')).toHaveCount(1, { timeout: 180_000 });
+    await expect.poll(async () => {
+      if (await page.locator(".kpcm-audio-enable").isVisible()) await page.locator(".kpcm-audio-enable").click();
+      return page.locator('[data-audio-state]').getAttribute("data-audio-state");
+    }, { timeout: 30_000 }).toBe("running");
+    const loveFlips = () => page.locator("body").innerText().then(text =>
+      Number(text.match(/(\d+)\s*flips\s*·/i)?.[1] ?? -1));
+    const initialFlips = await loveFlips();
+    await expect.poll(loveFlips, { timeout: 60_000 }).toBeGreaterThan(initialFlips + 5);
     await launch(page, "WordPress MariaDB", "wordpress-mariadb");
     await expect(previewFrame(page, "WordPress MariaDB").locator("body"))
       .toContainText(/Hello world/i, { timeout: 240_000 });

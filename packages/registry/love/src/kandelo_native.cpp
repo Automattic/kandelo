@@ -1,7 +1,7 @@
 // Kandelo platform backends for upstream LÖVE modules.
 //
 // These classes provide the small native pieces the upstream renderer expects
-// a window object backed by SDL2 Wayland/EGL or Kandelo's KMS/EGL surface,
+// a window object backed by SDL2 Wayland/EGL or KMSDRM/EGL,
 // and a filesystem object backed by the package's mounted POSIX directory.
 
 #include <algorithm>
@@ -39,6 +39,7 @@ extern "C" {
 #include "modules/graphics/wrap_Graphics.h"
 #include "modules/image/wrap_Image.h"
 #include "modules/math/wrap_Math.h"
+#include "modules/mouse/wrap_Mouse.h"
 #include "modules/physics/box2d/wrap_Physics.h"
 #include "modules/thread/Channel.h"
 #include "modules/thread/threads.h"
@@ -784,6 +785,10 @@ extern "C" bool kandelo_love_register_native_renderer(lua_State *L, const char *
       return false;
     }
   }
+
+  // Use upstream LÖVE mouse APIs unchanged. SDL owns the window and input
+  // state on both Wayland and KMSDRM, including evdev coordinate conversion.
+  if (!callLuaOpen(L, "love.mouse", love::mouse::luaopen_love_mouse)) return false;
 
   return true;
 }

@@ -2,13 +2,14 @@
 
 The port from `emdash/love-target-resolution-upscale` builds with the current
 Kandelo SDK and links the upstream LÖVE OpenGL renderer and Box2D physics.
-The Kandelo window/filesystem backends use POSIX files, KMS/EGL/GLES on
-`/dev/dri/card0` and evdev keyboard/pointer input on `/dev/input/event{0,1}`.
-Inside a Wayland session, the same executable instead creates an SDL2 EGL
-window and receives keyboard, text, pointer, wheel, focus and close events
-from the compositor. It leaves physical input and DRM master to the desktop.
+The filesystem backend uses POSIX files. SDL2 owns the EGL window and input
+on both standalone KMSDRM and Wayland displays. Inside a Wayland session,
+SDL receives keyboard, text, pointer, wheel, focus and close events from the
+compositor, leaving physical input and DRM master to the desktop.
 SDL2 supplies the actual drawable size, including output scale, to LÖVE.
 Lua 5.2 is a separate registry library; FreeType and zlib use main's recipes.
+Audio uses SDL2's OSS driver on `/dev/dsp`, with a checksum-pinned stb_vorbis
+source dependency for Ogg decoding. No browser audio API is called by the game.
 
 The browser gallery's **LÖVE games** machine starts Pong. Its **Games** menu
 launches Pong, Snake, Breakout, Asteroids, BYTEPATH or SNKRX.
@@ -21,7 +22,11 @@ in the application launcher. The six entries use the same executable and
 lazy game archive. The runtime detects `WAYLAND_DISPLAY` or a compositor
 socket in `XDG_RUNTIME_DIR` (default `/tmp`); `SDL_VIDEODRIVER=wayland`
 explicitly requests this backend and initialization failures are reported.
-Outside a desktop session, the standalone KMS backend remains available.
+Outside a desktop session, SDL2 selects its KMSDRM backend. This build has
+no udev, so the launcher supplies SDL's supported `SDL_EVDEV_DEVICES` list for
+`/dev/input/event{0,1}`. LÖVE's upstream SDL mouse module is compiled unchanged;
+SDL reads `EVIOCGABS` bounds and maps absolute device units to window pixels.
+The launcher no longer reads evdev coordinates or owns a separate KMS surface.
 Ctrl+W closes the focused game through Wayland's ordinary window-close event.
 
 The core examples scale a stable playfield and convert pointer coordinates
@@ -44,12 +49,53 @@ BYTEPATH or SNKRX through the dock menu. BYTEPATH starts with its console;
 type `help` or `start`. SNKRX uses mouse clicks in its menu/shop and keyboard
 steering in the arena.
 
+## Audio
+
+The source now implements mono/stereo static Ogg Vorbis and WAV sources,
+file-backed Ogg streams, independent clones, overlapping voices, volume,
+pitch, looping, pause/resume, stop, and seek/tell in seconds or sample frames.
+Static clones share decoded 16-bit PCM; stream clones have independent decoders.
+Streams retain a 2048-frame decode window rather than a full decoded track.
+The backend retains up to 256 active or paused voices. The SDL callback mixes
+playing voices to 48 kHz stereo, with linear interpolation for pitch/sample-rate
+conversion and final clipping.
+Playing sources remain alive when Lua drops its last reference; device close
+joins the callback before source data and SDL are released.
+
+BYTEPATH and SNKRX use their original Ogg assets and game audio calls.
+Pong, Snake, Breakout, and Asteroids have generated PCM effects for collisions,
+scores, pickups, shots, and explosions. Press **M** to mute these core games.
+The browser still requires a user gesture to enable its audio sink. Node uses
+Kandelo's existing paced headless sink, which does not output to Mac speakers.
+The physical OSS output is exclusive, so simultaneous audio clients can fail
+with a busy device; the backend reports device/decode failures as Lua errors.
+
+The wasm32 package and shell demo image have been rebuilt with this backend.
+Chromium tests observed nonzero Web Audio output from all six games. Older
+binaries may still use the silent backend. Run
+`love /usr/share/love/examples/audio-check` to exercise source controls,
+cloning, garbage collection, streaming/loop boundaries, and failure reporting.
+The repeated browser-memory switching test also includes LÖVE as an audio
+consumer. The source API fixture passed in Chromium, and pointer tracking
+passed in Chromium, Firefox, and Playwright WebKit at two CSS viewport sizes.
+A native Safari session activated LÖVE audio, but its repeated-switch check
+remains incomplete after the page became unobservable following a switch.
+A direct Node LÖVE run exited with status 132 during renderer initialization,
+before loading the audio fixture; Node LÖVE audio is therefore unverified.
+Node's headless audio sink must not be mistaken for physical playback.
+
 ## Compatibility boundaries
 
-This is a partial LÖVE port. Audio output is unavailable: it logs that it runs
-silently, and audio sources never report successful playback. Video decoding,
-Steam integration, LÖVE thread channels and general LuaJIT native FFI loading
-are not supported.
+SDL2's KMSDRM backend does not provide system cursor themes. LÖVE reports
+`getSystemCursor` as unsupported on that backend; SNKRX's optional Steam-button
+hand cursor falls back to the default pointer so hovering still works.
+Cursor sizing on high-density displays remains deferred to compositor work.
+
+This is a partial LÖVE port. Audio capture, queueable sources, spatial audio,
+effects, and codecs other than Vorbis and WAV are not implemented. WAV is
+supported for static sources only. Effect setters return false, and spatial
+calls fail explicitly. Video decoding, Steam integration, LÖVE thread channels
+and general LuaJIT native FFI loading are not supported.
 The FFI compatibility module handles the byte buffers used by these games;
 `ffi.load` fails explicitly. This is not a promise that arbitrary LÖVE games
 run without further porting work.

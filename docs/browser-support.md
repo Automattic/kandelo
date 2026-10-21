@@ -465,7 +465,7 @@ Located in `apps/browser-demos/pages/`:
 | modeset | modeset.c | dinit | GLES2/EGL port of Pavel's WebGL fluid simulation (bloom, sun rays, shading), steered by the mouse through `/dev/input/mice`: each frame renders through the host's WebGL2 bridge, swaps, and waits on a real `drmModePageFlip` on `/dev/dri/card0`. The binary comes from the `modeset` package as a lazy file in the image, fetched when the profile first runs it; the image's `init.shellCommand` (`/usr/local/bin/modeset`) starts it. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | scummvm | ScummVM 2026.3.0 | dinit | SCUMM engine fullscreen on SDL2's KMSDRM backend with OSS audio — see [ScummVM demo](#scummvm-demo). The image declares `/usr/local/bin/scummvm`, a wrapper that sets SDL's environment and the user's config, then execs the lazy engine. Dock actions fetch and play the freeware games the ScummVM project distributes; any other game is a zipped upload. |
 | freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Multiplayer dock menu hosts or joins the session host on port 5556. Audio and multicast discovery are disabled; see [Freeciv](freeciv.md). |
-| love | Native LÖVE 11.5 games | dinit | KMS/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. Audio output is currently unavailable; Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
+| love | Native LÖVE 11.5 games | dinit | SDL2 KMSDRM/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. SDL2/OSS audio output is verified in Chromium. Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The image itself is 1.8 MB compressed. |
 
@@ -1291,7 +1291,20 @@ physical input ownership; the games receive surface-local pointer and
 keyboard events, output-scale-aware drawable sizes, focus, resize, and close
 events. The four core examples letterbox their playfield, and BYTEPATH and
 SNKRX update their canvas/pointer scales on resize. Game files download
-lazily when launched. Audio playback remains unavailable in this LÖVE port.
+lazily when launched. The LÖVE audio source now mixes static Vorbis/WAV effects
+and streamed Vorbis music through SDL2's OSS driver on `/dev/dsp`, including
+pitch, volume, looping, and independent clones. Core games have generated
+sound effects and an M-key mute toggle; BYTEPATH and SNKRX use upstream audio.
+The wasm32 package and shell image have been rebuilt; Chromium tests observed
+nonzero audio output from all six games, and the source-control/streaming
+fixture passed in Chromium. Pointer tracking passed in Chromium, Firefox,
+and Playwright WebKit. Native Safari activated LÖVE audio, but its repeated
+switching check remains incomplete. A direct Node LÖVE run exited during
+renderer initialization before reaching the audio fixture; Node LÖVE audio
+is unverified. Older binaries may still be silent. Browser playback requires
+user activation. SDL2 KMSDRM has no system cursor themes; SNKRX keeps the
+default pointer when its optional hand cursor is unavailable. Cursor sizing
+on high-density displays remains deferred to compositor work.
 See `packages/registry/love/README.md` for its compatibility boundaries.
 
 The same wrapper runs ScummVM on the Omarchy desktop, from the launcher or
@@ -2195,7 +2208,9 @@ axis bounds across display mode changes. Sending an out-of-window
 position to SDL's direct-display backend can clear mouse focus, hiding
 its cursor and dropping window focus for subsequent input.
 SDL's evdev adapter also maps inclusive device bounds to inclusive
-display pixels, for both ordinary input and overflow recovery. The
+display pixels, for both ordinary input and overflow recovery. LÖVE uses
+SDL2's KMSDRM window/input backend and its upstream SDL mouse module; it does
+not interpret device units as pixels or add a separate coordinate transform. The
 maximum axis sample reaches the last pixel rather than `width` or
 `height`; out-of-range device samples are confined to the same bounds.
 

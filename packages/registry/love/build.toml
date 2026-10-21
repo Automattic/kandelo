@@ -5,8 +5,9 @@ inputs = [
   "packages/registry/love/src",
   "packages/registry/love/patches",
   "packages/registry/love/game-demos",
+  "packages/registry/love/generate-demo-audio.py",
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 9
+revision = 12
 publication_state = "pending"
