@@ -17,7 +17,12 @@ pub fn run(cmd: &str, args: &[String], cwd: Option<&Path>) -> RunResult {
 }
 
 /// `run`, with the named variables removed from the program's environment.
-pub fn run_without_env(cmd: &str, args: &[String], cwd: Option<&Path>, removed: &[&str]) -> RunResult {
+pub fn run_without_env(
+    cmd: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    removed: &[&str],
+) -> RunResult {
     let mut command = Command::new(cmd);
     command.args(args).stdin(Stdio::null());
     for name in removed {
@@ -32,7 +37,11 @@ pub fn run_without_env(cmd: &str, args: &[String], cwd: Option<&Path>, removed: 
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             exit_code: output.status.code().unwrap_or(1),
         },
-        Err(_) => RunResult { stdout: String::new(), stderr: String::new(), exit_code: 1 },
+        Err(_) => RunResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 1,
+        },
     }
 }
 

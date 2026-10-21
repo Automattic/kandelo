@@ -2,20 +2,22 @@
 //! wasm-ld jobs that build a Kandelo program, and the post-link step that
 //! leaves each module with exactly the facts and optimization it needs.
 
-use crate::arch::{target_triple, WasmArch};
+use crate::Result;
+use crate::arch::{WasmArch, target_triple};
 use crate::exec::{run, run_passthrough, run_without_env};
 use crate::flags::{
-    calltypes_plugin_flags, compile_flags, filter_args, host_imports_allowance, infer_thread_slot_declaration,
-    join, link_flags, main_thread_stack_size, needs_linking, parse_args, read_text_file, requests_cfi,
-    shared_link_flags, thread_slot_declaration_define, tokenize_gnu_response_file, ParsedArgs,
-    ResponseFileContents, MAX_EXECUTABLE_MEMORY_SIZE, THREAD_SLOT_USE_HOST_DEFAULT,
+    MAX_EXECUTABLE_MEMORY_SIZE, ParsedArgs, ResponseFileContents, THREAD_SLOT_USE_HOST_DEFAULT,
+    calltypes_plugin_flags, compile_flags, filter_args, host_imports_allowance,
+    infer_thread_slot_declaration, join, link_flags, main_thread_stack_size, needs_linking,
+    parse_args, read_text_file, requests_cfi, shared_link_flags, thread_slot_declaration_define,
+    tokenize_gnu_response_file,
 };
 use crate::node_path::{self, basename, cwd, is_absolute, resolve};
-use crate::toolchain::{resolve_lld_major, Toolchain};
+use crate::toolchain::{Toolchain, resolve_lld_major};
 use crate::wasm::{
-    imports_function, is_wasm_module, with_code_hash_section, without_custom_section, CALLTYPES_SECTION,
+    CALLTYPES_SECTION, imports_function, is_wasm_module, with_code_hash_section,
+    without_custom_section,
 };
-use crate::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -34,7 +36,10 @@ fn sdk_source_prefix_map_flags(toolchain: &Toolchain, arch: WasmArch) -> Vec<Str
         WasmArch::Wasm64 => "sysroot64",
         WasmArch::Wasm32 => "sysroot",
     };
-    let mut flags = source_prefix_map_flags(&toolchain.glue_dir, &format!("{STABLE_SDK_SOURCE_ROOT}/libc/glue"));
+    let mut flags = source_prefix_map_flags(
+        &toolchain.glue_dir,
+        &format!("{STABLE_SDK_SOURCE_ROOT}/libc/glue"),
+    );
     flags.extend(source_prefix_map_flags(
         &toolchain.sysroot,
         &format!("{STABLE_SDK_SOURCE_ROOT}/{sysroot_name}"),
@@ -72,7 +77,10 @@ fn is_package_name(name: &str) -> bool {
 fn recipe_work_prefix_map_flags() -> Vec<String> {
     let mut flags = Vec::new();
     if let Some(cache_root) = absolute_env("WASM_POSIX_SOURCE_ONLY_CACHE_ROOT") {
-        flags.extend(source_prefix_map_flags(&cache_root, &format!("{STABLE_BUILD_SOURCE_ROOT}-deps")));
+        flags.extend(source_prefix_map_flags(
+            &cache_root,
+            &format!("{STABLE_BUILD_SOURCE_ROOT}-deps"),
+        ));
     }
     if let Some(work_dir) = absolute_env("WASM_POSIX_DEP_WORK_DIR") {
         let destination = match std::env::var("WASM_POSIX_DEP_NAME") {
@@ -93,7 +101,13 @@ pub fn decode_llvm_response_file(bytes: &[u8]) -> Result<String> {
         }
         let units: Vec<u16> = body
             .chunks_exact(2)
-            .map(|pair| if little { u16::from_le_bytes([pair[0], pair[1]]) } else { u16::from_be_bytes([pair[0], pair[1]]) })
+            .map(|pair| {
+                if little {
+                    u16::from_le_bytes([pair[0], pair[1]])
+                } else {
+                    u16::from_be_bytes([pair[0], pair[1]])
+                }
+            })
             .collect();
         String::from_utf16(&units).map_err(|_| format!("invalid {name} response file"))
     };
@@ -109,7 +123,10 @@ pub fn decode_llvm_response_file(bytes: &[u8]) -> Result<String> {
 fn read_llvm_response_file(path: &str, working_directory: &str) -> Option<ResponseFileContents> {
     let resolved = resolve(working_directory, path);
     let contents = decode_llvm_response_file(&std::fs::read(&resolved).ok()?).ok()?;
-    let identity = std::fs::canonicalize(&resolved).ok()?.to_string_lossy().into_owned();
+    let identity = std::fs::canonicalize(&resolved)
+        .ok()?
+        .to_string_lossy()
+        .into_owned();
     Some(ResponseFileContents { contents, identity })
 }
 
@@ -119,7 +136,9 @@ pub enum LinkerPreparation {
     /// The command links nothing after all (a response file held only
     /// compile flags).
     NoLink,
-    ExecutableLink { main_thread_stack_size_bytes: u64 },
+    ExecutableLink {
+        main_thread_stack_size_bytes: u64,
+    },
 }
 
 /// The internal-only third state: the provisional trace
@@ -137,7 +156,10 @@ fn is_pinned_linker(actual: Option<&str>, linker_path: &str) -> bool {
     if actual == linker_path {
         return true;
     }
-    match (std::fs::canonicalize(actual), std::fs::canonicalize(linker_path)) {
+    match (
+        std::fs::canonicalize(actual),
+        std::fs::canonicalize(linker_path),
+    ) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
     }
@@ -145,7 +167,11 @@ fn is_pinned_linker(actual: Option<&str>, linker_path: &str) -> bool {
 
 fn executable_name(path: &str) -> &str {
     let name = basename(path);
-    match name.len().checked_sub(4).and_then(|stem| Some((stem, name.get(stem..)?))) {
+    match name
+        .len()
+        .checked_sub(4)
+        .and_then(|stem| Some((stem, name.get(stem..)?)))
+    {
         Some((stem, suffix)) if suffix.eq_ignore_ascii_case(".exe") => &name[..stem],
         _ => name,
     }
@@ -171,14 +197,20 @@ fn is_expected_non_linker_job(args: &[String]) -> bool {
     args.get(1).is_some_and(|a| a == "-cc1") || is_wasm_opt_job(args)
 }
 
-fn clang_trace_commands(trace: &str, accepts_first_line: &dyn Fn(&[String], &str) -> bool) -> Result<Vec<String>> {
+fn clang_trace_commands(
+    trace: &str,
+    accepts_first_line: &dyn Fn(&[String], &str) -> bool,
+) -> Result<Vec<String>> {
     let chars: Vec<char> = trace.chars().collect();
     let len = chars.len();
     let mut commands = Vec::new();
     let mut offset = 0;
 
     while offset < len {
-        let physical_line_end = chars[offset..].iter().position(|&c| c == '\n').map(|p| p + offset);
+        let physical_line_end = chars[offset..]
+            .iter()
+            .position(|&c| c == '\n')
+            .map(|p| p + offset);
         let first_line_end = physical_line_end.unwrap_or(len);
         let first_line: String = chars[offset..first_line_end].iter().collect();
         let first_line_args = tokenize_gnu_response_file(&first_line);
@@ -247,10 +279,15 @@ pub fn linker_args_from_clang_trace(trace: &str, linker_path: &str) -> Result<Op
     fn program(args: &[String]) -> Option<&str> {
         args.first().map(String::as_str)
     }
-    let matches: Vec<&Vec<String>> = jobs.iter().filter(|args| is_pinned_linker(program(args), linker_path)).collect();
+    let matches: Vec<&Vec<String>> = jobs
+        .iter()
+        .filter(|args| is_pinned_linker(program(args), linker_path))
+        .collect();
     let unexpected = jobs
         .iter()
-        .filter(|args| !is_pinned_linker(program(args), linker_path) && !is_expected_non_linker_job(args))
+        .filter(|args| {
+            !is_pinned_linker(program(args), linker_path) && !is_expected_non_linker_job(args)
+        })
         .count();
     if matches.len() > 1 || unexpected > 0 {
         return Err(format!(
@@ -261,7 +298,10 @@ pub fn linker_args_from_clang_trace(trace: &str, linker_path: &str) -> Result<Op
     match matches.first() {
         Some(linker) => Ok(Some(linker[1..].to_vec())),
         None => {
-            if !jobs.iter().any(|args| args.get(1).is_some_and(|a| a == "-cc1")) {
+            if !jobs
+                .iter()
+                .any(|args| args.get(1).is_some_and(|a| a == "-cc1"))
+            {
                 return Err("clang -### emitted no compiler or pinned linker jobs".into());
             }
             Ok(None)
@@ -269,7 +309,10 @@ pub fn linker_args_from_clang_trace(trace: &str, linker_path: &str) -> Result<Op
     }
 }
 
-pub fn working_directory_from_clang_trace(trace: &str, initial_working_directory: &str) -> Result<String> {
+pub fn working_directory_from_clang_trace(
+    trace: &str,
+    initial_working_directory: &str,
+) -> Result<String> {
     let mut traced: HashSet<String> = HashSet::new();
 
     // The provisional argv always adds absolute glue C sources, so an
@@ -281,7 +324,11 @@ pub fn working_directory_from_clang_trace(trace: &str, initial_working_directory
     let has_cc1 = |args: &[String], _: &str| args.iter().any(|a| a == "-cc1");
     for command in clang_trace_commands(trace, &has_cc1)? {
         let args = tokenize_gnu_response_file(&command);
-        let Some(index) = args.iter().position(|a| a == "-resource-dir").filter(|i| args.get(i + 1).is_some()) else {
+        let Some(index) = args
+            .iter()
+            .position(|a| a == "-resource-dir")
+            .filter(|i| args.get(i + 1).is_some())
+        else {
             return Err("clang -### cc1 command omitted its driver resource-directory slot".into());
         };
         let following = index + 2;
@@ -290,7 +337,11 @@ pub fn working_directory_from_clang_trace(trace: &str, initial_working_directory
                 Some(value) if !value.is_empty() => {
                     traced.insert(resolve(initial_working_directory, value));
                 }
-                _ => return Err("clang -### emitted a malformed driver working-directory slot".into()),
+                _ => {
+                    return Err(
+                        "clang -### emitted a malformed driver working-directory slot".into(),
+                    );
+                }
             },
             Some(other) if other.starts_with("-working-directory") => {
                 return Err("clang -### emitted an ambiguous driver working-directory slot".into());
@@ -312,7 +363,10 @@ pub fn glue_sources(toolchain: &Toolchain, link_dl: bool) -> Vec<String> {
     if link_dl {
         names.push("dlopen.c");
     }
-    names.iter().map(|name| join(&toolchain.glue_dir, name)).collect()
+    names
+        .iter()
+        .map(|name| join(&toolchain.glue_dir, name))
+        .collect()
 }
 
 /// Compile command for the link-time glue sources.
@@ -357,7 +411,10 @@ fn executable_thread_slot_define(user_args: &[String], arch: WasmArch) -> Result
 }
 
 fn is_assembly_input(arg: &str) -> bool {
-    !arg.starts_with('-') && [".s", ".S", ".sx", ".asm"].iter().any(|ext| arg.ends_with(ext))
+    !arg.starts_with('-')
+        && [".s", ".S", ".sx", ".asm"]
+            .iter()
+            .any(|ext| arg.ends_with(ext))
 }
 
 fn build_clang_args_internal(
@@ -385,8 +442,12 @@ fn build_clang_args_internal(
     let mut args: Vec<String> = Vec::new();
     let target = format!("--target={}", target_triple(arch));
 
-    let may_run_compile =
-        has_source_files || parsed.compile_only || parsed.preprocess_only || parsed.assembly_only || linking || no_link;
+    let may_run_compile = has_source_files
+        || parsed.compile_only
+        || parsed.preprocess_only
+        || parsed.assembly_only
+        || linking
+        || no_link;
     // Inject compile flags for visible sources and compile-only modes, links
     // that compile glue, and response-hidden compile jobs found by the trace.
     if may_run_compile {
@@ -395,7 +456,8 @@ fn build_clang_args_internal(
     // The call-type facts plugin, for invocations that can run a compile job.
     // A link of objects only has none, and clang would warn that the -Xclang
     // flags went unused.
-    let assembly_only_inputs = !has_source_files && parsed.other_args.iter().any(|a| is_assembly_input(a));
+    let assembly_only_inputs =
+        !has_source_files && parsed.other_args.iter().any(|a| is_assembly_input(a));
     if let Some(plugin) = &toolchain.calltypes_plugin {
         if !requests_cfi(&filtered)
             && !parsed.preprocess_only
@@ -472,9 +534,9 @@ fn build_clang_args_internal(
                     .into());
             };
             let prepared_stack_size = match executable_linker {
-                Some(Preparation::Prepared(LinkerPreparation::ExecutableLink { main_thread_stack_size_bytes })) => {
-                    Some(main_thread_stack_size_bytes)
-                }
+                Some(Preparation::Prepared(LinkerPreparation::ExecutableLink {
+                    main_thread_stack_size_bytes,
+                })) => Some(main_thread_stack_size_bytes),
                 Some(Preparation::MeasureOnly) => None,
                 _ => {
                     return Err("executable linker arguments are unprepared; call prepare_executable_linker() \
@@ -510,7 +572,11 @@ fn build_clang_args_internal(
             if lld_major >= 22 {
                 args.push("-Wl,--no-stack-first".into());
             }
-            args.extend(link_flags(arch, &host_imports_allowance(&toolchain.glue_dir), prepared_stack_size));
+            args.extend(link_flags(
+                arch,
+                &host_imports_allowance(&toolchain.glue_dir),
+                prepared_stack_size,
+            ));
         }
     }
 
@@ -554,10 +620,18 @@ impl TempDir {
             match builder.create(&path) {
                 Ok(()) => return Ok(TempDir(path)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(format!("cannot create a temporary directory in {}: {error}", base.display())),
+                Err(error) => {
+                    return Err(format!(
+                        "cannot create a temporary directory in {}: {error}",
+                        base.display()
+                    ));
+                }
             }
         }
-        Err(format!("cannot create a temporary directory in {}", base.display()))
+        Err(format!(
+            "cannot create a temporary directory in {}",
+            base.display()
+        ))
     }
 
     pub fn path(&self) -> &Path {
@@ -580,7 +654,10 @@ pub fn compile_executable_glue(
     arch: WasmArch,
     executable_linker: Option<LinkerPreparation>,
 ) -> Result<Option<(Vec<String>, TempDir)>> {
-    if !matches!(executable_linker, Some(LinkerPreparation::ExecutableLink { .. })) {
+    if !matches!(
+        executable_linker,
+        Some(LinkerPreparation::ExecutableLink { .. })
+    ) {
         return Ok(None);
     }
     let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
@@ -597,9 +674,17 @@ pub fn compile_executable_glue(
     // CCC_OVERRIDE_OPTIONS edits the caller's own clang jobs, not this one.
     // (It could also move this compile's working directory, and with it the
     // objects, out of the directory the link reads them from.)
-    let result = run_without_env(&toolchain.cc, &args, Some(dir.path()), &["CCC_OVERRIDE_OPTIONS"]);
+    let result = run_without_env(
+        &toolchain.cc,
+        &args,
+        Some(dir.path()),
+        &["CCC_OVERRIDE_OPTIONS"],
+    );
     if result.exit_code != 0 {
-        return Err(format!("compiling SDK glue failed:\n{}", result.stderr.trim()));
+        return Err(format!(
+            "compiling SDK glue failed:\n{}",
+            result.stderr.trim()
+        ));
     }
     let dir_text = dir.path().to_string_lossy().into_owned();
     let objects = sources
@@ -627,7 +712,8 @@ pub fn prepare_executable_linker(
         return Ok(None);
     }
 
-    let classification_args = build_clang_args_internal(user_args, toolchain, arch, None, false, true, None)?;
+    let classification_args =
+        build_clang_args_internal(user_args, toolchain, arch, None, false, true, None)?;
     let classification = run(compiler, &with_trace_flag(&classification_args), None);
     if classification.exit_code != 0 {
         return Err(format!(
@@ -646,8 +732,15 @@ pub fn prepare_executable_linker(
     // shape as the real build, so a cc1 job — and with it a working
     // directory for response-file resolution — is guaranteed even for an
     // object-only link). It carries no SDK-injected stack-size flag.
-    let provisional =
-        build_clang_args_internal(user_args, toolchain, arch, Some(Preparation::MeasureOnly), false, false, None)?;
+    let provisional = build_clang_args_internal(
+        user_args,
+        toolchain,
+        arch,
+        Some(Preparation::MeasureOnly),
+        false,
+        false,
+        None,
+    )?;
     let trace = run(compiler, &with_trace_flag(&provisional), None);
     if trace.exit_code != 0 {
         return Err(format!(
@@ -665,14 +758,17 @@ pub fn prepare_executable_linker(
             traced_working_directory.clone().unwrap_or_else(cwd)
         } else {
             if traced_working_directory.is_none() {
-                traced_working_directory = Some(working_directory_from_clang_trace(&trace.stderr, &cwd())?);
+                traced_working_directory =
+                    Some(working_directory_from_clang_trace(&trace.stderr, &cwd())?);
             }
             traced_working_directory.clone().expect("set above")
         };
         Ok(read_llvm_response_file(path, &directory))
     };
     let size = main_thread_stack_size(&linker_args, Some(&mut reader))?;
-    Ok(Some(LinkerPreparation::ExecutableLink { main_thread_stack_size_bytes: size }))
+    Ok(Some(LinkerPreparation::ExecutableLink {
+        main_thread_stack_size_bytes: size,
+    }))
 }
 
 fn with_trace_flag(args: &[String]) -> Vec<String> {
@@ -704,7 +800,11 @@ fn comparable_linker(jobs: &[Vec<String>], linker: &[String]) -> Vec<String> {
         if job.get(1).map(String::as_str) != Some("-cc1") {
             continue;
         }
-        if let Some(output) = job.iter().position(|a| a == "-o").and_then(|i| job.get(i + 1)) {
+        if let Some(output) = job
+            .iter()
+            .position(|a| a == "-o")
+            .and_then(|i| job.get(i + 1))
+        {
             let label = format!("<compile-job-{}>", temporaries.len());
             temporaries.insert(output.clone(), label);
         }
@@ -758,11 +858,16 @@ pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Re
         ));
     }
     let linker = linkers[0];
-    let Some(output_arg) = linker.iter().position(|a| a == "-o").and_then(|i| linker.get(i + 1)) else {
+    let Some(output_arg) = linker
+        .iter()
+        .position(|a| a == "-o")
+        .and_then(|i| linker.get(i + 1))
+    else {
         return Err("clang -### emitted a wasm-ld job without an output".into());
     };
     // A link with no compile jobs runs the driver in this directory.
-    let working_directory = working_directory_from_clang_trace(&trace.stderr, &cwd()).unwrap_or_else(|_| cwd());
+    let working_directory =
+        working_directory_from_clang_trace(&trace.stderr, &cwd()).unwrap_or_else(|_| cwd());
     let output = resolve(&working_directory, output_arg);
 
     // `--no-wasm-opt` also drops the target_features section clang keeps for
@@ -773,13 +878,24 @@ pub fn run_compiler_driver(compiler: &str, args: &[String], linking: bool) -> Re
         link_args.push("--no-wasm-opt".into());
         link_args.push(format!("-Wl,{KEEP_TARGET_FEATURES}"));
         let held_back = run(compiler, &with_trace_flag(&link_args), None);
-        let held_back_jobs = if held_back.exit_code == 0 { traced_jobs(&held_back.stderr)? } else { Vec::new() };
-        let held_back_linkers: Vec<&Vec<String>> = held_back_jobs.iter().filter(|job| is_linker_job(job)).collect();
+        let held_back_jobs = if held_back.exit_code == 0 {
+            traced_jobs(&held_back.stderr)?
+        } else {
+            Vec::new()
+        };
+        let held_back_linkers: Vec<&Vec<String>> = held_back_jobs
+            .iter()
+            .filter(|job| is_linker_job(job))
+            .collect();
         if held_back_jobs.iter().any(|job| is_wasm_opt_job(job))
             || held_back_linkers.len() != 1
-            || comparable_linker(&held_back_jobs, held_back_linkers[0]) != comparable_linker(&jobs, linker)
+            || comparable_linker(&held_back_jobs, held_back_linkers[0])
+                != comparable_linker(&jobs, linker)
         {
-            return Err("clang changed the wasm-ld command when its post-link wasm-opt was held back".into());
+            return Err(
+                "clang changed the wasm-ld command when its post-link wasm-opt was held back"
+                    .into(),
+            );
         }
     }
     let exit_code = run_passthrough(compiler, &link_args);
@@ -813,7 +929,10 @@ fn write_output(path: &str, bytes: &[u8]) -> Result<()> {
 /// Does this invocation compile anything (and so need the facts plugin)?
 pub fn may_compile(user_args: &[String], arch: WasmArch) -> Result<bool> {
     let parsed = parse_args(&filter_args(user_args, arch).filtered)?;
-    Ok(!parsed.source_files.is_empty() || parsed.compile_only || parsed.assembly_only || needs_linking(&parsed))
+    Ok(!parsed.source_files.is_empty()
+        || parsed.compile_only
+        || parsed.assembly_only
+        || needs_linking(&parsed))
 }
 
 /// The shared entry of wasm{32,64}posix-cc and -c++: the exit status.

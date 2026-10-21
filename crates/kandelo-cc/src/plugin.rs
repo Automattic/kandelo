@@ -15,8 +15,8 @@
 //! the compiler that will load it, so a source or toolchain change can never
 //! reuse a stale one. Kandelo's own clang has the plugin compiled in.
 
-use crate::flags::CallTypesPlugin;
 use crate::Result;
+use crate::flags::CallTypesPlugin;
 
 /// Use this prebuilt plugin instead of building one (must match the compiler).
 pub const CALLTYPES_PLUGIN_ENV: &str = "WASM_POSIX_CALLTYPES_PLUGIN";
@@ -52,7 +52,12 @@ mod host {
     use std::time::{Duration, SystemTime};
 
     const PLUGIN_SOURCES: &[&str] = &["KandeloCallTypes.cpp", "KandeloFnCasts.cpp", "build.sh"];
-    const LLVM_INPUT_ENV: &[&str] = &["KANDELO_LLVM_DEV", "KANDELO_LLVM_LIB", "KANDELO_CLANG_DEV", "KANDELO_CLANG_LIB"];
+    const LLVM_INPUT_ENV: &[&str] = &[
+        "KANDELO_LLVM_DEV",
+        "KANDELO_LLVM_LIB",
+        "KANDELO_CLANG_DEV",
+        "KANDELO_CLANG_LIB",
+    ];
     const BUILD_LOCK_STALE: Duration = Duration::from_secs(10 * 60);
 
     fn plugin_file_name() -> &'static str {
@@ -97,14 +102,21 @@ mod host {
             h.update(b"\0");
         }
         for name in LLVM_INPUT_ENV {
-            h.update(format!("{name}={}\0", std::env::var(name).unwrap_or_default()));
+            h.update(format!(
+                "{name}={}\0",
+                std::env::var(name).unwrap_or_default()
+            ));
         }
         let identity = fs::canonicalize(compiler)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| compiler.to_string());
         h.update(format!("compiler={identity}\0"));
         let digest = h.finalize();
-        Ok(digest.iter().map(|b| format!("{b:02x}")).collect::<String>()[..24].to_string())
+        Ok(digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()[..24]
+            .to_string())
     }
 
     /// The plugin for this toolchain, building it first if needed.
@@ -141,13 +153,21 @@ mod host {
             if Path::new(&plugin).exists() {
                 return Ok(CallTypesPlugin::Library(plugin));
             }
-            match fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock)
+            {
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     // Another compile is building it. A lock older than any real
                     // build belongs to a builder that died: take it over.
                     if let Ok(modified) = fs::metadata(&lock).and_then(|m| m.modified()) {
-                        if SystemTime::now().duration_since(modified).unwrap_or_default() > BUILD_LOCK_STALE {
+                        if SystemTime::now()
+                            .duration_since(modified)
+                            .unwrap_or_default()
+                            > BUILD_LOCK_STALE
+                        {
                             let _ = fs::remove_file(&lock);
                         }
                     }
@@ -170,11 +190,7 @@ mod host {
         let _ = fs::remove_dir_all(&staging);
         fs::create_dir_all(&staging).map_err(|e| format!("cannot create {staging}: {e}"))?;
         let script = join(&plugin_source_dir()?, "build.sh");
-        let result = crate::exec::run(
-            "bash",
-            &[script, join(&staging, plugin_file_name())],
-            None,
-        );
+        let result = crate::exec::run("bash", &[script, join(&staging, plugin_file_name())], None);
         if result.exit_code != 0 {
             let _ = fs::remove_dir_all(&staging);
             return Err(format!(

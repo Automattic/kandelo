@@ -15,7 +15,7 @@ use kandelo_cc::driver::compiler_main;
 use kandelo_cc::flags::CallTypesPlugin;
 use kandelo_cc::plugin::ensure_calltypes_plugin;
 use kandelo_cc::toolchain::Toolchain;
-use kandelo_cc::{tools, Result};
+use kandelo_cc::{Result, tools};
 use std::process::ExitCode;
 
 fn exit(code: i32) -> ExitCode {
@@ -24,7 +24,10 @@ fn exit(code: i32) -> ExitCode {
 
 /// The tool a program name selects, without its arch prefix.
 fn tool_name(name: &str) -> &str {
-    if let Some(tool) = name.strip_prefix("wasm32posix-").or_else(|| name.strip_prefix("wasm64posix-")) {
+    if let Some(tool) = name
+        .strip_prefix("wasm32posix-")
+        .or_else(|| name.strip_prefix("wasm64posix-"))
+    {
         return tool;
     }
     match name {
@@ -84,7 +87,11 @@ fn main() -> ExitCode {
     // under another name) must decide from its own name.
     // SAFETY: no other thread exists yet.
     unsafe { std::env::remove_var("WASM_POSIX_INVOKED_AS") };
-    let name = invoked_as.rsplit('/').next().unwrap_or(&invoked_as).to_string();
+    let name = invoked_as
+        .rsplit('/')
+        .next()
+        .unwrap_or(&invoked_as)
+        .to_string();
 
     if name == "kandelo-cc" {
         return calltypes_plugin_command(&args);

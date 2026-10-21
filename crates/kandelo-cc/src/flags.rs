@@ -1,7 +1,7 @@
 //! The SDK's compile and link flags, and its reading of a caller's arguments.
 
-use crate::arch::{target_triple, tool_prefix, WasmArch};
 use crate::Result;
+use crate::arch::{WasmArch, target_triple, tool_prefix};
 use std::collections::HashSet;
 
 pub fn compile_flags(arch: WasmArch) -> Vec<String> {
@@ -72,11 +72,13 @@ pub fn calltypes_plugin_flags(plugin: &CallTypesPlugin) -> Vec<String> {
         CallTypesPlugin::Library(path) => {
             flags.extend(["-Xclang", "-load", "-Xclang"].map(String::from));
             flags.push(path.clone());
-            flags.extend(["-Xclang", "-add-plugin", "-Xclang", "kandelo-fncasts"].map(String::from));
+            flags
+                .extend(["-Xclang", "-add-plugin", "-Xclang", "kandelo-fncasts"].map(String::from));
             flags.push(format!("-fpass-plugin={path}"));
         }
         CallTypesPlugin::BuiltIn => {
-            flags.extend(["-Xclang", "-add-plugin", "-Xclang", "kandelo-fncasts"].map(String::from));
+            flags
+                .extend(["-Xclang", "-add-plugin", "-Xclang", "kandelo-fncasts"].map(String::from));
         }
     }
     flags
@@ -743,20 +745,14 @@ fn is_word_char(c: char) -> bool {
 fn is_js_space(c: char) -> bool {
     matches!(
         c,
-        '\t' | '\n'
-            | '\u{b}'
-            | '\u{c}'
-            | '\r'
-            | ' '
-            | '\u{a0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200a}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202f}'
-            | '\u{205f}'
-            | '\u{3000}'
-            | '\u{feff}'
+        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
     )
 }
 
@@ -781,9 +777,14 @@ fn skip_spaces(text: &[char], mut at: usize) -> usize {
 /// `pthread_create`, `thrd_create`, `\bclone\s*\(`, `std::thread`,
 /// `#include\s*<thread>`, `\bdlopen\b`, `__wasm_dlopen`.
 fn suggests_threads_or_dynamic_linking(text: &str) -> bool {
-    if ["pthread_create", "thrd_create", "std::thread", "__wasm_dlopen"]
-        .iter()
-        .any(|literal| text.contains(literal))
+    if [
+        "pthread_create",
+        "thrd_create",
+        "std::thread",
+        "__wasm_dlopen",
+    ]
+    .iter()
+    .any(|literal| text.contains(literal))
     {
         return true;
     }
@@ -825,7 +826,10 @@ fn has_uncertain_link_input(parsed: &ParsedArgs) -> bool {
         return true;
     }
     parsed.other_args.iter().any(|arg| {
-        arg == "-fuse-ld=lld" || arg.starts_with("-l") || arg.starts_with("-Wl,") || arg.starts_with('@')
+        arg == "-fuse-ld=lld"
+            || arg.starts_with("-l")
+            || arg.starts_with("-Wl,")
+            || arg.starts_with('@')
     })
 }
 
@@ -881,14 +885,26 @@ mod tests {
         assert_eq!(parse_lld_stack_size("0O17"), ParsedStackSize::Invalid);
         assert_eq!(parse_lld_stack_size("0x10"), ParsedStackSize::Valid(16));
         assert_eq!(parse_lld_stack_size("0b101"), ParsedStackSize::Valid(5));
-        assert_eq!(parse_lld_stack_size("1048576"), ParsedStackSize::Valid(1048576));
+        assert_eq!(
+            parse_lld_stack_size("1048576"),
+            ParsedStackSize::Valid(1048576)
+        );
         assert_eq!(parse_lld_stack_size("08"), ParsedStackSize::Invalid);
         assert_eq!(parse_lld_stack_size("1k"), ParsedStackSize::Invalid);
         assert_eq!(parse_lld_stack_size(""), ParsedStackSize::Invalid);
         assert_eq!(parse_lld_stack_size("0x"), ParsedStackSize::Invalid);
-        assert_eq!(parse_lld_stack_size("0x40000001"), ParsedStackSize::Overflow);
-        assert_eq!(parse_lld_stack_size("99999999999"), ParsedStackSize::Overflow);
-        assert_eq!(parse_lld_stack_size("0x0000000040000000"), ParsedStackSize::Valid(1 << 30));
+        assert_eq!(
+            parse_lld_stack_size("0x40000001"),
+            ParsedStackSize::Overflow
+        );
+        assert_eq!(
+            parse_lld_stack_size("99999999999"),
+            ParsedStackSize::Overflow
+        );
+        assert_eq!(
+            parse_lld_stack_size("0x0000000040000000"),
+            ParsedStackSize::Valid(1 << 30)
+        );
     }
 
     #[test]
@@ -897,7 +913,10 @@ mod tests {
             tokenize_gnu_response_file("\u{feff} a 'b c' \"d\\\"e\" f\\ g\n"),
             strings(&["a", "b c", "d\"e", "f g"])
         );
-        assert_eq!(tokenize_gnu_response_file("'unterminated"), strings(&["unterminated"]));
+        assert_eq!(
+            tokenize_gnu_response_file("'unterminated"),
+            strings(&["unterminated"])
+        );
         assert_eq!(tokenize_gnu_response_file("x\\"), strings(&["x\\"]));
     }
 
@@ -905,7 +924,10 @@ mod tests {
     fn last_stack_request_wins() {
         let args = strings(&["-z", "stack-size=16777216", "-zstack-size=9437184"]);
         assert_eq!(main_thread_stack_size(&args, None).unwrap(), 9437184);
-        assert_eq!(main_thread_stack_size(&[], None).unwrap(), DEFAULT_MAIN_THREAD_STACK_SIZE);
+        assert_eq!(
+            main_thread_stack_size(&[], None).unwrap(),
+            DEFAULT_MAIN_THREAD_STACK_SIZE
+        );
         let after_terminator = strings(&["--", "-zstack-size=9437184"]);
         assert_eq!(
             main_thread_stack_size(&after_terminator, None).unwrap(),
@@ -918,9 +940,13 @@ mod tests {
         assert!(suggests_threads_or_dynamic_linking("x = clone (f);"));
         assert!(!suggests_threads_or_dynamic_linking("x = myclone(f);"));
         assert!(suggests_threads_or_dynamic_linking("#include  <thread>"));
-        assert!(suggests_threads_or_dynamic_linking("void *h = dlopen(p, 0);"));
+        assert!(suggests_threads_or_dynamic_linking(
+            "void *h = dlopen(p, 0);"
+        ));
         assert!(!suggests_threads_or_dynamic_linking("my_dlopen_x(p);"));
-        assert!(!suggests_threads_or_dynamic_linking("int main(void) { return 0; }"));
+        assert!(!suggests_threads_or_dynamic_linking(
+            "int main(void) { return 0; }"
+        ));
         assert!(suggests_threads_or_dynamic_linking("dlopen"));
     }
 

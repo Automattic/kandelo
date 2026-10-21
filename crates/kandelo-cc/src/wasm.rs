@@ -58,12 +58,20 @@ fn sections(bytes: &[u8]) -> Result<Vec<Section>> {
         let name = if id == 0 {
             let (name_len, name_start) = read_leb(bytes, body_start)?;
             let name_start = name_start.min(bytes.len());
-            let name_end = name_start.saturating_add(name_len as usize).min(bytes.len());
+            let name_end = name_start
+                .saturating_add(name_len as usize)
+                .min(bytes.len());
             Some(String::from_utf8_lossy(&bytes[name_start..name_end]).into_owned())
         } else {
             None
         };
-        out.push(Section { id, start, body_start, end, name });
+        out.push(Section {
+            id,
+            start,
+            body_start,
+            end,
+            name,
+        });
         offset = end;
     }
     Ok(out)

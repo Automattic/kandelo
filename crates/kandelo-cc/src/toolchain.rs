@@ -7,9 +7,9 @@
 //! the same `WASM_POSIX_*` overrides. Everything after discovery — the
 //! compiler and linker jobs — is shared.
 
-use crate::arch::{sysroot_dir, WasmArch};
-use crate::flags::{join, CallTypesPlugin};
 use crate::Result;
+use crate::arch::{WasmArch, sysroot_dir};
+use crate::flags::{CallTypesPlugin, join};
 use std::path::Path;
 
 #[derive(Clone, Debug)]
@@ -26,7 +26,14 @@ pub struct Toolchain {
     pub calltypes_plugin: Option<CallTypesPlugin>,
 }
 
-const REQUIRED_LLVM_TOOLS: &[&str] = &["clang", "clang++", "llvm-ar", "llvm-ranlib", "llvm-nm", "wasm-ld"];
+const REQUIRED_LLVM_TOOLS: &[&str] = &[
+    "clang",
+    "clang++",
+    "llvm-ar",
+    "llvm-ranlib",
+    "llvm-nm",
+    "wasm-ld",
+];
 
 fn has_required_llvm_tools(bin_dir: &str) -> bool {
     REQUIRED_LLVM_TOOLS
@@ -70,7 +77,12 @@ mod discovery {
     fn find_project_root() -> Option<String> {
         let mut dir = resolve(&cwd(), "");
         loop {
-            if exists(&crate::node_path::join(&[&dir, "libc", "glue", "abi_constants.h"])) {
+            if exists(&crate::node_path::join(&[
+                &dir,
+                "libc",
+                "glue",
+                "abi_constants.h",
+            ])) {
                 return Some(dir);
             }
             let parent = crate::node_path::join(&[&dir, ".."]);
@@ -130,8 +142,16 @@ mod discovery {
             if has_required_llvm_tools(dir) {
                 let test = run(
                     &join(dir, "clang"),
-                    &["--target=wasm32-unknown-unknown", "-x", "c", "-c", "-o", "/dev/null", "/dev/null"]
-                        .map(String::from),
+                    &[
+                        "--target=wasm32-unknown-unknown",
+                        "-x",
+                        "c",
+                        "-c",
+                        "-o",
+                        "/dev/null",
+                        "/dev/null",
+                    ]
+                    .map(String::from),
                     None,
                 );
                 if test.exit_code == 0 {
@@ -179,7 +199,11 @@ mod discovery {
         if let Some(glue) = env_nonempty("WASM_POSIX_GLUE_DIR") {
             return Ok(glue);
         }
-        Ok(crate::node_path::join(&[&project_root_or_sdk()?, "libc", "glue"]))
+        Ok(crate::node_path::join(&[
+            &project_root_or_sdk()?,
+            "libc",
+            "glue",
+        ]))
     }
 }
 
@@ -221,7 +245,9 @@ pub use discovery::*;
 
 pub fn validate_sysroot(sysroot: &str) -> Result<()> {
     if !exists(&join(&join(sysroot, "lib"), "libc.a")) {
-        return Err(format!("Sysroot not found at {sysroot}\nRun scripts/build-musl.sh first."));
+        return Err(format!(
+            "Sysroot not found at {sysroot}\nRun scripts/build-musl.sh first."
+        ));
     }
     Ok(())
 }
@@ -288,7 +314,10 @@ mod tests {
 
     #[test]
     fn lld_version() {
-        assert_eq!(lld_major_from_version("LLD 21.1.7 (compatible with GNU linkers)"), Some(21));
+        assert_eq!(
+            lld_major_from_version("LLD 21.1.7 (compatible with GNU linkers)"),
+            Some(21)
+        );
         assert_eq!(lld_major_from_version("Homebrew LLD 22.0.0"), Some(22));
         assert_eq!(lld_major_from_version("wasm-ld version"), None);
     }

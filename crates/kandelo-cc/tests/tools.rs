@@ -5,7 +5,10 @@ use kandelo_cc::arch::WasmArch;
 use kandelo_cc::tools::{configure_args, configure_env, pkg_config_env};
 
 fn value<'a>(env: &'a [(String, String)], name: &str) -> Option<&'a str> {
-    env.iter().rev().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+    env.iter()
+        .rev()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.as_str())
 }
 
 fn strings(values: &[&str]) -> Vec<String> {
@@ -21,20 +24,34 @@ fn configure_args_include_host_and_prefix() {
 
 #[test]
 fn configure_args_use_the_musl_userland_identity_for_wasm64() {
-    assert!(configure_args(&[], WasmArch::Wasm64).contains(&"--host=wasm64-unknown-linux-musl".to_string()));
+    assert!(
+        configure_args(&[], WasmArch::Wasm64)
+            .contains(&"--host=wasm64-unknown-linux-musl".to_string())
+    );
 }
 
 #[test]
 fn configure_args_forward_extra_user_args() {
-    let args = configure_args(&strings(&["--disable-shared", "--without-pear"]), WasmArch::Wasm32);
-    assert_eq!(&args[2..], &strings(&["--disable-shared", "--without-pear"])[..]);
+    let args = configure_args(
+        &strings(&["--disable-shared", "--without-pear"]),
+        WasmArch::Wasm32,
+    );
+    assert_eq!(
+        &args[2..],
+        &strings(&["--disable-shared", "--without-pear"])[..]
+    );
 }
 
 /// Point SDK discovery at this checkout's sdk/ (the test binary is not
 /// installed inside an SDK).
 fn use_repository_sdk() {
     // SAFETY: tests in this crate run single-threaded (.cargo/config.toml).
-    unsafe { std::env::set_var("WASM_POSIX_SDK_ROOT", concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk")) };
+    unsafe {
+        std::env::set_var(
+            "WASM_POSIX_SDK_ROOT",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk"),
+        )
+    };
 }
 
 #[test]
@@ -60,7 +77,12 @@ fn configure_env_identifies_wasm64_so_config_site_selects_lp64_values() {
 const SYSROOT: &str = "/tmp/test-sysroot";
 
 fn pc_path(caller: &str, resolver: &str) -> String {
-    value(&pkg_config_env(caller, resolver, SYSROOT), "PKG_CONFIG_PATH").unwrap().to_string()
+    value(
+        &pkg_config_env(caller, resolver, SYSROOT),
+        "PKG_CONFIG_PATH",
+    )
+    .unwrap()
+    .to_string()
 }
 
 #[test]
@@ -80,8 +102,15 @@ fn pkg_config_keeps_wasm_cache_paths() {
 
 #[test]
 fn pkg_config_keeps_exact_main_metadata_only_inside_the_target_cache_namespace() {
-    assert_eq!(pc_path("/home/runner/work/_temp/exact-main-package-cache.abc/libs/icu/lib/pkgconfig", ""), "");
-    let target = "/home/runner/work/_temp/kandelo/exact-main-package-cache.abc/libs/icu/lib/pkgconfig";
+    assert_eq!(
+        pc_path(
+            "/home/runner/work/_temp/exact-main-package-cache.abc/libs/icu/lib/pkgconfig",
+            ""
+        ),
+        ""
+    );
+    let target =
+        "/home/runner/work/_temp/kandelo/exact-main-package-cache.abc/libs/icu/lib/pkgconfig";
     assert_eq!(pc_path(target, ""), target);
 }
 
@@ -90,7 +119,11 @@ fn pkg_config_keeps_a_path_the_resolver_provided_whatever_the_cache_root_is_call
     // A per-worktree cache root ("kandelo-lane-f") fails the name test; the
     // resolver's own list (WASM_POSIX_DEP_PKG_CONFIG_PATH) answers by provenance.
     let lane = "/Users/x/.cache/kandelo-lane-f/source-only/source-only-v1/compiled/libs/icu-74.2/lib/pkgconfig";
-    assert_eq!(pc_path(lane, ""), "", "without the resolver variable the name test still rejects it");
+    assert_eq!(
+        pc_path(lane, ""),
+        "",
+        "without the resolver variable the name test still rejects it"
+    );
     assert_eq!(pc_path(lane, lane), lane);
 }
 
@@ -132,6 +165,9 @@ fn pkg_config_sets_only_libdir_and_path() {
     // absolute paths in the SDK's .pc files), and everything else the caller
     // exported, including an inherited PKG_CONFIG_SYSROOT_DIR, passes through
     // untouched because pkg-config inherits the caller's environment.
-    let names: Vec<String> = pkg_config_env("", "", SYSROOT).into_iter().map(|(name, _)| name).collect();
+    let names: Vec<String> = pkg_config_env("", "", SYSROOT)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
     assert_eq!(names, strings(&["PKG_CONFIG_LIBDIR", "PKG_CONFIG_PATH"]));
 }

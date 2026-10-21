@@ -2,7 +2,9 @@
 //! reads them.
 
 use kandelo_cc::driver::is_fork_capable;
-use kandelo_cc::wasm::{with_code_hash_section, without_custom_section, CALLTYPES_CODE_HASH_SECTION, CALLTYPES_SECTION};
+use kandelo_cc::wasm::{
+    CALLTYPES_CODE_HASH_SECTION, CALLTYPES_SECTION, with_code_hash_section, without_custom_section,
+};
 
 fn module(wat: &str) -> Vec<u8> {
     wat::parse_str(wat).unwrap()
@@ -28,7 +30,8 @@ fn custom_sections(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
         let (size, body) = leb(bytes, offset + 1);
         if id == 0 {
             let (name_len, name_start) = leb(bytes, body);
-            let name = String::from_utf8(bytes[name_start..name_start + name_len].to_vec()).unwrap();
+            let name =
+                String::from_utf8(bytes[name_start..name_start + name_len].to_vec()).unwrap();
             out.push((name, bytes[name_start + name_len..body + size].to_vec()));
         }
         offset = body + size;
@@ -57,14 +60,31 @@ const FORK_MODULE: &str = r#"(module
 #[test]
 fn the_code_hash_is_the_one_the_instrumenter_checks() {
     let linked = with_custom(module(FORK_MODULE), CALLTYPES_SECTION, b"facts");
-    let hashed = with_code_hash_section(&linked).unwrap().expect("module has code");
+    let hashed = with_code_hash_section(&linked)
+        .unwrap()
+        .expect("module has code");
     let sections = custom_sections(&hashed);
-    let (_, recorded) = sections.iter().find(|(name, _)| name == CALLTYPES_CODE_HASH_SECTION).unwrap();
-    assert_eq!(recorded.as_slice(), fork_instrument::facts::code_sha256(&hashed).unwrap().as_slice());
-    assert_eq!(CALLTYPES_CODE_HASH_SECTION, fork_instrument::facts::CODE_HASH_SECTION);
+    let (_, recorded) = sections
+        .iter()
+        .find(|(name, _)| name == CALLTYPES_CODE_HASH_SECTION)
+        .unwrap();
+    assert_eq!(
+        recorded.as_slice(),
+        fork_instrument::facts::code_sha256(&hashed)
+            .unwrap()
+            .as_slice()
+    );
+    assert_eq!(
+        CALLTYPES_CODE_HASH_SECTION,
+        fork_instrument::facts::CODE_HASH_SECTION
+    );
     assert_eq!(CALLTYPES_SECTION, fork_instrument::facts::SECTION);
     // The facts themselves stay for the instrumenter.
-    assert!(sections.iter().any(|(name, payload)| name == CALLTYPES_SECTION && payload == b"facts"));
+    assert!(
+        sections
+            .iter()
+            .any(|(name, payload)| name == CALLTYPES_SECTION && payload == b"facts")
+    );
 }
 
 #[test]
@@ -81,15 +101,28 @@ fn rewriting_the_code_hash_replaces_the_old_one() {
 
 #[test]
 fn a_module_without_code_is_left_alone() {
-    assert_eq!(with_code_hash_section(&module("(module (memory 1))")).unwrap(), None);
+    assert_eq!(
+        with_code_hash_section(&module("(module (memory 1))")).unwrap(),
+        None
+    );
 }
 
 #[test]
 fn stripping_the_facts_keeps_every_other_byte() {
     let plain = module(FORK_MODULE);
-    let linked = with_custom(with_custom(plain.clone(), CALLTYPES_SECTION, b"a"), CALLTYPES_SECTION, b"b");
-    assert_eq!(without_custom_section(&linked, CALLTYPES_SECTION).unwrap(), Some(plain.clone()));
-    assert_eq!(without_custom_section(&plain, CALLTYPES_SECTION).unwrap(), None);
+    let linked = with_custom(
+        with_custom(plain.clone(), CALLTYPES_SECTION, b"a"),
+        CALLTYPES_SECTION,
+        b"b",
+    );
+    assert_eq!(
+        without_custom_section(&linked, CALLTYPES_SECTION).unwrap(),
+        Some(plain.clone())
+    );
+    assert_eq!(
+        without_custom_section(&plain, CALLTYPES_SECTION).unwrap(),
+        None
+    );
 }
 
 #[test]

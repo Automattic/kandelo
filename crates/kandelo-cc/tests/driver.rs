@@ -1,14 +1,14 @@
 //! The compiler driver's argument building and its reading of clang's
 //! `-###` traces and LLVM response files. Ported from sdk/test/cc.test.ts.
 
+use kandelo_cc::Result;
 use kandelo_cc::arch::WasmArch;
 use kandelo_cc::driver::{
-    build_clang_args, build_glue_compile_args, decode_llvm_response_file, glue_sources, linker_args_from_clang_trace,
-    working_directory_from_clang_trace, LinkerPreparation,
+    LinkerPreparation, build_clang_args, build_glue_compile_args, decode_llvm_response_file,
+    glue_sources, linker_args_from_clang_trace, working_directory_from_clang_trace,
 };
 use kandelo_cc::flags::MAX_EXECUTABLE_MEMORY_SIZE;
 use kandelo_cc::toolchain::Toolchain;
-use kandelo_cc::Result;
 
 const MIB: u64 = 1024 * 1024;
 
@@ -30,11 +30,19 @@ fn toolchain() -> Toolchain {
 
 /// An executable link prepared with `stack` bytes of main-thread stack.
 fn executable_link(stack: u64) -> Option<LinkerPreparation> {
-    Some(LinkerPreparation::ExecutableLink { main_thread_stack_size_bytes: stack })
+    Some(LinkerPreparation::ExecutableLink {
+        main_thread_stack_size_bytes: stack,
+    })
 }
 
 fn try_build_with(user_args: &[&str], toolchain: &Toolchain, stack: u64) -> Result<Vec<String>> {
-    build_clang_args(&strings(user_args), toolchain, WasmArch::Wasm32, executable_link(stack), None)
+    build_clang_args(
+        &strings(user_args),
+        toolchain,
+        WasmArch::Wasm32,
+        executable_link(stack),
+        None,
+    )
 }
 
 /// wasm32 arguments for `user_args`, prepared as an 8 MiB-stack executable link.
@@ -57,7 +65,10 @@ fn index_of(args: &[String], value: &str) -> Option<usize> {
 }
 
 fn last_stack_size_flag(args: &[String]) -> Option<&str> {
-    args.iter().filter(|a| a.contains("stack-size=")).next_back().map(String::as_str)
+    args.iter()
+        .filter(|a| a.contains("stack-size="))
+        .next_back()
+        .map(String::as_str)
 }
 
 // buildClangArgs
@@ -102,20 +113,37 @@ fn uses_the_8_mib_stack_floor_for_default_and_smaller_requests() {
     let default_args = build(&["foo.c", "-o", "foo.wasm"]);
     let smaller_args = build(&["foo.c", "-Wl,-z,stack-size=1048576", "-o", "foo.wasm"]);
 
-    assert_eq!(last_stack_size_flag(&default_args), Some("-Wl,-z,stack-size=8388608"));
-    assert_eq!(last_stack_size_flag(&smaller_args), Some("-Wl,-z,stack-size=8388608"));
+    assert_eq!(
+        last_stack_size_flag(&default_args),
+        Some("-Wl,-z,stack-size=8388608")
+    );
+    assert_eq!(
+        last_stack_size_flag(&smaller_args),
+        Some("-Wl,-z,stack-size=8388608")
+    );
 }
 
 #[test]
 fn emits_the_prepared_larger_stack_after_preserving_the_original_arguments() {
-    let user_args = ["foo.c", "-Wl,-z", "-iquote", "/tmp/include", "-Wl,stack-size=16777216", "-o", "foo.wasm"];
+    let user_args = [
+        "foo.c",
+        "-Wl,-z",
+        "-iquote",
+        "/tmp/include",
+        "-Wl,stack-size=16777216",
+        "-o",
+        "foo.wasm",
+    ];
     let args = try_build_with(&user_args, &toolchain(), 16 * MIB).unwrap();
     let forwarded = strings(&user_args[..user_args.len() - 2]);
 
     let start = index_of(&args, &forwarded[0]).unwrap();
     let end = index_of(&args, forwarded.last().unwrap()).unwrap();
     assert_eq!(args[start..=end], forwarded[..]);
-    assert_eq!(last_stack_size_flag(&args), Some("-Wl,-z,stack-size=16777216"));
+    assert_eq!(
+        last_stack_size_flag(&args),
+        Some("-Wl,-z,stack-size=16777216")
+    );
 }
 
 #[test]
@@ -158,7 +186,13 @@ fn preserves_user_linker_input_order_across_argument_categories() {
     // --whole-archive is order-sensitive and accepted by wasm-ld, so it is a
     // real test of ordering. (--start-group/--end-group are dropped: wasm-ld
     // rejects them and resolves archives order-independently.)
-    let user_link_args = ["main.o", "-Wl,--whole-archive", "-lfoo", "libbar.a", "-Wl,--no-whole-archive"];
+    let user_link_args = [
+        "main.o",
+        "-Wl,--whole-archive",
+        "-lfoo",
+        "libbar.a",
+        "-Wl,--no-whole-archive",
+    ];
     let mut user_args = user_link_args.to_vec();
     user_args.extend(["-o", "out.wasm"]);
     let args = build(&user_args);
@@ -169,7 +203,11 @@ fn preserves_user_linker_input_order_across_argument_categories() {
 
 #[test]
 fn links_precompiled_glue_objects_in_place_of_the_glue_sources() {
-    let objects = strings(&["/tmp/g/channel_syscall.o", "/tmp/g/compiler_rt.o", "/tmp/g/cxxrt.o"]);
+    let objects = strings(&[
+        "/tmp/g/channel_syscall.o",
+        "/tmp/g/compiler_rt.o",
+        "/tmp/g/cxxrt.o",
+    ]);
     let args = build_clang_args(
         &strings(&["main.o", "-o", "out.wasm"]),
         &toolchain(),
@@ -189,11 +227,22 @@ fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
     let toolchain = toolchain();
     assert_eq!(
         glue_sources(&toolchain, false),
-        strings(&["/tmp/glue/channel_syscall.c", "/tmp/glue/compiler_rt.c", "/tmp/glue/cxxrt.c"])
+        strings(&[
+            "/tmp/glue/channel_syscall.c",
+            "/tmp/glue/compiler_rt.c",
+            "/tmp/glue/cxxrt.c"
+        ])
     );
-    assert_eq!(glue_sources(&toolchain, true).last().map(String::as_str), Some("/tmp/glue/dlopen.c"));
-    let args =
-        build_glue_compile_args(&glue_sources(&toolchain, false), &toolchain, WasmArch::Wasm32, Some("-DSLOTS=4"));
+    assert_eq!(
+        glue_sources(&toolchain, true).last().map(String::as_str),
+        Some("/tmp/glue/dlopen.c")
+    );
+    let args = build_glue_compile_args(
+        &glue_sources(&toolchain, false),
+        &toolchain,
+        WasmArch::Wasm32,
+        Some("-DSLOTS=4"),
+    );
     assert!(has(&args, "-O2"));
     assert!(has(&args, "-DSLOTS=4"));
     assert!(has(&args, "--target=wasm32-unknown-unknown"));
@@ -202,14 +251,31 @@ fn compiles_glue_as_optimized_c_regardless_of_the_link_command() {
     assert_eq!(args[x..x + 2], strings(&["-x", "c"])[..]);
     assert_eq!(
         args[args.len() - 4..],
-        strings(&["-c", "/tmp/glue/channel_syscall.c", "/tmp/glue/compiler_rt.c", "/tmp/glue/cxxrt.c"])[..]
+        strings(&[
+            "-c",
+            "/tmp/glue/channel_syscall.c",
+            "/tmp/glue/compiler_rt.c",
+            "/tmp/glue/cxxrt.c"
+        ])[..]
     );
-    assert!(has(&args, "-ffile-prefix-map=/tmp/glue=/usr/src/kandelo-sdk/libc/glue"));
+    assert!(has(
+        &args,
+        "-ffile-prefix-map=/tmp/glue=/usr/src/kandelo-sdk/libc/glue"
+    ));
 }
 
 #[test]
 fn orders_explicit_libc_and_user_libraries_after_syscall_glue() {
-    let args = build(&["main.o", "-L", "/deps/lib", "-lxml2", "support.a", "-lc", "-o", "out.wasm"]);
+    let args = build(&[
+        "main.o",
+        "-L",
+        "/deps/lib",
+        "-lxml2",
+        "support.a",
+        "-lc",
+        "-o",
+        "out.wasm",
+    ]);
     let order = [
         "/tmp/glue/channel_syscall.c",
         "/tmp/sysroot/lib/crt1.o",
@@ -220,33 +286,65 @@ fn orders_explicit_libc_and_user_libraries_after_syscall_glue() {
         "-lc",
         "/tmp/sysroot/lib/libc.a",
     ];
-    let positions: Vec<usize> = order.iter().map(|value| index_of(&args, value).unwrap()).collect();
+    let positions: Vec<usize> = order
+        .iter()
+        .map(|value| index_of(&args, value).unwrap())
+        .collect();
     for (pair, names) in positions.windows(2).zip(order.windows(2)) {
-        assert!(pair[0] < pair[1], "{} must come before {}", names[0], names[1]);
+        assert!(
+            pair[0] < pair[1],
+            "{} must come before {}",
+            names[0],
+            names[1]
+        );
     }
 }
 
 #[test]
 fn maps_sdk_owned_glue_and_sysroot_paths_to_stable_debug_identities() {
-    let args = build(&["-ffile-prefix-map=/tmp=/caller-source", "foo.c", "-o", "foo.wasm"]);
+    let args = build(&[
+        "-ffile-prefix-map=/tmp=/caller-source",
+        "foo.c",
+        "-o",
+        "foo.wasm",
+    ]);
 
     for kind in ["file", "debug", "macro"] {
-        assert!(has(&args, &format!("-f{kind}-prefix-map=/tmp/glue=/usr/src/kandelo-sdk/libc/glue")));
-        assert!(has(&args, &format!("-f{kind}-prefix-map=/tmp/sysroot=/usr/src/kandelo-sdk/sysroot")));
+        assert!(has(
+            &args,
+            &format!("-f{kind}-prefix-map=/tmp/glue=/usr/src/kandelo-sdk/libc/glue")
+        ));
+        assert!(has(
+            &args,
+            &format!("-f{kind}-prefix-map=/tmp/sysroot=/usr/src/kandelo-sdk/sysroot")
+        ));
     }
     // After the caller's broader mapping, so the SDK's more specific one wins.
     assert!(
-        index_of(&args, "-ffile-prefix-map=/tmp/glue=/usr/src/kandelo-sdk/libc/glue").unwrap()
+        index_of(
+            &args,
+            "-ffile-prefix-map=/tmp/glue=/usr/src/kandelo-sdk/libc/glue"
+        )
+        .unwrap()
             > index_of(&args, "-ffile-prefix-map=/tmp=/caller-source").unwrap()
     );
 }
 
 #[test]
 fn uses_an_architecture_specific_stable_identity_for_the_wasm64_sysroot() {
-    let args =
-        build_clang_args(&strings(&["-c", "foo.c", "-o", "foo.o"]), &toolchain(), WasmArch::Wasm64, None, None).unwrap();
+    let args = build_clang_args(
+        &strings(&["-c", "foo.c", "-o", "foo.o"]),
+        &toolchain(),
+        WasmArch::Wasm64,
+        None,
+        None,
+    )
+    .unwrap();
 
-    assert!(has(&args, "-ffile-prefix-map=/tmp/sysroot=/usr/src/kandelo-sdk/sysroot64"));
+    assert!(has(
+        &args,
+        "-ffile-prefix-map=/tmp/sysroot=/usr/src/kandelo-sdk/sysroot64"
+    ));
 }
 
 #[test]
@@ -326,23 +424,49 @@ fn pins_lld_to_the_same_resolved_llvm_tree_as_clang() {
 
 #[test]
 fn rejects_executable_link_arguments_before_wasm_ld_is_versioned() {
-    let unversioned = Toolchain { lld_major: None, ..toolchain() };
-    let error = build_clang_args(&strings(&["foo.c", "-o", "foo.wasm"]), &unversioned, WasmArch::Wasm32, None, None)
-        .unwrap_err();
+    let unversioned = Toolchain {
+        lld_major: None,
+        ..toolchain()
+    };
+    let error = build_clang_args(
+        &strings(&["foo.c", "-o", "foo.wasm"]),
+        &unversioned,
+        WasmArch::Wasm32,
+        None,
+        None,
+    )
+    .unwrap_err();
     assert!(error.contains("wasm-ld version is unresolved"), "{error}");
 }
 
 #[test]
 fn rejects_executable_links_without_the_matching_clang_trace_preparation() {
-    let error = build_clang_args(&strings(&["foo.c", "-o", "foo.wasm"]), &toolchain(), WasmArch::Wasm32, None, None)
-        .unwrap_err();
-    assert!(error.contains("executable linker arguments are unprepared"), "{error}");
+    let error = build_clang_args(
+        &strings(&["foo.c", "-o", "foo.wasm"]),
+        &toolchain(),
+        WasmArch::Wasm32,
+        None,
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("executable linker arguments are unprepared"),
+        "{error}"
+    );
     // Over-ceiling prepared sizes are still rejected: that is a structural
     // requirement of the linker invocation, not the 8 MiB floor. (The
     // TypeScript test also rejected 1.5 and -1; a u64 cannot hold either.)
     // A sub-floor size is a valid caller choice, asserted below.
-    let error = try_build_with(&["foo.c", "-o", "foo.wasm"], &toolchain(), MAX_EXECUTABLE_MEMORY_SIZE + 1).unwrap_err();
-    assert!(error.contains("prepared main-thread stack size must be a non-negative integer"), "{error}");
+    let error = try_build_with(
+        &["foo.c", "-o", "foo.wasm"],
+        &toolchain(),
+        MAX_EXECUTABLE_MEMORY_SIZE + 1,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("prepared main-thread stack size must be a non-negative integer"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -359,7 +483,10 @@ fn extracts_the_exact_pinned_wasm_ld_argv_from_a_clang_trace() {
     const LD: &str = "/opt/llvm/bin/wasm-ld";
     let expect_error = |trace: &str, linker: &str, message: &str| {
         let error = linker_args_from_clang_trace(trace, linker).unwrap_err();
-        assert!(error.contains(message), "expected {message:?}, got {error:?}");
+        assert!(
+            error.contains(message),
+            "expected {message:?}, got {error:?}"
+        );
     };
     let trace = [
         "clang version 21.1.7",
@@ -370,18 +497,31 @@ fn extracts_the_exact_pinned_wasm_ld_argv_from_a_clang_trace() {
 
     assert_eq!(
         linker_args_from_clang_trace(&trace, LD).unwrap(),
-        Some(strings(&["-m", "wasm32", "main.o", "-z", "stack-size=16777216"]))
+        Some(strings(&[
+            "-m",
+            "wasm32",
+            "main.o",
+            "-z",
+            "stack-size=16777216"
+        ]))
     );
     expect_error(&trace, "/other/wasm-ld", "emitted 0 commands");
 
     let no_link_trace = r#" "/opt/llvm/bin/clang-21" "-cc1" "-triple" "wasm32-unknown-unknown""#;
-    assert_eq!(linker_args_from_clang_trace(no_link_trace, LD).unwrap(), None);
+    assert_eq!(
+        linker_args_from_clang_trace(no_link_trace, LD).unwrap(),
+        None
+    );
     expect_error(
         " \"/opt/llvm/bin/clang-21\" \"-cc1\"\n \"/opt/llvm/bin/wasm-ld\" \"one.o\"\n \"/opt/llvm/bin/wasm-ld\" \"two.o\"",
         LD,
         "emitted 2 commands",
     );
-    expect_error(" \"/opt/llvm/bin/clang-21\" \"-cc1\"\n \"/other/wasm-ld\" \"main.o\"", LD, "emitted 0 commands");
+    expect_error(
+        " \"/opt/llvm/bin/clang-21\" \"-cc1\"\n \"/other/wasm-ld\" \"main.o\"",
+        LD,
+        "emitted 0 commands",
+    );
     expect_error(
         " \"/opt/llvm/bin/clang-21\" \"-cc1\"\n \"/opt/llvm/bin/wasm-ld\" \"main.o\"\n \"/other/wasm-ld\" \"other.o\"",
         LD,
@@ -396,21 +536,37 @@ fn extracts_the_exact_pinned_wasm_ld_argv_from_a_clang_trace() {
         .unwrap(),
         Some(strings(&["main.o"]))
     );
-    expect_error(r#" "/opt/bin/wasm-opt" "a.wasm""#, LD, "no compiler or pinned linker jobs");
+    expect_error(
+        r#" "/opt/bin/wasm-opt" "a.wasm""#,
+        LD,
+        "no compiler or pinned linker jobs",
+    );
     expect_error("clang version 21.1.7", LD, "no recognizable jobs");
 
     // A quoted newline belongs to its argument, not a new line of the trace.
-    let newline_path_trace = " \"/opt/llvm/bin/wasm-ld\" \"main\nobject.o\" \"-z\" \"stack-size=16777216\"\n";
+    let newline_path_trace =
+        " \"/opt/llvm/bin/wasm-ld\" \"main\nobject.o\" \"-z\" \"stack-size=16777216\"\n";
     assert_eq!(
         linker_args_from_clang_trace(newline_path_trace, LD).unwrap(),
         Some(strings(&["main\nobject.o", "-z", "stack-size=16777216"]))
     );
     // An unterminated quote on a non-job line does not swallow the jobs after it.
     assert_eq!(
-        linker_args_from_clang_trace(&format!("\"unrelated unterminated diagnostic\n{trace}"), LD).unwrap(),
-        Some(strings(&["-m", "wasm32", "main.o", "-z", "stack-size=16777216"]))
+        linker_args_from_clang_trace(&format!("\"unrelated unterminated diagnostic\n{trace}"), LD)
+            .unwrap(),
+        Some(strings(&[
+            "-m",
+            "wasm32",
+            "main.o",
+            "-z",
+            "stack-size=16777216"
+        ]))
     );
-    expect_error(" \"/opt/llvm/bin/wasm-ld\" \"unterminated\n", LD, "unterminated quoted command");
+    expect_error(
+        " \"/opt/llvm/bin/wasm-ld\" \"unterminated\n",
+        LD,
+        "unterminated quoted command",
+    );
 
     // The driver working directory is the -working-directory in the slot
     // right after -resource-dir, not a later -Xclang one or -ffile-compilation-dir.
@@ -423,16 +579,26 @@ fn extracts_the_exact_pinned_wasm_ld_argv_from_a_clang_trace() {
         r#" "/opt/llvm/bin/wasm-ld" "main.o""#,
     ]
     .join("\n");
-    assert_eq!(working_directory_from_clang_trace(&working_directory_trace, "/tmp/project").unwrap(), "/tmp/build");
+    assert_eq!(
+        working_directory_from_clang_trace(&working_directory_trace, "/tmp/project").unwrap(),
+        "/tmp/build"
+    );
 
     let initial_directory_trace = concat!(
         r#" "/opt/llvm/bin/clang-21" "-cc1" "-resource-dir" "/opt/llvm/lib/clang/21" "#,
         r#""-internal-isystem" "/opt/include" "-working-directory" "/xclang-only""#,
     );
-    assert_eq!(working_directory_from_clang_trace(initial_directory_trace, "/tmp/project").unwrap(), "/tmp/project");
+    assert_eq!(
+        working_directory_from_clang_trace(initial_directory_trace, "/tmp/project").unwrap(),
+        "/tmp/project"
+    );
 
     let inconsistent = "did not emit one consistent driver working directory";
-    let error = working_directory_from_clang_trace(" \"/opt/llvm/bin/wasm-ld\" \"main.o\"\n", "/tmp/project").unwrap_err();
+    let error = working_directory_from_clang_trace(
+        " \"/opt/llvm/bin/wasm-ld\" \"main.o\"\n",
+        "/tmp/project",
+    )
+    .unwrap_err();
     assert!(error.contains(inconsistent), "{error}");
     let conflicting = [
         working_directory_trace.as_str(),
@@ -445,7 +611,10 @@ fn extracts_the_exact_pinned_wasm_ld_argv_from_a_clang_trace() {
 
 #[test]
 fn preserves_stack_after_data_layout_with_lld_22_and_newer() {
-    let lld_22 = Toolchain { lld_major: Some(22), ..toolchain() };
+    let lld_22 = Toolchain {
+        lld_major: Some(22),
+        ..toolchain()
+    };
     let args = try_build_with(&["foo.c", "-o", "foo.wasm"], &lld_22, 8 * MIB).unwrap();
 
     assert!(has(&args, "-Wl,--no-stack-first"));
@@ -453,7 +622,10 @@ fn preserves_stack_after_data_layout_with_lld_22_and_newer() {
 
 #[test]
 fn uses_lld_21_defaults_without_passing_its_unsupported_negative_option() {
-    let lld_21 = Toolchain { lld_major: Some(21), ..toolchain() };
+    let lld_21 = Toolchain {
+        lld_major: Some(21),
+        ..toolchain()
+    };
     let args = try_build_with(&["foo.c", "-o", "foo.wasm"], &lld_21, 8 * MIB).unwrap();
 
     assert!(!has(&args, "-Wl,--no-stack-first"));

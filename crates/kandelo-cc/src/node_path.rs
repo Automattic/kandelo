@@ -46,11 +46,7 @@ pub fn normalize(path: &str) -> String {
     if trailing {
         out.push('/');
     }
-    if absolute {
-        format!("/{out}")
-    } else {
-        out
-    }
+    if absolute { format!("/{out}") } else { out }
 }
 
 /// `path.join`.

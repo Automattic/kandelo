@@ -21,7 +21,10 @@ struct EnvGuard {
 
 impl EnvGuard {
     fn new() -> EnvGuard {
-        EnvGuard { saved: Vec::new(), _lock: ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner()) }
+        EnvGuard {
+            saved: Vec::new(),
+            _lock: ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner()),
+        }
     }
 
     fn set(&mut self, name: &'static str, value: Option<&str>) {
@@ -69,7 +72,14 @@ fn finds_llvm_from_auto_detection() {
     // a complete set of fake tools whose clang accepts the wasm32 probe, and
     // the overrides that take precedence over PATH are unset.
     let bin = TempDir::new("kandelo-cc-llvm-").unwrap();
-    for tool in ["clang", "clang++", "llvm-ar", "llvm-ranlib", "llvm-nm", "wasm-ld"] {
+    for tool in [
+        "clang",
+        "clang++",
+        "llvm-ar",
+        "llvm-ranlib",
+        "llvm-nm",
+        "wasm-ld",
+    ] {
         fake_tool(bin.path(), tool);
     }
     let bin_dir = bin.path().to_str().unwrap();
@@ -95,8 +105,14 @@ fn resolves_sysroot_relative_to_the_sdk_root() {
 fn selects_the_sysroot_matching_the_compiler_architecture() {
     let mut env = EnvGuard::new();
     env.set("WASM_POSIX_SYSROOT", None);
-    assert_eq!(basename(&find_sysroot(WasmArch::Wasm32).unwrap()), "sysroot");
-    assert_eq!(basename(&find_sysroot(WasmArch::Wasm64).unwrap()), "sysroot64");
+    assert_eq!(
+        basename(&find_sysroot(WasmArch::Wasm32).unwrap()),
+        "sysroot"
+    );
+    assert_eq!(
+        basename(&find_sysroot(WasmArch::Wasm64).unwrap()),
+        "sysroot64"
+    );
 }
 
 // findGlueDir

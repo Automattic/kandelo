@@ -1,10 +1,10 @@
 //! The SDK's other tools: the binutils-style pass-throughs, `strip`,
 //! `configure` and `pkg-config`.
 
-use crate::arch::{tool_prefix, WasmArch};
+use crate::Result;
+use crate::arch::{WasmArch, tool_prefix};
 use crate::flags::join;
 use crate::toolchain::{find_sysroot, resolve_toolchain, sdk_config_site};
-use crate::Result;
 use std::process::Command;
 
 /// GNU build-system identity for Kandelo's musl userland.
@@ -19,7 +19,11 @@ pub fn autoconf_host_triple(arch: WasmArch) -> String {
 }
 
 fn run_with_env(program: &str, args: &[String], env: &[(String, String)]) -> i32 {
-    match Command::new(program).args(args).envs(env.iter().cloned()).status() {
+    match Command::new(program)
+        .args(args)
+        .envs(env.iter().cloned())
+        .status()
+    {
         Ok(status) => status.code().unwrap_or(1),
         Err(_) => 127,
     }
@@ -30,7 +34,10 @@ pub fn llvm_passthrough(tool: &str, args: &[String]) -> Result<i32> {
     // The binutils-style tools are arch-independent; like the SDK always
     // has, they resolve the wasm32 toolchain.
     let toolchain = resolve_toolchain(WasmArch::Wasm32)?;
-    Ok(crate::exec::run_passthrough(&join(&toolchain.llvm_dir, tool), args))
+    Ok(crate::exec::run_passthrough(
+        &join(&toolchain.llvm_dir, tool),
+        args,
+    ))
 }
 
 /// The environment `configure` runs under: the SDK's tools and the
@@ -62,13 +69,20 @@ pub fn configure_env(arch: WasmArch) -> Result<Vec<(String, String)>> {
 }
 
 pub fn configure_args(user_args: &[String], arch: WasmArch) -> Vec<String> {
-    let mut args = vec![format!("--host={}", autoconf_host_triple(arch)), "--prefix=/usr".to_string()];
+    let mut args = vec![
+        format!("--host={}", autoconf_host_triple(arch)),
+        "--prefix=/usr".to_string(),
+    ];
     args.extend(user_args.iter().cloned());
     args
 }
 
 pub fn configure(arch: WasmArch, user_args: &[String]) -> Result<i32> {
-    Ok(run_with_env("./configure", &configure_args(user_args, arch), &configure_env(arch)?))
+    Ok(run_with_env(
+        "./configure",
+        &configure_args(user_args, arch),
+        &configure_env(arch)?,
+    ))
 }
 
 /// Anything under `kandelo/...` (the dep cache root) or a sysroot is
@@ -94,8 +108,15 @@ fn is_wasm_posix_path(p: &str) -> bool {
 /// PKG_CONFIG_SYSROOT_DIR is intentionally not set: every .pc file the SDK
 /// produces has absolute paths in `prefix=`, so prepending a sysroot would
 /// corrupt the emitted -I/-L flags.
-pub fn pkg_config_env(caller_path: &str, resolver_paths: &str, sysroot: &str) -> Vec<(String, String)> {
-    let resolver: std::collections::HashSet<&str> = resolver_paths.split(':').filter(|p| !p.is_empty()).collect();
+pub fn pkg_config_env(
+    caller_path: &str,
+    resolver_paths: &str,
+    sysroot: &str,
+) -> Vec<(String, String)> {
+    let resolver: std::collections::HashSet<&str> = resolver_paths
+        .split(':')
+        .filter(|p| !p.is_empty())
+        .collect();
     let filtered: Vec<&str> = caller_path
         .split(':')
         .filter(|p| !p.is_empty() && (is_wasm_posix_path(p) || resolver.contains(p)))
