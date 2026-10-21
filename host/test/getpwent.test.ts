@@ -87,9 +87,11 @@ describe.skipIf(!haveSmoke || !haveRootfs)("getpwent via rootfs.vfs.zst mount", 
     expect(result.exitCode, result.stderr || result.stdout).toBe(0);
     expect(result.stdout).toContain("GRENT 0 name=root gid=0");
     expect(result.stdout).toContain("GRENT 1 name=daemon gid=1");
-    expect(result.stdout).toContain("GRENT 7 name=wheel gid=10");
-    expect(result.stdout).toContain("GRENT 8 name=maker gid=1000");
-    expect(result.stdout).toContain("GRENT count=9");
+    // games owns NetHack's shared playground (/var/games/nethack).
+    expect(result.stdout).toContain("GRENT 5 name=games gid=60");
+    expect(result.stdout).toContain("GRENT 8 name=wheel gid=10");
+    expect(result.stdout).toContain("GRENT 9 name=maker gid=1000");
+    expect(result.stdout).toContain("GRENT count=10");
   });
 
   it("resolves canonical service names and aliases from the rootfs image", async () => {
