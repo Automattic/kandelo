@@ -69,15 +69,29 @@ int main(int argc, char **argv) {
         }
         char byte;
         CHECK(read(ready[0], &byte, 1) == 1);
+        if (argc > 1 && strcmp(argv[1], "terminate-owner") == 0) {
+            printf("allocator-ready=%d\n", getpid());
+            fflush(stdout);
+            CHECK(read(gate[0], &byte, 1) == 1);
+        }
+        if (argc > 1 && strcmp(argv[1], "trap-owner") == 0) __builtin_trap();
         exit(0);
     }
-    int status;
-    CHECK(waitpid(allocator, &status, 0) == allocator);
-    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-    printf("allocator-reaped=%d\n", allocator);
-    fflush(stdout);
     char permission;
-    CHECK(read(STDIN_FILENO, &permission, 1) == 1);
+    if (argc > 1 && strcmp(argv[1], "terminate-owner") == 0) {
+        // Hard host removal is not a POSIX signal exit. The test driver
+        // acknowledges exact worker retirement before releasing this barrier.
+        CHECK(read(STDIN_FILENO, &permission, 1) == 1);
+        puts("allocator removed by host");
+    } else {
+        int status;
+        CHECK(waitpid(allocator, &status, 0) == allocator);
+        CHECK((WIFEXITED(status) && WEXITSTATUS(status) == 0)
+              || (argc > 1 && strcmp(argv[1], "trap-owner") == 0 && WIFSIGNALED(status)));
+        printf("allocator-reaped=%d\n", allocator);
+        fflush(stdout);
+        CHECK(read(STDIN_FILENO, &permission, 1) == 1);
+    }
     CHECK(write(gate[1], "g", 1) == 1);
     int ok = 0;
     CHECK(read(result[0], &ok, sizeof(ok)) == sizeof(ok));

@@ -2822,6 +2822,43 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     });
   });
 
+  it("changes the preferred monitor without resizing the pane, retains the override across launches, and resets to the image default", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.setPresentation({ ...host.getPresentation(), displayScale: 1.5 });
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      host.attachKmsDisplay(makeCanvas());
+      fireResize(FakeResizeObserver.instances[0], 1440, 810);
+      host.setDisplayScaleOverride(1.25);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenLastCalledWith(1, 1152, 648, mmFor(1152, 648));
+      expect(host.getDisplayScalePreference()).toEqual({ defaultScale: 1.5, override: 1.25 });
+      expect(new LiveKernelHost().getDisplayScalePreference().override).toBeNull();
+      host.detachKernel();
+      host.setPresentation({ ...host.getPresentation(), displayScale: 2 });
+      host.attachKernel(kernel as any);
+      host.attachKmsDisplay(makeCanvas());
+      fireResize(FakeResizeObserver.instances.at(-1)!, 1440, 810);
+      expect(host.getPresentation().displayScale).toBe(1.25);
+      host.setDisplayScaleOverride(null);
+      expect(kernel.kmsSetDisplaySize).toHaveBeenLastCalledWith(1, 720, 480, mmFor(720, 480));
+      expect(host.getDisplayScalePreference()).toEqual({ defaultScale: 2, override: null });
+      expect(() => host.setDisplayScaleOverride(NaN)).toThrow("Display scale");
+      expect(() => host.setDisplayScaleOverride(0)).toThrow("Display scale");
+    });
+  });
+
+  it("keeps scale on a same-machine reboot and resets it for a different machine", async () => {
+    const host = new LiveKernelHost();
+    const descriptor = host.getBootDescriptor();
+    host.setDisplayScaleOverride(1.75);
+    await host.applyBootDescriptor(descriptor);
+    expect(host.getDisplayScalePreference().override).toBe(1.75);
+    await host.applyBootDescriptor({ ...descriptor, id: "different-machine" });
+    expect(host.getDisplayScalePreference().override).toBeNull();
+  });
+
   it("uses the actual bounded mode for virtual DPI and ignores hidden panes", () => {
     withFakeResizeObserver(() => {
       const host = new LiveKernelHost();

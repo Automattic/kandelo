@@ -1,3 +1,4 @@
+import { mergeChangedByteRuns } from "./shared-byte-runs";
 import { KmsCursorPlane } from "./dri/cursor-plane";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
@@ -26924,7 +26925,7 @@ export class CentralizedKernelWorker {
             offset,
             len,
           )) continue;
-          if (this.mergeChangedByteRuns(
+          if (mergeChangedByteRuns(
             processMem,
             mapAddr + offset,
             mapping.snapshot,
@@ -28523,30 +28524,6 @@ export class CentralizedKernelWorker {
     this.#kernel.releaseHostFileHandle(backing.handle);
     this.sharedMmapBackings.delete(backing.key);
     this.invalidateSharedMmapFdCache();
-  }
-
-  private mergeChangedByteRuns(
-    source: Uint8Array,
-    sourceOffset: number,
-    snapshot: Uint8Array,
-    snapshotOffset: number,
-    destination: Uint8Array,
-    destinationOffset: number,
-    len: number,
-  ): boolean {
-    let changed = false;
-    let i = 0;
-    while (i < len) {
-      while (i < len && source[sourceOffset + i] === snapshot[snapshotOffset + i]) i++;
-      if (i >= len) break;
-      const start = i;
-      do { i++; } while (
-        i < len && source[sourceOffset + i] !== snapshot[snapshotOffset + i]
-      );
-      destination.set(source.subarray(sourceOffset + start, sourceOffset + i), destinationOffset + start);
-      changed = true;
-    }
-    return changed;
   }
 
   private rangeDiffersFromSnapshot(

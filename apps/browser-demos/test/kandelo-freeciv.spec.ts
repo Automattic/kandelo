@@ -67,7 +67,7 @@ async function guestCommand(page: Page, command: string) {
 }
 
 // Keep native widget regressions at their explicit saved 960x540 mode.
-// The separate fresh-profile case below checks the product's 100% default.
+// The separate fresh-profile case below checks the product's 150% default.
 // Configure this through the real guest settings file and normal relaunch.
 async function gotoMachine(...args: Parameters<typeof gotoDefaultMachine>) {
   await gotoDefaultMachine(...args);
@@ -78,14 +78,21 @@ async function gotoMachine(...args: Parameters<typeof gotoDefaultMachine>) {
   const display = (await canvas(page).boundingBox())!;
   await waitForPanel(page, display.width - 60, display.height - 60);
   await canvas(page).click({ position: await menuPosition(page, "quit") });
-  await expect.poll(() => terminalLines(page), { timeout: 30_000 }).toMatch(/kandelo\$\s*$/);
+  await expect(page.getByRole("button", { name: "Terminal", exact: true }))
+    .toHaveAttribute("aria-current", "true", { timeout: 30_000 });
+  await expect.poll(() => page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").innerText())
+    .toMatch(/kandelo\$\s*$/);
   await guestCommand(page, [
     'mkdir -p "$HOME/.freeciv"',
     'printf "[client]\\nmigration_sdl2_from_sdl=TRUE\\nflag_sdl2_default_screen_size_set=TRUE\\ngui_sdl2_screen.width=960\\ngui_sdl2_screen.height=540\\nsound_effects_volume=25\\n" > "$HOME/.freeciv/freeciv-client-rc-3.2"',
   ].join("\n"));
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
-  await multiplayer(page, "local");
-  await expect(page.getByTestId("kms-dock-action-status")).toHaveCount(0, { timeout: 60_000 });
+  // With no display owner the Demo tab is correctly unavailable. Relaunch
+  // from the real shell rather than trying to open the old preview's controls.
+  // This second terminal also verifies dock replacements follow the actual
+  // display owner instead of assuming the primary terminal owns every game.
+  await page.keyboard.insertText("/usr/bin/freeciv");
+  await page.keyboard.press("Enter");
+  await expect(canvas(page)).toBeVisible({ timeout: 60_000 });
   // Dispatch completion can leave the previous menu on screen. Observe
   // the replacement client's selected scanout before sending its input.
   await expect(page.getByText(/960×540 · \d+ flips/i)).toBeVisible({ timeout: 60_000 });
@@ -631,19 +638,86 @@ for (const density of [1, 2]) {
       await page.screenshot({ path: `../../.context/freeciv-auto-terminal-${density}.png`, scale: "css" });
     });
 
+    test("preferred display scale keeps output fitted and survives relaunch", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "direct-display scaling acceptance targets Chromium");
+      test.setTimeout(180_000);
+      await gotoMachine(page, "freeciv");
+      await running(page);
+      await showGame(page);
+      await expect(page.getByText(/960×540 · \d+ flips/)).toBeVisible();
+      await page.getByRole("button", { name: "Display settings", exact: true }).click();
+      const scale = page.getByRole("combobox", { name: "Preferred display scale", exact: true });
+      await expect(scale).toHaveValue("default");
+      await expect(scale.getByRole("option", { name: /Use demo default/ })).toHaveCount(1);
+      await scale.selectOption("1.25");
+      // The preferred mode must never override an application's saved mode
+      // with bitmap zoom. Always show its entire display and cursor together.
+      await expect(page.getByText(/960×540 · \d+ flips/)).toBeVisible();
+      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
+      await expect.poll(async () => (await canvas(page).boundingBox())!.height).toBeCloseTo(810, 0);
+      const cursor = page.locator(".kmodeset-cursor");
+      expect(await cursor.boundingBox()).toEqual(await canvas(page).boundingBox());
+      await page.screenshot({ path: `../../.context/freeciv-display-scale-${density}.png`, scale: "css" });
+      await page.keyboard.press("Escape");
+      await canvas(page).click({ position: await menuPosition(page, "quit") });
+      await expect(page.getByRole("button", { name: "Terminal", exact: true })).toHaveAttribute("aria-current", "true");
+      await page.keyboard.insertText("/usr/bin/freeciv");
+      await page.keyboard.press("Enter");
+      // Freeciv saves its resolution automatically on exit. Preserve that
+      // application choice while keeping the machine's preferred scale.
+      await expect(page.getByText(/960×540 · \d+ flips/)).toBeVisible({ timeout: 60_000 });
+      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
+      await page.getByRole("button", { name: "Display settings", exact: true }).click();
+      await expect(scale).toHaveValue("1.25");
+      await scale.selectOption("2");
+      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
+      await page.keyboard.press("Escape");
+      const viewport = page.getByRole("region", { name: "Graphics viewport" });
+      const expectNoOverflow = async () => {
+        await expect.poll(() => viewport.evaluate(el => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight))
+          .toBe(true);
+        expect(await cursor.boundingBox()).toEqual(await canvas(page).boundingBox());
+      };
+      await expectNoOverflow();
+      // Fit down when the guest is larger than the viewport, then up again.
+      await page.setViewportSize({ width: 800, height: 700 });
+      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(800, 0);
+      await expectNoOverflow();
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
+      await expectNoOverflow();
+      await canvas(page).click({ position: await menuPosition(page, "quit") });
+      await expect(page.getByRole("button", { name: "Terminal", exact: true })).toHaveAttribute("aria-current", "true");
+      await page.keyboard.insertText("/usr/bin/freeciv");
+      await page.keyboard.press("Enter");
+      await expect(page.getByText(/960×540 · \d+ flips/)).toBeVisible({ timeout: 60_000 });
+      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
+      await page.getByRole("button", { name: "Display settings", exact: true }).click();
+      await scale.selectOption("default");
+      await expect.poll(async () => (await canvas(page).boundingBox())!.width).toBeCloseTo(1440, 0);
+      await expectNoOverflow();
+    });
+
     test("fresh profile uses CSS resolution and quiet first-run sound", async ({ page, browserName }) => {
       test.skip(browserName !== "chromium", "graphical acceptance targets Chromium");
       test.setTimeout(180_000);
       await gotoDefaultMachine(page, "freeciv");
       await running(page);
       await showGame(page);
-      await expect(page.getByText("1440×810", { exact: false })).toBeVisible();
+      writeFileSync("../../.context/freeciv-scaled-demo-url.txt", page.url());
+      await page.getByRole("button", { name: "Display settings", exact: true }).click();
+      const scale = page.getByRole("combobox", { name: "Preferred display scale", exact: true });
+      await expect(scale).toHaveValue("default");
+      await expect(scale.getByRole("option", { name: "Use demo default (150%)", exact: true })).toHaveCount(1);
+      await page.screenshot({ path: `../../.context/freeciv-scale-default-${density}.png`, scale: "css" });
+      await page.keyboard.press("Escape");
+      await expect(page.getByText("960×540", { exact: false })).toBeVisible();
       const box = (await canvas(page).boundingBox())!;
       expect(box.width).toBeCloseTo(1440, 0);
       expect(box.height).toBeCloseTo(810, 0);
       expect(await page.evaluate(() => devicePixelRatio)).toBe(density);
       await canvas(page).click({ position: await menuPosition(page, "options") });
-      await waitForTitlebar(page, -15, -148, true, 50);
+      await waitForOptions(page);
       const settings = await guestCommand(page,
         'cat "$HOME/.freeciv/freeciv-client-rc-3.2"');
       expect(settings).toMatch(/sound_effects_volume\s*=\s*25\b/);

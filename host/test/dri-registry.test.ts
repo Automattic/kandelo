@@ -258,7 +258,7 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     expect(events).not.toContain("100:1:destroy");
   });
 
-  it("drops the bo when process teardown releases its final handle", () => {
+  it("keeps storage until kernel destruction, even after every observed mapping retires", () => {
     const mem = newMemory();
     const events: string[] = [];
     const reg = new GbmBoRegistry({
@@ -278,10 +278,11 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     reg.releaseProcess(100);
 
     expect(reg.get(100, 1)).toBeUndefined();
-    expect(events.slice(-2)).toEqual([
-      "100:1:unbind",
-      "100:1:destroy",
-    ]);
+    expect(events).not.toContain("100:1:destroy");
+    expect(reg.pixelView(1)).toBeDefined();
+    reg.destroy(100, 1);
+    expect(events.at(-1)).toBe("100:1:destroy");
+    expect(reg.pixelView(1)).toBeUndefined();
   });
 });
 
@@ -304,27 +305,46 @@ describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
     expect(reg.dims(2)).toBeUndefined();
   });
 
-  it("syncCreatorToSab flushes the creator's mapping, never an importer's stale copy", () => {
+  it("syncToSab publishes a writer without flushing an unchanged stale reader", () => {
     const { memA, memB, reg } = twoPidSetup();
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
     reg.bind(200, 1, BO_ADDR, BO_SIZE);
-    fillPattern(memA, BO_ADDR, BO_SIZE, 0x30); // creator's fresh frame
-    fillPattern(memB, BO_ADDR, BO_SIZE, 0x99); // importer's stale snapshot
-    reg.syncCreatorToSab(1);
+    fillPattern(memA, BO_ADDR, BO_SIZE, 0x11);
+    reg.primeBindFromSab(200, 1, memB);
+    fillPattern(memA, BO_ADDR, BO_SIZE, 0x30); // newer writer frame; B stays unchanged
+    reg.syncToSab(1);
     // An importer flush after the creator's would clobber fresh bytes
     // with 0x99 — the texture bind must see the producer's pixels.
     expectPattern(reg.pixelView(1)!.slice(0, BO_SIZE), 0x30);
   });
 
-  it("hasStaleableImports flags only importers whose creator also holds a live mapping", () => {
+  it("hasStaleableImports tracks concurrent mappings without assuming a writer", () => {
     const { reg } = twoPidSetup();
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
-    expect(reg.hasStaleableImports(100)).toBe(false); // the creator itself
+    expect(reg.hasStaleableImports(100)).toBe(false); // only one mapping
     expect(reg.hasStaleableImports(200)).toBe(false); // not bound yet
     reg.bind(200, 1, BO_ADDR, BO_SIZE);
     expect(reg.hasStaleableImports(200)).toBe(true);
-    reg.unbind(100, 1, BO_ADDR, BO_SIZE);
+    reg.unbind(100, 1);
     expect(reg.hasStaleableImports(200)).toBe(false); // nothing left to go stale from
+  });
+
+  it.each(["unmap", "exit", "exec"])("refreshes a survivor after the last writer retires through %s", retirement => {
+    const { memA, memB, reg } = twoPidSetup();
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
+    fillPattern(memA, BO_ADDR, BO_SIZE, 0x73);
+    if (retirement === "exit") reg.releaseProcess(100);
+    else if (retirement === "exec") reg.releaseProcessMappings(100);
+    else reg.unbind(100, 1);
+    // Retirement publishes the writer's final bytes. The remaining reader
+    // still needs a readiness refresh even though it is now the only mapping.
+    expect(reg.hasStaleableImports(200)).toBe(true);
+    reg.syncImportsForPid(200, memB);
+    expectPattern(readPattern(memB, BO_ADDR, BO_SIZE), 0x73);
+    expect(reg.hasStaleableImports(200)).toBe(false);
   });
 
   it("syncImportsForPid delivers the creator's latest bytes into the importer's mapping", () => {
@@ -378,10 +398,10 @@ describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
     creatorAlive = false;
 
     reg.bind(100, 1, BO_ADDR, BO_SIZE);          // the reused pid imports
-    fillPattern(memReused, BO_ADDR, BO_SIZE, 0xee);
-    reg.syncCreatorToSab(1);
+    reg.primeBindFromSab(100, 1, memReused);
+    reg.syncToSab(1);
     expectPattern(reg.pixelView(1)!.slice(0, BO_SIZE), 0x51);
-    expect(reg.hasStaleableImports(100)).toBe(false);
+    expect(reg.hasStaleableImports(100)).toBe(true);
     reg.syncImportsForPid(100, memReused);
     expectPattern(readPattern(memReused, BO_ADDR, BO_SIZE), 0x51);
   });
@@ -406,8 +426,33 @@ it("exec flushes the old mapping and permits the retained GEM handle to bind new
   reg.primeBindFromSab(100, 1, active);
   expectPattern(readPattern(active, BO_ADDR, BO_SIZE), 0x61);
   fillPattern(active, BO_ADDR, BO_SIZE, 0x72);
-  reg.syncCreatorToSab(1);
+  reg.syncToSab(1);
   expectPattern(reg.pixelView(1)!, 0x72);
   reg.releaseProcess(100);
   expect(reg.get(100, 1)).toBeUndefined();
+});
+
+it("merges importer writes and disjoint changes in one page while preserving stale readers", () => {
+  const a = newMemory(), b = newMemory();
+  const reg = new GbmBoRegistry({ getProcessMemory: pid => pid === 100 ? a : b });
+  reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+  reg.bind(100, 1, 0, BO_SIZE);
+  reg.primeBindFromSab(100, 1, a);
+  reg.bind(200, 1, 0, BO_SIZE);
+  reg.primeBindFromSab(200, 1, b);
+  const av = new Uint8Array(a.buffer), bv = new Uint8Array(b.buffer);
+  av[4] = 10; bv[8] = 20;
+  reg.syncToSab(1);
+  expect(Array.from(reg.pixelView(1)!.slice(4, 9))).toEqual([10, 0, 0, 0, 20]);
+  // The active importer changes again; an unchanged allocator must not erase it.
+  bv[8] = 30;
+  reg.syncToSab(1);
+  expect(reg.pixelView(1)![4]).toBe(10);
+  expect(reg.pixelView(1)![8]).toBe(30);
+  reg.unbind(100, 1);
+  expect(reg.pixelView(1)![8]).toBe(30);
+  reg.releaseProcess(200);
+  expect(reg.pixelView(1)![8]).toBe(30);
+  reg.destroy(200, 1);
+  expect(reg.pixelView(1)).toBeUndefined();
 });

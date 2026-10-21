@@ -1101,6 +1101,10 @@ export interface KernelHost {
 
   // presentation — declares what users should see by default for this demo.
   getPresentation(): DemoPresentation;
+  /** Per-machine session override. null follows the image's default. */
+  getDisplayScalePreference(): { defaultScale: number | null; override: number | null };
+  /** Update the next preferred monitor mode, not the guest's selected mode or bitmap fit. */
+  setDisplayScaleOverride(scale: number | null): void;
   subscribePresentation(cb: (state: DemoPresentation) => void): () => void;
   getSurfaceAvailability(): SurfaceAvailability;
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void;
@@ -1380,6 +1384,8 @@ export class LiveKernelHost implements KernelHost {
 
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
+  private displayScaleOverride: number | null = null;
+  private kmsSizeReporters = new Map<number, () => void>();
   private applyBootDescriptorImpl?: NonNullable<LiveKernelHostOptions["applyBootDescriptor"]>;
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
@@ -1536,6 +1542,7 @@ export class LiveKernelHost implements KernelHost {
     // to the new kernel — the desktop falls back to a 1920×1080 letterbox.
     // Waiters on the detached kernel will never see a report: release them.
     this.kmsDisplaySizes.clear();
+    this.kmsSizeReporters.clear();
     this.settleKmsDisplaySizeWaiters(undefined, undefined);
     // Each canvas's control was transferred to the detached kernel's worker;
     // the next kernel needs canvases of its own.
@@ -1578,6 +1585,20 @@ export class LiveKernelHost implements KernelHost {
   /** Update the presentation intent and fan out to subscribers. */
   setPresentation(presentation: DemoPresentation): void {
     this.presentation = { ...presentation, runningPrimary: presentation.runningPrimary.slice() };
+    for (const report of this.kmsSizeReporters.values()) report();
+    this.presentationListeners.emit(this.getPresentation());
+  }
+
+  getDisplayScalePreference(): { defaultScale: number | null; override: number | null } {
+    return { defaultScale: this.presentation.displayScale ?? null, override: this.displayScaleOverride };
+  }
+
+  setDisplayScaleOverride(scale: number | null): void {
+    if (scale !== null && (!Number.isFinite(scale) || scale < 0.5 || scale > 4)) {
+      throw new Error("Display scale must be between 0.5 and 4, or null for the demo default");
+    }
+    this.displayScaleOverride = scale;
+    for (const report of this.kmsSizeReporters.values()) report();
     this.presentationListeners.emit(this.getPresentation());
   }
 
@@ -1909,6 +1930,10 @@ export class LiveKernelHost implements KernelHost {
   }
 
   async applyBootDescriptor(desc: BootDescriptor): Promise<void> {
+    // Image loading may replace intermediate descriptors. Only a new boot
+    // request's machine identity resets this session's user preference.
+    if ((desc.id !== this._descriptor.id || desc.base !== this._descriptor.base)
+        && this.displayScaleOverride !== null) this.setDisplayScaleOverride(null);
     if (!this.applyBootDescriptorImpl) {
       this.setDescriptor(desc);
       return;
@@ -3140,20 +3165,15 @@ export class LiveKernelHost implements KernelHost {
       kernel.kmsSetDisplaySize &&
       typeof ResizeObserver !== "undefined"
     ) {
-      const resizeObserver = new ResizeObserver((entries) => {
-        // Bound to the kernel that attached this canvas. Once that kernel
-        // is detached (reboot), stop for good — otherwise this closure
-        // would keep re-populating kmsDisplaySizes (which detachKernel
-        // just cleared) with the dead session's size and pushing sizes
-        // into the dead kernel. The next boot's pane remount attaches a
-        // fresh canvas with its own observer.
-        if (this.kernel !== kernel) {
-          resizeObserver.disconnect();
-          return;
-        }
-        const entry = entries[entries.length - 1];
+      // Keep only the last numeric measurements. A preference change can
+      // advertise the next mode immediately without waiting for a resize.
+      let lastBox: { contentRect: { width: number; height: number };
+        devicePixelContentBoxSize?: readonly { inlineSize: number; blockSize: number }[] } | null = null;
+      const report = () => {
+        if (this.kernel !== kernel || !lastBox) return;
+        const entry = lastBox;
         const dp = entry.devicePixelContentBoxSize?.[0];
-        const scale = this.presentation.displayScale;
+        const scale = this.getPresentation().displayScale;
         // WHY: bitmap clients must see one readable pixel grid, including
         // hit testing and device state. Enlarging only fonts breaks their
         // theme geometry. Compositors keep native output when unset.
@@ -3178,6 +3198,21 @@ export class LiveKernelHost implements KernelHost {
         this.kmsDisplaySizes.set(crtcId, { width, height });
         kernel.kmsSetDisplaySize?.(crtcId, width, height, physicalMm);
         this.settleKmsDisplaySizeWaiters(crtcId, { width, height });
+      };
+      this.kmsSizeReporters.set(crtcId, report);
+      const resizeObserver = new ResizeObserver((entries) => {
+        if (this.kernel !== kernel) {
+          resizeObserver.disconnect();
+          return;
+        }
+        const entry = entries[entries.length - 1];
+        if (!(entry.contentRect.width > 0) || !(entry.contentRect.height > 0)) return;
+        const dp = entry.devicePixelContentBoxSize?.[0];
+        lastBox = {
+          contentRect: { width: entry.contentRect.width, height: entry.contentRect.height },
+          devicePixelContentBoxSize: dp ? [{ inlineSize: dp.inlineSize, blockSize: dp.blockSize }] : undefined,
+        };
+        report();
       });
       resizeObserver.observe(canvas);
       this.kmsResizeObservers.set(canvas, resizeObserver);
@@ -3256,7 +3291,8 @@ export class LiveKernelHost implements KernelHost {
   }
 
   getPresentation(): DemoPresentation {
-    return { ...this.presentation, runningPrimary: this.presentation.runningPrimary.slice() };
+    return { ...this.presentation, runningPrimary: this.presentation.runningPrimary.slice(),
+      ...(this.displayScaleOverride === null ? {} : { displayScale: this.displayScaleOverride }) };
   }
 
   subscribePresentation(cb: (state: DemoPresentation) => void): () => void {

@@ -20,7 +20,8 @@ static uint32_t *map_bo(int fd, uint32_t handle) {
 }
 
 int main(int argc, char **argv) {
-    int importer_writes = argc > 1 && strcmp(argv[1], "importer") == 0;
+    int late_update = argc > 1 && strcmp(argv[1], "importer-after-submit") == 0;
+    int importer_writes = argc > 1 && (strcmp(argv[1], "importer") == 0 || late_update);
     int allocator_writes_late = argc > 1 && strcmp(argv[1], "allocator-after-import") == 0;
     int gate[2], ready[2], updated[2];
     CHECK(pipe(gate) == 0 && pipe(ready) == 0 && pipe(updated) == 0);
@@ -57,6 +58,13 @@ int main(int argc, char **argv) {
         CHECK(ioctl(card, 0xc02464bb, &cursor) == 0);
         printf("cursor submitted by %s\n", argv[1]);
         fflush(stdout);
+        if (late_update) {
+            char byte;
+            CHECK(read(STDIN_FILENO, &byte, 1) == 1);
+            for (int i = 0; i < 4096; i++) image[i] = 0xff00ff00;
+            puts("cursor updated without resubmission");
+            fflush(stdout);
+        }
     }
     if (child != 0 && allocator_writes_late) {
         char byte;

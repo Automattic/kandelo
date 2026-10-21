@@ -1,4 +1,8 @@
-# Cross-process graphics follow-up (work in progress)
+# Cross-process graphics follow-up
+
+The initial findings below record the failing baseline. Repairs are now
+implemented and validated on rebuilt products; see the implementation
+section at the end. Broader port and native Safari gaps remain explicit.
 
 The Freeciv port does not currently demonstrate these two failures
 during ordinary play. The follow-up protects general device sharing
@@ -6,7 +10,7 @@ contracts. Both concerns now have reproductions built with Kandelo's SDK
 and run through its ordinary guest syscalls, kernel, and dedicated host
 worker.
 
-## Imported handle lifetime
+## Initial reproduction: imported handle lifetime
 
 An allocator creates and exports a 64x64 graphics buffer. Another guest
 imports its file descriptor and selects the buffer as its cursor. The
@@ -36,7 +40,7 @@ framebuffers for a spawned child without counting its cursor reference.
 Add a guest regression for that path before changing the reference
 bookkeeping.
 
-## Importer-written cursor pixels
+## Initial reproduction: importer-written cursor pixels
 
 A real browser guest creates and exports a buffer, and a second guest
 imports it and selects it as a cursor. The control allocator fills the
@@ -70,7 +74,7 @@ and stale reader mappings, not only the initial cursor selection.
 Preserve bounded independent device storage; never send guest memories
 or their views to persistent browser/audio realms.
 
-## Review and validation still required
+## Initial repair acceptance criteria
 
 - Make every guest regression pass after repair, with its positive
   controls retained.
@@ -82,16 +86,15 @@ or their views to persistent browser/audio realms.
   conformance, and repeated browser memory/lifecycle checks.
 - Native Safari follow-up is separate from Playwright WebKit evidence.
 
-The focused Node test fails for the unmapped importer and passes its
-mapped control. The focused Chromium test samples the actual canvas:
+At baseline, the focused Node test failed for the unmapped importer and
+passed its mapped control. The focused Chromium test sampled the canvas:
 importer writes show the white page background, while allocator writes
 show red. A further control makes the allocator write only after the
 peer has mapped the old pixels. That stale peer must not overwrite the
-newer allocator pixels when it submits the cursor. Both tests currently
-fail for the defects they are meant to protect; they must pass after
-repair before this draft can merge.
+newer allocator pixels when it submits the cursor. Both tests failed for
+the defects they were meant to protect; they now pass after repair.
 
-Neither cross-process buffer-sharing repair is implemented yet.
+At this initial investigation stage, neither sharing repair was implemented.
 
 ## Additional Freeciv browser investigation
 
@@ -140,7 +143,91 @@ ordinary and Retina densities. A separate SDL application also exits to
 the focused terminal. All three Chromium cases pass; the Freeciv handoff
 regression fails against the previous preview.
 
-These results protect the presentation handoff. The original imported
-buffer lifetime and importer-written cursor defects above remain
-unfixed, and the complete port browser suite and multi-engine memory
-gate are not established by these focused checks.
+These results protect the presentation handoff. At this handoff-only stage,
+the original imported buffer lifetime and importer-written cursor defects
+remained unfixed. These focused checks did
+not establish the complete port browser suite or multi-engine memory gate.
+
+
+## Shared-buffer repairs and adjustable presentation
+
+The kernel now determines the lifetime of host BO storage through its
+existing reference counts. Host process retirement removes only its
+mappings and observed membership, preserving storage for unmapped imports.
+Final reference destruction releases storage and derived textures. Forced
+process removal and failed spawn rollback now collect the same DRI close
+effects as ordinary close; the adapter drains those effects. Spawn also
+retains inherited cursor references, balancing close/exec retirement.
+
+The host publishes changed byte runs from each mapping relative to its
+private snapshot. This merge primitive is shared with anonymous MAP_SHARED
+publication. Cursor and texture publication no longer assume the allocator
+is the writer. Unchanged stale readers cannot overwrite new pixels, and
+later importer writes can update a selected cursor without reselecting it.
+Snapshots are bounded by each mapping and BO size, remain worker-local, and
+retire with their mappings. Wasm memories still do not live-alias; applications
+must synchronize overlapping writers.
+
+The graphics dock now exposes a preferred display scale, including the
+image default. The initial implementation also zoomed the current bitmap,
+which overflowed the viewport. After user testing, that zoom was removed:
+the complete scene and cursor always fit up or down inside the viewport.
+Changing the preference advertises the next preferred mode without silently
+changing the guest's selected mode. KMS has no live hotplug/client-resize path;
+saved application modes can override the preference. The control states that
+limit and points users to application display options. The override lasts for the
+machine session and survives same-machine restarts; changing machine identity
+or reloading the page resets it. Freeciv's image default is 150%. A saved application
+resolution can override that preferred mode.
+
+Early validation: the Rust workspace passed 2,914 tests. The focused
+source selection passed 248 tests, including shared-memory publication
+regressions. Twelve Chromium Freeciv checks passed at ordinary and Retina
+density, covering live zoom with a saved resolution, scrolling and hit
+testing, picker drags, font typing, resolution changes, and quit/relaunch.
+These browser checks used the verified baseline kernel and current host/UI;
+they do not replace final combined-tree checks. Four cursor-pixel probes
+passed, including allocator/importer controls and a later importer update.
+All four imported-buffer survival cases now pass against that same baseline:
+normal exit with mapped and unmapped imports, hard host removal, and a trap.
+
+The real inherited-cursor guest regression fails against the baseline
+kernel with EINVAL after repeated child close-on-exec. This complements the
+Rust reference-count regression. It now passes against the rebuilt kernel
+through the normal completed projection, alongside the four lifetime cases,
+exec, shared-memory publication and session checks: 261 pass across nine files.
+
+All 15 cursor pixel/exec browser probes pass across Chromium, Firefox and
+WebKit. The final fitted UI passes 15 Chromium checks on the rebuilt image:
+both densities, preference changes, fitting down/up with viewport changes,
+cursor alignment, picker drags, font input, resolution changes, saved modes,
+terminal handoff and a separate SDL application. These supersede the early
+baseline-image UI evidence above. There is no explicit bitmap zoom or overflow.
+
+Conformance checks pass: 24 Sortix process cases, 13 selected descriptor/memory
+cases, and eight Open POSIX mapping/sync cases with two existing expected
+failures and no unexpected failures or skips. The ABI snapshot and host
+declaration checks pass. App typechecking still reports the same 82 existing
+diagnostics as origin/main, with no new diagnostics.
+
+The complete browser-memory gate passed again after the fitted UI correction:
+162 host checks, three teardown cases on each of Node and Bun, and nine
+browser cases. Chromium, Firefox and WebKit each completed four
+Doom → Quake → Freeciv → WordPress cycles, with real audio, in one
+persistent page and audio realm. Native Safari 27.0.1 on macOS 27.0.1
+exposed a window, but input/rebinding failed with cgWindowNotFound;
+zero native switching cycles completed. The earlier cursor-edge and Retina
+active-game Quit checks remain unresolved; the complete Freeciv suite and
+general performance are not established as passing.
+
+Broader testing also exposed dock replacements interrupting the primary
+terminal while a different terminal owned the display. KMS replacements now
+signal and await the actual display owner through the shared device-owner
+helper. The browser fixture deliberately launches in the second terminal;
+its dock, picker, and resolution flows pass with that ownership repair.
+
+A further source regression exposed a survivor missing the last publication
+after its writer unmapped, exited, or replaced its address space. All three
+cases failed before pending-reader tracking and now pass. Pending readers
+retire with their mapping or after consuming the published bytes; their
+refresh eligibility does not depend on another writer remaining mapped.

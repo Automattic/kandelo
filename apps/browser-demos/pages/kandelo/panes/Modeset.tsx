@@ -10,6 +10,7 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
   runDemoIngest,
+  stopDeviceOwner,
   type IngestPhase,
 } from "../../../../../web-libs/kandelo-session/src/demo-ingest";
 import { describeClipboardPasteFailure } from "../../../../../web-libs/kandelo-session/src/clipboard-paste";
@@ -18,6 +19,7 @@ import { pointerButtons } from "@host/input/pointer-buttons";
 import { DemoSurfaceDockControls, IngestControl } from "./Framebuffer";
 import { useDockActions } from "./DockActions";
 import { useFittedCanvasStyle } from "./canvasFit";
+import { DisplayScaleControl } from "./DisplayScaleControl";
 
 // modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
 // auto-attach resizes the OffscreenCanvas drawing buffer to match the
@@ -77,6 +79,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
   const host = useKernelHost();
   const status = useStatus();
   const presentation = usePresentation();
+  const scalePreference = host.getDisplayScalePreference();
   const ingest = useDemoIngest();
   const [ingestPhase, setIngestPhase] = React.useState<IngestPhase | null>(null);
   const [ingestName, setIngestName] = React.useState<string | null>(null);
@@ -109,8 +112,16 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     const counters = handleRef.current?.stats;
     return counters ? Atomics.load(counters, 0) : 0;
   }, []);
+  const stopDisplayProgram = React.useCallback(async () => {
+    const counters = handleRef.current?.stats;
+    const owner = counters && counters.length > 8 ? Atomics.load(counters, 8) : 0;
+    // The display may belong to a program launched from another terminal.
+    // Interrupting the primary shell cannot stop that device owner.
+    if (owner) await stopDeviceOwner(host, owner, { timeoutMs: 10_000 });
+    else await host.interruptShellForeground({ timeoutMs: 10_000 });
+  }, [host]);
   const dockActions = useDockActions("kms", status === "running" ? stats.presentCount : null,
-    undefined, readPresentCount);
+    stopDisplayProgram, readPresentCount);
 
   // Mount the host's display canvas for this CRTC rather than rendering one:
   // a program's WebGL context is bound to that canvas for good, so a
@@ -526,6 +537,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       status={statusLabel}
       active={hasFrame}
     >
+      <DisplayScaleControl preference={scalePreference} onChange={scale => host.setDisplayScaleOverride(scale)} />
       {dockActions.controls}
       {ingest && status === "running" && (
         <IngestControl
@@ -538,7 +550,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
         />
       )}
     </DemoSurfaceDockControls>
-  ), [busy, crtcId, dockActions.controls, hasFrame, ingest, ingestFile, ingestName, status, statusLabel]);
+  ), [busy, crtcId, dockActions.controls, hasFrame, host, ingest, ingestFile, ingestName, scalePreference.override, scalePreference.defaultScale, status, statusLabel]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -549,14 +561,14 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
   return (
     <div className="kmodeset-surface" data-kms-owner-pid={stats.ownerPid ?? 0}
       data-kms-present-count={stats.presentCount}>
-      <div className="kmodeset-stage" ref={stageRef}>
-        {/* Holds the host's display canvas (mounted above); `contents`
-            keeps the canvas a direct flex item of the stage. */}
-        <div
-          ref={slotRef}
-          className="kmodeset-canvas-slot"
-          style={{ display: showCanvas ? "contents" : "none" }}
-        />
+      <div className="kmodeset-stage">
+        {/* Always fit the selected guest mode, including cursor and input.
+            Preferred render scale must never turn into clipped bitmap zoom. */}
+        <div className="kmodeset-viewport" ref={stageRef}
+          role="region" aria-label="Graphics viewport">
+          <div ref={slotRef} className="kmodeset-canvas-slot"
+            style={{ display: showCanvas ? "block" : "none", ...canvasStyle }} />
+        </div>
         {showCanvas && !hasFrame && (
           <div className="kmodeset-waiting" role="status" aria-live="polite">
             <div className="kmodeset-waiting-line">Waiting for PAGE_FLIP on CRTC {crtcId}</div>

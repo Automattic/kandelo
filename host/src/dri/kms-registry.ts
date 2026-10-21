@@ -101,8 +101,8 @@ export class KmsRegistry {
     if (!this.cursorBo) return this.cursor;
     const length = this.cursor.width * this.cursor.height * 4;
     // Cursor images use a packed prefix, even in a larger allocation.
-    // Never flush stale importer mappings over the producer's live image.
-    this.gbm.syncCreatorToSab(this.cursorBo, length);
+    // Merge writes from any mapping; unchanged readers cannot erase them.
+    this.gbm.syncToSab(this.cursorBo, length);
     const bytes = this.gbm.pixelView(this.cursorBo);
     if (!bytes || bytes.length < length) {
       throw new Error("KMS cursor BO is unavailable or undersized");

@@ -2171,8 +2171,9 @@ the next graphical application can discover its display size. The UI
 offers the live graphics surface while a process holds DRM master. When
 that ownership ends, the selected graphics pane returns to the terminal
 and releases pointer capture and held buttons. A later graphical owner
-reopens the surface. Exiting an unrelated process leaves it unchanged;
-a Wayland client exiting does not close its compositor's display.
+reopens the surface. Dock replacements stop the actual display owner, even
+when it was launched from a second terminal. Exiting an unrelated process
+leaves it unchanged; a Wayland client exiting does not close its compositor's display.
 
 A bitmap interface can declare `presentation.displayScale` (0.5–4 CSS
 pixels per guest pixel). The browser advertises a virtual display sized
@@ -2189,6 +2190,23 @@ virtual connector also lists 17 standard resolutions from 640×480 through
 3840×2160, deduplicating its preferred mode. Applications can select those
 modes through ordinary SDL/libdrm APIs; the browser fits the chosen scanout
 and aspect ratio.
+
+The KMS graphics dock exposes **Display settings → Preferred display scale**, with
+100%, 125%, 150%, 175%, and 200%, plus the image default (native output
+when no default is declared). A per-machine session override immediately
+updates the virtual monitor's preferred mode using the last measured pane
+size. Presentation always fits the complete selected scanout and cursor
+inside the viewport, scaling up or down while preserving aspect ratio.
+The preference never adds bitmap zoom, cropping, or scrollbars. Only the
+rendering canvas captures guest keys, leaving host controls usable.
+Applications discover the preferred mode at initialization; existing KMS
+clients receive no hotplug or forced mode change. A saved application
+resolution can override this preference. Use the application's display
+options when it retains a different mode. Resetting to the image default
+restores its preferred-mode policy, with the same automatic fitting.
+The override survives application and same-machine restarts;
+new machine identity or a page reload resets it. It is not stored in shared
+URLs, snapshots, or browser storage.
 
 Omitting `displayScale` preserves native device-pixel output and CSS-derived
 physical size, so Wayland compositors and DPI-aware applications retain
@@ -2233,6 +2251,24 @@ it never paints a cursor into a guest's saved scene or uploads the scene
 on cursor motion. The overlay uses the scanout's fitted coordinate space
 and cannot intercept input. Both Node and browser retain the same cursor
 device state; Node has no visual surface unless the embedder attaches one.
+
+DRI pixel backing belongs to kernel buffer references, including unmapped
+PRIME imports, framebuffers, and cursor selections. Retiring a process's
+host mappings cannot destroy it. Normal close, forced removal, and failed
+spawn cleanup release the same kernel references; only the final-reference
+notification destroys host storage and derived GPU textures. Spawn also
+retains inherited cursor references, balancing its later close/exec path.
+
+CPU-backed mappings publish only bytes changed since each mapping's last
+snapshot. Map/unmap, cursor and scanout presentation, foreign-texture
+submission, and imported-buffer readiness synchronize through the same
+canonical backing. Importers may write; unchanged readers cannot erase
+newer pixels. This is boundary synchronization, not live memory aliasing;
+applications must synchronize overlapping writers. Each live mapping uses
+at most one BO-sized private snapshot inside the disposable kernel worker,
+released on unmap, exec, or exit. Neither snapshots nor guest memory views
+are sent to persistent browser realms.
+
 
 Images can also declare an optional `guide`. When `guide` is absent, Kandelo
 does not render a demo panel; this is the intended shape for demos where the

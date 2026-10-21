@@ -194,20 +194,31 @@ explicit `--` GUI argument block overrides the fullscreen default.
 
 ## Display and input ownership
 
-The image declares Kandelo's generic `presentation.displayScale: 1`.
+The image declares Kandelo's generic `presentation.displayScale: 1.5`.
 This selects a readable virtual monitor from the pane's CSS size,
 independently of browser density. At a 1440×810 CSS display, Freeciv sees
-1440×810 pixels at both 1× and 2× density. Its unmodified fonts, bitmap art,
+960×540 pixels at both 1× and 2× density. Its unmodified fonts, bitmap art,
 map tiles, widget dimensions, mouse state, and hit targets all use that
-single grid. The browser presents the complete scene at 100% CSS scale,
+single grid. The browser presents the complete scene at 150% CSS scale,
 compensating for the display's physical pixel density.
 
 There is no Freeciv DPI conversion, renderer logical-size transform, font
 point conversion, or compensating font/layout patch. Upstream's theme size
-10 remains size 10 in the guest, displayed at about 10 CSS pixels here.
+10 remains size 10 in the guest, displayed at about 15 CSS pixels here.
 This is bitmap scaling, not independent native-density glyph rasterization.
 The shared connector minimum is 640×480, so smaller panes fit that mode.
 DPI-aware compositor profiles omit `displayScale` and retain native output.
+
+The graphics dock's **Display settings → Preferred display scale** control
+offers 100%, 125%, 150%, 175%, and 200%, plus **Use demo default (150%)**.
+It sets the preferred resolution for future graphical launches. The complete
+scene and cursor always fit the pane, scaling up or down without clipping
+or scrollbars. Freeciv can retain its saved resolution instead of selecting
+the preferred mode; use its Screen resolution option in that case. There is
+no live KMS hotplug or forced application resize. The choice survives application
+restarts and rebooting the same machine session, but does not persist across
+page reloads or launching a different machine.
+
 
 The normal game menu exposes resolutions under **Options → Local options →
 Interface → Screen resolution**. Kandelo's virtual monitor advertises 17
@@ -216,7 +227,7 @@ mode when its size is not already in that list. Smaller resolutions make
 the whole bitmap UI larger; larger resolutions show more map and smaller
 controls. The browser fits the selected aspect ratio with letterboxing.
 Selecting a mode overrides the preferred mode; the default presentation
-uses one guest pixel per CSS pixel independently of display density.
+uses 1.5 CSS pixels per guest pixel independently of display density.
 
 Freeciv's SDL2 resolution callback originally only rearranged widgets.
 The client correction calls SDL's window/display mode APIs, recreates its

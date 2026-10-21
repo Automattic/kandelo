@@ -18,6 +18,7 @@ for (const [writer, label] of [
   ["allocator", "allocator before import"],
   ["allocator-after-import", "allocator after an unchanged import"],
   ["importer", "importing process"],
+  ["importer-after-submit", "importer before and after selection"],
 ]) {
   test(`presents cursor pixels written by the ${label}`, async ({ page, baseURL }) => {
     const image = KandeloImageFs.create();
@@ -61,12 +62,13 @@ for (const [writer, label] of [
         const child = await (globalThis as any).__cursorImportKernel.spawnFromVfs(
           "/bin/probe", ["probe", writer], { uid: 1000, gid: 1000 });
         child.exit.catch(() => {});
+        (globalThis as any).__cursorImportRootPid = child.pid;
       }, writer);
       await expect.poll(() => page.evaluate(() => (globalThis as any).__cursorImportOutput.stdout),
         { timeout: 30_000 }).toContain("cursor submitted");
       // Observe the actual browser output, without injecting registry state
       // or replacing the presentation path. Both writers fill the same red.
-      await expect.poll(async () => {
+      const sampleCursor = async () => {
         const png = await page.locator("#cursor-plane").screenshot({ scale: "css" });
         return page.evaluate(async encoded => {
           const bitmap = await createImageBitmap(new Blob([
@@ -78,7 +80,15 @@ for (const [writer, label] of [
           bitmap.close();
           return pixel;
         }, png.toString("base64"));
-      }, { timeout: 10_000 }).toEqual([255, 0, 0, 255]);
+      };
+      await expect.poll(sampleCursor, { timeout: 10_000 }).toEqual([255, 0, 0, 255]);
+      if (writer === "importer-after-submit") {
+        await page.evaluate(() => (globalThis as any).__cursorImportKernel.appendStdinData(
+          (globalThis as any).__cursorImportRootPid, new TextEncoder().encode("g")));
+        await expect.poll(() => page.evaluate(() => (globalThis as any).__cursorImportOutput.stdout))
+          .toContain("cursor updated without resubmission");
+        await expect.poll(sampleCursor, { timeout: 10_000 }).toEqual([0, 255, 0, 255]);
+      }
     } finally {
       await page.evaluate(() => (globalThis as any).__cursorImportKernel?.destroy());
     }

@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <spawn.h>
+#include <sys/wait.h>
+extern char **environ;
 
 struct cap { uint64_t capability, value; };
 struct dumb { uint32_t height, width, bpp, flags, handle, pitch; uint64_t size; };
@@ -22,6 +25,7 @@ static uint32_t *map_cursor(int fd, uint32_t handle) {
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "spawn-child") == 0) return 0;
     if (argc == 4 && strcmp(argv[1], "after-exec") == 0) {
         int fd = atoi(argv[2]);
         uint32_t handle = strtoul(argv[3], NULL, 10);
@@ -61,6 +65,31 @@ int main(int argc, char **argv) {
         snprintf(handle_arg, sizeof(handle_arg), "%u", bo.handle);
         execl("/bin/kms-cursor", "kms-cursor", "after-exec", fd_arg, handle_arg, (char *)NULL);
         CHECK(0 && "exec failed");
+    }
+    if (argc == 2 && strcmp(argv[1], "spawn") == 0) {
+        uint32_t *pixels = map_cursor(fd, bo.handle);
+        CHECK(pixels != MAP_FAILED);
+        pixels[0] = 0xff223344;
+        pixels[4095] = 0xff556677;
+        CHECK(fcntl(fd, F_SETFD, FD_CLOEXEC) == 0);
+        char *child_argv[] = {"kms-cursor", "spawn-child", NULL};
+        pid_t child;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            if (attempt < 2) {
+                CHECK(posix_spawn(&child, "/bin/kms-cursor", NULL, NULL, child_argv, environ) == 0);
+                int status;
+                CHECK(waitpid(child, &status, 0) == child);
+                CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+            } else {
+                CHECK(posix_spawn(&child, "/bin/no-such-cursor-probe", NULL, NULL, child_argv, environ) == ENOENT);
+            }
+            CHECK(munmap(pixels, 64 * 64 * 4) == 0);
+            pixels = map_cursor(fd, bo.handle);
+            CHECK(pixels != MAP_FAILED);
+            CHECK(pixels[0] == 0xff223344 && pixels[4095] == 0xff556677);
+        }
+        CHECK(munmap(pixels, 64 * 64 * 4) == 0);
+        puts("kms-cursor-spawn: ok");
     }
     cursor.flags = 2;
     cursor.x = -5;

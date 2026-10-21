@@ -3071,6 +3071,28 @@ throughput or performance claim.
 
 ## DRM/KMS (`/dev/dri/card0`, `/dev/dri/renderD128`)
 
+Kernel BO references, not the host mapping inventory, own DRI pixel
+backing. Unmapped PRIME imports and selected cursors retain storage after
+the allocator exits. Normal OFD close and process removal share the same
+DRI release collector: kernel references retire synchronously, then the
+owning adapter drains final BO, framebuffer, GL, and master notifications.
+Failed spawn rollback drains those effects too. Spawn counts inherited
+cursor references alongside GEM handles and framebuffers.
+
+The worker's DRI registry merges changed byte runs relative to a private
+snapshot of each mapping. It uses the same merge primitive as anonymous
+`MAP_SHARED` publication. Allocator and importer writes both publish at
+mapping, readiness, texture submission, and cursor/scanout presentation
+boundaries; unchanged readers do not overwrite newer bytes. Refreshing a
+reader also refreshes its snapshot. A pending reader remains eligible for
+refresh after the last writer unmaps, exits, or replaces its address space.
+This remains boundary synchronization,
+not live aliasing between Wasm memories. A snapshot is bounded by the
+mapping length and BO size and retired with its mapping; backing is retired
+only by the kernel's final-reference destroy notification. GPU textures
+follow that same destruction event. All guest mappings and snapshots stay
+inside disposable workers. No guest ABI layout or import is changed.
+
 The host's independent display statistics buffer publishes the current
 DRM master PID in slot 8 (zero when unowned), alongside presentation and
 scanout counters. The dedicated kernel worker snapshots this state on

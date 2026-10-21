@@ -3744,6 +3744,45 @@ mod tests {
     }
 
     #[test]
+    fn spawn_cursor_references_survive_child_close_and_retire_on_final_removal() {
+        use crate::ofd::{DriFdState, DriOfdState, KmsFdState};
+        use crate::process_table::ProcessTable;
+        use crate::spawn::{FileAction, SpawnAttrs};
+        use crate::syscalls::DriReleaseEffect;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| {
+            let bo = r.alloc(64, 64, 32).id;
+            r.incref(bo); // one handle and one cursor reference
+            bo
+        });
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        let idx = proc.ofd_table.create(crate::ofd::FileType::CharDevice, 0, -9, b"/dev/dri/card0".to_vec());
+        let mut dri = DriFdState::default();
+        dri.handles.insert(5, bo);
+        let mut kms = KmsFdState::default();
+        kms.cursor_bo = Some(bo);
+        proc.ofd_table.get_mut(idx).unwrap().dri_state = Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+        proc.fd_table.alloc(crate::fd::OpenFileDescRef(idx), 0).unwrap();
+        let mut host = test_host::NoopHost;
+        let child = table.spawn_child_for_caller(pid, pid, &[b"child"], &[], &[], &SpawnAttrs::empty(), &mut host).unwrap();
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 4);
+        let removed = table.remove_process(child).unwrap();
+        assert!(removed.dri_effects.is_empty());
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
+        // Failure after inheritance must retire the partial child's refs too.
+        assert!(table.spawn_child_for_caller(pid, pid, &[b"child"], &[],
+            &[FileAction::Dup2 { srcfd: -1, fd: 0 }], &SpawnAttrs::empty(), &mut host).is_err());
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
+        let removed = table.remove_process(pid).unwrap();
+        assert_eq!(removed.dri_effects, alloc::vec![DriReleaseEffect::DestroyBo(bo)]);
+        assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
+        assert!(table.remove_process(pid).is_none());
+    }
+
+    #[test]
     fn fork_process_increfs_inherited_dri_bos_exactly_once() {
         // Guard the spawn-vs-fork incref split. DRI bos are increfed on the
         // fork path inside deserialize (read_dri_fd_state / read_kms_fd_state),
