@@ -495,8 +495,10 @@ function buildKernelImports(
     // Sticky kernel-owned state captured for this exact process image.
     kernel_get_secure_exec: (): number => secureExec ? 1 : 0,
 
-    // Called by the syscall wait after a bounded wait times out; lets a
-    // JavaScriptCore VM finish a collection begun before the thread blocked.
+    // [RUNTIME-WORKAROUND: JSC-BLOCKED-WAIT-GC-STARVATION] Called by the
+    // syscall wait after a bounded wait times out; lets a JavaScriptCore VM
+    // finish a collection begun before the thread blocked (suspected cause;
+    // see docs/browser-support.md).
     kernel_heap_safepoint: createHeapSafepointImport(),
 
     // Fork/exec state — not a fork child.
@@ -4420,10 +4422,12 @@ export async function centralizedWorkerMain(
   }
 }
 
-// One decoder for every export name: a PHP binary has about 22,000 exports.
-// Constructing a TextDecoder per name made each process start create
-// thousands of DOM wrappers, and WebKit's page process crashed in
-// cacheWrapper<TextDecoder> during those bursts (docs/browser-support.md,
+// [RUNTIME-WORKAROUND: WEBKIT-TEXTDECODER-WRAPPER-CRASH] One decoder for
+// every export name: a PHP binary has about 22,000 exports. Constructing a
+// TextDecoder per name made each process start create thousands of DOM
+// wrappers, and WebKit's page process crashed in cacheWrapper<TextDecoder>
+// during those bursts. The cause is suspected, not a confirmed WebKit
+// defect: there is no standalone reduction (docs/browser-support.md,
 // "WebKit page-process crash while creating TextDecoders").
 const EXPORT_NAME_DECODER = new TextDecoder();
 

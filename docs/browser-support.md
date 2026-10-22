@@ -3047,27 +3047,33 @@ coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
 ### JavaScriptCore garbage collection and blocked workers
 
-This is a WebKit engine boundary with a workaround in the syscall glue. It
-applies to JavaScriptCore everywhere: Safari on every device, and Bun.
+This is a suspected JavaScriptCore behavior with a tagged workaround in
+the syscall glue (`JSC-BLOCKED-WAIT-GC-STARVATION`). It is not yet a confirmed
+WebKit defect: the standalone page below shows helper-thread pinning only
+through a manual stack sample, so the cause is a hypothesis that fits every
+measurement. It would apply to JavaScriptCore everywhere: Safari on every
+device, and Bun. The machine hang and the effect of the workaround are
+measured and do not depend on the hypothesis.
 
 A Kandelo process makes each syscall by writing its channel and waiting in
 `memory.atomic.wait32` until the kernel answers. The wait stays inside Wasm,
 so the worker does not return to JavaScript or its event loop while it
 waits. JavaScriptCore does not release a worker's heap access during that
-wait (`WaiterListManager::waitSyncImpl` uses a `VMBlockingScope`, not a
-heap-access release). A garbage collection that began in the worker's VM
-before it blocked, for example because `memory.grow` reported more memory,
-needs that worker to stop. JavaScriptCore hands the collection back to the
-blocked thread. It finishes only when that thread runs JavaScript that
-reaches an allocation slow path.
+wait (reading `WaiterListManager::waitSyncImpl` suggests a
+`VMBlockingScope`, not a heap-access release). A garbage collection that
+began in the worker's VM before it blocked, for example because
+`memory.grow` reported more memory, needs that worker to stop. The suspected
+cause is that JavaScriptCore hands the collection back to the blocked
+thread, so it finishes only when that thread runs JavaScript that reaches
+an allocation slow path.
 
-Until then the collection keeps every shared GC helper thread that joined
-it. JavaScriptCore has one small pool of helpers (six on the tested Mac) for
+Until then, under this hypothesis, the collection keeps every shared GC
+helper thread that joined it. JavaScriptCore has one small pool of helpers (six on the tested Mac) for
 all the page's workers, and helpers choose a collecting heap at random. A
 machine with a few idle processes (a shell at its prompt, a database
 waiting for a client, PHP-FPM waiting for requests) soon pins all of them.
-Other workers' concurrent collections then depend on helpers that never
-return:
+Other workers' concurrent collections would then depend on helpers that
+never return, which matches what was observed:
 
 - an exiting process worker cannot finish destroying its VM
   (`~VM` → `Heap::lastChanceToFinalize`), so its `WebAssembly.Memory` and
@@ -3088,7 +3094,7 @@ JavaScriptCore's helper threads disabled (`JSC_numberOfGCMarkers=1`), the
 same 20-command run passed twice. Web content cannot change that option.
 With the workaround below, every run that booted completed all 20
 commands (5 of 5; a sixth crashed during boot from the separate
-[TextDecoder defect](#webkit-page-process-crash-while-creating-textdecoders)
+[TextDecoder crash](#webkit-page-process-crash-while-creating-textdecoders)
 before its mitigation), and the WebKit cases of
 `apps/browser-demos/test/php-web-image-cli.spec.ts` passed 9 of 9.
 
@@ -3110,19 +3116,28 @@ The cost on JavaScriptCore is one wakeup per blocked thread per 100 ms. A
 standalone reproduction (24 workers that start a collection and then block)
 left all six helpers pinned and seven to eleven collections unfinished; with
 safepoints it left none, and waking up without allocating did not help.
-Remove the workaround when JavaScriptCore releases heap access while a
-thread is blocked in a synchronous atomic wait, or stops handing a
-collection to such a thread.
+This entry stays suspected, for two reasons the measurements do not remove.
+The standalone page's helper pinning is read from a manual stack sample, not
+reported by the page itself, and a reproduction that needs a manual
+observation does not judge itself. It becomes a confirmed WebKit defect only
+when a standalone page reports the hang or the pinned helpers on its own,
+without a person reading a sample, and the same page passes with the
+workaround's allocation. Remove the workaround when JavaScriptCore releases
+heap access while a thread is blocked in a synchronous atomic wait, or stops
+handing a collection to such a thread.
 
 ### WebKit page-process crash while creating TextDecoders
 
-This is a WebKit engine defect with a mitigation in the host runtime. The
-WebKit page process could crash with `SIGSEGV` in
+This is a suspected WebKit problem with a tagged mitigation in the host
+runtime (`WEBKIT-TEXTDECODER-WRAPPER-CRASH`). It is not a confirmed WebKit
+bug: there is no standalone reduction, so the cause is a hypothesis that fits
+the crash reports and the effect of the mitigation. The WebKit page process
+could crash with `SIGSEGV` in
 `HashMap<void*, Weak<JSObject>>::add`, called from
 `cacheWrapper<TextDecoder>` while JavaScript constructed a `TextDecoder`.
 The faulting addresses were data-like (for example `0x0403020100000008`),
-so a table WebKit uses to track the worker's DOM wrappers had been
-corrupted. JavaScript cannot corrupt WebKit's native heap. In 24 of 25
+so a table WebKit uses to track the worker's DOM wrappers appears to have
+been corrupted. JavaScript cannot corrupt WebKit's native heap. In 24 of 25
 crash reports the faulting thread was the newest worker, handling its first
 message in interpreted code, which is a Kandelo process starting; in the
 other it was the kernel worker.
@@ -3138,14 +3153,16 @@ concurrent collector off, so the crash is not the
 above. It also occurred before the PHP 8.5 upgrade. With one shared decoder
 for those names, 32 of 32 boots succeeded. A standalone page that starts
 nested workers which each construct 25,000 decoders did not crash, so the
-reduction to a WebKit test case is incomplete.
+reduction to a WebKit test case is incomplete. The entry becomes a confirmed
+WebKit defect only when a standalone page reproduces the crash by itself and
+judges its own outcome.
 
 **Mitigation.** Wasm name parsing (`host/src/constants.ts`) and the
 thread-patching export scans (`host/src/worker-main.ts`) share one
 `TextDecoder`; `decode()` without `stream` keeps no state between calls.
-Other host code still constructs decoders per call. Constructing many
-wrappers is valid JavaScript, so a recurrence elsewhere is still a WebKit
-defect to report, not a reason to avoid `TextDecoder`.
+Other host code still constructs decoders per call. A recurrence elsewhere
+would be evidence for the hypothesis and a reason to build the standalone
+reduction, not a reason to avoid `TextDecoder` as a rule.
 
 ### Compiler engine limits
 

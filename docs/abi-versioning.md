@@ -1654,11 +1654,13 @@ added before anything shipped under the number:
 ### ABI 52 heap safepoints in the syscall wait
 
 ABI 52 gives every process a new required host import so a process blocked
-in a syscall cannot deadlock JavaScriptCore's garbage collector. JavaScriptCore
-keeps a blocked worker's heap access, so a collection that began in a blocked
+in a syscall does not deadlock JavaScriptCore's garbage collector. The
+suspected cause (not a confirmed WebKit defect) is that JavaScriptCore keeps
+a blocked worker's heap access, so a collection that began in a blocked
 process's VM can finish only when that thread allocates from JavaScript; until
-then it pins the engine's shared GC helper threads, which stalled the kernel
-and kept exited processes' memory from being released (see
+then it would pin the engine's shared GC helper threads, which stalled the
+kernel and kept exited processes' memory from being released. The stall and
+the effect of the safepoint are measured (see
 [the browser boundary](browser-support.md#javascriptcore-garbage-collection-and-blocked-workers)).
 `__abi_version` equality is exact, so every program, package archive and VFS
 image is rebuilt for 52.

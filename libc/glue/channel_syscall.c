@@ -593,16 +593,21 @@ __attribute__((import_module("kernel"), import_name("kernel_exit")))
 _Noreturn void kernel_exit(int32_t status);
 
 /*
- * Heap safepoint for engines that keep a blocked thread's heap access.
+ * [RUNTIME-WORKAROUND: JSC-BLOCKED-WAIT-GC-STARVATION] Heap safepoint for
+ * engines that may keep a blocked thread's heap access.
  *
- * WHY: JavaScriptCore (Safari, Bun) does not release a worker's heap access
- * while it is blocked in memory.atomic.wait32. A garbage collection that began
- * in this worker's JavaScript VM before it blocked is then handed back to this
- * thread, and it cannot finish until this thread runs JavaScript that reaches
- * an allocation slow path. Until then it pins the engine's shared GC helper
- * threads, which stalls collection in every other worker: the kernel's, and
- * those of exiting processes whose memory can then never be released. A
- * machine with idle processes deadlocks.
+ * WHY (suspected cause, not a confirmed WebKit defect): JavaScriptCore
+ * (Safari, Bun) appears not to release a worker's heap access while it is
+ * blocked in memory.atomic.wait32. A garbage collection that began in this
+ * worker's JavaScript VM before it blocked would then be handed back to this
+ * thread, and could not finish until this thread runs JavaScript that reaches
+ * an allocation slow path. Until then it would pin the engine's shared GC
+ * helper threads, which stalls collection in every other worker: the
+ * kernel's, and those of exiting processes whose memory can then never be
+ * released. A machine with idle processes deadlocks. The deadlock and the
+ * effect of the safepoint are measured (docs/browser-support.md); the helper
+ * pinning is established only by a manual stack sample, so the cause stays
+ * suspected until a standalone repro judges itself.
  *
  * Each wait is therefore bounded. After a timeout, the host's
  * kernel_heap_safepoint import allocates from JavaScript so the VM can finish
@@ -744,8 +749,8 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
 
     /* Cooperative hard-exit for host teardown.
      *
-     * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
-     * is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+     * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND,
+     * remove when the engine bug is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
      *
      * SIGKILL is never delivered to the guest in normal operation — it is
      * uncatchable, so the kernel enforces its default terminate action itself

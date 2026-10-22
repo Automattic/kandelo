@@ -210,7 +210,8 @@ pub mod process_layout;
 ///     lifetime, nesting validation, fairness, and stream half-close readiness.
 /// 52: processes import `kernel_heap_safepoint`. The syscall glue bounds its
 ///     channel wait and calls it after a timeout so a JavaScriptCore VM can
-///     finish a collection handed to a blocked thread. docs/abi-versioning.md
+///     finish a collection that is suspected to be handed to a blocked thread
+///     and to starve other workers' collections. docs/abi-versioning.md
 ///     ("ABI 52").
 pub const ABI_VERSION: u32 = 52;
 
@@ -2893,10 +2894,12 @@ pub mod abi {
     /// Process-worker import the syscall glue calls after a bounded wait
     /// times out (ABI 52).
     ///
-    /// JavaScriptCore keeps a blocked worker's heap access, so a collection
-    /// that began in its VM can finish only when that thread allocates from
-    /// JavaScript. The host import allocates, then returns the next wait bound
-    /// in nanoseconds, or a negative value when its engine needs no bound.
+    /// JavaScriptCore is suspected to keep a blocked worker's heap access, so
+    /// a collection that began in its VM could finish only when that thread
+    /// allocates from JavaScript (suspected cause, not a confirmed WebKit
+    /// defect; see docs/browser-support.md). The host import allocates, then
+    /// returns the next wait bound in nanoseconds, or a negative value when
+    /// its engine needs no bound.
     /// `libc/glue/channel_syscall.c` declares it outside `libc.a`, so the
     /// package import audit adds it to the SDK contract from this
     /// declaration.

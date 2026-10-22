@@ -1,18 +1,23 @@
 /**
- * Process heap safepoints: the host half of the bounded syscall wait in
+ * [RUNTIME-WORKAROUND: JSC-BLOCKED-WAIT-GC-STARVATION] Process heap
+ * safepoints: the host half of the bounded syscall wait in
  * `libc/glue/channel_syscall.c`.
  *
- * WHY: JavaScriptCore (Safari on every device, and Bun) keeps a worker's heap
- * access while the worker is blocked in `memory.atomic.wait32`. A garbage
- * collection that began in that worker's VM before it blocked is handed back
- * to the blocked thread, and it finishes only when that thread runs
+ * WHY (suspected cause, not a confirmed WebKit defect): JavaScriptCore
+ * (Safari on every device, and Bun) appears to keep a worker's heap access
+ * while the worker is blocked in `memory.atomic.wait32`. A garbage
+ * collection that began in that worker's VM before it blocked would then be
+ * handed back to the blocked thread, and finish only when that thread runs
  * JavaScript that reaches an allocation slow path. Until then the collection
- * keeps every shared GC helper thread that joined it. A Kandelo process waits
- * for each syscall in Wasm and never returns to JavaScript while it waits, so
- * idle processes (a shell at its prompt, a database waiting for a client) pin
- * all helpers. Other workers' collections then stall: the kernel's, and those
- * of exiting process workers, whose memory is never released. The machine
- * deadlocks once the kernel needs a collection to create a process's memory.
+ * would keep every shared GC helper thread that joined it. A Kandelo process
+ * waits for each syscall in Wasm and never returns to JavaScript while it
+ * waits, so idle processes (a shell at its prompt, a database waiting for a
+ * client) would pin all helpers. Other workers' collections then stall: the
+ * kernel's, and those of exiting process workers, whose memory is never
+ * released. The machine deadlocks once the kernel needs a collection to
+ * create a process's memory. The deadlock and the safepoint's effect are
+ * measured; the helper pinning is shown only by a manual stack sample, so
+ * the cause stays suspected until a standalone repro judges itself.
  *
  * On those engines the glue bounds each wait. After a timeout it calls
  * `kernel.kernel_heap_safepoint`, which allocates a small `ArrayBuffer` (an

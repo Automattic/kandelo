@@ -603,11 +603,14 @@ function hasWasmMagic(src: Uint8Array): boolean {
     src[3] === 0x6d;
 }
 
-// One decoder for every Wasm name: binaries such as PHP export about 22,000
-// names, and a TextDecoder per name made each process start create thousands
-// of DOM wrappers. WebKit's page process crashed in cacheWrapper<TextDecoder>
-// during those bursts (docs/browser-support.md, "WebKit page-process crash
-// while creating TextDecoders"). decode() without `stream` keeps no state.
+// [RUNTIME-WORKAROUND: WEBKIT-TEXTDECODER-WRAPPER-CRASH] One decoder for
+// every Wasm name: binaries such as PHP export about 22,000 names, and a
+// TextDecoder per name made each process start create thousands of DOM
+// wrappers. WebKit's page process crashed in cacheWrapper<TextDecoder>
+// during those bursts. The cause is suspected, not a confirmed WebKit
+// defect: there is no standalone reduction (docs/browser-support.md, "WebKit
+// page-process crash while creating TextDecoders"). decode() without
+// `stream` keeps no state.
 const WASM_NAME_DECODER = new TextDecoder();
 
 function readName(src: Uint8Array, pos: number): [string, number] {

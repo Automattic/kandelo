@@ -2,8 +2,9 @@
  * Process heap safepoints for JavaScriptCore. Runs under V8 (Node, via
  * `vitest`) and JavaScriptCore (Bun, via `npm run test:teardown:bun`).
  *
- * JavaScriptCore keeps a blocked worker's heap access, so the syscall glue
- * bounds each wait and calls kernel.kernel_heap_safepoint after a timeout.
+ * JavaScriptCore is suspected (not confirmed) to keep a blocked worker's
+ * heap access, so the syscall glue bounds each wait and calls
+ * kernel.kernel_heap_safepoint after a timeout.
  * Under Node the host answers with an unbounded wait after the first
  * timeout; under Bun it keeps answering 100 ms, so the fixture's blocking
  * syscalls pass through several safepoints. Both must return the kernel's
