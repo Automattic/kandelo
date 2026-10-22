@@ -3023,6 +3023,11 @@ fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessR
     // /dev/kandelo/clipboard: drop ownership and any text the agent had not
     // read, so it does not outlive its reader.
     crate::clipboard::release(pid);
+    // Synthetic init adopted this process's children. It reaps the zombies
+    // among them whose exits the host already published.
+    for zombie in result.adopted_zombies {
+        let _ = reap_process_and_cleanup(zombie);
+    }
 }
 
 fn remove_process_and_cleanup(pid: u32) -> i32 {
@@ -3045,6 +3050,34 @@ fn reap_process_and_cleanup(pid: u32) -> i32 {
         }
         None => -(Errno::ESRCH as i32),
     }
+}
+
+/// Apply the kernel-owned consequences of a published process exit.
+///
+/// The host calls this exactly where it publishes an exit: after it has
+/// observed `pid` in the Exited state and before it notifies a parent. Rust
+/// gives `pid`'s children to synthetic init, lets init reap the adopted
+/// zombies whose exits were already published, signals newly orphaned
+/// stopped process groups with SIGHUP then SIGCONT, and lets init reap `pid`
+/// itself when init is its parent. In that last case `kernel_get_parent_pid`
+/// then reports `ESRCH`, so no parent is notified.
+///
+/// Returns the number of processes that received SIGHUP and SIGCONT; when
+/// it is positive the host applies the same follow-up as a group `kill()`.
+/// Returns `-EINVAL` when `pid` has not exited and `-ESRCH` when it is absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_publish_process_exit(pid: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    let publication = match table.publish_process_exit(pid, &mut host) {
+        Ok(publication) => publication,
+        Err(error) => return -(error as i32),
+    };
+    for (reaped_pid, result) in publication.reaped {
+        finish_removed_process(reaped_pid, result);
+    }
+    publication.signaled.len() as i32
 }
 
 /// Remove a process from the process table.

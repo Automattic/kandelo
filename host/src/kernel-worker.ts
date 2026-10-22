@@ -24925,6 +24925,31 @@ export class CentralizedKernelWorker {
     return result > 0 ? result : undefined;
   }
 
+  /**
+   * Hand one observed exit to Rust's exit publication. Returns how many
+   * processes the kernel sent SIGHUP and SIGCONT. A kernel built before this
+   * optional export existed does not reparent orphans; publication is then
+   * a no-op.
+   */
+  #publishKernelProcessExit(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): number {
+    const publish = this.#kernelInstanceForEntry(entry).exports
+      .kernel_publish_process_exit as ((pid: number) => number) | undefined;
+    if (typeof publish !== "function") return 0;
+    const result = publish(pid);
+    // ESRCH: a guest wait or init already consumed this zombie. Any other
+    // failure means the host published an exit Rust does not hold.
+    if (result === -ESRCH) return 0;
+    if (result < 0) {
+      throw new Error(
+        `Kernel rejected exit publication for process ${pid}: errno ${-result}`,
+      );
+    }
+    return result;
+  }
+
   private consumeExitedChild(
     parentPid: number,
     childPid: number,
@@ -24941,6 +24966,22 @@ export class CentralizedKernelWorker {
     pid: number,
     entry: KernelWorkerEntryContext,
   ): void {
+    // Rust applies the exit to the rest of the process table first: the
+    // children move to synthetic init, init reaps any zombies among them,
+    // and init reaps this process if it was init's child (the parent lookup
+    // below then finds no process). Every exit path publishes through here;
+    // Rust publication is idempotent, so a spawn child that exited before
+    // its spawn result was published may safely arrive twice.
+    if (this.#publishKernelProcessExit(pid, entry) > 0) {
+      // The kernel sent SIGHUP and SIGCONT to a newly orphaned stopped
+      // group. Apply the same follow-up as a guest group kill(): resume
+      // continued members, retry their blocked syscalls, and retire any
+      // member the default SIGHUP action terminated.
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+      this.scheduleWakeBlockedRetries(entry);
+      this.reapKilledProcessesAfterSyscall(entry);
+    }
+
     const parentPid = this.getParentPid(pid, entry);
     if (parentPid === undefined) return;
 

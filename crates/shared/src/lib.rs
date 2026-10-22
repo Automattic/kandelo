@@ -3655,6 +3655,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_process_metadata_commit"),
         HostAdapterKernelExport::required("kernel_process_metadata_stage"),
         HostAdapterKernelExport::required("kernel_process_secure_exec"),
+        HostAdapterKernelExport::optional_until("kernel_publish_process_exit", 53, 54),
         HostAdapterKernelExport::required("kernel_publish_spawn_child"),
         HostAdapterKernelExport::required("kernel_reap_exited_child"),
         HostAdapterKernelExport::required("kernel_remove_process"),

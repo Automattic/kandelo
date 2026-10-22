@@ -228,6 +228,7 @@ host/test/opfs-channel.test.ts	source-only
 host/test/opfs-readdir-atomicity.test.ts	source-only
 host/test/optional-demo-vfs.test.ts	source-only
 host/test/ordinary-process-exit.test.ts	prepared-product
+host/test/orphan-reparent.test.ts	prepared-product
 host/test/owned-job-reap.test.ts	source-only
 host/test/owned-jobs.test.ts	source-only
 host/test/package-runtime-file.test.ts	prepared-product

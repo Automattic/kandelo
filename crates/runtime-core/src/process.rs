@@ -1080,6 +1080,12 @@ pub struct Process {
     /// pending, but it is not yet part of the parent's waitable child set.
     /// Only the parent-bound spawn publication transaction may clear this.
     pub spawn_publication_pending: bool,
+    /// The host has published this process's exit: it observed the Exited
+    /// transition, began retiring the process's workers, and handed the exit
+    /// to `ProcessTable::publish_process_exit`. Synthetic init reaps an
+    /// adopted zombie only after this point, because until then the host
+    /// still needs the zombie record to discover the death.
+    pub exit_published: bool,
     pub pgid: u32,
     pub sid: u32,
     /// True iff this process is the session leader of its session (i.e. the
@@ -1404,6 +1410,7 @@ impl Process {
             exec_generation: 0,
             prepared_exec_targets: PreparedExecLedger::new(),
             spawn_publication_pending: false,
+            exit_published: false,
             pgid: pid,
             sid: 0,
             is_session_leader: false,
