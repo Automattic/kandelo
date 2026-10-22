@@ -244,6 +244,7 @@ echo "==> Post-instrument size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/nu
 
 # Preserve facts for the HTTP transport too. Optimization ordering belongs
 # to the SDK and instrumenter, including curl's longjmp-heavy paths.
+# Request Oz after instrumentation to keep the transport below its old size.
 # Apply the same pipeline to git-remote-http — libcurl may call fork()
 # internally (e.g., for DNS resolution when pthreads are unavailable).
 # git-remote-http is always built post-Phase-7 (HTTP/HTTPS transport
@@ -251,7 +252,7 @@ echo "==> Post-instrument size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/nu
 if [ -f "$BIN_DIR/git-remote-http.wasm" ]; then
     echo "==> Instrumenting git-remote-http.wasm..."
     RH_SIZE_BEFORE=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
-    "$FORK_INSTRUMENT" --require-facts "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm.instr"
+    "$FORK_INSTRUMENT" --require-facts "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm.instr" --post-optimize Oz
     mv "$BIN_DIR/git-remote-http.wasm.instr" "$BIN_DIR/git-remote-http.wasm"
     RH_SIZE_AFTER=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
     echo "==> git-remote-http: $(echo "$RH_SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_BEFORE}") -> $(echo "$RH_SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_AFTER}")"

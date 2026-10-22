@@ -95,7 +95,9 @@ executable's plan source is `facts` and its facts bind to linked functions.
 policy when it instruments raw outputs. Non-forking modules, side modules
 and wasm64 are exempt because facts-based sink analysis does not apply.
 Document necessary code-rewrite exceptions explicitly, as Ruby does for its
-GC root-spilling pass. Remove names only after instrumentation, retaining runtime
+GC root-spilling pass. The fork guide also records the measured, deferred
+Bash/CPython/PHP migrations; new recipes use the ordering and checks above.
+Remove names only after instrumentation, retaining runtime
 custom sections; the default post-pass already drops names. See
 [Optimization around instrumentation](fork-instrumentation.md#optimization-around-instrumentation).
 

@@ -810,7 +810,8 @@ activation/boundary counts are retained in the build log.
 `install_local_binary` applies the same check when it instruments a raw
 executable. Side modules, non-forking modules and wasm64 do not use the
 facts-based plan and are exempt. An already-instrumented artifact must
-have passed the check where its recipe invoked the instrumenter.
+have passed the check where its recipe invoked the instrumenter, except
+for the documented conservative pipelines below.
 
 Quickshell's address-taken fork-returning functions cause the instrumenter
 to select `assume-all-entries-fork-returning`; the plan can still come
@@ -820,6 +821,18 @@ state. That rewrite invalidates facts; Ruby deliberately uses the
 conservative fallback until the passes can preserve or regenerate them.
 Do not move root spilling after fork instrumentation merely to satisfy
 this check.
+
+Bash, CPython and PHP CLI/FPM are deferred migrations. Their compared
+facts-preserving pipelines did not meet the package no-regression condition,
+so they retain their established conservative plans. PHP CLI/curl fork
+cycles regressed repeatedly in the Node comparisons. Bash/CPython launch
+results disagreed between the short and longer controls under substantial
+host memory pressure; unchanged cost was not established. See the paired
+measurements in [PR #1565](https://github.com/Automattic/kandelo/pull/1565).
+These recipes instrument explicitly before installation; the shared
+installer still requires facts for raw executable inputs. Re-evaluate the
+migrations with host-clock launch/fork comparisons before enabling their
+facts checks. New recipes follow the SDK/instrumenter ordering above.
 
 Historical pre-facts measurements of `wasm-opt → instrument → wasm-opt`
 are not evidence for adding that ordering to current package recipes.
