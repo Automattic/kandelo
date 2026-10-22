@@ -3,7 +3,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -20,8 +19,12 @@ import { runCentralizedProgram } from "../../../../host/test/centralized-test-he
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageBuild = join(__dirname, "../bin/node.wasm");
+const explicitNodeWasm = process.env.KANDELO_TEST_SPIDERMONKEY_NODE_WASM;
+if (explicitNodeWasm && !existsSync(explicitNodeWasm)) {
+  throw new Error(`Explicit SpiderMonkey Node artifact is missing: ${explicitNodeWasm}`);
+}
 const nodeWasm =
-  tryResolveBinary("programs/spidermonkey-node.wasm") ??
+  explicitNodeWasm ?? tryResolveBinary("programs/spidermonkey-node.wasm") ??
   (existsSync(packageBuild) ? packageBuild : null);
 const npmDist = join(__dirname, "../../../../packages/registry/npm/dist");
 const hasNpm = existsSync(join(npmDist, "lib/cli.js"));
@@ -430,14 +433,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
   describe.skipIf(!hasNpm)("npm package installation", () => {
     it("installs cowsay with npm and runs its package bin", async () => {
       const tempDir = mkdtempSync(join(tmpdir(), "sm-node-npm-"));
-      const homeDir = join(tempDir, "home-maker");
-      const tmpMountDir = join(tempDir, "tmp");
-      mkdirSync(homeDir, { recursive: true });
-      mkdirSync(tmpMountDir, { recursive: true });
-      writeFileSync(
-        join(homeDir, "package.json"),
-        JSON.stringify({ name: "demo", version: "0.0.1" }),
-      );
+      const guestHome = "/home/maker";
       const { npmDir, helperDir } = prepareNpmRuntime(tempDir);
       const { registryDir, cowsayTarballFilename } = createCowsayPackages(tempDir);
       const nodeBytes = loadWasm(nodeWasm!);
@@ -447,8 +443,8 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
       let stderr = "";
       let ptyOutput = "";
       const env = [
-        "HOME=/home/maker",
-        "PWD=/home/maker",
+        `HOME=${guestHome}`,
+        `PWD=${guestHome}`,
         "USER=maker",
         "LOGNAME=maker",
         "TMPDIR=/tmp",
@@ -471,7 +467,6 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
         maxWorkers: 4,
         rootfsImage: "default",
         extraMounts: [
-          { mountPoint: "/tmp", hostPath: tmpMountDir, readonly: false },
           {
             mountPoint: "/usr/local/lib/npm",
             hostPath: npmDir,
@@ -483,7 +478,6 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
             readonly: true,
           },
           { mountPoint: "/registry", hostPath: registryDir, readonly: true },
-          { mountPoint: "/home/maker", hostPath: homeDir, readonly: false },
         ],
         onStdout: (_pid, data) => {
           stdout += decoder.decode(data);
@@ -498,6 +492,12 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
 
       try {
         await withCiProgress("init npm cowsay kernel", host.init());
+        // Canonical /home and /tmp scratch filesystems belong to the kernel.
+        // Initialize the project and inspect its outputs through that same VFS.
+        await host.writeFileToVfs(
+          `${guestHome}/package.json`,
+          new TextEncoder().encode(JSON.stringify({ name: "demo", version: "0.0.1" })),
+        );
         const installExitCode = await withCiProgress(
           "npm install cowsay",
           host.spawn(
@@ -513,7 +513,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
             ],
             {
               programModule: nodeModule,
-              cwd: "/home/maker",
+              cwd: guestHome,
               env,
               pty: true,
               ptyCols: 100,
@@ -524,15 +524,19 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
 
         expect(stderr).not.toContain("Exit handler never called");
         ptyOutput += ptyDecoder.decode();
-        const logsDir = join(tmpMountDir, ".npm-cache", "_logs");
-        const npmLogs = existsSync(logsDir)
-          ? readdirSync(logsDir).map((name) => readFileSync(join(logsDir, name), "utf8")).join("\n--- npm log ---\n")
-          : "";
+        const logsDir = "/tmp/.npm-cache/_logs";
+        const logEntries = await host.readDirFromVfs(logsDir) ?? [];
+        const npmLogs = (await Promise.all(logEntries
+          .filter((entry) => entry.name.endsWith(".log"))
+          .map(async (entry) => {
+            const bytes = await host.readFileFromVfs(`${logsDir}/${entry.name}`);
+            return bytes ? decoder.decode(bytes) : "";
+          }))).join("\n--- npm log ---\n");
         expect(installExitCode, `stdout:\n${stdout}\nstderr:\n${stderr}\npty:\n${ptyOutput}\nlogs:\n${npmLogs}`).toBe(0);
         expect(ptyOutput).toMatch(/added \d+ packages? in /);
-        expect(
-          existsSync(join(homeDir, "node_modules/cowsay/package.json")),
-        ).toBe(true);
+        const installedInGuest = await host.readFileFromVfs(`${guestHome}/node_modules/cowsay/package.json`);
+        expect(installedInGuest, `artifact: ${nodeWasm}\npty:\n${ptyOutput}\nlogs:\n${npmLogs}`).not.toBeNull();
+        expect(JSON.parse(decoder.decode(installedInGuest!)).name).toBe("cowsay");
 
         stdout = "";
         stderr = "";
@@ -540,8 +544,8 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
           "run cowsay bin",
           host.spawn(
             nodeBytes,
-            ["node", "/home/maker/node_modules/.bin/cowsay", "Kandelo"],
-            { programModule: nodeModule, cwd: "/home/maker", env },
+            ["node", `${guestHome}/node_modules/.bin/cowsay`, "Kandelo"],
+            { programModule: nodeModule, cwd: guestHome, env },
           ),
         );
 
