@@ -245,8 +245,8 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
     command: "/usr/local/bin/love /usr/share/love/examples/pong",
   },
   doom: {
-    executable: "/usr/local/bin/fbdoom",
-    command: "/usr/local/bin/fbdoom -iwad /doom1.wad",
+    executable: "/usr/local/bin/doom-launch",
+    command: "/usr/local/bin/doom-launch",
   },
   modeset: {
     executable: "/usr/local/bin/modeset",
@@ -271,13 +271,144 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
 } as const;
 
 /**
+ * The game machines' supervisor loop, shared by their launch wrappers.
+ *
+ * Kandelo exchange hands a dropped WAD, pak or zip to a handler running as
+ * the handler account (docs/architecture.md, "Kandelo exchange"). The handler
+ * puts the file in place and asks the running game to pick it up by sending
+ * SIGHUP to the wrapper, whose pid it reads from a pid file. The wrapper runs
+ * the engine as its child: on SIGHUP it stops the engine (SIGTERM, then waits
+ * so the display is free) and starts it again; when the engine exits for any
+ * other reason the wrapper exits with its status, so the shell prompt returns
+ * and the machine's dock actions, which stop the display owner and type their
+ * own command, work as before. Ctrl+C is forwarded as SIGTERM, which the
+ * engine does not ignore in this non-interactive shell (SIGINT is ignored in
+ * an asynchronous list).
+ *
+ * `supervise PIDFILE ARGS...` expects a function `start_engine` that starts
+ * the engine in the background with ARGS and sets `engine` to its pid.
+ */
+const SUPERVISE_FUNCTION = `supervise() {
+    pidfile="$1"
+    shift
+    echo $$ > "$pidfile"
+    restart=0
+    trap 'restart=1; kill -TERM "$engine" 2>/dev/null' HUP
+    trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; rm -f "$pidfile"; exit 130' INT TERM
+    while :; do
+        restart=0
+        start_engine "$@"
+        status=0
+        wait "$engine" || status=$?
+        # A trapped signal ends the wait early; wait for the engine itself.
+        while kill -0 "$engine" 2>/dev/null; do wait "$engine" || status=$?; done
+        [ "$restart" = 1 ] || break
+    done
+    rm -f "$pidfile"
+    exit "$status"
+}
+`;
+
+/**
+ * fbDOOM's machine command, /usr/local/bin/doom-launch: DOOM with the user's
+ * WAD when one has been sent to the machine, else the shareware one, under
+ * the supervisor above. The doom WAD handler writes the user's WAD and sends
+ * SIGHUP, so the next DOOM plays it.
+ */
+const DOOM_LAUNCH_SCRIPT = `#!/bin/sh
+USER_WAD=/usr/share/doom/user.wad
+${SUPERVISE_FUNCTION}
+start_engine() {
+    wad=/doom1.wad
+    [ -f "$USER_WAD" ] && wad="$USER_WAD"
+    /usr/local/bin/fbdoom -iwad "$wad" "$@" &
+    engine=$!
+}
+supervise /tmp/doom-launch.pid "$@"
+`;
+
+/**
+ * The Kandelo exchange handlers for the game machines, run by kxchgd as the
+ * handler account with the batch directory as $1. Each acts only while its
+ * game's wrapper runs (its pid file names a live process); otherwise the
+ * batch goes to the catch-all, which saves it to ~/Downloads, so dropping a
+ * .zip on a plain shell is never mistaken for a game upload.
+ */
+const GAME_HANDLER_PRELUDE = `#!/bin/sh
+batch="$1"
+status() { setfattr -n user.kandelo.status -v "$1" "$batch" 2>/dev/null || true; }
+wrapper_pid() {
+    pid=$(cat "$1" 2>/dev/null) && kill -0 "$pid" 2>/dev/null && echo "$pid"
+}
+first_entry() { for entry in "$batch"/*; do echo "$entry"; return; done; }
+`;
+
+const DOOM_LOAD_WAD_HANDLER = `${GAME_HANDLER_PRELUDE}
+pid=$(wrapper_pid /tmp/doom-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
+wad=$(first_entry)
+cp "$wad" /usr/share/doom/user.wad.tmp && mv -f /usr/share/doom/user.wad.tmp /usr/share/doom/user.wad || {
+    status "failed: could not store the WAD"
+    exit 1
+}
+status "loading $(basename "$wad")"
+kill -HUP "$pid"
+`;
+
+const QUAKE_LOAD_PAK_HANDLER = `${GAME_HANDLER_PRELUDE}
+pid=$(wrapper_pid /tmp/quake-launch.pid) || exec /usr/libexec/kandelo/exchange-save "$batch"
+pak=$(first_entry)
+dest=/usr/share/quake/id1/pak0.pak
+cp "$pak" "$dest.tmp" && mv -f "$dest.tmp" "$dest" || {
+    status "failed: could not store the pak"
+    exit 1
+}
+status "loading $(basename "$pak")"
+kill -HUP "$pid"
+`;
+
+const SCUMMVM_LOAD_ZIP_HANDLER = `${GAME_HANDLER_PRELUDE}
+wrapper_pid /tmp/scummvm-launch.pid >/dev/null || exec /usr/libexec/kandelo/exchange-save "$batch"
+GAMES=/usr/share/scummvm-games
+for zip in "$batch"/*; do
+    if ! unzip -o -q "$zip" -d "$GAMES"; then
+        status "failed: $(basename "$zip") is not a zip archive"
+        exit 1
+    fi
+done
+status "extracted into $GAMES; add it from the launcher"
+`;
+
+/** Machine-specific exchange rules (the image's, in /etc). */
+const GAME_EXCHANGE_RULES: ReadonlyArray<{ name: string; handler: string; script: string; rule: string }> = [
+  {
+    name: "50-doom-wad.handler",
+    handler: "/usr/libexec/kandelo/doom-load-wad",
+    script: DOOM_LOAD_WAD_HANDLER,
+    rule: "# A WAD for DOOM: it restarts with it.\nmatch extension .wad\nkind file\nmax-bytes 33554432\nrun /usr/libexec/kandelo/doom-load-wad\n",
+  },
+  {
+    name: "50-quake-pak.handler",
+    handler: "/usr/libexec/kandelo/quake-load-pak",
+    script: QUAKE_LOAD_PAK_HANDLER,
+    rule: "# A pak0.pak for Quake: it restarts with it.\nmatch extension .pak\nkind file\nmax-bytes 33554432\nrun /usr/libexec/kandelo/quake-load-pak\n",
+  },
+  {
+    name: "50-scummvm-zip.handler",
+    handler: "/usr/libexec/kandelo/scummvm-load-zip",
+    script: SCUMMVM_LOAD_ZIP_HANDLER,
+    rule: "# Game data for ScummVM, zipped: extracted for its launcher.\nmatch extension .zip\nkind file\nmax-bytes 536870912\nrun /usr/libexec/kandelo/scummvm-load-zip\n",
+  },
+];
+
+/**
  * The Quake software demo's launch wrapper, written eagerly to
  * /usr/local/bin/quake. It extracts id1/pak0.pak from id's original shareware
  * archive on first launch using the image's own lazy tools (unzip -> lha), then
  * execs the lazy engine at /usr/bin/quake with the shareware basedir. Using an
  * absolute engine path avoids recursing back into this wrapper via PATH. The
  * step is idempotent and surfaces failure honestly; the engine then reports its
- * own missing-data error rather than faking success.
+ * own missing-data error rather than faking success. The engine runs under
+ * the supervisor, so a pak0.pak sent to the machine restarts it.
  */
 const QUAKE_LAUNCH_SCRIPT = `#!/bin/sh
 set -e
@@ -298,7 +429,12 @@ if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
         echo "quake: extraction failed; no pak0.pak produced" >&2
     fi
 fi
-exec /usr/bin/quake -basedir "$BASE" "$@"
+${SUPERVISE_FUNCTION}
+start_engine() {
+    /usr/bin/quake -basedir "$BASE" "$@" &
+    engine=$!
+}
+supervise /tmp/quake-launch.pid "$@"
 `;
 
 /**
@@ -346,22 +482,18 @@ exec /usr/bin/fbdoom "$@"
  *   computes from the physical size the kernel reports on the connector
  *   (KMSDRM) or the compositor reports on wl_output (Wayland).
  *
- * It then stays alive beside the engine to unpack uploads. "Load game data"
- * writes one archive to $GAMES/upload.zip while ScummVM keeps running (the
- * user keeps their place in the launcher), and nothing else can run the
- * extraction: the machine's terminal is ScummVM's. The wrapper polls for the
- * archive — inotify is unimplemented (ENOSYS), and polling is what a watcher
- * falls back to — unzips it in place, and removes it so the peak filesystem
- * cost is one archive plus its contents. The host writes the file in one
- * kernel-worker task, so the wrapper never sees a partial archive.
+ * The engine runs under the shared supervisor. Zipped game data sent to the
+ * machine (Kandelo exchange) is extracted into $GAMES by the scummvm zip
+ * handler while ScummVM keeps running, so the user keeps their place in the
+ * launcher; the handler acts only while this wrapper's pid file names it.
  *
  * Because the engine runs as an asynchronous list in a non-interactive shell,
  * POSIX has it start with SIGINT and SIGQUIT ignored, so Ctrl+C at the
  * machine's terminal (and the ScummVM machine's dock action, which sends
  * exactly that) would kill only this wrapper and orphan an engine still
- * holding the display. The trap forwards the interrupt as SIGTERM, which the
- * engine does not ignore (SDL turns it into a normal quit), and waits for it,
- * so the shell prompt returns only once the display is free.
+ * holding the display. The supervisor forwards the interrupt as SIGTERM,
+ * which the engine does not ignore (SDL turns it into a normal quit), and
+ * waits for it, so the shell prompt returns only once the display is free.
  */
 const SCUMMVM_LAUNCH_SCRIPT = `#!/bin/sh
 set -e
@@ -375,23 +507,13 @@ if [ -z "\${XDG_RUNTIME_DIR:-}" ] || [ ! -S "$XDG_RUNTIME_DIR/\${WAYLAND_DISPLAY
     export SDL_VIDEODRIVER=kmsdrm
     export SDL_EVDEV_DEVICES=2:/dev/input/event0,1:/dev/input/event1
 fi
-/usr/bin/scummvm --config="$INI" "$@" &
-engine=$!
-trap 'kill -TERM "$engine" 2>/dev/null; wait "$engine"; exit 130' INT TERM
 set +e
-while kill -0 "$engine" 2>/dev/null; do
-    if [ -f "$GAMES/upload.zip" ]; then
-        echo "scummvm: extracting uploaded game data..." >&2
-        if unzip -o -q "$GAMES/upload.zip" -d "$GAMES"; then
-            echo "scummvm: extracted into $GAMES; add it from the launcher" >&2
-        else
-            echo "scummvm: could not extract the upload (not a zip archive?)" >&2
-        fi
-        rm -f "$GAMES/upload.zip"
-    fi
-    sleep 1
-done
-wait "$engine"
+${SUPERVISE_FUNCTION}
+start_engine() {
+    /usr/bin/scummvm --config="$INI" "$@" &
+    engine=$!
+}
+supervise /tmp/scummvm-launch.pid "$@"
 `;
 
 /**
@@ -1607,10 +1729,35 @@ export async function buildSourceRootfsShellImage(
     0o644,
   );
   ensureDirRecursive(fs, "/usr/share/scummvm-games", 0o777);
-  // Create the id1 game dir too: the bring-your-own-pak ingest writes
-  // /usr/share/quake/id1/pak0.pak directly (host.writeFile requires the parent
-  // to exist), and that path must work even offline when no quake106.zip was
-  // staged and the wrapper's own `mkdir -p id1` never ran.
+  // DOOM: the machine command supervises fbdoom; a WAD sent to the machine
+  // lands in /usr/share/doom, world-writable like the game directories above
+  // because the exchange handler runs as the unprivileged handler account.
+  writeVfsBinary(fs, "/usr/local/bin/doom-launch", new TextEncoder().encode(DOOM_LAUNCH_SCRIPT), 0o755);
+  ensureDirRecursive(fs, "/usr/share/doom", 0o777);
+  // The game machines' Kandelo exchange handlers and their rules. The rules
+  // go in the image's rule directory, which the base rootfs declares
+  // (images/rootfs/MANIFEST) with the ownership kxchgd checks; creating it
+  // here would hide a base that lacks it. Rule files are root-owned and not
+  // group- or world-writable, as kxchgd requires.
+  const rulesDir = "/etc/kandelo/exchange-handlers.d";
+  let rulesStat;
+  try {
+    rulesStat = fs.stat(rulesDir);
+  } catch (error) {
+    throw new Error(`source rootfs is missing ${rulesDir} (images/rootfs/MANIFEST)`, { cause: error });
+  }
+  if ((rulesStat.mode & FILE_TYPE_MASK) !== DIRECTORY_MODE) {
+    throw new Error(`${rulesDir} must be a directory`);
+  }
+  ensureDirRecursive(fs, "/usr/libexec/kandelo");
+  for (const { name, handler, script, rule } of GAME_EXCHANGE_RULES) {
+    writeVfsBinary(fs, handler, new TextEncoder().encode(script), 0o755);
+    writeVfsBinary(fs, `${rulesDir}/${name}`, new TextEncoder().encode(rule), 0o644);
+  }
+  // Create the id1 game dir too: the pak handler writes
+  // /usr/share/quake/id1/pak0.pak directly, and that path must work even
+  // offline when no quake106.zip was staged and the wrapper's own
+  // `mkdir -p id1` never ran.
   ensureDirRecursive(fs, "/usr/share/quake/id1", 0o777);
   writeSdl2ShaderPresets(fs);
   // WHY: the package shell must not promise optional programs it does not own.

@@ -1278,16 +1278,15 @@ the terminal. A game stays unpacked for the rest of the session, so choosing
 it again starts it without downloading; nothing persists across a reboot.
 
 No other game ships with the machine: no Kandelo package carries a commercial
-SCUMM title. **Load game data** in the display's dock takes a `.zip` (up to
-512 MiB, the platform's ingest ceiling) and writes it to
-`/usr/share/scummvm-games/upload.zip` while ScummVM keeps running. The
-launch wrapper stays alive beside the engine, notices the archive (it polls,
-since `inotify` is unimplemented), unzips it in place and deletes it; the
-terminal shows when it is done. ScummVM's "Add Game" browser opens in that
-directory. The archive and its contents must fit the machine's filesystem,
-which lives in kernel memory beside everything else guests have written (a
-1 GiB kernel ceiling on desktop browsers, 768 MiB on constrained ones such as
-iOS Safari); a write that does not fit fails with `ENOSPC`. The pointer is a real absolute device (`/dev/input/event1`
+SCUMM title. Sending a `.zip` to the machine (**Load game data** in the
+display's dock, or a drop) hands it to the machine's scummvm rule (up to
+512 MiB), which extracts it into `/usr/share/scummvm-games` while ScummVM
+keeps running; the batch's toast says when it is done. ScummVM's "Add Game"
+browser opens in that directory. The extracted game must fit the machine's
+filesystem, which lives in kernel memory beside everything else guests have
+written (a 1 GiB kernel ceiling on desktop browsers, 768 MiB on constrained
+ones such as iOS Safari); an extraction that does not fit fails, and the
+toast shows it. The pointer is a real absolute device (`/dev/input/event1`
 reports `EV_ABS` positions), and the browser hides its own cursor over the
 display because ScummVM draws one.
 
@@ -2019,7 +2018,7 @@ the only top-level keys; every machine block below belongs to a
 error naming it. There is no top-level fallback for a profile that omits a
 block — a machine field is read from the selected profile or from nowhere.
 
-Alongside `presentation`, `assets`, `guide`, and `ingest`, a profile may
+Alongside `presentation`, `assets`, `guide`, and `exchange`, a profile may
 declare these blocks.
 
 - `identity` — what a listing shows for this profile: `title`, `summary`,
@@ -2067,37 +2066,33 @@ declare these blocks.
   An image with exactly one profile needs no declaration; an image with
   several must name one.
 
-A profile may also declare one fixed-path file-ingest capability. The current
-Kandelo browser UI presents it on the framebuffer surface as a file picker and
-drop target:
+Files reach a machine through Kandelo exchange (`docs/architecture.md`,
+"Kandelo exchange"), not through the profile. Dropping files or folders on
+the terminal, framebuffer, or display surface, or choosing them with the
+dock's "Send files" button, offers them to the machine as one batch. The
+machine's agent and its handler rules decide what happens: the game
+machines' rules load a WAD, a pak or zipped game data, and the catch-all
+saves anything else to `~/Downloads`. Each batch gets a toast with its
+status and outcome; outputs the machine publishes appear in a tray with
+Save and Dismiss (Save streams through `showSaveFilePicker` where the
+browser has it, and otherwise buffers the output and downloads it). A
+machine with no agent shows "This machine doesn't accept files" and refuses
+the drop. A profile may add presentation hints:
 
 ```json
 {
-  "ingest": {
-    "accept": [".wad"],
-    "targetPath": "/user.wad",
-    "maxBytes": 33554432,
-    "label": "Load WAD",
-    "onLoad": {
-      "restart": "/usr/local/bin/fbdoom -iwad /user.wad"
-    }
-  }
+  "exchange": { "label": "Load WAD", "accept": [".wad"] }
 }
 ```
 
-The image, not the uploaded filename or profile name, owns `targetPath` and the
-optional restart command. The path must be absolute and normalized, its parent
-must already exist, extensions are matched case-insensitively, and `maxBytes`
-cannot exceed 64 MiB. The browser checks both the file's declared size and the
-actual buffer length. It writes before stopping a current device owner, then
-uses the kernel signal path and bounded process/device waits before dispatching
-the image-owned command. Write, signal, timeout, and command-dispatch failures
-remain visible. An absent `ingest` block means the image exposes no upload
-capability; the loader does not infer one from a package or profile name.
+`label` adds a labelled button for the picker on the display surface's
+dock, and `accept` filters that picker. They are hints only; the guest's
+rules stay the authority. The retired `ingest` block is refused with a
+message pointing here, never silently ignored.
 
 A profile may also declare up to four dock buttons that replace the machine's
 foreground program. The browser UI shows them on the display surface's dock,
-before the ingest control:
+before the exchange button:
 
 ```json
 {
@@ -2150,11 +2145,11 @@ is not sent. A program that reads its keyboard from a raw-mode terminal, as
 fbDOOM does, has turned the line discipline's signal keys off, so Ctrl+C
 reaches it as an ordinary keypress and it keeps running, exactly as it would
 on any Unix terminal. The framebuffer pane therefore ends its display
-program the way `ingest.onLoad` does: it sends `SIGTERM` to the process
+program the way the display panes always have: it sends `SIGTERM` to the process
 bound to `/dev/fb0` and waits, for at most ten seconds, until that process
 has exited and the kernel has released the device; when nothing owns the
 device it falls back to Ctrl+C. Only then is `restart` written to the shell,
-exactly as if typed. Like `ingest.onLoad`, `restart` is the image author's
+exactly as if typed. Like `init.shellCommand`, `restart` is the image author's
 command, never user input. `id`s must be unique within the profile, and
 entry `id`s within their menu.
 

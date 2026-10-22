@@ -15,7 +15,7 @@
 // or press Ctrl+Shift+Esc to move focus back to the UI.
 
 import * as React from "react";
-import { useDemoIngest, useKernelHost, usePresentation, useStatus } from "../kernel-host/react";
+import { useDemoExchange, useKernelHost, usePresentation, useStatus } from "../kernel-host/react";
 import {
   attachLinuxMediumRawKeyboard,
   attachPointerLockMouse,
@@ -23,14 +23,13 @@ import {
 } from "../../../../../host/src/framebuffer/browser-controls";
 import type { FramebufferHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
-  IngestError,
-  runDemoIngest,
   stopDeviceOwner,
   waitForProcessExit,
-  type IngestPhase,
-} from "../../../../../web-libs/kandelo-session/src/demo-ingest";
+} from "../../../../../web-libs/kandelo-session/src/device-owner";
 import { useFittedCanvasStyle } from "./canvasFit";
 import { useDockActions } from "./DockActions";
+import { useExchangeDrop } from "../app/exchange-drop";
+import { ExchangeDropOverlay, ExchangePickControl } from "../app/ExchangeToasts";
 import {
   createTouchKeySender,
   KEY_ENTER,
@@ -61,7 +60,7 @@ export interface FramebufferProps {
 export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onDockControlsChange }) => {
   const host = useKernelHost();
   const status = useStatus();
-  const ingest = useDemoIngest();
+  const exchangeHints = useDemoExchange();
   const presentation = usePresentation();
   const coarsePointer = useCoarsePointer();
   const stageRef = React.useRef<HTMLDivElement>(null);
@@ -80,10 +79,6 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   const [boundPid, setBoundPid] = React.useState<number | null>(null);
   const [focused, setFocused] = React.useState(false);
   const [mouseCaptured, setMouseCaptured] = React.useState(false);
-  const [ingestPhase, setIngestPhase] = React.useState<IngestPhase | null>(null);
-  const [ingestName, setIngestName] = React.useState<string | null>(null);
-  const [ingestError, setIngestError] = React.useState<string | null>(null);
-  const [dragActive, setDragActive] = React.useState(false);
 
   React.useEffect(() => {
     if (status !== "running") return;
@@ -225,8 +220,8 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
 
   // A dock action replaces the program on the display. A game reading its
   // keyboard through a raw-mode terminal takes Ctrl+C as a keypress, so end
-  // the /dev/fb0 owner the way Load WAD does; with no owner, interrupt the
-  // shell's foreground program as other panes do.
+  // the /dev/fb0 owner with SIGTERM; with no owner, interrupt the shell's
+  // foreground program as other panes do.
   const stopDisplayProgram = React.useCallback(async () => {
     const pid = handleRef.current?.getBoundPid() ?? null;
     if (pid === null) {
@@ -240,62 +235,6 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   }, [host, waitForFbRelease]);
   const dockActions = useDockActions("fb", null, stopDisplayProgram);
 
-  /** Resolve boundedly once some process has bound /dev/fb0 again. */
-  const waitForFbBind = React.useCallback((): Promise<void> => {
-    const handle = handleRef.current;
-    return new Promise<void>((resolve, reject) => {
-      if (!handle) {
-        reject(new Error("framebuffer handle disappeared during restart"));
-        return;
-      }
-      let settled = false;
-      let off = () => {};
-      const timer = window.setTimeout(() => {
-        finish(new Error(
-          `replacement did not bind /dev/fb0 within `
-            + `${FRAMEBUFFER_REBIND_TIMEOUT_MS}ms`,
-        ));
-      }, FRAMEBUFFER_REBIND_TIMEOUT_MS);
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timer);
-        off();
-        if (error) reject(error);
-        else resolve();
-      };
-      off = handle.onBoundPidChange((next) => {
-        if (next !== null) finish();
-      });
-      if (handle.getBoundPid() !== null) finish();
-      if (settled) off();
-    });
-  }, []);
-
-  const ingestFile = React.useCallback(async (file: File) => {
-    if (!ingest || ingestPhase !== null) return;
-    setIngestError(null);
-    setIngestName(file.name);
-    try {
-      await runDemoIngest(host, ingest, file, {
-        targetPid: handleRef.current?.getBoundPid() ?? null,
-        waitForRelease: waitForFbRelease,
-        onPhase: setIngestPhase,
-      });
-      // runDemoIngest returns as soon as the relaunch is dispatched; keep the
-      // indicator up until the new process actually owns the framebuffer.
-      await waitForFbBind();
-    } catch (err) {
-      setIngestError(
-        err instanceof IngestError ? err.message
-          : err instanceof Error ? err.message
-          : String(err),
-      );
-    } finally {
-      setIngestPhase(null);
-      setIngestName(null);
-    }
-  }, [host, ingest, ingestPhase, waitForFbBind, waitForFbRelease]);
 
   const showCanvas = status === "running" && !error;
   const showHint = showCanvas && boundPid === null;
@@ -331,7 +270,6 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     ? CAPTURE_LABELS[1]
     : boundPid !== null ? CAPTURE_LABELS[2] : CAPTURE_LABELS[3];
   const canvasStyle = useFittedCanvasStyle(stageRef, canvasRef, 16 / 10);
-  const busy = ingestPhase !== null;
   const dockControls = React.useMemo(() => (
     <DemoSurfaceDockControls
       title={`FRAMEBUFFER · /DEV/FB0${boundPid !== null ? ` · pid ${boundPid}` : ""}`}
@@ -340,18 +278,11 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       active={focused || mouseCaptured}
     >
       {dockActions.controls}
-      {ingest && status === "running" && (
-        <IngestControl
-          accept={ingest.accept}
-          label={ingest.label ?? "Load file"}
-          busy={busy}
-          busyLabel={ingestName ? `loading ${ingestName}…` : "loading…"}
-          testIdPrefix="fb"
-          onFile={ingestFile}
-        />
+      {exchangeHints?.label && status === "running" && (
+        <ExchangePickControl label={exchangeHints.label} accept={exchangeHints.accept} testIdPrefix="fb" />
       )}
     </DemoSurfaceDockControls>
-  ), [boundPid, busy, captureLabel, dockActions.controls, focused, ingest, ingestFile, ingestName, mouseCaptured, status]);
+  ), [boundPid, captureLabel, dockActions.controls, exchangeHints, focused, mouseCaptured, status]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -359,32 +290,18 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
     return () => onDockControlsChange(null);
   }, [dockControls, onDockControlsChange]);
 
-  // Drag-and-drop is an enhancement over the always-present dock button, so it
-  // is wired only when the image declares an ingest capability.
-  const dropHandlers = ingest && status === "running" ? {
-    onDragOver: (e: React.DragEvent) => {
-      e.preventDefault();
-      if (!busy) setDragActive(true);
-    },
-    onDragLeave: (e: React.DragEvent) => {
-      if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-      setDragActive(false);
-    },
-    onDrop: (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragActive(false);
-      const file = e.dataTransfer.files?.[0];
-      if (file) void ingestFile(file);
-    },
-  } : {};
+
+  // A drop offers the files to the machine through Kandelo exchange.
+  const exchangeDrop = useExchangeDrop(status === "running");
 
   return (
     <div
       className="kframebuffer-surface"
       ref={stageRef}
-      data-drag-active={dragActive ? "true" : "false"}
-      {...dropHandlers}
+      data-drag-active={exchangeDrop.dragActive ? "true" : "false"}
+      {...exchangeDrop.handlers}
     >
+      <ExchangeDropOverlay active={exchangeDrop.dragActive} refused={exchangeDrop.refused} testId="fb-exchange-dropzone" />
       <canvas
         ref={canvasRef}
         className="kframebuffer-canvas"
@@ -420,35 +337,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
           Waiting for a process to bind /dev/fb0.
         </div>
       )}
-      {dragActive && !busy && (
-        <div className="kframebuffer-dropzone" data-testid="fb-dropzone">
-          Drop {ingest?.accept.join(" / ")} to load
-        </div>
-      )}
       {dockActions.toasts}
-      {busy && (
-        <div className="kdemo-toast" data-testid="fb-ingest-busy">
-          {ingestName ? `loading ${ingestName}…` : "loading…"}
-        </div>
-      )}
-      {ingestError && !busy && (
-        <div
-          className="kdemo-toast"
-          data-error="true"
-          data-testid="fb-ingest-error"
-          role="alert"
-        >
-          {ingestError}
-          <button
-            type="button"
-            className="kdemo-toast-dismiss"
-            onClick={() => setIngestError(null)}
-            aria-label="Dismiss error"
-          >
-            ×
-          </button>
-        </div>
-      )}
       {(error || status !== "running") && (
         <div style={{
           fontFamily: "var(--k-font-mono)",
@@ -495,44 +384,3 @@ export const DemoSurfaceDockControls: React.FC<{
   </div>
 );
 
-/**
- * The primary ingest path: a real <input type="file">, so it works on every
- * platform including touch, where drag-and-drop does not exist.
- */
-export const IngestControl: React.FC<{
-  accept: string[];
-  label: string;
-  busy: boolean;
-  busyLabel: string;
-  /** Surface that owns this control, so two panes get distinct test ids. */
-  testIdPrefix: string;
-  onFile: (file: File) => void;
-}> = ({ accept, label, busy, busyLabel, testIdPrefix, onFile }) => {
-  const inputRef = React.useRef<HTMLInputElement>(null);
-  return (
-    <>
-      <input
-        ref={inputRef}
-        type="file"
-        accept={accept.join(",")}
-        data-testid={`${testIdPrefix}-ingest-input`}
-        style={{ display: "none" }}
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          // Reset so re-picking the same file fires change again.
-          e.target.value = "";
-          if (file) onFile(file);
-        }}
-      />
-      <button
-        type="button"
-        className="kdemo-surface-action"
-        data-testid={`${testIdPrefix}-ingest-button`}
-        disabled={busy}
-        onClick={() => inputRef.current?.click()}
-      >
-        {busy ? busyLabel : label}
-      </button>
-    </>
-  );
-};

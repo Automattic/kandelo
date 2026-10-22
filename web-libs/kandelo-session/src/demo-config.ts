@@ -74,31 +74,14 @@ export interface DemoCompanionConfig {
 }
 
 /**
- * What to do once an ingested file has landed at `targetPath`.
- *
- * `restart` is an author-provided shell command from the VFS image, never
- * user input. The uploaded file's name never reaches it: the payload is
- * always written to the fixed `targetPath`.
+ * Presentation hints for sending files to a machine (Kandelo exchange). The
+ * guest decides what it accepts (its handler rules); these only shape the UI.
  */
-export interface DemoIngestOnLoadConfig {
-  restart: string;
-}
-
-/**
- * Declarative "bring your own file" capability for a demo — e.g. a NES ROM or
- * a DOOM WAD. Content-neutral: the schema knows about extensions, a size cap,
- * and one fixed destination, not about what the bytes mean.
- */
-export interface DemoIngestConfig {
-  /** Lowercase extension allow-list, each including the dot (".nes"). */
-  accept: string[];
-  /** Fixed absolute destination. Never derived from the uploaded filename. */
-  targetPath: string;
-  /** Hard cap, enforced before any byte is written. */
-  maxBytes: number;
-  /** Human-facing control label, e.g. "Load ROM". */
+export interface DemoExchangeConfig {
+  /** The file picker's button text, e.g. "Load WAD". */
   label?: string;
-  onLoad?: DemoIngestOnLoadConfig;
+  /** Extensions offered first in the file picker (".wad"); a filter, not a rule. */
+  accept?: string[];
 }
 
 /**
@@ -112,7 +95,7 @@ export interface DemoIngestConfig {
  * like typing its command after quitting the program by hand.
  *
  * `restart` is an author-provided shell command from the VFS image, never
- * user input: same vocabulary and same trust as `ingest.onLoad.restart`.
+ * user input: the same trust as `init.shellCommand`.
  *
  * An action declares exactly one of `restart` (the button runs it) or
  * `menu` (the button opens a list, and the chosen entry's `restart` runs the
@@ -240,7 +223,7 @@ export const MAX_REQUESTED_WORKERS = 64;
  *   wants a service manager (see images/vfs/products/browser-ruby-todo.toml,
  *   which deliberately excludes dinit to stay lean for one long-running
  *   process). `program` must be an absolute, normalized path — validated the
- *   same way as `ingest.targetPath` — but this does NOT weaken the "boot
+ *   same way as `init.cwd` — but this does NOT weaken the "boot
  *   identity is never URL-carried" trust rule: the path names a program that
  *   must already exist inside the image, which is exactly as image-owned as
  *   a dinit target name. What that rule forbids is a *command vector*
@@ -332,7 +315,7 @@ export interface KandeloDemoProfileConfig {
   presentation?: DemoPresentationConfig;
   assets?: DemoAssetConfig[];
   guide?: DemoGuideConfig;
-  ingest?: DemoIngestConfig;
+  exchange?: DemoExchangeConfig;
   dockActions?: DemoDockActionConfig[];
   runtime?: DemoRuntimeConfigInput;
   init?: DemoInitConfig;
@@ -425,7 +408,7 @@ const PROFILE_ONLY_KEYS = [
   "presentation",
   "assets",
   "guide",
-  "ingest",
+  "exchange",
   "dockActions",
   "runtime",
   "init",
@@ -433,6 +416,13 @@ const PROFILE_ONLY_KEYS = [
   "identity",
   "display",
 ] as const;
+
+/** Why a retired `ingest` block is refused, and where its hints now live. */
+function retiredIngestMessage(where: string, exchangeField: string): string {
+  return `${where} is no longer supported: files reach a machine through ` +
+    `Kandelo exchange (handler rules in /etc/kandelo/exchange-handlers.d); ` +
+    `${exchangeField} holds the picker's label and accept hints`;
+}
 
 /**
  * Validate every image-owned demo profile eagerly. Runtime resolution stays
@@ -442,6 +432,9 @@ const PROFILE_ONLY_KEYS = [
 export function validateKandeloDemoConfig(config: KandeloDemoConfig): void {
   if (!isRecord(config) || config.version !== 1) {
     throw new Error("demo config must use version 1");
+  }
+  if ((config as Record<string, unknown>).ingest !== undefined) {
+    throw new Error(retiredIngestMessage("ingest", "profiles.<id>.exchange"));
   }
   const misplaced = PROFILE_ONLY_KEYS.filter(
     (key) => (config as Record<string, unknown>)[key] !== undefined,
@@ -499,14 +492,14 @@ export function resolveDemoGuide(
     : normalizeGuide(profile.guide, `profiles.${profileId}.guide`);
 }
 
-export function resolveDemoIngest(
+export function resolveDemoExchange(
   config: KandeloDemoConfig,
   profileId: string,
-): DemoIngestConfig | null {
+): DemoExchangeConfig | null {
   const profile = profileConfig(config, profileId);
-  return profile?.ingest === undefined
+  return profile?.exchange === undefined
     ? null
-    : normalizeIngest(profile.ingest, `profiles.${profileId}.ingest`);
+    : normalizeExchange(profile.exchange, `profiles.${profileId}.exchange`);
 }
 
 export function resolveDemoDockActions(
@@ -518,15 +511,6 @@ export function resolveDemoDockActions(
     ? []
     : normalizeDockActions(profile.dockActions, `profiles.${profileId}.dockActions`);
 }
-
-/** Upper bound on any image-declared cap, so a bad image can't ask the browser
- *  to buffer an unbounded upload into the VFS. The upload is held in page
- *  memory and then written into the machine's filesystem, which lives in
- *  kernel memory (`kernelMaxPages`: 1 GiB on desktop engines, 768 MiB on
- *  constrained ones, shared with the kernel heap and every other written
- *  file) — a file the filesystem cannot hold fails the write. 512 MiB admits a CD-era game archive (a SCUMM talkie is
- *  roughly 150-500 MB zipped) while staying well under that ceiling. */
-const INGEST_MAX_BYTES_CEILING = 512 * 1024 * 1024;
 
 const RUNTIME_FEATURES = new Set<DemoRuntimeFeature>([
   "framebuffer",
@@ -629,10 +613,9 @@ const INIT_TARGET_RE = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
 
 /**
  * An absolute, normalized, NUL-free guest path — no `.`/`..` segments, no
- * trailing slash tricks. Shared by `init.program`/`init.cwd` and
- * `ingest.targetPath`: both name a fixed location inside the image, and a
- * traversal in either would escape the author's intended target even though
- * no user input reaches either field.
+ * trailing slash tricks. Shared by `init.program` and `init.cwd`: both name a
+ * fixed location inside the image, and a traversal in either would escape the
+ * author's intended target even though no user input reaches either field.
  */
 function validateAbsoluteNormalizedPath(path: string, field: string): void {
   if (!path.startsWith("/")) {
@@ -958,59 +941,27 @@ export function resolveDemoDisplay(
     : normalizeDisplay(profile.display, `profiles.${profileId}.display`);
 }
 
-function normalizeIngest(value: unknown, field: string): DemoIngestConfig {
+function normalizeExchange(value: unknown, field: string): DemoExchangeConfig {
   if (!isRecord(value)) {
     throw new Error(`${field} must be an object`);
   }
-
-  if (!Array.isArray(value.accept) || value.accept.length === 0) {
-    throw new Error(`${field}.accept must be a non-empty array`);
+  const exchange: DemoExchangeConfig = {};
+  if (value.label !== undefined) {
+    exchange.label = cappedString(value.label, `${field}.label`, 64);
   }
-  const accept = value.accept.map((ext, index) => {
-    const raw = requiredString(ext, `${field}.accept[${index}]`);
-    if (
-      !raw.startsWith(".")
-      || raw.length < 2
-      || raw.length > 32
-      || raw.includes("/")
-      || /\s/.test(raw)
-    ) {
-      throw new Error(`${field}.accept[${index}] must be an extension like ".nes"`);
+  if (value.accept !== undefined) {
+    if (!Array.isArray(value.accept) || value.accept.length === 0 || value.accept.length > 32) {
+      throw new Error(`${field}.accept must be a non-empty array of at most 32 extensions`);
     }
-    return raw.toLowerCase();
-  });
-  if (new Set(accept).size !== accept.length) {
-    throw new Error(`${field}.accept must not contain duplicate extensions`);
+    exchange.accept = value.accept.map((ext, index) => {
+      const raw = requiredString(ext, `${field}.accept[${index}]`);
+      if (!raw.startsWith(".") || raw.length < 2 || raw.length > 32 || raw.includes("/") || /\s/.test(raw)) {
+        throw new Error(`${field}.accept[${index}] must be an extension like ".wad"`);
+      }
+      return raw.toLowerCase();
+    });
   }
-
-  const targetPath = requiredString(value.targetPath, `${field}.targetPath`);
-  // The write goes to this exact path, so a traversal here would escape the
-  // author's intended destination even though no user input reaches it.
-  validateAbsoluteNormalizedPath(targetPath, `${field}.targetPath`);
-
-  const maxBytes = value.maxBytes;
-  if (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes <= 0) {
-    throw new Error(`${field}.maxBytes must be a positive integer`);
-  }
-  if (maxBytes > INGEST_MAX_BYTES_CEILING) {
-    throw new Error(
-      `${field}.maxBytes exceeds the ${INGEST_MAX_BYTES_CEILING}-byte ceiling`,
-    );
-  }
-
-  const ingest: DemoIngestConfig = { accept, targetPath, maxBytes };
-  if (typeof value.label === "string" && value.label.length > 0) {
-    ingest.label = value.label;
-  }
-  if (value.onLoad !== undefined) {
-    if (!isRecord(value.onLoad)) {
-      throw new Error(`${field}.onLoad must be an object`);
-    }
-    ingest.onLoad = {
-      restart: requiredString(value.onLoad.restart, `${field}.onLoad.restart`),
-    };
-  }
-  return ingest;
+  return exchange;
 }
 
 /**
@@ -1060,7 +1011,12 @@ function validateProfileFields(
     normalizeGuide(value.guide, `${field}.guide`);
   }
   if (value.ingest !== undefined) {
-    normalizeIngest(value.ingest, `${field}.ingest`);
+    // Refused, not ignored: a profile that still declares it would silently
+    // lose the file loading it describes.
+    throw new Error(retiredIngestMessage(`${field}.ingest`, `${field}.exchange`));
+  }
+  if (value.exchange !== undefined) {
+    normalizeExchange(value.exchange, `${field}.exchange`);
   }
   if (value.dockActions !== undefined) {
     normalizeDockActions(value.dockActions, `${field}.dockActions`);

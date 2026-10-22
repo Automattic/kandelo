@@ -3,9 +3,10 @@ import { absolutePointerValue } from "../../../host/src/input/input-source.js";
 import type {
   DemoDockActionConfig,
   DemoGuideConfig,
-  DemoIngestConfig,
+  DemoExchangeConfig,
 } from "./demo-config";
 import type { ClipboardPasteFailure } from "./clipboard-paste";
+import { ExchangeSession, type ExchangeLike } from "./exchange-session";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 import type { RemoteSegmentPeer } from "../../../host/src/networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "../../../host/src/networking/remote-segment-runtime";
@@ -233,6 +234,8 @@ export interface KernelLike {
   statVfsPath?(path: string): Promise<KernelVfsPathStat | null>;
   /** /dev/fb0 binding registry. Used by attachFramebuffer. */
   readonly framebuffers?: FramebufferRegistryLike;
+  /** Kandelo exchange: moving files into and out of the machine. */
+  readonly exchange?: ExchangeLike;
   /**
    * Per-pid wasm Memory accessor. Needed for mmap-based framebuffer
    * bindings; write-based bindings (fbDOOM) don't reach into this.
@@ -1109,14 +1112,20 @@ export interface KernelHost {
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void;
   getDemoGuide(): DemoGuideConfig | null;
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void;
-  /** File-ingest capability declared by the current VFS image, if any. */
-  getDemoIngest(): DemoIngestConfig | null;
-  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void;
+  /** Kandelo exchange presentation hints declared by the current VFS image. */
+  getDemoExchange(): DemoExchangeConfig | null;
+  subscribeDemoExchange(cb: (state: DemoExchangeConfig | null) => void): () => void;
   /** Dock buttons declared by the current VFS image; empty when none. */
   getDemoDockActions(): DemoDockActionConfig[];
   subscribeDemoDockActions(cb: (state: DemoDockActionConfig[]) => void): () => void;
   /** Paste gestures that could not reach the guest (`clipboard` feature). */
   subscribeClipboardPasteFailures(cb: (failure: ClipboardPasteFailure) => void): () => void;
+  /**
+   * Kandelo exchange for the attached machine: its consumer state, offered
+   * batches and the output tray. Follows the kernel: empty until one is
+   * attached, and reset when it is replaced or detached.
+   */
+  getExchange(): ExchangeSession;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -1359,6 +1368,7 @@ const NOT_IMPLEMENTED = (m: string) =>
   );
 
 export class LiveKernelHost implements KernelHost {
+  private readonly exchange = new ExchangeSession();
   private _status: MachineStatus;
   private statusListeners = new ListenerSet<MachineStatus>();
 
@@ -1378,7 +1388,7 @@ export class LiveKernelHost implements KernelHost {
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
   private galleryListeners = new ListenerSet<void>();
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
-  private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
+  private demoExchangeListeners = new ListenerSet<DemoExchangeConfig | null>();
   private demoDockActionListeners = new ListenerSet<DemoDockActionConfig[]>();
   private clipboardPasteFailureListeners = new ListenerSet<ClipboardPasteFailure>();
   private audioStateListeners = new ListenerSet<MachineAudioState>();
@@ -1390,7 +1400,7 @@ export class LiveKernelHost implements KernelHost {
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
   private demoGuide: DemoGuideConfig | null = null;
-  private demoIngest: DemoIngestConfig | null = null;
+  private demoExchange: DemoExchangeConfig | null = null;
   private demoDockActions: DemoDockActionConfig[] = [];
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
@@ -1462,6 +1472,7 @@ export class LiveKernelHost implements KernelHost {
     this._descriptor = opts.descriptor ?? DEFAULT_DESCRIPTOR;
     this.presentation = opts.presentation ?? DEFAULT_PRESENTATION;
     this.kernel = undefined;
+    this.exchange.detach();
     this.shell = opts.shell;
     this.applyBootDescriptorImpl = opts.applyBootDescriptor;
     this.galleryItems = opts.galleryItems ?? [];
@@ -1492,6 +1503,7 @@ export class LiveKernelHost implements KernelHost {
     this.offAudioActivity = null;
     this.invalidatePtySessions(previousKernel);
     this.kernel = kernel;
+    this.exchange.attach(kernel.exchange);
     if (kernel.framebuffers) {
       this.offFramebufferAvailability = kernel.framebuffers.onChange(() => {
         this.refreshFramebufferAvailability();
@@ -1534,6 +1546,7 @@ export class LiveKernelHost implements KernelHost {
     this.offAudioActivity = null;
     this.invalidatePtySessions(detachedKernel);
     this.kernel = undefined;
+    this.exchange.detach();
     this.audioStateListeners.emit("unavailable");
     this.audioActivityListeners.emit(false);
     // The sizes describe the DETACHED kernel's panes. Left in place, the
@@ -1551,7 +1564,7 @@ export class LiveKernelHost implements KernelHost {
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
-    this.setDemoIngest(null);
+    this.setDemoExchange(null);
     this.setDemoDockActions([]);
   }
 
@@ -1599,15 +1612,19 @@ export class LiveKernelHost implements KernelHost {
     this.demoGuideListeners.emit(this.getDemoGuide());
   }
 
+  getExchange(): ExchangeSession {
+    return this.exchange;
+  }
+
   /** Report a paste gesture the guest never received (see clipboard-paste). */
   reportClipboardPasteFailure(failure: ClipboardPasteFailure): void {
     this.clipboardPasteFailureListeners.emit({ ...failure });
   }
 
-  /** Update the optional file-ingest capability exposed by the current image. */
-  setDemoIngest(ingest: DemoIngestConfig | null): void {
-    this.demoIngest = ingest ? structuredClone(ingest) : null;
-    this.demoIngestListeners.emit(this.getDemoIngest());
+  /** Update the exchange presentation hints exposed by the current image. */
+  setDemoExchange(hints: DemoExchangeConfig | null): void {
+    this.demoExchange = hints ? structuredClone(hints) : null;
+    this.demoExchangeListeners.emit(this.getDemoExchange());
   }
 
   /** Update the dock buttons exposed by the current image. */
@@ -1941,11 +1958,12 @@ export class LiveKernelHost implements KernelHost {
     this.offAudioActivity = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
-    this.setDemoIngest(null);
+    this.setDemoExchange(null);
     this.setDemoDockActions([]);
     const kernel = this.kernel;
     this.invalidatePtySessions(kernel);
     this.kernel = undefined;
+    this.exchange.detach();
     await kernel?.destroy?.();
   }
 
@@ -3281,12 +3299,12 @@ export class LiveKernelHost implements KernelHost {
     return this.demoGuide ? structuredClone(this.demoGuide) : null;
   }
 
-  getDemoIngest(): DemoIngestConfig | null {
-    return this.demoIngest ? structuredClone(this.demoIngest) : null;
+  getDemoExchange(): DemoExchangeConfig | null {
+    return this.demoExchange ? structuredClone(this.demoExchange) : null;
   }
 
-  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void {
-    return this.demoIngestListeners.add(cb);
+  subscribeDemoExchange(cb: (state: DemoExchangeConfig | null) => void): () => void {
+    return this.demoExchangeListeners.add(cb);
   }
 
   getDemoDockActions(): DemoDockActionConfig[] {

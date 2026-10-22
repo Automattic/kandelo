@@ -16,6 +16,7 @@ import {
   resolveDemoInit,
   resolveDemoDisplay,
   resolveDemoPresentation,
+  resolveDemoExchange,
   type KandeloDemoConfig,
 } from "../src/demo-config";
 
@@ -482,7 +483,7 @@ describe("profile-only schema", () => {
     ["web", { requiredPorts: [8080] }],
     ["display", { minWidth: 640, minHeight: 480 }],
     ["assets", []],
-    ["ingest", { accept: [".wad"], targetPath: "/u.wad", maxBytes: 1 }],
+    ["exchange", { label: "Load WAD" }],
     ["guide", { title: "G" }],
     ["presentation", {
       bootPrimary: "syslog",
@@ -589,5 +590,50 @@ describe("virtual display scale", () => {
     expect(() => validateKandeloDemoConfig(withProfile({
       presentation: { ...presentation, displayScale },
     }))).toThrow("presentation.displayScale");
+  });
+});
+
+describe("image-owned exchange hints", () => {
+  it("resolves the picker's label and accept filter", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: { doom: { exchange: { label: "Load WAD", accept: [".WAD"] } } },
+    }));
+    expect(config).not.toBeNull();
+    validateKandeloDemoConfig(config!);
+    expect(resolveDemoExchange(config!, "doom")).toEqual({ label: "Load WAD", accept: [".wad"] });
+    expect(resolveDemoExchange(config!, "other")).toBeNull();
+  });
+
+  it("refuses the retired ingest block rather than ignoring it", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: {
+        selected: {},
+        unselected: { ingest: { accept: [".rom"], targetPath: "/game.rom", maxBytes: 1024 } },
+      },
+    }));
+    expect(config).not.toBeNull();
+    expect(() => validateKandeloDemoConfig(config!)).toThrow(
+      /profiles\.unselected\.ingest is no longer supported: files reach a machine through Kandelo exchange/,
+    );
+  });
+
+  it("refuses a retired top-level ingest block with the same explanation", () => {
+    expect(() => validateKandeloDemoConfig({
+      version: 1,
+      ingest: { accept: [".wad"], targetPath: "/u.wad", maxBytes: 1 },
+      profiles: { m: {} },
+    } as unknown as KandeloDemoConfig)).toThrow(
+      /^ingest is no longer supported: files reach a machine through Kandelo exchange/,
+    );
+  });
+
+  it("rejects malformed hints", () => {
+    const config = parseKandeloDemoConfig(JSON.stringify({
+      version: 1,
+      profiles: { x: { exchange: { accept: ["wad"] } } },
+    }));
+    expect(() => validateKandeloDemoConfig(config!)).toThrow('profiles.x.exchange.accept[0] must be an extension like ".wad"');
   });
 });

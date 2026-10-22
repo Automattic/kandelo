@@ -1,12 +1,13 @@
-// "Bring your own WAD" ingest for the fbDOOM demo — the on-main consumer that
-// exercises the reusable file-ingest capability end to end.
+// "Bring your own WAD" for the fbDOOM machine through Kandelo exchange: the
+// file reaches the machine's agent (kxchgd), whose doom rule stores it and
+// signals DOOM's launch wrapper, which restarts DOOM with it.
 //
 // The gate that matters is the /dev/fb0 handoff. fb0 is single-owner (EBUSY on
 // a second open), so a successful reload requires the running fbdoom to exit
 // and release the binding before the replacement can start. We prove that by
-// watching the bound pid change AND fbDOOM re-render — the new process was
-// launched by the author's restart command (`fbdoom -iwad /user.wad`), so a
-// fresh pid painting DOOM is evidence the upload landed and was loaded.
+// watching the bound pid change AND fbDOOM re-render: the wrapper starts a new
+// fbdoom only after the old one exited, so a fresh pid painting DOOM is
+// evidence the WAD landed and was loaded.
 //
 // The demo boots by fetching the shareware doom1.wad; this spec uploads a WAD
 // obtained the same way. If that fetch is unavailable the whole demo can't run,
@@ -30,7 +31,7 @@ let wadPath = "";
 let wadDir = "";
 
 test.beforeAll(async () => {
-  wadDir = mkdtempSync(join(tmpdir(), "kandelo-doom-ingest-"));
+  wadDir = mkdtempSync(join(tmpdir(), "kandelo-doom-exchange-"));
   wadPath = join(wadDir, "doom1.wad");
   try {
     const res = await fetch(DOOM_WAD_URL);
@@ -86,36 +87,38 @@ async function boundPid(page: Page): Promise<number | null> {
   return m ? Number(m[1]) : null;
 }
 
-async function awaitHandoffAndRender(page: Page, canvas: Locator): Promise<void> {
-  await page.getByTestId("fb-ingest-busy")
-    .waitFor({ state: "detached", timeout: 90_000 })
-    .catch(() => { /* handoff may finish before we look */ });
+/** The newest batch toast's status text. */
+function batchStatus(page: Page): Promise<string> {
+  return page.getByTestId("exchange-batch-status").last().textContent().then((text) => text ?? "");
+}
+
+async function awaitHandoffAndRender(page: Page, canvas: Locator, pidBefore: number | null): Promise<void> {
+  // The handler reports what it did, then the wrapper restarts DOOM.
+  await expect.poll(() => batchStatus(page), { timeout: 90_000 }).toMatch(/^loading .+\.wad$/);
+  await expect.poll(() => boundPid(page), { timeout: 90_000 }).not.toBe(pidBefore);
   await expect.poll(() => distinctColors(canvas), {
     timeout: 90_000,
     intervals: [1_000, 2_000, 3_000],
   }).toBeGreaterThan(4);
 }
 
-test("Load WAD button swaps the running IWAD and hands /dev/fb0 over", async ({ page }) => {
+test("Load WAD sends the WAD to the machine, which restarts DOOM with it", async ({ page }) => {
   test.setTimeout(300_000);
   const canvas = await bootDoomOrSkip(page);
   const pidBefore = await boundPid(page);
   expect(pidBefore).not.toBeNull();
 
-  const button = page.getByTestId("fb-ingest-button");
+  // The image's exchange hint labels the button; the guest decides the rest.
+  const button = page.getByTestId("fb-exchange-button");
   await expect(button).toBeVisible();
   await expect(button).toHaveText(/load wad/i);
 
-  await page.getByTestId("fb-ingest-input").setInputFiles(wadPath);
-  await awaitHandoffAndRender(page, canvas);
-
-  // A new process owns fb0 and is rendering. fbdoom only starts via the restart
-  // command (`-iwad /user.wad`), so the old instance must have exited and
-  // released fb0 — otherwise the relaunch would have hit EBUSY.
-  const pidAfter = await boundPid(page);
-  expect(pidAfter).not.toBeNull();
-  expect(pidAfter).not.toBe(pidBefore);
-  await expect(page.getByTestId("fb-ingest-error")).toHaveCount(0);
+  await page.getByTestId("fb-exchange-input").setInputFiles(wadPath);
+  // A new process owns fb0 and is rendering. The wrapper starts it only after
+  // the old instance exited and released fb0, otherwise it would hit EBUSY.
+  await awaitHandoffAndRender(page, canvas, pidBefore);
+  expect(await boundPid(page)).not.toBeNull();
+  await expect(page.locator('[data-testid="exchange-batch-toast"][data-phase="failed"]')).toHaveCount(0);
 });
 
 test("dropping a WAD on the framebuffer loads it", async ({ page }) => {
@@ -137,38 +140,34 @@ test("dropping a WAD on the framebuffer loads it", async ({ page }) => {
 
   const stage = page.locator(".kframebuffer-surface").first();
   await stage.dispatchEvent("dragover", { dataTransfer });
-  await expect(page.getByTestId("fb-dropzone")).toBeVisible();
+  await expect(page.getByTestId("fb-exchange-dropzone")).toBeVisible();
 
   await stage.dispatchEvent("drop", { dataTransfer });
-  await awaitHandoffAndRender(page, canvas);
-  expect(await boundPid(page)).not.toBe(pidBefore);
+  await awaitHandoffAndRender(page, canvas, pidBefore);
 });
 
-test("a rejected file fails visibly and leaves the running WAD alone", async ({ page }) => {
+test("a file the doom rule does not take is saved and leaves the running WAD alone", async ({ page }) => {
   test.setTimeout(300_000);
   await bootDoomOrSkip(page);
   const pidBefore = await boundPid(page);
-  const error = page.getByTestId("fb-ingest-error");
 
-  // Wrong extension — rejected before anything is written.
-  await page.getByTestId("fb-ingest-input").setInputFiles({
+  // Wrong extension: the catch-all saves it.
+  await page.getByTestId("fb-exchange-input").setInputFiles({
     name: "notes.txt",
     mimeType: "text/plain",
     buffer: Buffer.from("not a wad"),
   });
-  await expect(error).toBeVisible();
-  await expect(error).toContainText(".wad");
+  await expect.poll(() => batchStatus(page), { timeout: 60_000 }).toBe("saved to ~/Downloads/notes.txt");
 
-  // Over the 32 MiB cap — rejected before anything is written.
-  await page.getByTestId("fb-ingest-input").setInputFiles({
+  // Over the doom rule's 32 MiB limit: saved too, never loaded.
+  await page.getByTestId("fb-exchange-input").setInputFiles({
     name: "huge.wad",
     mimeType: "application/octet-stream",
     buffer: Buffer.alloc(33 * 1024 * 1024, 1),
   });
-  await expect(error).toBeVisible();
-  await expect(error).toContainText(/exceeds/i);
+  await expect.poll(() => batchStatus(page), { timeout: 90_000 }).toBe("saved to ~/Downloads/huge.wad");
 
-  // The demo was never signalled: same pid, still up.
+  // DOOM was never signalled: same pid, still up.
   expect(await boundPid(page)).toBe(pidBefore);
 });
 

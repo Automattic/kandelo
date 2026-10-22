@@ -101,6 +101,8 @@ export type DockLayoutState = {
 };
 
 export const Dock: React.FC<{
+  /** Open the file picker that sends files to the machine (Kandelo exchange). */
+  onSendFiles?: () => void;
   networkPhase?: SessionPhase;
   onOpenNetwork?: () => void;
   activePane: DockPaneId | null;
@@ -130,6 +132,7 @@ export const Dock: React.FC<{
   onHeightChange: (height: number) => void;
   onLayoutChange?: (layout: DockLayoutState) => void;
 }> = ({
+  onSendFiles,
   networkPhase = "offline",
   onOpenNetwork,
   activePane,
@@ -414,6 +417,21 @@ export const Dock: React.FC<{
               {viewControls}
             </div>
             <div className="kdock-toggle-pill" aria-label="Dock layout controls">
+              {onSendFiles && (
+                <button
+                  type="button"
+                  className="kdock-header-btn kexchange-send-button"
+                  aria-label="Send files to this machine"
+                  title="Send files to this machine"
+                  data-testid="exchange-send-files"
+                  onClick={onSendFiles}
+                >
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 11V3M5 6l3-3 3 3" />
+                    <path d="M3 10v2.5h10V10" />
+                  </svg>
+                </button>
+              )}
               {onOpenNetwork && (
                 <button
                   type="button"

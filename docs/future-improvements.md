@@ -195,8 +195,8 @@ existing Linux-VT guests working and preserve Node/browser parity.
 ## Browser
 
 ### Investigate the WebKit fbDOOM WAD-drop failure
-`apps/browser-demos/test/kandelo-doom-ingest.spec.ts` "dropping a WAD on the
-framebuffer loads it" failed in WebKit in three of three local runs on
+The test that is now `apps/browser-demos/test/kandelo-doom-exchange.spec.ts`
+"dropping a WAD on the framebuffer loads it" failed in WebKit in three of three local runs on
 2026-09-28, each at a different step: the 90 s wait for the restarted
 fbDOOM to render, and a locator that never became visible. The drop itself
 works — the screenshot shows the shell running
@@ -219,6 +219,12 @@ On 2026-10-21 the test passed in local Playwright WebKit on main at
 rather than at reap (6 of 6). Neither run reproduced the stall, so the
 cause remains unknown; the entry stays open until a failing run can be
 captured as described above.
+
+On 2026-10-22 profile `ingest` was replaced by Kandelo exchange: the drop
+now reaches the machine's agent, and DOOM's launch wrapper restarts fbDOOM
+on SIGHUP instead of the browser typing a restart command. Re-run the drop
+test in WebKit against the new path; if it does not stall, close this
+entry.
 
 ### Replace the constrained public CORS proxy with an owned relay
 
