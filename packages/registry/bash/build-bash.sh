@@ -41,6 +41,12 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
+WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
+if [ -z "$WASM_OPT" ]; then
+    echo "ERROR: wasm-opt not found. Install binaryen." >&2
+    exit 1
+fi
+
 export WASM_POSIX_SYSROOT="$SYSROOT"
 export WASM_POSIX_GLUE_DIR="$REPO_ROOT/libc/glue"
 
@@ -409,8 +415,17 @@ cp "$BASH_BIN" "$BIN_DIR/bash.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/bash.wasm" | tr -d ' ')
 echo "==> Pre-instrumentation size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# Preserve the SDK's compiler facts until installation instruments the link.
-# The instrumenter owns post-instrumentation optimization.
+# Measured legacy exception: the facts-preserving variants did not meet the
+# launch/fork no-regression requirement. Retain the conservative pipeline
+# described in docs/fork-instrumentation.md until that migration is validated.
+echo "==> Optimizing bash with wasm-opt -O2..."
+"$WASM_OPT" -O2 "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm"
+
+# Instrument this deliberate conservative input explicitly. The shared
+# installer continues to require facts when it receives a raw executable.
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$BIN_DIR/bash.wasm" \
+    -o "$BIN_DIR/bash.wasm.instr"
+mv -f "$BIN_DIR/bash.wasm.instr" "$BIN_DIR/bash.wasm"
 
 # Install into local-binaries/ (resolver priority 1) and the resolver
 # scratch dir when invoked by xtask build-deps / archive-stage.

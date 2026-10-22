@@ -696,7 +696,10 @@ prepare_runtime_wasm() {
             return 1
         fi
         instrumented=$(mktemp "$WORK_DIR/erlang-fork-instrument.XXXXXX.wasm")
-        "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts "$artifact" -o "$instrumented"
+        # The Os trial grew after retaining runtime metadata. Request Oz only
+        # after facts are consumed to keep the emulator below its old size.
+        "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
+            "$artifact" -o "$instrumented" --post-optimize Oz
         chmod 0755 "$instrumented"
         mv "$instrumented" "$artifact"
     fi

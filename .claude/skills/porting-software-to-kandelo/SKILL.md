@@ -98,10 +98,13 @@ Do not run `wasm-opt`, strip names, or rewrite code between the SDK link and
 fork instrumentation. Let the SDK/instrumenter optimize. Direct recipe calls
 use `scripts/run-wasm-fork-instrument.sh --require-facts <input> -o <output>`;
 `install_local_binary` checks raw fork-using wasm32 executables automatically.
-The build must fail if `--sink-report` does not report `source\tfacts` where
-facts apply. Side modules and wasm64 use conservative coverage; necessary
+The wrapper/installer require `--sink-report` to report `source\tfacts` and
+nonzero bound-function coverage wherever facts apply. A name-only strip can
+leave the source as facts while preventing every binding. Side modules and
+wasm64 use conservative coverage; necessary
 pre-instrumentation rewrites such as Ruby GC root spilling need an explicit
-explanation. Remove names only afterwards, retaining runtime custom sections.
+explanation. The fork guide records the measured, deferred Bash/CPython/PHP
+migrations; new recipes use the facts-preserving order. Remove names only afterwards, retaining runtime custom sections.
 
 ## Feedback
 
