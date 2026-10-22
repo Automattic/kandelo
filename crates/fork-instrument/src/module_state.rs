@@ -1111,7 +1111,7 @@ fn inject_table_reconcile_guard(
     (guard, mutation_begin)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum TableOperation {
     Set(TableId),
     Fill(TableId),
@@ -1120,7 +1120,7 @@ enum TableOperation {
     Grow(TableId),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum TableConsumer {
     Get(TableId),
     Size(TableId),
@@ -1158,6 +1158,12 @@ fn rewrite_table_mutations(
             &mut consumers,
         );
     }
+    // Emission allocates function/type IDs. Randomized HashSet iteration
+    // would change the resulting binary between fresh CLI processes.
+    let mut operations: Vec<_> = operations.into_iter().collect();
+    operations.sort_unstable();
+    let mut consumers: Vec<_> = consumers.into_iter().collect();
+    consumers.sort_unstable();
     let helpers: HashMap<_, _> = operations
         .into_iter()
         .map(|operation| {
