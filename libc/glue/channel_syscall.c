@@ -1787,6 +1787,10 @@ restart_wait_syscall:
      * shadow stack, where cross-thread memory writes can corrupt it.
      * Reading from the global (a per-instance register) is immune. */
     {
+        /* [RUNTIME-WORKAROUND: JSC-BLOCKED-WAIT-GC-STARVATION] The wait is
+         * bounded so a JavaScriptCore VM can finish a collection it is
+         * suspected to have handed to this blocked thread; see the comment
+         * at kernel_heap_safepoint. */
         int wait_ret;
         int64_t bound = __atomic_load_n(&heap_safepoint_bound_ns,
                                         __ATOMIC_RELAXED);

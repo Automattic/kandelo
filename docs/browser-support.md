@@ -3058,22 +3058,22 @@ measured and do not depend on the hypothesis.
 A Kandelo process makes each syscall by writing its channel and waiting in
 `memory.atomic.wait32` until the kernel answers. The wait stays inside Wasm,
 so the worker does not return to JavaScript or its event loop while it
-waits. JavaScriptCore does not release a worker's heap access during that
-wait (reading `WaiterListManager::waitSyncImpl` suggests a
-`VMBlockingScope`, not a heap-access release). A garbage collection that
-began in the worker's VM before it blocked, for example because
-`memory.grow` reported more memory, needs that worker to stop. The suspected
-cause is that JavaScriptCore hands the collection back to the blocked
-thread, so it finishes only when that thread runs JavaScript that reaches
-an allocation slow path.
+waits. The suspected mechanism is that JavaScriptCore does not release a
+worker's heap access during that wait (reading
+`WaiterListManager::waitSyncImpl` suggests a `VMBlockingScope`, not a
+heap-access release). A garbage collection that began in the worker's VM
+before it blocked, for example because `memory.grow` reported more memory,
+needs that worker to stop. Under this hypothesis JavaScriptCore hands the
+collection back to the blocked thread, so it finishes only when that thread
+runs JavaScript that reaches an allocation slow path.
 
 Until then, under this hypothesis, the collection keeps every shared GC
-helper thread that joined it. JavaScriptCore has one small pool of helpers (six on the tested Mac) for
-all the page's workers, and helpers choose a collecting heap at random. A
-machine with a few idle processes (a shell at its prompt, a database
-waiting for a client, PHP-FPM waiting for requests) soon pins all of them.
-Other workers' concurrent collections would then depend on helpers that
-never return, which matches what was observed:
+helper thread that joined it. JavaScriptCore has one small pool of helpers
+(six on the tested Mac) for all the page's workers, and helpers choose a
+collecting heap at random. A machine with a few idle processes (a shell at
+its prompt, a database waiting for a client, PHP-FPM waiting for requests)
+would soon pin all of them. Other workers' concurrent collections would
+then depend on helpers that never return, which matches what was observed:
 
 - an exiting process worker cannot finish destroying its VM
   (`~VM` → `Heap::lastChanceToFinalize`), so its `WebAssembly.Memory` and
@@ -3101,15 +3101,15 @@ before its mitigation), and the WebKit cases of
 **Workaround.** On JavaScriptCore each syscall wait is bounded at 100 ms.
 After a timeout the glue calls the host import `kernel.kernel_heap_safepoint`
 (ABI 52), which allocates a small `ArrayBuffer` and keeps waiting on the same
-request. The allocation gives the VM an allocation slow path at which it
-finishes the handed-off collection and releases its helpers. A blocked
-process therefore holds a collection for at most one interval instead of
-indefinitely. The kernel's answer, and the syscall's blocking and errno
-semantics, are unchanged; the timeout is not visible to the program. V8
-and SpiderMonkey release a waiting thread's heap access, so on Chromium,
-Firefox, and Node the host answers the first timeout with an unbounded wait
-and the process waits exactly as before. The host import lives in
-`host/src/heap-safepoint.ts`; the bounded wait is in
+request. Under this hypothesis the allocation gives the VM an allocation
+slow path at which it finishes the handed-off collection and releases its
+helpers, so a blocked process is expected to hold a collection for at most
+one interval instead of indefinitely. The kernel's answer, and the
+syscall's blocking and errno semantics, are unchanged; the timeout is not
+visible to the program. V8 and SpiderMonkey are not known to need
+safepoints, so on Chromium, Firefox, and Node the host answers the first
+timeout with an unbounded wait and the process waits exactly as before. The
+host import lives in `host/src/heap-safepoint.ts`; the bounded wait is in
 `libc/glue/channel_syscall.c`.
 
 The cost on JavaScriptCore is one wakeup per blocked thread per 100 ms. A
