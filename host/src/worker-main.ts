@@ -4420,6 +4420,13 @@ export async function centralizedWorkerMain(
   }
 }
 
+// One decoder for every export name: a PHP binary has about 22,000 exports.
+// Constructing a TextDecoder per name made each process start create
+// thousands of DOM wrappers, and WebKit's page process crashed in
+// cacheWrapper<TextDecoder> during those bursts (docs/browser-support.md,
+// "WebKit page-process crash while creating TextDecoders").
+const EXPORT_NAME_DECODER = new TextDecoder();
+
 /**
  * Set up __channel_base in TLS so __do_syscall knows the channel offset.
  */
@@ -4524,7 +4531,7 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readLEB128(src, pos);
         pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen));
+        const name = EXPORT_NAME_DECODER.decode(src.subarray(pos, pos + nameLen));
         pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readLEB128(src, pos);
@@ -4868,7 +4875,7 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readLEB128(src, pos);
         pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen));
+        const name = EXPORT_NAME_DECODER.decode(src.subarray(pos, pos + nameLen));
         pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readLEB128(src, pos);

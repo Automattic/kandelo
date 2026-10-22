@@ -3109,13 +3109,37 @@ Remove the workaround when JavaScriptCore releases heap access while a
 thread is blocked in a synchronous atomic wait, or stops handing a
 collection to such a thread.
 
-A separate WebKit crash is not explained by this mechanism. The WebKit page
-process can crash with `SIGSEGV` in
-`HashMap<void*, Weak<JSObject>>::add` while a worker constructs a
-`TextDecoder` (`cacheWrapper<TextDecoder>`), with data-like faulting
-addresses. JavaScript cannot corrupt WebKit's native heap, so this is an
-engine defect; it was seen on the WordPress machines both before and after
-the PHP 8.5 upgrade. Its cause is unknown.
+### WebKit page-process crash while creating TextDecoders
+
+This is a WebKit engine defect with a mitigation in the host runtime. The
+WebKit page process could crash with `SIGSEGV` in
+`HashMap<void*, Weak<JSObject>>::add`, called from
+`cacheWrapper<TextDecoder>` while JavaScript constructed a `TextDecoder`.
+The faulting addresses were data-like (for example `0x0403020100000008`),
+so a table WebKit uses to track the worker's DOM wrappers had been
+corrupted. JavaScript cannot corrupt WebKit's native heap. In every crash
+report the faulting thread was the newest worker, handling its first
+message in interpreted code, which is a Kandelo process starting.
+
+The trigger was the burst of wrappers a process start created. The host
+parsed each program's export and import names with a new `TextDecoder` per
+name, in the kernel and again in the new process worker, and a PHP binary
+exports about 22,000 names. In Playwright's WebKit, booting the
+WordPress + MariaDB machine crashed in 5 of 32 runs, 8 of 32 without the
+disposable memory-allocation workers, and 8 of 32 with JavaScriptCore's
+concurrent collector off, so the crash is not the
+[garbage-collection deadlock](#javascriptcore-garbage-collection-and-blocked-workers)
+above. It also occurred before the PHP 8.5 upgrade. With one shared decoder
+for those names, 32 of 32 boots succeeded. A standalone page that starts
+nested workers which each construct 25,000 decoders did not crash, so the
+reduction to a WebKit test case is incomplete.
+
+**Mitigation.** Wasm name parsing (`host/src/constants.ts`) and the
+thread-patching export scans (`host/src/worker-main.ts`) share one
+`TextDecoder`; `decode()` without `stream` keeps no state between calls.
+Other host code still constructs decoders per call. Constructing many
+wrappers is valid JavaScript, so a recurrence elsewhere is still a WebKit
+defect to report, not a reason to avoid `TextDecoder`.
 
 ### Compiler engine limits
 
