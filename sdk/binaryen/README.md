@@ -65,12 +65,14 @@ Offsets are relative to the beginning of the function's local declarations.
 The section precedes code. The patch updates offsets and function indices;
 original target IDs remain stable through the restricted inlining pass.
 
-After optimization, the bridge creates format-5 compiler facts with the
-prefix `#kandelo-preinline-targets-v1` after the normal format header. Synthetic
-type IDs encode target-set membership. This prefix disables lexical cleanup
-overrides: an absent caller-specific pair must not become an empty-handler
-restriction. The new facts receive the hash of the code they actually
-describe. All source facts and transport annotations are removed before
+After optimization, the bridge creates `resolved-1` facts with the header
+`#kandelo-calltypes\tresolved-1`. They reuse the source format's function,
+type and call records; synthetic type IDs encode target-set membership.
+The distinct format disables lexical cleanup overrides: an absent
+caller-specific pair must not become an empty-handler restriction. Older
+instrumenters reject this header and fall back conservatively. Resolved facts
+cannot be concatenated with source-object facts. The new facts receive the
+hash of the code they actually describe. All source facts and transport annotations are removed before
 shipping the instrumented output.
 
 ## Validation

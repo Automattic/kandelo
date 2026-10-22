@@ -14,7 +14,7 @@ use wasmparser::{CompositeInnerType, FuncType, Operator, Parser, Payload, TypeRe
 use crate::{Options, facts};
 
 pub const SECTION: &str = "metadata.code.kandelo.fork-targets";
-pub(crate) const RESOLVED_PREFIX: &str = "#kandelo-calltypes\t5\n#kandelo-preinline-targets-v1\n";
+pub(crate) const RESOLVED_PREFIX: &str = "#kandelo-calltypes\tresolved-1\n";
 
 #[derive(Debug)]
 struct Site {
@@ -378,7 +378,7 @@ fn read_annotations(input: &[u8], layout: &[Function]) -> Result<Annotations> {
     annotations.context("optimizer did not preserve fork-target annotations")
 }
 
-/// Build fresh format-5 facts describing the optimized code. Lexical cleanup
+/// Build fresh resolved-1 facts describing the optimized code. Lexical cleanup
 /// and jmp_buf identities are not carried; those analyses fall back rather
 /// than reusing facts about the old function scopes.
 pub fn finish(input: &[u8]) -> Result<Vec<u8>> {

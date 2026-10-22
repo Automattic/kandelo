@@ -190,6 +190,14 @@ pub(crate) fn split_chunks(text: &str) -> Result<Vec<&str>> {
 impl Side {
     /// Parse one chunk; its definitions become `self.chunks[last]`.
     pub(crate) fn parse_chunk(&mut self, text: &str, sigs: &mut Interner) -> Result<()> {
+        self.parse_chunk_version(text, sigs, FORMAT_VERSION)
+    }
+
+    pub(crate) fn parse_resolved_chunk(&mut self, text: &str, sigs: &mut Interner) -> Result<()> {
+        self.parse_chunk_version(text, sigs, "resolved-1")
+    }
+
+    fn parse_chunk_version(&mut self, text: &str, sigs: &mut Interner, version: &str) -> Result<()> {
         let side = self;
         let mut defs: Vec<(String, IrFn)> = vec![];
         let mut module = side.modules.id("?");
@@ -216,7 +224,7 @@ impl Side {
             match f[0] {
                 "#kandelo-calltypes" => {
                     ensure!(lineno == 0, "line {}: second header inside a chunk", lineno + 1);
-                    ensure!(f.get(1) == Some(&FORMAT_VERSION), "facts format {:?}, expected {FORMAT_VERSION}", f.get(1));
+                    ensure!(f.get(1) == Some(&version), "facts format {:?}, expected {version}", f.get(1));
                     header = true;
                 }
                 "M" => {

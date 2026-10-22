@@ -176,8 +176,18 @@ pub fn binding(module: &Module, section: &[u8]) -> Result<Vec<(u32, Vec<(usize, 
 
 fn parse(section: &[u8], sigs: &mut side::Interner, effective_types: bool) -> Result<side::Side> {
     let mut parsed = side::Side { effective_types, ..Default::default() };
+    let resolved = section.starts_with(crate::preopt::RESOLVED_PREFIX.as_bytes());
     codec::visit_chunks(section, |i, chunk| {
-        parsed.parse_chunk(chunk, sigs).with_context(|| format!("facts chunk {i}"))?;
+        if resolved {
+            anyhow::ensure!(i == 0, "resolved facts cannot be concatenated with object facts");
+            parsed.parse_resolved_chunk(chunk, sigs)?;
+        } else {
+            // The initial prototype used a format-5 comment to change cleanup
+            // semantics. Reject that experimental encoding; old readers could
+            // ignore the comment and apply an unsafe empty-handler override.
+            anyhow::ensure!(!chunk.lines().any(|line| line == "#kandelo-preinline-targets-v1"), "unversioned pre-inlining facts must be rebuilt");
+            parsed.parse_chunk(chunk, sigs).with_context(|| format!("facts chunk {i}"))?;
+        }
         Ok(())
     })?;
     Ok(parsed)
@@ -242,4 +252,29 @@ fn call_facts_with_cleanup(module: &Module, section: &[u8], opts: FactsOptions, 
         signature_mismatch: defined.iter().filter(|(f, _, _)| graph.view[*f as usize] == targets::View::Mismatch).count(),
     };
     Ok((facts, report))
+}
+
+#[cfg(test)]
+mod resolved_format_tests {
+    use super::*;
+
+    #[test]
+    fn source_facts_reader_rejects_the_resolved_format() {
+        let mut side = side::Side::default();
+        let mut sigs = side::Interner::default();
+        let error = side.parse_chunk(crate::preopt::RESOLVED_PREFIX, &mut sigs).unwrap_err();
+        assert!(error.to_string().contains("expected 5"));
+    }
+
+    #[test]
+    fn mixed_and_unversioned_resolved_facts_are_rejected() {
+        let source = "#kandelo-calltypes\t5\nM\tordinary.c\n";
+        for section in [
+            format!("{}{source}", crate::preopt::RESOLVED_PREFIX),
+            format!("{source}{}", crate::preopt::RESOLVED_PREFIX),
+            "#kandelo-calltypes\t5\n#kandelo-preinline-targets-v1\n".into(),
+        ] {
+            assert!(parse(section.as_bytes(), &mut side::Interner::default(), true).is_err());
+        }
+    }
 }
