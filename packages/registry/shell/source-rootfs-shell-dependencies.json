@@ -78,7 +78,7 @@
     },
     {
       "name": "php",
-      "version": "8.3.15",
+      "version": "8.5.12",
       "role": "lazy-file"
     },
     {

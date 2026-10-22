@@ -62,6 +62,7 @@ const RUN_TESTS_BASE_INI = [
   "disable_functions=",
   "output_buffering=Off",
   "error_reporting=32767",
+  "fatal_error_backtraces=0",
   "display_errors=1",
   "display_startup_errors=1",
   "log_errors=0",
@@ -552,7 +553,6 @@ function sharedExtensionPathsForPhp(phpPath: string): Map<string, string> {
   // side-module paths directly. They were resolved together with php.wasm and
   // icu.dat from one complete provenance tier.
   for (const name of [
-    "opcache",
     "curl",
     "phar",
     "zend_test",
@@ -562,12 +562,6 @@ function sharedExtensionPathsForPhp(phpPath: string): Map<string, string> {
     const resolved = PHP_ICU_RUNTIME?.closureHostPaths.get(`php/${name}.so`);
     if (resolved) out.set(name, resolved);
   }
-  const phpDir = dirname(phpPath);
-  const opcachePath =
-    process.env.PHP_OPCACHE_SO ??
-    PHP_ICU_RUNTIME?.closureHostPaths.get("php/opcache.so") ??
-    join(phpDir, "opcache.so");
-  if (opcachePath && existsSync(opcachePath)) out.set("opcache", opcachePath);
   return out;
 }
 
@@ -580,16 +574,18 @@ function loadExtensionIniArgs(
   let emittedExtensionDir = false;
   for (const extension of requiredExtensions) {
     const name = normalizeExtensionName(extension);
-    if (!availableSharedExtensions.has(name)) continue;
-    if (!emittedExtensionDir) {
+    // PHP 8.5 includes OPcache in the executable.
+    if (name !== "opcache" && !availableSharedExtensions.has(name)) continue;
+    if (name !== "opcache" && !emittedExtensionDir) {
       args.push("-d", `extension_dir=${guestExtensionDir}`);
       emittedExtensionDir = true;
     }
-    const directive =
-      name === "opcache" || name === "xdebug" ? "zend_extension" : "extension";
-    args.push("-d", `${directive}=${guestExtensionDir}/${name}.so`);
+    if (name !== "opcache") {
+      const directive = name === "xdebug" ? "zend_extension" : "extension";
+      args.push("-d", `${directive}=${guestExtensionDir}/${name}.so`);
+    }
     if (name === "opcache") {
-      // Kandelo has no cross-process MAP_SHARED yet, so the packaged extension
+      // Kandelo has no cross-process MAP_SHARED yet, so the built-in OPcache
       // rejects the normal SHM mode. Exercise its supported file-cache-only
       // boundary explicitly; individual PHPT --INI-- sections can still expose
       // unsupported SHM assumptions as real failures.
@@ -792,7 +788,7 @@ function unsupportedReason(test: PhptTest): string | null {
         opcacheConfiguration,
       );
     const fileCachePath =
-      /(?:^|[^\w])(?:-d)?opcache\.file_cache(?!_only)\s*=\s*[^\s'";]+/im.test(
+      /(?:^|[^\w])(?:-d)?opcache\.file_cache(?!_only)\s*=\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s'";]+)/im.test(
         opcacheConfiguration,
       );
     if (!fileCacheOnly || !fileCachePath) {

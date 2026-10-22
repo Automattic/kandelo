@@ -108,7 +108,7 @@ describe("WordPress benchmark measurement state", () => {
 
   it("points file-cache-only OPcache at the measurement directory", () => {
     const fileCachePath = "/benchmark-results/wordpress-opcache/http";
-    const args = buildPhpOpcacheArgs("/artifacts/php/opcache.so", fileCachePath);
+    const args = buildPhpOpcacheArgs(fileCachePath);
 
     expect(args).toContain(`opcache.file_cache=${fileCachePath}`);
     expect(args).toContain("opcache.file_cache_only=1");

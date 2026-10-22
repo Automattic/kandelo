@@ -3,7 +3,7 @@ name = "composer"
 version = "2.10.3"
 kernel_abi = 50
 arches = ["wasm32"]
-depends_on = ["php@8.3.15"]
+depends_on = ["php@8.5.12"]
 
 [source]
 url = "https://getcomposer.org/download/2.10.3/composer.phar"

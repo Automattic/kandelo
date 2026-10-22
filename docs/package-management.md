@@ -350,11 +350,14 @@ What each producer step does to keep its bytes a function of its inputs:
   second (`dynamic_members.revalidate`), which the file-cache loader never
   reads. The PHP recipe (`packages/registry/php/build-php.sh`, "Upstream
   reproducibility defect") clears those fields and the header's padding in
-  the serialized copy, so the prewarm is reproducible in both validation
-  modes. `host/test/opcache-prewarm.test.ts` ("writes byte-identical cache
+  the serialized copy and zeroes the file-cache persistence arena (matching
+  upstream's shared-memory path), so allocator padding cannot leak into
+  cache files. It also clears the unused user-function argument-default field
+  in the serialized copy; actual defaults remain in their bytecode. The
+  prewarm is reproducible in both validation modes. `host/test/opcache-prewarm.test.ts` ("writes byte-identical cache
   files when run again later") runs the prewarm twice, more than a second
   apart, and requires identical `.bin` files; it fails against the unpatched
-  `opcache.so`. Opcache also records each source file's mtime, and a runtime
+  OPcache implementation (built into PHP since 8.5). OPcache also records each source file's mtime, and a runtime
   with `opcache.validate_timestamps=1` (`nginx-php-vfs`) unlinks any entry
   whose recorded mtime differs from the shipped file's; "writes entries a
   timestamp-validating runtime accepts" in the same file covers that.
