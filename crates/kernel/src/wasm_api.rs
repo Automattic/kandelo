@@ -10598,9 +10598,6 @@ pub fn kernel_getresgid(
 /// getgroups — get supplementary group IDs.
 /// Returns count on success, negative errno on error.
 fn validate_getgroups_destination(size: u32, list_ptr: *mut u32) -> Result<(), Errno> {
-    if size as usize > crate::credentials::NGROUPS_MAX {
-        return Err(Errno::EINVAL);
-    }
     if size > 0 && list_ptr.is_null() {
         return Err(Errno::EFAULT);
     }
@@ -10614,12 +10611,13 @@ pub extern "C" fn kernel_getgroups(size: u32, list_ptr: *mut u32) -> i32 {
     }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let result = match syscalls::sys_getgroups(proc, size) {
-        // WHY: the shared descriptor lends exactly size * sizeof(gid_t).
-        // Count-only queries never name or inspect a destination.
+        // WHY: the host lends size * sizeof(gid_t), bounded to NGROUPS_MAX
+        // entries (no list is longer). Count-only queries never name or
+        // inspect a destination.
         Ok(groups) => match syscalls::copy_getgroups_to_destination(
             size,
             list_ptr,
-            size * size_of::<u32>() as u32,
+            size.min(crate::credentials::NGROUPS_MAX as u32) * size_of::<u32>() as u32,
             groups,
         ) {
             Ok(count) => count as i32,
@@ -10645,7 +10643,7 @@ mod getgroups_destination_tests {
     }
 
     #[test]
-    fn positive_request_requires_a_destination_and_bounded_count() {
+    fn positive_request_requires_a_destination_and_any_size_is_valid() {
         let pointer = core::ptr::NonNull::<u32>::dangling().as_ptr();
         assert_eq!(
             validate_getgroups_destination(1, core::ptr::null_mut()),
@@ -10656,7 +10654,7 @@ mod getgroups_destination_tests {
                 crate::credentials::NGROUPS_MAX as u32 + 1,
                 pointer,
             ),
-            Err(Errno::EINVAL)
+            Ok(())
         );
         assert_eq!(validate_getgroups_destination(1, pointer), Ok(()));
     }

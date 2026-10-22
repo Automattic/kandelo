@@ -1741,6 +1741,11 @@ Semantic changes:
   `setxattr` checks its flags (`EINVAL`), name (`ERANGE`), and size (`E2BIG`
   above 64 KiB) before the path, as Linux does. Get and list buffers are
   clamped to 64 KiB.
+- **`getgroups` with a large buffer.** A `gidsetsize` above `NGROUPS_MAX`
+  (32) now succeeds, as POSIX and Linux require; only a nonzero size
+  smaller than the group count is `EINVAL`. The host lends at most
+  `NGROUPS_MAX` entries of the caller's buffer, since no list is longer.
+  `setgroups` still refuses more than `NGROUPS_MAX` groups with `EINVAL`.
 
 ## The snapshot
 

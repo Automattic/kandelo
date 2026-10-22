@@ -121,6 +121,7 @@ host/test/gc-reference-state-fresh-worker.test.ts	prepared-product
 host/test/generated-abi.test.ts	source-only
 host/test/getaddrinfo.test.ts	prepared-product
 host/test/getdents-boundary.test.ts	prepared-product
+host/test/getgroups-large-buffer.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
