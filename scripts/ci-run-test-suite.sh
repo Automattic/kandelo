@@ -680,6 +680,17 @@ case "$suite" in
         (
             cd apps/browser-demos
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            # chromium is what driver.test.mjs drives; firefox and webkit are
+            # the other engines registry entries target. An engine that is
+            # missing would otherwise surface as "could not launch" verdicts.
+            if [ "$(uname -s)" = "Linux" ]; then
+                run_timed 30m "Install Playwright browsers" \
+                    env PATH="/usr/bin:/bin:$PATH" \
+                    npx playwright install --with-deps chromium firefox webkit
+            else
+                run_timed 30m "Install Playwright browsers" \
+                    npx playwright install chromium firefox webkit
+            fi
         )
         node --test tests/runtime-workarounds/driver.test.mjs
         cargo run -p xtask --target "$(host_target)" --quiet -- runtime-workarounds run

@@ -19,7 +19,8 @@
 
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -140,12 +141,47 @@ async function loadPlaywright() {
   return import(pathToFileURL(PLAYWRIGHT).href);
 }
 
-async function browserAttempt(engine, url, timeoutMs) {
+// TEMPORARY WORKAROUND: remove once the pinned Playwright bundles Firefox
+// 158 or later (mirrors the same workaround in
+// apps/browser-demos/playwright.config.ts).
+//
+// macOS 27 protects ~/Library/Application Support/Firefox (the installed
+// Firefox's app-data directory) behind Full Disk Access. Playwright's bundled
+// Firefox resolves that same directory despite -profile, so from a terminal
+// or agent without Full Disk Access every launch hangs or fails with "Could
+// not find profile folder". A fresh, empty CoreFoundation home keeps that
+// lookup inside a directory the driver owns. `env` replaces the child's
+// environment, hence the spread of process.env.
+// Upstream: https://github.com/microsoft/playwright/issues/42768 and
+// Mozilla's fix https://phabricator.services.mozilla.com/D326501.
+//
+// One such directory serves all attempts of a run. Firefox populates it with
+// macOS-protected folders (Downloads, Library/Application Support) that
+// neither this process nor `rm -rf` can delete without Full Disk Access, so
+// cleanup is best-effort: one empty directory per Firefox run may be left
+// for the OS to reap from the temp directory.
+function firefoxHome(name) {
+  return name === 'firefox' && process.platform === 'darwin'
+    ? mkdtemp(join(tmpdir(), 'kandelo-repro-firefox-home-'))
+    : Promise.resolve(null);
+}
+
+function launch(engine, home, timeoutMs) {
+  const options = { headless: true, timeout: timeoutMs };
+  if (home) options.env = { ...process.env, CFFIXED_USER_HOME: home };
+  return engine.launch(options);
+}
+
+async function browserAttempt(engine, name, home, url, timeoutMs) {
   let browser;
   try {
-    browser = await engine.launch({ headless: true });
+    browser = await launch(engine, home, timeoutMs);
   } catch (error) {
-    return { result: 'inconclusive', details: `could not launch ${engine.name()}: ${String(error.message).split('\n')[0]}`, version: null };
+    return {
+      result: 'inconclusive',
+      details: `could not launch ${name}: ${String(error.message).split('\n')[0]}`,
+      version: null,
+    };
   }
   const version = browser.version();
   let crashed = false;
@@ -197,21 +233,23 @@ async function runBrowserPage(opts) {
   const playwright = await loadPlaywright();
   const engine = playwright[opts.target];
   const server = await serve(opts.dir);
+  const home = await firefoxHome(opts.target);
   const url = `http://127.0.0.1:${server.address().port}/${encodeURI(opts.entry)}`;
   const results = [];
   const details = [];
   let version = null;
   try {
     for (let i = 0; i < opts.attempts; i++) {
-      const attempt = await browserAttempt(engine, url, opts.timeoutSeconds * 1000);
+      const attempt = await browserAttempt(engine, opts.target, home, url, opts.timeoutSeconds * 1000);
       results.push(attempt.result);
       details.push(attempt.details);
       version ??= attempt.version;
     }
   } finally {
     server.close();
+    if (home) await rm(home, { recursive: true, force: true }).catch(() => {});
   }
-  return { results, details, version: version ? `${opts.target} ${version}` : `${opts.target} unknown` };
+  return { results, details, version: version ?? 'unknown' };
 }
 
 // ----------------------------------------------------------------- script

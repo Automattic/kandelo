@@ -42,7 +42,8 @@ test('a page that reports reproduced is reproduced', () => {
   const r = page('reports-reproduced');
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.verdict.verdict, 'reproduced');
-  assert.match(r.verdict.version, /^chromium /);
+  // The version is the browser's own; the record's runtime field names the engine.
+  assert.match(r.verdict.version, /^\d+\.\d/);
   assert.ok(['macos', 'linux', 'windows'].includes(r.verdict.os), r.verdict.os);
   assert.match(r.verdict.details, /fixture says the defect is present/);
 });
@@ -73,6 +74,21 @@ test('a node script repro reports through REPRO-VERDICT', () => {
   assert.equal(r.verdict.verdict, 'reproduced');
   assert.match(r.verdict.version, /^v\d/);
   assert.match(r.verdict.details, /fixture script says the defect is present/);
+});
+
+test('a script that outlives the timeout is killed and inconclusive', () => {
+  const r = drive('sleeps', { kind: 'script', entry: 'repro.mjs', target: 'node', timeoutSeconds: 2 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.verdict.verdict, 'inconclusive');
+  assert.match(r.verdict.details, /no verdict within 2s/);
+  assert.ok(r.seconds < 15, `took ${r.seconds}s`);
+});
+
+test('a script that exits without a REPRO-VERDICT line is inconclusive', () => {
+  const r = drive('exits-silently', { kind: 'script', entry: 'repro.mjs', target: 'node' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.verdict.verdict, 'inconclusive');
+  assert.match(r.verdict.details, /without a REPRO-VERDICT line/);
 });
 
 test('aggregate', () => {

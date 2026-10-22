@@ -268,6 +268,43 @@ fn format_utc(secs: u64) -> String {
     )
 }
 
+/// What one `run` found, for the closing summary line.
+#[derive(Debug, Default, PartialEq)]
+struct Tally {
+    matched: usize,
+    changed: usize,
+    unrecorded: usize,
+    inconclusive: usize,
+    skipped: usize,
+}
+
+impl Tally {
+    fn line(&self) -> String {
+        let run = self.matched + self.changed + self.unrecorded + self.inconclusive;
+        format!(
+            "runtime-workarounds: {run} run: {} match, {} changed, {} unrecorded, \
+             {} inconclusive; {} skipped",
+            self.matched, self.changed, self.unrecorded, self.inconclusive, self.skipped
+        )
+    }
+}
+
+/// This run's records laid over the previous file: a record for the same
+/// (id, target, os) replaces the old one and the rest are kept.
+fn merge(previous: Option<LastRun>, records: Vec<LastRunRecord>, finished: String) -> LastRun {
+    let mut kept = previous.map_or_else(Vec::new, |p| p.records);
+    kept.retain(|old| {
+        !records
+            .iter()
+            .any(|new| (&new.id, &new.target, &new.os) == (&old.id, &old.target, &old.os))
+    });
+    kept.extend(records);
+    LastRun {
+        finished,
+        records: kept,
+    }
+}
+
 struct Options {
     ids: Vec<String>,
     targets: Vec<String>,
@@ -326,12 +363,18 @@ pub fn run(repo: &Path, args: &[String]) -> Result<(), String> {
     }
 
     let mut records = Vec::new();
-    let mut changed = 0;
+    let mut tally = Tally {
+        skipped: plan.skipped.len(),
+        ..Tally::default()
+    };
     for job in &plan.jobs {
         let record = drive(repo, job)?;
         let outcome = compare(job.entry, &record);
-        if matches!(outcome, Outcome::Changed(_)) {
-            changed += 1;
+        match outcome {
+            Outcome::Match => tally.matched += 1,
+            Outcome::Changed(_) => tally.changed += 1,
+            Outcome::Unrecorded => tally.unrecorded += 1,
+            Outcome::Inconclusive => tally.inconclusive += 1,
         }
         println!(
             "{} {} {} ({}): {} -- {}",
@@ -350,19 +393,23 @@ pub fn run(repo: &Path, args: &[String]) -> Result<(), String> {
     }
 
     let path = last_run_path(repo);
-    let last = LastRun {
-        finished: utc_now(),
-        records,
-    };
+    // A run narrowed by --id/--target must not discard other records. An
+    // unreadable previous file is replaced, as `list` already ignores it.
+    let previous = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<LastRun>(&text).ok());
+    let last = merge(previous, records, utc_now());
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let text = serde_json::to_string_pretty(&last).map_err(|e| format!("serialize run: {e}"))?;
     std::fs::write(&path, text + "\n").map_err(|e| format!("write {}: {e}", path.display()))?;
 
-    if changed > 0 {
+    println!("{}", tally.line());
+    if tally.changed > 0 {
         return Err(format!(
-            "{changed} runtime workaround(s) no longer match the registry; update their entry.toml"
+            "{} runtime workaround(s) no longer match the registry; update their entry.toml",
+            tally.changed
         ));
     }
     Ok(())
@@ -475,6 +522,66 @@ summary = "s"
         let e = entry(&observation("webkit", "18.2", "macos", true, "2026-10-01"));
         let r = record("webkit", "macos", "18.4", Verdict::Inconclusive);
         assert_eq!(compare(&e, &r), Outcome::Inconclusive);
+    }
+
+    #[test]
+    fn merge_replaces_matching_records_and_keeps_others() {
+        let rec = |id: &str, target: &str, os: &str, verdict: Verdict| LastRunRecord {
+            id: id.to_string(),
+            target: target.to_string(),
+            os: os.to_string(),
+            version: "v".to_string(),
+            verdict,
+            details: String::new(),
+        };
+        let previous = LastRun {
+            finished: "2026-10-01T00:00:00Z".to_string(),
+            records: vec![
+                rec("A", "webkit", "macos", Verdict::Reproduced),
+                rec("A", "firefox", "macos", Verdict::Reproduced),
+                rec("B", "webkit", "macos", Verdict::Reproduced),
+            ],
+        };
+        let merged = merge(
+            Some(previous),
+            vec![
+                rec("A", "webkit", "macos", Verdict::NotReproduced),
+                rec("A", "webkit", "linux", Verdict::Reproduced),
+            ],
+            "2026-10-22T00:00:00Z".to_string(),
+        );
+        assert_eq!(merged.finished, "2026-10-22T00:00:00Z");
+        let shown: Vec<_> = merged
+            .records
+            .iter()
+            .map(|r| (r.id.as_str(), r.target.as_str(), r.os.as_str(), r.verdict))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("A", "firefox", "macos", Verdict::Reproduced),
+                ("B", "webkit", "macos", Verdict::Reproduced),
+                ("A", "webkit", "macos", Verdict::NotReproduced),
+                ("A", "webkit", "linux", Verdict::Reproduced),
+            ]
+        );
+        assert_eq!(merge(None, Vec::new(), "t".to_string()).records, []);
+    }
+
+    #[test]
+    fn summary_line_counts_every_outcome() {
+        let tally = Tally {
+            matched: 3,
+            changed: 1,
+            unrecorded: 2,
+            inconclusive: 4,
+            skipped: 5,
+        };
+        assert_eq!(
+            tally.line(),
+            "runtime-workarounds: 10 run: 3 match, 1 changed, 2 unrecorded, 4 inconclusive; \
+             5 skipped"
+        );
     }
 
     #[test]
