@@ -53,7 +53,7 @@ import {
   resolveDemoDockActions,
   resolveDemoGuide,
   resolveDemoIdentity,
-  resolveDemoIngest,
+  resolveDemoExchange,
   resolveDemoInit,
   resolveDemoPresentation,
   type DemoInitConfig,
@@ -1355,9 +1355,9 @@ async function bootProfile(
   const presentation = presentationForWebMachine(machine.web, rawPresentation);
   host.setPresentation(presentation);
   host.setDemoGuide(resolveDemoGuide(imageConfig, profileId));
-  // Ingest is an image-owned capability. Absence is valid and must not be
-  // replaced with a package- or profile-name-specific UI promise.
-  host.setDemoIngest(resolveDemoIngest(imageConfig, profileId));
+  // Exchange hints are image-owned presentation (the picker's label and
+  // filter). Absence is valid: the machine still accepts dropped files.
+  host.setDemoExchange(resolveDemoExchange(imageConfig, profileId));
   host.setDemoDockActions(resolveDemoDockActions(imageConfig, profileId));
   // The one command this machine asked its login shell to run, if any. Read
   // once here: `init` is the single block that says what a machine runs.

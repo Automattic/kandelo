@@ -3,21 +3,19 @@
 // vblank pump. Stats slot layout is set by tickVblank in kernel-worker.ts.
 
 import * as React from "react";
-import { useDemoIngest, useKernelHost, usePresentation, useStatus } from "../kernel-host/react";
+import { useDemoExchange, useKernelHost, usePresentation, useStatus } from "../kernel-host/react";
 import {
   KMS_PRIMARY_CRTC,
   type KmsDisplayHandle,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import {
-  runDemoIngest,
-  stopDeviceOwner,
-  type IngestPhase,
-} from "../../../../../web-libs/kandelo-session/src/demo-ingest";
+import { stopDeviceOwner } from "../../../../../web-libs/kandelo-session/src/device-owner";
 import { describeClipboardPasteFailure } from "../../../../../web-libs/kandelo-session/src/clipboard-paste";
 import { injectChunkedMouseMotion, type MouseEventSink } from "@host/framebuffer/browser-controls";
 import { pointerButtons } from "@host/input/pointer-buttons";
-import { DemoSurfaceDockControls, IngestControl } from "./Framebuffer";
+import { DemoSurfaceDockControls } from "./Framebuffer";
 import { useDockActions } from "./DockActions";
+import { useExchangeDrop } from "../app/exchange-drop";
+import { ExchangeDropOverlay, ExchangePickControl } from "../app/ExchangeToasts";
 import { useFittedCanvasStyle } from "./canvasFit";
 
 // modeset.c hardcodes 1920×1080 (CANVAS_W/CANVAS_H). The kernel-side
@@ -77,11 +75,11 @@ const RENDERER_LABELS: Record<number, string> = { 1: "2d", 2: "webgl2", 3: "webg
 export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PRIMARY_CRTC, onDockControlsChange, onOwnerChange }) => {
   const host = useKernelHost();
   const status = useStatus();
+  // Dropping files on the display (KMS, or a Wayland desktop drawn on it)
+  // offers them to the machine through Kandelo exchange.
+  const exchangeDrop = useExchangeDrop(status === "running");
   const presentation = usePresentation();
-  const ingest = useDemoIngest();
-  const [ingestPhase, setIngestPhase] = React.useState<IngestPhase | null>(null);
-  const [ingestName, setIngestName] = React.useState<string | null>(null);
-  const [ingestError, setIngestError] = React.useState<string | null>(null);
+  const exchangeHints = useDemoExchange();
   // A paste gesture over the machine that never reached the guest (the
   // `clipboard` runtime feature). Shown until dismissed or replaced.
   const [pasteError, setPasteError] = React.useState<string | null>(null);
@@ -510,24 +508,6 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       (RENDERER_LABELS[stats.renderer] ? ` · ${RENDERER_LABELS[stats.renderer]}` : "")
     : "waiting for PAGE_FLIP";
 
-  const busy = ingestPhase !== null;
-  const ingestFile = React.useCallback(async (file: File) => {
-    if (!ingest || ingestPhase !== null) return;
-    setIngestError(null);
-    setIngestName(file.name);
-    try {
-      // No targetPid: an upload here adds files the running program reads on
-      // its next directory scan. The KMS program holds DRM master for the
-      // whole session, so stopping and relaunching it would cost the user
-      // their place for no gain.
-      await runDemoIngest(host, ingest, file, { onPhase: setIngestPhase });
-    } catch (err) {
-      setIngestError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setIngestPhase(null);
-      setIngestName(null);
-    }
-  }, [host, ingest, ingestPhase]);
 
   const dockControls = React.useMemo(() => (
     <DemoSurfaceDockControls
@@ -536,18 +516,11 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
       active={hasFrame}
     >
       {dockActions.controls}
-      {ingest && status === "running" && (
-        <IngestControl
-          accept={ingest.accept}
-          label={ingest.label ?? "Load file"}
-          busy={busy}
-          busyLabel={ingestName ? `loading ${ingestName}…` : "loading…"}
-          testIdPrefix="kms"
-          onFile={ingestFile}
-        />
+      {exchangeHints?.label && status === "running" && (
+        <ExchangePickControl label={exchangeHints.label} accept={exchangeHints.accept} testIdPrefix="kms" />
       )}
     </DemoSurfaceDockControls>
-  ), [busy, crtcId, dockActions.controls, hasFrame, host, ingest, ingestFile, ingestName, status, statusLabel]);
+  ), [crtcId, dockActions.controls, exchangeHints, hasFrame, status, statusLabel]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -557,7 +530,10 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
 
   return (
     <div className="kmodeset-surface" data-kms-owner-pid={stats.ownerPid ?? 0}
-      data-kms-present-count={stats.presentCount}>
+      data-kms-present-count={stats.presentCount}
+      data-drag-active={exchangeDrop.dragActive ? "true" : "false"}
+      {...exchangeDrop.handlers}>
+      <ExchangeDropOverlay active={exchangeDrop.dragActive} refused={exchangeDrop.refused} testId="kms-exchange-dropzone" />
       <div className="kmodeset-stage">
         {/* Always fit the selected guest mode, including cursor and input.
             Preferred render scale must never turn into clipped bitmap zoom. */}
@@ -594,30 +570,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
               onClick={() => setPointerLockError(null)}>×</button>
           </div>
         )}
-        {busy && (
-          <div className="kdemo-toast" data-testid="kms-ingest-busy">
-            {ingestName ? `loading ${ingestName}…` : "loading…"}
-          </div>
-        )}
-        {ingestError && !busy && (
-          <div
-            className="kdemo-toast"
-            data-error="true"
-            data-testid="kms-ingest-error"
-            role="alert"
-          >
-            {ingestError}
-            <button
-              type="button"
-              className="kdemo-toast-dismiss"
-              onClick={() => setIngestError(null)}
-              aria-label="Dismiss error"
-            >
-              ×
-            </button>
-          </div>
-        )}
-        {pasteError && !busy && !ingestError && (
+        {pasteError && (
           <div
             className="kdemo-toast"
             data-error="true"
