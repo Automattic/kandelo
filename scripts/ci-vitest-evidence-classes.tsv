@@ -400,6 +400,7 @@ host/test/worker-exit-trap.test.ts	source-only
 host/test/worker-kernel-import-contract.test.ts	source-only
 host/test/worker-quiescence.test.ts	source-only
 host/test/wpkdraw-smoke.test.ts	prepared-product
+host/test/xattr-unsupported.test.ts	prepared-product
 host/test/zip.test.ts	source-only
 packages/registry/bash/test/bash.test.ts	prepared-product
 packages/registry/bzip2/test/bzip2.test.ts	prepared-product

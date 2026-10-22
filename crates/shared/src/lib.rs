@@ -213,7 +213,9 @@ pub mod process_layout;
 ///     finish a collection that is suspected to be handed to a blocked thread
 ///     and to starve other workers' collections. docs/abi-versioning.md
 ///     ("ABI 52").
-pub const ABI_VERSION: u32 = 52;
+/// 53: the extended-attribute syscalls marshal their arguments and carry
+///     channel scalar contracts. docs/abi-versioning.md ("ABI 53") lists each.
+pub const ABI_VERSION: u32 = 53;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -266,6 +268,10 @@ pub mod platform_limits {
     pub const HOST_NAME_MAX_BYTES: usize = 256;
     /// Linux memfd name content is limited to 249 bytes, plus its NUL.
     pub const MEMFD_NAME_MAX_BYTES: usize = 250;
+    /// Linux XATTR_NAME_MAX (255 bytes of name) plus its terminating NUL.
+    pub const XATTR_NAME_MAX_BYTES: usize = 256;
+    /// Linux XATTR_SIZE_MAX: the largest value one xattr call accepts.
+    pub const XATTR_SIZE_MAX_BYTES: usize = 65_536;
     /// Largest one-entry argv/environment transport admitted by the host.
     ///
     /// This is not POSIX ARG_MAX; complete argv+env representation remains
@@ -3832,6 +3838,18 @@ pub mod abi {
         pub const SYS_SHMAT: u32 = 345;
         pub const SYS_SHMDT: u32 = 346;
         pub const SYS_SHMCTL: u32 = 347;
+        pub const SYS_FGETXATTR: u32 = 350;
+        pub const SYS_FLISTXATTR: u32 = 351;
+        pub const SYS_FREMOVEXATTR: u32 = 352;
+        pub const SYS_FSETXATTR: u32 = 353;
+        pub const SYS_GETXATTR: u32 = 354;
+        pub const SYS_LISTXATTR: u32 = 355;
+        pub const SYS_LGETXATTR: u32 = 356;
+        pub const SYS_LLISTXATTR: u32 = 357;
+        pub const SYS_LREMOVEXATTR: u32 = 358;
+        pub const SYS_LSETXATTR: u32 = 359;
+        pub const SYS_REMOVEXATTR: u32 = 360;
+        pub const SYS_SETXATTR: u32 = 361;
         pub const SYS_SIGNALFD: u32 = 377;
         pub const SYS_EPOLL_CREATE: u32 = 378;
         pub const SYS_EPOLL_WAIT: u32 = 379;
@@ -4173,6 +4191,54 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "Shmctl",
                 number: SYS_SHMCTL,
+            },
+            AbiSyscallNumber {
+                name: "Fgetxattr",
+                number: SYS_FGETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Flistxattr",
+                number: SYS_FLISTXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Fremovexattr",
+                number: SYS_FREMOVEXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Fsetxattr",
+                number: SYS_FSETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Getxattr",
+                number: SYS_GETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Listxattr",
+                number: SYS_LISTXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Lgetxattr",
+                number: SYS_LGETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Llistxattr",
+                number: SYS_LLISTXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Lremovexattr",
+                number: SYS_LREMOVEXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Lsetxattr",
+                number: SYS_LSETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Removexattr",
+                number: SYS_REMOVEXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Setxattr",
+                number: SYS_SETXATTR,
             },
             AbiSyscallNumber {
                 name: "Signalfd",

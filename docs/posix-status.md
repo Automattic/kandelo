@@ -372,9 +372,9 @@ proves and reserves only the 128-byte prefix the kernel can write.
 
 | Function | Status | Notes |
 |----------|--------|-------|
-| `getxattr()` / `setxattr()` / `removexattr()` / `listxattr()` | Stub | Returns ENOSYS. Extended attributes not supported by host filesystem abstraction. |
-| `lgetxattr()` / `lsetxattr()` / `lremovexattr()` / `llistxattr()` | Stub | Returns ENOSYS. |
-| `fgetxattr()` / `fsetxattr()` / `fremovexattr()` / `flistxattr()` | Stub | Returns ENOSYS. |
+| `getxattr()` / `setxattr()` / `removexattr()` / `listxattr()` | Unsupported | POSIX does not define extended attributes; Kandelo follows Linux for a filesystem without xattr support, and no Kandelo filesystem stores them yet. get, set, and remove fail with ENOTSUP; list succeeds with an empty list (0), which is true. Path errors come first, exactly as `stat` reports them (ENOENT, ENOTDIR, ELOOP, ENAMETOOLONG, EACCES). `setxattr` first rejects flags other than `XATTR_CREATE`/`XATTR_REPLACE` (EINVAL), an empty name (ERANGE), and a value over 64 KiB (E2BIG). A name over 255 bytes is ERANGE, reported by argument marshalling before the path is resolved. Get and list buffers are clamped to 64 KiB, as on Linux. |
+| `lgetxattr()` / `lsetxattr()` / `lremovexattr()` / `llistxattr()` | Unsupported | As above, without following a final symbolic link (errors as `lstat`). |
+| `fgetxattr()` / `fsetxattr()` / `fremovexattr()` / `flistxattr()` | Unsupported | As above on an open descriptor. A closed or `O_PATH` descriptor is EBADF. |
 
 ## Terminal / TTY
 
@@ -792,7 +792,7 @@ These features require SharedArrayBuffer (and cross-origin isolation headers in 
 - **Process stubs:** fork/vfork/clone (ENOSYS), execve/execveat, personality, unshare/setns
 - **Event stubs:** eventfd2, signalfd4, timerfd_*, inotify_*, fanotify_*
 - **IPC stubs:** SysV msg/sem/shm (12), POSIX mq (6), ipc multiplexer
-- **Extended attributes:** 12 xattr syscalls (all ENOSYS)
+- **Extended attributes:** 12 xattr syscalls (ENOTSUP for get/set/remove; empty list)
 - **Remaining:** memfd_create, membarrier, getcpu, splice/tee, POSIX timers, capget/capset, and more
 
 ---

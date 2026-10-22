@@ -71,6 +71,7 @@ pub mod vfsi_container;
 pub mod wait_queue;
 pub mod wait_shadow;
 pub mod wakeup;
+pub mod xattr;
 pub mod writeback_loss;
 pub mod zip;
 

@@ -2871,6 +2871,10 @@ fn render_ts_module() -> String {
         shared::platform_limits::NAME_MAX_BYTES
     ));
     out.push_str(&format!(
+        "export const XATTR_SIZE_MAX_BYTES = {} as const;\n",
+        shared::platform_limits::XATTR_SIZE_MAX_BYTES
+    ));
+    out.push_str(&format!(
         "export const PROCESS_METADATA_ENTRY_MAX_BYTES = {} as const;\n",
         shared::platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES
     ));

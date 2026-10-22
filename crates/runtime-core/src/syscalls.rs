@@ -125,7 +125,7 @@ pub fn current_tid_for_process(proc: &Process) -> u32 {
     }
 }
 
-fn require_io_fd(proc: &Process, fd: i32) -> Result<(), Errno> {
+pub(crate) fn require_io_fd(proc: &Process, fd: i32) -> Result<(), Errno> {
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.is_path_only() {
@@ -53774,5 +53774,165 @@ impl HostIO for RelSymlinkMock {
         let n = sys_poll(&mut proc, &mut host, core::slice::from_mut(&mut pollfd), 0).unwrap();
         assert_eq!(n, 0);
         assert_eq!(pollfd.revents & POLLOUT, 0);
+    }
+
+    // -- Extended attributes: no filesystem supports them yet --------------
+
+    mod xattr_unsupported {
+        use super::*;
+        use crate::xattr::{
+            sys_getxattr, sys_listxattr, sys_removexattr, sys_setxattr, XattrTarget,
+        };
+
+        fn path(path: &[u8]) -> XattrTarget<'_> {
+            XattrTarget::Path { path, follow: true }
+        }
+
+        #[test]
+        fn get_set_and_remove_report_enotsup_on_an_existing_file() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let target = path(b"/tmp/file");
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, target, b"user.a"),
+                Err(Errno::ENOTSUP)
+            );
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, path(b"/tmp/file"), b"user.a", 1, 0),
+                Err(Errno::ENOTSUP)
+            );
+            assert_eq!(
+                sys_removexattr(&mut proc, &mut host, path(b"/tmp/file"), b"user.a"),
+                Err(Errno::ENOTSUP)
+            );
+        }
+
+        #[test]
+        fn list_reports_an_empty_list_on_an_existing_file() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            assert_eq!(sys_listxattr(&mut proc, &mut host, path(b"/tmp/file")), Ok(0));
+        }
+
+        #[test]
+        fn a_missing_path_is_reported_before_lack_of_support() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            host.set_missing_path(b"/tmp/missing");
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/missing"), b"user.a"),
+                Err(Errno::ENOENT)
+            );
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, path(b"/tmp/missing"), b"user.a", 1, 0),
+                Err(Errno::ENOENT)
+            );
+            assert_eq!(
+                sys_listxattr(&mut proc, &mut host, path(b"/tmp/missing")),
+                Err(Errno::ENOENT)
+            );
+            assert_eq!(
+                sys_removexattr(&mut proc, &mut host, path(b"/tmp/missing"), b"user.a"),
+                Err(Errno::ENOENT)
+            );
+        }
+
+        #[test]
+        fn the_l_variants_do_not_follow_a_dangling_symlink() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            host.set_symlink(b"/tmp/dangling", b"/tmp/nowhere");
+            host.set_missing_path(b"/tmp/nowhere");
+            let no_follow = XattrTarget::Path {
+                path: b"/tmp/dangling",
+                follow: false,
+            };
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, no_follow, b"user.a"),
+                Err(Errno::ENOTSUP)
+            );
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/dangling"), b"user.a"),
+                Err(Errno::ENOENT)
+            );
+        }
+
+        #[test]
+        fn names_must_be_one_to_255_bytes() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let long = [b'a'; 256];
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), b""),
+                Err(Errno::ERANGE)
+            );
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), &long),
+                Err(Errno::ERANGE)
+            );
+            assert_eq!(
+                sys_removexattr(&mut proc, &mut host, path(b"/tmp/file"), b""),
+                Err(Errno::ERANGE)
+            );
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), &long[..255]),
+                Err(Errno::ENOTSUP)
+            );
+        }
+
+        #[test]
+        fn set_validates_flags_name_and_size_before_the_path() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            host.set_missing_path(b"/tmp/missing");
+            let missing = || path(b"/tmp/missing");
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, missing(), b"user.a", 1, 4),
+                Err(Errno::EINVAL)
+            );
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, missing(), b"", 1, 0),
+                Err(Errno::ERANGE)
+            );
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, missing(), b"user.a", 65_537, 0),
+                Err(Errno::E2BIG)
+            );
+            for flags in [0, 1, 2, 3] {
+                assert_eq!(
+                    sys_setxattr(&mut proc, &mut host, path(b"/tmp/file"), b"user.a", 65_536, flags),
+                    Err(Errno::ENOTSUP)
+                );
+            }
+        }
+
+        #[test]
+        fn descriptor_variants_reject_closed_and_path_only_descriptors() {
+            let mut proc = Process::new(81_100);
+            let mut host = MockHostIO::new();
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, XattrTarget::Fd(99), b"user.a"),
+                Err(Errno::EBADF)
+            );
+            assert_eq!(
+                sys_listxattr(&mut proc, &mut host, XattrTarget::Fd(99)),
+                Err(Errno::EBADF)
+            );
+            let path_only = sys_open(&mut proc, &mut host, b"/tmp/path-only", O_PATH, 0).unwrap();
+            assert_eq!(
+                sys_setxattr(&mut proc, &mut host, XattrTarget::Fd(path_only), b"user.a", 1, 0),
+                Err(Errno::EBADF)
+            );
+            let fd = sys_open(&mut proc, &mut host, b"/tmp/file", O_RDWR | O_CREAT, 0o644).unwrap();
+            assert_eq!(
+                sys_getxattr(&mut proc, &mut host, XattrTarget::Fd(fd), b"user.a"),
+                Err(Errno::ENOTSUP)
+            );
+            assert_eq!(sys_listxattr(&mut proc, &mut host, XattrTarget::Fd(fd)), Ok(0));
+            assert_eq!(
+                sys_removexattr(&mut proc, &mut host, XattrTarget::Fd(fd), b"user.a"),
+                Err(Errno::ENOTSUP)
+            );
+        }
     }
 }
