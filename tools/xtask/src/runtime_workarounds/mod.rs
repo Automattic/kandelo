@@ -7,6 +7,7 @@
 pub mod check;
 #[allow(dead_code)]
 pub mod entry;
+pub mod report;
 pub mod scan;
 
 use std::path::{Path, PathBuf};
@@ -22,11 +23,22 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     };
     match sub.as_str() {
         "check" => run_check(),
-        "list" | "run" => Err("not implemented yet".to_string()),
+        "list" => run_list(&args[1..]),
+        "run" => Err("not implemented yet".to_string()),
         other => Err(format!(
             "unknown runtime-workarounds subcommand {other:?} (expected check, list or run)"
         )),
     }
+}
+
+fn run_list(args: &[String]) -> Result<(), String> {
+    let json = match args {
+        [] => false,
+        [flag] if flag == "--json" => true,
+        _ => return Err("usage: xtask runtime-workarounds list [--json]".to_string()),
+    };
+    print!("{}", report::list(&crate::repo_root(), json)?);
+    Ok(())
 }
 
 fn run_check() -> Result<(), String> {
