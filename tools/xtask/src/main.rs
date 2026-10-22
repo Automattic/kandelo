@@ -57,6 +57,9 @@
 //!                         local kernel artifact (local-binaries/source-only-v1/
 //!                         kernel.wasm) declares a stale ABI version
 //!                         relative to the source tree. Backs `./run.sh test`.
+//!   runtime-workarounds   Registry of workarounds for outside runtime/toolchain defects:
+//!                         `check` keeps source tags and tests/runtime-workarounds entries
+//!                         consistent.
 //!   set-build-commit      Stamp `[build].commit = <sha>` into one
 //!                         `packages/registry/<name>/package.toml`. Used by the
 //!                         publish flow to record source provenance.
@@ -92,6 +95,7 @@ mod package_imports;
 mod recipe_tree_guard;
 mod remote_fetch;
 mod root_js_deps;
+mod runtime_workarounds;
 mod source_archive_cache;
 mod source_extract;
 mod stamp_abi_contract;
@@ -105,7 +109,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh"
+                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh, runtime-workarounds"
             );
             return ExitCode::from(2);
         }
@@ -135,6 +139,7 @@ fn main() -> ExitCode {
         #[cfg(unix)]
         "cache-gc" => cache_gc::run(rest),
         "stamp-abi-contract" => stamp_abi_contract::run(&rest),
+        "runtime-workarounds" => runtime_workarounds::run(rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
