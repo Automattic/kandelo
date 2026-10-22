@@ -1,541 +1,112 @@
 # Kandelo
 
-Kandelo is a POSIX-compatible multi-process kernel for WebAssembly that runs command-line tools, server stacks, and early graphical demos in the browser or Node.js with syscall-level compatibility.
+Kandelo is an operating system kernel for WebAssembly (Wasm). It runs Unix
+software — shells, editors, web servers, databases, and games — in a browser
+or Node.js. Programs use POSIX, the standard Unix interfaces for files,
+processes, pipes, signals, and sockets, to work together.
 
-**Live demo**: [Open Kandelo in the browser](https://kandelo.dev/)
+**[Try Kandelo in your browser](https://kandelo.dev/)** — pick a machine from
+its gallery. Nothing to install.
 
-**User guide**: [Read the browser and VFS guide](https://automattic.github.io/kandelo/guide/)
-
-***ATTENTION:*** This repo may contain .wasm binary builds in its history. In the future, history will likely be rewritten to remove these as they are offloaded to a better data store.
+Kandelo is experimental. POSIX conformance is the goal; some interfaces are
+incomplete or limited by WebAssembly and browser security rules.
 
 ## What runs on it
 
-Real, unmodified software compiled to WebAssembly:
+| Examples | What you can do |
+|----------|-----------------|
+| WordPress, nginx, PHP, MariaDB, SQLite | Run web apps and databases |
+| Python, Ruby, Perl | Run scripts and language interpreters |
+| SpiderMonkey-based Node.js runtime | Run JavaScript with a Node.js-compatible API |
+| Git, Vim, nano | Work with source code in a terminal |
+| bash, dash, GNU coreutils | Use shells, pipes, and familiar command-line tools |
+| Freeciv | Play with the native client and dedicated server |
+| DOOM, Quake | Play games with graphics and audio |
+| LÖVE | Run Lua games |
 
-| Software | Version | Notes |
-|----------|---------|-------|
-| nginx | 1.27 | Static serving, reverse proxy, FastCGI, multi-worker fork |
-| PHP | 8.4 | CLI + PHP-FPM, FastCGI protocol |
-| MariaDB | 10.5 | SQL database, Aria storage engine, 5 threads |
-| Redis | 7.2 | In-memory store, 3 background threads |
-| WordPress | 6.7 | Full CMS: nginx + PHP-FPM + SQLite or MariaDB |
-| CPython | 3.13 | REPL, script execution, stdlib |
-| Git | 2.47 | Core version control operations |
-| Vim | 9.1 | Full editor with ncurses terminal UI |
-| NetHack | 3.6.7 | Classic roguelike with curses UI |
-| fbDOOM | (maximevince) | id Software's DOOM via the kernel's `/dev/fb0` Linux fbdev surface |
-| [Freeciv](docs/freeciv.md) | 3.2.6 | Native SDL2 client and dedicated server; single player and TCP multiplayer through browser network sessions |
-| espeak-ng | 1.52 | Speech synthesis; plays through upstream pcaudiolib's OSS backend on `/dev/dsp` |
-| Perl | 5.40 | Interpreter with core modules |
-| Ruby | 3.3 | Interpreter with core stdlib |
-| SpiderMonkey | 140 ESR | JavaScript engine backing the Node.js-compatible runtime with Intl, SharedArrayBuffer, worker_threads, and npm package installs. |
-| GNU nano | 8.3 | Terminal text editor |
-| ELinks | 0.20 | Text-mode web browser: tables, tabs, HTTPS, and page JavaScript via QuickJS-NG. Carries two small portability patches (see `packages/registry/elinks/patches/`) |
-| dash | 0.5.12 | POSIX shell with pipes, redirects, job control |
-| GNU coreutils | 9.6 | 50+ utilities (ls, cat, sort, wc, etc.) |
-| GNU grep | 3.11 | Regular expression search |
-| GNU sed | 4.9 | Stream editor |
-| GNU make | 4.4 | Build automation |
-| curl | 8.11 | HTTP client with TLS |
-| GNU Netcat | 0.7.1 | TCP/UDP client and server utility |
-| wget | 1.25 | HTTP file retrieval |
-| gawk | 5.3 | Pattern scanning and processing |
-| GNU findutils | 4.10 | find, xargs |
-| GNU diffutils | 3.10 | diff, cmp |
-| tar | 1.35 | Archive utility |
-| gzip, bzip2, xz, zstd | — | Compression utilities |
-| less | 668 | Terminal pager |
-| bc | 1.07 | Calculator |
-| m4 | 1.4.19 | Macro processor |
-| file | 5.46 | File type identification |
+See [software examples and versions](packages/README.md) for more. These are
+upstream projects compiled through Kandelo's SDK; package recipes include
+portability patches where needed.
 
-All run in both Node.js and the browser with no source modifications.
+## Quick start
 
-## Architecture
-
-A single shared kernel serves all processes via channel IPC (SharedArrayBuffer + Atomics):
-
-```
-┌─────────────────────────────────────────┐
-│  User Programs (C → Wasm)               │
-│  Each in its own Web Worker             │
-│  Linked against musl libc + glue        │
-├─────────────────────────────────────────┤
-│  Kernel (Rust → Wasm)                   │
-│  One instance, all processes            │
-│  Syscalls, fd table, pipes, signals,    │
-│  sockets, PTY, memory management        │
-├─────────────────────────────────────────┤
-│  Host Runtime (TypeScript)              │
-│  Node.js: fs, net, crypto               │
-│  Browser: SharedArrayBuffer FS, fetch   │
-└─────────────────────────────────────────┘
-```
-
-- **Kernel** (Rust → Wasm) — 170+ syscall implementations. One instance manages all processes via a `ProcessTable`.
-- **Host** (TypeScript) — Loads kernel and user Wasm binaries, provides host I/O, bridges blocking syscalls to async APIs via `Atomics.waitAsync`.
-- **Glue** (C) — Syscall dispatcher compiled into every user program. Translates musl's `__syscall` ABI into channel writes that the kernel reads.
-
-See [docs/architecture.md](docs/architecture.md) for the full architecture reference.
-
-## What's Implemented
-
-170+ POSIX syscalls across these subsystems:
-
-| Subsystem | Highlights |
-|-----------|------------|
-| File I/O | open, close, read, write, seek, dup/dup2/dup3, pipe, readv/writev, pread/pwrite, sendfile, ftruncate, fsync, copy_file_range, splice, statx |
-| fcntl | Advisory locking (F_GETLK/F_SETLK/F_SETLKW), file flags, FD_CLOEXEC, cross-process locks |
-| Process | fork (`wasm-fork-instrument`), exec, posix_spawn, exit, getpid/getppid, process groups, sessions, waitpid |
-| Threads | clone with CLONE_VM\|CLONE_THREAD, per-thread TLS and channels |
-| Signals | kill, sigaction (SA_SIGINFO), sigprocmask, sigsuspend, sigaltstack, alarm, setitimer/getitimer, RT signals, sigqueue, sigtimedwait, signalfd |
-| Memory | mmap (MAP_ANONYMOUS + MAP_PRIVATE file + MAP_SHARED file), munmap, mremap, brk/sbrk, memfd_create |
-| Networking | AF_INET UDP/TCP sockets, local virtual networking between Kandelo machines, AF_UNIX sockets, bind/listen/accept/connect, send/recv, sendto/recvfrom, sendmsg/recvmsg, SCM_RIGHTS |
-| Directories | opendir/readdir, mkdir, rmdir, rename, symlink, readlink, chmod, chown, statvfs, all *at() variants |
-| Time | clock_gettime, gettimeofday, nanosleep, utimensat, timer_create/settime/gettime/delete |
-| Terminal | Full PTY support (/dev/ptmx + /dev/pts/N), line discipline, canonical/raw mode, 16 terminal ioctls |
-| Virtual devices | /dev/null, /dev/zero, /dev/urandom, /dev/full, /dev/fd/N, /dev/tty, /dev/ptmx, /dev/pts/* |
-| Procfs | /proc/self, /proc/\<pid\>/stat, status, cmdline, environ, maps, fd/\*, /proc/net/tcp, unix |
-| IPC | SysV msg queues, semaphores, shared memory; POSIX mqueues |
-| Event/Notification | eventfd, timerfd, signalfd |
-| Poll/Select | poll, ppoll, pselect6, epoll (host-intercepted in browser) |
-
-See [docs/posix-status.md](docs/posix-status.md) for the full syscall-by-syscall status.
-
-## Prerequisites
-
-- **Rust nightly** (for `build-std` and atomics) — pinned via `rust-toolchain.toml`
-- **LLVM 21+** with `clang` and `wasm-ld` (macOS: `brew install llvm`)
-- **Node.js** 24+
-
-Or use the Nix flake (see [Using Nix](#using-nix) below) and skip per-tool installs.
-
-## Using Nix
-
-A `flake.nix` provides a reproducible dev shell with the pinned Rust nightly,
-Nix's LLVM 21 package set, Node 24, minimal Erlang 28, and the
-autotools/cmake/binaryen/wabt stack the build scripts need. With
-[Nix](https://nixos.org/download.html) installed (flakes enabled —
-Determinate Systems Nix has them on by default):
+To build locally, you need **macOS or Linux**, **Git**, and
+**[Nix](https://nixos.org/download/) with flakes enabled**. Nix supplies the
+compilers, Node.js, and other build tools.
 
 ```bash
-scripts/dev-shell.sh bash              # interactive pure shell
-# or
-scripts/dev-shell.sh ./run.sh setup    # one-shot hermetic build
-```
-
-The `shellHook` exports `LLVM_BIN` / `LLVM_PREFIX` / `LLVM_VERSION` so the
-build scripts pick up the Nix-provided LLVM toolchain. It also exports the
-LLVM source paths used to rebuild the repo's libcxx package reproducibly.
-The first shell entry downloads the toolchain (~10–15 min); subsequent entries
-are near-instant.
-
-## Quick Start
-
-### Which command do I run?
-
-`./run.sh setup` is the front door — run it first and most of the time
-that is all you need:
-
-| Command | What it does |
-|---|---|
-| `./run.sh setup` | One command to get a working repo: provisions the musl sysroot/SDK and builds the fork-instrument tool, every package, the rootfs image, and the TypeScript host. Run this first, and again after pulling upstream changes. |
-| `./run.sh build <target>` | Build one thing: the kernel, the host, the rootfs, a package (e.g. `php`), or a VFS product (e.g. `shell-vfs`). |
-| `./run.sh rebuild <target>` | Force a rebuild of one target, bypassing the cache. |
-| `./run.sh clean <target>` | Remove a target's build outputs, plus any products that embed it. |
-| `./run.sh browser` | Build (fast, cached after `setup`) and serve the browser demos. |
-| `./run.sh local-build [--json]` | The packages-only primitive underneath `setup` and `browser`: builds just the package/VFS-product graph, optionally emitting machine-readable JSON. Reach for it directly for a focused package rebuild, scripted/CI output, or VFS-product iteration. |
-
-`./run.sh list` shows the full set of build targets, examples, and
-test suites. Under the hood, these subcommands delegate to a typed
-`cargo xtask` engine (`bootstrap`, `verify-fresh`, `clean`, and more);
-see [docs/agent-guidance/packages-and-builds.md](docs/agent-guidance/packages-and-builds.md)
-if you need to work at that layer directly.
-
-### Install published packages
-
-For consumers that do not need to rebuild Kandelo itself, the npm
-packages are the easiest entry point:
-
-```bash
-npm install wasm-posix-host wasm-posix-sdk
-```
-
-`wasm-posix-host` ships the compiled host runtime JS, worker entry
-points, `kernel.wasm`, and `rootfs.vfs.zst`. `wasm-posix-sdk` ships the
-compiler wrappers, musl sysroot, and host glue files used when linking
-your own C/C++ programs. You still need LLVM 21+ on `PATH` (or
-`WASM_POSIX_LLVM_DIR`) because the SDK wraps clang rather than
-bundling a native compiler.
-
-From a source checkout, `npm run pack:packages` builds npm tarballs
-after `./run.sh setup` has produced the sysroot, kernel, and rootfs
-artifacts.
-
-### 1. Set up the repository
-
-```bash
+git clone https://github.com/Automattic/kandelo.git
+cd kandelo
 git submodule update --init libc/musl sdk/rust/libc-upstream
-
-# Repository build: musl sysroot(s) and SDK, fork-instrument tool,
-# local-build engine (all packages), rootfs image, then the
-# TypeScript host
 ./run.sh setup
-```
-
-The Rust libc submodule supplies the pinned source used to build Rust
-packages, including librsvg; initializing musl alone is not enough for
-the full package graph.
-
-`./run.sh setup` is the single entry point for a working repo: it
-checks both musl sysroots against source/toolchain inputs and installed
-core-output receipts (rebuilding missing, stale, or altered cores from
-private source trees and refreshing graphics libraries),
-builds the fork-instrument host tool, resolves and builds every
-package in the local-build graph, produces the rootfs VFS image, and
-builds the TypeScript host. See [Which command do I
-run?](#which-command-do-i-run) above for the rest of the command
-surface.
-
-Library dependencies (zlib, openssl,
-sqlite, libcxx, etc.) and ported programs (vim, git, php, etc.) are resolved
-on demand by `cargo xtask build-deps resolve <name>`, which prefers
-the per-user cache, then falls back to the published binary release at
-[`binaries-abi-v<ABI_VERSION>`](https://github.com/Automattic/kandelo/releases),
-then to a source build via the per-library `build-<name>.sh`. See
-[docs/package-management.md](docs/package-management.md) for the
-full schema, resolution order, and release-archive contract.
-
-`./run.sh setup` already resolves every registry package this way, so a
-fresh checkout needs no separate fetch step.
-
-To source-build the current seven browser VFS products and their declared
-dependency graph, use the local DAG builder from the repository root:
-
-```bash
-./run.sh local-build
-```
-
-The command uses an active direnv/Nix development shell when one is already
-loaded; otherwise it enters the repository dev shell for you. It selects
-package and product inputs from their checked-in manifests, builds with up to
-16 concurrent jobs, reuses completed content-addressed nodes, and writes the
-validated SourceOnly projection to `local-binaries/source-only-v1`.
-
-The default output ends with a concise node, cache, build, and product
-summary. Use `./run.sh local-build --json` when automation needs the canonical
-machine-readable result.
-
-On PR branches, CI publishes temporary binaries to
-`pr-<PR_NUMBER>-staging`. Those archives remain available for release
-inspection through `./run.sh --pr-staging fetch`. The browser command does
-not consume them: it always builds or reuses the local SourceOnly graph.
-
-If you are editing a package's `package.toml` to iterate locally, the
-resolver detects the cache-key mismatch, logs a warning, and falls
-through to a source build via the package's `build-<name>.sh` —
-no flag needed. See [Iterating on a package
-locally](docs/package-management.md#iterating-on-a-package-locally).
-
-### 2. Install the SDK
-
-```bash
-cd sdk && npm link
-```
-
-This installs 8 CLI tools that wrap LLVM for the `wasm32-posix` target:
-
-| Tool | Purpose |
-|------|---------|
-| `wasm32posix-cc` | C compiler |
-| `wasm32posix-c++` | C++ compiler |
-| `wasm32posix-ar` | Static archive tool |
-| `wasm32posix-ranlib` | Archive index generator |
-| `wasm32posix-nm` | Symbol lister |
-| `wasm32posix-strip` | Symbol stripper (no-op) |
-| `wasm32posix-pkg-config` | pkg-config with sysroot awareness |
-| `wasm32posix-configure` | Autoconf configure wrapper |
-
-See [docs/sdk-guide.md](docs/sdk-guide.md) for detailed SDK usage.
-
-### 3. Compile and run a C program
-
-```bash
-wasm32posix-cc examples/hello.c -o hello.wasm
-npx tsx examples/run-example.ts hello
-```
-
-### 4. Try Kandelo in the browser
-
-```bash
-# Build/reuse the local SourceOnly products, then start the dev server
 ./run.sh browser
 ```
 
-`./run.sh browser` runs the same cached DAG as `./run.sh local-build`, points
-Vite at the validated `local-binaries/source-only-v1` projection, and never
-fetches a prebuilt browser binary selection. Subsequent launches reuse
-unchanged nodes.
+Open the URL printed by the server, normally <http://127.0.0.1:5401>.
+The first setup downloads tools and builds the supported software from source.
+Later runs reuse cached builds. Run `./run.sh setup` again after pulling changes.
 
-Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
+The development server supplies the browser isolation settings Kandelo needs.
+For custom hosting, see [Browser Support](docs/browser-support.md#directory-scoped-production-hosting).
 
-To build the deployable static site, run:
+To change Kandelo, run tests, or compile a C program, start with
+[Contributing](CONTRIBUTING.md).
 
-```bash
-./run.sh build-browser                      # site root, e.g. https://kandelo.dev/
-./run.sh build-browser --base /kandelo/ --out build/kandelo   # under a prefix
+## How it works
+
+```text
+Programs (C, C++, Rust → Wasm)
+    │ system calls through shared memory
+    ▼
+Kernel (Rust → Wasm, in a dedicated worker)
+    │
+    ▼
+Host runtime (TypeScript → browser or Node.js APIs)
 ```
 
-It runs the local build, produces the authenticated VFS asset group, runs the
-production Vite build, and checks the result. Upload the contents of the
-output directory (default `apps/browser-demos/dist/`) so it is served at
-exactly the chosen base.
+Each process runs in its own worker. One kernel manages the machine's
+processes, files, and communication between programs. Programs link against
+musl, a C library, and a small adapter that sends system calls to the kernel.
+The host runtime starts workers and connects the kernel to network, display,
+and other host APIs.
 
-WP Cloud can keep serving this static build with the portable PHP signalling
-endpoint (`--signalling-url /signalling/piplet.php`) and its chosen CORS proxy.
-Spacefast is an optional host: package the static build with its Functions
-proxy and database-backed signalling. An experimental separate-proxy layout
-uses an exact approved-Referer list. Either host can select that proxy
-with `--cors-proxy "${SPACEFAST_PROXY_ORIGIN}/?url="`, after setting
-`SPACEFAST_PROXY_ORIGIN` to its canonical origin. See the
-[Spacefast quickstart](#5-deploy-to-spacefast-optional) and
-[deployment recipes](apps/spacefast-cors-proxy/README.md#combined-kandelo-site)
-for both layouts, access requirements and the rate-limit policy.
+See the [architecture reference](docs/architecture.md) for the layers and
+system-call flow, and [fork instrumentation](docs/fork-instrumentation.md)
+for how Kandelo copies a running process.
 
-Production output is bound to the absolute prefix selected at build time. The
-equivalent manual steps, here building separate distributions for `/a/` and
-`/candidate-b/`, are:
+## Capabilities and limits
 
-```bash
-scripts/dev-shell.sh bash -lc '
-  set -euo pipefail
-  export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
-  export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
-  npx tsx scripts/build-local-vfs-asset-group.ts \
-    "$PWD/local-binaries/vfs-group" \
-    "$PWD/local-binaries/pages-vfs-products.private.json"
-  export KANDELO_PAGES_PRODUCT_MAP="$PWD/local-binaries/pages-vfs-products.private.json"
-  export KANDELO_PAGES_VFS_ASSET_GROUP_DIR="$PWD/local-binaries/vfs-group"
-  VITE_BASE=/a/ npm --prefix apps/browser-demos run build -- \
-    --outDir "$PWD/build/a" --emptyOutDir
-  VITE_BASE=/candidate-b/ npm --prefix apps/browser-demos run build -- \
-    --outDir "$PWD/build/candidate-b" --emptyOutDir
-'
-```
+Kandelo supports files and directories, processes and threads, pipes and
+signals, sockets, terminals, and graphics/audio devices. Programs can share
+one machine or communicate over virtual networks and browser WebRTC sessions.
 
-Host those output directories at exactly `/a/` and `/candidate-b/`; do not
-move a completed build to a different prefix. See
-[Directory-scoped production hosting](docs/browser-support.md#directory-scoped-production-hosting)
-for worker ownership, VFS relocation, and troubleshooting.
+Some system calls and flags are incomplete. WebAssembly also limits memory
+protection, shared memory between processes, and asynchronous thread
+cancellation. Browser internet traffic uses fetch/TLS bridges rather than
+arbitrary raw TCP/UDP sockets.
 
-The browser app routes cross-origin fetches through the service worker and
-defaults to the main WordPress Playground CORS proxy:
-`https://wordpress-playground-cors-proxy.net/?`. To test an alternate proxy in
-dev, preview, or production builds, set `VITE_CORS_PROXY_URL` before starting or
-building the browser app:
+See [POSIX status](docs/posix-status.md) for supported behavior and
+[WebAssembly limitations](docs/wasm-limitations.md) for platform boundaries.
+Browser APIs and file image formats can change: pin your Kandelo revision and
+rebuild programs and images when the binary interface (ABI) changes. See
+[API stability](docs-site/reference/api-stability.md).
 
-```bash
-cd apps/browser-demos
-VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
-```
+## Learn more
 
-Proxy prefixes ending in a bare `?` receive the raw target URL. Other prefix
-forms, such as `https://your-proxy.example/cors?url=`, receive a
-percent-encoded target URL. If you change the proxy while a service worker is
-already active, reload the page; clearing site data may be needed if the browser
-keeps an older service worker around.
-
-The application owns one complete proxy profile. The current profile relays
-only `Accept`, `Content-Type`, `git-protocol`, `Range`, `wp_blog`, and
-`wp_install`, by case-insensitive field name, at every configured proxy
-dispatch, and also sends `Range` as `X-Cors-Proxy-Range` (a workaround the
-default proxy needs because WP Cloud, which hosts it, strips `Range` before
-the request reaches its PHP). Unsupported
-fields may be omitted with a diagnostic only for anonymous bodyless GETs;
-lossy credentialed, body-bearing, or non-GET requests fail before dispatch.
-This is a browser transport boundary, not full HTTP-header fidelity. Direct
-browser requests and Node.js-host networking are not filtered by this profile.
-
-Browser Kandelo supports local loopback and virtual machine-to-machine UDP/TCP. External raw TCP/UDP sockets are still constrained by the browser sandbox and require fetch, service-worker, proxy, or future WebRTC-backed transports behind the POSIX socket layer.
-
-The browser UI uses pre-built **VFS images** - binary filesystem snapshots that load instantly at runtime. See [docs/browser-support.md](docs/browser-support.md#vfs-images) for details.
-
-### 5. Deploy to Spacefast (optional)
-
-The normal build remains suitable for WP Cloud. The reusable
-[`scripts/deploy-spacefast.mjs`](scripts/deploy-spacefast.mjs) script can
-build and host the app, CORS proxy and signalling together on Spacefast.
-Use Node 24 and the normal build prerequisites. For publication, separately
-install the [official Spacefast CLI](https://spacefast.com/docs/cli/),
-sign in with `sf auth login`, and choose an existing Space. See the
-[full deployment guide](apps/spacefast-cors-proxy/README.md#combined-kandelo-site)
-for first-Space setup.
-
-Run from the repository root:
-
-```bash
-# Set KANDELO_SPACE_URL to your selected Space's HTTPS origin, with no
-# trailing slash or path. The target is required; saved selections are ignored.
-node scripts/deploy-spacefast.mjs --space "$KANDELO_SPACE_URL" --publish
-```
-
-Omit `--publish` to prepare a bundle and print its exact publish command.
-Use `--dry-run` instead for the CLI's local checks without upload. These are
-alternative modes; each builds a fresh bundle. The script never installs
-tools, signs in, creates a Space or changes access settings.
-
-Publication updates that Space's live version and preserves its
-access settings. Both clients must have access to a private Space. The
-Space's database is supplied automatically; the services create their tables
-on first use. Reload existing tabs after deploying the new proxy protocol.
-See the full deployment guide for custom approved origins, platform limits
-and the experimental separate proxy.
-
-## Porting Software
-
-Build scripts for all ported software are in `packages/registry/`:
-
-```bash
-bash packages/registry/dash/build-dash.sh          # dash shell
-bash packages/registry/coreutils/build-coreutils.sh # GNU coreutils
-bash packages/registry/php/build-php.sh             # PHP 8.4
-bash packages/registry/redis/build-redis.sh         # Redis 7.2
-bash packages/registry/mariadb/build-mariadb.sh     # MariaDB 10.5
-bash packages/registry/cpython/build-cpython.sh     # CPython 3.13
-bash packages/registry/git/build-git.sh             # Git 2.47
-bash packages/registry/vim/build-vim.sh             # Vim 9.1
-bash packages/registry/perl/build-perl.sh           # Perl 5.40
-bash packages/registry/ruby/build-ruby.sh           # Ruby 3.3
-bash packages/registry/spidermonkey/build-spidermonkey.sh # SpiderMonkey JS + Node.js compat
-bash packages/registry/nano/build-nano.sh           # GNU nano 8.3
-cargo xtask build-deps resolve elinks               # ELinks 0.20 + QuickJS-NG (builds its library deps first)
-bash packages/registry/curl/build-curl.sh           # curl
-bash packages/registry/netcat/build-netcat.sh        # GNU Netcat 0.7.1
-bash packages/registry/make/build-make.sh           # GNU make
-bash packages/registry/espeak-ng/build-espeak-ng.sh # espeak-ng 1.52
-```
-
-See [docs/porting-guide.md](docs/porting-guide.md) for how to port your own software.
-
-## Running Tests
-
-```bash
-# Kernel unit tests (700 tests)
-cargo test -p kandelo --target aarch64-apple-darwin --lib
-
-# Host, package, and browser-adjacent integration tests
-cd host && npx vitest run
-
-# musl libc-test suite (0 unexpected failures)
-scripts/run-libc-tests.sh
-
-# Open POSIX test suite (0 failures)
-scripts/run-posix-tests.sh
-
-# Sortix test suite (4817+ pass, 0 failures)
-scripts/run-sortix-tests.sh --all
-```
-
-## Project Structure
-
-```
-crates/
-  shared/            Shared types (Errno, syscall numbers, flags, channel layout)
-  kernel/            Kernel implementation (syscalls, fd table, signals, pipes, sockets, PTY)
-host/
-  src/               TypeScript host runtime shared by Node.js and browser hosts
-    node-kernel-host.ts / node-kernel-worker-entry.ts
-                      Node.js host main-thread proxy and kernel worker entry
-    browser-kernel-host.ts / browser-kernel-worker-entry.ts
-                      Browser host main-thread proxy and kernel worker entry
-    worker-main.ts   Shared process-worker runtime used by both hosts
-    vfs/ networking/ framebuffer/
-                      Shared host services used by Node.js, browser, and tests
-  test/              Host/kernel runtime behavior tests
-  wasm/              Compiled Wasm binaries
-sdk/
-  src/bin/           CLI tool wrappers for LLVM cross-compilation
-  src/lib/           Toolchain discovery, compiler flags, arg parsing
-apps/
-  browser-demos/     Vite Kandelo UI app that consumes the browser host runtime
-web-libs/
-  kandelo-session/   Reusable Kandelo session/UI integration contracts
-packages/
-  registry/          Kandelo package manifests and build scripts
-    <name>/test/     Package-owned tests and fixtures
-  sets/              Named package sets for CI and product scenarios
-tests/
-  package-system/    Package registry and binary-fetching automation tests
-  libc/              musl libc-test suite and overlays
-  posix/             Open POSIX test suite
-  sortix/            Sortix os-test suite and overlays
-images/
-  rootfs/            Source tree for the base VFS image
-  vfs/scripts/       VFS image and archive builders
-tools/
-  mkrootfs/          Root filesystem image builder
-  xtask/             Rust package/release automation CLI
-libc/glue/
-  channel_syscall.c  Channel-based syscall dispatcher (compiled into every user program)
-  compiler_rt.c      Soft-float and 64-bit compiler runtime builtins
-libc/musl/                musl libc (git submodule)
-libc/musl-overlay/        Wasm32-specific architecture patches for musl
-tests/
-  libc/              musl libc-test submodule, overlays, and build output
-  posix/             Open POSIX test suite
-  sortix/            Sortix os-test submodule and build output
-scripts/             Build scripts and test runners
-examples/
-  *.c / *.wasm       Simple C example programs
-docs/
-  architecture.md    Architecture reference
-  sdk-guide.md       SDK usage guide
-  porting-guide.md   Guide to porting software and creating demos
-  browser-support.md Browser capabilities and limitations
-  posix-status.md    Full syscall-by-syscall status tracker
-  wasm-limitations.md  Fundamental WebAssembly platform limitations
-```
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [User Guide](https://automattic.github.io/kandelo/guide/) | Browser UI usage, custom browser apps, VFS images, publishing, and API stability notes |
-| [Architecture](docs/architecture.md) | Kernel design, syscall flow, multi-process model, memory layout |
-| [Repository Organization](docs/repository-organization.md) | Top-level ownership boundaries and CI-oriented path categories |
-| [SDK Guide](docs/sdk-guide.md) | Compiling programs, toolchain setup, autoconf/CMake integration |
-| [Porting Guide](docs/porting-guide.md) | How to port software and create package builds |
-| [Browser Support](docs/browser-support.md) | Browser architecture, capabilities, and limitations |
-| [Shareable Computer URLs](docs/plans/2026-05-11-shareable-computer-url-design.md) | Boot descriptor design for sharing computer topology, signed bases/packages, mounts, and overlays |
-| [Package Management](docs/package-management.md) | `packages/registry/<name>/package.toml` schema, resolver, release archives |
-| [Package Sources](docs/package-sources.md) | Reusable workflows and scripts for third-party Kandelo package repositories |
-| [Package Management — Future Work](docs/package-management-future-work.md) | Deferred items: WASI caching, semver, multi-arch `[binary]`, etc. |
-| [Binary Releases](docs/binary-releases.md) | `index.toml` ledger, package-system `.tar.zst` archive layout, fetch + verify flow |
-| [Profiling & Benchmarking](docs/profiling.md) | Syscall profiler, benchmark suite, cross-host comparison |
-| [POSIX Status](docs/posix-status.md) | Syscall-by-syscall implementation status |
-| [Wasm Limitations](docs/wasm-limitations.md) | Fundamental platform constraints |
-
-## How It Works
-
-1. **Compilation**: C source → clang (wasm32-unknown-unknown) → linked against musl `libc.a` + glue layer. The glue translates musl's `__syscall(number, args...)` into typed writes to a SharedArrayBuffer channel.
-
-2. **Loading**: The TypeScript host instantiates the kernel Wasm module with host I/O imports, then creates process workers that each get their own Wasm memory with a channel region.
-
-3. **Syscall execution**: When user code calls e.g. `open("/etc/hosts", O_RDONLY)`:
-   - musl `open()` → `__syscall(SYS_openat, AT_FDCWD, path, flags, mode)`
-   - Glue writes syscall number + args to the channel, then `Atomics.store(status, SYSCALL_READY)` + `Atomics.notify()`
-   - Kernel worker wakes, reads channel, dispatches to `sys_open()`, writes result back
-   - Glue resumes with the return value (fd or negative errno)
-
-4. **Multi-process**: `fork()` uses `wasm-fork-instrument` to snapshot and restore the Wasm call stack. The host copies process memory to a new Web Worker, and the child resumes from the fork point. `exec()` replaces the process image by terminating the old worker and starting a new one with fresh memory. Cross-process pipes, signals, and locks are coordinated through the shared kernel instance.
+| I want to… | Start here |
+|------------|------------|
+| Use the browser app | [User guide](https://automattic.github.io/kandelo/guide/) |
+| Build, change, or test Kandelo | [Contributing](CONTRIBUTING.md) |
+| Compile a program | [C/C++ SDK](docs/sdk-guide.md) · [Rust SDK](sdk/rust/README.md) |
+| Port software | [Porting Guide](docs/porting-guide.md) |
+| Host Kandelo | [Static hosting](docs/browser-support.md#directory-scoped-production-hosting) · [Optional Spacefast hosting](apps/spacefast-cors-proxy/README.md#combined-kandelo-site) |
+| Understand the internals | [Architecture](docs/architecture.md) · [Repository layout](docs/repository-organization.md) |
 
 ## License
 
-This project uses a split license model:
+- **GPL-2.0-or-later** for the platform: kernel, host runtime, SDK, build
+  scripts, and examples.
+- **MIT** for the runtime glue and musl overlay linked into user programs.
 
-- **GPL-2.0-or-later** — The platform (kernel, host runtime, SDK, build scripts, examples)
-- **MIT** — Runtime library components linked into user programs (libc/musl-overlay/ and libc/glue/)
-
-You can compile and run your own programs — including proprietary ones — without the GPL applying to your code. The runtime code linked into your program is MIT-licensed, and the kernel communicates via IPC, not linking.
-
-See [LICENSE](LICENSE) for full details.
+Ported packages keep their upstream licenses. See [LICENSE](LICENSE) for the
+full licensing model, including running your own proprietary programs.

@@ -1,21 +1,33 @@
 # Browser Support
 
-> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**. See [`CLAUDE.md`](../CLAUDE.md#two-hosts-browser-and-nodejs--dual-host-parity-is-load-bearing) for the hard requirements. PR #388 (brk-base) and PR #410 (worker exit message) both shipped one-sided fixes that left browser behavior broken for users; those are the failure modes this rule exists to prevent.
+> **Contributor note — dual-host parity is load-bearing.** The browser host is a peer of the Node.js host, not a follower. Any change touching host-runtime behavior MUST land symmetrically on both hosts, **in the same PR**, unless a documented platform boundary explains the difference. See [`CLAUDE.md`](../CLAUDE.md#host-runtime-contract) for the requirements.
 
 ## Overview
 
-Kandelo runs in modern browsers with SharedArrayBuffer support (Chrome 91+, Firefox 79+, Safari 16.4+). The shared-kernel architecture uses one kernel Wasm instance in a dedicated web worker, with each process running in a sub-worker.
+Kandelo uses SharedArrayBuffer, workers, `Atomics.waitAsync`, and WebAssembly
+features whose availability varies by browser engine and guest architecture.
+SharedArrayBuffer support alone does not establish support for a browser
+version. The engine-specific validation and limitations below distinguish
+wasm32, wasm64, and host capabilities. The shared-kernel architecture uses
+one kernel Wasm instance in a dedicated worker, with each process running in
+a sub-worker.
 
 ## Required HTTP Headers
 
-SharedArrayBuffer requires cross-origin isolation:
+SharedArrayBuffer requires a secure context (HTTPS, or a trustworthy local
+address such as `127.0.0.1`) and cross-origin isolation:
 
 ```
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 ```
 
-Without these headers, `SharedArrayBuffer` is undefined and the kernel cannot initialize.
+Without cross-origin isolation, `SharedArrayBuffer` is unavailable and the
+kernel cannot initialize. The Vite development server sends these headers.
+Production builds include an isolation service worker for hosts that cannot
+set them directly; its first activation may require a reload. An insecure
+remote HTTP origin cannot be repaired by that service worker. See
+[Directory-scoped production hosting](#directory-scoped-production-hosting).
 
 ## Architecture
 
@@ -76,7 +88,6 @@ Service Worker ──MessagePort──> Kernel Worker       │
   This engine boundary requires `blob:` in a deployment's `worker-src` Content
   Security Policy. Node, Chromium and Firefox retain direct construction and
   the same independent-address-space fork semantics.
-- **Kernel in dedicated worker**: Browser syscall notification remains event-driven through `Atomics.waitAsync`; it does not poll channels. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue, allowing syscall handling and worker messages to keep progressing together under multi-process bridge load. Node.js keeps its native/default batching unchanged.
 - **The kernel owns the filesystem** (`kernel.boot()`): the page hands `BrowserKernel` a pre-built VFS image, the main thread zstd-decodes it and transfers the bytes to the kernel worker, and the kernel parses it and serves `/` itself (`docs/architecture.md`, "Filesystem"); the scratch mounts and `/dev/shm` are an in-kernel tmpfs. The worker then exec()s `argv[0]` as the first user process. The main thread holds no filesystem and is not in the FS hot path. Service-supervised demos run dinit under the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. Single-program demos exec the language interpreter directly.
   Browser harnesses that must stage a transient file between process spawns use
   `BrowserKernel`'s worker RPC methods (`readFileSnapshotFromVfs`,
@@ -2392,8 +2403,10 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 Node, WordPress, and LAMP are optional demo profiles. Their VFS asset imports
 are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or
-resolver-managed artifact is absent, the browser reports that exact missing
-image and asks the user to run `./run.sh fetch`.
+resolver-managed artifact is absent, the browser reports that missing image.
+Some missing-artifact diagnostics still suggest the retired `./run.sh fetch`
+command. Use `./run.sh setup` or `./run.sh browser` to build/reuse the supported
+local graph; there is no `fetch` subcommand.
 
 Normal Vite development resolves exact optional binary URL globs through
 the verified binary resolver, including the implicit SourceOnly tree.
@@ -2422,10 +2435,12 @@ The standalone MariaDB demo and MariaDB test images run `mariadbd` as the
 therefore serialized as `101:101` with mode `0775`; `/tmp` remains a
 root-owned `01777` sticky directory.
 
-Generated VFS images are `.gitignore`d rather than committed. Package-backed
-images can be materialized from a current public package archive; the normal
-resolver falls back to the package's source recipe when needed. The `run.sh`
-script handles this automatically before starting the browser.
+Generated VFS images are `.gitignore`d rather than committed. The normal local
+build uses the supported package recipes and content-addressed source cache,
+then publishes a validated projection into `local-binaries/source-only-v1`.
+It has no remote prebuilt-binary fallback. `./run.sh browser` prepares that
+projection before starting Vite. Serving an image's lazy assets over HTTP at
+runtime is a separate operation from resolving a package for a local build.
 
 ### Building VFS images
 
@@ -2473,7 +2488,8 @@ extensions for Composer only; invoking `php` keeps its normal configuration.
 The archive and PHP executable remain deferred until used. For example,
 `composer dump-autoload --no-plugins --no-scripts` generates an autoloader for
 a local project. PHP-FPM is not installed by these declarations.
-`./run.sh --fetch-only build shell-vfs` refuses source fallback.
+Use `./run.sh build shell-vfs` for a focused rebuild. The former `--fetch-only`
+mode is not part of the current command surface.
 
 Shell-derived packages consume that resolved image as a declared dependency.
 Their builders preserve capacity, ABI identity, package-backed lazy transports
