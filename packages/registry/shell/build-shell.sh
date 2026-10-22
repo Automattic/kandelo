@@ -102,6 +102,8 @@ for dependency in "${EXTENDED_DEPENDENCIES[@]}"; do
 done
 
 ROOTFS="$ROOTFS_DIR/rootfs.vfs.zst"
+CA_BUNDLE="$WASM_POSIX_DEP_CA_CERTIFICATES_DIR/ca-certificates.zip"
+require_regular_file "CA bundle dependency output" "$CA_BUNDLE"
 BASH="$BASH_DIR/bash.wasm"
 # Thread eager programs/scripts and package data archives to the composer.
 # Other programs (fbdoom, modeset, sdl2, espeak-ng, the desktops' programs)
@@ -149,6 +151,7 @@ VFS="$BUILD_DIR/shell.vfs.zst"
 TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     "$NODE_BIN" "$TSX_CLI" "$COMPOSER" \
     --rootfs "$ROOTFS" \
+    --ca-bundle "$CA_BUNDLE" \
     --bash "$BASH" \
     --wldesktop "$WLDESKTOP" \
     --omarchydesktop "$OMARCHYDESKTOP" \

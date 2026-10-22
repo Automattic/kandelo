@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,10 +52,19 @@ describe("shell optional data on Node", () => {
     await host.init(kernel.buffer.slice(kernel.byteOffset, kernel.byteOffset + kernel.byteLength));
     try {
       expect(downloads).toEqual([]);
+      const caBytes = readFileSync(join(repoRoot, "images/rootfs/etc/ssl/cert.pem"));
+      const caDigest = createHash("sha256").update(caBytes).digest("hex");
+      for (const path of ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"]) {
+        expect(fs.isPathDeferred(path), path).toBe(true);
+      }
+      // The browser performs this ordinary truncating write before guest boot.
+      // It must neither download nor alter the other deferred trust-root file.
+      await host.writeFileToVfs("/etc/ssl/certs/ca-certificates.crt", new TextEncoder().encode("session root\n"));
+      expect(downloads).toEqual([]);
       for (let iteration = 0; iteration < 2; iteration++) {
         stdout = "";
         stderr = "";
-        const exit = await host.spawn(bash.buffer.slice(bash.byteOffset, bash.byteOffset + bash.byteLength) as ArrayBuffer, ["bash", "-c", command], {
+        const exit = await host.spawn(bash.buffer.slice(bash.byteOffset, bash.byteOffset + bash.byteLength) as ArrayBuffer, ["bash", "-c", command + "; sha256sum /etc/ssl/cert.pem; cat /etc/ssl/certs/ca-certificates.crt"], {
           env: ["PATH=/usr/bin:/bin", "HOME=/home/maker", "USER=maker", "TMPDIR=/tmp"],
           cwd: "/home/maker",
           uid: 1000,
@@ -65,6 +75,9 @@ describe("shell optional data on Node", () => {
         expect(stdout).toContain("speech-data-ok");
         expect(stdout).toContain("ASCII text");
         expect(stdout).toContain("Tokyo Night");
+        expect(stdout).toContain(caDigest);
+        expect(stdout).toContain("session root");
+        expect(downloads.filter(event => event.status === "complete" && event.url.endsWith("ca-certificates.zip"))).toHaveLength(1);
         for (const name of optionalData) {
           expect(downloads.filter(event => event.status === "complete" && event.url.endsWith(name)), name)
             .toHaveLength(1);

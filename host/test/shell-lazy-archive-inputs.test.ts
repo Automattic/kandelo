@@ -595,11 +595,10 @@ describe("declared shell lazy-archive inputs", () => {
       expect(
         fs.stat(`${spec.mountPrefix}${spec.requiredMember}`).size,
       ).toBe(`${spec.id} executable`.length);
-      // The prefix is compared WITHOUT stripping a trailing slash. Both
-      // producers normalize it now (`f20d51f4e`); the strip that used to be
-      // here was papering over a difference between them.
+      // Archive descriptors normalize trailing slashes, except for the root.
       expect(recordedArchives(fs)).toEqual([
-        { url: spec.archiveUrl, mountPrefix: spec.mountPrefix.replace(/\/$/, "") },
+        { url: spec.archiveUrl, mountPrefix: spec.mountPrefix === "/"
+          ? "/" : spec.mountPrefix.replace(/\/$/, "") },
       ]);
     },
   );
