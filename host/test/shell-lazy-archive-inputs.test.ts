@@ -25,6 +25,7 @@ import {
   loadDeclaredShellLazyArchive,
   registerDeclaredShellLazyArchive,
   SHELL_LAZY_ARCHIVE_SPECS,
+  SHELL_LAZY_DATA_ARCHIVE_SPECS,
   type ShellLazyArchiveSpec,
 } from "../../images/vfs/scripts/shell-lazy-archives";
 import { resolveVfsArtifact } from "../../images/vfs/scripts/shell-vfs-build";
@@ -567,7 +568,7 @@ describe("declared shell lazy-archive inputs", () => {
     );
   });
 
-  it.each(SHELL_LAZY_ARCHIVE_SPECS)(
+  it.each([...SHELL_LAZY_ARCHIVE_SPECS, ...SHELL_LAZY_DATA_ARCHIVE_SPECS])(
     "indexes and hashes the exact resolved $id bundle bytes once",
     (spec) => {
       const expected = archiveFor(spec);
@@ -598,7 +599,7 @@ describe("declared shell lazy-archive inputs", () => {
       // producers normalize it now (`f20d51f4e`); the strip that used to be
       // here was papering over a difference between them.
       expect(recordedArchives(fs)).toEqual([
-        { url: spec.archiveUrl, mountPrefix: "/usr" },
+        { url: spec.archiveUrl, mountPrefix: spec.mountPrefix.replace(/\/$/, "") },
       ]);
     },
   );

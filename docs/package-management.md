@@ -266,6 +266,15 @@ package outputs. All three privileged commands are installed as root-owned
 effect. The image-owned experimental terminal declaration starts
 `login -p -f maker` once and then uses `login -p` after logout.
 
+The browser shell embeds Bash because the default login immediately runs it.
+Optional eSpeak voice data and desktop assets are verified lazy ZIP archives
+at `/usr/share/espeak-ng-data` and `/usr/share/kandelo`; ordinary file reads
+fetch the complete archive on first use and inflate members as needed. The
+rootfs's `/usr/share/misc/magic` is a standalone lazy file, fetched when
+`file` loads its database. The browser's ordinary and grouped deployments and
+the Node resolver map these image-owned references to the same package bytes.
+Certificates, terminal definitions, and libinput device quirks remain eager.
+
 The shell and new login packages are pending publication while this change is
 under review. Their `commit = "UNPUBLISHED"` placeholders must be stamped with
 the truthful producer commit before release. Changes to the base image, shell

@@ -267,8 +267,10 @@ aliases = ["/bin/file"]
 [[packages.outputs]]
 binary = "programs/wasm32/file/file-magic.lite"
 source_artifact = "magic.lite"
-path = "/usr/share/misc/magic.mgc"
-install = "eager"
+# Text databases use libmagic's base path; .mgc is reserved for compiled data.
+path = "/usr/share/misc/magic"
+# The file executable and its database both fetch on first use.
+install = "lazy"
 mode = "0644"
 
 [[packages]]

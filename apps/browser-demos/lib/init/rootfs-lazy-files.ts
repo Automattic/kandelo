@@ -9,6 +9,7 @@ import grepWasmUrl from "@binaries/programs/wasm32/grep.wasm?url";
 import sedWasmUrl from "@binaries/programs/wasm32/sed.wasm?url";
 import bcWasmUrl from "@binaries/programs/wasm32/bc.wasm?url";
 import fileWasmUrl from "@binaries/programs/wasm32/file/file.wasm?url";
+import fileMagicUrl from "@binaries/programs/wasm32/file/file-magic.lite?url";
 import m4WasmUrl from "@binaries/programs/wasm32/m4.wasm?url";
 import makeWasmUrl from "@binaries/programs/wasm32/make.wasm?url";
 import findWasmUrl from "@binaries/programs/wasm32/findutils/find.wasm?url";
@@ -75,6 +76,7 @@ export const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/sed.wasm", sedWasmUrl],
   ["binaries/programs/wasm32/bc.wasm", bcWasmUrl],
   ["binaries/programs/wasm32/file/file.wasm", fileWasmUrl],
+  ["binaries/programs/wasm32/file/file-magic.lite", fileMagicUrl],
   ["binaries/programs/wasm32/m4.wasm", m4WasmUrl],
   ["binaries/programs/wasm32/make.wasm", makeWasmUrl],
   ["binaries/programs/wasm32/findutils/find.wasm", findWasmUrl],

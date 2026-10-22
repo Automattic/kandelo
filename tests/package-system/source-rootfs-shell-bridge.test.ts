@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -33,6 +34,7 @@ import {
   NCURSES_TERMINFO_RUNTIME_FILE,
   registerShellProfileScripts,
   SHELL_LAZY_ARCHIVE_SPECS,
+  SHELL_LAZY_DATA_ARCHIVE_SPECS,
   SHELL_PROFILE_SCRIPT_PATHS,
   type ShellLazyArchiveResolver,
 } from "../../images/vfs/scripts/shell-lazy-archives";
@@ -240,8 +242,8 @@ function fixturePaths(root: string) {
   const rootfsPath = join(root, "rootfs.vfs.zst");
   const bashPath = join(root, "bash.wasm");
   const espeakNgDataPath = join(root, "espeak-ng-data.zip");
-  // The files the composer writes eagerly: the desktops' launchers and the
-  // data archives. Their programs are lazy files, written below with every
+  // Explicit composer inputs include eager launcher scripts and optional
+  // data archives. Their programs are lazy files, registered below with every
   // other SHELL_LAZY_BINARY_SPECS entry.
   const wldesktopPath = join(root, "wldesktop");
   const omarchydesktopPath = join(root, "omarchydesktop");
@@ -279,7 +281,8 @@ function fixturePaths(root: string) {
   writeFileSync(
     espeakNgDataPath,
     zipSync({
-      "en/en_dict": new TextEncoder().encode("espeak voice data fixture"),
+      "phondata": new TextEncoder().encode("espeak phoneme fixture"),
+      "en_dict": new TextEncoder().encode("espeak voice data fixture"),
     }),
   );
   const dependencyRoots = new Map<string, string>();
@@ -710,11 +713,23 @@ describe("canonical source-rootfs shell", () => {
       ).toMatchObject({ uri: url, size: `${spec!.id} fixture`.length });
       expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
     }
-    // PATH_ESPEAK_DATA is compiled into the binary as /usr/share, so the
-    // voice-data zip must land unpacked rather than staying a lazy archive.
-    expect(text(readVfsFile(fs, "/usr/share/espeak-ng-data/en/en_dict"))).toBe(
-      "espeak voice data fixture",
+    // Fixed guest paths retain real metadata without downloading optional
+    // voice data. The serialized image must retain the exact ZIP identity.
+    expect(fs.isPathDeferred("/usr/share/espeak-ng-data/en_dict")).toBe(true);
+    expect(fs.stat("/usr/share/espeak-ng-data/en_dict").size).toBe(
+      "espeak voice data fixture".length,
     );
+    for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
+      const source = spec.id === "desktop-data"
+        ? paths.desktopDataPath : paths.espeakNgDataPath;
+      const bytes = readFileSync(source);
+      expect(fs.isPathDeferred(`${spec.mountPrefix}${spec.requiredMember}`)).toBe(true);
+      expect(composed.archives.find(({ uri }) => uri === spec.archiveUrl))
+        .toMatchObject({
+          bytes: bytes.byteLength,
+          digest: new Uint8Array(createHash("sha256").update(bytes).digest()),
+        });
+    }
     // The ScummVM machine's dock actions run this script, so it must be an
     // eager executable, and every game it can fetch must be pinned in the
     // catalog it reads: an unverified download would let a changed file
@@ -767,15 +782,14 @@ describe("canonical source-rootfs shell", () => {
       );
       expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
     }
-    // The desktops' data is image bytes under /usr/share/kandelo.
-    expect(
-      new TextDecoder().decode(
-        readVfsFile(fs, "/usr/share/kandelo/themes/tokyo-night/theme.conf"),
-      ),
-    ).toBe("# Tokyo Night\n");
-    expect(
-      new TextDecoder().decode(readVfsFile(fs, "/usr/share/kandelo/apps/terminal.conf")),
-    ).toBe("name = Terminal\n");
+    // Desktop paths exist at boot; their contents wait for the first read.
+    for (const [path, content] of [
+      ["/usr/share/kandelo/themes/tokyo-night/theme.conf", "# Tokyo Night\n"],
+      ["/usr/share/kandelo/apps/terminal.conf", "name = Terminal\n"],
+    ]) {
+      expect(fs.isPathDeferred(path), path).toBe(true);
+      expect(fs.stat(path).size, path).toBe(content.length);
+    }
     expect(
       text(readVfsFile(fs, "/usr/share/libinput/10-generic-keyboard.quirks")),
     ).toBe("[Generic Keyboard]\n");

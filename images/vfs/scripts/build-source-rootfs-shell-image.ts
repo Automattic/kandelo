@@ -34,6 +34,8 @@ import { SHELL_LAZY_BINARY_SPECS } from "../lib/init/shell-binaries";
 import {
   NETHACK_PLAYGROUND,
   SHELL_LAZY_ARCHIVE_SPECS,
+  SHELL_LAZY_DATA_ARCHIVE_SPECS,
+  registerDeclaredShellLazyArchive,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
 import {
@@ -157,20 +159,23 @@ function readSourceRootfsShellResolverDependencies(
   return dependencies;
 }
 
-function readRegularInput(path: string, label: string): Uint8Array {
+function requireRegularInput(path: string, label: string): void {
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink()) {
     throw new Error(`${label} must be a regular non-symlink file: ${path}`);
   }
+}
+
+function readRegularInput(path: string, label: string): Uint8Array {
+  requireRegularInput(path, label);
   return new Uint8Array(readFileSync(path));
 }
 
 /**
  * Unpack a package's data zip under `root`, as ordinary files (0644).
  *
- * For data a program opens from a compiled-in directory by plain open/read —
- * espeak-ng's voices, libinput's device quirks — rather than through the
- * range-mapped reads a lazy archive mount serves.
+ * Used for the small libinput device-quirk database kept available at boot.
+ * Optional speech and desktop data use lazy archives instead.
  */
 function unpackDataZip(fs: KandeloImageFs, root: string, zipBytes: Uint8Array): void {
   ensureDirRecursive(fs, root);
@@ -1150,6 +1155,15 @@ function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   }
 }
 
+function requireLazyShellData(fs: KandeloImageFs): void {
+  for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
+    const path = `${spec.mountPrefix}${spec.requiredMember}`;
+    if (!fs.isPathDeferred(path)) {
+      throw new Error(`source-rootfs shell must defer optional data ${path}`);
+    }
+  }
+}
+
 function dependencyEnvKey(name: string): string {
   return name.replaceAll("-", "_").toUpperCase();
 }
@@ -1468,18 +1482,12 @@ export async function buildSourceRootfsShellImage(
     inputs.omarchydesktopPath,
     "omarchydesktop launcher dependency",
   );
-  const desktopData = readRegularInput(
-    inputs.desktopDataPath,
-    "desktop data dependency",
-  );
+  requireRegularInput(inputs.desktopDataPath, "desktop data dependency");
   const libinputQuirks = readRegularInput(
     inputs.libinputQuirksPath,
     "libinput quirks dependency",
   );
-  const espeakNgData = readRegularInput(
-    inputs.espeakNgDataPath,
-    "espeak-ng data dependency",
-  );
+  requireRegularInput(inputs.espeakNgDataPath, "espeak-ng data dependency");
 
   // WHY: Bash remains the ordinary account shell and is therefore eager after
   // login. Opening its canonical alias follows a symlink when present,
@@ -1505,10 +1513,16 @@ export async function buildSourceRootfsShellImage(
   // starts a desktop never fetches them.
   writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
-  // Configs, themes, .desktop entries, the shell's QML, fontconfig and D-Bus
-  // configs, and the font: everything the desktops read is image data here,
-  // not page staging.
-  unpackDataZip(fs, "/usr/share/kandelo", desktopData);
+  // WHY: speech and desktop data are optional, just like their executables.
+  // Register the exact package ZIPs at their compiled-in guest paths: normal
+  // open/read triggers a verified first-use fetch on both Node and browser.
+  const dataArchivePaths = {
+    "desktop-data": inputs.desktopDataPath,
+    "espeak-ng-data": inputs.espeakNgDataPath,
+  };
+  for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
+    registerDeclaredShellLazyArchive(fs, spec, () => dataArchivePaths[spec.id]);
+  }
   // wlcompositor's statically linked libinput reads its device quirks from
   // LIBINPUT_QUIRKS_DIR, compiled in as /usr/share/libinput.
   unpackDataZip(fs, "/usr/share/libinput", libinputQuirks);
@@ -1564,9 +1578,6 @@ export async function buildSourceRootfsShellImage(
   // to exist), and that path must work even offline when no quake106.zip was
   // staged and the wrapper's own `mkdir -p id1` never ran.
   ensureDirRecursive(fs, "/usr/share/quake/id1", 0o777);
-  // /usr/bin/espeak-ng itself is a lazy file.
-  // libespeak-ng's PATH_ESPEAK_DATA is compiled in as /usr/share.
-  unpackDataZip(fs, "/usr/share/espeak-ng-data", espeakNgData);
   writeSdl2ShaderPresets(fs);
   // WHY: the package shell must not promise optional programs it does not own.
   // Bind its extra profiles to executable bytes so a metadata-only edit cannot
@@ -1578,6 +1589,7 @@ export async function buildSourceRootfsShellImage(
 
   // Checked before saving so a rejected composition writes no output.
   requireLazyShellPrograms(sourceEagerPrograms, fs);
+  requireLazyShellData(fs);
 
   // WHY: Bash is the one intentional eager identity. Every other source-rootfs
   // first-use download must retain the same path, URL, size, and tree metadata.
@@ -1619,6 +1631,7 @@ export async function buildSourceRootfsShellImage(
     "serialized source-rootfs shell",
   );
   requireCompleteProductShellContract(outputFs);
+  requireLazyShellData(outputFs);
   readExperimentalTerminalSession(outputFs);
   return image;
 }
