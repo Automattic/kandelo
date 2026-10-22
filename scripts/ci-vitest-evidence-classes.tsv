@@ -293,6 +293,7 @@ host/test/shared-pipe-buffer.test.ts	source-only
 host/test/shared-wasm-memory-growth-isolate.test.ts	source-only
 host/test/shared-wasm-memory-growth.test.ts	source-only
 host/test/shell-lazy-archive-inputs.test.ts	prepared-product
+host/test/shell-lazy-data.test.ts	prepared-product
 host/test/signal-accept-livelock.test.ts	source-only
 host/test/signal-no-restart.test.ts	prepared-product
 host/test/signal-process.test.ts	prepared-product

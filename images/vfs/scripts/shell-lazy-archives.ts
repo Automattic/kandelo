@@ -24,7 +24,7 @@ export interface ShellLazyArchiveSpec {
   dependency: string;
   resolverPath: string;
   archiveUrl: string;
-  mountPrefix: "/usr/";
+  mountPrefix: `/${string}/`;
   requiredMember: string;
 }
 
@@ -132,6 +132,29 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     archiveUrl: "kandelo-sdk.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/wasm32posix-cc",
+  },
+] as const satisfies readonly ShellLazyArchiveSpec[];
+
+/** Optional data used by the canonical browser shell's speech and desktops.
+ * Kept separate from the shared tool archives: service-image builders do not
+ * declare espeak-ng or wayland-demo and must not acquire those dependencies.
+ */
+export const SHELL_LAZY_DATA_ARCHIVE_SPECS = [
+  {
+    id: "espeak-ng-data",
+    dependency: "espeak-ng",
+    resolverPath: "programs/espeak-ng/espeak-ng-data.zip",
+    archiveUrl: "espeak-ng-data.zip",
+    mountPrefix: "/usr/share/espeak-ng-data/",
+    requiredMember: "phondata",
+  },
+  {
+    id: "desktop-data",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/kandelo-desktop-data.zip",
+    archiveUrl: "kandelo-desktop-data.zip",
+    mountPrefix: "/usr/share/kandelo/",
+    requiredMember: "themes/tokyo-night/theme.conf",
   },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 

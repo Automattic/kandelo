@@ -22,6 +22,12 @@ export function normalizeImageOwnedLazyReference(reference: string): string {
     validateVfsAssetGroupRelativePath(path);
     return `assets/programs/wasm32/${path}`;
   }
+  if (reference === "espeak-ng-data.zip") {
+    return "assets/programs/wasm32/espeak-ng/espeak-ng-data.zip";
+  }
+  if (reference === "kandelo-desktop-data.zip") {
+    return "assets/programs/wasm32/wayland-demo/kandelo-desktop-data.zip";
+  }
   if (reference === "love-examples.zip") {
     return "assets/programs/wasm32/love/share/love-examples.zip";
   }

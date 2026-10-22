@@ -103,9 +103,9 @@ done
 
 ROOTFS="$ROOTFS_DIR/rootfs.vfs.zst"
 BASH="$BASH_DIR/bash.wasm"
-# Only files the composer writes eagerly are threaded below. Every other
-# program (fbdoom, modeset, sdl2, espeak-ng, the Wayland desktops' programs)
-# is a lazy file it resolves from the dependency's declared directory.
+# Thread eager programs/scripts and package data archives to the composer.
+# Other programs (fbdoom, modeset, sdl2, espeak-ng, the desktops' programs)
+# are lazy files it resolves from the dependency's declared directory.
 #
 # The Wayland desktop's launcher. A package runtime_file is NOT installed
 # into the shell image by the composer, so it has to be threaded explicitly.

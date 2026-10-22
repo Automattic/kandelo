@@ -6,7 +6,7 @@ version = "1.52.0"
 # /dev/dsp like every other Kandelo sound port. Neither source tree is
 # patched. The build bundles a minimal English-only data dir, published as
 # the runtime file below. Consumers install the binary at /usr/bin/espeak-ng
-# and unpack the data at /usr/share/espeak-ng-data, matching
+# and mount the lazy data archive at /usr/share/espeak-ng-data, matching
 # CMAKE_INSTALL_PREFIX=/usr so libespeak-ng's PATH_ESPEAK_DATA resolves.
 kernel_abi = 43
 depends_on = ["libcxx@21.1.7", "pcaudiolib-source@1.3"]
@@ -61,7 +61,7 @@ wasm = "espeak-ng.wasm"
 
 # The voice data is a separate closure member so image builders and the
 # browser demo consume the same immutable bytes through the resolver
-# instead of reading the build tree. Stored-only zip, like cpython's.
+# instead of reading the build tree. Deflated ZIP for first-use fetching.
 [[runtime_files]]
 artifact = "espeak-ng-data.zip"
 guest_path = "/usr/share/espeak-ng/espeak-ng-data.zip"
