@@ -166,6 +166,12 @@ differently from the button path (synthetic `DataTransfer` drop, focus,
 pane switching to the terminal); and capture the kernel's view of the
 restarted fbDOOM (blocked syscall, fb0 ownership) when it stalls.
 
+On 2026-10-21 the test passed in local Playwright WebKit on main at
+`050922f79` (6 of 6 runs), and again with `/dev/fb0` released at exit
+rather than at reap (6 of 6). Neither run reproduced the stall, so the
+cause remains unknown; the entry stays open until a failing run can be
+captured as described above.
+
 ### Replace the constrained public CORS proxy with an owned relay
 
 The current public proxy has a narrow six-name request-header profile. A
