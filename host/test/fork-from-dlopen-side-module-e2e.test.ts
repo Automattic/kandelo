@@ -156,8 +156,8 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     // code never returns through a fork child, not that it never returns. A
     // call through a dlsym pointer matches no function in the program; when
     // the analysis summed that empty target set to "never returns", the
-    // fork after it left the plan, `main` stayed uninstrumented, and the
-    // child trapped while resuming through it.
+    // fork after it left the plan and `main` stayed uninstrumented, so the
+    // child could not resume inside it.
     const libraryPath = buildSharedLibrary(`
       int side_value(void) {
         return 5;
@@ -170,6 +170,11 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
       #include <unistd.h>
       typedef int (*side_value_fn)(void);
       int main(int argc, char **argv) {
+        // Observable only if the child re-runs main's prefix instead of
+        // resuming at fork(): the line prints twice and the child sees
+        // its own pid where the parent's should be.
+        write(1, "prefix\\n", 7);
+        int parent = getpid();
         void *lib = dlopen(argv[1], RTLD_NOW);
         if (!lib) {
           fprintf(stderr, "dlopen failed: %s\\n", dlerror());
@@ -180,7 +185,7 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
         volatile int value = side_value();
         int pid = fork();
         if (pid < 0) return 4;
-        if (pid == 0) _exit(value == 5 ? 0 : 9);
+        if (pid == 0) _exit(value == 5 && getppid() == parent ? 0 : 9);
         int status = 0;
         if (waitpid(pid, &status, 0) != pid) return 5;
         if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return 6;
@@ -202,6 +207,7 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     });
     expect(result.exitCode, `stderr:\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("dlsym call then fork ok");
+    expect(result.stdout.match(/prefix/g)).toHaveLength(1);
   }, 30_000);
 
   it("preserves the side frame and returns in both parent and child", async () => {
