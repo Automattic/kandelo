@@ -1,0 +1,17 @@
+script_path = "packages/registry/kandelo-exchange/build-kandelo-exchange.sh"
+inputs = [
+  "packages/registry/kandelo-exchange/build-kandelo-exchange.sh",
+  "programs/kandelo-exchange/exchange-save.c",
+  "programs/kandelo-exchange/kandelo-exchange.c",
+  "programs/kandelo-exchange/kandelo-publish.c",
+  "programs/kandelo-exchange/kx-rules.h",
+  "programs/kandelo-exchange/kx-util.h",
+  "programs/kandelo-exchange/kxchgd.c",
+  "libc/musl-overlay/include/kandelo/exchange.h",
+  "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+publication_state = "pending"

@@ -20,6 +20,7 @@ use wasm_posix_shared::{
 };
 
 use crate::blocked_retry::{BlockingRetryOperation, BlockingRetryTarget, StableOfdTarget};
+use crate::exchange::device::ExchangeDevice;
 use crate::fd::OpenFileDescRef;
 use crate::lock::{
     AdvisoryLockManager, AdvisoryLockType, FileId, KernelFileKind, LockMutation, LockOwner,
@@ -2943,6 +2944,23 @@ fn resolve_namespace_path_from(
     })
 }
 
+/// The canonical spelling of an existing path, following a final symlink or
+/// not. For callers outside this module that must key state by path.
+pub(crate) fn canonical_path(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    path: &[u8],
+    follow: bool,
+) -> Result<Vec<u8>, Errno> {
+    let options = if follow { PathResolveOptions::FOLLOW } else { PathResolveOptions::NOFOLLOW };
+    Ok(resolve_namespace_path(proc, host, path, options)?.path)
+}
+
+/// `check_access` for callers outside this module.
+pub(crate) fn check_access_mode(proc: &Process, st: &WasmStat, amode: u32) -> Result<(), Errno> {
+    check_access(proc, st, amode)
+}
+
 fn resolve_namespace_path(
     proc: &Process,
     host: &mut dyn HostIO,
@@ -3732,6 +3750,14 @@ fn try_open_fifo(
     if oflags & O_DIRECTORY != 0 {
         return Err(Errno::ENOTDIR);
     }
+    // An exchange input stream carries the host's bytes; no guest writes it,
+    // whatever its credentials.
+    if oflags & O_PATH == 0
+        && oflags & O_ACCMODE != O_RDONLY
+        && crate::exchange::xattr::area(resolved) == crate::exchange::xattr::Area::Input
+    {
+        return Err(Errno::EPERM);
+    }
     if oflags & O_PATH != 0 {
         check_search_path(proc, host, resolved)?;
         let status_flags = oflags & !CREATION_FLAGS;
@@ -4133,6 +4159,9 @@ pub fn sys_open(
         if oflags & O_CREAT != 0 {
             tmpfs_stamp_now(host)?;
         }
+        if let Some(node) = crate::exchange::device::device_node_at(&resolved) {
+            return open_exchange_node(proc, host, node, resolved, oflags);
+        }
         if crate::tmpfs::is_dir(&resolved) {
             // A directory cannot be opened for writing.
             if oflags & O_ACCMODE != O_RDONLY {
@@ -4217,12 +4246,58 @@ pub fn sys_open(
 /// EISDIR for a directory path until a later increment adds directory OFDs.
 /// Permission enforcement against the inode mode is likewise deferred; scratch
 /// mounts are broadly writable today.
+/// Open an exchange device node (`events` or `work/clone`) after the
+/// ordinary permission check has passed. The nodes are read-only for
+/// everyone; root's permission bypass does not make them writable (EPERM).
+fn open_exchange_node(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    node: crate::exchange::device::ExchangeNode,
+    resolved: Vec<u8>,
+    oflags: u32,
+) -> Result<i32, Errno> {
+    use crate::exchange::device::ExchangeNode;
+    if oflags & O_CREAT != 0 && oflags & O_EXCL != 0 {
+        return Err(Errno::EEXIST);
+    }
+    if oflags & O_DIRECTORY != 0 {
+        return Err(Errno::ENOTDIR);
+    }
+    if oflags & O_ACCMODE != O_RDONLY {
+        return Err(Errno::EPERM);
+    }
+    let device = match node {
+        ExchangeNode::Events => crate::exchange::open_events(proc.effective_uid(), proc.effective_gid())?,
+        ExchangeNode::Clone => {
+            tmpfs_stamp_now(host)?;
+            crate::exchange::open_session(proc.effective_uid(), proc.effective_gid())?
+        }
+    };
+    let host_handle = device.host_handle();
+    let status_flags = oflags & !CREATION_FLAGS;
+    let ofd_idx = proc
+        .ofd_table
+        .create(FileType::CharDevice, status_flags, host_handle, resolved);
+    let fd_flags = oflags_to_fd_flags(oflags);
+    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+        Ok(fd) => Ok(fd),
+        Err(err) => {
+            proc.ofd_table.dec_ref(ofd_idx);
+            crate::descriptor_backing::release_for_ofd(FileType::CharDevice, host_handle);
+            Err(err)
+        }
+    }
+}
+
 fn open_scratch_tmpfs(
     proc: &mut Process,
     resolved: Vec<u8>,
     oflags: u32,
     effective_mode: u32,
 ) -> Result<i32, Errno> {
+    if oflags & O_CREAT != 0 && crate::tmpfs::lstat(&resolved).is_err() {
+        crate::exchange::policy::check_create(&resolved)?;
+    }
     let host_handle = crate::tmpfs::open(
         &resolved,
         oflags,
@@ -4287,6 +4362,14 @@ fn fs_lstat(host: &mut dyn HostIO, path: &[u8]) -> Result<WasmStat, Errno> {
 /// so a subsequent metadata mutation (create/write/truncate/chmod/chown) stamps
 /// accurate atime/mtime/ctime. One host clock read per mutating syscall; both
 /// in-kernel filesystem cores stay host-free.
+/// Unix time in milliseconds, for exchange IDs.
+fn exchange_now_ms(host: &mut dyn HostIO) -> Result<u64, Errno> {
+    let (sec, nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
+    let sec = u64::try_from(sec).map_err(|_| Errno::EINVAL)?;
+    let nsec = u64::try_from(nsec).map_err(|_| Errno::EINVAL)?;
+    Ok(sec * 1000 + nsec / 1_000_000)
+}
+
 fn tmpfs_stamp_now(host: &mut dyn HostIO) -> Result<(), Errno> {
     let (sec, nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_REALTIME)?;
     let sec = u64::try_from(sec).map_err(|_| Errno::EINVAL)?;
@@ -5064,6 +5147,13 @@ fn release_ofd_reference_impl(
                     || host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
                 {
                     // Procfs/devfs/tmpfs/rootfs directory: nothing to clean up
+                } else if file_type == FileType::CharDevice
+                    && crate::exchange::is_exchange_handle(host_handle)
+                {
+                    // Exchange descriptions are kernel-global and shared
+                    // across fork; the last reference ends the consumer or
+                    // removes the work session.
+                    crate::descriptor_backing::release_for_ofd(file_type, host_handle);
                 } else if file_type == FileType::CharDevice && host_handle < 0 {
                     // Virtual char devices have no host handle to close.
                     // Nothing to clean up on host side
@@ -5695,6 +5785,11 @@ pub fn sys_read(
                     if n > 0 {
                         return Ok(n);
                     }
+                    // A failed writer (a Kandelo exchange input whose host
+                    // stream errored): truncated data is EIO, never EOF.
+                    if let Some(error) = pipe.read_error() {
+                        return Err(error);
+                    }
                     if pipe.read_end_has_eof() {
                         return Ok(0);
                     }
@@ -5880,6 +5975,17 @@ pub fn sys_read(
             Err(Errno::EAGAIN)
         }
         _ => {
+            // Kandelo exchange devices (`events`, work sessions).
+            if file_type == FileType::CharDevice {
+                if let Some(device) = ExchangeDevice::from_host_handle(host_handle) {
+                    return match device {
+                        ExchangeDevice::Events => crate::exchange::device::read_events(buf),
+                        ExchangeDevice::Session(number) => {
+                            crate::exchange::device::read_session(number, buf)
+                        }
+                    };
+                }
+            }
             // Virtual character devices — handle in-kernel
             if file_type == FileType::CharDevice {
                 if let Some(dev) = VirtualDevice::from_host_handle(host_handle) {
@@ -6119,7 +6225,9 @@ pub fn sys_read(
             if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
                 let current_offset =
                     proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.offset();
-                let n = crate::tmpfs::read(host_handle, current_offset, buf)?;
+                let n = crate::tmpfs::read(host_handle, current_offset, buf, &mut |source, source_offset, bytes| {
+                    host.exchange_source_read(source, source_offset, bytes)
+                })?;
                 let new_offset = checked_host_cursor_advance(current_offset, buf.len(), n)?;
                 proc.ofd_table
                     .get_mut(ofd_idx)
@@ -6226,6 +6334,11 @@ pub fn sys_write(
                 {
                     let pipe = unsafe { crate::pipe::global_pipe_table().get_mut(pipe_idx) }
                         .ok_or(Errno::EBADF)?;
+                    // The writer declared the stream finished (a published
+                    // exchange stream's `user.kandelo.end`).
+                    if pipe.is_write_sealed() {
+                        return Err(Errno::EPERM);
+                    }
                     if !pipe.is_read_end_open() {
                         proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                         return Err(Errno::EPIPE);
@@ -6419,6 +6532,12 @@ pub fn sys_write(
                 return Ok(n);
             }
 
+            // Exchange devices are opened read-only.
+            if file_type == FileType::CharDevice
+                && ExchangeDevice::from_host_handle(host_handle).is_some()
+            {
+                return Err(Errno::EBADF);
+            }
             // Virtual character devices — handle in-kernel
             if file_type == FileType::CharDevice {
                 if let Some(dev) = VirtualDevice::from_host_handle(host_handle) {
@@ -6731,6 +6850,14 @@ pub fn sys_lseek(
         return Ok(offset);
     }
 
+    // Exchange devices are streams: `events` is a line stream and a session
+    // description reads its number once. Like a pipe, they cannot seek.
+    if ofd.file_type == FileType::CharDevice
+        && ExchangeDevice::from_host_handle(ofd.host_handle).is_some()
+    {
+        return Err(Errno::ESPIPE);
+    }
+
     // Virtual char devices: seek is a no-op for null/zero/etc. /dev/fb0
     // is the exception — seek positions the cursor for the write-based
     // pixel-blit path used by fbDOOM-style software.
@@ -6957,7 +7084,9 @@ pub fn sys_pread(
 
     // In-kernel tmpfs: positioned read from Rust memory, no cursor change.
     if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
-        return crate::tmpfs::read(host_handle, offset, buf);
+        return crate::tmpfs::read(host_handle, offset, buf, &mut |source, source_offset, bytes| {
+            host.exchange_source_read(source, source_offset, bytes)
+        });
     }
 
     // In-kernel rootfs overlay: positioned read; base-file bytes via the byte source.
@@ -7969,6 +8098,11 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
             proc.effective_gid(),
         ))
     } else if ofd.file_type == FileType::CharDevice {
+        // An exchange description stats as the node it was opened through,
+        // whose owner, group, and mode decide who may open it.
+        if let Some(device) = ExchangeDevice::from_host_handle(ofd.host_handle) {
+            return crate::tmpfs::lstat(device.node_path());
+        }
         if let Some(dev) = VirtualDevice::from_host_handle(ofd.host_handle) {
             return Ok(virtual_device_stat(
                 dev,
@@ -8796,6 +8930,7 @@ pub fn sys_mkdir(
         let effective_mode = mode & !proc.umask;
         check_parent_writable(proc, host, &resolved)?;
         tmpfs_stamp_now(host)?;
+        crate::exchange::policy::check_create(&resolved)?;
         return crate::tmpfs::mkdir(
             &resolved,
             effective_mode,
@@ -8821,11 +8956,37 @@ pub fn sys_mkdir(
     crate::hostdir::chown(host, &resolved, proc.effective_uid(), proc.effective_gid())
 }
 
+/// unlink on a tmpfs path. Unlinking a published exchange output withdraws
+/// it, so the host is told.
+fn tmpfs_unlink(resolved: &[u8]) -> Result<(), Errno> {
+    let output = crate::exchange::policy::outbox_child_name(resolved)
+        .and_then(|_| crate::exchange::outputs::output_id(resolved));
+    crate::tmpfs::unlink(resolved)?;
+    if let Some(output) = output {
+        crate::exchange::outputs::on_withdrawn(output);
+    }
+    Ok(())
+}
+
+/// rmdir on a tmpfs path. Removing an exchange batch directory is the
+/// consumer's acknowledgement, so the batch settles with its last status.
+fn tmpfs_rmdir(resolved: &[u8]) -> Result<(), Errno> {
+    crate::exchange::policy::check_remove(resolved)?;
+    let batch_name = crate::exchange::batches::inbox_child_name(resolved);
+    let status = batch_name
+        .map(|_| crate::tmpfs::xattr_get(resolved, b"user.kandelo.status").unwrap_or_default());
+    crate::tmpfs::rmdir(resolved)?;
+    if let (Some(name), Some(status)) = (batch_name, status) {
+        crate::exchange::batches::on_inbox_entry_removed(name, status);
+    }
+    Ok(())
+}
+
 pub fn sys_rmdir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Result<(), Errno> {
     let resolved = resolve_namespace_path(proc, host, path, PathResolveOptions::NOFOLLOW)?.path;
     if crate::tmpfs::claims_path(&resolved) {
         check_may_delete(proc, host, &resolved)?;
-        return crate::tmpfs::rmdir(&resolved);
+        return tmpfs_rmdir(&resolved);
     }
     if crate::rootfs::claims_path(&resolved) {
         check_may_delete(proc, host, &resolved)?;
@@ -8880,6 +9041,7 @@ fn make_fifo(
         check_parent_writable(proc, host, &resolved.path)?;
         tmpfs_stamp_now(host)?;
         let effective_mode = mode & !proc.umask;
+        crate::exchange::policy::check_create(&resolved.path)?;
         crate::tmpfs::mknod_special(
             &resolved.path,
             effective_mode & 0o7777,
@@ -8987,7 +9149,8 @@ fn unlink_fifo_marker(host: &mut dyn HostIO, resolved: &[u8]) -> Option<Result<(
         // A tmpfs fifo has no host marker file; drop its `Special(S_IFIFO)`
         // inode. A host fifo removes its marker file instead.
         if crate::tmpfs::claims_path(resolved) {
-            crate::tmpfs::unlink(resolved)?;
+            crate::exchange::policy::check_remove(resolved)?;
+            tmpfs_unlink(resolved)?;
         } else if crate::rootfs::claims_path(resolved) {
             crate::rootfs::unlink(resolved)?;
         } else {
@@ -9000,6 +9163,8 @@ fn unlink_fifo_marker(host: &mut dyn HostIO, resolved: &[u8]) -> Option<Result<(
         }
         unsafe { crate::pipe::global_pipe_table() }
             .remove_fifo_name_at(pipe_idx, ctime_sec, ctime_nsec);
+        // An exchange input stream no one can reach releases its source.
+        crate::exchange::streams::touch(pipe_idx);
         Ok(())
     })();
     Some(result)
@@ -9077,11 +9242,12 @@ pub fn sys_unlink(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Res
         if let Some(result) = unlink_fifo_marker(host, &resolved) {
             return result;
         }
+        crate::exchange::policy::check_remove(&resolved)?;
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.unregister(&resolved) {
             crate::wakeup::push_datagram_writable();
         }
-        return crate::tmpfs::unlink(&resolved);
+        return tmpfs_unlink(&resolved);
     }
     // In-kernel rootfs overlay owns `/`: same fifo/socket handling as tmpfs — a
     // fifo lives in the fifo/pipe table, a bound AF_UNIX socket in the registry;
@@ -9148,6 +9314,12 @@ pub fn sys_rename(
             return Err(Errno::EXDEV);
         }
         check_may_rename(proc, host, &old, &new)?;
+        if crate::exchange::policy::check_rename(&old, &new)?
+            == crate::exchange::policy::Rename::Publish
+        {
+            tmpfs_stamp_now(host)?;
+            return crate::exchange::outputs::publish(&old, &new, exchange_now_ms(host)?);
+        }
         // A tmpfs fifo lives in the fifo/pipe table keyed by path (alongside its
         // Special inode), and an AF_UNIX socket in the unix-socket registry.
         // Advance a displaced fifo's cached ctime and rekey both registries
@@ -9214,6 +9386,7 @@ pub fn sys_link(
         check_search_path(proc, host, &old)?;
         check_parent_writable(proc, host, &new)?;
         tmpfs_stamp_now(host)?;
+        crate::exchange::policy::check_link(&old, &new)?;
         return crate::tmpfs::link(&old, &new);
     }
     let old_rootfs = crate::rootfs::claims_path(&old);
@@ -9246,6 +9419,7 @@ pub fn sys_symlink(
     if crate::tmpfs::claims_path(&link) {
         check_parent_writable(proc, host, &link)?;
         tmpfs_stamp_now(host)?;
+        crate::exchange::policy::check_create(&link)?;
         return crate::tmpfs::symlink(target, &link, proc.effective_uid(), proc.effective_gid());
     }
     if crate::rootfs::claims_path(&link) {
@@ -14419,6 +14593,7 @@ pub fn sys_bind(
                 if crate::tmpfs::claims_path(&resolved) {
                     // In-kernel tmpfs owns the node; the socket endpoint stays in
                     // the path-keyed registry below.
+                    crate::exchange::policy::check_create(&resolved)?;
                     tmpfs_stamp_now(host)?;
                     match crate::tmpfs::mknod_special(
                         &resolved,
@@ -15851,6 +16026,19 @@ fn poll_check_depth(
                     }
                     // Mice doesn't accept writes — never report POLLOUT.
                 } else if ofd.file_type == FileType::CharDevice
+                    && ExchangeDevice::from_host_handle(ofd.host_handle).is_some()
+                {
+                    // `events` is readable while a line is waiting, matching
+                    // sys_read's EAGAIN; a session description always reads
+                    // (its number, then end-of-file). Neither accepts writes.
+                    let readable = match ExchangeDevice::from_host_handle(ofd.host_handle) {
+                        Some(ExchangeDevice::Events) => crate::exchange::device::events_readable(),
+                        _ => true,
+                    };
+                    if pollfd.events & POLLIN != 0 && readable {
+                        revents |= POLLIN;
+                    }
+                } else if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle)
                         == Some(VirtualDevice::Clipboard)
                 {
@@ -15966,12 +16154,16 @@ fn poll_check_depth(
                                 if pollfd.events & POLLIN != 0 && pipe.available() > 0 {
                                     revents |= POLLIN;
                                 }
+                                // A failed writer: the next read returns EIO.
+                                if pipe.available() == 0 && pipe.read_error().is_some() {
+                                    revents |= POLLERR;
+                                }
                                 if pipe.read_end_has_hangup() {
                                     revents |= POLLHUP;
                                 }
                             }
                             O_WRONLY => {
-                                if !pipe.has_readers() {
+                                if !pipe.has_readers() || pipe.is_write_sealed() {
                                     revents |= POLLERR;
                                 }
                                 if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
@@ -16533,6 +16725,9 @@ pub fn sys_openat(
         if oflags & O_CREAT != 0 {
             tmpfs_stamp_now(host)?;
         }
+        if let Some(node) = crate::exchange::device::device_node_at(&resolved) {
+            return open_exchange_node(proc, host, node, resolved, oflags);
+        }
         if crate::tmpfs::is_dir(&resolved) {
             // A directory cannot be opened for writing.
             if oflags & O_ACCMODE != O_RDONLY {
@@ -16711,7 +16906,7 @@ pub fn sys_unlinkat(
         // Mirrors `sys_rmdir`.
         if crate::tmpfs::claims_path(&resolved) {
             check_may_delete(proc, host, &resolved)?;
-            return crate::tmpfs::rmdir(&resolved);
+            return tmpfs_rmdir(&resolved);
         }
         if crate::rootfs::claims_path(&resolved) {
             check_may_delete(proc, host, &resolved)?;
@@ -16731,11 +16926,12 @@ pub fn sys_unlinkat(
         if let Some(result) = unlink_fifo_marker(host, &resolved) {
             return result;
         }
+        crate::exchange::policy::check_remove(&resolved)?;
         let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
         if registry.unregister(&resolved) {
             crate::wakeup::push_datagram_writable();
         }
-        return crate::tmpfs::unlink(&resolved);
+        return tmpfs_unlink(&resolved);
     }
     if crate::rootfs::claims_path(&resolved) {
         check_may_delete(proc, host, &resolved)?;
@@ -16793,6 +16989,7 @@ pub fn sys_mkdirat(
         let effective_mode = mode & !proc.umask;
         check_parent_writable(proc, host, &resolved)?;
         tmpfs_stamp_now(host)?;
+        crate::exchange::policy::check_create(&resolved)?;
         return crate::tmpfs::mkdir(
             &resolved,
             effective_mode,
@@ -16846,6 +17043,12 @@ pub fn sys_renameat(
             return Err(Errno::EXDEV);
         }
         check_may_rename(proc, host, &old_resolved, &new_resolved)?;
+        if crate::exchange::policy::check_rename(&old_resolved, &new_resolved)?
+            == crate::exchange::policy::Rename::Publish
+        {
+            tmpfs_stamp_now(host)?;
+            return crate::exchange::outputs::publish(&old_resolved, &new_resolved, exchange_now_ms(host)?);
+        }
         // Keep the fifo/pipe table and unix-socket registry coherent across the
         // move (see sys_rename): advance a displaced fifo's cached ctime, rekey
         // both registries.
@@ -20154,6 +20357,7 @@ pub fn sys_linkat(
         check_search_path(proc, host, &old_resolved)?;
         check_parent_writable(proc, host, &new_resolved)?;
         tmpfs_stamp_now(host)?;
+        crate::exchange::policy::check_link(&old_resolved, &new_resolved)?;
         return crate::tmpfs::link(&old_resolved, &new_resolved);
     }
     let old_rootfs = crate::rootfs::claims_path(&old_resolved);
@@ -20197,6 +20401,7 @@ pub fn sys_symlinkat(
     if crate::tmpfs::claims_path(&resolved_link) {
         check_parent_writable(proc, host, &resolved_link)?;
         tmpfs_stamp_now(host)?;
+        crate::exchange::policy::check_create(&resolved_link)?;
         return crate::tmpfs::symlink(
             target,
             &resolved_link,
@@ -22224,6 +22429,8 @@ mod tests {
                     | b"/home/user"
                     | b"/opt"
                     | b"/root"
+                    | b"/run"
+                    | b"/run/kandelo"
                     | b"/some"
                     | b"/src"
                     | b"/srv"
@@ -53799,11 +54006,11 @@ impl HostIO for RelSymlinkMock {
             let mut host = MockHostIO::new();
             let target = path(b"/tmp/file");
             assert_eq!(
-                sys_getxattr(&mut proc, &mut host, target, b"user.a"),
+                sys_getxattr(&mut proc, &mut host, target, b"user.a", &mut []),
                 Err(Errno::ENOTSUP)
             );
             assert_eq!(
-                sys_setxattr(&mut proc, &mut host, path(b"/tmp/file"), b"user.a", 1, 0),
+                sys_setxattr(&mut proc, &mut host, path(b"/tmp/file"), b"user.a", &alloc::vec![0u8; 1], 0),
                 Err(Errno::ENOTSUP)
             );
             assert_eq!(
@@ -53816,7 +54023,7 @@ impl HostIO for RelSymlinkMock {
         fn list_reports_an_empty_list_on_an_existing_file() {
             let mut proc = Process::new(1);
             let mut host = MockHostIO::new();
-            assert_eq!(sys_listxattr(&mut proc, &mut host, path(b"/tmp/file")), Ok(0));
+            assert_eq!(sys_listxattr(&mut proc, &mut host, path(b"/tmp/file"), &mut []), Ok(0));
         }
 
         #[test]
@@ -53825,15 +54032,15 @@ impl HostIO for RelSymlinkMock {
             let mut host = MockHostIO::new();
             host.set_missing_path(b"/tmp/missing");
             assert_eq!(
-                sys_getxattr(&mut proc, &mut host, path(b"/tmp/missing"), b"user.a"),
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/missing"), b"user.a", &mut []),
                 Err(Errno::ENOENT)
             );
             assert_eq!(
-                sys_setxattr(&mut proc, &mut host, path(b"/tmp/missing"), b"user.a", 1, 0),
+                sys_setxattr(&mut proc, &mut host, path(b"/tmp/missing"), b"user.a", &alloc::vec![0u8; 1], 0),
                 Err(Errno::ENOENT)
             );
             assert_eq!(
-                sys_listxattr(&mut proc, &mut host, path(b"/tmp/missing")),
+                sys_listxattr(&mut proc, &mut host, path(b"/tmp/missing"), &mut []),
                 Err(Errno::ENOENT)
             );
             assert_eq!(
@@ -53853,11 +54060,11 @@ impl HostIO for RelSymlinkMock {
                 follow: false,
             };
             assert_eq!(
-                sys_getxattr(&mut proc, &mut host, no_follow, b"user.a"),
+                sys_getxattr(&mut proc, &mut host, no_follow, b"user.a", &mut []),
                 Err(Errno::ENOTSUP)
             );
             assert_eq!(
-                sys_getxattr(&mut proc, &mut host, path(b"/tmp/dangling"), b"user.a"),
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/dangling"), b"user.a", &mut []),
                 Err(Errno::ENOENT)
             );
         }
@@ -53868,11 +54075,11 @@ impl HostIO for RelSymlinkMock {
             let mut host = MockHostIO::new();
             let long = [b'a'; 256];
             assert_eq!(
-                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), b""),
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), b"", &mut []),
                 Err(Errno::ERANGE)
             );
             assert_eq!(
-                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), &long),
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), &long, &mut []),
                 Err(Errno::ERANGE)
             );
             assert_eq!(
@@ -53880,7 +54087,7 @@ impl HostIO for RelSymlinkMock {
                 Err(Errno::ERANGE)
             );
             assert_eq!(
-                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), &long[..255]),
+                sys_getxattr(&mut proc, &mut host, path(b"/tmp/file"), &long[..255], &mut []),
                 Err(Errno::ENOTSUP)
             );
         }
@@ -53892,20 +54099,20 @@ impl HostIO for RelSymlinkMock {
             host.set_missing_path(b"/tmp/missing");
             let missing = || path(b"/tmp/missing");
             assert_eq!(
-                sys_setxattr(&mut proc, &mut host, missing(), b"user.a", 1, 4),
+                sys_setxattr(&mut proc, &mut host, missing(), b"user.a", &alloc::vec![0u8; 1], 4),
                 Err(Errno::EINVAL)
             );
             assert_eq!(
-                sys_setxattr(&mut proc, &mut host, missing(), b"", 1, 0),
+                sys_setxattr(&mut proc, &mut host, missing(), b"", &alloc::vec![0u8; 1], 0),
                 Err(Errno::ERANGE)
             );
             assert_eq!(
-                sys_setxattr(&mut proc, &mut host, missing(), b"user.a", 65_537, 0),
+                sys_setxattr(&mut proc, &mut host, missing(), b"user.a", &alloc::vec![0u8; 65_537], 0),
                 Err(Errno::E2BIG)
             );
             for flags in [0, 1, 2, 3] {
                 assert_eq!(
-                    sys_setxattr(&mut proc, &mut host, path(b"/tmp/file"), b"user.a", 65_536, flags),
+                    sys_setxattr(&mut proc, &mut host, path(b"/tmp/file"), b"user.a", &alloc::vec![0u8; 65_536], flags),
                     Err(Errno::ENOTSUP)
                 );
             }
@@ -53916,28 +54123,625 @@ impl HostIO for RelSymlinkMock {
             let mut proc = Process::new(81_100);
             let mut host = MockHostIO::new();
             assert_eq!(
-                sys_getxattr(&mut proc, &mut host, XattrTarget::Fd(99), b"user.a"),
+                sys_getxattr(&mut proc, &mut host, XattrTarget::Fd(99), b"user.a", &mut []),
                 Err(Errno::EBADF)
             );
             assert_eq!(
-                sys_listxattr(&mut proc, &mut host, XattrTarget::Fd(99)),
+                sys_listxattr(&mut proc, &mut host, XattrTarget::Fd(99), &mut []),
                 Err(Errno::EBADF)
             );
             let path_only = sys_open(&mut proc, &mut host, b"/tmp/path-only", O_PATH, 0).unwrap();
             assert_eq!(
-                sys_setxattr(&mut proc, &mut host, XattrTarget::Fd(path_only), b"user.a", 1, 0),
+                sys_setxattr(&mut proc, &mut host, XattrTarget::Fd(path_only), b"user.a", &alloc::vec![0u8; 1], 0),
                 Err(Errno::EBADF)
             );
             let fd = sys_open(&mut proc, &mut host, b"/tmp/file", O_RDWR | O_CREAT, 0o644).unwrap();
             assert_eq!(
-                sys_getxattr(&mut proc, &mut host, XattrTarget::Fd(fd), b"user.a"),
+                sys_getxattr(&mut proc, &mut host, XattrTarget::Fd(fd), b"user.a", &mut []),
                 Err(Errno::ENOTSUP)
             );
-            assert_eq!(sys_listxattr(&mut proc, &mut host, XattrTarget::Fd(fd)), Ok(0));
+            assert_eq!(sys_listxattr(&mut proc, &mut host, XattrTarget::Fd(fd), &mut []), Ok(0));
             assert_eq!(
                 sys_removexattr(&mut proc, &mut host, XattrTarget::Fd(fd), b"user.a"),
                 Err(Errno::ENOTSUP)
             );
+        }
+    }
+
+    mod exchange_devices {
+        use super::*;
+        use crate::exchange::device::tests::TestGuard as ExchangeGuard;
+        use crate::exchange::EXCHANGE_GID;
+
+        const EVENTS: &[u8] = b"/run/kandelo/exchange/events";
+        const XATTR_CREATE_FLAG: u32 = crate::xattr::XATTR_CREATE;
+        const XATTR_REPLACE_FLAG: u32 = crate::xattr::XATTR_REPLACE;
+        const CLONE: &[u8] = b"/run/kandelo/exchange/work/clone";
+
+        fn read_text(proc: &mut Process, host: &mut MockHostIO, fd: i32) -> Result<Vec<u8>, Errno> {
+            let mut buf = [0u8; 64];
+            let n = sys_read(proc, host, fd, &mut buf)?;
+            Ok(buf[..n].to_vec())
+        }
+
+        #[test]
+        fn events_has_one_consumer_and_speaks_lines() {
+            let _exchange = ExchangeGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            assert_eq!(sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0), Err(Errno::EBUSY));
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"outputs none\n");
+            assert_eq!(read_text(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
+
+            let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+            poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
+            assert_eq!(pollfd.revents & POLLIN, 0, "nothing to read yet");
+            crate::exchange::device::push_line(b"batch x\n".to_vec());
+            poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
+            assert_ne!(pollfd.revents & POLLIN, 0);
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"batch x\n");
+
+            let st = sys_fstat(&proc, &mut host, fd).unwrap();
+            assert_eq!(st.st_mode, S_IFCHR | 0o440);
+            assert_eq!((st.st_uid, st.st_gid), (0, EXCHANGE_GID));
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET), Err(Errno::ESPIPE));
+            assert_eq!(sys_write(&mut proc, &mut host, fd, b"x"), Err(Errno::EBADF));
+
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert!(!crate::exchange::device::consumer_present());
+            let again = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            sys_close(&mut proc, &mut host, again).unwrap();
+        }
+
+        #[test]
+        fn epoll_wakes_on_each_new_events_line() {
+            // An agent may wait on `events` with epoll as well as poll. Each
+            // queued line is a readiness edge for it, including the line
+            // that announces whether outputs are accepted.
+            use wasm_posix_shared::epoll::{EPOLLET, EPOLLIN};
+            let _exchange = ExchangeGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY | O_NONBLOCK, 0).unwrap();
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"outputs none\n");
+            let ep = sys_epoll_create1(&mut proc, 0).unwrap();
+            sys_epoll_ctl(&mut proc, ep, 1, fd, EPOLLIN | EPOLLET, 7).unwrap();
+            let wait = |proc: &mut Process, host: &mut MockHostIO| {
+                sys_epoll_pwait(proc, host, ep, 4, 0, None).unwrap().1
+            };
+            assert!(wait(&mut proc, &mut host).is_empty());
+            crate::exchange::device::push_line(b"batch x\n".to_vec());
+            assert_eq!(wait(&mut proc, &mut host), [(EPOLLIN, 7)]);
+            assert!(wait(&mut proc, &mut host).is_empty(), "one edge per line");
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"batch x\n");
+            crate::exchange::device::set_outputs_accepting(true);
+            assert_eq!(wait(&mut proc, &mut host), [(EPOLLIN, 7)]);
+            sys_close(&mut proc, &mut host, ep).unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+
+        #[test]
+        fn the_nodes_are_read_only_even_for_root() {
+            let _exchange = ExchangeGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            for node in [EVENTS, CLONE] {
+                assert_eq!(sys_open(&mut proc, &mut host, node, O_RDWR, 0), Err(Errno::EPERM));
+                assert_eq!(sys_open(&mut proc, &mut host, node, O_WRONLY, 0), Err(Errno::EPERM));
+                assert_eq!(
+                    sys_open(&mut proc, &mut host, node, O_RDONLY | O_CREAT | O_EXCL, 0o600),
+                    Err(Errno::EEXIST)
+                );
+            }
+        }
+
+        #[test]
+        fn opening_needs_the_exchange_group() {
+            let _exchange = ExchangeGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let mut host = MockHostIO::new();
+            let mut outsider = Process::new(2);
+            set_test_credentials(&mut outsider, 1000, 1000, 1000, 1000, &[]);
+            assert_eq!(sys_open(&mut outsider, &mut host, EVENTS, O_RDONLY, 0), Err(Errno::EACCES));
+            assert_eq!(sys_open(&mut outsider, &mut host, CLONE, O_RDONLY, 0), Err(Errno::EACCES));
+            let mut member = Process::new(3);
+            set_test_credentials(&mut member, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let fd = sys_open(&mut member, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            sys_close(&mut member, &mut host, fd).unwrap();
+        }
+
+        #[test]
+        fn the_consumer_acknowledges_a_batch_by_removing_it() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification, Outcome};
+            let mut proc = Process::new(5);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"drop", 1).unwrap();
+            batches::add_entry(&batch, batches::tests::file(&[b"notes.txt"], 9, 4), 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let dir = batches::batch_path(&batch);
+            let mut file = dir.clone();
+            file.extend_from_slice(b"/notes.txt");
+
+            // The consumer may not change an entry, but may remove it.
+            assert_eq!(sys_open(&mut proc, &mut host, &file, O_RDWR, 0), Err(Errno::EACCES));
+            sys_unlink(&mut proc, &mut host, &file).unwrap();
+            sys_rmdir(&mut proc, &mut host, &dir).unwrap();
+            let notes = batches::take_notifications();
+            assert!(notes.contains(&Notification::Settled {
+                batch,
+                outcome: Outcome::Removed,
+                status: Vec::new(),
+            }));
+            assert!(notes.contains(&Notification::SourceReleased { source: 9 }));
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        #[test]
+        fn exchange_files_carry_user_attributes_under_the_exchange_rules() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            use crate::exchange::ids;
+            use crate::xattr::{sys_getxattr, sys_listxattr, sys_removexattr, sys_setxattr, XattrTarget};
+            let mut proc = Process::new(6);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"drop", 1).unwrap();
+            let mut entry = batches::tests::file(&[b"photo.jpg"], 11, 2);
+            entry.mime_type = Some(b"image/jpeg".to_vec());
+            let entry_id = batches::add_entry(&batch, entry, 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let dir = batches::batch_path(&batch);
+            let mut photo = dir.clone();
+            photo.extend_from_slice(b"/photo.jpg");
+            fn at(path: &[u8]) -> XattrTarget<'_> {
+                XattrTarget::Path { path, follow: true }
+            }
+
+            // Reading inputs' metadata.
+            let mut buf = [0u8; 64];
+            let n = sys_getxattr(&mut proc, &mut host, at(&photo), b"user.mime_type", &mut buf).unwrap();
+            assert_eq!(&buf[..n], b"image/jpeg");
+            assert_eq!(sys_getxattr(&mut proc, &mut host, at(&photo), b"user.kandelo.id", &mut []), Ok(36));
+            let n = sys_getxattr(&mut proc, &mut host, at(&photo), b"user.kandelo.id", &mut buf).unwrap();
+            assert_eq!(&buf[..n], ids::format(&entry_id));
+            assert_eq!(sys_getxattr(&mut proc, &mut host, at(&photo), b"user.kandelo.id", &mut [0u8; 8]), Err(Errno::ERANGE));
+            assert_eq!(sys_getxattr(&mut proc, &mut host, at(&photo), b"user.other", &mut buf), Err(Errno::ENODATA));
+            assert_eq!(sys_getxattr(&mut proc, &mut host, at(&photo), b"trusted.a", &mut buf), Err(Errno::ENOTSUP));
+            let n = sys_listxattr(&mut proc, &mut host, at(&photo), &mut buf).unwrap();
+            assert_eq!(&buf[..n], b"user.kandelo.id\0user.mime_type\0");
+
+            // Inputs are read-only; the batch's status is the consumer's to set.
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&photo), b"user.mime_type", b"x", 0), Err(Errno::EACCES));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&dir), b"user.kandelo.status", b"saving", 0), Ok(()));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&dir), b"user.kandelo.source", b"x", 0), Err(Errno::EPERM));
+            assert!(batches::take_notifications().contains(&Notification::Status { batch, status: b"saving".to_vec() }));
+
+            // Session files take metadata and provenance.
+            let session = sys_open(&mut proc, &mut host, CLONE, O_RDONLY, 0).unwrap();
+            let number = read_text(&mut proc, &mut host, session).unwrap();
+            let mut out = b"/run/kandelo/exchange/work/".to_vec();
+            out.extend_from_slice(&number[..number.len() - 1]);
+            out.extend_from_slice(b"/sheet.pdf");
+            let fd = sys_open(&mut proc, &mut host, &out, O_WRONLY | O_CREAT, 0o644).unwrap();
+            assert_eq!(sys_setxattr(&mut proc, &mut host, XattrTarget::Fd(fd), b"user.mime_type", b"application/pdf", 0), Ok(()));
+            let mut provenance = ids::format(&entry_id).to_vec();
+            provenance.push(b'\n');
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&out), b"user.kandelo.derived_from", &provenance, XATTR_CREATE_FLAG), Ok(()));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&out), b"user.kandelo.derived_from", &provenance, XATTR_CREATE_FLAG), Err(Errno::EEXIST));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&out), b"user.kandelo.derived_from", b"nonsense", 0), Err(Errno::EINVAL));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&out), b"user.kandelo.id", b"x", 0), Err(Errno::EPERM));
+            assert_eq!(sys_removexattr(&mut proc, &mut host, at(&out), b"user.mime_type"), Ok(()));
+            assert_eq!(sys_removexattr(&mut proc, &mut host, at(&out), b"user.mime_type"), Err(Errno::ENODATA));
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at(&out), b"user.x", b"1", XATTR_REPLACE_FLAG), Err(Errno::ENODATA));
+
+            // Devices hold no attributes.
+            assert_eq!(sys_getxattr(&mut proc, &mut host, at(EVENTS), b"user.a", &mut buf), Err(Errno::ENODATA));
+            assert_eq!(sys_listxattr(&mut proc, &mut host, at(EVENTS), &mut buf), Ok(0));
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            sys_close(&mut proc, &mut host, session).unwrap();
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        fn open_session(proc: &mut Process, host: &mut MockHostIO) -> (i32, Vec<u8>) {
+            let fd = sys_open(proc, host, CLONE, O_RDONLY, 0).unwrap();
+            let number = read_text(proc, host, fd).unwrap();
+            let mut dir = b"/run/kandelo/exchange/work/".to_vec();
+            dir.extend_from_slice(&number[..number.len() - 1]);
+            (fd, dir)
+        }
+
+        fn join(dir: &[u8], name: &[u8]) -> Vec<u8> {
+            let mut path = dir.to_vec();
+            path.push(b'/');
+            path.extend_from_slice(name);
+            path
+        }
+
+        #[test]
+        fn publishing_is_a_rename_from_a_session_that_freezes_the_output() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            let mut proc = Process::new(7);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let (session, dir) = open_session(&mut proc, &mut host);
+            let staged = join(&dir, b"sheet.pdf");
+            let fd = sys_open(&mut proc, &mut host, &staged, O_WRONLY | O_CREAT, 0o644).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, fd, b"%PDF").unwrap(), 4);
+            crate::xattr::sys_setxattr(
+                &mut proc, &mut host, crate::xattr::XattrTarget::Fd(fd), b"user.mime_type", b"application/pdf", 0,
+            )
+            .unwrap();
+            let published = b"/run/kandelo/exchange/outbox/sheet.pdf";
+            assert_eq!(sys_rename(&mut proc, &mut host, &staged, published), Err(Errno::ENXIO), "no listener");
+            crate::exchange::device::set_outputs_accepting(true);
+            assert_eq!(sys_rename(&mut proc, &mut host, &staged, published), Err(Errno::EBUSY), "still open");
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            // A second name would let the same file be published twice.
+            let alias = join(&dir, b"alias.pdf");
+            sys_link(&mut proc, &mut host, &staged, &alias).unwrap();
+            assert_eq!(sys_rename(&mut proc, &mut host, &staged, published), Err(Errno::EBUSY), "linked twice");
+            sys_unlink(&mut proc, &mut host, &alias).unwrap();
+            sys_rename(&mut proc, &mut host, &staged, published).unwrap();
+            let notes = batches::take_notifications();
+            let Some(Notification::OutputPublished { output, name, size, mime_type, derived_from, .. }) = notes.last().cloned() else {
+                panic!("no publication in {notes:?}");
+            };
+            assert_eq!((name.as_slice(), size, mime_type.as_deref()), (&b"sheet.pdf"[..], 4, Some(&b"application/pdf"[..])));
+            assert!(derived_from.is_empty());
+
+            // Frozen: no write, no change of metadata, no rename; unlink withdraws.
+            assert_eq!(sys_open(&mut proc, &mut host, published, O_RDWR, 0), Err(Errno::EPERM));
+            assert_eq!(sys_chmod(&mut proc, &mut host, published, 0o600), Err(Errno::EPERM));
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, published, b"/run/kandelo/exchange/outbox/other.pdf"),
+                Err(Errno::EPERM)
+            );
+            let again = join(&dir, b"sheet.pdf");
+            let fd = sys_open(&mut proc, &mut host, &again, O_WRONLY | O_CREAT, 0o644).unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert_eq!(sys_rename(&mut proc, &mut host, &again, published), Err(Errno::EEXIST));
+            sys_unlink(&mut proc, &mut host, published).unwrap();
+            assert!(batches::take_notifications().contains(&Notification::OutputWithdrawn { output }));
+            sys_close(&mut proc, &mut host, session).unwrap();
+        }
+
+        #[test]
+        fn a_host_stream_input_is_a_fifo_the_host_writes() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            use crate::exchange::streams;
+            let mut proc = Process::new(9);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"api", 1).unwrap();
+            batches::add_entry(&batch, batches::tests::stream(&[b"feed"], 31), 1).unwrap();
+            batches::add_entry(&batch, batches::tests::stream(&[b"broken"], 32), 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let dir = batches::batch_path(&batch);
+            let feed = join(&dir, b"feed");
+            let broken = join(&dir, b"broken");
+            let st = sys_stat(&mut proc, &mut host, &feed).unwrap();
+            assert_eq!((st.st_mode, st.st_size), (S_IFIFO | 0o440, 0));
+            assert!(batches::take_notifications().contains(&Notification::StreamDemand { source: 31, free: 65536 }));
+
+            // The host is the writer, so opening for read does not block, and
+            // an empty read waits for the host.
+            let fd = sys_open(&mut proc, &mut host, &feed, O_RDONLY | O_NONBLOCK, 0).unwrap();
+            assert_eq!(sys_lseek(&mut proc, &mut host, fd, 0, SEEK_SET), Err(Errno::ESPIPE));
+            assert_eq!(read_text(&mut proc, &mut host, fd), Err(Errno::EAGAIN));
+            assert_eq!(streams::push_input(31, b"hello "), Ok(6));
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"hello ");
+            assert!(batches::take_notifications().contains(&Notification::StreamDemand { source: 31, free: 65536 }));
+            // Backpressure: the host writes only what fits.
+            let big = alloc::vec![b'x'; 70_000];
+            assert_eq!(streams::push_input(31, &big), Ok(65536));
+            assert_eq!(streams::push_input(31, b"more"), Ok(0));
+            let mut drain = alloc::vec![0u8; 65536];
+            assert_eq!(sys_read(&mut proc, &mut host, fd, &mut drain), Ok(65536));
+            // A clean end is end-of-file.
+            streams::end_input(31, false).unwrap();
+            assert_eq!(streams::push_input(31, b"late"), Err(Errno::EPIPE));
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"");
+
+            // A failed host stream is EIO after what was buffered: never EOF.
+            let bad = sys_open(&mut proc, &mut host, &broken, O_RDONLY | O_NONBLOCK, 0).unwrap();
+            streams::push_input(32, b"part").unwrap();
+            streams::end_input(32, true).unwrap();
+            assert_eq!(read_text(&mut proc, &mut host, bad).unwrap(), b"part");
+            assert_eq!(read_text(&mut proc, &mut host, bad), Err(Errno::EIO));
+
+            // Inputs stay read-only, even to root.
+            assert_eq!(sys_open(&mut proc, &mut host, &feed, O_WRONLY | O_NONBLOCK, 0), Err(Errno::EPERM));
+            let mut root = Process::new(13);
+            assert_eq!(sys_open(&mut root, &mut host, &feed, O_RDWR | O_NONBLOCK, 0), Err(Errno::EPERM));
+
+            // Once no name and no reader remain, the sources are released.
+            batches::take_notifications();
+            sys_unlink(&mut proc, &mut host, &feed).unwrap();
+            assert!(!batches::take_notifications().contains(&Notification::SourceReleased { source: 31 }), "still open");
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert!(batches::take_notifications().contains(&Notification::SourceReleased { source: 31 }));
+            sys_close(&mut proc, &mut host, bad).unwrap();
+            sys_unlink(&mut proc, &mut host, &broken).unwrap();
+            sys_rmdir(&mut proc, &mut host, &dir).unwrap();
+            assert!(batches::take_notifications().contains(&Notification::SourceReleased { source: 32 }));
+            assert_eq!(streams::push_input(31, b"x"), Err(Errno::ENOENT));
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        #[test]
+        fn a_stream_that_ended_before_anyone_opened_it_still_reads_to_eof() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches;
+            use crate::exchange::streams;
+            let mut proc = Process::new(14);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"api", 1).unwrap();
+            batches::add_entry(&batch, batches::tests::stream(&[b"short"], 51), 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let short = join(&batches::batch_path(&batch), b"short");
+            // Bytes flow only while a reader exists: that is the backpressure.
+            assert_eq!(streams::push_input(51, b"early"), Ok(0));
+            // A first reader takes everything; then the stream ends.
+            let first = sys_open(&mut proc, &mut host, &short, O_RDONLY | O_NONBLOCK, 0).unwrap();
+            assert_eq!(streams::push_input(51, b"all of it"), Ok(9));
+            assert_eq!(read_text(&mut proc, &mut host, first).unwrap(), b"all of it");
+            sys_close(&mut proc, &mut host, first).unwrap();
+            streams::end_input(51, false).unwrap();
+            // A later blocking open does not wait for a writer that will never
+            // write again (the host keeps its endpoint), and reads end-of-file.
+            let fd = sys_open(&mut proc, &mut host, &short, O_RDONLY, 0).unwrap();
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"", "end-of-file, not EAGAIN");
+            let mut pollfd = WasmPollFd { fd, events: POLLIN, revents: 0 };
+            poll_check(&mut proc, &mut host, core::slice::from_mut(&mut pollfd));
+            assert_ne!(pollfd.revents & POLLHUP, 0, "a finished stream hangs up");
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        #[test]
+        fn a_discarded_batch_takes_its_stream_names_with_it() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            let mut proc = Process::new(10);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"api", 1).unwrap();
+            batches::add_entry(&batch, batches::tests::stream(&[b"feed"], 41), 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let feed = join(&batches::batch_path(&batch), b"feed");
+            batches::cancel(&batch).unwrap();
+            assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(&feed), None);
+            assert!(batches::take_notifications().contains(&Notification::SourceReleased { source: 41 }));
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        #[test]
+        fn a_published_fifo_is_a_streamed_output_the_host_reads() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            use crate::exchange::outputs;
+            use crate::exchange::streams::{self, OutputRead};
+            use crate::xattr::{sys_setxattr, XattrTarget};
+            let mut proc = Process::new(11);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            crate::exchange::device::set_outputs_accepting(true);
+            let (session, dir) = open_session(&mut proc, &mut host);
+            let staged = join(&dir, b"capture.webm");
+            sys_mkfifo(&mut proc, &mut host, &staged, 0o600).unwrap();
+            let published: &[u8] = b"/run/kandelo/exchange/outbox/capture.webm";
+            // Its writer opens only after publishing.
+            let early = sys_open(&mut proc, &mut host, &staged, O_RDWR, 0).unwrap();
+            assert_eq!(sys_rename(&mut proc, &mut host, &staged, published), Err(Errno::EBUSY));
+            sys_close(&mut proc, &mut host, early).unwrap();
+            sys_rename(&mut proc, &mut host, &staged, published).unwrap();
+            let notes = batches::take_notifications();
+            let Some(Notification::OutputPublished { output, stream, size, .. }) = notes.last().cloned() else {
+                panic!("no publication in {notes:?}");
+            };
+            assert_eq!((stream, size), (true, 0));
+
+            // No reader until the host starts: a non-blocking writer's open is ENXIO.
+            assert_eq!(sys_open(&mut proc, &mut host, published, O_WRONLY | O_NONBLOCK, 0), Err(Errno::ENXIO));
+            let mut buf = [0u8; 16];
+            assert_eq!(streams::read_output(&output, &mut buf), Err(Errno::EINVAL), "not started");
+            streams::start_output(&output).unwrap();
+            assert_eq!(streams::read_output(&output, &mut buf), Ok(OutputRead::Wait), "no writer yet");
+            let writer = sys_open(&mut proc, &mut host, published, O_WRONLY | O_NONBLOCK, 0).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, writer, b"frame"), Ok(5));
+            assert!(batches::take_notifications().contains(&Notification::StreamReadable { output }));
+            assert_eq!(streams::read_output(&output, &mut buf), Ok(OutputRead::Bytes(5)));
+            assert_eq!(&buf[..5], b"frame");
+
+            // The end is declared before closing, once, and seals the stream.
+            let at = XattrTarget::Path { path: published, follow: true };
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at, b"user.kandelo.end", b"finished", 0), Err(Errno::EINVAL));
+            sys_setxattr(&mut proc, &mut host, XattrTarget::Fd(writer), b"user.kandelo.end", b"complete", 0).unwrap();
+            assert_eq!(sys_setxattr(&mut proc, &mut host, at, b"user.kandelo.end", b"aborted no", 0), Err(Errno::EPERM));
+            assert_eq!(sys_write(&mut proc, &mut host, writer, b"more"), Err(Errno::EPERM));
+            assert_eq!(streams::read_output(&output, &mut buf), Ok(OutputRead::Wait), "the writer is open");
+            sys_close(&mut proc, &mut host, writer).unwrap();
+            assert_eq!(streams::read_output(&output, &mut buf), Ok(OutputRead::End));
+            assert_eq!(outputs::end_state(&output), Ok(Some(b"complete".to_vec())));
+            outputs::release_output(&output).unwrap();
+            assert!(sys_lstat(&mut proc, &mut host, published).is_err());
+            assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(published), None);
+            sys_close(&mut proc, &mut host, session).unwrap();
+        }
+
+        #[test]
+        fn releasing_an_unread_stream_frees_a_writer_waiting_in_open() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let _thread_guard = THREAD_IDENTITY_LOCK.lock().unwrap();
+            set_test_current_tid(0);
+            use crate::exchange::batches::{self, Notification};
+            use crate::exchange::outputs;
+            let mut proc = Process::new(15);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            crate::exchange::device::set_outputs_accepting(true);
+            let (session, dir) = open_session(&mut proc, &mut host);
+            let staged = join(&dir, b"never-read");
+            sys_mkfifo(&mut proc, &mut host, &staged, 0o600).unwrap();
+            let published: &[u8] = b"/run/kandelo/exchange/outbox/never-read";
+            sys_rename(&mut proc, &mut host, &staged, published).unwrap();
+            let Some(Notification::OutputPublished { output, .. }) = batches::take_notifications().last().cloned() else {
+                panic!("no publication");
+            };
+            // The writer blocks in open: the host has not started reading.
+            assert_eq!(sys_open(&mut proc, &mut host, published, O_WRONLY, 0), Err(Errno::EAGAIN));
+            // The host's lease ends without reading. The open completes, and
+            // the writer's pipe is broken rather than waiting forever.
+            outputs::release_output(&output).unwrap();
+            let writer = sys_open(&mut proc, &mut host, published, O_WRONLY, 0).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, writer, b"x"), Err(Errno::EPIPE));
+            sys_close(&mut proc, &mut host, writer).unwrap();
+            sys_close(&mut proc, &mut host, session).unwrap();
+        }
+
+        #[test]
+        fn ending_a_stream_lease_early_breaks_the_writers_pipe() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches::{self, Notification};
+            use crate::exchange::{outputs, streams};
+            let mut proc = Process::new(12);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            crate::exchange::device::set_outputs_accepting(true);
+            let (session, dir) = open_session(&mut proc, &mut host);
+            let staged = join(&dir, b"log");
+            sys_mkfifo(&mut proc, &mut host, &staged, 0o600).unwrap();
+            let published: &[u8] = b"/run/kandelo/exchange/outbox/log";
+            sys_rename(&mut proc, &mut host, &staged, published).unwrap();
+            let Some(Notification::OutputPublished { output, .. }) = batches::take_notifications().last().cloned() else {
+                panic!("no publication");
+            };
+            streams::start_output(&output).unwrap();
+            let writer = sys_open(&mut proc, &mut host, published, O_WRONLY | O_NONBLOCK, 0).unwrap();
+            outputs::release_output(&output).unwrap();
+            assert_eq!(sys_write(&mut proc, &mut host, writer, b"x"), Err(Errno::EPIPE));
+            assert!(proc.signals.is_pending(wasm_posix_shared::signal::SIGPIPE));
+            sys_close(&mut proc, &mut host, writer).unwrap();
+
+            // At most 8 unfinished streams await the host.
+            for n in 0..streams::MAX_UNFINISHED_OUTPUTS {
+                let name = alloc::format!("s{n}");
+                let staged = join(&dir, name.as_bytes());
+                sys_mkfifo(&mut proc, &mut host, &staged, 0o600).unwrap();
+                let published = join(b"/run/kandelo/exchange/outbox", name.as_bytes());
+                sys_rename(&mut proc, &mut host, &staged, &published).unwrap();
+            }
+            let staged = join(&dir, b"one-more");
+            sys_mkfifo(&mut proc, &mut host, &staged, 0o600).unwrap();
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, &staged, b"/run/kandelo/exchange/outbox/one-more"),
+                Err(Errno::ENOSPC)
+            );
+            sys_close(&mut proc, &mut host, session).unwrap();
+            assert_eq!(unsafe { crate::fifo::global_fifo_table() }.lookup(&staged), None, "the session took its FIFO");
+        }
+
+        #[test]
+        fn names_appear_only_in_sessions_and_never_change_owners() {
+            let _batches = crate::exchange::batches::tests::TestGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            use crate::exchange::batches;
+            let mut proc = Process::new(8);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let events = sys_open(&mut proc, &mut host, EVENTS, O_RDONLY, 0).unwrap();
+            let batch = batches::begin(b"drop", 1).unwrap();
+            batches::add_entry(&batch, batches::tests::file(&[b"in.txt"], 21, 1), 1).unwrap();
+            batches::commit(&batch).unwrap();
+            let batch_dir = batches::batch_path(&batch);
+            let input = join(&batch_dir, b"in.txt");
+            let (session, dir) = open_session(&mut proc, &mut host);
+
+            assert_eq!(sys_open(&mut proc, &mut host, b"/run/kandelo/exchange/outbox/x", O_WRONLY | O_CREAT, 0o644), Err(Errno::EPERM));
+            assert_eq!(sys_mkdir(&mut proc, &mut host, b"/run/kandelo/exchange/inbox/x", 0o755), Err(Errno::EPERM));
+            assert_eq!(sys_open(&mut proc, &mut host, &join(&batch_dir, b"new"), O_WRONLY | O_CREAT, 0o644), Err(Errno::EPERM));
+            assert_eq!(sys_rename(&mut proc, &mut host, &input, &join(&dir, b"in.txt")), Err(Errno::EPERM));
+            assert_eq!(sys_link(&mut proc, &mut host, &input, &join(&dir, b"in.txt")), Err(Errno::EPERM));
+            let elsewhere = sys_open(&mut proc, &mut host, b"/tmp/exchange_elsewhere", O_WRONLY | O_CREAT, 0o644).unwrap();
+            sys_close(&mut proc, &mut host, elsewhere).unwrap();
+            assert_eq!(sys_rename(&mut proc, &mut host, b"/tmp/exchange_elsewhere", &join(&dir, b"x")), Err(Errno::EXDEV));
+
+            // Inside a session everything ordinary works.
+            let a = join(&dir, b"a");
+            let fd = sys_open(&mut proc, &mut host, &a, O_WRONLY | O_CREAT, 0o644).unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            sys_mkdir(&mut proc, &mut host, &join(&dir, b"sub"), 0o755).unwrap();
+            sys_link(&mut proc, &mut host, &a, &join(&dir, b"sub/a")).unwrap();
+            sys_symlink(&mut proc, &mut host, b"a", &join(&dir, b"link")).unwrap();
+            sys_rename(&mut proc, &mut host, &a, &join(&dir, b"b")).unwrap();
+            crate::exchange::device::set_outputs_accepting(true);
+            assert_eq!(
+                sys_rename(&mut proc, &mut host, &join(&dir, b"link"), b"/run/kandelo/exchange/outbox/link"),
+                Err(Errno::EPERM),
+                "symbolic links cannot be published"
+            );
+
+            // Root is bound by the same rules.
+            let mut root = Process::new(9);
+            assert_eq!(sys_unlink(&mut root, &mut host, EVENTS), Err(Errno::EPERM));
+            assert_eq!(sys_rmdir(&mut root, &mut host, &dir), Err(Errno::EPERM));
+            assert_eq!(sys_open(&mut root, &mut host, b"/run/kandelo/exchange/x", O_WRONLY | O_CREAT, 0o644), Err(Errno::EPERM));
+            sys_close(&mut proc, &mut host, session).unwrap();
+            sys_close(&mut proc, &mut host, events).unwrap();
+        }
+
+        #[test]
+        fn a_work_session_lives_exactly_as_long_as_its_description() {
+            let _exchange = ExchangeGuard::acquire();
+            let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+            let mut proc = Process::new(4);
+            set_test_credentials(&mut proc, 1000, 1000, 1000, 1000, &[EXCHANGE_GID]);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut proc, &mut host, CLONE, O_RDONLY, 0).unwrap();
+            let number = read_text(&mut proc, &mut host, fd).unwrap();
+            assert_eq!(read_text(&mut proc, &mut host, fd).unwrap(), b"", "then end-of-file");
+            assert_eq!(number.last(), Some(&b'\n'));
+            let mut dir = b"/run/kandelo/exchange/work/".to_vec();
+            dir.extend_from_slice(&number[..number.len() - 1]);
+            let st = crate::tmpfs::lstat(&dir).unwrap();
+            assert_eq!(st.st_mode, S_IFDIR | 0o700);
+            assert_eq!((st.st_uid, st.st_gid), (1000, 1000));
+
+            // A second process inheriting the description (fork) keeps the
+            // session alive past the first close.
+            let handle = crate::exchange::device::ExchangeDevice::from_host_handle(
+                proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().host_handle,
+            )
+            .unwrap()
+            .host_handle();
+            assert_eq!(crate::descriptor_backing::add_ref_for_ofd(FileType::CharDevice, handle), Ok(true));
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert!(crate::tmpfs::lstat(&dir).is_ok(), "the inherited reference keeps it");
+            assert!(crate::descriptor_backing::release_for_ofd(FileType::CharDevice, handle));
+            assert_eq!(crate::tmpfs::lstat(&dir).unwrap_err(), Errno::ENOENT);
         }
     }
 }

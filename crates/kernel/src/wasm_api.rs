@@ -116,6 +116,18 @@ unsafe extern "C" {
     // Native validation rejected these transport bytes. Eviction only;
     // the failed read still returns EIO and does not automatically retry.
     fn host_discard_deferred(uri_ptr: *const u8, uri_len: u32);
+    // Bytes of a Kandelo exchange input at `offset`, from the host side that
+    // offered its source. -EAGAIN while the host fetches them; the host wakes
+    // the blocked syscall when they arrive. `source` and `offset` are 64-bit
+    // values split into 32-bit words.
+    fn host_exchange_source_read(
+        source_lo: u32,
+        source_hi: u32,
+        offset_lo: u32,
+        offset_hi: u32,
+        buf_ptr: *mut u8,
+        buf_len: u32,
+    ) -> i32;
     // Positioned read of the VFS image's own container bytes, so the kernel can
     // parse the image it booted from instead of consuming a tree the host
     // walked for it (`rootfs::load_image`). There is exactly one image per
@@ -502,6 +514,21 @@ impl HostIO for WasmHostIO {
         if let Ok(len) = u32::try_from(uri.len()) {
             unsafe { host_discard_deferred(uri.as_ptr(), len) };
         }
+    }
+
+    fn exchange_source_read(&mut self, source: u64, offset: u64, buf: &mut [u8]) -> Result<usize, Errno> {
+        let capacity = checked_host_buffer_len(buf.len())?;
+        let result = unsafe {
+            host_exchange_source_read(
+                source as u32,
+                (source >> 32) as u32,
+                offset as u32,
+                (offset >> 32) as u32,
+                buf.as_mut_ptr(),
+                capacity,
+            )
+        };
+        checked_host_transfer_result(result, buf.len())
     }
 
     fn image_read(&mut self, buf: &mut [u8], offset: u64) -> Result<usize, Errno> {
@@ -3419,7 +3446,16 @@ pub extern "C" fn kernel_reap_exited_child(parent_pid: u32, child_pid: u32) -> i
     if !table.is_exited_child_of(parent_pid, child_pid) {
         return -(Errno::ECHILD as i32);
     }
-    reap_process_and_cleanup(child_pid)
+    // Init reaps its children at once; the exchange agent is one of them,
+    // and how it ended decides activation's next step.
+    let status = (parent_pid == crate::process_table::SYNTHETIC_INIT_PID)
+        .then(|| table.get(child_pid).map(|child| (child.exit_status, child.exit_signal)))
+        .flatten();
+    let result = reap_process_and_cleanup(child_pid);
+    if let (0, Some((exit_status, exit_signal))) = (result, status) {
+        crate::exchange::activation::on_reaped(child_pid, exit_status, exit_signal);
+    }
+    result
 }
 
 /// Check if a process has SA_NOCLDWAIT set for SIGCHLD.
@@ -6929,13 +6965,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // SYS_FGETXATTR: (fd, name, value, size)
             let name = channel_const_ptr!(1, u8);
             let name_len = channel_cstr_len!(name);
-            let _ = process_size!(3);
-            kernel_xattr(KernelXattrOp::Get, None, a1, Some((name, name_len)))
+            let value = channel_mut_slice!(2, process_size!(3));
+            kernel_xattr(KernelXattrOp::Get(value), None, a1, Some((name, name_len)))
         }
         351 => {
             // SYS_FLISTXATTR: (fd, list, size)
-            let _ = process_size!(2);
-            kernel_xattr(KernelXattrOp::List, None, a1, None)
+            let list = channel_mut_slice!(1, process_size!(2));
+            kernel_xattr(KernelXattrOp::List(list), None, a1, None)
         }
         352 => {
             // SYS_FREMOVEXATTR: (fd, name)
@@ -6947,10 +6983,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // SYS_FSETXATTR: (fd, name, value, size, flags)
             let name = channel_const_ptr!(1, u8);
             let name_len = channel_cstr_len!(name);
-            let op = KernelXattrOp::Set {
-                size: process_size!(3),
-                flags: a5 as u32,
-            };
+            let value = channel_const_slice!(2, process_size!(3));
+            let op = KernelXattrOp::Set { value, flags: a5 as u32 };
             kernel_xattr(op, None, a1, Some((name, name_len)))
         }
         354 | 356 => {
@@ -6959,10 +6993,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let path_len = channel_cstr_len!(path);
             let name = channel_const_ptr!(1, u8);
             let name_len = channel_cstr_len!(name);
-            let _ = process_size!(3);
+            let value = channel_mut_slice!(2, process_size!(3));
             let follow = nr == 354;
             kernel_xattr(
-                KernelXattrOp::Get,
+                KernelXattrOp::Get(value),
                 Some((path, path_len, follow)),
                 -1,
                 Some((name, name_len)),
@@ -6972,9 +7006,9 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             // SYS_LISTXATTR / SYS_LLISTXATTR: (path, list, size)
             let path = channel_const_ptr!(0, u8);
             let path_len = channel_cstr_len!(path);
-            let _ = process_size!(2);
+            let list = channel_mut_slice!(1, process_size!(2));
             let follow = nr == 355;
-            kernel_xattr(KernelXattrOp::List, Some((path, path_len, follow)), -1, None)
+            kernel_xattr(KernelXattrOp::List(list), Some((path, path_len, follow)), -1, None)
         }
         358 | 360 => {
             // SYS_LREMOVEXATTR / SYS_REMOVEXATTR: (path, name)
@@ -6996,10 +7030,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             let path_len = channel_cstr_len!(path);
             let name = channel_const_ptr!(1, u8);
             let name_len = channel_cstr_len!(name);
-            let op = KernelXattrOp::Set {
-                size: process_size!(3),
-                flags: a5 as u32,
-            };
+            let value = channel_const_slice!(2, process_size!(3));
+            let op = KernelXattrOp::Set { value, flags: a5 as u32 };
             let follow = nr == 361;
             kernel_xattr(op, Some((path, path_len, follow)), -1, Some((name, name_len)))
         }
@@ -9304,19 +9336,17 @@ pub fn kernel_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i3
     result
 }
 
-/// One extended-attribute operation; see `crate::xattr`.
-enum KernelXattrOp {
-    Get,
-    Set { size: usize, flags: u32 },
-    List,
+/// One extended-attribute operation and its buffer; see `crate::xattr`.
+enum KernelXattrOp<'a> {
+    Get(&'a mut [u8]),
+    Set { value: &'a [u8], flags: u32 },
+    List(&'a mut [u8]),
     Remove,
 }
 
 /// Run an xattr call on a path (`Some((ptr, len, follow))`) or on `fd`.
-/// The value and list buffers are never touched: no filesystem stores
-/// extended attributes yet, so there is nothing to copy in or out.
 fn kernel_xattr(
-    op: KernelXattrOp,
+    op: KernelXattrOp<'_>,
     path: Option<(*const u8, u32, bool)>,
     fd: i32,
     name: Option<(*const u8, u32)>,
@@ -9335,13 +9365,13 @@ fn kernel_xattr(
         None => &[],
     };
     let result = match op {
-        KernelXattrOp::Get => crate::xattr::sys_getxattr(proc, &mut host, target, name)
+        KernelXattrOp::Get(value) => crate::xattr::sys_getxattr(proc, &mut host, target, name, value)
             .map(|size| size as i32),
-        KernelXattrOp::Set { size, flags } => {
-            crate::xattr::sys_setxattr(proc, &mut host, target, name, size, flags).map(|()| 0)
+        KernelXattrOp::Set { value, flags } => {
+            crate::xattr::sys_setxattr(proc, &mut host, target, name, value, flags).map(|()| 0)
         }
-        KernelXattrOp::List => {
-            crate::xattr::sys_listxattr(proc, &mut host, target).map(|size| size as i32)
+        KernelXattrOp::List(list) => {
+            crate::xattr::sys_listxattr(proc, &mut host, target, list).map(|size| size as i32)
         }
         KernelXattrOp::Remove => {
             crate::xattr::sys_removexattr(proc, &mut host, target, name).map(|()| 0)
@@ -15752,6 +15782,341 @@ pub extern "C" fn kernel_vblank() -> u32 {
         };
     crate::dri::drain_pending_flips(seq, tv_sec, tv_usec);
     seq
+}
+
+// ---------------------------------------------------------------------------
+// Kandelo exchange — files into and out of the machine (crate::exchange)
+// ---------------------------------------------------------------------------
+
+/// Every exchange ID crosses the boundary as a pointer and its length, which
+/// must be exactly 16 bytes.
+fn exchange_id_at(id_ptr: *const u8, id_len: u32) -> Result<crate::exchange::ids::ExchangeId, Errno> {
+    if id_ptr.is_null() {
+        return Err(Errno::EFAULT);
+    }
+    if id_len != 16 {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: the host passes 16 bytes of a scratch lease it filled.
+    let bytes = unsafe { slice::from_raw_parts(id_ptr, 16) };
+    bytes.try_into().map_err(|_| Errno::EFAULT)
+}
+
+fn write_exchange_id(out_ptr: *mut u8, out_len: u32, id: &crate::exchange::ids::ExchangeId) -> Result<(), Errno> {
+    if out_ptr.is_null() {
+        return Err(Errno::EFAULT);
+    }
+    if out_len != 16 {
+        return Err(Errno::EINVAL);
+    }
+    // SAFETY: the host passes 16 writable bytes of a scratch lease.
+    unsafe { slice::from_raw_parts_mut(out_ptr, 16) }.copy_from_slice(id);
+    Ok(())
+}
+
+fn errno_result(result: Result<i32, Errno>) -> i32 {
+    result.unwrap_or_else(|error| -(error as i32))
+}
+
+/// Start this boot's exchange state with a nonce from the host's random
+/// source, so exchange IDs from different boots never validate.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_init(nonce_lo: u32, nonce_hi: u32) -> i32 {
+    crate::exchange::batches::init((u64::from(nonce_hi) << 32) | u64::from(nonce_lo));
+    0
+}
+
+/// Set the bytes `work/` and `outbox/` may hold (the host's quota).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_configure(limit_lo: u32, limit_hi: u32) -> i32 {
+    let limit = (u64::from(limit_hi) << 32) | u64::from(limit_lo);
+    errno_result(crate::tmpfs::set_byte_limit(crate::exchange::MOUNT_PATH, Some(limit)).map(|()| 0))
+}
+
+/// Whether a host output listener exists (nonzero) or not. The consumer is
+/// told with an `outputs` line.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_set_listener(present: i32) -> i32 {
+    crate::exchange::device::set_outputs_accepting(present != 0);
+    0
+}
+
+/// 1 while a consumer holds `events`, else 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_consumer_present() -> i32 {
+    i32::from(crate::exchange::device::consumer_present())
+}
+
+/// Begin staging a batch offered by `label` (`drop`, `picker`, `paste`,
+/// `share`, `api`). Writes its 16-byte ID at `out_id_ptr`. Each pointer is
+/// followed by its byte length, as every scratch-lease export's is.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_begin(
+    label_ptr: *const u8,
+    label_len: u32,
+    out_id_ptr: *mut u8,
+    out_id_len: u32,
+    now_lo: u32,
+    now_hi: u32,
+) -> i32 {
+    if label_ptr.is_null() && label_len != 0 {
+        return -(Errno::EFAULT as i32);
+    }
+    // SAFETY: the host passes a range of a scratch lease it filled.
+    let label = if label_len == 0 { &[][..] } else { unsafe { slice::from_raw_parts(label_ptr, label_len as usize) } };
+    let now = (u64::from(now_hi) << 32) | u64::from(now_lo);
+    errno_result(crate::exchange::batches::begin(label, now).and_then(|id| write_exchange_id(out_id_ptr, out_id_len, &id)).map(|()| 0))
+}
+
+/// Stage one entry record (see `exchange::wire`). Writes the entry's
+/// 16-byte ID at `out_id_ptr`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_add_entry(
+    record_ptr: *const u8,
+    record_len: u32,
+    out_id_ptr: *mut u8,
+    out_id_len: u32,
+    now_lo: u32,
+    now_hi: u32,
+) -> i32 {
+    if record_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    // SAFETY: the host passes a range of a scratch lease it filled.
+    let record = unsafe { slice::from_raw_parts(record_ptr, record_len as usize) };
+    let now = (u64::from(now_hi) << 32) | u64::from(now_lo);
+    errno_result(
+        crate::exchange::wire::decode_entry(record)
+            .and_then(|(batch, entry)| crate::exchange::batches::add_entry(&batch, entry, now))
+            .and_then(|id| write_exchange_id(out_id_ptr, out_id_len, &id))
+            .map(|()| 0),
+    )
+}
+
+/// Commit a staged batch: 0 when it is visible now, 1 when it waits for a
+/// consumer. `-ENXIO` when nothing could ever consume it: activation is on,
+/// no executable is at the agent path, and no consumer holds `events`. The
+/// host wakes parked readers afterwards.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_commit(id_ptr: *const u8, id_len: u32) -> i32 {
+    if !crate::exchange::device::consumer_present()
+        && crate::exchange::activation::mode() == crate::exchange::activation::Mode::OnDemand
+        && !exchange_agent_available(&mut WasmHostIO)
+    {
+        return -(Errno::ENXIO as i32);
+    }
+    errno_result(exchange_id_at(id_ptr, id_len).and_then(|id| crate::exchange::batches::commit(&id)).map(|committed| match committed {
+        crate::exchange::batches::Committed::Now => 0,
+        crate::exchange::batches::Committed::Pending => 1,
+    }))
+}
+
+/// Whether an executable is at the agent path: ordinary path resolution and
+/// exec permission, as root, from `/`.
+fn exchange_agent_available(host: &mut WasmHostIO) -> bool {
+    let init = inspection_init();
+    crate::syscalls::inspect_namespace_stat(init, host, crate::exchange::activation::AGENT_PATH, true)
+        .and_then(|stat| crate::syscalls::check_prepared_exec_stat(init, &stat))
+        .is_ok()
+}
+
+/// Create the agent's process record: a child of init, argv the agent path,
+/// stdin, stdout and stderr on `/dev/null`.
+fn create_exchange_agent(host: &mut WasmHostIO) -> Result<u32, Errno> {
+    use wasm_posix_shared::flags::{O_RDONLY, O_WRONLY};
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let pid = table.create_init_child(alloc::vec![crate::exchange::activation::AGENT_PATH.to_vec()])?;
+    let opened = (|| {
+        let child = table.get_mut(pid).ok_or(Errno::ESRCH)?;
+        for (fd, flags) in [(0, O_RDONLY), (1, O_WRONLY), (2, O_WRONLY)] {
+            if crate::syscalls::sys_open(child, host, b"/dev/null", flags, 0)? != fd {
+                return Err(Errno::EIO);
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = opened {
+        let _ = table.remove_process(pid);
+        return Err(error);
+    }
+    Ok(pid)
+}
+
+/// The embedder's `exchange.activation`: 0 off, 1 on demand.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_configure_activation(mode: i32) -> i32 {
+    use crate::exchange::activation::{configure, Mode};
+    match mode {
+        0 => configure(Mode::Off),
+        1 => configure(Mode::OnDemand),
+        _ => return -(Errno::EINVAL as i32),
+    }
+    0
+}
+
+/// Decide about activation at `now`: returns the pid of an agent process the
+/// host must launch (a pending spawn child of init), or 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_activate(now_lo: u32, now_hi: u32) -> i32 {
+    use crate::exchange::activation::{self, Decision};
+    let now = (u64::from(now_hi) << 32) | u64::from(now_lo);
+    let mut host = WasmHostIO;
+    let available = exchange_agent_available(&mut host);
+    let decision = activation::decide(
+        now,
+        available,
+        crate::exchange::batches::awaiting_consumer(),
+        crate::exchange::device::consumer_present(),
+    );
+    match decision {
+        Decision::Launch => match create_exchange_agent(&mut host) {
+            Ok(pid) => {
+                activation::launched(pid);
+                pid as i32
+            }
+            Err(error) => {
+                activation::on_create_failed(error as u32);
+                0
+            }
+        },
+        Decision::Nothing => 0,
+    }
+}
+
+/// The host could not launch agent `pid` and removed its process record.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_agent_failed(pid: u32, errno: u32) -> i32 {
+    crate::exchange::activation::on_launch_failed(pid, errno);
+    0
+}
+
+/// Cancel a batch at any stage.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_cancel(id_ptr: *const u8, id_len: u32) -> i32 {
+    errno_result(exchange_id_at(id_ptr, id_len).and_then(|id| crate::exchange::batches::cancel(&id)).map(|()| 0))
+}
+
+/// 1 when notifications are waiting (and clears the flag), else 0.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_take_pending() -> i32 {
+    i32::from(crate::wakeup::take_exchange_pending())
+}
+
+/// Write as many whole notification records as fit; returns the bytes
+/// written, 0 when none remain.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_drain_notifications(out_ptr: *mut u8, out_len: u32) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    // SAFETY: the host passes a writable range of a scratch lease.
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    i32::try_from(crate::exchange::batches::drain_into(out)).unwrap_or(i32::MAX)
+}
+
+/// Read a published output's bytes at `offset`; returns the count, 0 at its
+/// end, `-ENOENT` once it is gone.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_read_output(
+    id_ptr: *const u8,
+    id_len: u32,
+    offset_lo: u32,
+    offset_hi: u32,
+    out_ptr: *mut u8,
+    out_len: u32,
+) -> i32 {
+    if out_ptr.is_null() && out_len != 0 {
+        return -(Errno::EFAULT as i32);
+    }
+    let offset = (u64::from(offset_hi) << 32) | u64::from(offset_lo);
+    let out: &mut [u8] = if out_len == 0 {
+        &mut []
+    } else {
+        // SAFETY: the host passes a writable range of a scratch lease.
+        unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) }
+    };
+    errno_result(
+        exchange_id_at(id_ptr, id_len)
+            .and_then(|id| crate::exchange::outputs::read_output(&id, offset, out))
+            .map(|count| i32::try_from(count).unwrap_or(i32::MAX)),
+    )
+}
+
+/// Write host bytes into input stream `source`'s FIFO: returns how many fit
+/// (possibly 0), `-ENOENT` once the source is released, `-EPIPE` after the
+/// host ended it. The host wakes parked readers afterwards.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_stream_push(
+    data_ptr: *const u8,
+    data_len: u32,
+    source_lo: u32,
+    source_hi: u32,
+) -> i32 {
+    if data_ptr.is_null() && data_len != 0 {
+        return -(Errno::EFAULT as i32);
+    }
+    // SAFETY: the host passes a range of a scratch lease it filled.
+    let data = if data_len == 0 { &[][..] } else { unsafe { slice::from_raw_parts(data_ptr, data_len as usize) } };
+    let source = (u64::from(source_hi) << 32) | u64::from(source_lo);
+    errno_result(
+        crate::exchange::streams::push_input(source, data).map(|count| i32::try_from(count).unwrap_or(i32::MAX)),
+    )
+}
+
+/// The host stream behind input `source` ended: cleanly (`failed` 0; readers
+/// see end-of-file) or with an error (readers see EIO).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_stream_end(source_lo: u32, source_hi: u32, failed: i32) -> i32 {
+    let source = (u64::from(source_hi) << 32) | u64::from(source_lo);
+    errno_result(crate::exchange::streams::end_input(source, failed != 0).map(|()| 0))
+}
+
+/// The host starts reading a streamed output: it becomes the FIFO's reader.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_stream_start(id_ptr: *const u8, id_len: u32) -> i32 {
+    errno_result(exchange_id_at(id_ptr, id_len).and_then(|id| crate::exchange::streams::start_output(&id)).map(|()| 0))
+}
+
+/// Read a streamed output: the byte count, 0 at its end (the writers
+/// closed), `-EAGAIN` while a writer may still write.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_stream_read(id_ptr: *const u8, id_len: u32, out_ptr: *mut u8, out_len: u32) -> i32 {
+    if out_ptr.is_null() || out_len == 0 {
+        return -(Errno::EINVAL as i32);
+    }
+    // SAFETY: the host passes a writable range of a scratch lease.
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    errno_result(exchange_id_at(id_ptr, id_len).and_then(|id| {
+        match crate::exchange::streams::read_output(&id, out)? {
+            crate::exchange::streams::OutputRead::Bytes(count) => Ok(i32::try_from(count).unwrap_or(i32::MAX)),
+            crate::exchange::streams::OutputRead::End => Ok(0),
+            crate::exchange::streams::OutputRead::Wait => Err(Errno::EAGAIN),
+        }
+    }))
+}
+
+/// Copy a streamed output's `user.kandelo.end` into `out`: its length,
+/// `-ENODATA` when the writer set none, `-ERANGE` if `out` is too small.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_output_end(id_ptr: *const u8, id_len: u32, out_ptr: *mut u8, out_len: u32) -> i32 {
+    if out_ptr.is_null() && out_len != 0 {
+        return -(Errno::EFAULT as i32);
+    }
+    errno_result(exchange_id_at(id_ptr, id_len).and_then(|id| {
+        let value = crate::exchange::outputs::end_state(&id)?.ok_or(Errno::ENODATA)?;
+        if value.len() > out_len as usize {
+            return Err(Errno::ERANGE);
+        }
+        // SAFETY: the host passes a writable range of a scratch lease.
+        unsafe { slice::from_raw_parts_mut(out_ptr, value.len()) }.copy_from_slice(&value);
+        Ok(i32::try_from(value.len()).unwrap_or(i32::MAX))
+    }))
+}
+
+/// The host's lease on an output ended: remove it from `outbox/`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exchange_release_output(id_ptr: *const u8, id_len: u32) -> i32 {
+    errno_result(exchange_id_at(id_ptr, id_len).and_then(|id| crate::exchange::outputs::release_output(&id)).map(|()| 0))
 }
 
 // ---------------------------------------------------------------------------

@@ -1174,6 +1174,22 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     });
   }
 
+  // Kandelo exchange: range requests for offered sources and the kernel's
+  // notifications go to the main thread, which owns the sources and leases.
+  kernelWorker.setExchangeHandlers({
+    requestRange: (source, offset, length) => {
+      post({ type: "exchange_range_request", source, offset, length });
+    },
+    onNotifications: (notifications) => {
+      post({ type: "exchange_notifications", notifications });
+    },
+  });
+  if (msg.config.exchangeActivation !== undefined) {
+    kernelWorker.setExchangeActivation(msg.config.exchangeActivation);
+  }
+  if (msg.config.exchangeByteLimit !== undefined) {
+    kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
+  }
   await kernelWorker.init(msg.kernelWasmBytes);
   finalizeRootfsTransport?.();
 
@@ -3793,6 +3809,29 @@ async function handleClipboardGuestWait(
   }
 }
 
+async function handleExchangeRequest(
+  msg: Extract<MainToKernelMessage, { type: "exchange_request" }>,
+) {
+  if (!initReady) {
+    respondError(msg.requestId, "exchange requires an initialized kernel");
+    return;
+  }
+  try {
+    respond(msg.requestId, await kernelWorker.exchangeRequest(msg.request));
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function handleExchangeRange(msg: Extract<MainToKernelMessage, { type: "exchange_range" }>) {
+  if (!initReady) return;
+  if (msg.bytes !== undefined) {
+    kernelWorker.exchangeFulfillRange(msg.source, msg.offset, msg.requested, msg.bytes);
+  } else {
+    kernelWorker.exchangeFailRange(msg.source, msg.errno);
+  }
+}
+
 async function handleClipboardOffer(
   msg: Extract<MainToKernelMessage, { type: "clipboard_offer" }>,
 ) {
@@ -4487,6 +4526,8 @@ sw.onmessage = (e: MessageEvent) => {
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
     case "clipboard_offer": void handleClipboardOffer(msg); break;
+    case "exchange_request": void handleExchangeRequest(msg); break;
+    case "exchange_range": handleExchangeRange(msg); break;
     case "clipboard_guest_wait": void handleClipboardGuestWait(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;
     case "set_stdin_data": kernelWorker.setStdinData(msg.pid, msg.data); break;

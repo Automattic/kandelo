@@ -1,3 +1,5 @@
+import { DEFAULT_KERNEL_MAX_PAGES } from "./constants";
+import { ExchangeController, exchangeByteLimit } from "./exchange-controller";
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
@@ -176,6 +178,14 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /**
+   * Kandelo exchange: whether the platform may start the image's agent
+   * (`/usr/libexec/kandelo/exchange-agent`) when a batch needs a consumer.
+   * `"on-demand"` (the default) or `"off"`, fixed for the machine's
+   * lifetime. Embedder code only: never derived from a boot descriptor,
+   * shared URL, or image file.
+   */
+  exchange?: { activation?: "on-demand" | "off" };
   /** Exact image/scratch mount contract. Requires `rootfsImage`. */
   rootfsMountSpec?: readonly MountSpec[];
   /**
@@ -258,6 +268,18 @@ export class NodeKernelHost {
   private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
   private exitSequence = 0;
   private _nextRequestId = 1;
+  /**
+   * Kandelo exchange: offer files to the guest and receive what it
+   * publishes. The same interface on Node.js and in the browser.
+   */
+  readonly exchange: ExchangeController = new ExchangeController({
+    request: (request) => {
+      const requestId = this._nextRequestId++;
+      return this.request(requestId, { type: "exchange_request", requestId, request });
+    },
+    // ArrayBuffers are transferable under both the DOM and worker_threads types.
+    sendRange: (message, transfer) => this.sendToWorker(message, transfer as unknown as Parameters<NodeKernelHost["sendToWorker"]>[1]),
+  });
   private options: NodeKernelHostOptions;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
   private destroyProgress = createDestroyProgressFanout();
@@ -450,6 +472,8 @@ export class NodeKernelHost {
             imageBuildDeterminism: validImageBuildDeterminism(
               this.options.imageBuildDeterminism,
             ),
+            exchangeByteLimit: exchangeByteLimit(DEFAULT_KERNEL_MAX_PAGES),
+            exchangeActivation: this.options.exchange?.activation ?? "on-demand",
           },
           execPrograms: this.options.execPrograms,
           execProgramBytes,
@@ -1361,6 +1385,12 @@ export class NodeKernelHost {
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
+      case "exchange_range_request":
+        this.exchange.handleRangeRequest(msg.source, msg.offset, msg.length);
+        break;
+      case "exchange_notifications":
+        this.exchange.handleNotifications(msg.notifications);
+        break;
       case "ready":
       case "init_error":
         // The temporary init listener resolves readiness. The permanent

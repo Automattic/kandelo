@@ -33,7 +33,7 @@ use core::cell::UnsafeCell;
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use wasm_posix_shared::mode::{S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
+use wasm_posix_shared::mode::{S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::WasmStat;
 use wasm_posix_shared::WasmStatfs;
@@ -58,7 +58,7 @@ fn dirent_type(inode: &Inode) -> u8 {
     match inode.kind {
         InodeKind::Dir(_) => DT_DIR as u8,
         InodeKind::Symlink(_) => DT_LNK as u8,
-        InodeKind::Regular(_) => DT_REG as u8,
+        InodeKind::Regular(_) | InodeKind::HostBacked { .. } => DT_REG as u8,
         InodeKind::Special(type_bits) => {
             if type_bits & S_IFMT == S_IFSOCK {
                 DT_SOCK as u8
@@ -86,17 +86,41 @@ struct ScratchMount {
     uid: u32,
     gid: u32,
     st_dev: u64,
+    /// `statfs` `f_type`.
+    magic: u32,
+    /// Nodes created with the mount root, in order (parents first). Empty for
+    /// ordinary scratch mounts, which start empty.
+    layout: &'static [LayoutNode],
+    /// Default limit on regular-file content bytes; `None` is unlimited
+    /// beyond kernel memory.
+    byte_limit: Option<u64>,
 }
 
-/// Mirror of the `scratch` entries in `host/src/vfs/default-mounts.ts`.
+/// A node a mount comes up with: a directory or a device-like file whose
+/// open is served by a kernel virtual device (see `syscalls::VirtualDevice`).
+struct LayoutNode {
+    /// Mount-relative path without a leading slash.
+    path: &'static [u8],
+    /// `S_IFDIR` or `S_IFCHR`.
+    type_bits: u32,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+}
+
+const TMPFS_MAGIC: u32 = 0x0102_1994;
+const NO_LAYOUT: &[LayoutNode] = &[];
+
+/// Mirror of the `scratch` entries in `host/src/vfs/default-mounts.ts`, plus
+/// the kernel-owned exchange mount, which has no host counterpart.
 const SCRATCH_MOUNTS: &[ScratchMount] = &[
-    ScratchMount { prefix: b"/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE },
-    ScratchMount { prefix: b"/var/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 1 },
-    ScratchMount { prefix: b"/var/log", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 2 },
-    ScratchMount { prefix: b"/var/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3 },
-    ScratchMount { prefix: b"/home/maker", mode: 0o755, uid: 1000, gid: 1000, st_dev: TMPFS_DEV_BASE + 4 },
-    ScratchMount { prefix: b"/root", mode: 0o700, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 5 },
-    ScratchMount { prefix: b"/srv", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 6 },
+    ScratchMount { prefix: b"/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/var/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 1, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/var/log", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 2, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/var/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/home/maker", mode: 0o755, uid: 1000, gid: 1000, st_dev: TMPFS_DEV_BASE + 4, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/root", mode: 0o700, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 5, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/srv", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 6, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
     // POSIX shared memory. Sticky and world-writable like `/tmp`, and served
     // here for the same reason: the kernel owns `/` and every other scratch
     // prefix, so `/dev/shm` is tmpfs like the rest. `MAP_SHARED` mappings of
@@ -104,11 +128,110 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
     // coherent by the kernel's shared-mapping table
     // (`memory::SharedMappingTable`), which pins the inode (`pin_mapping`) and
     // watches its content generation (`content_generation`).
-    ScratchMount { prefix: b"/dev/shm", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 7 },
+    ScratchMount { prefix: b"/dev/shm", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 7, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    // Kandelo exchange (`crate::exchange`): files moving into and out of the
+    // machine. Kernel-owned; the host mounts nothing here.
+    ScratchMount {
+        prefix: crate::exchange::MOUNT_PATH,
+        mode: 0o755,
+        uid: 0,
+        gid: 0,
+        st_dev: TMPFS_DEV_BASE + 8,
+        magic: crate::exchange::FS_MAGIC,
+        layout: EXCHANGE_LAYOUT,
+        byte_limit: Some(crate::exchange::DEFAULT_BYTE_LIMIT),
+    },
 ];
 
+const EXCHANGE_LAYOUT: &[LayoutNode] = {
+    use crate::exchange::EXCHANGE_GID as G;
+    &[
+        LayoutNode { path: b"events", type_bits: S_IFCHR, mode: 0o440, uid: 0, gid: G },
+        LayoutNode { path: b"inbox", type_bits: S_IFDIR, mode: 0o770, uid: 0, gid: G },
+        LayoutNode { path: b"work", type_bits: S_IFDIR, mode: 0o750, uid: 0, gid: G },
+        LayoutNode { path: b"work/clone", type_bits: S_IFCHR, mode: 0o440, uid: 0, gid: G },
+        LayoutNode { path: b"outbox", type_bits: S_IFDIR, mode: 0o770, uid: 0, gid: G },
+    ]
+};
+
+/// A directory's entries. Each entry gets a getdents cookie when it is
+/// created and keeps it until it is removed, so removing entries while a
+/// reader walks the directory never shifts the others (POSIX: every entry
+/// not removed is returned exactly once), and a listing resumes from its
+/// cookie without rebuilding the directory.
+#[derive(Default)]
+struct DirEntries {
+    /// Child inode index and cookie, by name.
+    by_name: BTreeMap<Vec<u8>, (u32, u64)>,
+    /// Names in creation order, by cookie.
+    by_cookie: BTreeMap<u64, Vec<u8>>,
+    next_cookie: u64,
+}
+
+impl DirEntries {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Point `name` at `idx`. A new name gets the next cookie; a replaced
+    /// one (rename over an existing entry) keeps its own.
+    fn insert(&mut self, name: Vec<u8>, idx: u32) -> Option<u32> {
+        if let Some(entry) = self.by_name.get_mut(&name) {
+            return Some(core::mem::replace(&mut entry.0, idx));
+        }
+        let cookie = self.next_cookie;
+        self.next_cookie += 1;
+        self.by_cookie.insert(cookie, name.clone());
+        self.by_name.insert(name, (idx, cookie));
+        None
+    }
+
+    fn remove(&mut self, name: &[u8]) -> Option<u32> {
+        let (idx, cookie) = self.by_name.remove(name)?;
+        self.by_cookie.remove(&cookie);
+        Some(idx)
+    }
+
+    fn get(&self, name: &[u8]) -> Option<&u32> {
+        self.by_name.get(name).map(|(idx, _)| idx)
+    }
+
+    fn contains_key(&self, name: &[u8]) -> bool {
+        self.by_name.contains_key(name)
+    }
+
+    fn len(&self) -> usize {
+        self.by_name.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.by_name.is_empty()
+    }
+
+    /// Entries by name.
+    fn iter(&self) -> impl Iterator<Item = (&Vec<u8>, &u32)> {
+        self.by_name.iter().map(|(name, (idx, _))| (name, idx))
+    }
+
+    fn values(&self) -> impl Iterator<Item = &u32> {
+        self.by_name.values().map(|(idx, _)| idx)
+    }
+
+    /// The child inode indexes, consuming the directory.
+    fn into_children(self) -> impl Iterator<Item = u32> {
+        self.by_name.into_values().map(|(idx, _)| idx)
+    }
+
+    /// Entries whose cookie is at least `first`, in cookie order.
+    fn from_cookie(&self, first: u64) -> impl Iterator<Item = (u64, &Vec<u8>, u32)> {
+        self.by_cookie
+            .range(first..)
+            .map(move |(&cookie, name)| (cookie, name, self.by_name[name].0))
+    }
+}
+
 enum InodeKind {
-    Dir(BTreeMap<Vec<u8>, u32>),
+    Dir(DirEntries),
     Regular(Vec<u8>),
     /// Symbolic link holding its target path bytes.
     Symlink(Vec<u8>),
@@ -116,6 +239,10 @@ enum InodeKind {
     /// bits are stored; the communication endpoint lives in the socket registry
     /// or fifo table, keyed by path.
     Special(u32),
+    /// A regular file whose bytes stay with the host (an exchange input) and
+    /// are read on demand by source id through the byte-source callback
+    /// [`read`] takes. Its content never changes, so writes are EPERM.
+    HostBacked { source: u64, size: u64 },
 }
 
 struct Inode {
@@ -137,6 +264,14 @@ struct Inode {
     map_pins: u32,
     /// Bumped by every content mutation (see [`content_generation`]).
     content_gen: u64,
+    /// Extended attributes, by full name (`user.mime_type`). Only the
+    /// exchange mount stores any; which names a caller may read or change is
+    /// the exchange layer's decision, not this store's.
+    xattrs: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Set when an exchange output is published: content, metadata, and
+    /// extended attributes can no longer change (EPERM). Names can still be
+    /// removed, which is how a guest withdraws an output.
+    frozen: bool,
     st_dev: u64,
     ino: u64,
     atime_sec: u64,
@@ -161,6 +296,8 @@ impl Inode {
             open_count: 0,
             map_pins: 0,
             content_gen: 0,
+            xattrs: BTreeMap::new(),
+            frozen: false,
             st_dev,
             ino,
             atime_sec: sec,
@@ -206,13 +343,14 @@ impl Inode {
     fn stat(&self) -> WasmStat {
         let type_bits = match self.kind {
             InodeKind::Dir(_) => S_IFDIR,
-            InodeKind::Regular(_) => S_IFREG,
+            InodeKind::Regular(_) | InodeKind::HostBacked { .. } => S_IFREG,
             InodeKind::Symlink(_) => S_IFLNK,
             InodeKind::Special(type_bits) => type_bits,
         };
         let size = match &self.kind {
             InodeKind::Dir(entries) => entries.len() as u64,
             InodeKind::Regular(data) => data.len() as u64,
+            InodeKind::HostBacked { size, .. } => *size,
             InodeKind::Symlink(target) => target.len() as u64,
             InodeKind::Special(_) => 0,
         };
@@ -240,6 +378,11 @@ impl Inode {
     fn is_dir(&self) -> bool {
         matches!(self.kind, InodeKind::Dir(_))
     }
+
+    /// EPERM for a frozen inode.
+    fn check_mutable(&self) -> Result<(), Errno> {
+        if self.frozen { Err(Errno::EPERM) } else { Ok(()) }
+    }
 }
 
 /// A materialized directory stream: a snapshot of entries plus a cursor. Taken
@@ -258,6 +401,13 @@ struct TmpfsState {
     mount_roots: Vec<Option<u32>>,
     /// Open directory streams keyed by dir-iter index.
     dir_iters: Vec<Option<DirIter>>,
+    /// Sources of host-backed files freed since the last
+    /// [`take_released_sources`]: no name and no open description remain.
+    released_sources: Vec<u64>,
+    /// Bytes of regular-file content per mount (host-backed files hold none).
+    mount_bytes: Vec<u64>,
+    /// Content-byte limit per mount, where one is set (see [`set_byte_limit`]).
+    byte_limits: Vec<Option<u64>>,
     free_dir_iters: Vec<u32>,
     next_ino: u64,
 }
@@ -270,6 +420,9 @@ impl TmpfsState {
             mount_roots: alloc::vec![None; SCRATCH_MOUNTS.len()],
             dir_iters: Vec::new(),
             free_dir_iters: Vec::new(),
+            released_sources: Vec::new(),
+            mount_bytes: alloc::vec![0; SCRATCH_MOUNTS.len()],
+            byte_limits: SCRATCH_MOUNTS.iter().map(|mount| mount.byte_limit).collect(),
             next_ino: 1,
         }
     }
@@ -327,8 +480,42 @@ impl TmpfsState {
             .map(|inode| inode.nlink == 0 && inode.open_count == 0 && inode.map_pins == 0)
             .unwrap_or(false);
         if drop_it {
+            if let Some(Some(Inode { kind: InodeKind::HostBacked { source, .. }, .. })) =
+                self.inodes.get(idx as usize)
+            {
+                self.released_sources.push(*source);
+                // The host may still hold the source's bytes; tell it there
+                // is something to drain, whatever freed the file.
+                crate::wakeup::push_exchange_pending();
+            }
+            if let Some(Some(Inode { kind: InodeKind::Regular(data), st_dev, .. })) = self.inodes.get(idx as usize) {
+                let (st_dev, freed) = (*st_dev, data.len() as u64);
+                self.credit(st_dev, freed);
+            }
+            if let Some(Some(inode)) = self.inodes.get(idx as usize) {
+                let (st_dev, freed) = (inode.st_dev, xattr_bytes(&inode.xattrs));
+                self.credit(st_dev, freed);
+            }
             self.inodes[idx as usize] = None;
             self.free_inodes.push(idx);
+        }
+    }
+
+    /// Account `bytes` more content on the mount of `st_dev`, refusing growth
+    /// past its limit with ENOSPC.
+    fn charge(&mut self, st_dev: u64, bytes: u64) -> Result<(), Errno> {
+        let Some(mount) = mount_of_dev(st_dev) else { return Ok(()) };
+        let used = self.mount_bytes[mount].checked_add(bytes).ok_or(Errno::ENOSPC)?;
+        if self.byte_limits[mount].is_some_and(|limit| used > limit) {
+            return Err(Errno::ENOSPC);
+        }
+        self.mount_bytes[mount] = used;
+        Ok(())
+    }
+
+    fn credit(&mut self, st_dev: u64, bytes: u64) {
+        if let Some(mount) = mount_of_dev(st_dev) {
+            self.mount_bytes[mount] = self.mount_bytes[mount].saturating_sub(bytes);
         }
     }
 
@@ -341,7 +528,7 @@ impl TmpfsState {
         let ino = self.alloc_ino();
         // A fresh directory has two links: its own entry and `.`.
         let root = self.insert_inode(Inode::new(
-            InodeKind::Dir(BTreeMap::new()),
+            InodeKind::Dir(DirEntries::new()),
             mount.mode,
             mount.uid,
             mount.gid,
@@ -350,7 +537,33 @@ impl TmpfsState {
             ino,
         ));
         self.mount_roots[mount_idx] = Some(root);
+        for node in mount.layout {
+            self.insert_layout_node(root, node, mount.st_dev);
+        }
         root
+    }
+
+    /// Create one fixed layout node under `root`. Its parent comes earlier in
+    /// the layout, so the walk cannot fail for a well-formed table.
+    fn insert_layout_node(&mut self, root: u32, node: &LayoutNode, st_dev: u64) {
+        let comps = split_components(node.path);
+        let (parent_comps, last) = comps.split_at(comps.len() - 1);
+        let parent = self.walk(root, parent_comps).expect("layout parent precedes child");
+        let ino = self.alloc_ino();
+        let (kind, nlink) = if node.type_bits == S_IFDIR {
+            (InodeKind::Dir(DirEntries::new()), 2)
+        } else {
+            (InodeKind::Special(node.type_bits), 1)
+        };
+        let idx = self.insert_inode(Inode::new(kind, node.mode, node.uid, node.gid, nlink, st_dev, ino));
+        if node.type_bits == S_IFDIR {
+            if let Some(parent_inode) = self.get_mut(parent) {
+                parent_inode.nlink += 1;
+            }
+        }
+        if let Some(InodeKind::Dir(entries)) = self.get_mut(parent).map(|inode| &mut inode.kind) {
+            entries.insert(last[0].to_vec(), idx);
+        }
     }
 
     /// Walk `components` from `mount_root`, returning the target inode index.
@@ -433,6 +646,28 @@ impl TmpfsGlobal {
 unsafe impl Sync for TmpfsGlobal {}
 
 static TMPFS: TmpfsGlobal = TmpfsGlobal::new();
+
+/// The mount whose synthetic `st_dev` this is.
+fn mount_of_dev(st_dev: u64) -> Option<usize> {
+    let index = usize::try_from(st_dev.checked_sub(TMPFS_DEV_BASE)?).ok()?;
+    (index < SCRATCH_MOUNTS.len()).then_some(index)
+}
+
+/// Limit the regular-file content bytes of the mount at `prefix` (the host
+/// configures the exchange quota at boot). EINVAL for an unknown mount.
+pub fn set_byte_limit(prefix: &[u8], limit: Option<u64>) -> Result<(), Errno> {
+    let index = SCRATCH_MOUNTS.iter().position(|mount| mount.prefix == prefix).ok_or(Errno::EINVAL)?;
+    TMPFS.with(|state| {
+        state.byte_limits[index] = limit;
+        Ok(())
+    })
+}
+
+/// `(bytes used, limit)` for the mount containing `path`.
+pub fn byte_usage(path: &[u8]) -> Result<(u64, Option<u64>), Errno> {
+    let (index, _) = match_mount(path).ok_or(Errno::ENOENT)?;
+    TMPFS.with(|state| Ok((state.mount_bytes[index], state.byte_limits[index])))
+}
 
 /// Split a canonical mount-relative remainder into non-empty components.
 fn split_components(rel: &[u8]) -> Vec<&[u8]> {
@@ -584,6 +819,13 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                 if matches!(inode.kind, InodeKind::Special(_)) {
                     return Err(Errno::ENXIO);
                 }
+                // A host-backed or frozen file's content cannot change,
+                // whoever asks.
+                if (matches!(inode.kind, InodeKind::HostBacked { .. }) || inode.frozen)
+                    && (flags & O_ACCMODE != O_RDONLY || flags & O_TRUNC != 0)
+                {
+                    return Err(Errno::EPERM);
+                }
                 if inode.is_dir() {
                     if flags & O_ACCMODE != O_RDONLY {
                         return Err(Errno::EISDIR);
@@ -592,6 +834,13 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
                     return Err(Errno::ENOTDIR);
                 }
                 if flags & O_TRUNC != 0 && !inode.is_dir() && flags & O_ACCMODE != O_RDONLY {
+                    let freed = match state.get(existing).map(|node| (&node.kind, node.st_dev)) {
+                        Some((InodeKind::Regular(data), st_dev)) => Some((st_dev, data.len() as u64)),
+                        _ => None,
+                    };
+                    if let Some((st_dev, bytes)) = freed {
+                        state.credit(st_dev, bytes);
+                    }
                     if let Some(node) = state.get_mut(existing) {
                         if let InodeKind::Regular(data) = &mut node.kind {
                             // O_TRUNC on an already-empty file is a no-op and
@@ -647,24 +896,236 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
 }
 
 /// Read up to `buf.len()` bytes at `offset`. Returns the number read (0 at EOF).
-pub fn read(handle: i64, offset: i64, buf: &mut [u8]) -> Result<usize, Errno> {
+/// Reads `buf.len()` bytes at an offset of a host-backed file's source:
+/// `(source, offset, buf)`. May return EAGAIN while the host fetches them.
+pub type SourceRead<'a> = dyn FnMut(u64, u64, &mut [u8]) -> Result<usize, Errno> + 'a;
+
+/// A byte source for callers that have no host: a host-backed file reads as
+/// an I/O error rather than as empty or stale bytes.
+pub fn no_source(_: u64, _: u64, _: &mut [u8]) -> Result<usize, Errno> {
+    Err(Errno::EIO)
+}
+
+pub fn read(handle: i64, offset: i64, buf: &mut [u8], source_read: &mut SourceRead<'_>) -> Result<usize, Errno> {
     let idx = file_handle_to_inode(handle)?;
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
-    TMPFS.with(|state| {
+    let host_backed = TMPFS.with(|state| {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
-        let InodeKind::Regular(data) = &inode.kind else {
-            return Err(Errno::EISDIR);
-        };
-        let start = offset as usize;
-        if start >= data.len() {
-            return Ok(0);
+        match &inode.kind {
+            InodeKind::Regular(data) => {
+                let start = offset as usize;
+                if start >= data.len() {
+                    return Ok(Err(0));
+                }
+                let n = core::cmp::min(buf.len(), data.len() - start);
+                buf[..n].copy_from_slice(&data[start..start + n]);
+                Ok(Err(n))
+            }
+            InodeKind::HostBacked { source, size } => Ok(Ok((*source, *size))),
+            _ => Err(Errno::EISDIR),
         }
-        let n = core::cmp::min(buf.len(), data.len() - start);
-        buf[..n].copy_from_slice(&data[start..start + n]);
-        Ok(n)
+    })?;
+    let (source, size) = match host_backed {
+        Err(copied) => return Ok(copied),
+        Ok(found) => found,
+    };
+    // Outside the tmpfs lock: the host may answer from a cache or EAGAIN.
+    let offset = offset as u64;
+    if offset >= size {
+        return Ok(0);
+    }
+    let want = core::cmp::min(buf.len() as u64, size - offset) as usize;
+    let n = source_read(source, offset, &mut buf[..want])?;
+    if n > want {
+        return Err(Errno::EIO);
+    }
+    Ok(n)
+}
+
+/// Create a host-backed regular file at a tmpfs path. EEXIST if taken.
+pub fn create_host_backed(
+    path: &[u8],
+    source: u64,
+    size: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    mtime: (u64, u32),
+) -> Result<(), Errno> {
+    let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
+    let comps = split_components(rel);
+    if comps.is_empty() {
+        return Err(Errno::EEXIST);
+    }
+    TMPFS.with(|state| {
+        let (parent, last, existing) = state.resolve(mount_idx, &comps)?;
+        if existing.is_some() {
+            return Err(Errno::EEXIST);
+        }
+        let last = last.ok_or(Errno::ENOENT)?;
+        let st_dev = SCRATCH_MOUNTS[mount_idx].st_dev;
+        let ino = state.alloc_ino();
+        let mut inode = Inode::new(InodeKind::HostBacked { source, size }, mode & 0o7777, uid, gid, 1, st_dev, ino);
+        inode.mtime_sec = mtime.0;
+        inode.mtime_nsec = mtime.1;
+        let new_idx = state.insert_inode(inode);
+        match state.get_mut(parent).map(|i| &mut i.kind) {
+            Some(InodeKind::Dir(entries)) => {
+                entries.insert(last.to_vec(), new_idx);
+                Ok(())
+            }
+            _ => Err(Errno::ENOTDIR),
+        }
     })
+}
+
+fn with_inode_at<R>(path: &[u8], f: impl FnOnce(&mut Inode) -> Result<R, Errno>) -> Result<R, Errno> {
+    let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
+    let comps = split_components(rel);
+    TMPFS.with(|state| {
+        let (_, _, target) = state.resolve(mount_idx, &comps)?;
+        let inode = state.get_mut(target.ok_or(Errno::ENOENT)?).ok_or(Errno::ENOENT)?;
+        f(inode)
+    })
+}
+
+fn with_inode_handle<R>(handle: i64, f: impl FnOnce(&mut Inode) -> Result<R, Errno>) -> Result<R, Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| f(state.get_mut(idx).ok_or(Errno::EBADF)?))
+}
+
+/// The extended attribute `name` of the inode at `path` (not following a
+/// final symlink: the caller resolved the path). ENODATA if absent.
+pub fn xattr_get(path: &[u8], name: &[u8]) -> Result<Vec<u8>, Errno> {
+    with_inode_at(path, |inode| inode.xattrs.get(name).cloned().ok_or(Errno::ENODATA))
+}
+
+/// Every extended attribute name of the inode at `path`.
+pub fn xattr_names(path: &[u8]) -> Result<Vec<Vec<u8>>, Errno> {
+    with_inode_at(path, |inode| Ok(inode.xattrs.keys().cloned().collect()))
+}
+
+/// Set or replace an extended attribute; stamps ctime like Linux.
+pub fn xattr_set(path: &[u8], name: &[u8], value: &[u8]) -> Result<(), Errno> {
+    with_state_at(path, |state, idx| store_xattr(state, idx, name, Some(value), true))
+}
+
+/// Extended attributes a single inode may hold.
+pub const MAX_XATTRS_PER_INODE: usize = 64;
+
+/// Bytes extended attributes occupy: names and values, charged against the
+/// mount's quota like file content.
+fn xattr_bytes(xattrs: &BTreeMap<Vec<u8>, Vec<u8>>) -> u64 {
+    xattrs.iter().map(|(name, value)| (name.len() + value.len()) as u64).sum()
+}
+
+fn with_state_at<R>(path: &[u8], f: impl FnOnce(&mut TmpfsState, u32) -> Result<R, Errno>) -> Result<R, Errno> {
+    let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
+    let comps = split_components(rel);
+    TMPFS.with(|state| {
+        let (_, _, target) = state.resolve(mount_idx, &comps)?;
+        f(state, target.ok_or(Errno::ENOENT)?)
+    })
+}
+
+/// Set (`Some`) or remove (`None`) one extended attribute, charging the size
+/// change against the mount's quota (ENOSPC beyond it, or beyond
+/// [`MAX_XATTRS_PER_INODE`] names). `enforce_frozen` is false only for the
+/// kernel's own records on frozen outputs.
+fn store_xattr(state: &mut TmpfsState, idx: u32, name: &[u8], value: Option<&[u8]>, enforce_frozen: bool) -> Result<(), Errno> {
+    let inode = state.get(idx).ok_or(Errno::ENOENT)?;
+    if enforce_frozen {
+        inode.check_mutable()?;
+    }
+    let st_dev = inode.st_dev;
+    let old = inode.xattrs.get(name).map(|old| (name.len() + old.len()) as u64);
+    match value {
+        None => {
+            let freed = old.ok_or(Errno::ENODATA)?;
+            let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+            inode.xattrs.remove(name);
+            inode.touch_changed();
+            state.credit(st_dev, freed);
+        }
+        Some(value) => {
+            if old.is_none() && inode.xattrs.len() >= MAX_XATTRS_PER_INODE {
+                return Err(Errno::ENOSPC);
+            }
+            let new = (name.len() + value.len()) as u64;
+            let old = old.unwrap_or(0);
+            if new > old {
+                state.charge(st_dev, new - old)?;
+            } else {
+                state.credit(st_dev, old - new);
+            }
+            let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+            inode.xattrs.insert(name.to_vec(), value.to_vec());
+            inode.touch_changed();
+        }
+    }
+    Ok(())
+}
+
+/// Remove an extended attribute. ENODATA if absent.
+pub fn xattr_remove(path: &[u8], name: &[u8]) -> Result<(), Errno> {
+    with_state_at(path, |state, idx| store_xattr(state, idx, name, None, true))
+}
+
+/// [`xattr_get`] on an open file.
+pub fn xattr_get_handle(handle: i64, name: &[u8]) -> Result<Vec<u8>, Errno> {
+    with_inode_handle(handle, |inode| inode.xattrs.get(name).cloned().ok_or(Errno::ENODATA))
+}
+
+/// [`xattr_names`] on an open file.
+pub fn xattr_names_handle(handle: i64) -> Result<Vec<Vec<u8>>, Errno> {
+    with_inode_handle(handle, |inode| Ok(inode.xattrs.keys().cloned().collect()))
+}
+
+/// [`xattr_set`] on an open file.
+pub fn xattr_set_handle(handle: i64, name: &[u8], value: &[u8]) -> Result<(), Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| store_xattr(state, idx, name, Some(value), true))
+}
+
+/// [`xattr_remove`] on an open file.
+pub fn xattr_remove_handle(handle: i64, name: &[u8]) -> Result<(), Errno> {
+    let idx = file_handle_to_inode(handle)?;
+    TMPFS.with(|state| store_xattr(state, idx, name, None, true))
+}
+
+/// Freeze the inode at `path`; see [`Inode::frozen`].
+pub fn freeze(path: &[u8]) -> Result<(), Errno> {
+    with_inode_at(path, |inode| {
+        inode.frozen = true;
+        Ok(())
+    })
+}
+
+/// Set an extended attribute even on a frozen inode. Kernel use only: the
+/// exchange layer's own record on a published output (its ID, a stream's
+/// end state).
+pub fn xattr_set_kernel(path: &[u8], name: &[u8], value: &[u8]) -> Result<(), Errno> {
+    with_state_at(path, |state, idx| store_xattr(state, idx, name, Some(value), false))
+}
+
+/// Whether nothing has the inode at `path` open or mapped.
+pub fn is_unreferenced(path: &[u8]) -> Result<bool, Errno> {
+    with_inode_at(path, |inode| Ok(inode.open_count == 0 && inode.map_pins == 0))
+}
+
+/// How many names the directory at `path` holds.
+pub fn dir_entry_count(path: &[u8]) -> Result<usize, Errno> {
+    with_inode_at(path, |inode| match &inode.kind {
+        InodeKind::Dir(entries) => Ok(entries.len()),
+        _ => Err(Errno::ENOTDIR),
+    })
+}
+
+/// Sources of host-backed files that have been freed since the last call.
+pub fn take_released_sources() -> Vec<u64> {
+    TMPFS.with(|state| core::mem::take(&mut state.released_sources))
 }
 
 /// Write `buf` at `offset`, growing (and zero-filling any gap) as needed.
@@ -674,15 +1135,35 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
         return Err(Errno::EINVAL);
     }
     TMPFS.with(|state| {
+        let (st_dev, growth) = {
+            let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            let end = (offset as usize).checked_add(buf.len()).ok_or(Errno::EFBIG)?;
+            let current = match &inode.kind {
+                InodeKind::Regular(data) => data.len(),
+                _ => end,
+            };
+            (inode.st_dev, end.saturating_sub(current) as u64)
+        };
+        if !state.get(idx).ok_or(Errno::EBADF)?.frozen {
+            state.charge(st_dev, growth)?;
+        }
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        if let Err(error) = inode.check_mutable() {
+            return Err(error);
+        }
         {
-            let InodeKind::Regular(data) = &mut inode.kind else {
-                return Err(Errno::EISDIR);
+            let data = match &mut inode.kind {
+                InodeKind::Regular(data) => data,
+                InodeKind::HostBacked { .. } => return Err(Errno::EPERM),
+                _ => return Err(Errno::EISDIR),
             };
             let start = offset as usize;
             let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
             if end > data.len() {
-                grow_file_bytes(data, end, Errno::ENOSPC)?;
+                if let Err(error) = grow_file_bytes(data, end, Errno::ENOSPC) {
+                    state.credit(st_dev, growth);
+                    return Err(error);
+                }
             }
             data[start..end].copy_from_slice(buf);
         }
@@ -704,7 +1185,8 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
 /// by owner and lands here for a scratch path.
 pub fn read_file_at(path: &[u8], offset: i64, buf: &mut [u8]) -> Result<usize, Errno> {
     let handle = open(path, O_RDONLY, 0, 0, 0)?;
-    let result = read(handle, offset, buf);
+    // The host serves host-backed files itself; it does not read them back.
+    let result = read(handle, offset, buf, &mut no_source);
     release_handle(handle);
     result
 }
@@ -743,6 +1225,7 @@ pub fn size(handle: i64) -> Result<i64, Errno> {
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
         match &inode.kind {
             InodeKind::Regular(data) => Ok(data.len() as i64),
+            InodeKind::HostBacked { size, .. } => i64::try_from(*size).map_err(|_| Errno::EOVERFLOW),
             _ => Err(Errno::EISDIR),
         }
     })
@@ -777,6 +1260,21 @@ pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
     TMPFS.with(|state| {
+        let (st_dev, old_len) = {
+            let inode = state.get(idx).ok_or(Errno::EBADF)?;
+            inode.check_mutable()?;
+            match &inode.kind {
+                InodeKind::Regular(data) => (inode.st_dev, data.len()),
+                _ => (inode.st_dev, new_len),
+            }
+        };
+        if new_len > old_len {
+            // Growth is real memory here, so it counts against the mount's
+            // limit (ENOSPC) as well as the file-size rule below (EFBIG).
+            state.charge(st_dev, (new_len - old_len) as u64)?;
+        } else {
+            state.credit(st_dev, (old_len - new_len) as u64);
+        }
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
         let changed = match &mut inode.kind {
             InodeKind::Regular(data) => {
@@ -786,6 +1284,7 @@ pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
                 grow_file_bytes(data, new_len, Errno::EFBIG)?;
                 old_len != new_len
             }
+            InodeKind::HostBacked { .. } => return Err(Errno::EPERM),
             _ => return Err(Errno::EISDIR),
         };
         // A truncate to the current size is a no-op and preserves set-ID bits.
@@ -843,7 +1342,7 @@ pub fn pin_mapping(handle: i64) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
-        if !matches!(inode.kind, InodeKind::Regular(_)) {
+        if !matches!(inode.kind, InodeKind::Regular(_) | InodeKind::HostBacked { .. }) {
             return Err(Errno::EBADF);
         }
         inode.map_pins = inode.map_pins.checked_add(1).ok_or(Errno::EOVERFLOW)?;
@@ -907,7 +1406,7 @@ pub fn mkdir(path: &[u8], mode: u32, uid: u32, gid: u32) -> Result<(), Errno> {
         let st_dev = SCRATCH_MOUNTS[mount_idx].st_dev;
         let ino = state.alloc_ino();
         let new_idx = state.insert_inode(Inode::new(
-            InodeKind::Dir(BTreeMap::new()),
+            InodeKind::Dir(DirEntries::new()),
             mode & 0o7777,
             uid,
             gid,
@@ -958,6 +1457,54 @@ pub fn rmdir(path: &[u8]) -> Result<(), Errno> {
             inode.nlink = 0;
         }
         state.maybe_free(target);
+        Ok(())
+    })
+}
+
+/// Remove a directory and everything beneath it, as `rm -r` would. Anything
+/// still open keeps working until its last close (POSIX unlink-while-open);
+/// only the names go now. Removes a kernel-owned subtree at once, such as an
+/// ended exchange work session, without a guest walking it.
+pub fn remove_tree(path: &[u8]) -> Result<(), Errno> {
+    let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
+    let comps = split_components(rel);
+    if comps.is_empty() {
+        return Err(Errno::EBUSY); // cannot remove a mount root
+    }
+    TMPFS.with(|state| {
+        let (parent, last, target) = state.resolve(mount_idx, &comps)?;
+        let target = target.ok_or(Errno::ENOENT)?;
+        let last = last.ok_or(Errno::ENOENT)?;
+        if !state.get(target).ok_or(Errno::ENOENT)?.is_dir() {
+            return Err(Errno::ENOTDIR);
+        }
+        if let Some(InodeKind::Dir(entries)) = state.get_mut(parent).map(|i| &mut i.kind) {
+            entries.remove(last);
+        }
+        if let Some(parent_inode) = state.get_mut(parent) {
+            parent_inode.nlink = parent_inode.nlink.saturating_sub(1);
+        }
+        let mut directories = alloc::vec![target];
+        while let Some(directory) = directories.pop() {
+            let children = match state.get_mut(directory).map(|i| &mut i.kind) {
+                Some(InodeKind::Dir(entries)) => core::mem::take(entries),
+                _ => DirEntries::new(),
+            };
+            for child in children.into_children() {
+                if state.get(child).is_some_and(Inode::is_dir) {
+                    directories.push(child);
+                } else {
+                    if let Some(inode) = state.get_mut(child) {
+                        inode.nlink = inode.nlink.saturating_sub(1);
+                    }
+                    state.maybe_free(child);
+                }
+            }
+            if let Some(inode) = state.get_mut(directory) {
+                inode.nlink = 0;
+            }
+            state.maybe_free(directory);
+        }
         Ok(())
     })
 }
@@ -1038,13 +1585,20 @@ pub fn mknod_special(
 /// Reports a generous nominal capacity (the store grows within kernel Wasm
 /// memory, not a fixed reservation), so free-space precondition checks pass.
 pub fn statfs(path: &[u8]) -> Result<WasmStatfs, Errno> {
-    match_mount(path).ok_or(Errno::ENOENT)?;
+    let (mount_idx, _) = match_mount(path).ok_or(Errno::ENOENT)?;
+    let (used, limit) = TMPFS.with(|state| (state.mount_bytes[mount_idx], state.byte_limits[mount_idx]));
+    // A limited mount reports its real capacity and use, so ENOSPC reads as
+    // what `df` shows; others report a nominal 1 GiB.
+    let (blocks, free) = match limit {
+        Some(limit) => (limit / 4096, limit.saturating_sub(used) / 4096),
+        None => (262_144, 262_144),
+    };
     Ok(WasmStatfs {
-        f_type: 0x0102_1994, // TMPFS_MAGIC
+        f_type: SCRATCH_MOUNTS[mount_idx].magic,
         f_bsize: 4096,
-        f_blocks: 262_144, // 1 GiB nominal at 4 KiB blocks
-        f_bfree: 262_144,
-        f_bavail: 262_144,
+        f_blocks: blocks,
+        f_bfree: free,
+        f_bavail: free,
         f_files: 65_536,
         f_ffree: 65_536,
         f_fsid: 0,
@@ -1258,6 +1812,7 @@ pub fn chmod(path: &[u8], mode: u32) -> Result<(), Errno> {
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.check_mutable()?;
         inode.mode = mode & 0o7777;
         inode.touch_changed();
         Ok(())
@@ -1269,6 +1824,7 @@ pub fn chown(path: &[u8], uid: u32, gid: u32, clear_setid: bool) -> Result<(), E
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.check_mutable()?;
         if uid != u32::MAX {
             inode.uid = uid;
         }
@@ -1298,6 +1854,7 @@ pub fn fchmod(handle: i64, mode: u32) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        inode.check_mutable()?;
         inode.mode = mode & 0o7777;
         inode.touch_changed();
         Ok(())
@@ -1309,6 +1866,7 @@ pub fn fchown(handle: i64, uid: u32, gid: u32, clear_setid: bool) -> Result<(), 
     let idx = file_handle_to_inode(handle)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::EBADF)?;
+        inode.check_mutable()?;
         if uid != u32::MAX {
             inode.uid = uid;
         }
@@ -1345,6 +1903,7 @@ pub fn utimensat(
     let idx = walk_to_inode(path)?;
     TMPFS.with(|state| {
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        inode.check_mutable()?;
         inode.atime_sec = atime_sec;
         inode.atime_nsec = atime_nsec;
         inode.mtime_sec = mtime_sec;
@@ -1426,31 +1985,59 @@ pub fn is_dir(path: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
-/// getdents64 for a tmpfs directory: build the entry list from the live store
-/// and hand it to the shared virtual-dirent formatter, which injects `.`/`..`
-/// and honors the cookie/short-buffer protocol. Returns
-/// `(bytes_written, new_cookie, exhausted)`.
+/// getdents64 for a tmpfs directory, from the live store. `.` and `..` come
+/// first (positions 0 and 1); every other entry sits at its stable cookie
+/// plus 2 (see [`DirEntries`]), and the listing resumes at the position the
+/// caller passes, so a reader that removes entries as it goes still sees
+/// every remaining one exactly once. Only the entries that fit in `buf` are
+/// visited. Returns `(bytes_written, new_cookie, exhausted)`.
 pub fn getdents64(path: &[u8], buf: &mut [u8], offset: i64) -> Result<(usize, i64, bool), Errno> {
+    if offset < 0 {
+        return Err(Errno::EINVAL);
+    }
     let (mount_idx, rel) = match_mount(path).ok_or(Errno::ENOENT)?;
     let comps = split_components(rel);
-    let (dir_ino, entries) = TMPFS.with(|state| {
+    TMPFS.with(|state| {
         let root = state.mount_root(mount_idx);
         let idx = state.walk(root, &comps)?;
         let dir = state.get(idx).ok_or(Errno::ENOENT)?;
-        let InodeKind::Dir(map) = &dir.kind else {
+        let InodeKind::Dir(entries) = &dir.kind else {
             return Err(Errno::ENOTDIR);
         };
         let dir_ino = dir.ino;
-        let mut out: Vec<(Vec<u8>, u8, u64)> = Vec::with_capacity(map.len());
-        for (name, &child_idx) in map.iter() {
-            let child = state.get(child_idx).ok_or(Errno::ENOENT)?;
-            out.push((name.clone(), dirent_type(child), child.ino));
+        let mut pos = 0usize;
+        let mut cookie = offset;
+        // `..` inode is not tracked across the tmpfs/host boundary; report the
+        // directory's own inode, which callers never rely on for `..`.
+        let dots: [(i64, &[u8]); 2] = [(0, b"."), (1, b"..")];
+        for (dot_cookie, name) in dots {
+            if cookie != dot_cookie {
+                continue;
+            }
+            let written = crate::procfs::write_dirent64(buf, pos, dir_ino, dot_cookie + 1, DT_DIR as u8, name);
+            if written == 0 {
+                return if pos == 0 { Err(Errno::EINVAL) } else { Ok((pos, cookie, false)) };
+            }
+            pos += written;
+            cookie = dot_cookie + 1;
         }
-        Ok((dir_ino, out))
-    })?;
-    // `..` inode is not tracked across the tmpfs/host boundary; report the
-    // directory's own inode, which callers never rely on for `..`.
-    crate::procfs::write_virtual_dirents64(buf, offset, dir_ino, dir_ino, &entries)
+        let first = u64::try_from(cookie.saturating_sub(2)).unwrap_or(0);
+        for (entry_cookie, name, child_idx) in entries.from_cookie(first) {
+            let position = i64::try_from(entry_cookie)
+                .map_err(|_| Errno::EOVERFLOW)?
+                .checked_add(2)
+                .ok_or(Errno::EOVERFLOW)?;
+            let next = position.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+            let child = state.get(child_idx).ok_or(Errno::ENOENT)?;
+            let written = crate::procfs::write_dirent64(buf, pos, child.ino, next, dirent_type(child), name);
+            if written == 0 {
+                return if pos == 0 { Err(Errno::EINVAL) } else { Ok((pos, position, false)) };
+            }
+            pos += written;
+            cookie = next;
+        }
+        Ok((pos, cookie, true))
+    })
 }
 
 /// Close a tmpfs directory stream.
@@ -1479,12 +2066,26 @@ mod tests {
     // These tests run against the process-global TMPFS. Each test uses a unique
     // path subtree so they remain independent even when run in one binary.
 
+    fn getdents_names(path: &[u8]) -> Vec<Vec<u8>> {
+        let handle = opendir(path).unwrap();
+        let mut names = Vec::new();
+        let mut buf = [0u8; 256];
+        while let Some((_, _, len)) = readdir(handle, &mut buf).unwrap() {
+            let name = buf[..len].to_vec();
+            if name != b"." && name != b".." {
+                names.push(name);
+            }
+        }
+        closedir(handle).unwrap();
+        names
+    }
+
     fn read_all(handle: i64) -> Vec<u8> {
         let mut out = Vec::new();
         let mut off = 0i64;
         let mut buf = [0u8; 8];
         loop {
-            let n = read(handle, off, &mut buf).unwrap();
+            let n = read(handle, off, &mut buf, &mut no_source).unwrap();
             if n == 0 {
                 break;
             }
@@ -1492,6 +2093,95 @@ mod tests {
             off += n as i64;
         }
         out
+    }
+
+    /// Names from one getdents64 buffer.
+    fn dirent_names(buf: &[u8], len: usize) -> Vec<Vec<u8>> {
+        let mut names = Vec::new();
+        let mut pos = 0;
+        while pos < len {
+            let reclen = u16::from_le_bytes([buf[pos + 16], buf[pos + 17]]) as usize;
+            let name = &buf[pos + 19..pos + reclen];
+            let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+            names.push(name[..end].to_vec());
+            pos += reclen;
+        }
+        names
+    }
+
+    #[test]
+    fn removing_entries_while_listing_never_skips_the_rest() {
+        let dir = b"/tmp/getdents_remove_while_listing";
+        mkdir(dir, 0o755, 0, 0).unwrap();
+        let count = 300;
+        for i in 0..count {
+            let path = alloc::format!("/tmp/getdents_remove_while_listing/entry-{i:04}");
+            write_file_at(path.as_bytes(), 0, b"x", 0o644, true).unwrap();
+        }
+        // A small buffer forces many calls; each returned entry is removed
+        // before the next call, as `rm -r` does.
+        let mut seen = Vec::new();
+        let mut cookie = 0i64;
+        let mut buf = [0u8; 512];
+        loop {
+            let (len, next, exhausted) = getdents64(dir, &mut buf, cookie).unwrap();
+            for name in dirent_names(&buf, len) {
+                if name == b"." || name == b".." {
+                    continue;
+                }
+                let mut path = dir.to_vec();
+                path.push(b'/');
+                path.extend_from_slice(&name);
+                unlink(&path).unwrap();
+                seen.push(name);
+            }
+            cookie = next;
+            if exhausted && len == 0 {
+                break;
+            }
+        }
+        let mut unique = seen.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), seen.len(), "no entry returned twice");
+        assert_eq!(seen.len(), count, "every entry returned");
+        rmdir(dir).unwrap();
+    }
+
+    #[test]
+    fn a_large_listing_returns_each_entry_once_in_creation_order() {
+        // Each call resumes at its cookie instead of rebuilding the listing,
+        // so entries come back in creation order; a name that rename moved
+        // takes a new place at the end, and one created mid-listing appears
+        // at most once.
+        let dir = b"/tmp/getdents_large_listing";
+        mkdir(dir, 0o755, 0, 0).unwrap();
+        let count = 2000;
+        for i in 0..count {
+            let path = alloc::format!("/tmp/getdents_large_listing/f{i}");
+            write_file_at(path.as_bytes(), 0, b"x", 0o644, true).unwrap();
+        }
+        rename(b"/tmp/getdents_large_listing/f1", b"/tmp/getdents_large_listing/f0").unwrap();
+        let mut seen = Vec::new();
+        let mut cookie = 0i64;
+        let mut buf = [0u8; 1024];
+        let mut added = false;
+        loop {
+            let (len, next, _) = getdents64(dir, &mut buf, cookie).unwrap();
+            if len == 0 {
+                break;
+            }
+            seen.extend(dirent_names(&buf, len).into_iter().filter(|n| n != b"." && n != b".."));
+            if !added {
+                write_file_at(b"/tmp/getdents_large_listing/late", 0, b"x", 0o644, true).unwrap();
+                added = true;
+            }
+            cookie = next;
+        }
+        let mut expected: Vec<Vec<u8>> = (2..count).map(|i| alloc::format!("f{i}").into_bytes()).collect();
+        expected.push(b"f0".to_vec());
+        expected.push(b"late".to_vec());
+        assert_eq!(seen, expected);
     }
 
     #[test]
@@ -1513,6 +2203,183 @@ mod tests {
         assert_eq!(&buf[..n], b"x");
         assert_eq!(lstat(p).unwrap().st_mode & 0o7777, 0o600);
         assert_eq!(read_file_at(b"/tmp/host_whole_file_missing", 0, &mut buf), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn the_exchange_mount_comes_up_with_its_fixed_layout() {
+        use crate::exchange::EXCHANGE_GID;
+        let root = lstat(b"/run/kandelo/exchange").unwrap();
+        assert_eq!(root.st_mode, S_IFDIR | 0o755);
+        assert_eq!((root.st_uid, root.st_gid), (0, 0));
+        for (path, type_bits, mode) in [
+            (&b"/run/kandelo/exchange/events"[..], S_IFCHR, 0o440),
+            (b"/run/kandelo/exchange/inbox", S_IFDIR, 0o770),
+            (b"/run/kandelo/exchange/work", S_IFDIR, 0o750),
+            (b"/run/kandelo/exchange/work/clone", S_IFCHR, 0o440),
+            (b"/run/kandelo/exchange/outbox", S_IFDIR, 0o770),
+        ] {
+            let st = lstat(path).unwrap();
+            assert_eq!(st.st_mode, type_bits | mode, "{}", core::str::from_utf8(path).unwrap());
+            assert_eq!((st.st_uid, st.st_gid), (0, EXCHANGE_GID));
+        }
+        let mut names = getdents_names(b"/run/kandelo/exchange");
+        names.sort();
+        assert_eq!(names, [&b"events"[..], b"inbox", b"outbox", b"work"]);
+    }
+
+    #[test]
+    fn the_exchange_mount_reports_its_own_filesystem_type() {
+        assert_eq!(statfs(b"/run/kandelo/exchange/inbox").unwrap().f_type, 0x4B58_4348);
+        assert_eq!(statfs(b"/tmp").unwrap().f_type, 0x0102_1994);
+        assert!(owns_path(b"/run/kandelo/exchange"));
+        assert!(!owns_path(b"/run/kandelo"));
+        assert_ne!(lstat(b"/run/kandelo/exchange").unwrap().st_dev, lstat(b"/tmp").unwrap().st_dev);
+    }
+
+    #[test]
+    fn remove_tree_removes_names_but_open_files_keep_working() {
+        let base = b"/tmp/remove_tree_case";
+        mkdir(base, 0o755, 0, 0).unwrap();
+        mkdir(b"/tmp/remove_tree_case/sub", 0o755, 0, 0).unwrap();
+        assert_eq!(write_file_at(b"/tmp/remove_tree_case/sub/a", 0, b"kept", 0o644, true).unwrap(), 4);
+        let handle = open(b"/tmp/remove_tree_case/sub/a", O_RDWR, 0, 0, 0).unwrap();
+        remove_tree(base).unwrap();
+        assert_eq!(lstat(base).unwrap_err(), Errno::ENOENT);
+        assert_eq!(lstat(b"/tmp/remove_tree_case/sub/a").unwrap_err(), Errno::ENOENT);
+        assert_eq!(read_all(handle), b"kept");
+        release_handle(handle);
+        assert_eq!(remove_tree(b"/tmp"), Err(Errno::EBUSY));
+    }
+
+    #[test]
+    fn host_backed_files_read_through_their_source_and_never_change() {
+        let path = b"/tmp/host_backed_case";
+        create_host_backed(path, 42, 10, 0o440, 0, 0, (1_700_000_000, 5)).unwrap();
+        let st = lstat(path).unwrap();
+        assert_eq!((st.st_mode, st.st_size, st.st_mtime_sec), (S_IFREG | 0o440, 10, 1_700_000_000));
+        let handle = open(path, O_RDONLY, 0, 0, 0).unwrap();
+        let mut calls = Vec::new();
+        let mut source = |source: u64, offset: u64, bytes: &mut [u8]| {
+            calls.push((source, offset, bytes.len()));
+            for (index, byte) in bytes.iter_mut().enumerate() {
+                *byte = b'a' + (offset as u8) + index as u8;
+            }
+            Ok(bytes.len())
+        };
+        let mut buf = [0u8; 4];
+        assert_eq!(read(handle, 8, &mut buf, &mut source), Ok(2), "clamped to the size");
+        assert_eq!(&buf[..2], b"ij");
+        assert_eq!(read(handle, 10, &mut buf, &mut source), Ok(0));
+        assert_eq!(calls, [(42, 8, 2)], "end-of-file needs no host call");
+        let mut eagain = |_: u64, _: u64, _: &mut [u8]| Err(Errno::EAGAIN);
+        assert_eq!(read(handle, 0, &mut buf, &mut eagain), Err(Errno::EAGAIN));
+        assert_eq!(read(handle, 0, &mut buf, &mut no_source), Err(Errno::EIO));
+        assert_eq!(write(handle, 0, b"x"), Err(Errno::EPERM));
+        assert_eq!(truncate_handle(handle, 0), Err(Errno::EPERM));
+        assert_eq!(size(handle), Ok(10));
+        assert_eq!(open(path, O_RDWR, 0, 0, 0), Err(Errno::EPERM));
+        assert_eq!(open(path, O_RDONLY | O_TRUNC, 0, 0, 0), Err(Errno::EPERM));
+
+        // The source is released only once no name and no description remain.
+        take_released_sources();
+        unlink(path).unwrap();
+        assert!(!take_released_sources().contains(&42));
+        release_handle(handle);
+        assert!(take_released_sources().contains(&42));
+    }
+
+    #[test]
+    fn extended_attributes_are_stored_per_inode_and_follow_renames() {
+        let path = b"/tmp/xattr_store_case";
+        assert_eq!(write_file_at(path, 0, b"x", 0o644, true).unwrap(), 1);
+        assert_eq!(xattr_get(path, b"user.a"), Err(Errno::ENODATA));
+        xattr_set(path, b"user.a", b"1").unwrap();
+        xattr_set(path, b"user.b", b"").unwrap();
+        xattr_set(path, b"user.a", b"2").unwrap();
+        assert_eq!(xattr_get(path, b"user.a").unwrap(), b"2");
+        assert_eq!(xattr_names(path).unwrap(), [b"user.a".to_vec(), b"user.b".to_vec()]);
+        rename(path, b"/tmp/xattr_store_case_moved").unwrap();
+        let handle = open(b"/tmp/xattr_store_case_moved", O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(xattr_get_handle(handle, b"user.b").unwrap(), b"");
+        xattr_remove_handle(handle, b"user.b").unwrap();
+        assert_eq!(xattr_remove_handle(handle, b"user.b"), Err(Errno::ENODATA));
+        release_handle(handle);
+        assert_eq!(xattr_get(b"/tmp/xattr_store_case_missing", b"user.a"), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn a_frozen_file_cannot_change_but_can_be_removed() {
+        let path = b"/tmp/frozen_case";
+        assert_eq!(write_file_at(path, 0, b"abc", 0o644, true).unwrap(), 3);
+        let handle = open(path, O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(is_unreferenced(path), Ok(false));
+        release_handle(handle);
+        assert_eq!(is_unreferenced(path), Ok(true));
+        freeze(path).unwrap();
+        assert_eq!(open(path, O_RDWR, 0, 0, 0), Err(Errno::EPERM));
+        let reader = open(path, O_RDONLY, 0, 0, 0).unwrap();
+        assert_eq!(write(reader, 0, b"x"), Err(Errno::EPERM));
+        assert_eq!(truncate_handle(reader, 0), Err(Errno::EPERM));
+        assert_eq!(fchmod(reader, 0o600), Err(Errno::EPERM));
+        assert_eq!(chmod(path, 0o600), Err(Errno::EPERM));
+        assert_eq!(chown(path, 1, 1, false), Err(Errno::EPERM));
+        assert_eq!(utimensat(path, 1, 0, 1, 0, 1, 0), Err(Errno::EPERM));
+        assert_eq!(xattr_set(path, b"user.a", b"1"), Err(Errno::EPERM));
+        xattr_set_kernel(path, b"user.kandelo.id", b"x").unwrap();
+        assert_eq!(read_all(reader), b"abc");
+        release_handle(reader);
+        unlink(path).unwrap();
+    }
+
+    #[test]
+    fn a_limited_mount_refuses_growth_past_its_limit_and_reports_it() {
+        // The limit is global; keep exchange tests from running meanwhile.
+        let _exchange = crate::exchange::device::tests::TestGuard::acquire();
+        let dir = b"/run/kandelo/exchange/work/quota_case";
+        mkdir(dir, 0o700, 0, 0).unwrap();
+        let path = b"/run/kandelo/exchange/work/quota_case/f";
+        let (before, _) = byte_usage(path).unwrap();
+        set_byte_limit(b"/run/kandelo/exchange", Some(before + 8192)).unwrap();
+        assert_eq!(write_file_at(path, 0, &[1u8; 8192], 0o644, true), Ok(8192));
+        let handle = open(path, O_RDWR, 0, 0, 0).unwrap();
+        assert_eq!(write(handle, 8192, b"x"), Err(Errno::ENOSPC));
+        assert_eq!(truncate_handle(handle, 8193), Err(Errno::ENOSPC));
+        let st = statfs(path).unwrap();
+        assert_eq!(st.f_bfree, 0);
+        truncate_handle(handle, 4096).unwrap();
+        assert_eq!(write(handle, 4096, &[2u8; 4096]), Ok(4096), "a shrink returns space");
+        release_handle(handle);
+        remove_tree(dir).unwrap();
+        assert_eq!(byte_usage(path).unwrap().0, before, "freeing the file returns its bytes");
+        set_byte_limit(b"/run/kandelo/exchange", Some(crate::exchange::DEFAULT_BYTE_LIMIT)).unwrap();
+    }
+
+    #[test]
+    fn extended_attributes_count_against_the_quota() {
+        let _exchange = crate::exchange::device::tests::TestGuard::acquire();
+        let dir = b"/run/kandelo/exchange/work/xattr_quota_case";
+        mkdir(dir, 0o700, 0, 0).unwrap();
+        let path = b"/run/kandelo/exchange/work/xattr_quota_case/f";
+        write_file_at(path, 0, b"", 0o644, true).unwrap();
+        let (before, _) = byte_usage(path).unwrap();
+        set_byte_limit(b"/run/kandelo/exchange", Some(before + 4200)).unwrap();
+        let value = [b'v'; 4096];
+        xattr_set(path, b"user.a", &value).unwrap();
+        assert_eq!(xattr_set(path, b"user.b", &value), Err(Errno::ENOSPC), "past the quota");
+        assert_eq!(byte_usage(path).unwrap().0, before + 4096 + 6);
+        // Replacing with a smaller value returns the difference.
+        xattr_set(path, b"user.a", b"small").unwrap();
+        assert_eq!(byte_usage(path).unwrap().0, before + 5 + 6);
+        set_byte_limit(b"/run/kandelo/exchange", Some(crate::exchange::DEFAULT_BYTE_LIMIT)).unwrap();
+        // And there is a cap on names, whatever their size.
+        for i in 1..MAX_XATTRS_PER_INODE {
+            xattr_set(path, alloc::format!("user.n{i}").as_bytes(), b"").unwrap();
+        }
+        assert_eq!(xattr_set(path, b"user.one_too_many", b""), Err(Errno::ENOSPC));
+        xattr_remove(path, b"user.a").unwrap();
+        // Freeing the file returns everything.
+        remove_tree(dir).unwrap();
+        assert_eq!(byte_usage(path).unwrap().0, before);
     }
 
     #[test]
@@ -1950,3 +2817,4 @@ mod tests {
         );
     }
 }
+

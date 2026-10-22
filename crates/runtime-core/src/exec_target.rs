@@ -453,7 +453,7 @@ fn target_pread(
             crate::rootfs::ByteReq::Image { offset } => host.image_read(b, offset),
         })
     } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
-        crate::tmpfs::read(host_handle, offset, buf)
+        crate::tmpfs::read(host_handle, offset, buf, &mut |source, source_offset, bytes| host.exchange_source_read(source, source_offset, bytes))
     } else {
         host.host_pread(host_handle, buf, offset)
     }

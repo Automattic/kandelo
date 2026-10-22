@@ -1780,6 +1780,10 @@ process during host teardown. A process with a guest parent does not satisfy the
 `ppid=0` check and remains an exited zombie until that parent consumes its
 status through `wait()`/`waitpid()`.
 
+Children of the virtual init (pid 1) are the one other case: init ignores
+SIGCHLD, so the shared exit path reaps them as they exit, as a Linux init
+does. Today the kernel-started Kandelo exchange agent is the only such child.
+
 This cleanup also does not implement orphan adoption. Kandelo does not yet
 reparent a guest descendant when its parent exits, so such a descendant can
 still become an unreapable zombie after it exits. That existing process-
@@ -2967,6 +2971,148 @@ it is never a file, so it cannot reach a persisted mount or a shared snapshot.
 - **Latest copy wins for keyboard copies.** A successful copy-out records
   the text as the one the guest already holds, so the next host paste of
   anything else is offered and the same text is not re-offered.
+
+## Kandelo exchange (`/run/kandelo/exchange`)
+
+Kandelo exchange moves files into and out of a running machine: a dropped or
+picked file arrives as an ordinary file a guest program reads, and a file a
+guest publishes reaches the host as an output the embedding app decides what
+to do with. It is independent of drag and drop; the design is
+`docs/superpowers/specs/2026-10-21-kandelo-exchange-design.md`.
+
+```text
+ host.exchange.offer(items)       NodeKernelHost / BrowserKernel (same API)
+        │  Blobs stay on the main thread; the kernel holds source numbers
+        ▼
+ kernel_exchange_begin / _add_entry / _commit   one kernel entry, scratch lease
+        │
+        ▼
+ inbox/<batch-id>/…  ◄── consumer holding `events` reads `batch <id>`
+        │                 reads files (bytes fetched from the Blob on demand)
+        │                 rmdir inbox/<batch-id>  → settled
+ work/clone → work/<n>/ ──rename──► outbox/<name>  (frozen, gets an ID)
+                                        │ output-published
+                                        ▼
+ host.exchange.onOutput(listener)  lease until the listener settles and its
+                                   streams close, then the kernel removes it
+```
+
+- **The filesystem** is a kernel tmpfs mount at `/run/kandelo/exchange`
+  (`crates/runtime-core/src/exchange/`), present on every machine that boots
+  from a kernel rootfs image: the kernel creates the mount point when it loads
+  the image. `statfs` reports `f_type` `0x4B584348` ("KXCH") and the real
+  quota. The fixed layout is `events` and `work/clone` (character devices,
+  `root:exchange`, 0440), `inbox/` and `outbox/` (0770) and `work/` (0750),
+  with the `exchange` group GID 120. The legacy raw host-root Node mode (no
+  rootfs image, the host's `/` as the root) has no exchange mount, so its
+  paths fail with `ENOENT`.
+- **Inputs.** `events` has a single consumer (a second open is `EBUSY`). Its
+  first line says whether a host output listener exists (`outputs accepting`
+  or `outputs none`), and each committed batch adds `batch <id>`. An empty
+  device returns `EAGAIN`, which parks a blocking reader until the next line.
+  A batch offered with no consumer waits, and becomes visible when a consumer
+  opens `events`. Input files are owned by the consumer with group 120, mode
+  0440, and are read-only to everyone (`EPERM` on a write open). Their bytes
+  stay in the host's Blob until a read asks for them: the kernel returns
+  `EAGAIN`, the worker fetches the range from the main thread, and the read
+  is retried. Metadata is extended attributes (`user.kandelo.id`,
+  `user.kandelo.source`, `user.mime_type`, `user.xdg.origin.url`,
+  `user.kandelo.original_name`, `user.kandelo.index`). Removing the batch
+  directory settles the batch with its last `user.kandelo.status`. A source
+  is released when no name or open description holds its file any longer;
+  the host learns of it after the settlement that caused it.
+- **Stream inputs.** A host `ReadableStream` becomes a FIFO in the batch
+  (`crates/runtime-core/src/exchange/streams.rs`): `st_size` 0, `lseek`
+  ESPIPE, read once. The host holds its writer from the moment the batch
+  appears, so opening it never blocks, and no guest may open it for
+  writing (EPERM, root included). The host writes only what the 64 KiB
+  FIFO has room for and is told of more room as readers drain it, which is
+  the backpressure. The end of the host stream is end-of-file; a host
+  stream error makes reads fail with EIO once the buffered bytes are read,
+  so a truncated input never looks complete. When no name and no reader
+  remain, the host cancels its stream.
+- **Outputs.** Opening `work/clone` creates a session directory `work/<n>/`
+  owned by the opener, removed with everything unpublished in it when the
+  description's last reference goes. Renaming a regular file from a session
+  to a direct child of `outbox/` publishes it. Publishing fails with `ENXIO`
+  without a host output listener, `EBUSY` while anything has the file open or
+  mapped, `EEXIST` for a name already in `outbox/`, `ENOSPC` beyond 64
+  outputs (or beyond 8 unfinished streams), and `EPERM` for directories and
+  symlinks. A published output is frozen (`EPERM` on any change) and gets its
+  own `user.kandelo.id`; its `user.kandelo.derived_from` lists the input IDs
+  it came from. Unlinking it withdraws it.
+- **Streamed outputs.** A FIFO published from a session is read by the host
+  once, as it is written. Its writer opens it only after publishing; the
+  open blocks until the host starts reading (`O_NONBLOCK`: ENXIO), as for
+  any FIFO without a reader. Before closing, the writer declares how it
+  ended by setting `user.kandelo.end` once, to `complete` or
+  `aborted <reason>`; later writes fail with EPERM. The host's stream closes
+  only for `complete`; `aborted` and no declaration at all are errors, so a
+  crashed writer never looks finished. If the host's lease ends first,
+  writers get EPIPE and SIGPIPE.
+- **The host interface** (`host/src/exchange-controller.ts`) is the same on
+  Node and in the browser. `offer()` resolves once the batch is visible to
+  the guest, or rejects with a reason (`consumer-timeout` after 30 s by
+  default, `quota`, `invalid-name`, `aborted`, `failed`); its batch exposes
+  `settled`, `released`, status changes and `cancel()`. `onOutput()`
+  registers the single output listener for as long as its `AbortSignal` is
+  live. An output's lease lasts until the listener's promise settles and
+  every stream from `read()` has closed, so an ignored output is released at
+  once. A stored output may be read any number of times, by range; a
+  streamed one once. Nothing in the platform turns an output into a file or
+  a download.
+- **Quotas.** `work/` and `outbox/` together hold at most min(256 MiB, a
+  quarter of the kernel's maximum memory), because those bytes live in
+  kernel memory; past it writes fail with `ENOSPC`. The kernel stages at
+  most 16 batches of at most 1,024 entries, 16 directories deep, and 32
+  work sessions.
+- **Activation.** The kernel starts the image's agent,
+  `/usr/libexec/kandelo/exchange-agent`, when a batch waits for a consumer
+  and nothing holds `events` (`crates/runtime-core/src/exchange/activation.rs`).
+  It checks the path by ordinary resolution and exec permission at every
+  offer. It creates the agent's process record itself: a child of init, root
+  with no supplementary groups, cwd `/`, its own session, stdio on
+  `/dev/null`, environment `PATH` and `KANDELO_EXCHANGE`. The host launches
+  it through the same exec-target and Worker path as a `posix_spawn` child.
+  The kernel asks for that by queueing an activation-check notification; the
+  host answers by calling `kernel_exchange_activate` with the time, which
+  returns the pid to launch. The agent is `starting` until it opens `events`
+  and `ready` after. Exiting first, or an exec failure, is a failure: the
+  kernel backs off 250 ms, doubling to 5 s, and resets once a consumer has
+  been ready for 2 s. Init reaps the agent and reports how it ended. With no
+  executable at the path and no consumer, an offer fails at once as
+  `unavailable`. The embedder option `exchange: { activation: "off" }`
+  (default `"on-demand"`) stops the kernel from ever starting it; batches
+  then wait for whatever consumer comes. `host.exchange.consumer`,
+  `consumerState()` and `onConsumer()` report the state, the activation
+  setting and the last failure.
+- **Guest userland** (`kandelo-exchange` package, sources in
+  `programs/kandelo-exchange/`, part of the base rootfs). `kxchgd` is the
+  agent at the agent path. It switches to the account named in
+  `/etc/kandelo/exchange.conf` (`user maker`; it must be in the `exchange`
+  group, GID 120) before it opens `events`, because batches belong to the
+  consumer's credentials as of that open. For each batch it re-reads the
+  rules in `/etc/kandelo/exchange-handlers.d/` (owned by the handler
+  account) over `/usr/share/kandelo/exchange-handlers.d/` (vendor), merged
+  by file name, an empty file masking. A rule owned by anyone else, or that
+  others may write, is ignored. The first rule, in file-name order, that
+  matches every top-level entry runs in a fresh work session with the batch
+  directory as `argv[1]`. Its outcome becomes the batch status (`done`,
+  `failed: exit N`, `no handler: NAME`, or the handler's own), and the
+  batch is removed. `kxchgd` exits after 60 s idle. The vendor catch-all
+  `99-save` (`exchange-save`) copies entries into `~/Downloads`, reads
+  streams to end-of-file, and names collisions `name (2).ext`.
+  `kandelo-exchange` runs a command in a session, acknowledges batches and
+  manages rules; `kandelo-publish` publishes stored and streamed outputs.
+  `<kandelo/exchange.h>` spells the paths, attribute names and session and
+  publish helpers, and the `attr` package's `getfattr` and `setfattr` let
+  shell handlers read and set attributes.
+
+Gated by `host/test/exchange-node.test.ts` with
+`programs/exchange-consumer.c`, `host/test/exchange-agent.test.ts` (the
+userland), `host/test/exchange-controller.test.ts`,
+`host/test/exchange-host.test.ts` and the `exchange` tests in
+`crates/runtime-core`.
 
 ## Audio output (`/dev/dsp`)
 

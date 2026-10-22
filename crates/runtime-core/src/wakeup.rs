@@ -43,6 +43,8 @@ struct WakeupBuffer {
     next_accept_idx: UnsafeCell<u32>,
     #[cfg(not(test))]
     pty_readiness_changed: UnsafeCell<bool>,
+    #[cfg(not(test))]
+    exchange_pending: UnsafeCell<bool>,
 }
 
 unsafe impl Sync for WakeupBuffer {}
@@ -53,6 +55,8 @@ static WAKEUP_BUFFER: WakeupBuffer = WakeupBuffer {
     next_accept_idx: UnsafeCell::new(1),
     #[cfg(not(test))]
     pty_readiness_changed: UnsafeCell::new(false),
+    #[cfg(not(test))]
+    exchange_pending: UnsafeCell::new(false),
 };
 
 // Kernel Wasm execution is serialized, but native unit tests run in parallel.
@@ -86,6 +90,32 @@ pub fn take_pty_readiness_changed() -> bool {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    static TEST_EXCHANGE_PENDING: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// Kandelo exchange has notifications for the host. Coalesced like the PTY
+/// flag: the host takes it only while it has exchange activity, so idle
+/// machines pay nothing per syscall.
+pub fn push_exchange_pending() {
+    #[cfg(test)]
+    TEST_EXCHANGE_PENDING.with(|pending| pending.set(true));
+    #[cfg(not(test))]
+    unsafe {
+        *WAKEUP_BUFFER.exchange_pending.get() = true;
+    }
+}
+
+pub fn take_exchange_pending() -> bool {
+    #[cfg(test)]
+    return TEST_EXCHANGE_PENDING.with(|pending| pending.replace(false));
+    #[cfg(not(test))]
+    unsafe {
+        core::mem::replace(&mut *WAKEUP_BUFFER.exchange_pending.get(), false)
+    }
+}
+
 /// Allocate a host-visible readiness token for a listening socket.
 pub fn alloc_accept_wake_idx() -> u32 {
     let next = unsafe { &mut *WAKEUP_BUFFER.next_accept_idx.get() };
@@ -115,6 +145,10 @@ pub fn push(idx: u32, wake_type: u8) {
     if events != 0 {
         crate::epoll::notify(source, events);
     }
+    // Kandelo exchange streams are FIFOs whose other end is the host; a
+    // change to one is an exchange notification too. One relaxed load when
+    // no stream exists.
+    crate::exchange::streams::on_wake(idx, wake_type);
     #[cfg(test)]
     {
         TEST_WAKEUP_EVENTS.with(|events| {

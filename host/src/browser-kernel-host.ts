@@ -1,3 +1,4 @@
+import { ExchangeController, exchangeByteLimit } from "./exchange-controller";
 import type { PcmTransportSnapshot } from "./audio/pcm-transport";
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
@@ -76,6 +77,14 @@ const defaultPcmWorkletUrl = new URL(
 );
 
 export interface BrowserKernelOptions {
+  /**
+   * Kandelo exchange: whether the platform may start the image's agent
+   * (`/usr/libexec/kandelo/exchange-agent`) when a batch needs a consumer.
+   * `"on-demand"` (the default) or `"off"`, fixed for the machine's
+   * lifetime. Embedder code only: never derived from a boot descriptor,
+   * shared URL, or image file.
+   */
+  exchange?: { activation?: "on-demand" | "off" };
   /** Worker-owned remote UDP segment; a joiner transfers its native peer port. */
   remoteNetwork?: RemoteSegmentInit;
   /** Maximum concurrent workers (default: 4) */
@@ -312,6 +321,17 @@ export class BrowserKernel {
   private exitSequence = 0;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private nextRequestId = 1;
+  /**
+   * Kandelo exchange: offer files to the guest and receive what it
+   * publishes. The same interface on Node.js and in the browser.
+   */
+  readonly exchange: ExchangeController = new ExchangeController({
+    request: (request) => {
+      const requestId = this.nextRequestId++;
+      return this.request(requestId, { type: "exchange_request", requestId, request });
+    },
+    sendRange: (message, transfer) => this.sendToKernel(message, transfer),
+  });
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
   /**
    * Mirror of the kernel-worker's FramebufferRegistry, populated by
@@ -637,6 +657,8 @@ export class BrowserKernel {
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
             kernelMaxPages: this.memoryProfile.kernelMaxPages,
+            exchangeByteLimit: exchangeByteLimit(this.memoryProfile.kernelMaxPages),
+            exchangeActivation: this.options.exchange?.activation ?? "on-demand",
             memoryProfileId: this.memoryProfile.id,
             maxProcessMemoryBytes:
               this.options.maxProcessMemoryBytes
@@ -1865,6 +1887,12 @@ export class BrowserKernel {
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
+      case "exchange_range_request":
+        this.exchange.handleRangeRequest(msg.source, msg.offset, msg.length);
+        break;
+      case "exchange_notifications":
+        this.exchange.handleNotifications(msg.notifications);
+        break;
       case "ready": {
         if (msg.pcmPort) {
           this.pcmPort = msg.pcmPort;

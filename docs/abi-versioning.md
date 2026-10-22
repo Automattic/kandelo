@@ -1707,7 +1707,7 @@ Semantic changes: none visible to programs. A timed-out wait keeps waiting on
 the same request, so syscall results, blocking behaviour, signals and errno
 values are unchanged.
 
-### ABI 53 honest extended attributes
+### ABI 53 extended attributes, Kandelo exchange and getgroups
 
 ABI 53 makes the twelve extended-attribute syscalls (`getxattr`, `setxattr`,
 `listxattr`, `removexattr`, and their `l` and `f` variants, numbers 350-361)
@@ -1732,8 +1732,25 @@ Structural changes (recorded in the snapshot):
   (65536) join `platform_limits`; the host gets `XATTR_SIZE_MAX_BYTES` in
   `host/src/generated/abi.ts`.
 
+- **Kandelo exchange.** Twenty required kernel exports,
+  `kernel_exchange_*`: init, configure (quota and activation), offers
+  (begin, add_entry, commit, cancel), notifications (take_pending,
+  drain_notifications), outputs (read_output, release_output,
+  output_end), streams (stream_push, stream_end, stream_start,
+  stream_read), and activation (activate, agent_failed), plus
+  set_listener and consumer_present. Every pointer is followed by its byte
+  length and travels through a kernel scratch lease. One new host import,
+  `host_exchange_source_read`, serves input bytes. The entry-record and
+  notification layouts are documented in
+  `crates/runtime-core/src/exchange/wire.rs`.
+
 Semantic changes:
 
+- **Kandelo exchange.** Every machine booted from a kernel rootfs image has
+  the exchange filesystem at `/run/kandelo/exchange` (`f_type`
+  `0x4B584348`), which stores `user.*` extended attributes. The virtual
+  init (pid 1) ignores SIGCHLD, so its children (the exchange agent the
+  kernel starts) are reaped as they exit.
 - **Truthful results.** Following Linux for a filesystem without xattr
   support, get, set, and remove fail with `ENOTSUP`, and list succeeds with an
   empty list. Path errors (`ENOENT`, `ENOTDIR`, `ELOOP`, `ENAMETOOLONG`,
