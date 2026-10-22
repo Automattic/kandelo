@@ -601,6 +601,9 @@ pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Er
                 return Err(Errno::EBADF);
             }
         }
+        FileType::CharDevice if crate::exchange::is_exchange_handle(host_handle) => {
+            crate::exchange::add_ref_handle(host_handle)?;
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -643,6 +646,9 @@ pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
         }
         FileType::Regular if crate::rootfs::is_rootfs_file_handle(host_handle) => {
             crate::rootfs::release_handle(host_handle)
+        }
+        FileType::CharDevice if crate::exchange::is_exchange_handle(host_handle) => {
+            crate::exchange::release_handle(host_handle)
         }
         _ => false,
     }

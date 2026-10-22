@@ -528,3 +528,35 @@ fn epoll_old_wait_retirement_cannot_cancel_a_later_call() {
     assert_eq!(p.epoll_waits.len(), 1);
     assert_ne!(p.epoll_waits[0].1.token, old);
 }
+
+#[test]
+fn epoll_reports_exchange_stream_end_failure_and_seal() {
+    // Kandelo exchange streams change a pipe's state without closing an end:
+    // the host finishes or fails its writes while holding the writer, and a
+    // published output seals its writers. Each is a readiness edge, so a
+    // waiter that asked only for the implicit HUP and ERR must see it.
+    let mut p = Process::new(130);
+    let mut h = MockHostIO::new();
+    let pipe = |p: &Process, fd: i32| {
+        let entry = p.fd_table.get(fd).unwrap();
+        let ofd = p.ofd_table.get(entry.ofd_ref.0).unwrap();
+        unsafe { crate::pipe::global_pipe_table().get_mut((-(ofd.host_handle + 1)) as usize) }
+            .unwrap()
+    };
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    let (finished, _w1) = sys_pipe2(&mut p, O_NONBLOCK).unwrap();
+    let (failed, _w2) = sys_pipe2(&mut p, O_NONBLOCK).unwrap();
+    let (_r3, sealed) = sys_pipe2(&mut p, O_NONBLOCK).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, finished, EPOLLET, 1).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, failed, EPOLLET, 2).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, sealed, EPOLLET, 3).unwrap();
+    assert!(batch(&mut p, &mut h, ep, 8).is_empty());
+
+    pipe(&p, finished).finish_writes();
+    assert_eq!(batch(&mut p, &mut h, ep, 8), [(EPOLLHUP, 1)]);
+    pipe(&p, failed).fail_reads_after_buffered(Errno::EIO);
+    assert_eq!(batch(&mut p, &mut h, ep, 8), [(EPOLLERR, 2)]);
+    pipe(&p, sealed).seal_writes();
+    assert_eq!(batch(&mut p, &mut h, ep, 8), [(EPOLLERR, 3)]);
+    assert!(batch(&mut p, &mut h, ep, 8).is_empty(), "edge-triggered: each once");
+}

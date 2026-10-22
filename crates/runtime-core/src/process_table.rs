@@ -569,8 +569,39 @@ impl ProcessTable {
             init.fd_table = crate::fd::FdTable::new();
             init.ofd_table = crate::ofd::OfdTable::new();
             init.terminal.foreground_pgid = 0;
+            // Init reaps its children: with SIGCHLD ignored (POSIX: as
+            // SA_NOCLDWAIT), a child of pid 1 never lingers as a zombie,
+            // since init never waits.
+            let _ = init.signals.set_action(
+                wasm_posix_shared::signal::SIGCHLD,
+                crate::signal::SignalAction {
+                    handler: crate::signal::SignalHandler::Ignore,
+                    ..crate::signal::SignalAction::default()
+                },
+            );
             self.processes.insert(SYNTHETIC_INIT_PID, init);
         }
+    }
+
+    /// Create a process the kernel starts itself, as a child of the synthetic
+    /// init (Linux's `call_usermodehelper` shape): root credentials with no
+    /// supplementary groups, working directory `/`, its own session and
+    /// process group, and no descriptors (the caller opens its stdio). It is
+    /// hidden as a pending spawn child until the host publishes its launch.
+    pub fn create_init_child(&mut self, argv: alloc::vec::Vec<alloc::vec::Vec<u8>>) -> Result<u32, Errno> {
+        self.ensure_init();
+        let task_id = self.allocate_task_id()?;
+        let pid = task_id.as_raw();
+        crate::image_build_determinism::process_created(pid);
+        let mut child = Process::new_allocated_empty(task_id);
+        child.ppid = SYNTHETIC_INIT_PID;
+        child.argv = argv;
+        child.pgid = pid;
+        child.sid = pid;
+        child.is_session_leader = true;
+        child.spawn_publication_pending = true;
+        self.processes.insert(pid, child);
+        Ok(pid)
     }
 
     /// Remove a process from the table.

@@ -512,3 +512,37 @@ aliases = ["/bin/xgettext"]
 binary = "programs/wasm32/posix-utils-lite/yacc.wasm"
 path = "/usr/bin/yacc"
 aliases = ["/bin/yacc"]
+
+# Kandelo exchange: the agent the kernel starts on demand, its helpers, and
+# the catch-all `99-save` handler (see docs/architecture.md).
+[[packages]]
+name = "kandelo-exchange"
+
+[[packages.outputs]]
+binary = "programs/wasm32/kandelo-exchange/kxchgd.wasm"
+path = "/usr/libexec/kandelo/exchange-agent"
+
+[[packages.outputs]]
+binary = "programs/wasm32/kandelo-exchange/kandelo-exchange.wasm"
+path = "/usr/bin/kandelo-exchange"
+
+[[packages.outputs]]
+binary = "programs/wasm32/kandelo-exchange/kandelo-publish.wasm"
+path = "/usr/bin/kandelo-publish"
+
+[[packages.outputs]]
+binary = "programs/wasm32/kandelo-exchange/exchange-save.wasm"
+path = "/usr/libexec/kandelo/exchange-save"
+
+# getfattr and setfattr, for shell handlers that read or set exchange
+# attributes (MIME types, provenance, batch status).
+[[packages]]
+name = "attr"
+
+[[packages.outputs]]
+binary = "programs/wasm32/attr/getfattr.wasm"
+path = "/usr/bin/getfattr"
+
+[[packages.outputs]]
+binary = "programs/wasm32/attr/setfattr.wasm"
+path = "/usr/bin/setfattr"

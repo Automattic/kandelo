@@ -152,6 +152,17 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_drain_wakeup_events",
   "kernel_enum_procs",
   "kernel_epoll_wake_indices",
+  "kernel_exchange_add_entry",
+  "kernel_exchange_begin",
+  "kernel_exchange_cancel",
+  "kernel_exchange_commit",
+  "kernel_exchange_drain_notifications",
+  "kernel_exchange_output_end",
+  "kernel_exchange_read_output",
+  "kernel_exchange_release_output",
+  "kernel_exchange_stream_push",
+  "kernel_exchange_stream_read",
+  "kernel_exchange_stream_start",
   "kernel_exec_target_prepare",
   "kernel_exec_target_read",
   "kernel_get_cwd",
@@ -279,7 +290,24 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_rootfs_unlink_file":
     case "kernel_truncate":
     case "kernel_uname":
+    case "kernel_exchange_cancel":
+    case "kernel_exchange_commit":
+    case "kernel_exchange_drain_notifications":
+    case "kernel_exchange_release_output":
+    case "kernel_exchange_stream_push":
+    case "kernel_exchange_stream_start":
       return REQUIRED_POINTER_0;
+    case "kernel_exchange_output_end":
+    case "kernel_exchange_stream_read":
+      // the ID at arg 0, the buffer out at arg 2.
+      return REQUIRED_POINTER_0_2;
+    case "kernel_exchange_add_entry":
+    case "kernel_exchange_begin":
+      // input bytes at arg 0, the 16-byte ID out at arg 2.
+      return REQUIRED_POINTER_0_2;
+    case "kernel_exchange_read_output":
+      // the ID at arg 0, the data buffer at arg 4.
+      return REQUIRED_POINTER_0_4;
     case "kernel_rootfs_inspect_stat":
       return REQUIRED_POINTER_0_2;
     case "kernel_rootfs_inspect_directory":
@@ -372,6 +400,17 @@ function isKernelScratchExportName(
     case "kernel_drain_wakeup_events":
     case "kernel_enum_procs":
     case "kernel_epoll_wake_indices":
+    case "kernel_exchange_add_entry":
+    case "kernel_exchange_begin":
+    case "kernel_exchange_cancel":
+    case "kernel_exchange_commit":
+    case "kernel_exchange_drain_notifications":
+    case "kernel_exchange_output_end":
+    case "kernel_exchange_read_output":
+    case "kernel_exchange_release_output":
+    case "kernel_exchange_stream_push":
+    case "kernel_exchange_stream_read":
+    case "kernel_exchange_stream_start":
     case "kernel_exec_target_prepare":
     case "kernel_exec_target_read":
     case "kernel_get_cwd":

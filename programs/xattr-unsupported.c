@@ -1,7 +1,7 @@
 /* Extended attributes on a filesystem that does not support them.
  *
- * No Kandelo filesystem stores extended attributes yet. The calls must say
- * so truthfully, the way Linux does for a filesystem without xattr handlers:
+ * Only the exchange filesystem stores extended attributes; /tmp does not.
+ * The calls must say so truthfully, the way Linux does for a filesystem without xattr handlers:
  * get, set, and remove fail with ENOTSUP; list succeeds with an empty list.
  * Path and descriptor errors come first, and setxattr validates its flags,
  * name, and size before the path. Prints PASS and exits 0 only if every

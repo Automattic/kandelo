@@ -67,6 +67,12 @@ import posixXgettextWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/xge
 import posixYaccWasmUrl from "@binaries/programs/wasm32/posix-utils-lite/yacc.wasm?url";
 import sudoLiteWasmUrl from "@binaries/programs/wasm32/sudo-lite.wasm?url";
 import sudoWasmUrl from "@binaries/programs/wasm32/sudo/sudo.wasm?url";
+import kxchgdWasmUrl from "@binaries/programs/wasm32/kandelo-exchange/kxchgd.wasm?url";
+import kandeloExchangeWasmUrl from "@binaries/programs/wasm32/kandelo-exchange/kandelo-exchange.wasm?url";
+import kandeloPublishWasmUrl from "@binaries/programs/wasm32/kandelo-exchange/kandelo-publish.wasm?url";
+import exchangeSaveWasmUrl from "@binaries/programs/wasm32/kandelo-exchange/exchange-save.wasm?url";
+import getfattrWasmUrl from "@binaries/programs/wasm32/attr/getfattr.wasm?url";
+import setfattrWasmUrl from "@binaries/programs/wasm32/attr/setfattr.wasm?url";
 
 export const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/bash.wasm", bashWasmUrl],
@@ -134,6 +140,12 @@ export const ROOTFS_LAZY_ASSET_URLS = new Map<string, string>([
   ["binaries/programs/wasm32/posix-utils-lite/yacc.wasm", posixYaccWasmUrl],
   ["binaries/programs/wasm32/sudo-lite.wasm", sudoLiteWasmUrl],
   ["binaries/programs/wasm32/sudo/sudo.wasm", sudoWasmUrl],
+  ["binaries/programs/wasm32/kandelo-exchange/kxchgd.wasm", kxchgdWasmUrl],
+  ["binaries/programs/wasm32/kandelo-exchange/kandelo-exchange.wasm", kandeloExchangeWasmUrl],
+  ["binaries/programs/wasm32/kandelo-exchange/kandelo-publish.wasm", kandeloPublishWasmUrl],
+  ["binaries/programs/wasm32/kandelo-exchange/exchange-save.wasm", exchangeSaveWasmUrl],
+  ["binaries/programs/wasm32/attr/getfattr.wasm", getfattrWasmUrl],
+  ["binaries/programs/wasm32/attr/setfattr.wasm", setfattrWasmUrl],
 ]);
 
 // Nothing here rewrites an image. The image keeps the canonical addresses it

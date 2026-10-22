@@ -66,6 +66,10 @@ host/test/dylink-fork-archive.test.ts	source-only
 host/test/dylink.test.ts	source-only
 host/test/environment-lifecycle.test.ts	prepared-product
 host/test/epoll-semantics.test.ts	prepared-product
+host/test/exchange-agent.test.ts	prepared-product
+host/test/exchange-controller.test.ts	source-only
+host/test/exchange-host.test.ts	source-only
+host/test/exchange-node.test.ts	prepared-product
 host/test/exec-brk-base.test.ts	prepared-product
 host/test/exec-retirement-marker.test.ts	source-only
 host/test/exec-state-tracking.test.ts	source-only

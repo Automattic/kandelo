@@ -1,3 +1,9 @@
+import type {
+  ExchangeNotificationsMessage,
+  ExchangeRangeMessage,
+  ExchangeRangeRequestMessage,
+  ExchangeRequestMessage,
+} from "./exchange-host";
 import type { RemoteSegmentInit } from "./networking/remote-segment-port";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
@@ -199,6 +205,9 @@ export interface InitMessage {
     maxProcessMemoryBytes: number;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
+    /** Bytes Kandelo exchange's `work/` and `outbox/` may hold. */
+    exchangeByteLimit?: number;
+    exchangeActivation?: "on-demand" | "off";
     env: string[];
     /** Forwarded to KernelConfig.enableSyscallLog — log every syscall. */
     enableSyscallLog?: boolean;
@@ -408,6 +417,8 @@ export interface ClipboardGuestWaitMessage {
 
 export type MainToKernelMessage =
   | InitMessage
+  | ExchangeRequestMessage
+  | ExchangeRangeMessage
   | AttachRemotePeerMessage
   | RemoteNetworkSnapshotMessage
   | RemoteNetworkHostMessage
@@ -588,6 +599,8 @@ export interface VfsChangeMessage {
 
 export type KernelToMainMessage =
   | ReadyMessage
+  | ExchangeRangeRequestMessage
+  | ExchangeNotificationsMessage
   | { type: "audio_activity" }
   | InitErrorMessage
   | KernelFatalMessage
