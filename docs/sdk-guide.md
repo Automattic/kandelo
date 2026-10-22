@@ -848,6 +848,14 @@ DWARF from `-g` builds records clang's resource directory, which is
 `/usr/lib/llvm/lib/clang/21` here and a different path on the build
 machine, so `-g` outputs are not byte-identical between the two SDKs.
 
+Running the build machine's jobs costs time inside Kandelo: a link runs
+about eight clang processes (job traces, the glue compile and the link
+itself), and each clang start takes several seconds, so linking a small
+program takes about a minute where compiling a file takes several
+seconds. The base shell image has no `pkg-config` program, so
+`wasm32posix-pkg-config` reports that it cannot start one (exit status
+127).
+
 Node and Chromium pass the full sequential compiler acceptance. Firefox
 passes the C++ containers/entropy case in a fresh shell, but repeated LLVM
 launches in one session can exhaust its executable-code arena. Its engine

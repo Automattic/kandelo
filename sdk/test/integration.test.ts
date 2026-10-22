@@ -631,7 +631,10 @@ describe('integration: compile C program', () => {
     `);
 
     try {
-      const result = sdk(CXX, [srcFile, '-o', outFile, '-ldl']);
+      // The program uses no C++ library, and the repository sysroot holds
+      // none (libc++ is a declared package dependency), so it opts out of
+      // the C++ library c++ links by default, as it would with g++.
+      const result = sdk(CXX, [srcFile, '-o', outFile, '-ldl', '-nostdlib++']);
       if (result.exitCode !== 0) {
         console.error('wasm32posix-c++ stderr:', result.stderr);
       }
