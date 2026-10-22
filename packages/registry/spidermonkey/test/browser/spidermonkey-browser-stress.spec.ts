@@ -1,8 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractAbiVersion } from "../../../../../host/src/constants";
+import { tryResolveBinary } from "../../../../../host/src/binary-resolver";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../../../../..");
@@ -14,28 +15,13 @@ function currentAbiVersion(): number {
   return snapshot.abi_version;
 }
 
-function jsWasmCandidates(): string[] {
-  return [
-    join(repoRoot, "local-binaries/programs/wasm32/js.wasm"),
-    join(repoRoot, "binaries/programs/wasm32/js.wasm"),
-    join(repoRoot, "packages/registry/spidermonkey/bin/js.wasm"),
-  ];
-}
-
-function findJsWasm(): string | null {
-  return jsWasmCandidates().find((candidate) => existsSync(candidate)) ?? null;
-}
-
 function loadArrayBuffer(path: string): ArrayBuffer {
   const buf = readFileSync(path);
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
-const hasKernelWasm = [
-  join(repoRoot, "local-binaries/kernel.wasm"),
-  join(repoRoot, "binaries/kernel.wasm"),
-].some((candidate) => existsSync(candidate));
-const jsWasm = findJsWasm();
+const hasKernelWasm = tryResolveBinary("kernel.wasm") !== null;
+const jsWasm = tryResolveBinary("programs/js.wasm");
 const jsWasmAbi = jsWasm ? extractAbiVersion(loadArrayBuffer(jsWasm)) : null;
 const abiVersion = currentAbiVersion();
 
