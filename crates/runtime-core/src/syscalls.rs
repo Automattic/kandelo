@@ -890,8 +890,8 @@ fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
     }
 }
 
-/// Drop the `/dev/fb0` binding of an address space that exec or exit is
-/// discarding. Tell the host while the process Memory is still valid, and
+/// Drop the `/dev/fb0` binding when munmap, exec, or exit discards its
+/// mapping. Tell the host while the process Memory is still valid, and
 /// retain device ownership while an fb fd remains open in this process; the
 /// last close releases it.
 fn release_process_fb_binding(proc: &mut Process, host: &mut dyn HostIO) {
@@ -11614,12 +11614,7 @@ pub fn sys_munmap(
         false
     };
     if fb_release {
-        proc.fb_binding = None;
-        host.unbind_framebuffer(proc.pid as i32);
-        // Release ownership if the process also has no remaining Fb0 fds.
-        if !proc_has_fb0_fd(proc) {
-            maybe_release_fb0(proc.pid);
-        }
+        release_process_fb_binding(proc, host);
     }
 
     // GL cmdbuf cleanup: any munmap overlap invalidates the host's
