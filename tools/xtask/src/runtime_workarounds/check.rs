@@ -12,6 +12,8 @@ pub struct Report {
     pub tag_sites: usize,
 }
 
+/// The problems alone, for tests; the `check` subcommand wants the counts too.
+#[cfg(test)]
 pub fn problems(repo: &Path) -> Result<Vec<String>, String> {
     Ok(analyze(repo)?.problems)
 }

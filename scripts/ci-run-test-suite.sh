@@ -28,7 +28,7 @@ activate_ci_test_workspace
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
-    echo "usage: $0 <cargo-workspace|cargo-xtask|vitest|browser|libc|posix|sortix> [group]" >&2
+    echo "usage: $0 <cargo-workspace|cargo-xtask|runtime-workarounds|vitest|browser|libc|posix|sortix> [group]" >&2
     exit 2
 fi
 group="${2:-${TEST_GROUP:-all}}"
@@ -669,6 +669,20 @@ case "$suite" in
         HOST_TARGET="$(host_target)"
         cargo test -p xtask --target "$HOST_TARGET" -- \
             "${disabled_software_cargo_test_args[@]}"
+        ;;
+    runtime-workarounds)
+        # Does each confirmed outside-runtime defect still reproduce? Runs
+        # the registry's standalone reproductions (tests/runtime-workarounds/)
+        # in the runtimes installed on this machine and compares each verdict
+        # with its entry.toml. The driver imports Playwright from
+        # apps/browser-demos and needs its browsers installed.
+        install_node_deps
+        (
+            cd apps/browser-demos
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+        )
+        node --test tests/runtime-workarounds/driver.test.mjs
+        cargo run -p xtask --target "$(host_target)" --quiet -- runtime-workarounds run
         ;;
     vitest)
         if [ "$group" = "exact-abi-source" ]; then

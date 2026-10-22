@@ -1,13 +1,10 @@
 //! `xtask runtime-workarounds`: the registry of workarounds for defects in
 //! outside runtimes and toolchains. See `tests/runtime-workarounds/README.md`.
 
-// Entry fields and helpers here are consumed by the `list` and `run`
-// subcommands, which arrive after `check`.
-#[allow(dead_code)]
 pub mod check;
-#[allow(dead_code)]
 pub mod entry;
 pub mod report;
+pub mod run;
 pub mod scan;
 
 use std::path::{Path, PathBuf};
@@ -24,7 +21,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     match sub.as_str() {
         "check" => run_check(),
         "list" => run_list(&args[1..]),
-        "run" => Err("not implemented yet".to_string()),
+        "run" => run::run(&crate::repo_root(), &args[1..]),
         other => Err(format!(
             "unknown runtime-workarounds subcommand {other:?} (expected check, list or run)"
         )),
