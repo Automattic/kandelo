@@ -850,6 +850,9 @@ case "$suite" in
         # on JSC (Bun) as well as V8, since the workaround exists for JSC (Safari
         # and Bun) and is a no-op on V8. `bun` comes from the flake dev shell.
         # See docs/jsc-terminate-atomics-wait-workaround.md.
+        # The heap-safepoint test runs here too: only JSC receives repeated
+        # bounded waits (docs/browser-support.md, "JavaScriptCore garbage
+        # collection and blocked workers").
         # WHY: this is a separate cross-runtime check, not part of Vitest's V8
         # partition. Run it on one shard so CI retains the check exactly once.
         if [ "$group" = "all" ] || [ "$group" = "1/2" ]; then
@@ -857,7 +860,8 @@ case "$suite" in
                 cd host
                 KANDELO_VITEST_RUNTIME=bun bun x --bun vitest run \
                     test/teardown-reclaim.test.ts \
-                    test/pthread.test.ts
+                    test/pthread.test.ts \
+                    test/heap-safepoint.test.ts
             )
         fi
         ;;

@@ -3045,6 +3045,78 @@ exits can exceed it. JavaScript cannot hard-bound native backing that the
 browser engine has not reclaimed. Garbage-collection observations and bounded,
 coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
+### JavaScriptCore garbage collection and blocked workers
+
+This is a WebKit engine boundary with a workaround in the syscall glue. It
+applies to JavaScriptCore everywhere: Safari on every device, and Bun.
+
+A Kandelo process makes each syscall by writing its channel and waiting in
+`memory.atomic.wait32` until the kernel answers. The wait stays inside Wasm,
+so the worker does not return to JavaScript or its event loop while it
+waits. JavaScriptCore does not release a worker's heap access during that
+wait (`WaiterListManager::waitSyncImpl` uses a `VMBlockingScope`, not a
+heap-access release). A garbage collection that began in the worker's VM
+before it blocked, for example because `memory.grow` reported more memory,
+needs that worker to stop. JavaScriptCore hands the collection back to the
+blocked thread. It finishes only when that thread runs JavaScript that
+reaches an allocation slow path.
+
+Until then the collection keeps every shared GC helper thread that joined
+it. JavaScriptCore has one small pool of helpers (six on the tested Mac) for
+all the page's workers, and helpers choose a collecting heap at random. A
+machine with a few idle processes (a shell at its prompt, a database
+waiting for a client, PHP-FPM waiting for requests) soon pins all of them.
+Other workers' concurrent collections then depend on helpers that never
+return:
+
+- an exiting process worker cannot finish destroying its VM
+  (`~VM` → `Heap::lastChanceToFinalize`), so its `WebAssembly.Memory` and
+  the reservation it charges (see [Memory per process](#memory-per-process))
+  are never released;
+- the kernel worker's own collection stalls. When retired reservations have
+  filled the pool, creating the next process's memory runs a synchronous
+  collection in the kernel worker, which never returns, and every process
+  waiting for a syscall answer waits forever.
+
+On the WordPress + MariaDB machine in Playwright's WebKit this hung the
+machine after one to five terminal commands. Stack samples showed all six
+helpers in `SlotVisitor::drainFromShared`, collector threads in
+`drainInParallelPassively`, four exiting workers in
+`lastChanceToFinalize`, and the kernel in `Heap::waitForCollection`. With
+JavaScriptCore's helper threads disabled (`JSC_numberOfGCMarkers=1`) or
+concurrent collection off (`JSC_useConcurrentGC=false`), the same run
+passed every command. Web content cannot change either option.
+
+**Workaround.** On JavaScriptCore each syscall wait is bounded at 100 ms.
+After a timeout the glue calls the host import `kernel.kernel_heap_safepoint`
+(ABI 52), which allocates a small `ArrayBuffer` and keeps waiting on the same
+request. The allocation gives the VM an allocation slow path at which it
+finishes the handed-off collection and releases its helpers. A blocked
+process therefore holds a collection for at most one interval instead of
+indefinitely. The kernel's answer, and the syscall's blocking and errno
+semantics, are unchanged; the timeout is not visible to the program. V8
+and SpiderMonkey release a waiting thread's heap access, so on Chromium,
+Firefox, and Node the host answers the first timeout with an unbounded wait
+and the process waits exactly as before. The host import lives in
+`host/src/heap-safepoint.ts`; the bounded wait is in
+`libc/glue/channel_syscall.c`.
+
+The cost on JavaScriptCore is one wakeup per blocked thread per 100 ms. A
+standalone reproduction (24 workers that start a collection and then block)
+left all six helpers pinned and seven to eleven collections unfinished; with
+safepoints it left none, and waking up without allocating did not help.
+Remove the workaround when JavaScriptCore releases heap access while a
+thread is blocked in a synchronous atomic wait, or stops handing a
+collection to such a thread.
+
+A separate WebKit crash is not explained by this mechanism. The WebKit page
+process can crash with `SIGSEGV` in
+`HashMap<void*, Weak<JSObject>>::add` while a worker constructs a
+`TextDecoder` (`cacheWrapper<TextDecoder>`), with data-like faulting
+addresses. JavaScript cannot corrupt WebKit's native heap, so this is an
+engine defect; it was seen on the WordPress machines both before and after
+the PHP 8.5 upgrade. Its cause is unknown.
+
 ### Compiler engine limits
 
 The base shell lazily loads its C/C++ SDK on first use. Compiler acceptance

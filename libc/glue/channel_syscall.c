@@ -593,6 +593,34 @@ __attribute__((import_module("kernel"), import_name("kernel_exit")))
 _Noreturn void kernel_exit(int32_t status);
 
 /*
+ * Heap safepoint for engines that keep a blocked thread's heap access.
+ *
+ * WHY: JavaScriptCore (Safari, Bun) does not release a worker's heap access
+ * while it is blocked in memory.atomic.wait32. A garbage collection that began
+ * in this worker's JavaScript VM before it blocked is then handed back to this
+ * thread, and it cannot finish until this thread runs JavaScript that reaches
+ * an allocation slow path. Until then it pins the engine's shared GC helper
+ * threads, which stalls collection in every other worker: the kernel's, and
+ * those of exiting processes whose memory can then never be released. A
+ * machine with idle processes deadlocks.
+ *
+ * Each wait is therefore bounded. After a timeout, the host's
+ * kernel_heap_safepoint import allocates from JavaScript so the VM can finish
+ * that collection, and returns the next bound in nanoseconds, or a negative
+ * value when its engine needs no safepoints. The first bound applies before
+ * the host has answered; after a negative answer every wait in this image is
+ * unbounded again. See docs/browser-support.md, "JavaScriptCore garbage
+ * collection and blocked workers".
+ */
+__attribute__((import_module("kernel"), import_name("kernel_heap_safepoint")))
+int64_t kernel_heap_safepoint(void);
+
+#define HEAP_SAFEPOINT_FIRST_BOUND_NS 100000000LL
+
+/* Shared by this image's threads; any thread may store the host's answer. */
+static int64_t heap_safepoint_bound_ns = HEAP_SAFEPOINT_FIRST_BOUND_NS;
+
+/*
  * Complete one ordinary guest-owned channel request after a host import that
  * performed channel work in JavaScript. Those host-owned completions leave
  * caught signals kernel-pending because they cannot invoke this file's signal
@@ -1755,6 +1783,8 @@ restart_wait_syscall:
      * Reading from the global (a per-instance register) is immune. */
     {
         int wait_ret;
+        int64_t bound = __atomic_load_n(&heap_safepoint_bound_ns,
+                                        __ATOMIC_RELAXED);
         do {
             uintptr_t addr;
             __asm__ volatile(
@@ -1763,8 +1793,16 @@ restart_wait_syscall:
                 : "=r"(addr)
             );
             wait_ret = __builtin_wasm_memory_atomic_wait32(
-                (int32_t *)(uintptr_t)(addr + CH_STATUS), CH_PENDING, -1);
-        } while (wait_ret == 0);
+                (int32_t *)(uintptr_t)(addr + CH_STATUS), CH_PENDING,
+                bound > 0 ? bound : -1);
+            /* 2 = timed out with the request still pending: let the host's
+             * VM finish a collection, then keep waiting. */
+            if (wait_ret == 2) {
+                bound = kernel_heap_safepoint();
+                __atomic_store_n(&heap_safepoint_bound_ns, bound,
+                                 __ATOMIC_RELAXED);
+            }
+        } while (wait_ret != 1);
     }
 
     /* Read result — re-read base from global for safety */

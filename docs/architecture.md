@@ -985,6 +985,15 @@ Process Worker                          Kernel Worker (host)
 15. Return to caller
 ```
 
+Step 4 is a bounded wait on JavaScriptCore. When it times out with the
+request still pending, the glue calls the host import
+`kernel.kernel_heap_safepoint`, which allocates from JavaScript so the
+worker's VM can finish a garbage collection handed to the blocked thread,
+and waits again on the same request. The host answers V8 and SpiderMonkey
+with an unbounded wait, so there the step is a single wait. The program
+observes the same result either way. See
+[the browser boundary](browser-support.md#javascriptcore-garbage-collection-and-blocked-workers).
+
 Steps 10–15 normally include caught-signal publication and libc handler
 dispatch. A request marked `REQUEST_FLAG_DEFER_SIGNAL_DELIVERY` deliberately
 omits that publication because JavaScript owns its completion and has no

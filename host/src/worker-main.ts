@@ -142,6 +142,7 @@ import {
 } from "./fork-reference-broker";
 import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
 import { trapProcessWorker } from "./fork-worker-import-exceptions";
+import { createHeapSafepointImport } from "./heap-safepoint";
 import {
   ForkImportedGlobalCapture,
   ForkImportedGlobalPlanner,
@@ -493,6 +494,10 @@ function buildKernelImports(
 
     // Sticky kernel-owned state captured for this exact process image.
     kernel_get_secure_exec: (): number => secureExec ? 1 : 0,
+
+    // Called by the syscall wait after a bounded wait times out; lets a
+    // JavaScriptCore VM finish a collection begun before the thread blocked.
+    kernel_heap_safepoint: createHeapSafepointImport(),
 
     // Fork/exec state — not a fork child.
     kernel_is_fork_child: (): number => 0,
