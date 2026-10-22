@@ -91,6 +91,7 @@ host/test/fork-from-dlopen-side-module-e2e.test.ts	prepared-product
 host/test/fork-from-thread.test.ts	prepared-product
 host/test/fork-function-catalog.test.ts	source-only
 host/test/fork-gc-codec.test.ts	source-only
+host/test/fork-host-import-retirement.test.ts	source-only
 host/test/fork-host-import-runtime.test.ts	source-only
 host/test/fork-imported-globals.test.ts	source-only
 host/test/fork-instrument-coverage.test.ts	prepared-product
