@@ -41,12 +41,6 @@ if [ ! -f "$SYSROOT/lib/libc.a" ]; then
     exit 1
 fi
 
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-if [ -z "$WASM_OPT" ]; then
-    echo "ERROR: wasm-opt not found. Install binaryen." >&2
-    exit 1
-fi
-
 export WASM_POSIX_SYSROOT="$SYSROOT"
 export WASM_POSIX_GLUE_DIR="$REPO_ROOT/libc/glue"
 
@@ -415,11 +409,8 @@ cp "$BASH_BIN" "$BIN_DIR/bash.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/bash.wasm" | tr -d ' ')
 echo "==> Pre-instrumentation size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# --- Size optimization ---
-# Fork instrumentation remains last, but the shared installer below owns that
-# policy so direct and sealed builds cannot diverge.
-echo "==> Optimizing bash with wasm-opt -O2..."
-"$WASM_OPT" -O2 "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm"
+# Preserve the SDK's compiler facts until installation instruments the link.
+# The instrumenter owns post-instrumentation optimization.
 
 # Install into local-binaries/ (resolver priority 1) and the resolver
 # scratch dir when invoked by xtask build-deps / archive-stage.

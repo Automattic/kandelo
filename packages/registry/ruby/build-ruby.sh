@@ -1254,6 +1254,11 @@ fi
 
 ROOT_SPILL="$REPO_ROOT/scripts/run-wasm-local-root-spill.sh"
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
+# Ruby's conservative GC needs spill slots captured by fork, so this pass
+# must precede fork instrumentation. It rewrites code and invalidates the
+# compiler facts; deliberately use the conservative fallback here rather
+# than --require-facts. Moving it afterwards would leave spill state out
+# of the saved continuation. See crates/wasm-local-root-spill/README.md.
 echo "==> Applying wasm-local-root-spill to ruby.wasm..."
 "$ROOT_SPILL" --profile ruby "$BIN_DIR/ruby.wasm" -o "$BIN_DIR/ruby.wasm.roots"
 mv "$BIN_DIR/ruby.wasm.roots" "$BIN_DIR/ruby.wasm"

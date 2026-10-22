@@ -207,7 +207,7 @@ wasm32posix-cc "${CFLAGS[@]}" "$SRC_DIR/makoctl.c" \
 
 echo "==> Instrumenting fork paths..."
 for out in mako makoctl; do
-    bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+    bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
         "$BUILD_DIR/$out.wasm" -o "$BUILD_DIR/$out.wasm.instr"
     mv "$BUILD_DIR/$out.wasm.instr" "$BUILD_DIR/$out.wasm"
 done

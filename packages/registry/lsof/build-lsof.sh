@@ -28,86 +28,12 @@ if [ ! -f "$SRC" ] || [ -L "$SRC" ]; then
     exit 1
 fi
 
-# NOT the SDK's link contract. This recipe still carries its own copy of the
-# compiler selection and link flags (find_llvm_bin/CC/CFLAGS/LINK_FLAGS
-# below). scripts/build-programs.sh used to carry a matching copy and now
-# builds through sdk/bin/wasm32posix-cc instead, so this one has drifted
-# from sdk/src/lib/flags.ts: lsof.wasm is linked without
-# --export=__heap_base and --global-base, so the host falls back to a
-# guessed brk base for it (PROCESS_MEMORY_FALLBACK_BRK_BASE).
-#
-# Converting this recipe to the SDK driver is pending (it changes a shipped
-# package artifact, so it goes with the package build fixes); do not add
-# flags here to "catch up" by hand, which is how the drift happened.
-SYSROOT="$REPO_ROOT/sysroot"
-GLUE_DIR="$REPO_ROOT/libc/glue"
-
-find_llvm_bin() {
-    if [ -n "${LLVM_BIN:-}" ] && [ -x "$LLVM_BIN/clang" ]; then
-        echo "$LLVM_BIN"
-        return
-    fi
-    if [ -n "${LLVM_PREFIX:-}" ] && [ -x "$LLVM_PREFIX/bin/clang" ]; then
-        echo "$LLVM_PREFIX/bin"
-        return
-    fi
-    if command -v clang >/dev/null 2>&1; then
-        dirname "$(command -v clang)"
-        return
-    fi
-    echo "Error: LLVM/clang not found. Run scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX." >&2
-    exit 1
-}
-
-LLVM_BIN="$(find_llvm_bin)"
-CC="$LLVM_BIN/clang"
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "ERROR: sysroot not found at $SYSROOT. Run scripts/build-musl.sh first." >&2
-    exit 1
-fi
-
-CFLAGS=(
-    --target=wasm32-unknown-unknown
-    --sysroot="$SYSROOT"
-    -nostdlib
-    -O2
-    -matomics -mbulk-memory
-    -fno-trapping-math
-    -mllvm -wasm-enable-sjlj
-    -mllvm -wasm-use-legacy-eh=false
-)
-
-LINK_FLAGS=(
-    "$GLUE_DIR/channel_syscall.c"
-    "$GLUE_DIR/compiler_rt.c"
-    "$SYSROOT/lib/crt1.o"
-    "$SYSROOT/lib/libc.a"
-    -Wl,--no-entry
-    -Wl,--export=_start
-    -Wl,--import-memory
-    -Wl,--shared-memory
-    -Wl,--max-memory=1073741824
-    -Wl,-z,stack-size=8388608
-    -Wl,--allow-undefined-file="$GLUE_DIR/kandelo-host-imports.txt"
-    -Wl,--table-base=3
-    -Wl,--export-table
-    -Wl,--growable-table
-    -Wl,--export=__wasm_init_tls
-    -Wl,--export=__tls_base
-    -Wl,--export=__tls_size
-    -Wl,--export=__tls_align
-    -Wl,--export=__stack_pointer
-    -Wl,--export=__wasm_thread_init
-)
-
+# Use the SDK's link contract, including compiler facts and optimization
+# ordering, rather than a recipe-owned copy of its compiler/linker flags.
+# shellcheck source=/dev/null
+source "$REPO_ROOT/sdk/activate.sh"
 echo "==> Building lsof.wasm from $SRC"
-"$CC" "${CFLAGS[@]}" "$SRC" "${LINK_FLAGS[@]}" -o "$OUT_BIN"
-
-if [ -n "$WASM_OPT" ]; then
-    "$WASM_OPT" -O2 "$OUT_BIN" -o "$OUT_BIN"
-fi
+wasm32posix-cc -O2 -fno-trapping-math "$SRC" -o "$OUT_BIN"
 
 ls -lh "$OUT_BIN"
 echo "==> lsof built successfully!"

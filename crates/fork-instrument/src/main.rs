@@ -8,10 +8,10 @@
 //! ```
 //!
 //! After instrumenting, the CLI runs Binaryen's `wasm-opt` over the result
-//! (`$WASM_OPT`, else `wasm-opt` on PATH). Inputs are expected to be
-//! optimized already, so the full pipeline is wasm-opt -> instrument ->
-//! wasm-opt: the first pass shrinks the call graph the instrumenter has to
-//! cover, and this second pass cleans up the code the instrumenter adds.
+//! (`$WASM_OPT`, else `wasm-opt` on PATH), at `-Os` by default. SDK links
+//! importing `kernel.kernel_fork` must reach instrumentation without a
+//! post-link code rewrite: their compiler facts bind to the linked code.
+//! This final pass optimizes both the input code and the added machinery.
 //!
 //! Exits non-zero with a human-readable error on any failure (parse,
 //! validation, or instrumentation). Errors include the input file path

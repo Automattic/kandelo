@@ -101,7 +101,7 @@ echo "==> Linking sqlite3 CLI against libsqlite3.a + readline..."
     -o "$OUT"
 
 echo "==> Applying fork instrumentation (.shell/.system/.import fork)..."
-"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$OUT" -o "$OUT.instr"
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts "$OUT" -o "$OUT.instr"
 mv "$OUT.instr" "$OUT"
 
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then

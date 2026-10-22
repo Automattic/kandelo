@@ -92,6 +92,17 @@ When a build fails, fix the first error, not the last: later errors and `BLOCKED
 - **Wasm traces without names** mean `wasm-opt` stripped the name section; keep it for debugging rather than guessing from `wasm-function[N]`.
 - **A missing POSIX API is a platform gap**, not a package patch. Stub honestly or implement it in the kernel/libc.
 
+## Preserve compiler facts for fork instrumentation
+
+Do not run `wasm-opt`, strip names, or rewrite code between the SDK link and
+fork instrumentation. Let the SDK/instrumenter optimize. Direct recipe calls
+use `scripts/run-wasm-fork-instrument.sh --require-facts <input> -o <output>`;
+`install_local_binary` checks raw fork-using wasm32 executables automatically.
+The build must fail if `--sink-report` does not report `source\tfacts` where
+facts apply. Side modules and wasm64 use conservative coverage; necessary
+pre-instrumentation rewrites such as Ruby GC root spilling need an explicit
+explanation. Remove names only afterwards, retaining runtime custom sections.
+
 ## Feedback
 
 End your final report with one line, so maintainers can see where this skill helped or misled:

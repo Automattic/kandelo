@@ -176,7 +176,7 @@ TCLSH="$INSTALL_DIR/bin/tclsh8.6"
 if [ -f "$TCLSH" ]; then
     FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
     echo "==> Applying fork instrumentation to tclsh..."
-    "$FORK_INSTRUMENT" "$TCLSH" -o "$TCLSH.instr"
+    "$FORK_INSTRUMENT" --require-facts "$TCLSH" -o "$TCLSH.instr"
     mv "$TCLSH.instr" "$TCLSH"
 
     # Preserve the direct-build compatibility path. Resolver builds publish

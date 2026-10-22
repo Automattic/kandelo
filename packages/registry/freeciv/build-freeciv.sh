@@ -79,7 +79,7 @@ source "$REPO_ROOT/scripts/install-local-binary.sh"
 # Keep symbolic stack traces for diagnosing client/server failures. The normal
 # installer validates the already-instrumented artifacts before publishing.
 for program in freeciv-sdl2 freeciv-server; do
-    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
         "$WORK/build/$program" --keep-names -o "$WORK/$program.wasm"
     install_local_binary freeciv "$WORK/$program.wasm" "$program.wasm"
 done

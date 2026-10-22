@@ -429,7 +429,7 @@ wasm32posix-cc "${OBJS[@]}" -o "$OUT" -lcrypt
 # no onlylist needed. The tool also runs wasm-opt over the code it adds.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "  Applying fork instrumentation..."
-"$FORK_INSTRUMENT" "$OUT" -o "$OUT.instr"
+"$FORK_INSTRUMENT" --require-facts "$OUT" -o "$OUT.instr"
 mv "$OUT.instr" "$OUT"
 
 echo "==> nginx.wasm built successfully!"

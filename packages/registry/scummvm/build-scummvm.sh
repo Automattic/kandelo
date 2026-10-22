@@ -316,12 +316,12 @@ for data_file in \
 done
 
 echo "==> Fork-instrumenting scummvm.wasm and its engine plugins..."
-"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
     "$SRC_DIR/scummvm" \
     -o "$INSTALL_DIR/scummvm.wasm"
 mkdir -p "$INSTALL_DIR/lib/scummvm"
 for so in "$SRC_DIR"/plugins/*.so; do
-    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
         "$so" \
         -o "$INSTALL_DIR/lib/scummvm/$(basename "$so")"
 done

@@ -63,7 +63,7 @@ echo "==> Building the SDL3 GETOSPACE pacing fixture..."
     -o "$INSTALL_DIR/sdl3-dsp-test.wasm"
 
 for output in sdl2-dsp-test.wasm sdl3-dsp-test.wasm; do
-    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
         "$INSTALL_DIR/$output" -o "$INSTALL_DIR/$output.instrumented"
     mv "$INSTALL_DIR/$output.instrumented" "$INSTALL_DIR/$output"
 done

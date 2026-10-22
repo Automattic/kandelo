@@ -177,7 +177,11 @@ without it falls into a BSD branch or an `#error`. When a package hits that:
    target.
 
 Fork-using packages must be instrumented with
-`scripts/run-wasm-fork-instrument.sh` after linking and after optimization.
+`scripts/run-wasm-fork-instrument.sh --require-facts` directly after linking.
+Do not rewrite linked code or strip its names/facts first: the SDK and
+instrumenter own optimization ordering. Strip afterwards while preserving
+runtime custom sections. Document necessary rewrite exceptions (Ruby root
+spilling) explicitly; see `docs/fork-instrumentation.md`.
 Missing `wpk_fork_*` exports are a build/runtime error. Legacy Asyncify
 artifacts are stale and must be rebuilt, not supported.
 
