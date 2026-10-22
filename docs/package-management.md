@@ -273,13 +273,18 @@ fetch the complete archive on first use and inflate members as needed. The
 rootfs's `/usr/share/misc/magic` is a standalone lazy file, fetched when
 `file` loads its database. The browser's ordinary and grouped deployments and
 the Node resolver map these image-owned references to the same package bytes.
-Certificates, terminal definitions, and libinput device quirks remain eager.
+The shell also defers both CA bundle paths to the verified
+`ca-certificates.zip` data package. They remain separate guest files:
+replacing the browser session's `/etc/ssl/certs/ca-certificates.crt`
+does not change `/etc/ssl/cert.pem`. The base rootfs still embeds its
+trust roots. Terminal definitions and libinput device quirks remain
+eager.
 
-The shell and new login packages are pending publication while this change is
-under review. Their `commit = "UNPUBLISHED"` placeholders must be stamped with
-the truthful producer commit before release. Changes to the base image, shell
-composition, or terminal declaration rebuild the reverse-dependent image
-closure:
+The shell, CA data, and new login packages are pending publication while
+this change is under review. Their `commit = "UNPUBLISHED"` placeholders
+must be stamped with the truthful producer commit before release.
+Changes to the base image, shell composition, or terminal declaration
+rebuild the reverse-dependent image closure:
 
 - `rootfs` revision 11;
 - `shell` revision 29;

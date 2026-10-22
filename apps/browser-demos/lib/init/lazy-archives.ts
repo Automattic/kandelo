@@ -1,3 +1,4 @@
+import caCertificatesZipUrl from "@binaries/programs/wasm32/ca-certificates.zip?url";
 import espeakNgDataZipUrl from "@binaries/programs/wasm32/espeak-ng/espeak-ng-data.zip?url";
 import desktopDataZipUrl from "@binaries/programs/wasm32/wayland-demo/kandelo-desktop-data.zip?url";
 import loveExamplesZipUrl from "@binaries/programs/wasm32/love/share/love-examples.zip?url";
@@ -15,6 +16,7 @@ import lsofDocsZipUrl from "@binaries/programs/lsof-docs.zip?url";
 import kandeloSdkZipUrl from "@binaries/programs/kandelo-sdk.zip?url";
 
 export const SHELL_LAZY_ARCHIVES: Record<string, string> = {
+  "ca-certificates.zip": caCertificatesZipUrl,
   "espeak-ng-data.zip": espeakNgDataZipUrl,
   "kandelo-desktop-data.zip": desktopDataZipUrl,
   "love-examples.zip": loveExamplesZipUrl,

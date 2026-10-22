@@ -7,6 +7,11 @@
       "role": "base-image"
     },
     {
+      "name": "ca-certificates",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
       "name": "bash",
       "version": "5.2.37",
       "role": "eager-program"
