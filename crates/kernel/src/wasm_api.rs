@@ -6922,21 +6922,87 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             0
         }
 
-        // --- xattr stubs: no extended attribute support ---
-        // fgetxattr/fsetxattr/fremovexattr/flistxattr
-        350 => -(Errno::ENODATA as i32), // SYS_FGETXATTR: no attrs → ENODATA
-        351 => 0,                        // SYS_FLISTXATTR: empty list → 0 bytes
-        352 => -(Errno::ENODATA as i32), // SYS_FREMOVEXATTR: no attrs → ENODATA
-        353 => 0,                        // SYS_FSETXATTR: silently accept
-        // getxattr/setxattr/removexattr/listxattr (path-based)
-        354 => -(Errno::ENODATA as i32), // SYS_GETXATTR
-        355 => 0,                        // SYS_LISTXATTR: empty list
-        356 => -(Errno::ENODATA as i32), // SYS_LGETXATTR
-        357 => 0,                        // SYS_LLISTXATTR: empty list
-        358 => -(Errno::ENODATA as i32), // SYS_LREMOVEXATTR
-        359 => 0,                        // SYS_LSETXATTR: silently accept
-        360 => -(Errno::ENODATA as i32), // SYS_REMOVEXATTR
-        361 => 0,                        // SYS_SETXATTR: silently accept
+        // --- Extended attributes (crate::xattr) ---
+        // Path calls: (path, name, value, size[, flags]) / (path, list, size).
+        // Descriptor calls take the fd in place of the path.
+        350 => {
+            // SYS_FGETXATTR: (fd, name, value, size)
+            let name = channel_const_ptr!(1, u8);
+            let name_len = channel_cstr_len!(name);
+            let _ = process_size!(3);
+            kernel_xattr(KernelXattrOp::Get, None, a1, Some((name, name_len)))
+        }
+        351 => {
+            // SYS_FLISTXATTR: (fd, list, size)
+            let _ = process_size!(2);
+            kernel_xattr(KernelXattrOp::List, None, a1, None)
+        }
+        352 => {
+            // SYS_FREMOVEXATTR: (fd, name)
+            let name = channel_const_ptr!(1, u8);
+            let name_len = channel_cstr_len!(name);
+            kernel_xattr(KernelXattrOp::Remove, None, a1, Some((name, name_len)))
+        }
+        353 => {
+            // SYS_FSETXATTR: (fd, name, value, size, flags)
+            let name = channel_const_ptr!(1, u8);
+            let name_len = channel_cstr_len!(name);
+            let op = KernelXattrOp::Set {
+                size: process_size!(3),
+                flags: a5 as u32,
+            };
+            kernel_xattr(op, None, a1, Some((name, name_len)))
+        }
+        354 | 356 => {
+            // SYS_GETXATTR / SYS_LGETXATTR: (path, name, value, size)
+            let path = channel_const_ptr!(0, u8);
+            let path_len = channel_cstr_len!(path);
+            let name = channel_const_ptr!(1, u8);
+            let name_len = channel_cstr_len!(name);
+            let _ = process_size!(3);
+            let follow = nr == 354;
+            kernel_xattr(
+                KernelXattrOp::Get,
+                Some((path, path_len, follow)),
+                -1,
+                Some((name, name_len)),
+            )
+        }
+        355 | 357 => {
+            // SYS_LISTXATTR / SYS_LLISTXATTR: (path, list, size)
+            let path = channel_const_ptr!(0, u8);
+            let path_len = channel_cstr_len!(path);
+            let _ = process_size!(2);
+            let follow = nr == 355;
+            kernel_xattr(KernelXattrOp::List, Some((path, path_len, follow)), -1, None)
+        }
+        358 | 360 => {
+            // SYS_LREMOVEXATTR / SYS_REMOVEXATTR: (path, name)
+            let path = channel_const_ptr!(0, u8);
+            let path_len = channel_cstr_len!(path);
+            let name = channel_const_ptr!(1, u8);
+            let name_len = channel_cstr_len!(name);
+            let follow = nr == 360;
+            kernel_xattr(
+                KernelXattrOp::Remove,
+                Some((path, path_len, follow)),
+                -1,
+                Some((name, name_len)),
+            )
+        }
+        359 | 361 => {
+            // SYS_LSETXATTR / SYS_SETXATTR: (path, name, value, size, flags)
+            let path = channel_const_ptr!(0, u8);
+            let path_len = channel_cstr_len!(path);
+            let name = channel_const_ptr!(1, u8);
+            let name_len = channel_cstr_len!(name);
+            let op = KernelXattrOp::Set {
+                size: process_size!(3),
+                flags: a5 as u32,
+            };
+            let follow = nr == 361;
+            kernel_xattr(op, Some((path, path_len, follow)), -1, Some((name, name_len)))
+        }
 
         // --- setfsuid/setfsgid: return previous fsuid/fsgid (we mirror euid/egid) ---
         370 => {
@@ -9234,6 +9300,54 @@ pub fn kernel_lstat(path_ptr: *const u8, path_len: u32, stat_ptr: *mut u8) -> i3
         },
         Err(e) => -(e as i32),
     };
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// One extended-attribute operation; see `crate::xattr`.
+enum KernelXattrOp {
+    Get,
+    Set { size: usize, flags: u32 },
+    List,
+    Remove,
+}
+
+/// Run an xattr call on a path (`Some((ptr, len, follow))`) or on `fd`.
+/// The value and list buffers are never touched: no filesystem stores
+/// extended attributes yet, so there is nothing to copy in or out.
+fn kernel_xattr(
+    op: KernelXattrOp,
+    path: Option<(*const u8, u32, bool)>,
+    fd: i32,
+    name: Option<(*const u8, u32)>,
+) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let mut host = WasmHostIO;
+    let target = match path {
+        Some((pointer, length, follow)) => crate::xattr::XattrTarget::Path {
+            path: unsafe { slice::from_raw_parts(pointer, length as usize) },
+            follow,
+        },
+        None => crate::xattr::XattrTarget::Fd(fd),
+    };
+    let name: &[u8] = match name {
+        Some((pointer, length)) => unsafe { slice::from_raw_parts(pointer, length as usize) },
+        None => &[],
+    };
+    let result = match op {
+        KernelXattrOp::Get => crate::xattr::sys_getxattr(proc, &mut host, target, name)
+            .map(|size| size as i32),
+        KernelXattrOp::Set { size, flags } => {
+            crate::xattr::sys_setxattr(proc, &mut host, target, name, size, flags).map(|()| 0)
+        }
+        KernelXattrOp::List => {
+            crate::xattr::sys_listxattr(proc, &mut host, target).map(|size| size as i32)
+        }
+        KernelXattrOp::Remove => {
+            crate::xattr::sys_removexattr(proc, &mut host, target, name).map(|()| 0)
+        }
+    };
+    let result = result.unwrap_or_else(|error| -(error as i32));
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }

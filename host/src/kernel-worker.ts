@@ -152,6 +152,7 @@ import {
   PROCESS_STATE_STOPPED,
   POSIX_ARG_MAX_BYTES,
   POSIX_NAME_MAX_BYTES,
+  XATTR_SIZE_MAX_BYTES,
   POSIX_NGROUPS_MAX,
   POSIX_PATH_MAX_BYTES,
   PROCESS_FORK_MODE_FORK,
@@ -620,6 +621,28 @@ function boundedChannelArgumentSize(
   if (syscallNr === ABI_SYSCALLS.GetEnv && argIndex === 1) {
     return PROCESS_METADATA_ENTRY_MAX_BYTES;
   }
+  // Linux clamps an xattr value or name-list buffer to XATTR_SIZE_MAX
+  // (XATTR_LIST_MAX for lists, the same 64 KiB): no result can be longer.
+  if (
+    (
+      (
+        syscallNr === ABI_SYSCALLS.Getxattr
+        || syscallNr === ABI_SYSCALLS.Lgetxattr
+        || syscallNr === ABI_SYSCALLS.Fgetxattr
+      )
+      && argIndex === 2
+    )
+    || (
+      (
+        syscallNr === ABI_SYSCALLS.Listxattr
+        || syscallNr === ABI_SYSCALLS.Llistxattr
+        || syscallNr === ABI_SYSCALLS.Flistxattr
+      )
+      && argIndex === 1
+    )
+  ) {
+    return XATTR_SIZE_MAX_BYTES;
+  }
   if (
     (
       syscallNr === ABI_SYSCALLS.Recv
@@ -766,6 +789,19 @@ function validateCompleteChannelInputSize(
       && argIndex === 1
     || syscallNr === SYS_SENDTO && argIndex === 4;
   if (isSocketAddress) validateSocketAddressInputSize(size);
+  if (
+    (
+      syscallNr === ABI_SYSCALLS.Setxattr
+      || syscallNr === ABI_SYSCALLS.Lsetxattr
+      || syscallNr === ABI_SYSCALLS.Fsetxattr
+    )
+    && argIndex === 2
+    && size > XATTR_SIZE_MAX_BYTES
+  ) {
+    // Linux XATTR_SIZE_MAX. Refusing here avoids copying a value no
+    // filesystem could accept.
+    throw new KernelScratchError("xattr value exceeds XATTR_SIZE_MAX", E2BIG);
+  }
   if (
     syscallNr === ABI_SYSCALLS.Setsockopt
     && argIndex === 3

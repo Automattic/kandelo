@@ -1,5 +1,5 @@
 {
-  "abi_version": 52,
+  "abi_version": 53,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -962,6 +962,105 @@
       {
         "arguments": [
           {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "fgetxattr",
+        "number": 350,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "flistxattr",
+        "number": 351,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "fsetxattr",
+        "number": 353,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "getxattr",
+        "number": 354,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "listxattr",
+        "number": 355,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "lgetxattr",
+        "number": 356,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "llistxattr",
+        "number": 357,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "lsetxattr",
+        "number": 359,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "setxattr",
+        "number": 361,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
             "index": 2,
             "kind": "process-size"
           }
@@ -1164,7 +1263,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 52,
+      "abi_version": 53,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -8586,6 +8685,228 @@
         }
       }
     ],
+    "350": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
+        }
+      }
+    ],
+    "351": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 2,
+          "type": "arg"
+        }
+      }
+    ],
+    "352": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      }
+    ],
+    "353": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
+        }
+      }
+    ],
+    "354": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
+        }
+      }
+    ],
+    "355": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 2,
+          "type": "arg"
+        }
+      }
+    ],
+    "356": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
+        }
+      }
+    ],
+    "357": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 2,
+          "type": "arg"
+        }
+      }
+    ],
+    "358": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      }
+    ],
+    "359": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
+        }
+      }
+    ],
     "36": [
       {
         "argIndex": 1,
@@ -8603,6 +8924,59 @@
         "size": {
           "size": 16,
           "type": "fixed"
+        }
+      }
+    ],
+    "360": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      }
+    ],
+    "361": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
         }
       }
     ],
@@ -10074,6 +10448,54 @@
     {
       "name": "Shmctl",
       "number": 347
+    },
+    {
+      "name": "Fgetxattr",
+      "number": 350
+    },
+    {
+      "name": "Flistxattr",
+      "number": 351
+    },
+    {
+      "name": "Fremovexattr",
+      "number": 352
+    },
+    {
+      "name": "Fsetxattr",
+      "number": 353
+    },
+    {
+      "name": "Getxattr",
+      "number": 354
+    },
+    {
+      "name": "Listxattr",
+      "number": 355
+    },
+    {
+      "name": "Lgetxattr",
+      "number": 356
+    },
+    {
+      "name": "Llistxattr",
+      "number": 357
+    },
+    {
+      "name": "Lremovexattr",
+      "number": 358
+    },
+    {
+      "name": "Lsetxattr",
+      "number": 359
+    },
+    {
+      "name": "Removexattr",
+      "number": 360
+    },
+    {
+      "name": "Setxattr",
+      "number": 361
     },
     {
       "name": "Signalfd",
