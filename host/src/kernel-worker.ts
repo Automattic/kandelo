@@ -621,6 +621,11 @@ function boundedChannelArgumentSize(
   if (syscallNr === ABI_SYSCALLS.GetEnv && argIndex === 1) {
     return PROCESS_METADATA_ENTRY_MAX_BYTES;
   }
+  // No process has more than NGROUPS_MAX supplementary groups, so a larger
+  // getgroups buffer is valid (POSIX) and needs only that many entries.
+  if (syscallNr === ABI_SYSCALLS.Getgroups && argIndex === 1) {
+    return POSIX_NGROUPS_MAX * 4;
+  }
   // Linux clamps an xattr value or name-list buffer to XATTR_SIZE_MAX
   // (XATTR_LIST_MAX for lists, the same 64 KiB): no result can be longer.
   if (
@@ -812,11 +817,10 @@ function validateCompleteChannelInputSize(
       EINVAL,
     );
   }
+  // setgroups must refuse a list longer than NGROUPS_MAX (EINVAL);
+  // getgroups instead bounds its buffer (see boundedChannelArgumentSize).
   if (
-    (
-      syscallNr === ABI_SYSCALLS.Getgroups
-      || syscallNr === ABI_SYSCALLS.Setgroups
-    )
+    syscallNr === ABI_SYSCALLS.Setgroups
     && argIndex === 1
     && size > POSIX_NGROUPS_MAX * 4
   ) {
@@ -13359,20 +13363,24 @@ export class CentralizedKernelWorker {
         }
 
         if (desc.size.type === "arg") {
-          const simpleCount =
-            (desc.size.multiplier ?? 1) === 1
-            && (desc.size.add ?? 0) === 0;
+          const multiplier = desc.size.multiplier ?? 1;
+          const simpleCount = multiplier === 1 && (desc.size.add ?? 0) === 0;
+          // An entry count (getgroups' gid_t count) may carry a bounded
+          // complete-result maximum too, in bytes.
+          const entryCount = multiplier > 1 && (desc.size.add ?? 0) === 0;
           const semanticCeiling = simpleCount
             ? shortChannelArgumentSize(syscallNr, desc.argIndex)
               ?? boundedChannelArgumentSize(syscallNr, desc.argIndex)
-            : undefined;
+            : entryCount
+              ? boundedChannelArgumentSize(syscallNr, desc.argIndex)
+              : undefined;
           if (semanticCeiling !== undefined && size > semanticCeiling) {
             // Only the two short-safe calls or a separately generated
             // complete-result maximum may rewrite a caller count. Every other
             // variable extent retains its exact operation semantics and uses a
             // Rust-owned large channel below.
             size = semanticCeiling;
-            adjustedArgs[desc.size.argIndex] = size;
+            adjustedArgs[desc.size.argIndex] = Math.floor(size / multiplier);
           }
         }
 

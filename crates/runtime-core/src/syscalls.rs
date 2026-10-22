@@ -20754,9 +20754,9 @@ pub fn sys_getresgid(proc: &Process) -> (u32, u32, u32) {
 
 /// getgroups — get supplementary group IDs.
 pub fn sys_getgroups(proc: &Process, size: u32) -> Result<&[u32], Errno> {
-    if size as usize > crate::credentials::NGROUPS_MAX {
-        return Err(Errno::EINVAL);
-    }
+    // POSIX: EINVAL only when a nonzero size is smaller than the number of
+    // groups. A larger buffer is always enough; NGROUPS_MAX bounds the count,
+    // not the caller's buffer.
     if size != 0 && (size as usize) < proc.supplementary_groups().len() {
         return Err(Errno::EINVAL);
     }
@@ -23905,6 +23905,11 @@ mod tests {
         assert_eq!(
             sys_getgroups(&proc, ordered.len() as u32 - 1),
             Err(Errno::EINVAL),
+        );
+        // A buffer larger than NGROUPS_MAX is valid, as on Linux.
+        assert_eq!(
+            sys_getgroups(&proc, crate::credentials::NGROUPS_MAX as u32 + 32),
+            Ok(ordered.as_slice()),
         );
 
         assert_eq!(proc.seteuid(1000), Ok(()));
