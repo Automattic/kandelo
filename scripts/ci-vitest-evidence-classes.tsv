@@ -122,6 +122,8 @@ host/test/getdents-boundary.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
+host/test/guest-build-make.test.ts	prepared-product
+host/test/guest-build-run.test.ts	prepared-product
 host/test/host-adapter-manifest.test.ts	source-only
 host/test/host-diagnostic-routing.test.ts	source-only
 host/test/host-file-offset.test.ts	source-only
@@ -197,6 +199,7 @@ host/test/native-open-create-race.test.ts	source-only
 host/test/nethack-shared-playground.test.ts	prepared-product
 host/test/network-hostname.test.ts	source-only
 host/test/node-demo-workspace.test.ts	prepared-product
+host/test/node-guest-build.test.ts	source-only
 host/test/node-host-mounts.test.ts	prepared-product
 host/test/node-host-vfs-only-metadata.test.ts	source-only
 host/test/node-image-runtime.test.ts	prepared-product

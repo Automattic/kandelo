@@ -1583,6 +1583,63 @@ A package that depends on those libraries should:
    `scripts/build-gles-stubs.sh`) to `build.toml.inputs` so cache keys move
    when the sysroot implementation changes.
 
+### Building inside Kandelo
+
+A cross-compiled build that compiles helper programs and runs them during the
+build runs them on the build machine, so what they generate describes the
+build machine rather than the wasm32 target. NetHack's `makedefs` named the
+maintainer's OS in the game's banner and wrote 8-byte `long` fields that the
+32-bit game reads as 4 bytes. A recipe can instead run its whole build, helpers
+included, inside a Kandelo machine through the guest toolchain:
+
+```bash
+source "$REPO_ROOT/scripts/guest-build.sh"
+WS="$WASM_POSIX_DEP_WORK_DIR/ws"
+cp -R "$SRC" "$WS"
+kandelo_guest_build --workspace "$WS" \
+    --input /deps/ncurses="$WASM_POSIX_DEP_NCURSES_DIR" \
+    --env CC=cc \
+    -- /bin/sh -c 'make -j2'
+install -m 0755 "$WS/prog.wasm" "$WASM_POSIX_DEP_OUT_DIR/prog.wasm"
+```
+
+The contract:
+
+- `package.toml` lists `kernel@0.1.0` and `kandelo-build-image@0.1.0` in
+  `depends_on`. The machine boots exactly those artifacts. The build image is
+  the canonical rootfs with every tool resident, plus `kandelo-sdk.zip`
+  expanded under `/usr` (`cc`, `c++`, `wasm32posix-ar`, `wasm32posix-ranlib`
+  and the LLVM tools). It is never served to browsers.
+- `build.toml` `inputs` lists `scripts/guest-build.sh`,
+  `scripts/guest-build.ts`, `host/src/node-guest-build.ts` and the host runtime
+  it imports, and `cargo:runtime-core`, as `coreutils-docs` does: the kernel and
+  host runtime are part of the output's identity.
+- The workspace is mounted read-write at `/build` and must be a copy under
+  `WASM_POSIX_DEP_WORK_DIR`, never the checkout. `--input` mounts are
+  read-only. Neither may sit under a path the in-kernel tmpfs owns (`/tmp`,
+  `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`); the
+  runner refuses them.
+- The command runs as root with an exact environment: `PATH=/usr/bin:/bin`,
+  `HOME=/build/.home`, `TMPDIR=/build/.tmp`, `LC_ALL=C`, `TZ=UTC0`,
+  `SOURCE_DATE_EPOCH`, and any `--env` additions. `--env` cannot replace those.
+- Files the guest creates reach the host as mode `0600`; the guest's `chmod`
+  is not persisted to the host. Set output modes on the host while installing.
+  A program the build links can still be run in the same command, because the
+  guest sees its own modes for the session.
+- The machine uses the real clock. The image-build deterministic clock
+  restarts at the epoch for every process, which would let a later step write
+  an output older than its input and break `make`. Reproducibility comes from
+  `SOURCE_DATE_EPOCH`; prove it by building twice.
+- The command fails the build with its own exit status, or 124 after its
+  timeout (one hour unless `--timeout-ms` says otherwise). Output streams to
+  stderr and to `$WASM_POSIX_DEP_WORK_DIR/guest-build.log`.
+- The in-guest compiler does not yet fork-instrument, run Binaryen, or stamp
+  the ABI digest (see [the SDK guide](sdk-guide.md#compile-inside-the-base-shell)).
+  Programs built this way that call `fork()` cannot run until it does.
+
+This is a Node host facility. The browser host has no host-directory mount
+backend, and package builds do not run in browsers.
+
 ## Migrating a consumer to the cache
 
 When converting a `build-<prog>.sh` from "call the prerequisite
