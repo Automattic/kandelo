@@ -42,6 +42,7 @@ pub mod linked_frames;
 pub mod module_exception_codec;
 pub mod module_gc_codec;
 pub mod module_state;
+pub mod preopt;
 pub mod reference_analysis;
 pub mod runtime;
 pub mod sink;

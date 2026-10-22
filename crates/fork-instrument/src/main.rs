@@ -102,6 +102,12 @@ struct Cli {
     #[arg(long)]
     keep_names: bool,
 
+    /// Experimental: inline before instrumentation while preserving resolved
+    /// compiler facts. Requires Kandelo's patched Binaryen. Only the audited
+    /// inlining pass is allowed; the ordinary final optimization still runs.
+    #[arg(long, default_value = "none", value_parser = ["none", "inlining"])]
+    pre_optimize: String,
+
     /// Analyze the module and print the discovered fork-path function
     /// set as JSON to stdout. Skips instrumentation and output emission.
     /// Useful for validating call-graph discovery against
@@ -231,6 +237,14 @@ fn main() -> Result<()> {
         },
     };
 
+    let preoptimized;
+    let input = if cli.pre_optimize == "inlining" {
+        preoptimized = pre_optimize(&input, &opts)?;
+        &preoptimized
+    } else {
+        &input
+    };
+
     if cli.sink_report {
         let report = sink_report(&input, &opts)
             .with_context(|| format!("analyzing {}", cli.input.display()))?;
@@ -277,7 +291,7 @@ fn main() -> Result<()> {
         .with_context(|| format!("writing output: {}", output_path.display()))?;
     // A module outside any fork transaction comes back as the input without
     // its compiler facts; it was not transformed, so it is not optimized.
-    let untransformed = output == input
+    let untransformed = output == *input
         || fork_instrument::facts::strip_section(&input)?.is_some_and(|stripped| stripped == output);
     if cli.post_optimize != "none" && !untransformed {
         post_optimize(output_path, &cli.post_optimize, cli.keep_names)?;
@@ -285,6 +299,38 @@ fn main() -> Result<()> {
     preserve_input_mode(input_mode, output_path)?;
 
     Ok(())
+}
+
+/// Temporary inputs are private and removed on every exit path. The optimizer
+/// runs once per invocation, including reports, so guards inspect the same
+/// pipeline and policy as actual instrumentation.
+fn pre_optimize(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+    let path = std::env::temp_dir().join(format!("kandelo-fork-preinline-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&path).context("creating private pre-inlining directory")?;
+    let scratch = Scratch(path);
+    let source = scratch.0.join("input.wasm");
+    let output = scratch.0.join("output.wasm");
+    fs::write(&source, fork_instrument::preopt::prepare(input, opts)?)?;
+    let wasm_opt = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
+    let status = Command::new(wasm_opt)
+        .arg(&source)
+        .args(["--kandelo-fork-facts", "--inlining", "--optimize-level=2", "--shrink-level=0", "--partial-inlining-ifs=0", "--no-stack-ir", "-g"])
+        .arg("-o").arg(&output)
+        .status().context("running annotation-aware wasm-opt")?;
+    anyhow::ensure!(status.success(), "facts-preserving pre-inlining failed: {status}");
+    fork_instrument::preopt::finish(&fs::read(output)?)
 }
 
 /// Optimize the instrumented module in place.

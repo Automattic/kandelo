@@ -1,0 +1,164 @@
+--- a/src/wasm.h
++++ b/src/wasm.h
+@@ -2258,8 +2258,14 @@
+   // identity does not matter for such functions.
+   bool jsCalled = false;
+ 
++  // Correctness metadata for Kandelo's opt-in fork pre-inlining bridge.
++  // [0, original-function-id] on a function; [1, target-id...] on a call.
++  // Empty means unknown, not an empty target set. Only audited passes may run.
++  std::vector<uint32_t> kandeloForkTargets;
++
+   bool operator==(const CodeAnnotation& other) const {
+-    return branchLikely == other.branchLikely && inline_ == other.inline_ &&
++    return kandeloForkTargets == other.kandeloForkTargets &&
++           branchLikely == other.branchLikely && inline_ == other.inline_ &&
+            removableIfUnused == other.removableIfUnused &&
+            jsCalled == other.jsCalled;
+   }
+--- a/src/wasm-binary.h
++++ b/src/wasm-binary.h
+@@ -1439,6 +1439,7 @@
+   // must then insert before the code (as the spec requires that).
+   std::optional<BufferWithRandomAccess> writeCodeAnnotations();
+ 
++  std::optional<BufferWithRandomAccess> getKandeloForkTargetsBuffer();
+   std::optional<BufferWithRandomAccess> getBranchHintsBuffer();
+   std::optional<BufferWithRandomAccess> getInlineHintsBuffer();
+   std::optional<BufferWithRandomAccess> getRemovableIfUnusedHintsBuffer();
+@@ -1733,6 +1734,7 @@
+   };
+   std::vector<AnnotationSectionInfo> deferredAnnotationSections;
+ 
++  void readKandeloForkTargets(size_t payloadLen);
+   void readBranchHints(size_t payloadLen);
+   void readInlineHints(size_t payloadLen);
+   void readRemovableIfUnusedHints(size_t payloadLen);
+--- a/src/wasm/wasm-binary.cpp
++++ b/src/wasm/wasm-binary.cpp
+@@ -1625,6 +1625,7 @@
+     }
+   };
+ 
++  append(getKandeloForkTargetsBuffer());
+   append(getBranchHintsBuffer());
+   append(getInlineHintsBuffer());
+   append(getRemovableIfUnusedHintsBuffer());
+@@ -1734,6 +1735,21 @@
+   buffer.emitRetroactiveSectionSizeLEB(lebPos);
+ 
+   return buffer;
++}
++
++std::optional<BufferWithRandomAccess>
++WasmBinaryWriter::getKandeloForkTargetsBuffer() {
++  return writeExpressionHints(
++    Name("metadata.code.kandelo.fork-targets"),
++    [](const CodeAnnotation& a) { return !a.kandeloForkTargets.empty(); },
++    [](const CodeAnnotation& a, BufferWithRandomAccess& buffer) {
++      BufferWithRandomAccess payload;
++      for (auto value : a.kandeloForkTargets) {
++        payload << U32LEB(value);
++      }
++      buffer << U32LEB(payload.size());
++      buffer.insert(buffer.end(), payload.begin(), payload.end());
++    });
+ }
+ 
+ std::optional<BufferWithRandomAccess> WasmBinaryWriter::getBranchHintsBuffer() {
+@@ -2065,7 +2081,8 @@
+     if (sectionCode == BinaryConsts::Section::Custom) {
+       auto sectionName = getInlineString();
+ 
+-      if (sectionName == Annotations::BranchHint ||
++      if (sectionName == Name("metadata.code.kandelo.fork-targets") ||
++          sectionName == Annotations::BranchHint ||
+           sectionName == Annotations::InlineHint ||
+           sectionName == Annotations::RemovableIfUnusedHint ||
+           sectionName == Annotations::JSCalledHint) {
+@@ -2218,6 +2235,9 @@
+     readDylink(payloadLen);
+   } else if (sectionName.equals(BinaryConsts::CustomSections::Dylink0)) {
+     readDylink0(payloadLen);
++  } else if (sectionName == Name("metadata.code.kandelo.fork-targets")) {
++    deferredAnnotationSections.push_back(AnnotationSectionInfo{
++      pos, [this, payloadLen]() { readKandeloForkTargets(payloadLen); }});
+   } else if (sectionName == Annotations::BranchHint) {
+     // Deferred.
+     deferredAnnotationSections.push_back(AnnotationSectionInfo{
+@@ -5509,6 +5529,25 @@
+   }
+ }
+ 
++void WasmBinaryReader::readKandeloForkTargets(size_t payloadLen) {
++  readExpressionHints(Name("metadata.code.kandelo.fork-targets"), payloadLen,
++    [&](CodeAnnotation& a) {
++      auto size = getU32LEB();
++      if (size > input.size() - pos || !size || !a.kandeloForkTargets.empty()) {
++        throwError("bad or duplicate Kandelo fork targets");
++      }
++      auto end = pos + size;
++      while (pos < end) {
++        a.kandeloForkTargets.push_back(getU32LEB());
++      }
++      auto& values = a.kandeloForkTargets;
++      if (pos != end || values[0] > 1 ||
++          (values[0] == 0 && values.size() != 2)) {
++        throwError("bad Kandelo fork target payload");
++      }
++    });
++}
++
+ void WasmBinaryReader::readBranchHints(size_t payloadLen) {
+   readExpressionHints(
+     Annotations::BranchHint, payloadLen, [&](CodeAnnotation& annotation) {
+--- a/src/passes/pass.cpp
++++ b/src/passes/pass.cpp
+@@ -89,7 +89,15 @@
+ 
+ // PassRunner
+ 
++// An explicit capability flag: stock wasm-opt must reject this pipeline
++// rather than carrying our unknown custom section with stale byte offsets.
++struct KandeloForkFacts : Pass {
++  void run(Module*) override {}
++};
++
+ void PassRegistry::registerPasses() {
++  registerPass("kandelo-fork-facts", "preserve Kandelo fork target annotations",
++               []() { return new KandeloForkFacts(); });
+   registerPass("alignment-lowering",
+                "lower unaligned loads and stores to smaller aligned ones",
+                createAlignmentLoweringPass);
+@@ -852,6 +860,31 @@
+ }
+ 
+ void PassRunner::run() {
++  bool hasKandeloFacts = false;
++  for (auto& func : wasm->functions) {
++    for (auto& [expr, a] : func->codeAnnotations) {
++      hasKandeloFacts |= !a.kandeloForkTargets.empty();
++    }
++  }
++  if (hasKandeloFacts) {
++    // Advisory metadata may be discarded arbitrarily by folding passes.
++    // Correctness metadata cannot: reject every unaudited transformation.
++    // The anonymous nested pass is DoInlining, which uses the shared
++    // metadata::copyBetweenFunctions path and never combines call sites.
++    for (auto& pass : passes) {
++      if (pass->name != "inlining" && pass->name != "kandelo-fork-facts" &&
++          !(isNested && pass->name.empty())) {
++        Fatal() << "Kandelo fork facts: unaudited pass " << pass->name
++                << "; use --kandelo-fork-facts --inlining\n";
++      }
++    }
++    if (options.generateStackIR || options.optimizeStackIR) {
++      Fatal() << "Kandelo fork facts do not support StackIR optimization\n";
++    }
++    if (options.inlining.partialInliningIfs != 0) {
++      Fatal() << "Kandelo fork facts require --partial-inlining-ifs=0\n";
++    }
++  }
+   static const int passDebug = getPassDebug();
+   // Emit logging information when asked for. At passDebug level 1+ we log
+   // the main passes, while in 2 we also log nested ones. Note that for

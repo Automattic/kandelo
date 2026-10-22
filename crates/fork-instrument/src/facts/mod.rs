@@ -206,6 +206,18 @@ fn bind_defined(defined: &[(u32, String, &[walrus::ValType])], parsed: &side::Si
 /// the payload of its [`SECTION`]. Fails, so the caller can fall back to
 /// the analysis without facts, on anything this version cannot read.
 pub fn call_facts(module: &Module, section: &[u8], opts: FactsOptions) -> Result<(CallFacts, FactsReport)> {
+    call_facts_with_cleanup(module, section, opts, true)
+}
+
+/// Resolve targets before moving calls between functions. Lexical cleanup
+/// overrides cannot be transported as ordinary indirect-call restrictions:
+/// include every registered cleanup handler instead of clearing that dispatch.
+pub(crate) fn preopt_call_facts(module: &Module, section: &[u8], opts: FactsOptions) -> Result<(CallFacts, FactsReport)> {
+    call_facts_with_cleanup(module, section, opts, false)
+}
+
+fn call_facts_with_cleanup(module: &Module, section: &[u8], opts: FactsOptions, cleanup_lexical: bool) -> Result<(CallFacts, FactsReport)> {
+    let preinlined = section.starts_with(crate::preopt::RESOLVED_PREFIX.as_bytes());
     let mut sigs = side::Interner::default();
     let parsed = parse(section, &mut sigs, opts.effective_types)?;
     let w = targets::load_wasm(module, &mut sigs);
@@ -215,11 +227,12 @@ pub fn call_facts(module: &Module, section: &[u8], opts: FactsOptions) -> Result
     for ((f, _, _), b) in defined.iter().zip(&bound) {
         cands[*f as usize] = b.iter().map(|&(c, d)| &parsed.chunks[c][d].1).collect();
     }
-    let rules = targets::Rules { cleanup_lexical: true, casts: true, slots: true, sigaction_old: true };
+    let rules = targets::Rules { cleanup_lexical: cleanup_lexical && !preinlined, casts: true, slots: true, sigaction_old: true };
     let graph = targets::build_graph(&w, &parsed, &cands, &rules);
     let mut seen = std::collections::HashSet::new();
     let jmp: Vec<String> = parsed.jmp_facts.iter().filter(|l| seen.insert(l.as_str())).cloned().collect();
-    let facts = CallFacts { itargets: graph.export_targets(&sigs), cleanup: graph.cleanup_pairs(), jmp, assume_dlopen_contract: false };
+    let cleanup = if preinlined { vec![] } else { graph.cleanup_pairs() };
+    let facts = CallFacts { itargets: graph.export_targets(&sigs), cleanup, jmp, assume_dlopen_contract: false };
     let report = FactsReport {
         chunks: parsed.chunks.len(),
         definitions: parsed.chunks.iter().map(|c| c.len()).sum(),

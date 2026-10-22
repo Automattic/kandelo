@@ -800,6 +800,17 @@ The SDK and instrumenter own optimization ordering:
    code, names and facts is safe beforehand, as with FFmpeg's
    `llvm-strip --strip-debug`.
 
+An opt-in prototype, `--pre-optimize inlining`, resolves the original facts
+into conservative indirect-call target sets before moving code. It uses the
+separately built annotation-aware Binaryen to carry those sets with copied
+instructions and constructs fresh facts for the optimized module. Only the
+audited full-function inlining pass is allowed; other passes and StackIR
+optimization fail on annotated inputs. Missing annotations widen analysis;
+caller-specific cleanup and `jmp_buf` refinements fall back. This does not
+permit a recipe-owned `wasm-opt -O2` pass or bypass the linked-code hash.
+The default pipeline is unchanged. See the
+[prototype's build, metadata contract and tests](../sdk/binaryen/README.md).
+
 Package builds use the wrapper's `--require-facts` flag first, immediately
 followed by the input:
 

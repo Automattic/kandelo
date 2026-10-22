@@ -18,6 +18,9 @@ path = "src/lib.rs"
 # Opt-in per-category byte attribution of generated code; see
 # src/size_attribution.rs. Default builds emit identical modules.
 size-attribution = []
+# Requires the explicitly built annotation-aware Binaryen; ordinary unit tests
+# exercise the transport and conservative fallbacks without an external tool.
+preopt-integration-tests = []
 
 [dependencies]
 wasm-posix-shared = { path = "../shared" }
