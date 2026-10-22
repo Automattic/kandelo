@@ -94,7 +94,7 @@ wasm32posix-c++ \
 # link error naming the symbol. libc++ comes from the resolved libcxx
 # package; the shared worktree sysroot does not carry it.
 
-bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$RAW" -o "$OUT"
+bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts "$RAW" -o "$OUT"
 rm -f "$RAW"
 
 echo "QT_QML_SMOKE_BUILT $OUT"

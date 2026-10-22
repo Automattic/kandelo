@@ -46,7 +46,7 @@ mkdir -p "$WORK_DIR" "$OUT_DIR" "$DOWNLOAD_DIR"
 # Worktree-local SDK on PATH (no global npm link required).
 # shellcheck source=/dev/null
 
-for tool in wasm32posix-cc wasm32posix-ar wasm-opt wasm-objdump; do
+for tool in wasm32posix-cc wasm32posix-ar wasm-objdump; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "ERROR: required CPython build tool is unavailable: $tool" >&2
         exit 1
@@ -283,11 +283,9 @@ if [ ! -f "$RAW_PYTHON" ]; then
     exit 1
 fi
 
-OPTIMIZED_PYTHON="$WORK_DIR/python.optimized.wasm"
 FINAL_PYTHON="$WORK_DIR/python.wasm"
-wasm-opt -O2 "$RAW_PYTHON" -o "$OPTIMIZED_PYTHON"
-bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
-    "$OPTIMIZED_PYTHON" -o "$FINAL_PYTHON"
+bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
+    "$RAW_PYTHON" -o "$FINAL_PYTHON"
 chmod 0755 "$FINAL_PYTHON"
 
 # Validate the exact bytes that leave the source-build realm.

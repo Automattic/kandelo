@@ -208,7 +208,7 @@ done
 # binary that forks); dinitctl and dinitcheck don't need it.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "==> Applying wasm-fork-instrument to dinit.wasm..."
-"$FORK_INSTRUMENT" "$BIN_DIR/dinit.wasm" -o "$BIN_DIR/dinit.wasm.instr"
+"$FORK_INSTRUMENT" --require-facts "$BIN_DIR/dinit.wasm" -o "$BIN_DIR/dinit.wasm.instr"
 mv "$BIN_DIR/dinit.wasm.instr" "$BIN_DIR/dinit.wasm"
 ls -la "$BIN_DIR/dinit.wasm"
 

@@ -224,3 +224,173 @@ fn a_call_into_a_side_module_returns_under_the_dlopen_contract() {
         report.instrumented,
     );
 }
+
+// Exercise the package front door with the real planner: a warning-only CLI
+// fallback must become a build failure before any output is replaced.
+#[test]
+#[cfg(unix)]
+fn package_wrapper_requires_current_facts_before_writing_output() {
+    use std::{fs, process::Command, time::SystemTime};
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = std::env::temp_dir().join(format!(
+        "kandelo-package-facts-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&dir).unwrap();
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(dir.clone());
+    let input = dir.join("input.wasm");
+    let output = dir.join("output.wasm");
+    let run = |require: bool| {
+        let mut cmd = Command::new("bash");
+        cmd.arg(repo.join("scripts/run-wasm-fork-instrument.sh"));
+        if require {
+            cmd.arg("--require-facts");
+        }
+        cmd.arg(&input)
+            .arg("-o")
+            .arg(&output)
+            .args(["--post-optimize", "none"])
+            .env(
+                "WASM_POSIX_FORK_INSTRUMENT",
+                env!("CARGO_BIN_EXE_wasm-fork-instrument"),
+            );
+        cmd.output().unwrap()
+    };
+    let (_, fresh) = linked(TYPED_DISPATCH, FACTS, None);
+    fs::write(&input, &fresh).unwrap();
+    let accepted = run(true);
+    assert!(
+        accepted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    let log = String::from_utf8_lossy(&accepted.stderr);
+    assert!(log.contains("source\tfacts"), "{log}");
+    assert!(log.contains("activations 1"), "{log}");
+    assert!(!has_section(&fs::read(&output).unwrap(), SECTION));
+
+    // The normal package invocation has no remaining check_args after -o
+    // is removed. Exercise Darwin's Bash 3.2 as well as the shipping optimizer.
+    let shell = if cfg!(target_os = "macos") {
+        "/bin/bash"
+    } else {
+        "bash"
+    };
+    let optimized = Command::new(shell)
+        .arg(repo.join("scripts/run-wasm-fork-instrument.sh"))
+        .arg("--require-facts")
+        .arg(&input)
+        .arg("-o")
+        .arg(&output)
+        .env(
+            "WASM_POSIX_FORK_INSTRUMENT",
+            env!("CARGO_BIN_EXE_wasm-fork-instrument"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        optimized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&optimized.stderr)
+    );
+    let sections = |bytes: &[u8]| {
+        wasmparser::Parser::new(0)
+            .parse_all(bytes)
+            .filter_map(|p| match p.unwrap() {
+                wasmparser::Payload::CustomSection(s) if s.name().starts_with("kandelo.") => {
+                    Some((s.name().to_string(), s.data().to_vec()))
+                }
+                _ => None,
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let contracts = sections(&fs::read(&output).unwrap());
+    assert!(!contracts.is_empty());
+    // Erlang's final strip must retain continuation/loader metadata.
+    assert!(
+        Command::new("llvm-strip")
+            .arg("--strip-debug")
+            .arg(&output)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("llvm-objcopy")
+            .arg("--remove-section=name")
+            .arg(&output)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let stripped = fs::read(&output).unwrap();
+    assert!(!has_section(&stripped, "name"));
+    assert_eq!(sections(&stripped), contracts);
+
+    // Removing names alone preserves the hash and source=facts, yet all
+    // definitions become unbound. The package gate must catch that too.
+    fs::write(&input, &fresh).unwrap();
+    assert!(
+        Command::new("llvm-objcopy")
+            .arg("--remove-section=name")
+            .arg(&input)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(&output, b"previous artifact").unwrap();
+    let refused = run(true);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("did not bind any linked functions"));
+    assert_eq!(fs::read(&output).unwrap(), b"previous artifact");
+
+    for hash in [Some(Some([0; 32])), Some(None)] {
+        let (_, stale) = linked(TYPED_DISPATCH, FACTS, hash);
+        fs::write(&input, &stale).unwrap();
+        fs::write(&output, b"previous artifact").unwrap();
+        let refused = run(true);
+        assert!(!refused.status.success());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("expected compiler facts"));
+        assert_eq!(fs::read(&input).unwrap(), stale);
+        assert_eq!(fs::read(&output).unwrap(), b"previous artifact");
+        // Diagnostic/non-package callers retain the sound fallback.
+        assert!(run(false).status.success());
+    }
+    fs::write(&input, &fresh).unwrap();
+    assert!(
+        Command::new("wasm-strip")
+            .arg(&input)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        !run(true).status.success(),
+        "stripped compiler facts must fail the build"
+    );
+
+    // These modules have no facts-based plan to require.
+    for wat in [
+        "(module (memory 1) (func (export \"_start\")))",
+        "(module (import \"kernel\" \"kernel_fork\" (func $fork (param i64) (result i32))) (memory i64 1) (func (export \"_start\") (drop (call $fork (i64.const 0)))))",
+    ] {
+        fs::write(&input, wat::parse_str(wat).unwrap()).unwrap();
+        let accepted = run(true);
+        assert!(
+            accepted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&accepted.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&accepted.stderr).contains("expected compiler facts"));
+    }
+}

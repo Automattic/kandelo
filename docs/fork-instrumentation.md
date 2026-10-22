@@ -46,8 +46,9 @@ ABI version: `46` (see
 - Binaries exporting legacy `asyncify_*` symbols are stale and must be rebuilt.
   Do not add host support for them.
 - Do not keep compiler/linker flags solely for the retired legacy path. The
-  fork instrumenter does not require preserved function names or onlylists; if
-  a build keeps debug-info flags, it should be for a current diagnostic reason.
+  compiler-facts analysis needs linked function names until instrumentation;
+  the transformed artifact needs no names or onlylists. Keep DWARF only for
+  a current diagnostic reason.
 - On Unix hosts, the CLI preserves the input Wasm file's permission mode on
   its output, including when `--output` names the input file. Package build
   scripts can therefore instrument installed executables in place without
@@ -772,36 +773,58 @@ that produced it; see `crates/fork-instrument/src/size_attribution.rs`.
 
 ## Optimization around instrumentation
 
-A fork-using program goes through Binaryen's `wasm-opt` twice:
+A fork-using SDK link must reach instrumentation with its linked code,
+function names and compiler-facts sections intact. Do not run a recipe's
+`wasm-opt`, remove names/facts, or otherwise rewrite code between linking
+and instrumentation.
+The SDK and instrumenter own optimization ordering:
 
-1. **Before instrumentation.** The SDK's `-O` link runs `wasm-opt` (clang
-   schedules it after `wasm-ld`), and some recipes run their own pass.
-   Inlining, dead-function removal and identical-function merging shrink
-   the call graph the instrumenter has to cover. Quickshell's raw link has
-   108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
-2. **After instrumentation.** The CLI runs `wasm-opt -Os` over its own
-   output (`--post-optimize`; `$WASM_OPT`, else `wasm-opt` on PATH). This
-   pass simplifies the dispatch and frame code the transform adds, merges
-   or removes generated helpers, and drops runtime imports nothing calls.
+1. The compiler optimizes each source file. For a link importing
+   `kernel.kernel_fork`, the SDK holds back clang's post-link `wasm-opt`
+   and records the linked code's SHA-256 alongside `kandelo.calltypes`.
+2. The instrumenter uses those facts to choose the functions that need
+   continuation frames, then runs `wasm-opt -Os` on the transformed output.
+   Use `--post-optimize O1|O2|O3|Os|Oz` when a measured package need calls
+   for another level; avoid a recipe-owned pre-instrumentation pass.
+3. Remove names only after instrumentation, preserving the runtime's ABI,
+   continuation and dynamic-loader custom sections. An indiscriminate
+   `wasm-strip` after instrumentation removes these contracts too. The
+   instrumenter's default post-pass already removes names; debugging builds
+   can retain them with `--keep-names`. Debug-only stripping that preserves
+   code, names and facts is safe beforehand, as with FFmpeg's
+   `llvm-strip --strip-debug`.
 
-Measured on code-section size (static, captured links, 2026-10-02):
+Package builds use the wrapper's `--require-facts` flag first, immediately
+followed by the input:
 
-| program | wasm-opt → instrument | + wasm-opt after | instrument → wasm-opt |
-|---|---|---|---|
-| foot | 3,465,173 | −3.3% | −1.8% |
-| bash | 1,611,255 | −3.7% | −3.5% |
-| git | 5,368,248 | −3.9% | −4.9% |
-| python | 8,448,545 | −3.9% | −4.1% |
-| php | 16,888,534 | −5.8% | −5.9% |
-| waybar | 22,532,525 | −4.4% | −1.1% |
-| ruby | 12,769,437 | −3.9% | −4.9% |
-| qtgallery | 11,697,323 | −4.4% | +12.5% |
-| quickshell | 36,978,834 | −4.2% | +18.7% |
+```bash
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
+  program.wasm -o program.wasm
+```
 
-Instrumenting the raw link instead (last column) gives up step 1: every
-function of the unoptimized graph gets instrumented, and wasm-opt does not
-recover that afterwards. On C programs the difference is small; on Qt
-programs it is large.
+Before transforming a wasm32 executable importing `kernel.kernel_fork`,
+this runs `--sink-report` and requires its `source` row to be `facts`.
+At least one linked function must also bind to the facts: stripping names
+can otherwise leave `source=facts` with zero bindings. Coverage and
+activation/boundary counts are retained in the build log.
+`install_local_binary` applies the same check when it instruments a raw
+executable. Side modules, non-forking modules and wasm64 do not use the
+facts-based plan and are exempt. An already-instrumented artifact must
+have passed the check where its recipe invoked the instrumenter.
+
+Quickshell's address-taken fork-returning functions cause the instrumenter
+to select `assume-all-entries-fork-returning`; the plan can still come
+from facts, so this is not an exemption. Ruby is an explicit exception:
+its local-root spill pass must run first so fork saves the added GC spill
+state. That rewrite invalidates facts; Ruby deliberately uses the
+conservative fallback until the passes can preserve or regenerate them.
+Do not move root spilling after fork instrumentation merely to satisfy
+this check.
+
+Historical pre-facts measurements of `wasm-opt → instrument → wasm-opt`
+are not evidence for adding that ordering to current package recipes.
+Compare final size and host-clock launch/fork timing for the facts-preserving
+pipeline before making a package performance claim.
 
 Why a pass after instrumentation is safe:
 
