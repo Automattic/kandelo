@@ -29,6 +29,19 @@ pub enum Status {
     Retired,
 }
 
+impl std::fmt::Display for Status {
+    /// The spelling used in `entry.toml`, so messages quote what the file says.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Status::Suspected => "suspected",
+            Status::Confirmed => "confirmed",
+            Status::Reported => "reported",
+            Status::FixedUpstream => "fixed-upstream",
+            Status::Retired => "retired",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReportPolicy {
@@ -145,29 +158,64 @@ pub struct Entry {
     pub sites_without_tags: Vec<SiteWithoutTag>,
 }
 
-/// Load every `<registry>/<dir>/entry.toml`, sorted by directory name.
+/// What reading the registry directory found. `broken` holds one message per
+/// entry directory that could not be loaded, so `check` can report them next
+/// to every other problem instead of stopping at the first.
+pub struct Loaded {
+    pub entries: Vec<(String, Entry)>,
+    pub broken: Vec<String>,
+}
+
+/// Read every `<registry>/<dir>/entry.toml`, sorted by directory name.
 /// Directories starting with `_` hold fixtures and are skipped. A registry
 /// directory that does not exist yet has no entries.
-pub fn load_entries(registry: &Path) -> Result<Vec<(String, Entry)>, String> {
+pub fn load_registry(registry: &Path) -> Result<Loaded, String> {
+    let mut loaded = Loaded {
+        entries: Vec::new(),
+        broken: Vec::new(),
+    };
     let read = match std::fs::read_dir(registry) {
         Ok(read) => read,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(loaded),
         Err(e) => return Err(format!("read {}: {e}", registry.display())),
     };
-    let mut out = Vec::new();
+    let mut dirs = Vec::new();
     for dirent in read {
         let dirent = dirent.map_err(|e| format!("read {}: {e}", registry.display()))?;
         let name = dirent.file_name().to_string_lossy().into_owned();
-        let toml_path = dirent.path().join("entry.toml");
-        if name.starts_with('_') || !dirent.path().is_dir() || !toml_path.is_file() {
+        if !name.starts_with('_') && dirent.path().is_dir() {
+            dirs.push(name);
+        }
+    }
+    dirs.sort();
+    for name in dirs {
+        let toml_path = registry.join(&name).join("entry.toml");
+        // The directory name is what `check` and its readers can act on.
+        let shown = format!("{name}/entry.toml");
+        if !toml_path.is_file() {
+            loaded.broken.push(format!("{name}: missing entry.toml"));
             continue;
         }
-        let text = std::fs::read_to_string(&toml_path)
-            .map_err(|e| format!("read {}: {e}", toml_path.display()))?;
-        let entry: Entry =
-            toml::from_str(&text).map_err(|e| format!("parse {}: {e}", toml_path.display()))?;
-        out.push((name, entry));
+        let text = match std::fs::read_to_string(&toml_path) {
+            Ok(text) => text,
+            Err(e) => {
+                loaded.broken.push(format!("{shown}: read failed: {e}"));
+                continue;
+            }
+        };
+        match toml::from_str::<Entry>(&text) {
+            Ok(entry) => loaded.entries.push((name, entry)),
+            Err(e) => loaded.broken.push(format!("{shown}: parse error: {e}")),
+        }
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(out)
+    Ok(loaded)
+}
+
+/// Every loadable entry, or an error naming the first directory that is not.
+pub fn load_entries(registry: &Path) -> Result<Vec<(String, Entry)>, String> {
+    let loaded = load_registry(registry)?;
+    match loaded.broken.first() {
+        Some(first) => Err(first.clone()),
+        None => Ok(loaded.entries),
+    }
 }

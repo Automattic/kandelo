@@ -27,7 +27,7 @@ pub struct Scan {
     pub tags: Vec<TagSite>,
     /// Bare `[ID]` forms of registered IDs; `id` is that ID.
     pub legacy: Vec<TagSite>,
-    /// Lines that mention the tag word without a well-formed tag; `id` is empty.
+    /// Lines with a bracketed tag opening that is not a well-formed tag; `id` is empty.
     pub malformed: Vec<TagSite>,
 }
 
@@ -59,6 +59,11 @@ pub fn scan(repo: &Path, known_ids: &BTreeSet<String>) -> Result<Scan, String> {
         r"\[{TAG_WORD}: ([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\]"
     ))
     .expect("tag regex is valid");
+    // Only a bracketed opening is a tag attempt; prose may name the tag.
+    let opening = Regex::new(&format!(r"\[{TAG_WORD}")).expect("opening regex is valid");
+    // The documentation form shown in guides is a pattern, not a tag.
+    let placeholder =
+        Regex::new(&format!(r"\[{TAG_WORD}: <ID>\]")).expect("placeholder regex is valid");
     let legacy = if known_ids.is_empty() {
         None
     } else {
@@ -91,12 +96,13 @@ pub fn scan(repo: &Path, known_ids: &BTreeSet<String>) -> Result<Scan, String> {
                 line: index + 1,
                 id: id.to_string(),
             };
-            let mut strict_count = 0;
+            let mut accounted: BTreeSet<usize> = BTreeSet::new();
             for caps in strict.captures_iter(line) {
-                strict_count += 1;
+                accounted.insert(caps.get(0).expect("whole match").start());
                 result.tags.push(site(&caps[1]));
             }
-            if line.matches(TAG_WORD).count() > strict_count {
+            accounted.extend(placeholder.find_iter(line).map(|m| m.start()));
+            if opening.find_iter(line).any(|m| !accounted.contains(&m.start())) {
                 result.malformed.push(site(""));
             }
             if let Some(legacy) = &legacy {

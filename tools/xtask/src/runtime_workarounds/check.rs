@@ -1,8 +1,8 @@
 //! Consistency between the registry's entries and the tags in tracked source.
 
-use super::entry::{load_entries, Entry, ReportPolicy, Status, TARGETS};
+use super::entry::{load_registry, Entry, ReportPolicy, Status, TARGETS};
 use super::registry;
-use super::scan::{scan, tracked_files};
+use super::scan::{scan, tracked_files, TAG_WORD};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -18,12 +18,13 @@ pub fn problems(repo: &Path) -> Result<Vec<String>, String> {
 
 pub fn analyze(repo: &Path) -> Result<Report, String> {
     let registry_dir = registry(repo);
-    let entries = load_entries(&registry_dir)?;
+    let loaded = load_registry(&registry_dir)?;
+    let entries = loaded.entries;
     let known: BTreeSet<String> = entries.iter().map(|(_, e)| e.id.clone()).collect();
     let scanned = scan(repo, &known)?;
     let tracked: BTreeSet<String> = tracked_files(repo)?.into_iter().collect();
 
-    let mut problems = Vec::new();
+    let mut problems = loaded.broken;
     let mut tags_by_id: BTreeMap<&str, usize> = BTreeMap::new();
     for site in &scanned.tags {
         if known.contains(&site.id) {
@@ -39,7 +40,8 @@ pub fn analyze(repo: &Path) -> Result<Report, String> {
     }
     for site in &scanned.malformed {
         problems.push(format!(
-            "{}:{}: malformed workaround tag (expected `[<tag word>: <UPPER-CASE-ID>]`)",
+            "{}:{}: malformed workaround tag (expected `[{TAG_WORD}: <ID>]` with an \
+             upper-case, hyphenated ID)",
             site.path.display(),
             site.line
         ));
@@ -113,7 +115,7 @@ fn entry_problems(
         Status::Confirmed | Status::Reported | Status::FixedUpstream
     ) {
         match &entry.repro {
-            None => problem(format!("status {:?} requires a repro", entry.status)),
+            None => problem(format!("status {} requires a repro", entry.status)),
             Some(repro) if !repro.self_judging => {
                 problem("repro is not self-judging, so the entry cannot be beyond suspected".into())
             }
@@ -135,7 +137,11 @@ fn entry_problems(
                 .to_string(),
         );
     }
-    if entry.reports == ReportPolicy::AgentsAllowed && entry.reports_channel.is_none() {
+    if entry.reports == ReportPolicy::AgentsAllowed
+        && entry
+            .reports_channel
+            .as_deref()
+            .map_or(true, |c| c.trim().is_empty()) {
         problem("reports = agents-allowed requires reports_channel".to_string());
     }
 
@@ -374,6 +380,97 @@ summary = "a defect"
             2,
             "{problems:?}"
         );
+    }
+
+    fn malformed_count(problems: &[String]) -> usize {
+        problems.iter().filter(|p| p.contains("malformed")).count()
+    }
+
+    #[test]
+    fn prose_mention_of_the_tag_word_is_not_a_tag() {
+        let repo = clean_repo();
+        repo.write(
+            "docs/guide.md",
+            format!("Mark each site with the {TAG_WORD} tag, see {TAG_WORD}: below.\n"),
+        );
+        assert_eq!(repo.problems(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn documentation_placeholder_is_not_malformed() {
+        let repo = clean_repo();
+        repo.write(
+            "docs/guide.md",
+            format!("Write `// [{TAG_WORD}: <ID>] why` at each site.\n"),
+        );
+        assert_eq!(repo.problems(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn valid_tag_plus_bad_bracketed_opening_is_malformed() {
+        let repo = clean_repo();
+        repo.write(
+            "src/b.ts",
+            format!("// {} and [{TAG_WORD}:x]\n", tag(ID)),
+        );
+        let problems = repo.problems();
+        assert_eq!(malformed_count(&problems), 1, "{problems:?}");
+    }
+
+    #[test]
+    fn broken_entry_toml_is_a_problem_and_other_checks_continue() {
+        let repo = clean_repo();
+        repo.write("tests/runtime-workarounds/BROKEN-ONE/entry.toml", "not toml {{");
+        repo.write("src/b.ts", format!("// {}\n", tag("NOPE-THING")));
+        let problems = repo.problems();
+        assert!(
+            has(&problems, "BROKEN-ONE/entry.toml") && has(&problems, "parse"),
+            "{problems:?}"
+        );
+        assert!(has(&problems, "NOPE-THING"), "{problems:?}");
+    }
+
+    #[test]
+    fn unknown_field_in_entry_toml_names_the_file() {
+        let repo = clean_repo();
+        repo.entry("TYPO-ONE", &suspected_toml("TYPO-ONE", "sumary = \"x\""));
+        let problems = repo.problems();
+        assert!(has(&problems, "TYPO-ONE/entry.toml"), "{problems:?}");
+    }
+
+    #[test]
+    fn registry_directory_without_entry_toml_is_reported() {
+        let repo = clean_repo();
+        repo.write("tests/runtime-workarounds/NO-TOML/entry.md", "# notes\n");
+        let problems = repo.problems();
+        assert!(has(&problems, "NO-TOML: missing entry.toml"), "{problems:?}");
+    }
+
+    #[test]
+    fn blank_reports_channel_counts_as_missing() {
+        let repo = Repo::new();
+        repo.entry(
+            ID,
+            &confirmed_toml(ID, true).replace(
+                "summary",
+                "reports = \"agents-allowed\"\nreports_channel = \"  \"\nsummary",
+            ),
+        );
+        repo.write("src/a.ts", format!("// {}\n", tag(ID)));
+        let problems = repo.problems();
+        assert!(has(&problems, "reports_channel"), "{problems:?}");
+    }
+
+    #[test]
+    fn status_prints_in_kebab_case() {
+        let repo = Repo::new();
+        repo.entry(
+            ID,
+            &suspected_toml(ID, "").replace("suspected", "fixed-upstream"),
+        );
+        repo.write("src/a.ts", format!("// {}\n", tag(ID)));
+        let problems = repo.problems();
+        assert!(has(&problems, "status fixed-upstream requires"), "{problems:?}");
     }
 
     #[test]
