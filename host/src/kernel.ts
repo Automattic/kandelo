@@ -33,7 +33,7 @@ import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
-import { GlContextRegistry } from "./webgl/registry";
+import { GlContextRegistry, type GlBinding } from "./webgl/registry";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
@@ -1017,14 +1017,16 @@ export class WasmPosixKernel {
    * Idempotent: returns early once `b.gl` exists. Called from
    * `host_gl_create_context` and `host_kms_set_fb`.
    */
-  private tryAttachKmsGlCanvas(pid: number): void {
-    const b = this.gl.get(pid);
+  private tryAttachKmsGlCanvas(b: GlBinding): void {
+    const pid = b.pid;
     if (!b || b.forward) return;
     if (b.contextId == null) return; // GL context not created yet
     if (b.gl) return; // already built
     // The CRTC we attach in this call, if any — used to defer
     // `markKmsCanvasGlOwned` until a WebGL2 context is confirmed.
-    let attachedCrtc: number | null = null;
+    let attachedCrtc: number | null = this.gl.list().find(other =>
+      other !== b && other.canvas === b.canvas && b.canvas !== null
+      && other.claimedKmsCrtc !== null)?.claimedKmsCrtc ?? null;
     if (!b.canvas) {
       // Prefer a CRTC that already has an FB bound (modeset order);
       // otherwise, if the pid holds DRM master, take a registered scanout
@@ -1053,7 +1055,6 @@ export class WasmPosixKernel {
         canvas.width = fb.width;
         canvas.height = fb.height;
       }
-      this.gl.attachCanvas(pid, canvas);
       b.canvas = canvas;
       attachedCrtc = crtc;
     }
@@ -1093,7 +1094,9 @@ export class WasmPosixKernel {
       // hand the CRTC back to the pump when this GL session ends; without it
       // that release is a no-op and the canvas freezes on the last GL frame.
       b.claimedKmsCrtc = attachedCrtc;
-      this.callbacks.markKmsCanvasGlOwned?.(attachedCrtc);
+      if (!this.gl.list().some(other => other !== b && other.claimedKmsCrtc === attachedCrtc)) {
+        this.callbacks.markKmsCanvasGlOwned?.(attachedCrtc);
+      }
       // Render offscreen and flip on present, so the browser never
       // composites a cleared or half-drawn frame (see present-target.ts).
       // Failure is non-fatal: the session falls back to drawing straight
@@ -1438,13 +1441,21 @@ export class WasmPosixKernel {
    *  context destruction and renderD128 session teardown so a GPU
    *  compositor that degrades to its CPU path (or exits) doesn't leave
    *  the canvas frozen on its last GL frame. */
-  private releaseClaimedKmsCanvas(pid: number): void {
-    const b = this.gl.get(pid);
-    if (!b || b.claimedKmsCrtc == null) return;
-    const crtc = b.claimedKmsCrtc;
-    b.claimedKmsCrtc = null;
-    b.canvas = null;
-    this.callbacks.markKmsCanvasGlReleased?.(crtc);
+  private releaseClaimedKmsCanvas(pid: number, sessionId?: number): void {
+    if (sessionId !== undefined) sessionId >>>= 0;
+    const released = new Set<number>();
+    for (const b of this.gl.list()) {
+      if (b.pid !== pid || (sessionId !== undefined && b.sessionId !== sessionId)) continue;
+      if (b.claimedKmsCrtc === null) continue;
+      released.add(b.claimedKmsCrtc);
+      b.claimedKmsCrtc = null;
+      b.canvas = null;
+    }
+    for (const crtc of released) {
+      if (!this.gl.list().some(b => b.claimedKmsCrtc === crtc)) {
+        this.callbacks.markKmsCanvasGlReleased?.(crtc);
+      }
+    }
   }
 
   /** The shared multiplexer context that backs GPU-tier bos: the
@@ -1457,7 +1468,7 @@ export class WasmPosixKernel {
   #sharedGlContext(): WebGL2RenderingContext | null {
     const masterPid = this.kms.getMasterPid();
     if (masterPid == null) return null;
-    return this.gl.get(masterPid)?.gl ?? null;
+    return this.gl.list().find(b => b.pid === masterPid && b.gl)?.gl ?? null;
   }
 
   #createKernelMemory(pointerWidth: 4 | 8): WebAssembly.Memory {
@@ -2460,11 +2471,10 @@ export class WasmPosixKernel {
         },
         // /dev/dri/renderD128 GL hooks. The cmdbuf lives in the process's
         // wasm Memory SAB; submit/query reach into it via the embedder-
-        // supplied `getProcessMemory` callback. Without an attached
-        // canvas the create-context call leaves `b.gl = null` and
-        // submit/query become silent no-ops, so kernels that haven't
-        // wired a renderer (Node tests, headless smoke runs) stay safe.
-        host_gl_bind: (pid: number, addr: KernelPointer, len: KernelPointer): void => {
+        // supplied `getProcessMemory` callback. Session identities come
+        // from the kernel's open-description state, not from guest pointers
+        // or a process-only lookup that could select another context.
+        host_gl_bind: (pid: number, addr: KernelPointer, len: KernelPointer, sessionId?: number): void => {
           const binding = this.#checkedKernelSpan(
             addr,
             len,
@@ -2472,26 +2482,33 @@ export class WasmPosixKernel {
             "host_gl_bind process range",
           );
           this.gl.bind({
-            pid,
+            pid, sessionId,
             cmdbufAddr: binding.offset,
             cmdbufLen: binding.length,
           });
         },
-        host_gl_unbind: (pid: number): void => {
-          this.releaseClaimedKmsCanvas(pid);
-          this.gl.unbind(pid);
+        host_gl_unbind: (pid: number, sessionId?: number): void => {
+          this.releaseClaimedKmsCanvas(pid, sessionId);
+          this.gl_submit_queue.removeSession(pid, sessionId);
+          for (const b of this.gl.list()) {
+            if (b.pid === pid && (sessionId === undefined || b.sessionId === sessionId) && b.gl) {
+              this.gl_muxers.get(b.gl)?.invalidateCurrent();
+            }
+          }
+          this.gl.unbind(pid, sessionId);
         },
         host_gl_create_context: (
           pid: number, ctxId: number,
-          _attrsPtr: KernelPointer, _attrsLen: KernelPointer,
+          _attrsPtr: KernelPointer, _attrsLen: KernelPointer, sessionId?: number,
         ): number => {
-          const b = this.gl.get(pid);
+          const b = this.gl.get(pid, sessionId);
           if (!b) return -5; // EIO: no session owns this request.
+          ctxId >>>= 0;
           if (b.contextId !== null) return -16; // EBUSY
           const previousCanvas = b.canvas;
           try {
             if (b.forward) {
-              const rc = b.forward.onCreateContext();
+              const rc = b.forward.onCreateContext(b.sessionId);
               if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
               b.contextId = ctxId;
               return 0;
@@ -2509,30 +2526,31 @@ export class WasmPosixKernel {
             // tryAttachKmsGlCanvas needs the pending identity while it
             // attaches the drawable. Roll it back unless creation succeeds.
             b.contextId = ctxId;
-            this.tryAttachKmsGlCanvas(pid);
+            this.tryAttachKmsGlCanvas(b);
             if (b.gl && !b.gl.isContextLost()) return 0;
           } catch {
             // Native allocation and extension setup can throw. They must
             // follow the same rollback as a null/lost context.
           }
-          this.releaseClaimedKmsCanvas(pid);
-          this.gl.destroyContext(pid);
+          this.releaseClaimedKmsCanvas(pid, b.sessionId);
+          this.gl.destroyContext(pid, b.sessionId);
           b.canvas = previousCanvas;
           return -19; // ENODEV: no live rendering backend.
         },
-        host_gl_destroy_context: (pid: number, _ctxId: number): void => {
-          this.releaseClaimedKmsCanvas(pid);
-          const b = this.gl.get(pid);
+        host_gl_destroy_context: (pid: number, ctxId: number): void => {
+          const b = this.gl.getContext(pid, ctxId);
           if (!b) return;
+          this.releaseClaimedKmsCanvas(pid, b.sessionId);
+          this.gl_submit_queue.removeSession(pid, b.sessionId);
           if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
-          this.gl.destroyContext(pid);
-          if (b.forward) b.forward.onDestroyContext();
+          this.gl.destroyContext(pid, b.sessionId);
+          b.forward?.onDestroyContext(b.sessionId);
         },
         host_gl_create_surface: (
           pid: number, surfaceId: number,
-          attrsPtr: KernelPointer, attrsLen: KernelPointer,
+          attrsPtr: KernelPointer, attrsLen: KernelPointer, sessionId?: number,
         ): void => {
-          const b = this.gl.get(pid);
+          const b = this.gl.get(pid, sessionId);
           if (!b) return;
           b.surfaceId = surfaceId;
           // GlSurfaceAttrs: u32 kind, width, height, config_id,
@@ -2589,8 +2607,8 @@ export class WasmPosixKernel {
             this.gl_muxers.get(b.gl)?.invalidateCurrent();
           }
         },
-        host_gl_destroy_surface: (pid: number, _surfaceId: number): void => {
-          const b = this.gl.get(pid);
+        host_gl_destroy_surface: (pid: number, _surfaceId: number, sessionId?: number): void => {
+          const b = this.gl.get(pid, sessionId);
           if (!b) return;
           b.surfaceId = null;
           b.surfaceSize = null;
@@ -2622,9 +2640,9 @@ export class WasmPosixKernel {
           // track ctx + surface ids on the binding.
         },
         host_gl_submit: (
-          pid: number, offset: KernelPointer, length: KernelPointer,
+          pid: number, offset: KernelPointer, length: KernelPointer, sessionId?: number,
         ): number => {
-          const b = this.gl.get(pid);
+          const b = this.gl.get(pid, sessionId);
           if (!b) return -5; // EIO: kernel/host GL state diverged.
           if (!b.forward && !b.gl) return 0;
           let submission: { offset: number; length: number; end: number };
@@ -2673,6 +2691,7 @@ export class WasmPosixKernel {
                 submission.offset,
                 submission.end,
               ),
+              b.sessionId,
             );
             return 0;
           }
@@ -2690,14 +2709,16 @@ export class WasmPosixKernel {
             (bb, off, len) => decodeAndDispatch(bb, off, len),
           );
         },
-        host_gl_present: (pid: number): number => {
+        host_gl_present: (pid: number, sessionId?: number): number => {
           // A lost WebGL context silently no-ops every GL call, so a
           // present into it would report success while the canvas stays
           // frozen. EIO here fails the guest's `eglSwapBuffers`, which is
           // its cue to degrade to CPU compositing and hand the canvas
           // back to the vblank pump (`eglTerminate` →
           // `markKmsCanvasGlReleased`).
-          const b = this.gl.get(pid);
+          const b = this.gl.get(pid, sessionId);
+          if (!b) return sessionId !== undefined || this.gl.list().some(b => b.pid === pid) ? -5 : 0;
+          if (!b.gl && !b.forward) return -5;
           if (b?.gl?.isContextLost()) return -5; // EIO
           // A GPU-tier producer renders into an offscreen bo FBO on the
           // shared context, so `eglSwapBuffers` must fence the queued GL
@@ -2738,9 +2759,9 @@ export class WasmPosixKernel {
         host_gl_query: (
           pid: number, op: number,
           inPtr: KernelPointer, inLen: KernelPointer,
-          outPtr: KernelPointer, outLen: KernelPointer,
+          outPtr: KernelPointer, outLen: KernelPointer, sessionId?: number,
         ): number => {
-          const b = this.gl.get(pid);
+          const b = this.gl.get(pid, sessionId);
           if (!b || (!b.gl && !b.forward)) return -1;
           let inputLength: number;
           let outputLength: number;
@@ -2779,7 +2800,7 @@ export class WasmPosixKernel {
           try {
             if (b.forward) {
               if (!b.forward.onQuery) return -38; // ENOSYS: legacy channel
-              const result = b.forward.onQuery(op, inBuf, outputLength);
+              const result = b.forward.onQuery(op, inBuf, outputLength, b.sessionId);
               written = result.rc;
               outBuf = result.bytes;
             } else {
@@ -2814,7 +2835,8 @@ export class WasmPosixKernel {
         host_gl_bind_foreign_texture: (
           pid: number, ctxId: number, boId: number, glTarget: number,
         ): number => {
-          const b = this.gl.get(pid);
+          ctxId >>>= 0;
+          const b = this.gl.getContext(pid, ctxId);
           if (!b || !b.gl || b.contextId !== ctxId) return -5;  // EIO
           if (glTarget !== 0x0de1) return -22;                  // EINVAL: TEXTURE_2D only
           // GPU-tier bo: the texture already lives on the shared context,
@@ -3008,8 +3030,9 @@ export class WasmPosixKernel {
           // the canvas was registered late, and — whether or not the
           // context was already built — size the drawing buffer to the
           // freshly-bound FB so glViewport(fb.w, fb.h) isn't clipped.
-          this.tryAttachKmsGlCanvas(pid);
-          const b = this.gl.get(pid);
+          const bindings = this.gl.list().filter(b => b.pid === pid);
+          for (const binding of bindings) this.tryAttachKmsGlCanvas(binding);
+          const b = bindings.find(b => b.claimedKmsCrtc === crtc_id && b.gl);
           const fb = this.kms.currentFb(crtc_id);
           if (fb) this.callbacks.onKmsScanoutFb?.(crtc_id, fb.width, fb.height);
           if (

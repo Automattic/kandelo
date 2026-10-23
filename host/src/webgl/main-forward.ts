@@ -22,16 +22,16 @@ export interface ForwardWorkerLike {
 }
 
 export type GlForwardMessage =
-  | { type: "gl_forward_create_context"; pid: number; mailbox: SharedArrayBuffer }
-  | { type: "gl_forward_destroy_context"; pid: number }
-  | { type: "gl_forward_submit"; pid: number; bytes: Uint8Array }
-  | { type: "gl_forward_query"; pid: number; op: number; input: Uint8Array; mailbox: SharedArrayBuffer }
-  | { type: "gl_forward_unbind"; pid: number };
+  | { type: "gl_forward_create_context"; pid: number; sessionId: number; mailbox: SharedArrayBuffer }
+  | { type: "gl_forward_destroy_context"; pid: number; sessionId: number }
+  | { type: "gl_forward_submit"; pid: number; sessionId: number; bytes: Uint8Array }
+  | { type: "gl_forward_query"; pid: number; sessionId: number; op: number; input: Uint8Array; mailbox: SharedArrayBuffer }
+  | { type: "gl_forward_unbind"; pid: number; sessionId: number };
 
 /** Kernel-worker adapter. Copied command/input bytes and bounded device
  * storage are the only data that may cross to the persistent main realm. */
 export function createMainForwardChannel(
-  port: { postMessage(message: GlForwardMessage): void }, pid: number,
+  port: { postMessage(message: GlForwardMessage): void }, pid: number, defaultSessionId = 0,
 ): GlForwardChannel {
   let mailbox: SharedArrayBuffer | null = null;
   function request(outLen: number, send: (mailbox: SharedArrayBuffer) => void) {
@@ -46,26 +46,27 @@ export function createMainForwardChannel(
     }
   }
   return {
-    onCreateContext() {
+    onCreateContext(sessionId = defaultSessionId) {
       const { rc } = request(0, mailbox =>
-        port.postMessage({ type: "gl_forward_create_context", pid, mailbox }));
+        port.postMessage({ type: "gl_forward_create_context", pid, sessionId, mailbox }));
       // An unacknowledged allocation can still have reached the renderer.
       // Ordered cleanup also covers a timeout racing native creation.
       if (rc !== 0) {
-        try { port.postMessage({ type: "gl_forward_destroy_context", pid }); }
+        try { port.postMessage({ type: "gl_forward_destroy_context", pid, sessionId }); }
         catch { /* The failed channel remains failed; no success is reported. */ }
       }
       return rc;
     },
-    onDestroyContext() { port.postMessage({ type: "gl_forward_destroy_context", pid }); },
-    onSubmit(bytes) { port.postMessage({ type: "gl_forward_submit", pid, bytes: bytes.slice() }); },
-    onQuery(op, input, outLen) {
+    onDestroyContext(sessionId = defaultSessionId) { port.postMessage({ type: "gl_forward_destroy_context", pid, sessionId }); },
+    onUnbind(sessionId) { port.postMessage({ type: "gl_forward_unbind", pid, sessionId }); },
+    onSubmit(bytes, sessionId = defaultSessionId) { port.postMessage({ type: "gl_forward_submit", pid, sessionId, bytes: bytes.slice() }); },
+    onQuery(op, input, outLen, sessionId = defaultSessionId) {
       if (input.byteLength > GL_FORWARD_QUERY_MAX_BYTES || !Number.isSafeInteger(outLen)
           || outLen < 0 || outLen > GL_FORWARD_QUERY_MAX_BYTES) {
         return { rc: -22, bytes: new Uint8Array() };
       }
       return request(outLen, mailbox =>
-        port.postMessage({ type: "gl_forward_query", pid, op, input: input.slice(), mailbox }));
+        port.postMessage({ type: "gl_forward_query", pid, sessionId, op, input: input.slice(), mailbox }));
     },
   };
 }
@@ -76,12 +77,23 @@ export function setupMainForward(
   pid: number,
 ): () => void {
   const reg = new GlContextRegistry();
-  reg.bind({ pid, cmdbufAddr: 0, cmdbufLen: 0 });
 
   const onMessage = (e: MessageEvent) => {
     const msg = e.data as GlForwardMessage;
     if (!msg || typeof msg !== "object" || msg.pid !== pid) return;
-    const b = reg.get(pid);
+    if (!Number.isInteger(msg.sessionId) || msg.sessionId < 0 || msg.sessionId > 0xffff_ffff) return;
+    let b = reg.get(pid, msg.sessionId);
+    if (!b && msg.type === "gl_forward_create_context") {
+      try {
+        if (!glForwardRequestPending(msg.mailbox)) return;
+        if (glForwardQueryCapacity(msg.mailbox) !== 0) throw new RangeError("invalid creation reply");
+        reg.bind({ pid, sessionId: msg.sessionId, cmdbufAddr: 0, cmdbufLen: 0 });
+        b = reg.get(pid, msg.sessionId);
+      } catch {
+        try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); } catch { /* no reply authority */ }
+        return;
+      }
+    }
     if (!b) {
       if (msg.type === "gl_forward_create_context" || msg.type === "gl_forward_query") {
         completeGlForwardQuery(msg.mailbox, -5, new Uint8Array());
@@ -132,7 +144,7 @@ export function setupMainForward(
       }
       case "gl_forward_destroy_context": {
         if (b.gl) muxer(b.gl).invalidateCurrent();
-        reg.destroyContext(pid);
+        reg.destroyContext(pid, msg.sessionId);
         return;
       }
       case "gl_forward_submit": {
@@ -157,7 +169,7 @@ export function setupMainForward(
       }
       case "gl_forward_unbind": {
         if (b.gl) muxer(b.gl).invalidateCurrent();
-        reg.unbind(pid);
+        reg.unbind(pid, msg.sessionId);
         return;
       }
     }
@@ -166,8 +178,7 @@ export function setupMainForward(
   worker.addEventListener("message", onMessage);
   return () => {
     worker.removeEventListener("message", onMessage);
-    const gl = reg.get(pid)?.gl;
-    if (gl) muxer(gl).invalidateCurrent();
+    for (const b of reg.list()) if (b.gl) muxer(b.gl).invalidateCurrent();
     reg.unbind(pid);
   };
 }

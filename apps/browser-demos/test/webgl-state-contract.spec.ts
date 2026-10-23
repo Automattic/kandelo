@@ -160,11 +160,12 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
   }
 });
 
-test("forwarded synchronous queries isolate owners with one mailbox per channel", async ({ page }) => {
+for (const sameProcess of [false, true]) {
+test(`forwarded synchronous queries isolate ${sameProcess ? "sessions in one process" : "processes"} with one mailbox per channel`, async ({ page }) => {
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");
   const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const result = await page.evaluate(async (sourceRoot) => {
+  const result = await page.evaluate(async ({ sourceRoot, sameProcess }) => {
     const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
     const { setupMainForward } = await import(base + "main-forward.ts");
     const canvas = document.createElement("canvas");
@@ -175,7 +176,9 @@ test("forwarded synchronous queries isolate owners with one mailbox per channel"
       import * as O from ${JSON.stringify(base + "ops.ts")};
       onmessage = () => {
         try {
-          const channels = [73,74].map(pid => createMainForwardChannel({ postMessage: message => postMessage(message) }, pid));
+          const channels = [73,74].map((pid,index) => createMainForwardChannel(
+            { postMessage: message => postMessage(message) },
+            ${sameProcess ? 73 : "pid"}, ${sameProcess ? "index + 201" : 0}));
           const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
           const bytes = new Uint8Array(memory.buffer);
           const view = new DataView(memory.buffer);
@@ -210,7 +213,7 @@ test("forwarded synchronous queries isolate owners with one mailbox per channel"
     `;
     const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
     const worker = new Worker(url, { type: "module" });
-    const dispose = [73,74].map(pid => setupMainForward(worker, canvas, pid));
+    const dispose = (sameProcess ? [73] : [73,74]).map(pid => setupMainForward(worker, canvas, pid));
     // Structured clone produces distinct SAB wrappers over the same storage.
     // Use an unused payload byte to observe backing reuse across messages.
     let mailboxCount = 0;
@@ -243,7 +246,7 @@ test("forwarded synchronous queries isolate owners with one mailbox per channel"
     } finally {
       worker.terminate(); dispose.forEach(close => close()); URL.revokeObjectURL(url);
     }
-  }, root);
+  }, { sourceRoot: root, sameProcess });
   expect(result.independent).toBe(true);
   expect(result.mailboxes).toBe(2);
   expect(result.mailboxSizes[0]).toBeLessThan(66_000);
@@ -255,6 +258,8 @@ test("forwarded synchronous queries isolate owners with one mailbox per channel"
   });
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
+
+}
 
 test("forwarded creation acknowledges real context loss and restoration", async ({ page }) => {
   await installBrowserMemoryBoundaryProbe(page);

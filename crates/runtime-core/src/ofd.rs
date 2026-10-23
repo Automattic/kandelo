@@ -5,7 +5,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell, UnsafeCell};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::{O_ACCMODE, O_APPEND, O_NONBLOCK, O_PATH};
 
@@ -162,6 +162,16 @@ pub enum FileType {
     PcmPlayback,
 }
 
+// Kernel-issued graphics identities are never recycled within one machine.
+// An OFD slot, thread id or a client-selected name cannot identify a session
+// after close/reopen or a destroyed/recreated context.
+static NEXT_GL_ID: AtomicU32 = AtomicU32::new(1);
+pub fn allocate_gl_id() -> Result<u32, Errno> {
+    NEXT_GL_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map_err(|_| Errno::ENOMEM)
+}
+
 /// Live cmdbuf mapping for a process's GLES2 fd.
 ///
 /// Populated by the GLIO_INIT path and the cmdbuf mmap path. The
@@ -180,9 +190,12 @@ pub struct CmdbufBinding {
 
 /// Per-fd GL state for `/dev/dri/renderD128` handles, hung off
 /// [`DriFdState`] below. Each fresh `open()` of renderD128 yields a
-/// new `GlState`; `dup` / fork-inherit shares one.
+/// new `GlState`; `dup` / fork-inherit shares one. A renderer's address-space
+/// ownership remains with `owner_pid` even when the description is shared.
 #[derive(Clone, Debug, Default)]
 pub struct GlState {
+    pub session_id: u32,
+    pub owner_pid: i32,
     pub initialized: bool,
     pub context_id: Option<u32>,
     pub surface_id: Option<u32>,

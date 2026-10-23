@@ -1,5 +1,5 @@
 {
-  "abi_version": 53,
+  "abi_version": 54,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1164,7 +1164,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 53,
+      "abi_version": 54,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -2231,7 +2231,7 @@
     },
     "66": {
       "argKind": "pointer",
-      "direction": "in",
+      "direction": "inout",
       "wasm32Size": 16,
       "wasm64Size": 16
     },
@@ -3879,7 +3879,12 @@
         {
           "name": "reserved",
           "offset": 4,
-          "span": 12
+          "span": 8
+        },
+        {
+          "name": "context_id",
+          "offset": 12,
+          "span": 4
         }
       ],
       "size": 16

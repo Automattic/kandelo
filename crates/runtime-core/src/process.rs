@@ -469,19 +469,20 @@ pub trait HostIO {
     /// given offset within its wasm `Memory`. Length is always
     /// `shared::gl::CMDBUF_LEN` in v1.
     #[allow(unused_variables)]
-    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize) {}
+    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize, session_id: u32) {}
 
-    /// Notify the host that the GL cmdbuf for `pid` is gone (`munmap`,
-    /// process exit, or exec). Idempotent.
+    /// Notify the host that one session's command memory is gone (`munmap`,
+    /// process exit, or exec). Never retire another session of `pid`.
+    /// The process argument names the renderer's actual owner. Idempotent.
     #[allow(unused_variables)]
-    fn gl_unbind(&mut self, pid: i32) {}
+    fn gl_unbind(&mut self, pid: i32, session_id: u32) {}
 
-    /// Allocate a host-side WebGL context. `ctx_id` is the per-fd id chosen
-    /// by the kernel; `attrs` is a marshalled `shared::gl::GlContextAttrs`.
+    /// Allocate a host-side WebGL context. `ctx_id` is a fresh kernel-issued
+    /// identity; `attrs` is a marshalled `shared::gl::GlContextAttrs`.
     /// Return zero only after a live renderer accepts creation, or negative
     /// errno. Failure must leave no published context or device ownership.
     #[allow(unused_variables)]
-    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) -> i32 {
+    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8], session_id: u32) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 
@@ -491,10 +492,10 @@ pub trait HostIO {
     /// Allocate a host-side surface (default canvas or pbuffer). `attrs`
     /// is a marshalled `shared::gl::GlSurfaceAttrs`.
     #[allow(unused_variables)]
-    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {}
+    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], session_id: u32) {}
 
     #[allow(unused_variables)]
-    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32) {}
+    fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32, session_id: u32) {}
 
     /// Bind ctx + surface as the current rendering target for `pid`.
     #[allow(unused_variables)]
@@ -505,7 +506,7 @@ pub trait HostIO {
     /// `shared::gl::CMDBUF_LEN`). Returns 0 on success, or a negative
     /// errno when the host rejects the command stream or cannot dispatch it.
     #[allow(unused_variables)]
-    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize) -> i32 {
+    fn gl_submit(&mut self, pid: i32, offset: usize, length: usize, session_id: u32) -> i32 {
         0
     }
 
@@ -514,14 +515,14 @@ pub trait HostIO {
     /// WebGL context must fail `eglSwapBuffers` so a GPU compositor
     /// degrades to its CPU path instead of presenting frozen pixels.
     #[allow(unused_variables)]
-    fn gl_present(&mut self, pid: i32) -> i32 {
+    fn gl_present(&mut self, pid: i32, session_id: u32) -> i32 {
         0
     }
 
     /// Synchronous GL query (`glGetError`, `glReadPixels`, etc.).
     /// Returns bytes written into `out`, or negative errno on failure.
     #[allow(unused_variables)]
-    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8]) -> i32 {
+    fn gl_query(&mut self, pid: i32, op: u32, input: &[u8], out: &mut [u8], session_id: u32) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 

@@ -85,7 +85,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Main authoritative final BO destruction; preserve its recent memory and exec fixes | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics changes are combined under ABI 53; generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session changes are combined under ABI 54; generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -129,7 +129,7 @@ Rendered, guest, conformance and complete lifecycle validation remain open.
 
 The sysfs/netlink and KMS changes were adapted from mho22's `f758e3fe4b`
 and `ea2bae402f`, retaining that author on both derived commits. The
-combined contract uses ABI 53 and fork record version 20. Main's cursor
+current combined contract uses ABI 54 and fork record version 20. Main's cursor
 references, complete mode catalog and deferred cleanup effects are retained.
 The first integrated DRI selection passed 50 Rust tests after migrating its
 connector lookup to the new device-wide object ID.
@@ -524,8 +524,9 @@ Origin/main was fetched at `1ddfafc871638785a26675a28899e9af69c0274a`.
 That commit independently introduces ABI 52 for a required heap-safepoint
 import. This branch's graphics ABI 52 is not interchangeable with main's ABI
 52. Main through `f3cb7041f6` is now integrated, including multicast routing
-and the heap-safepoint import. The combined implementation uses fresh ABI
-53, with graphics package ABI floors advanced to match. Normal artifact
+and the heap-safepoint import. The first combined implementation used ABI
+53; the subsequent session protocol advances it to ABI 54, with graphics
+package ABI floors advanced to match. Normal artifact
 rebuilds and combined-tree validation remain required. The earlier measurements retain their original
 baseline and artifact identities. Expensive rebuild and integration checks
 remain deferred at the user's request while implementation continues.
@@ -576,6 +577,65 @@ Firefox 155.0 and WebKit 26.6 from the worktree lockfile/browser manifest.
 They include real context loss, failed creation while lost, restoration and
 successful retry, copied command/query storage, alternating rendered owners
 and failed relink recovery. These are source-host checks, not guest,
-compositor, full browser-memory or complete CTS evidence. Normal ABI 53
+compositor, full browser-memory or complete CTS evidence. Normal ABI 54
 SDK/package/image builds and the broader combined-tree suites remain
 required in the deferred rebuild/test phase.
+
+### Independent open-description graphics sessions (ABI 54)
+
+The kernel already kept a command mapping on each GL open description, but
+host bindings were keyed only by process. A second open overwrote the first
+binding, and close/unmap could destroy another session's renderer. Two new
+registry regressions reproduce both failures on `9488882656`:
+`.context/graphics-session-baseline.log` (14 pass, 2 fail).
+
+Every GL open description now owns a fresh session identity and creating
+process. Host imports, registry entries, submit queues, forwarding messages,
+queries, surfaces and cleanup carry that identity. Context creation returns
+a separate fresh kernel-issued context id through the now-InOut request;
+EGL passes that identity for foreign texture imports. Wasm's signed-i32
+JavaScript argument representation preserves the unsigned identity.
+Process-only registry operations refuse ambiguity. A scoped retirement
+clears its command-memory view and leaves sibling sessions live; growth
+invalidates every cached view. KMS ownership remains claimed until the last
+claiming session retires. Forwarding notification failure is reported after
+local session retirement rather than retaining other session records.
+
+Renderer memory stays with its creating process when a descriptor is
+inherited or transferred. Foreign-process GL operations fail with `EACCES`;
+unmap/exec cleanup does not discard the original owner's session. Final
+open-description cleanup names that original owner. Native tests exercise
+this ownership model, duplicate descriptors and final close. Full guest
+fork/exec/SCM_RIGHTS/crash coverage remains required.
+
+ABI 54 records the changed host import signatures, context result field and
+ioctl output direction. The snapshot, generated C/TypeScript declarations,
+standalone resolver and graphics package ABI floors match. This is still
+one context and surface per backend session. The public EGL facade remains
+single-context; its multiple contexts/share groups, per-context encoder
+state, kernel thread-current authority, independent read/draw surfaces and
+overlapping display generations remain ordinary open work. This foundation
+does not claim full E02, G02 or graphics conformance.
+
+The focused checks use the current sources rather than installed guest
+artifacts. Browser tests retain their original cross-process cases and add
+the same rendered/query checks for two sessions within one process. Results on the ABI 54 source tree:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Host graphics/KMS/scratch source gate | 272 passed, 16 files, no skips | `.context/graphics-session-host-verified.log` |
+| Host declarations, Node/browser entry points | passed | `.context/graphics-session-host-verified.log` |
+| Native Rust `runtime-core` filters `gl` and `dri` | 44 and 80 passed respectively, no failures/ignored (overlapping selections, not a combined count) | `.context/graphics-session-rust-scoped.log` |
+| Shared ioctl-contract tests | 12 passed | `.context/graphics-session-rust-scoped.log` |
+| Native actual EGL/GLES sources with UBSan/device double | 21 cases passed; foreign binding asserts the returned context identity | `.context/graphics-session-native-verified.log` |
+| EGL source compiled with normal wasm32 archive flags | passed, private object only | `.context/graphics-session-wasm-compile.log` |
+| Browser protocol and memory-boundary negative checks | 9 passed | `.context/graphics-session-memory-boundary.log` |
+| Chromium/Firefox/WebKit source rendering | 15 passed, no skips; cross-process and same-process sessions | `.context/graphics-session-browser-verified.log` |
+| ABI 54 generation/check and resolver consistency | passed | `.context/graphics-session-abi54.log`, `.context/graphics-session-abi54-final-check.log` |
+
+The browser versions match the preceding renderer-acknowledgement check.
+No installed SDK archive, guest executable, package or image was rebuilt by
+these checks. Full Rust workspace/package automation, guest CTS,
+compositors, full browser-memory and POSIX suites remain required after
+normal ABI 54 provisioning. Those deferred checks are not substituted by
+these source-host/native results.

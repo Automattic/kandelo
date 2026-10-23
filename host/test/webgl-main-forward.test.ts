@@ -29,7 +29,7 @@ class FakeWorker implements ForwardWorkerLike {
 function createMessage(pid: number): GlForwardMessage {
   const mailbox = createGlForwardQueryMailbox();
   prepareGlForwardQuery(mailbox, 0);
-  return { type: "gl_forward_create_context", pid, mailbox };
+  return { type: "gl_forward_create_context", pid, sessionId: 0, mailbox };
 }
 
 class RecordingGl {
@@ -77,8 +77,8 @@ describe("setupMainForward", () => {
     expect(getContextCalls.length).toBe(1);
     expect(getContextCalls[0][0]).toBe("webgl2");
 
-    worker.fire({ type: "gl_forward_destroy_context", pid: 7 });
-    worker.fire({ type: "gl_forward_submit", pid: 7, bytes: clearCmdbuf() });
+    worker.fire({ type: "gl_forward_destroy_context", pid: 7, sessionId: 0 });
+    worker.fire({ type: "gl_forward_submit", pid: 7, sessionId: 0, bytes: clearCmdbuf() });
     expect(stub.log).toEqual([]);
 
     dispose();
@@ -91,7 +91,7 @@ describe("setupMainForward", () => {
     const dispose = setupMainForward(worker, canvas, 7);
 
     worker.fire(createMessage(7));
-    worker.fire({ type: "gl_forward_submit", pid: 7, bytes: clearCmdbuf() });
+    worker.fire({ type: "gl_forward_submit", pid: 7, sessionId: 0, bytes: clearCmdbuf() });
     expect(stub.log).toEqual([["clear", [0x4000]]]);
 
     dispose();
@@ -182,6 +182,21 @@ describe("GlContextRegistry forward channel", () => {
 });
 
 describe("main-thread synchronous query transport", () => {
+  it("routes two sessions of one process through one channel and retires only one", () => {
+    const worker = new FakeWorker();
+    const gl = new RecordingGl();
+    const dispose = setupMainForward(worker, fakeCanvas(gl).canvas, 7);
+    const channel = createMainForwardChannel({ postMessage: message => worker.fire(message) }, 7);
+    expect(channel.onCreateContext(11)).toBe(0);
+    expect(channel.onCreateContext(12)).toBe(0);
+    channel.onUnbind!(11);
+    expect(channel.onQuery!(O.QOP_GET_ERROR, new Uint8Array(), 4, 11).rc).toBe(-5);
+    expect(channel.onQuery!(O.QOP_GET_ERROR, new Uint8Array(), 4, 12).rc).toBe(4);
+    channel.onSubmit(clearCmdbuf(), 12);
+    expect(gl.log).toEqual([["clear", [0x4000]]]);
+    dispose();
+  });
+
   it.each(["unavailable", "lost", "throwing"])("acknowledges %s renderer failure and allows retry", mode => {
     const worker = new FakeWorker();
     let failed = true;

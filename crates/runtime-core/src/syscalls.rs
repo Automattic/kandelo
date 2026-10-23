@@ -846,6 +846,14 @@ fn kms_state_mut(proc: &mut Process, ofd_idx: usize) -> Result<&mut crate::ofd::
         .ok_or(Errno::EBADF)
 }
 
+fn gl_session_id(proc: &Process, ofd_idx: usize) -> Result<u32, Errno> {
+    dri_state(proc, ofd_idx)?
+        .gl
+        .as_ref()
+        .map(|gl| gl.session_id)
+        .ok_or(Errno::EINVAL)
+}
+
 fn ranges_overlap(a_addr: usize, a_len: usize, b_addr: usize, b_len: usize) -> bool {
     let a_end = a_addr.saturating_add(a_len);
     let b_end = b_addr.saturating_add(b_len);
@@ -856,35 +864,34 @@ fn dri_fd_has_bo_handle(dri: &crate::ofd::DriFdState, bo_id: crate::dri::BoId) -
     dri.handles.values().any(|&candidate| candidate == bo_id)
 }
 
-fn clear_dri_fd_cmdbuf_in_range(dri: &mut crate::ofd::DriFdState, addr: usize, len: usize) -> bool {
-    let Some(gl) = dri.gl.as_mut() else {
-        return false;
-    };
-    let Some(cmdbuf) = gl.cmdbuf else {
-        return false;
-    };
+fn clear_dri_fd_cmdbuf_in_range(
+    dri: &mut crate::ofd::DriFdState,
+    owner_pid: i32,
+    addr: usize,
+    len: usize,
+) -> Option<u32> {
+    let gl = dri.gl.as_mut()?;
+    if gl.owner_pid != owner_pid {
+        return None;
+    }
+    let cmdbuf = gl.cmdbuf?;
     if !ranges_overlap(addr, len, cmdbuf.addr, cmdbuf.len) {
-        return false;
+        return None;
     }
     gl.cmdbuf = None;
-    true
+    gl.context_id = None;
+    gl.surface_id = None;
+    gl.current = false;
+    Some(gl.session_id)
 }
 
 fn unbind_gl_cmdbufs_in_range(proc: &mut Process, host: &mut dyn HostIO, addr: usize, len: usize) {
-    let mut released = false;
-    for (_ofd_idx, ofd) in proc.ofd_table.iter_mut() {
-        match ofd.dri_state.as_deref_mut() {
-            Some(crate::ofd::DriOfdState::RenderNode(dri)) => {
-                released |= clear_dri_fd_cmdbuf_in_range(dri, addr, len);
-            }
-            Some(crate::ofd::DriOfdState::Card { dri, .. }) => {
-                released |= clear_dri_fd_cmdbuf_in_range(dri, addr, len);
-            }
-            _ => {}
+    let pid = proc.pid as i32;
+    for (_, ofd) in proc.ofd_table.iter_mut() {
+        let Some(dri) = ofd.dri_mut() else { continue };
+        if let Some(session_id) = clear_dri_fd_cmdbuf_in_range(dri, pid, addr, len) {
+            host.gl_unbind(pid, session_id);
         }
-    }
-    if released {
-        host.gl_unbind(proc.pid as i32);
     }
 }
 
@@ -894,21 +901,12 @@ fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
     for b in bindings {
         host.gbm_bo_unbind(pid, b.bo_id, b.addr, b.len);
     }
-
-    let mut released_gl = false;
-    for (_ofd_idx, ofd) in proc.ofd_table.iter_mut() {
-        match ofd.dri_state.as_deref_mut() {
-            Some(crate::ofd::DriOfdState::RenderNode(dri)) => {
-                released_gl |= dri.gl.take().is_some();
-            }
-            Some(crate::ofd::DriOfdState::Card { dri, .. }) => {
-                released_gl |= dri.gl.take().is_some();
-            }
-            _ => {}
+    for (_, ofd) in proc.ofd_table.iter_mut() {
+        let Some(dri) = ofd.dri_mut() else { continue };
+        if dri.gl.as_ref().is_some_and(|gl| gl.owner_pid == pid) {
+            let gl = dri.gl.take().unwrap();
+            host.gl_unbind(pid, gl.session_id);
         }
-    }
-    if released_gl {
-        host.gl_unbind(pid);
     }
 }
 
@@ -1241,6 +1239,19 @@ fn handle_dri_ioctl(
     use wasm_posix_shared::dri::*;
     use wasm_posix_shared::gl;
     let pid = proc.pid as i32;
+    // GEM/PRIME descriptions can cross process boundaries; a renderer and
+    // its command memory belong to their creator's address-space generation.
+    if (gl::GLIO_INIT..=gl::GLIO_QUERY).contains(&request)
+        || request == DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE
+    {
+        if dri_state(proc, ofd_idx)?
+            .gl
+            .as_ref()
+            .is_some_and(|gl| gl.owner_pid != pid)
+        {
+            return Err(Errno::EACCES);
+        }
+    }
     match request {
         DRM_IOCTL_VERSION | DRM_IOCTL_VERSION_WASM64 => handle_drm_version(request, buf),
         DRM_IOCTL_GET_CAP => {
@@ -1601,6 +1612,8 @@ fn handle_dri_ioctl(
                 return Err(Errno::EBUSY);
             }
             dri.gl = Some(crate::ofd::GlState {
+                session_id: crate::ofd::allocate_gl_id()?,
+                owner_pid: pid,
                 initialized: true,
                 ..Default::default()
             });
@@ -1608,11 +1621,8 @@ fn handle_dri_ioctl(
         }
         gl::GLIO_TERMINATE => {
             let dri = dri_state_mut(proc, ofd_idx)?;
-            if dri.gl.is_none() {
-                return Err(Errno::EINVAL);
-            }
-            dri.gl = None;
-            host.gl_unbind(pid);
+            let gl = dri.gl.take().ok_or(Errno::EINVAL)?;
+            host.gl_unbind(pid, gl.session_id);
             Ok(())
         }
         gl::GLIO_CREATE_CONTEXT => {
@@ -1622,10 +1632,13 @@ fn handle_dri_ioctl(
             let attrs_bytes = &buf[..core::mem::size_of::<gl::GlContextAttrs>()];
             let attrs: gl::GlContextAttrs =
                 unsafe { core::ptr::read_unaligned(attrs_bytes.as_ptr() as *const _) };
-            if attrs.client_version != 2 && attrs.client_version != 3 {
+            if (attrs.client_version != 2 && attrs.client_version != 3)
+                || attrs.context_id != 0
+                || attrs.reserved != [0; 2]
+            {
                 return Err(Errno::EINVAL);
             }
-            let ctx_id;
+            let (ctx_id, session_id);
             {
                 let dri = dri_state_mut(proc, ofd_idx)?;
                 let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
@@ -1635,12 +1648,13 @@ fn handle_dri_ioctl(
                 if gls.context_id.is_some() {
                     return Err(Errno::EBUSY);
                 }
-                ctx_id = 1u32;
+                ctx_id = crate::ofd::allocate_gl_id()?;
+                session_id = gls.session_id;
             }
             // Do not publish a context the host could not actually create.
             // In particular, a renderer-less host must not turn GL calls
             // into successful no-ops behind a live EGL context handle.
-            let rc = host.gl_create_context(pid, ctx_id, attrs_bytes);
+            let rc = host.gl_create_context(pid, ctx_id, attrs_bytes, session_id);
             if rc != 0 {
                 return Err(rc
                     .checked_neg()
@@ -1652,6 +1666,7 @@ fn handle_dri_ioctl(
                 .as_mut()
                 .ok_or(Errno::EINVAL)?
                 .context_id = Some(ctx_id);
+            buf[12..16].copy_from_slice(&ctx_id.to_le_bytes());
             Ok(())
         }
         gl::GLIO_DESTROY_CONTEXT => {
@@ -1708,7 +1723,7 @@ fn handle_dri_ioctl(
             // is at byte offset 16 in the 32-byte GlSurfaceAttrs.
             buf[16..20].copy_from_slice(&target_bo_id.to_le_bytes());
             let attrs_bytes = &buf[..attrs_size];
-            host.gl_create_surface(pid, surface_id, attrs_bytes);
+            host.gl_create_surface(pid, surface_id, attrs_bytes, gl_session_id(proc, ofd_idx)?);
             Ok(())
         }
         gl::GLIO_DESTROY_SURFACE => {
@@ -1720,7 +1735,7 @@ fn handle_dri_ioctl(
                 gls.surface_id = None;
                 gls.current = false;
             }
-            host.gl_destroy_surface(pid, surface_id);
+            host.gl_destroy_surface(pid, surface_id, gl_session_id(proc, ofd_idx)?);
             Ok(())
         }
         gl::GLIO_MAKE_CURRENT => {
@@ -1755,7 +1770,7 @@ fn handle_dri_ioctl(
                 offset = info.offset as usize;
                 length = info.length as usize;
             }
-            let submit_rc = host.gl_submit(pid, offset, length);
+            let submit_rc = host.gl_submit(pid, offset, length, gl_session_id(proc, ofd_idx)?);
             if submit_rc < 0 {
                 return Err(Errno::from_u32((-submit_rc) as u32).unwrap_or(Errno::EIO));
             }
@@ -1773,7 +1788,7 @@ fn handle_dri_ioctl(
                     return Err(Errno::EINVAL);
                 }
             }
-            let present_rc = host.gl_present(pid);
+            let present_rc = host.gl_present(pid, gl_session_id(proc, ofd_idx)?);
             if present_rc < 0 {
                 return Err(Errno::from_u32((-present_rc) as u32).unwrap_or(Errno::EIO));
             }
@@ -1807,7 +1822,7 @@ fn handle_dri_ioctl(
                 }
             }
             let mut out_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.out_buf_len as usize];
-            let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf);
+            let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf, gl_session_id(proc, ofd_idx)?);
             if written < 0 {
                 return Err(Errno::EIO);
             }
@@ -2677,7 +2692,7 @@ pub enum DriReleaseEffect {
     DestroyBo(u32),
     RemoveFramebuffer(u32),
     DropMaster,
-    UnbindGl,
+    UnbindGl { owner_pid: i32, session_id: u32 },
 }
 
 pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host: &mut dyn HostIO) {
@@ -2686,7 +2701,7 @@ pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host:
             DriReleaseEffect::DestroyBo(bo) => host.gbm_bo_destroy(pid, bo),
             DriReleaseEffect::RemoveFramebuffer(fb) => host.kms_rmfb(pid, fb),
             DriReleaseEffect::DropMaster => host.kms_drop_master(pid),
-            DriReleaseEffect::UnbindGl => host.gl_unbind(pid),
+            DriReleaseEffect::UnbindGl { owner_pid, session_id } => host.gl_unbind(owner_pid, session_id),
         }
     }
 }
@@ -2712,8 +2727,8 @@ pub fn collect_dri_release_effects(
             release_bo(&mut effects, p.bo_id);
         }
         crate::ofd::DriOfdState::RenderNode(dri) => {
-            if dri.gl.is_some() {
-                effects.push(DriReleaseEffect::UnbindGl);
+            if let Some(gl) = dri.gl {
+                effects.push(DriReleaseEffect::UnbindGl { owner_pid: gl.owner_pid, session_id: gl.session_id });
             }
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(&mut effects, bo_id);
@@ -2733,8 +2748,8 @@ pub fn collect_dri_release_effects(
             if kms.holds_master && crate::dri::master::drop_master(pid, ofd_idx) {
                 effects.push(DriReleaseEffect::DropMaster);
             }
-            if dri.gl.is_some() {
-                effects.push(DriReleaseEffect::UnbindGl);
+            if let Some(gl) = dri.gl {
+                effects.push(DriReleaseEffect::UnbindGl { owner_pid: gl.owner_pid, session_id: gl.session_id });
             }
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(&mut effects, bo_id);
@@ -11925,7 +11940,7 @@ pub fn sys_mmap(
                 && ofd
                     .dri()
                     .and_then(|d| d.gl.as_ref())
-                    .map(|g| g.initialized && g.cmdbuf.is_none())
+                    .map(|g| g.owner_pid == proc.pid as i32 && g.initialized && g.cmdbuf.is_none())
                     .unwrap_or(false);
             if needs_cmdbuf {
                 if len != wasm_posix_shared::gl::CMDBUF_LEN {
@@ -11955,7 +11970,7 @@ pub fn sys_mmap(
                         }
                     }
                 }
-                host.gl_bind(proc.pid as i32, addr_out, len);
+                host.gl_bind(proc.pid as i32, addr_out, len, gl_session_id(proc, proc.fd_table.get(fd)?.ofd_ref.0)?);
                 return Ok(addr_out);
             }
             if (offset as u64) & 0xFFF != 0 {
@@ -23109,6 +23124,10 @@ mod tests {
         gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
         /// Recorded pid for every `gl_unbind` call.
         gl_unbind_calls: Vec<i32>,
+        gl_unbind_sessions: Vec<u32>,
+        gl_submit_sessions: Vec<u32>,
+        gl_create_context_sessions: Vec<u32>,
+        gl_bind_sessions: Vec<u32>,
         proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
         cursor_supported: bool,
         /// Simulated guest linear memory for `proc_read_bytes` /
@@ -23262,6 +23281,10 @@ mod tests {
                 gbm_bo_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
+                gl_unbind_sessions: Vec::new(),
+                gl_submit_sessions: Vec::new(),
+                gl_create_context_sessions: Vec::new(),
+                gl_bind_sessions: Vec::new(),
                 proc_write_calls: Vec::new(),
                 cursor_supported: false,
                 // 64 KiB — one wasm page, enough for every address these
@@ -24127,13 +24150,19 @@ mod tests {
         fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
             self.gbm_bo_unbind_calls.push((pid, bo_id, addr, len));
         }
-        fn gl_unbind(&mut self, pid: i32) {
-            self.gl_unbind_calls.push(pid);
+        fn gl_bind(&mut self, _pid: i32, _addr: usize, _len: usize, session_id: u32) {
+            self.gl_bind_sessions.push(session_id);
         }
-        fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize) -> i32 {
+        fn gl_unbind(&mut self, pid: i32, session_id: u32) {
+            self.gl_unbind_calls.push(pid);
+            self.gl_unbind_sessions.push(session_id);
+        }
+        fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize, session_id: u32) -> i32 {
+            self.gl_submit_sessions.push(session_id);
             self.gl_submit_rc
         }
-        fn gl_create_context(&mut self, _pid: i32, _ctx_id: u32, _attrs: &[u8]) -> i32 {
+        fn gl_create_context(&mut self, _pid: i32, _ctx_id: u32, _attrs: &[u8], session_id: u32) -> i32 {
+            self.gl_create_context_sessions.push(session_id);
             self.gl_create_context_rc
         }
         fn proc_write_bytes(&mut self, pid: i32, ptr: u64, bytes: &[u8]) -> i32 {
@@ -24167,7 +24196,7 @@ mod tests {
                 .push((pid, ctx_id, bo_id, gl_target));
             self.gl_bind_foreign_texture_rc
         }
-        fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {
+        fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], _session_id: u32) {
             self.gl_create_surface_calls
                 .push((pid, surface_id, attrs.to_vec()));
         }
@@ -51891,6 +51920,85 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn glio_inherited_description_preserves_renderer_owner_during_cleanup() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(2);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut gl::OP_VERSION.to_le_bytes()).unwrap();
+        let address = sys_mmap(&mut proc, &mut host, 0, gl::CMDBUF_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        // Model the same open-description state arriving from process 1.
+        // The mapping address is relative to that owner, not process 2.
+        let gls = dri_state_mut(&mut proc, ofd).unwrap().gl.as_mut().unwrap();
+        gls.owner_pid = 1;
+        let session_id = gls.session_id;
+        for (request, size) in [
+            (gl::GLIO_INIT, 4), (gl::GLIO_CREATE_CONTEXT, 16),
+            (gl::GLIO_SUBMIT, 8), (gl::GLIO_QUERY, 24), (gl::GLIO_TERMINATE, 0),
+        ] {
+            let mut bytes = alloc::vec![0x5a; size];
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, request, &mut bytes), Err(Errno::EACCES));
+            assert!(bytes.iter().all(|byte| *byte == 0x5a));
+        }
+        unbind_gl_cmdbufs_in_range(&mut proc, &mut host, address, gl::CMDBUF_LEN);
+        release_process_dri_mappings(&mut proc, &mut host);
+        assert!(host.gl_unbind_sessions.is_empty());
+        assert!(dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap().cmdbuf.is_some());
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.gl_unbind_calls, [1]);
+        assert_eq!(host.gl_unbind_sessions, [session_id]);
+    }
+
+    #[test]
+    fn glio_sessions_route_and_retire_by_open_description() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut sessions = Vec::new();
+        let mut contexts = Vec::new();
+        let mut fds = Vec::new();
+        for _ in 0..2 {
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut gl::OP_VERSION.to_le_bytes()).unwrap();
+            sys_mmap(&mut proc, &mut host, 0, gl::CMDBUF_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+            let mut attrs = [0u8; 16];
+            attrs[..4].copy_from_slice(&2u32.to_le_bytes());
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut attrs).unwrap();
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            let gls = dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap();
+            sessions.push(gls.session_id);
+            contexts.push(u32::from_le_bytes(attrs[12..16].try_into().unwrap()));
+            assert_eq!(gls.context_id, contexts.last().copied());
+            assert_eq!(attrs[..12], [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            fds.push(fd);
+        }
+        assert_ne!(sessions[0], sessions[1]);
+        assert!(sessions.iter().all(|id| *id != 0));
+        assert_ne!(contexts[0], contexts[1]);
+        assert!(contexts.iter().all(|id| *id != 0));
+        assert_eq!(host.gl_bind_sessions, sessions);
+        assert_eq!(host.gl_create_context_sessions, sessions);
+        for &fd in &fds {
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut [0u8; 8]).unwrap();
+        }
+        assert_eq!(host.gl_submit_sessions, sessions);
+        let duplicate = sys_dup(&mut proc, fds[0]).unwrap();
+        sys_close(&mut proc, &mut host, fds[0]).unwrap();
+        assert!(host.gl_unbind_sessions.is_empty());
+        sys_close(&mut proc, &mut host, duplicate).unwrap();
+        assert_eq!(host.gl_unbind_sessions, [sessions[0]]);
+        let other = proc.fd_table.get(fds[1]).unwrap().ofd_ref.0;
+        assert_eq!(dri_state(&proc, other).unwrap().gl.as_ref().unwrap().context_id, Some(contexts[1]));
+        sys_ioctl(&mut proc, &mut host, fds[1], gl::GLIO_SUBMIT, &mut [0u8; 8]).unwrap();
+        assert_eq!(host.gl_submit_sessions.last(), Some(&sessions[1]));
+        release_process_dri_mappings(&mut proc, &mut host);
+        assert_eq!(host.gl_unbind_sessions, sessions);
+    }
+
+    #[test]
     fn glio_create_context_preserves_backend_failure_and_allows_retry() {
         use wasm_posix_shared::gl;
         let mut proc = Process::new(1);
@@ -51925,8 +52033,9 @@ impl HostIO for RelSymlinkMock {
                 .as_ref()
                 .unwrap()
                 .context_id,
-            Some(1),
+            Some(u32::from_le_bytes(attrs[12..16].try_into().unwrap())),
         );
+        assert_ne!(attrs[12..16], [0; 4]);
     }
 
     #[test]
@@ -51941,7 +52050,8 @@ impl HostIO for RelSymlinkMock {
 
         let attrs = gl::GlContextAttrs {
             client_version: 2,
-            reserved: [0; 3],
+            reserved: [0; 2],
+            context_id: 0,
         };
         let mut buf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
@@ -51957,7 +52067,9 @@ impl HostIO for RelSymlinkMock {
             .gl
             .as_ref()
             .unwrap();
-        assert_eq!(gls.context_id, Some(1));
+        let first_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+        assert_ne!(first_id, 0);
+        assert_eq!(gls.context_id, Some(first_id));
 
         // Second CREATE_CONTEXT on the same fd must fail until the
         // first is destroyed.
@@ -51979,6 +52091,7 @@ impl HostIO for RelSymlinkMock {
         .unwrap();
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
+        assert!(u32::from_le_bytes(buf[12..16].try_into().unwrap()) > first_id);
     }
 
     #[test]
@@ -52040,10 +52153,11 @@ impl HostIO for RelSymlinkMock {
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
-        let attrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 3] };
+        let attrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 2], context_id: 0 };
         let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();
+        let context_id = u32::from_le_bytes(abuf[12..16].try_into().unwrap());
 
         // Unknown handle → ENOENT.
         req.bo_handle = 999;
@@ -52056,7 +52170,7 @@ impl HostIO for RelSymlinkMock {
 
         // Wrong ctx_id → EINVAL.
         req.bo_handle = dumb_out.handle;
-        req.ctx_id = 2;
+        req.ctx_id = 0;
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
         assert_eq!(
             sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf)
@@ -52067,7 +52181,7 @@ impl HostIO for RelSymlinkMock {
         // Happy path: the host's texture id round-trips into the struct,
         // and the host saw the resolved kernel-global bo id (2 — second
         // bo in the reset registry), not this fd's local handle (1).
-        req.ctx_id = 1;
+        req.ctx_id = context_id;
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
         sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf).unwrap();
         let out: WpkDrmBindForeignTexture =
@@ -52075,7 +52189,7 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(out.gl_texture_id, 7);
         assert_eq!(
             host.gl_bind_foreign_texture_calls[0],
-            (1, 1, 2, 0x0DE1),
+            (1, context_id, 2, 0x0DE1),
         );
 
         // Host failure (headless: no WebGL backing) → EIO.
@@ -52122,7 +52236,7 @@ impl HostIO for RelSymlinkMock {
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
-        let cattrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 3] };
+        let cattrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 2], context_id: 0 };
         let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, cattrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();

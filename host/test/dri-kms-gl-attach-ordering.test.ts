@@ -272,6 +272,27 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
  * nothing recorded, so it returned early every time.
  */
 describe("KMS GL canvas release — the claim is handed back", () => {
+  it("keeps the canvas claimed until the last session in a process retires", () => {
+    const owned: number[] = [], released: number[] = [];
+    const canvas = fakeCanvas(640, 480);
+    const { kernel, imports } = harness({
+      getKmsCanvas: () => canvas, getKmsCrtcIds: () => [1],
+      markKmsCanvasGlOwned: (id: number) => owned.push(id),
+      markKmsCanvasGlReleased: (id: number) => released.push(id),
+    });
+    imports.env.host_kms_set_master(PID);
+    for (const sessionId of [11, 12]) {
+      kernel.gl.bind({ pid: PID, sessionId, cmdbufAddr: 0, cmdbufLen: 0 });
+      expect(imports.env.host_gl_create_context(PID, sessionId + 20, 0, 0, sessionId)).toBe(0);
+    }
+    expect(owned).toEqual([1]);
+    imports.env.host_gl_unbind(PID, 11);
+    expect(released).toEqual([]);
+    expect(kernel.gl.get(PID, 12)!.claimedKmsCrtc).toBe(1);
+    imports.env.host_gl_unbind(PID, 12);
+    expect(released).toEqual([1]);
+  });
+
   function claimed(): {
     kernel: WasmPosixKernel & Record<string, any>;
     imports: { env: Record<string, (...args: any[]) => any> };

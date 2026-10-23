@@ -159,7 +159,7 @@
 
 /* Marshalled ioctl arg structs — must match shared::gl byte-for-byte. */
 struct gl_submit_info { uint32_t offset; uint32_t length; };
-struct gl_context_attrs { uint32_t client_version; uint32_t reserved[3]; };
+struct gl_context_attrs { uint32_t client_version; uint32_t reserved[2]; uint32_t context_id; };
 struct gl_surface_attrs { uint32_t kind; uint32_t width; uint32_t height; uint32_t config_id; uint32_t reserved[4]; };
 struct gl_query_info {
     uint32_t op;

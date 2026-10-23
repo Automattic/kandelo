@@ -1,12 +1,13 @@
 /**
  * Tracks live `/dev/dri/renderD128` GLES sessions reported by the kernel.
  *
- * One binding per process (single-owner enforced kernel-side via
- * `GL_DEVICE_OWNER`). Each binding owns:
+ * Each kernel GL session owns an independent binding within its process.
+ * Process-only lookups refuse ambiguity instead of selecting another session.
+ * Each binding owns:
  *
  *   - the cmdbuf region (a slice of the process's wasm Memory SAB),
  *   - a lazily-built `WebGL2RenderingContext` once a canvas is attached,
- *   - per-process handle maps that translate cmdbuf-side u32 names to
+ *   - per-session handle maps that translate cmdbuf-side u32 names to
  *     real `WebGL*` objects (buffers, textures, shaders, programs, VAOs,
  *     framebuffers, renderbuffers, uniform locations).
  *
@@ -27,6 +28,9 @@ export type GlSurfaceHandle = number;
 
 export type GlBindingInput = {
   pid: number;
+  /** Kernel-owned open-description session identity. Zero is the unscoped
+   * embedder API's single-session identity; kernel sessions are nonzero. */
+  sessionId?: number;
   /** Wasm-process address where the cmdbuf was mmap'd (set by the
    *  kernel's `host_gl_bind` call). */
   cmdbufAddr: number;
@@ -39,13 +43,15 @@ export type GlBindingInput = {
  *  out of the SAB-backed cmdbuf so the channel may transfer the buffer. */
 export type GlForwardChannel = {
   /** Zero acknowledges a live renderer; negative errno leaves no context. */
-  onCreateContext(): number;
-  onDestroyContext(): void;
-  onSubmit(bytes: Uint8Array): void;
-  onQuery?(op: number, input: Uint8Array, outLen: number): { rc: number; bytes: Uint8Array };
+  onCreateContext(sessionId?: number): number;
+  onDestroyContext(sessionId?: number): void;
+  onUnbind?(sessionId: number): void;
+  onSubmit(bytes: Uint8Array, sessionId?: number): void;
+  onQuery?(op: number, input: Uint8Array, outLen: number, sessionId?: number): { rc: number; bytes: Uint8Array };
 };
 
 export type GlBinding = GlBindingInput & {
+  sessionId: number;
   /** Lazy view of `[cmdbufAddr, cmdbufAddr+cmdbufLen)` of the process's
    *  wasm Memory SAB. Built on the first submit and dropped to `null`
    *  by `rebindMemory` after a `Memory.grow()`. */
@@ -58,7 +64,7 @@ export type GlBinding = GlBindingInput & {
    *  `attachCanvas` before the program calls `eglCreateContext`. */
   canvas: HTMLCanvasElement | OffscreenCanvas | null;
 
-  /** EGL context handle (opaque u32 the C side picks). */
+  /** Kernel-issued EGL backend context identity. */
   contextId: GlContextHandle | null;
   /** EGL surface handle (opaque u32 the C side picks). */
   surfaceId: GlSurfaceHandle | null;
@@ -176,7 +182,7 @@ export type GpuBo = {
 };
 
 export class GlContextRegistry {
-  private bindings = new Map<number, GlBinding>();
+  private bindings = new Map<string, GlBinding>();
   private listeners = new Set<GlChangeListener>();
   /** GPU-tier bos keyed by bo_id. Registry-scoped (NOT per-binding):
    *  the texture is owned by the bo and shared across every session that
@@ -197,12 +203,16 @@ export class GlContextRegistry {
   private pendingCanvases = new Map<number, HTMLCanvasElement | OffscreenCanvas>();
 
   bind(b: GlBindingInput): void {
-    const forward = this.pendingForwards.get(b.pid) ?? null;
+    const forward = this.pendingForwards.get(b.pid)
+      ?? this.list().find(value => value.pid === b.pid && value.forward)?.forward ?? null;
     this.pendingForwards.delete(b.pid);
-    const canvas = this.pendingCanvases.get(b.pid) ?? null;
+    const canvas = this.getCanvas(b.pid);
     this.pendingCanvases.delete(b.pid);
-    this.bindings.set(b.pid, {
+    const sessionId = (b.sessionId ?? 0) >>> 0;
+    if (this.get(b.pid, sessionId)) throw new Error("GL session is already bound");
+    this.bindings.set(`${b.pid}:${sessionId}`, {
       ...b,
+      sessionId,
       cmdbufView: null,
       gl: null,
       canvas,
@@ -238,19 +248,33 @@ export class GlContextRegistry {
     for (const l of this.listeners) l(b.pid, "bind");
   }
 
-  unbind(pid: number): void {
-    this.pendingForwards.delete(pid);
-    const b = this.bindings.get(pid);
-    if (!b) return;
-    this.destroyContext(pid);
-    this.bindings.delete(pid);
-    for (const l of this.listeners) l(pid, "unbind");
+  unbind(pid: number, sessionId?: number): void {
+    if (sessionId !== undefined) sessionId >>>= 0;
+    let failure: unknown;
+    for (const b of this.list()) {
+      if (b.pid !== pid || (sessionId !== undefined && b.sessionId !== sessionId)) continue;
+      b.cmdbufView = null;
+      try {
+        this.destroyContext(pid, b.sessionId);
+        b.forward?.onUnbind?.(b.sessionId);
+      } catch (error) {
+        failure ??= error;
+      } finally {
+        this.bindings.delete(`${pid}:${b.sessionId}`);
+      }
+      for (const l of this.listeners) l(pid, "unbind");
+    }
+    if (sessionId === undefined || !this.list().some(b => b.pid === pid)) {
+      this.pendingForwards.delete(pid);
+      this.pendingCanvases.delete(pid);
+    }
+    if (failure) throw failure;
   }
 
   /** The native WebGL context is shared and survives guest EGL contexts.
    * Retire this context's resources and shadow state before reusing it. */
-  destroyContext(pid: number): void {
-    const b = this.bindings.get(pid);
+  destroyContext(pid: number, sessionId?: number): void {
+    const b = this.get(pid, sessionId);
     if (!b) return;
     const gl = b.gl;
     // A deleted native program remains alive while physically current.
@@ -301,8 +325,14 @@ export class GlContextRegistry {
     b.gl = null;
   }
 
-  get(pid: number): GlBinding | undefined {
-    return this.bindings.get(pid);
+  get(pid: number, sessionId?: number): GlBinding | undefined {
+    if (sessionId !== undefined) return this.bindings.get(`${pid}:${sessionId >>> 0}`);
+    const bindings = this.list().filter(b => b.pid === pid);
+    return bindings.length === 1 ? bindings[0] : undefined;
+  }
+
+  getContext(pid: number, contextId: number): GlBinding | undefined {
+    return this.list().find(b => b.pid === pid && b.contextId === (contextId >>> 0));
   }
 
   list(): GlBinding[] {
@@ -316,8 +346,7 @@ export class GlContextRegistry {
    * rebuilds the view from the new SAB.
    */
   rebindMemory(pid: number): void {
-    const b = this.bindings.get(pid);
-    if (b) b.cmdbufView = null;
+    for (const b of this.list()) if (b.pid === pid) b.cmdbufView = null;
   }
 
   /**
@@ -332,45 +361,34 @@ export class GlContextRegistry {
     pid: number,
     canvas: HTMLCanvasElement | OffscreenCanvas,
   ): void {
-    const b = this.bindings.get(pid);
-    if (b) {
-      b.canvas = canvas;
-      return;
-    }
-    this.pendingCanvases.set(pid, canvas);
+    const bindings = this.list().filter(b => b.pid === pid);
+    if (bindings.length === 0) this.pendingCanvases.set(pid, canvas);
+    for (const b of bindings) b.canvas = canvas;
   }
 
   detachCanvas(pid: number): void {
     this.pendingCanvases.delete(pid);
-    const b = this.bindings.get(pid);
-    if (b) {
-      b.canvas = null;
-      b.gl = null;
-    }
+    for (const b of this.list()) if (b.pid === pid) { b.canvas = null; b.gl = null; }
   }
 
   /** Bound canvas, or staged `pendingCanvases` entry if `attachCanvas`
    *  ran before `bind()`. Used by the worker entries' fork hook to
    *  propagate the parent's canvas to the child. */
   getCanvas(pid: number): HTMLCanvasElement | OffscreenCanvas | null {
-    const b = this.bindings.get(pid);
+    const b = this.list().find(b => b.pid === pid && b.canvas);
     if (b?.canvas) return b.canvas;
     return this.pendingCanvases.get(pid) ?? null;
   }
 
   attachMainForward(pid: number, channel: GlForwardChannel): void {
-    const b = this.bindings.get(pid);
-    if (b) {
-      b.forward = channel;
-    } else {
-      this.pendingForwards.set(pid, channel);
-    }
+    const bindings = this.list().filter(b => b.pid === pid);
+    if (bindings.length === 0) this.pendingForwards.set(pid, channel);
+    for (const b of bindings) b.forward = channel;
   }
 
   detachMainForward(pid: number): void {
     this.pendingForwards.delete(pid);
-    const b = this.bindings.get(pid);
-    if (b) b.forward = null;
+    for (const b of this.list()) if (b.pid === pid) b.forward = null;
   }
 
   /** Delete every binding's foreign texture for a destroyed bo (the bo

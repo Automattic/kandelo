@@ -3833,6 +3833,18 @@ Timed-out creation requests retire their mailbox and cannot allocate a
 context on late delivery. EGL exposes backend allocation failure as
 `EGL_NO_CONTEXT` and `EGL_BAD_ALLOC`. A Node host without a rendering
 backend follows the same failure path as a browser without a usable context.
+Each GL open description has a distinct kernel-issued session identity.
+Command buffers, native object maps, shadow state, queries, forwarding and
+retirement are selected by process plus session. Process-only registry
+lookups refuse ambiguity. Closing or unmapping one session leaves sibling
+sessions intact, while process memory growth invalidates every cached view.
+KMS canvas ownership is retained until its last claiming session releases.
+GL context identities are also kernel-issued and returned by creation;
+foreign texture imports select the exact context. Cross-process inherited
+descriptions cannot operate another process's renderer or invalidate its
+command mapping; final cleanup retains the renderer's original process.
+The EGL facade, share groups and per-thread backend binding model remain
+incomplete; these session identities are a foundation for that work.
 Shader/program attachment records retain deleted shaders and current
 programs until their last logical reference releases. Native program deletion
 is deferred while the program is current in its owner, allowing muxer replay

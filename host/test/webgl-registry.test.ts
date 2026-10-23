@@ -2,6 +2,62 @@ import { describe, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 
 describe("GlContextRegistry", () => {
+  it("preserves u32 session identities received as signed Wasm i32 arguments", () => {
+    const reg = new GlContextRegistry();
+    reg.bind({ pid: 7, sessionId: -2147483647, cmdbufAddr: 0, cmdbufLen: 4 });
+    expect(reg.get(7, 0x80000001)!.sessionId).toBe(0x80000001);
+    reg.unbind(7, -2147483647);
+    expect(reg.list()).toEqual([]);
+  });
+
+  it("keeps two sessions in one process independent through scoped retirement", () => {
+    const reg = new GlContextRegistry();
+    reg.bind({ pid: 7, sessionId: 11, cmdbufAddr: 128, cmdbufLen: 32 });
+    const first = reg.get(7, 11)!;
+    first.contextId = 21;
+    first.errors.push(0x500);
+    first.cmdbufView = new Uint8Array(32);
+    reg.bind({ pid: 7, sessionId: 12, cmdbufAddr: 256, cmdbufLen: 64 });
+    const second = reg.get(7, 12)!;
+    second.contextId = 22;
+    expect(reg.get(7, 11)).toBe(first);
+    expect(reg.get(7), "a process-only lookup must refuse ambiguity").toBeUndefined();
+    expect(reg.getContext(7, 21)).toBe(first);
+    expect(reg.getContext(7, 22)).toBe(second);
+    expect(second.errors).toEqual([]);
+    expect(second.cmdbufAddr).toBe(256);
+    reg.unbind(7, 11);
+    expect(first.cmdbufView).toBeNull();
+    expect(reg.get(7, 11)).toBeUndefined();
+    expect(reg.get(7, 12)).toBe(second);
+    expect(second.contextId).toBe(22);
+    reg.unbind(7);
+    expect(reg.list()).toEqual([]);
+  });
+
+  it("retires every session even when a forwarding retirement notification fails", () => {
+    const reg = new GlContextRegistry();
+    reg.attachMainForward(7, {
+      onCreateContext: () => 0, onDestroyContext() {}, onSubmit() {},
+      onUnbind() { throw new Error("port closed"); },
+    });
+    for (const sessionId of [11, 12]) {
+      reg.bind({ pid: 7, sessionId, cmdbufAddr: 0, cmdbufLen: 4 });
+    }
+    expect(() => reg.unbind(7)).toThrow("port closed");
+    expect(reg.list()).toEqual([]);
+  });
+
+  it("invalidates every session's cached view after process memory growth", () => {
+    const reg = new GlContextRegistry();
+    for (const sessionId of [11, 12]) {
+      reg.bind({ pid: 7, sessionId, cmdbufAddr: 0, cmdbufLen: 4 });
+      reg.get(7, sessionId)!.cmdbufView = new Uint8Array(4);
+    }
+    reg.rebindMemory(7);
+    expect(reg.list().map(b => b.cmdbufView)).toEqual([null, null]);
+  });
+
   it("binds and retrieves with null lazy fields", () => {
     const reg = new GlContextRegistry();
     reg.bind({ pid: 7, cmdbufAddr: 0x10000, cmdbufLen: 1 << 20 });

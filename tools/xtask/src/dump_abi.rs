@@ -5702,7 +5702,8 @@ fn marshalled_structs() -> Value {
         "GlContextAttrs".into(),
         struct_layout!(GlContextAttrs {
             client_version,
-            reserved
+            reserved,
+            context_id
         }),
     );
     structs.insert(

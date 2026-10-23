@@ -225,7 +225,11 @@ pub mod process_layout;
 ///     The host_gl_create_context import returns a status; a failed native
 ///     allocation is not published as a live guest context.
 ///     docs/abi-versioning.md ("ABI 53") lists each.
-pub const ABI_VERSION: u32 = 53;
+/// 54: GL command-buffer sessions and their cleanup carry kernel-owned
+///     identities through host imports. Context creation returns a fresh
+///     identity in GlContextAttrs, which is now an InOut ioctl argument.
+///     Cross-process cleanup retains the renderer's actual owner.
+pub const ABI_VERSION: u32 = 54;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -5366,8 +5370,10 @@ pub mod gl {
     pub struct GlContextAttrs {
         /// EGL client version (2 → GLES 2, 3 → GLES 3).
         pub client_version: u32,
-        /// Reserved for `share_context`, debug bit, robustness bit, etc.
-        pub reserved: [u32; 3],
+        /// Reserved; must be zero.
+        pub reserved: [u32; 2],
+        /// Kernel-issued context identity. Zero on input, nonzero on success.
+        pub context_id: u32,
     }
 
     /// Argument to `GLIO_CREATE_SURFACE`. Total: 32 bytes.

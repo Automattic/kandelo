@@ -66,6 +66,7 @@ static struct egl_thread_binding *g_context_owner;
 static int g_surface_current, g_context_delete_pending, g_surface_delete_pending;
 static int g_terminate_pending;
 static EGLContext g_context_handle;
+static uint32_t g_backend_context_id;
 static EGLSurface g_surface_handle;
 static uintptr_t g_next_context_handle = 1, g_next_surface_handle = 1;
 static pthread_key_t g_binding_key;
@@ -406,7 +407,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config,
     }
     if (g_next_context_handle == 0) { g_last_error = EGL_BAD_ALLOC; return EGL_NO_CONTEXT; }
 
-    struct gl_context_attrs attrs = { .client_version = 2, .reserved = {0,0,0} };
+    struct gl_context_attrs attrs = { .client_version = 2, .reserved = {0,0}, .context_id = 0 };
     /* EGL_KHR_no_config_context: `config` may be EGL_NO_CONFIG_KHR. There
      * is one config, and a context draws to any surface, so the config
      * selects nothing either way. */
@@ -420,6 +421,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config,
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_CONTEXT;
     }
+    g_backend_context_id = attrs.context_id;
     g_context_made = 1;
     g_context_handle = (EGLContext)g_next_context_handle++;
     g_context_delete_pending = 0;
@@ -676,6 +678,7 @@ static void retire_pending_resources_locked(void) {
         ioctl(g_fd, GLIO_DESTROY_CONTEXT, NULL);
         g_context_made = g_context_delete_pending = 0;
         g_context_handle = EGL_NO_CONTEXT;
+        g_backend_context_id = 0;
     }
     if (g_terminate_pending && !g_context_owner) {
         retire_imported_images();
@@ -1066,7 +1069,7 @@ unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
     struct wpk_drm_bind_foreign_texture req = {
         .bo_handle = bo_handle,
         .gl_target = gl_target,
-        .ctx_id = 1,            /* single-context v1, matches GLIO_CREATE_CONTEXT */
+        .ctx_id = g_backend_context_id, /* kernel-issued identity on this EGL fd */
         .gl_texture_id = 0,
     };
     if (ioctl(g_fd, WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE, &req) != 0) return 0;

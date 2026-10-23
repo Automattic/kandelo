@@ -302,7 +302,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // Kandelo GLES requests use small private request numbers.
     pointer!(crate::gl::GLIO_INIT, In, 4),
     no_arg!(crate::gl::GLIO_TERMINATE),
-    pointer!(crate::gl::GLIO_CREATE_CONTEXT, In, 16),
+    pointer!(crate::gl::GLIO_CREATE_CONTEXT, InOut, 16),
     no_arg!(crate::gl::GLIO_DESTROY_CONTEXT),
     pointer!(crate::gl::GLIO_CREATE_SURFACE, In, 32),
     no_arg!(crate::gl::GLIO_DESTROY_SURFACE),
