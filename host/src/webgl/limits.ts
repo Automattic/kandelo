@@ -4,6 +4,12 @@
 const textureLimits = new WeakMap<WebGL2RenderingContext, number>();
 const viewportLimits = new WeakMap<WebGL2RenderingContext, readonly [number, number]>();
 
+/** Remains available after a retiring owner has discarded its shadow. A
+ * successful high-unit selection necessarily populated this native limit. */
+export function knownTextureUnitLimit(gl: WebGL2RenderingContext): number {
+  return textureLimits.get(gl) ?? 0;
+}
+
 export function combinedTextureUnits(gl: WebGL2RenderingContext): number {
   const cached = textureLimits.get(gl);
   if (cached !== undefined) return cached;

@@ -1,4 +1,5 @@
 // Replay each GLES2 texture target independently on the shared context.
+import { knownTextureUnitLimit } from "./limits.js";
 import {
   GL_BLEND,
   GL_BACK,
@@ -91,6 +92,7 @@ export class GlMuxer {
     // has never selected them. Native WebGL2 implementations may expose
     // more units than the 32 initially allocated in the guest shadow.
     const units = this.textureUnitCount = Math.max(this.textureUnitCount,
+      knownTextureUnitLimit(gl),
       s.textureUnits.length, s.cubeTextureUnits.length,
       this.current?.shadow.textureUnits.length ?? 0,
       this.current?.shadow.cubeTextureUnits.length ?? 0);

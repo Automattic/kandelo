@@ -415,6 +415,14 @@ execution of these newest changes is pending. Logs:
 `.context/graphics-native-limits-baseline.log`,
 `.context/graphics-state-query-final.log`.
 
+A later teardown regression found that resetting an outgoing shadow before
+muxer invalidation lost the high-unit clearing range. The muxer now also uses
+the cached native unit limit, which outlives logical context teardown. The
+new reset-before-invalidation case fails before repair; the resulting source
+gate passes 244 tests in 14 files without skips. Logs:
+`.context/graphics-unit-retirement-baseline.log`,
+`.context/graphics-unit-retirement-fixed.log`.
+
 ### Integration checkpoint after the build pause
 
 The user requested cancellation of this workspace's builds while another ABI

@@ -140,7 +140,7 @@ describe("cmdbuf decoder — shadow writes", () => {
     expect(new DataView(reply.buffer).getUint32(0,true)).toBe(0x500);
   });
 
-  it.each([false, true])("clears higher unused units after invalidation=%s", (invalidate) => {
+  it.each(["none", "invalidate", "reset-and-invalidate"])("clears higher unused units after %s", (invalidation) => {
     const first=setupBinding(), second=setupBinding();
     second.gl=first.gl;
     first.gl!.getParameter=() => 48;
@@ -161,11 +161,12 @@ describe("cmdbuf decoder — shadow writes", () => {
     t.view.setUint32(record.p,0x0de1,true); t.view.setUint32(record.p+4,1,true);
     expect(decodeAndDispatch(first,0,t.p)).toBe(0);
     expect(nativeBindings.get(40)).toBe(object);
-    if (invalidate) mux.invalidateCurrent();
+    if (invalidation === "reset-and-invalidate") first.shadow = defaultShadow();
+    if (invalidation !== "none") mux.invalidateCurrent();
     mux.switchTo(second);
     expect(nativeBindings.get(40)).toBeNull();
     mux.switchTo(first);
-    expect(nativeBindings.get(40)).toBe(object);
+    expect(nativeBindings.get(40)).toBe(invalidation === "reset-and-invalidate" ? null : object);
   });
   it.each([O.OP_CLEAR_COLOR, O.OP_BLEND_COLOR])("clamps color state for command %i", (op) => {
     const b = setupBinding();
