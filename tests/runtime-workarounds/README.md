@@ -269,10 +269,11 @@ narrow the run; `list` takes `--json`.
      and reproduction paths and the observed versions;
   2. *Filed*: reported, with URLs and the last run's result;
   3. *Possibly retirable*: fixed upstream, or confirmed/reported entries
-     whose last run reproduced on none of their targets. When some targets
-     still reproduce and others no longer do, the entry stays in its group
-     with a `note:` line naming the targets and versions that did not
-     reproduce;
+     whose last run gave a verdict on every target and reproduced on none.
+     When some targets still reproduce, or some were inconclusive, the
+     entry stays in its group with a `note:` line naming the targets and
+     versions that did not reproduce (an inconclusive run counts as
+     neither);
   4. *Needs reduction*: suspected entries;
   5. *Gaps*, by runtime.
 

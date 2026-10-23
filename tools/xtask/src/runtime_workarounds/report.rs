@@ -209,16 +209,29 @@ fn build(entries: &[(String, Entry)], last: Option<&LastRun>) -> Report {
                     .last_run
                     .iter()
                     .any(|r| r.verdict == Verdict::Reproduced);
-                // Retirable only when no target reproduced any more. When some
-                // still do, the entry keeps its place and names the others.
-                if !gone.is_empty() && !still {
+                // An inconclusive run says nothing either way: it neither
+                // counts as "did not reproduce" nor lets the others stand for
+                // the whole entry.
+                let unknown = it
+                    .last_run
+                    .iter()
+                    .any(|r| r.verdict == Verdict::Inconclusive);
+                // Retirable only when every target's last run gave a verdict
+                // and none reproduced. Otherwise the entry keeps its place and
+                // names the targets that did not reproduce.
+                if !gone.is_empty() && !still && !unknown {
                     it.why = Some(format!("last run did not reproduce on {}", gone.join(", ")));
                     retirable.push(it);
                     continue;
                 }
                 if !gone.is_empty() {
+                    let rest = if still {
+                        "it still reproduced elsewhere"
+                    } else {
+                        "the other targets' last runs were inconclusive"
+                    };
                     it.note = Some(format!(
-                        "last run did not reproduce on {}; it still reproduced elsewhere",
+                        "last run did not reproduce on {}; {rest}",
                         gone.join(", ")
                     ));
                 }
@@ -626,6 +639,33 @@ filed_by = "brandon"
         );
         assert!(
             section(&out, "Possibly retirable").contains("(none)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn inconclusive_target_keeps_entry_in_its_group() {
+        let entries = [entry("C-CONFIRMED", "bug", "confirmed", REPRO)];
+        let last = LastRun {
+            finished: "2026-10-22T10:00:00Z".to_string(),
+            records: vec![
+                record("C-CONFIRMED", "bun", "1.3.3", Verdict::Inconclusive),
+                record("C-CONFIRMED", "webkit", "26.6", Verdict::NotReproduced),
+            ],
+        };
+        let out = render(&entries, Some(&last));
+        let ready = section(&out, "Ready to file");
+        assert!(ready.contains("C-CONFIRMED"), "{out}");
+        assert!(
+            ready.contains(
+                "note: last run did not reproduce on webkit 26.6 (macos); \
+                 the other targets' last runs were inconclusive"
+            ),
+            "{out}"
+        );
+        assert!(!ready.contains("note: last run did not reproduce on bun"), "{out}");
+        assert!(
+            !section(&out, "Possibly retirable").contains("C-CONFIRMED"),
             "{out}"
         );
     }
