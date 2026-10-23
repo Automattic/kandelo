@@ -139,3 +139,33 @@ The initial setup job failed during package provisioning; its artifacts are
 not current-tree validation. Sources changed while that job was active,
 so no failure from it is attributed to main or to the candidate without a
 stable-tree reproduction. A full rebuild and broader suites remain required.
+
+### EGLImage storage ownership
+
+The selected cage EGL/GLES import implementation is integrated. Independent
+image control blocks now retain GL siblings, and an import-owner table
+balances repeated PRIME imports which return the same GEM handle. Texture
+respecification switches the named texture to independent storage. Framebuffer
+attachments retain storage separately from names, including deletion while
+another framebuffer is bound; respecification updates the retained attachment.
+Context teardown retires attachments and siblings and resets the encoder.
+
+The four initial ownership regressions fail against `ce8cd9dbcf` under
+UndefinedBehaviorSanitizer. They pass after repair. An additional unbound
+framebuffer regression failed before attachment ownership and now passes.
+The native device-double tests exercise actual library code and encoded
+commands, but provide no rendered pixel evidence. ASan in the declared
+LLVM21 environment deadlocked in its startup initializer on macOS27, before
+main; `.context/native-harness-sample.txt` records that stack. It is a
+validation-tool limitation, not a graphics API boundary.
+
+Guest coverage is added in `programs/egl_image_ownership.c` and
+`host/test/egl-image-ownership.test.ts`. It closes producer handles, imports
+the same BO twice, varies image/texture/renderbuffer/FBO destruction order,
+and checks host retirement ordering. Its execution and real browser pixel
+validation remain required.
+
+This does not close E05/E06 completely: CPU-tier image copies are not live
+shared storage, texture siblings still need independent sampler state,
+and all invalid-operation and multi-context transitions need broader CTS
+coverage. These remain implementation gaps, not platform boundaries.

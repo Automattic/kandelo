@@ -34,6 +34,8 @@ void glReadBuffer(GLenum src);
 void glEGLImageTargetTexture2DOES(GLenum target, void *image);
 void glEGLImageTargetRenderbufferStorageOES(GLenum target, void *image);
 
+static void retire_imported_images(void);
+
 static int      g_fd            = -1;
 static uint8_t *g_cmdbuf_base   = NULL;
 static EGLint   g_last_error    = EGL_SUCCESS;
@@ -430,6 +432,7 @@ EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface) {
 
 EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext ctx) {
     if (dpy != EGL_DPY_HANDLE || ctx != EGL_CONTEXT_HANDLE) return EGL_FALSE;
+    _wpk_gl_drop_image_siblings();
     ioctl(g_fd, GLIO_DESTROY_CONTEXT, NULL);
     g_context_made = 0;
     g_current = 0;
@@ -440,6 +443,8 @@ EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext ctx) {
 EGLBoolean eglTerminate(EGLDisplay dpy) {
     if (dpy != EGL_DPY_HANDLE) return EGL_FALSE;
     if (g_fd >= 0) {
+        _wpk_gl_drop_image_siblings();
+        retire_imported_images();
         ioctl(g_fd, GLIO_TERMINATE, NULL);
         if (g_cmdbuf_base) {
             munmap(g_cmdbuf_base, WPK_GL_CMDBUF_LEN);
@@ -747,13 +752,41 @@ struct wpk_drm_bind_foreign_texture {
     uint32_t gl_texture_id;   /* out */
 };
 
+/* PRIME import returns the existing handle for an already imported BO on
+ * this open description. Library owners need independent references even
+ * when their kernel handle names are equal. */
+struct imported_bo_reference {
+    uint32_t handle;
+    unsigned references;
+    struct imported_bo_reference *next;
+};
+static struct imported_bo_reference *g_imported_bos;
+static struct wpk_egl_image *g_images;
+
 /* Import `prime_fd`'s bo as a GEM handle on the EGL device fd. Returns
  * the handle, or 0 on failure. The caller owns the handle and releases
  * it with wpkEglCloseBoHandle. */
 unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd) {
     if (dpy != EGL_DPY_HANDLE || g_fd < 0 || prime_fd < 0) return 0;
+    struct imported_bo_reference *owner = calloc(1, sizeof *owner);
+    if (!owner) return 0;
     struct wpk_drm_prime_handle req = { .handle = 0, .flags = 0, .fd = prime_fd };
-    if (ioctl(g_fd, WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) != 0) return 0;
+    if (ioctl(g_fd, WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) != 0) {
+        free(owner);
+        return 0;
+    }
+    for (struct imported_bo_reference *existing = g_imported_bos; existing;
+         existing = existing->next) {
+        if (existing->handle == req.handle) {
+            existing->references++;
+            free(owner);
+            return req.handle;
+        }
+    }
+    owner->handle = req.handle;
+    owner->references = 1;
+    owner->next = g_imported_bos;
+    g_imported_bos = owner;
     return req.handle;
 }
 
@@ -793,6 +826,13 @@ void wpkEglSetWindowSurfaceTarget(EGLDisplay dpy, unsigned bo_handle) {
 /* Release a handle from wpkEglImportDmabufHandle. */
 void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
     if (dpy != EGL_DPY_HANDLE || g_fd < 0) return;
+    struct imported_bo_reference **owner = &g_imported_bos;
+    while (*owner && (*owner)->handle != bo_handle) owner = &(*owner)->next;
+    if (!*owner) return;
+    if (--(*owner)->references) return;
+    struct imported_bo_reference *retired = *owner;
+    *owner = retired->next;
+    free(retired);
     struct wpk_drm_gem_close req = { .handle = bo_handle, .pad = 0 };
     ioctl(g_fd, WPK_DRM_IOCTL_GEM_CLOSE, &req);
 }
@@ -933,7 +973,13 @@ EGLImageKHR eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
         EGLint error = errno != EINVAL ? EGL_BAD_ALLOC
                      : offset != 0     ? EGL_BAD_ACCESS
                                        : EGL_SUCCESS;
-        if (error == EGL_SUCCESS) return (EGLImageKHR)image;
+        if (error == EGL_SUCCESS) {
+            image->references = 1;
+            image->public_live = 1;
+            image->next = g_images;
+            g_images = image;
+            return (EGLImageKHR)image;
+        }
         wpkEglCloseBoHandle(dpy, image->handle);
         free(image);
         g_last_error = error;
@@ -942,7 +988,31 @@ EGLImageKHR eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
     image->map = map;
     image->map_len = (size_t)st.st_size;
     image->pixels = (const uint8_t *)map + offset;
+    image->references = 1;
+    image->public_live = 1;
+    image->next = g_images;
+    g_images = image;
     return (EGLImageKHR)image;
+}
+
+struct wpk_egl_image *_wpk_egl_image_lookup(const void *image) {
+    for (struct wpk_egl_image *candidate = g_images; candidate; candidate = candidate->next)
+        if (candidate == image && candidate->public_live) return candidate;
+    return NULL;
+}
+
+void _wpk_egl_image_retain(struct wpk_egl_image *image) {
+    image->references++;
+}
+
+void _wpk_egl_image_release(struct wpk_egl_image *image) {
+    if (--image->references) return;
+    struct wpk_egl_image **slot = &g_images;
+    while (*slot && *slot != image) slot = &(*slot)->next;
+    if (*slot) *slot = image->next;
+    if (image->map) munmap(image->map, image->map_len);
+    wpkEglCloseBoHandle(EGL_DPY_HANDLE, image->handle);
+    free(image);
 }
 
 EGLBoolean eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image) {
@@ -950,15 +1020,27 @@ EGLBoolean eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image) {
         g_last_error = EGL_BAD_DISPLAY;
         return EGL_FALSE;
     }
-    struct wpk_egl_image *img = (struct wpk_egl_image *)image;
+    struct wpk_egl_image *img = _wpk_egl_image_lookup(image);
     if (!img) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_FALSE;
     }
-    if (img->map) munmap(img->map, img->map_len);
-    wpkEglCloseBoHandle(dpy, img->handle);
-    free(img);
+    img->public_live = 0;
+    _wpk_egl_image_release(img);
     return EGL_TRUE;
+}
+
+static void retire_imported_images(void) {
+    while (g_images) {
+        struct wpk_egl_image *image = g_images;
+        /* Context siblings have already retired. */
+        _wpk_egl_image_release(image);
+    }
+    while (g_imported_bos) {
+        struct imported_bo_reference *owner = g_imported_bos;
+        g_imported_bos = owner->next;
+        free(owner);
+    }
 }
 
 uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {

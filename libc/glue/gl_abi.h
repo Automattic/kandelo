@@ -182,6 +182,9 @@ void     _wpk_gl_flush(void);
  * through the host texture the bo owns; a CPU-tier bo is read from
  * `pixels`, the caller's mapping of the dma-buf. */
 struct wpk_egl_image {
+    unsigned references;    /* public image plus every live GL sibling */
+    int public_live;
+    struct wpk_egl_image *next;
     uint32_t handle;          /* GEM handle on the EGL session's fd */
     uint32_t width, height;
     uint32_t fourcc;          /* DRM_FORMAT_[AX]RGB8888 / [AX]BGR8888 */
@@ -194,6 +197,10 @@ struct wpk_egl_image {
 /* The host texture name, in the current context's texture namespace,
  * that holds a GPU-tier image's bo. 0 when there is none: a CPU-tier
  * image, no GL context created yet, or no GL backing on this host. */
+struct wpk_egl_image *_wpk_egl_image_lookup(const void *image);
+void _wpk_egl_image_retain(struct wpk_egl_image *image);
+void _wpk_egl_image_release(struct wpk_egl_image *image);
+void _wpk_gl_drop_image_siblings(void);
 uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image);
 
 #endif

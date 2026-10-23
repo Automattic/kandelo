@@ -544,7 +544,7 @@ void glGenTextures(GLsizei n, GLuint *out) {
  * client's name to the host passes the host name instead. Deleting the
  * client's name drops the alias and never deletes the bo's texture. */
 
-struct wpk_gl_alias { GLuint name; GLuint host; };
+struct wpk_gl_alias { GLuint name; GLuint host; struct wpk_egl_image *image; };
 struct wpk_gl_alias_table { struct wpk_gl_alias *v; size_t len, cap; };
 
 static struct wpk_gl_alias_table g_texture_aliases;
@@ -560,23 +560,37 @@ static GLuint alias_lookup(const struct wpk_gl_alias_table *t, GLuint name) {
 static void alias_drop(struct wpk_gl_alias_table *t, GLuint name) {
     for (size_t i = 0; i < t->len; i++) {
         if (t->v[i].name != name) continue;
+        // Submit uses of this storage before its final kernel reference ends.
+        _wpk_gl_flush();
+        _wpk_egl_image_release(t->v[i].image);
         t->v[i] = t->v[--t->len];
         return;
     }
 }
 
-static int alias_set(struct wpk_gl_alias_table *t, GLuint name, GLuint host) {
-    alias_drop(t, name);
-    if (t->len == t->cap) {
+static int alias_set(struct wpk_gl_alias_table *t, GLuint name, GLuint host,
+                     struct wpk_egl_image *image) {
+    size_t index = 0;
+    while (index < t->len && t->v[index].name != name) index++;
+    if (index == t->len && t->len == t->cap) {
         size_t cap = t->cap ? t->cap * 2 : 16;
         struct wpk_gl_alias *v = realloc(t->v, cap * sizeof *v);
         if (!v) return 0;
         t->v = v;
         t->cap = cap;
     }
-    t->v[t->len++] = (struct wpk_gl_alias){ name, host };
+    // Retain before replacing, including rebinding the same storage.
+    _wpk_egl_image_retain(image);
+    if (index < t->len) {
+        _wpk_gl_flush();
+        _wpk_egl_image_release(t->v[index].image);
+    } else {
+        t->len++;
+    }
+    t->v[index] = (struct wpk_gl_alias){ name, host, image };
     return 1;
 }
+
 
 static GLuint host_texture_name(GLuint name) {
     GLuint host = name ? alias_lookup(&g_texture_aliases, name) : 0;
@@ -592,13 +606,137 @@ static GLuint g_active_unit = 0;
 static GLuint g_bound_texture_2d[WPK_GL_TEXTURE_UNITS];
 static GLuint g_bound_renderbuffer = 0;
 
+/* A framebuffer attachment retains its object storage after the object name
+ * is deleted while another FBO is bound. Keep that ownership separate from
+ * both the name table and the public EGLImage. */
+struct wpk_image_attachment {
+    GLuint framebuffer, point, kind, name;
+    struct wpk_egl_image *image;
+    struct wpk_image_attachment *next;
+};
+static struct wpk_image_attachment *g_image_attachments;
+static GLuint g_bound_framebuffer;
+static void emit_framebuffer_texture_2d(GLenum, GLenum, GLenum, GLuint, GLint);
+
+static void emit_bind_framebuffer(GLuint framebuffer) {
+    EMIT_BEGIN(OP_BIND_FRAMEBUFFER, 8)
+    w_u32(&_c, GL_FRAMEBUFFER);
+    w_u32(&_c, framebuffer);
+    EMIT_END()
+}
+static void emit_framebuffer_renderbuffer(GLenum target, GLenum attachment, GLuint name) {
+    EMIT_BEGIN(OP_FRAMEBUFFER_RENDERBUFFER, 16)
+    w_u32(&_c, target);
+    w_u32(&_c, attachment);
+    w_u32(&_c, GL_RENDERBUFFER);
+    w_u32(&_c, name);
+    EMIT_END()
+}
+static int track_image_attachment(GLuint point, GLuint kind, GLuint name,
+                                 struct wpk_egl_image *image) {
+    if (!g_bound_framebuffer) return 1;
+    struct wpk_image_attachment **slot = &g_image_attachments;
+    while (*slot && ((*slot)->framebuffer != g_bound_framebuffer || (*slot)->point != point))
+        slot = &(*slot)->next;
+    if (!*slot) {
+        if (!name) return 1;
+        *slot = calloc(1, sizeof **slot);
+        if (!*slot) { raise_client_error(GL_OUT_OF_MEMORY); return 0; }
+        (*slot)->framebuffer = g_bound_framebuffer;
+        (*slot)->point = point;
+    }
+    struct wpk_image_attachment *entry = *slot;
+    if (image) _wpk_egl_image_retain(image);
+    if (entry->image) {
+        _wpk_gl_flush();
+        _wpk_egl_image_release(entry->image);
+    }
+    entry->image = image;
+    entry->kind = kind;
+    entry->name = name;
+    if (!name) { *slot = entry->next; free(entry); }
+    return 1;
+}
+static void refresh_image_attachments(GLuint kind, GLuint name, GLuint host,
+                                      struct wpk_egl_image *image) {
+    for (struct wpk_image_attachment *entry = g_image_attachments; entry; entry = entry->next) {
+        if (entry->kind != kind || entry->name != name) continue;
+        if (image) _wpk_egl_image_retain(image);
+        emit_bind_framebuffer(entry->framebuffer);
+        if (kind == GL_TEXTURE_2D || image)
+            emit_framebuffer_texture_2d(GL_FRAMEBUFFER, entry->point, GL_TEXTURE_2D, host, 0);
+        else emit_framebuffer_renderbuffer(GL_FRAMEBUFFER, entry->point, name);
+        _wpk_gl_flush();
+        if (entry->image) _wpk_egl_image_release(entry->image);
+        entry->image = image;
+    }
+    emit_bind_framebuffer(g_bound_framebuffer);
+}
+static void retire_image_attachments(GLuint framebuffer) {
+    struct wpk_image_attachment **slot = &g_image_attachments;
+    while (*slot) {
+        struct wpk_image_attachment *entry = *slot;
+        if (entry->framebuffer != framebuffer) { slot = &entry->next; continue; }
+        _wpk_gl_flush();
+        if (entry->image) _wpk_egl_image_release(entry->image);
+        *slot = entry->next;
+        free(entry);
+    }
+}
+static void delete_attached_image_name(GLuint kind, GLuint name) {
+    for (struct wpk_image_attachment *entry = g_image_attachments; entry; entry = entry->next) {
+        if (entry->kind != kind || entry->name != name) continue;
+        if (entry->framebuffer == g_bound_framebuffer) {
+            if (kind == GL_TEXTURE_2D || entry->image)
+                emit_framebuffer_texture_2d(GL_FRAMEBUFFER, entry->point, GL_TEXTURE_2D, 0, 0);
+            else emit_framebuffer_renderbuffer(GL_FRAMEBUFFER, entry->point, 0);
+            _wpk_gl_flush();
+            if (entry->image) _wpk_egl_image_release(entry->image);
+            entry->image = NULL;
+        }
+        // An attachment in an unbound FBO owns the now-unnamed object.
+        // Rebinding the same numeric name later creates a distinct object.
+        entry->kind = 0;
+        entry->name = 0;
+    }
+}
+
+static void reset_context_encoder(void);
+
+void _wpk_gl_drop_image_siblings(void) {
+    while (g_image_attachments) retire_image_attachments(g_image_attachments->framebuffer);
+    g_bound_framebuffer = 0;
+    struct wpk_gl_alias_table *tables[] = { &g_texture_aliases, &g_renderbuffer_aliases };
+    for (unsigned i = 0; i < 2; i++) {
+        while (tables[i]->len) alias_drop(tables[i], tables[i]->v[0].name);
+        free(tables[i]->v);
+        *tables[i] = (struct wpk_gl_alias_table){0};
+    }
+    reset_context_encoder();
+}
+
+static void emit_bind_texture(GLenum target, GLuint host);
+static void rebind_image_texture_name(GLuint name, GLuint host) {
+    for (GLuint unit = 0; unit < WPK_GL_TEXTURE_UNITS; unit++) {
+        if (g_bound_texture_2d[unit] != name) continue;
+        { EMIT_BEGIN(OP_ACTIVE_TEXTURE, 4)
+          w_u32(&_c, GL_TEXTURE0 + unit); EMIT_END() }
+        emit_bind_texture(GL_TEXTURE_2D, host);
+    }
+    { EMIT_BEGIN(OP_ACTIVE_TEXTURE, 4)
+      w_u32(&_c, GL_TEXTURE0 + g_active_unit); EMIT_END() }
+}
+
 void glDeleteTextures(GLsizei n, const GLuint *names) {
     if (n <= 0 || !names) return;
     for (GLsizei i = 0; i < n; i++) {
-        alias_drop(&g_texture_aliases, names[i]);
+        if (!names[i]) continue;
+        delete_attached_image_name(GL_TEXTURE_2D, names[i]);
+        rebind_image_texture_name(names[i], 0);
         for (GLuint u = 0; u < WPK_GL_TEXTURE_UNITS; u++) {
             if (g_bound_texture_2d[u] == names[i]) g_bound_texture_2d[u] = 0;
         }
+        alias_drop(&g_texture_aliases, names[i]);
     }
     emit_name_array(OP_DELETE_TEXTURES, n, names);
 }
@@ -739,6 +877,23 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const void *data) {
     if (internalFormat == GL_BGRA_EXT) internalFormat = GL_RGBA;
+    if (target == GL_TEXTURE_2D && alias_lookup(&g_texture_aliases,
+            g_bound_texture_2d[g_active_unit])) {
+        if (width < 0 || height < 0 || level < 0 || border != 0) {
+            raise_client_error(GL_INVALID_VALUE);
+            return;
+        }
+        if (!bytes_per_pixel(format, type) || internalFormat != host_pixel_format(format)) {
+            raise_client_error(GL_INVALID_OPERATION);
+            return;
+        }
+        // Respecification replaces this texture's storage, independently of
+        // the image and its other texture/renderbuffer siblings.
+        GLuint name = g_bound_texture_2d[g_active_unit];
+        alias_drop(&g_texture_aliases, name);
+        refresh_image_attachments(GL_TEXTURE_2D, name, name, NULL);
+        rebind_image_texture_name(name, name);
+    }
     EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u)
     w_u32(&_c, (uint32_t)target);
     w_i32(&_c, level);
@@ -892,9 +1047,14 @@ void glGenFramebuffers(GLsizei n, GLuint *out) {
 void glDeleteFramebuffers(GLsizei n, const GLuint *names) {
     if (n <= 0 || !names) return;
     emit_name_array(OP_DELETE_FRAMEBUFFERS, n, names);
+    for (GLsizei i = 0; i < n; i++) {
+        retire_image_attachments(names[i]);
+        if (g_bound_framebuffer == names[i]) g_bound_framebuffer = 0;
+    }
 }
 
 void glBindFramebuffer(GLenum target, GLuint fb) {
+    if (target == GL_FRAMEBUFFER) g_bound_framebuffer = fb;
     EMIT_BEGIN(OP_BIND_FRAMEBUFFER, 8)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, fb);
@@ -915,6 +1075,10 @@ static void emit_framebuffer_texture_2d(GLenum target, GLenum attachment,
 
 void glFramebufferTexture2D(GLenum target, GLenum attachment,
                             GLenum textarget, GLuint texture, GLint level) {
+    struct wpk_egl_image *image = NULL;
+    for (size_t i = 0; i < g_texture_aliases.len; i++)
+        if (g_texture_aliases.v[i].name == texture) image = g_texture_aliases.v[i].image;
+    if (target == GL_FRAMEBUFFER && !track_image_attachment(attachment, GL_TEXTURE_2D, texture, image)) return;
     emit_framebuffer_texture_2d(target, attachment, textarget,
                                 host_texture_name(texture), level);
 }
@@ -1663,6 +1827,7 @@ void glGenRenderbuffers(GLsizei n, GLuint *out) {
 void glDeleteRenderbuffers(GLsizei n, const GLuint *names) {
     if (n <= 0 || !names) return;
     for (GLsizei i = 0; i < n; i++) {
+        delete_attached_image_name(GL_RENDERBUFFER, names[i]);
         alias_drop(&g_renderbuffer_aliases, names[i]);
         if (g_bound_renderbuffer == names[i]) g_bound_renderbuffer = 0;
     }
@@ -1678,8 +1843,14 @@ void glBindRenderbuffer(GLenum target, GLuint rb) {
 }
 
 void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height) {
-    if (target == GL_RENDERBUFFER)
+    if (target == GL_RENDERBUFFER) {
+        if (width < 0 || height < 0) {
+            raise_client_error(GL_INVALID_VALUE);
+            return;
+        }
         alias_drop(&g_renderbuffer_aliases, g_bound_renderbuffer);
+        refresh_image_attachments(GL_RENDERBUFFER, g_bound_renderbuffer, g_bound_renderbuffer, NULL);
+    }
     EMIT_BEGIN(OP_RENDERBUFFER_STORAGE, 16)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)internalformat);
@@ -1692,6 +1863,10 @@ void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, 
  * so attaching it attaches that texture. */
 void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
                                GLenum renderbuffertarget, GLuint renderbuffer) {
+    struct wpk_egl_image *image = NULL;
+    for (size_t i = 0; i < g_renderbuffer_aliases.len; i++)
+        if (g_renderbuffer_aliases.v[i].name == renderbuffer) image = g_renderbuffer_aliases.v[i].image;
+    if (target == GL_FRAMEBUFFER && !track_image_attachment(attachment, GL_RENDERBUFFER, renderbuffer, image)) return;
     GLuint host = renderbuffer
         ? alias_lookup(&g_renderbuffer_aliases, renderbuffer) : 0;
     if (host) {
@@ -1718,19 +1893,24 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
         raise_client_error(GL_INVALID_ENUM);
         return;
     }
-    const struct wpk_egl_image *img = (const struct wpk_egl_image *)image;
+    struct wpk_egl_image *img = _wpk_egl_image_lookup(image);
     GLuint name = g_bound_texture_2d[g_active_unit];
-    if (!img || name == 0) {
+    if (!img) {
+        raise_client_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (name == 0) {
         raise_client_error(GL_INVALID_OPERATION);
         return;
     }
     if (!img->pixels) {
         GLuint host = _wpk_egl_image_texture(img);
-        if (host == 0 || !alias_set(&g_texture_aliases, name, host)) {
+        if (host == 0 || !alias_set(&g_texture_aliases, name, host, img)) {
             raise_client_error(GL_INVALID_OPERATION);
             return;
         }
-        emit_bind_texture(GL_TEXTURE_2D, host);
+        refresh_image_attachments(GL_TEXTURE_2D, name, host, img);
+        rebind_image_texture_name(name, host);
         return;
     }
     alias_drop(&g_texture_aliases, name);
@@ -1761,14 +1941,21 @@ void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) 
         raise_client_error(GL_INVALID_ENUM);
         return;
     }
-    const struct wpk_egl_image *img = (const struct wpk_egl_image *)image;
-    if (!img || g_bound_renderbuffer == 0 || img->pixels) {
+    struct wpk_egl_image *img = _wpk_egl_image_lookup(image);
+    if (!img) {
+        raise_client_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (g_bound_renderbuffer == 0 || img->pixels) {
         raise_client_error(GL_INVALID_OPERATION);
         return;
     }
     GLuint host = _wpk_egl_image_texture(img);
-    if (host == 0 || !alias_set(&g_renderbuffer_aliases, g_bound_renderbuffer, host))
+    if (host == 0 || !alias_set(&g_renderbuffer_aliases, g_bound_renderbuffer, host, img)) {
         raise_client_error(GL_INVALID_OPERATION);
+        return;
+    }
+    refresh_image_attachments(GL_RENDERBUFFER, g_bound_renderbuffer, host, img);
 }
 
 void glDrawBuffer(GLenum buf) {
@@ -1916,4 +2103,18 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app_element_buffer);
         glDeleteBuffers(1, &element);
     }
+}
+
+/* No command cursor or client-pointer metadata may survive context teardown. */
+static void reset_context_encoder(void) {
+    _wpk_gl_flush();
+    g_cursor = NULL;
+    g_array_buffer = g_element_buffer = 0;
+    memset(g_attribs, 0, sizeof g_attribs);
+    memset(g_bound_texture_2d, 0, sizeof g_bound_texture_2d);
+    g_active_unit = g_bound_renderbuffer = 0;
+    g_unpack_alignment = 4;
+    g_unpack_row_length = g_unpack_skip_pixels = g_unpack_skip_rows = 0;
+    g_uniform_meta_count = 0;
+    _wpk_gl_client_error = GL_NO_ERROR;
 }
