@@ -4,7 +4,7 @@ import { runGlQuery } from "./query.js";
 import { GlMuxer } from "./muxer.js";
 import {
   completeGlForwardQuery, createGlForwardQueryMailbox, glForwardQueryCapacity,
-  GL_FORWARD_QUERY_MAX_BYTES, prepareGlForwardQuery, retireGlForwardQuery,
+  glForwardRequestPending, GL_FORWARD_QUERY_MAX_BYTES, prepareGlForwardQuery, retireGlForwardQuery,
   waitForGlForwardQuery,
 } from "./main-forward-query.js";
 
@@ -22,7 +22,7 @@ export interface ForwardWorkerLike {
 }
 
 export type GlForwardMessage =
-  | { type: "gl_forward_create_context"; pid: number }
+  | { type: "gl_forward_create_context"; pid: number; mailbox: SharedArrayBuffer }
   | { type: "gl_forward_destroy_context"; pid: number }
   | { type: "gl_forward_submit"; pid: number; bytes: Uint8Array }
   | { type: "gl_forward_query"; pid: number; op: number; input: Uint8Array; mailbox: SharedArrayBuffer }
@@ -34,8 +34,29 @@ export function createMainForwardChannel(
   port: { postMessage(message: GlForwardMessage): void }, pid: number,
 ): GlForwardChannel {
   let mailbox: SharedArrayBuffer | null = null;
+  function request(outLen: number, send: (mailbox: SharedArrayBuffer) => void) {
+    try {
+      mailbox ??= createGlForwardQueryMailbox();
+      prepareGlForwardQuery(mailbox, outLen);
+      send(mailbox);
+      return waitForGlForwardQuery(mailbox);
+    } catch {
+      if (mailbox) retireGlForwardQuery(mailbox);
+      return { rc: -5, bytes: new Uint8Array() };
+    }
+  }
   return {
-    onCreateContext() { port.postMessage({ type: "gl_forward_create_context", pid }); },
+    onCreateContext() {
+      const { rc } = request(0, mailbox =>
+        port.postMessage({ type: "gl_forward_create_context", pid, mailbox }));
+      // An unacknowledged allocation can still have reached the renderer.
+      // Ordered cleanup also covers a timeout racing native creation.
+      if (rc !== 0) {
+        try { port.postMessage({ type: "gl_forward_destroy_context", pid }); }
+        catch { /* The failed channel remains failed; no success is reported. */ }
+      }
+      return rc;
+    },
     onDestroyContext() { port.postMessage({ type: "gl_forward_destroy_context", pid }); },
     onSubmit(bytes) { port.postMessage({ type: "gl_forward_submit", pid, bytes: bytes.slice() }); },
     onQuery(op, input, outLen) {
@@ -43,15 +64,8 @@ export function createMainForwardChannel(
           || outLen < 0 || outLen > GL_FORWARD_QUERY_MAX_BYTES) {
         return { rc: -22, bytes: new Uint8Array() };
       }
-      try {
-        mailbox ??= createGlForwardQueryMailbox();
-        prepareGlForwardQuery(mailbox, outLen);
-        port.postMessage({ type: "gl_forward_query", pid, op, input: input.slice(), mailbox });
-        return waitForGlForwardQuery(mailbox);
-      } catch {
-        if (mailbox) retireGlForwardQuery(mailbox);
-        return { rc: -5, bytes: new Uint8Array() };
-      }
+      return request(outLen, mailbox =>
+        port.postMessage({ type: "gl_forward_query", pid, op, input: input.slice(), mailbox }));
     },
   };
 }
@@ -68,17 +82,32 @@ export function setupMainForward(
     const msg = e.data as GlForwardMessage;
     if (!msg || typeof msg !== "object" || msg.pid !== pid) return;
     const b = reg.get(pid);
-    if (!b) return;
+    if (!b) {
+      if (msg.type === "gl_forward_create_context" || msg.type === "gl_forward_query") {
+        completeGlForwardQuery(msg.mailbox, -5, new Uint8Array());
+      }
+      return;
+    }
     switch (msg.type) {
       case "gl_forward_create_context": {
-        const gl = canvas.getContext("webgl2", {
-          antialias: false,
-          premultipliedAlpha: false,
-          depth: true,
-          stencil: true,
-          preserveDrawingBuffer: true,
-        }) as WebGL2RenderingContext | null;
-        if (gl) {
+        try {
+          if (!glForwardRequestPending(msg.mailbox)) return;
+          if (glForwardQueryCapacity(msg.mailbox) !== 0) throw new RangeError("invalid creation reply");
+          if (b.gl) {
+            completeGlForwardQuery(msg.mailbox, -16, new Uint8Array());
+            return;
+          }
+          const gl = canvas.getContext("webgl2", {
+            antialias: false,
+            premultipliedAlpha: false,
+            depth: true,
+            stencil: true,
+            preserveDrawingBuffer: true,
+          }) as WebGL2RenderingContext | null;
+          if (!gl || gl.isContextLost()) {
+            completeGlForwardQuery(msg.mailbox, -19, new Uint8Array());
+            return;
+          }
           // Pavel's fluid sim renders the velocity/dye/pressure passes
           // into RGBA16F framebuffers and samples them with LINEAR
           // filtering during advection. Both require explicit extension
@@ -88,10 +117,17 @@ export function setupMainForward(
           gl.getExtension("EXT_color_buffer_float");
           gl.getExtension("OES_texture_float_linear");
           gl.getExtension("EXT_float_blend");
+          // The waiting worker can retire the request while native setup
+          // runs. Do not publish a late context into that retired channel.
+          if (!glForwardRequestPending(msg.mailbox)) return;
+          b.gl = gl;
+          b.shadow.viewport = [0, 0, canvas.width, canvas.height];
+          b.shadow.scissor.rect = [0, 0, canvas.width, canvas.height];
+          completeGlForwardQuery(msg.mailbox, 0, new Uint8Array());
+        } catch {
+          try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); }
+          catch { /* A malformed mailbox has no reply authority. */ }
         }
-        b.gl = gl;
-        b.shadow.viewport = [0, 0, canvas.width, canvas.height];
-        b.shadow.scissor.rect = [0, 0, canvas.width, canvas.height];
         return;
       }
       case "gl_forward_destroy_context": {

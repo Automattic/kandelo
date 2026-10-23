@@ -26,10 +26,17 @@ class FakeWorker implements ForwardWorkerLike {
   }
 }
 
+function createMessage(pid: number): GlForwardMessage {
+  const mailbox = createGlForwardQueryMailbox();
+  prepareGlForwardQuery(mailbox, 0);
+  return { type: "gl_forward_create_context", pid, mailbox };
+}
+
 class RecordingGl {
   log: Array<[string, unknown[]]> = [];
   clear(m: number) { this.log.push(["clear", [m]]); }
   getExtension(_name: string): unknown { return null; }
+  isContextLost() { return false; }
   getError() { return 0x500; }
 }
 
@@ -66,7 +73,7 @@ describe("setupMainForward", () => {
     const { canvas, getContextCalls } = fakeCanvas(stub);
     const dispose = setupMainForward(worker, canvas, 7);
 
-    worker.fire({ type: "gl_forward_create_context", pid: 7 });
+    worker.fire(createMessage(7));
     expect(getContextCalls.length).toBe(1);
     expect(getContextCalls[0][0]).toBe("webgl2");
 
@@ -83,7 +90,7 @@ describe("setupMainForward", () => {
     const { canvas } = fakeCanvas(stub);
     const dispose = setupMainForward(worker, canvas, 7);
 
-    worker.fire({ type: "gl_forward_create_context", pid: 7 });
+    worker.fire(createMessage(7));
     worker.fire({ type: "gl_forward_submit", pid: 7, bytes: clearCmdbuf() });
     expect(stub.log).toEqual([["clear", [0x4000]]]);
 
@@ -96,7 +103,7 @@ describe("setupMainForward", () => {
     const { canvas, getContextCalls } = fakeCanvas(stub);
     const dispose = setupMainForward(worker, canvas, 7);
 
-    worker.fire({ type: "gl_forward_create_context", pid: 99 });
+    worker.fire(createMessage(99));
     expect(getContextCalls.length).toBe(0);
 
     dispose();
@@ -119,7 +126,7 @@ describe("GlContextRegistry forward channel", () => {
     reg.bind({ pid: 7, cmdbufAddr: 0, cmdbufLen: 4 });
     const calls: string[] = [];
     reg.attachMainForward(7, {
-      onCreateContext: () => calls.push("create"),
+      onCreateContext: () => { calls.push("create"); return 0; },
       onDestroyContext: () => calls.push("destroy"),
       onSubmit: () => calls.push("submit"),
     });
@@ -131,7 +138,7 @@ describe("GlContextRegistry forward channel", () => {
   it("attachMainForward defers until bind() when binding is absent", () => {
     const reg = new GlContextRegistry();
     const channel = {
-      onCreateContext: () => {},
+      onCreateContext: () => 0,
       onDestroyContext: () => {},
       onSubmit: () => {},
     };
@@ -144,7 +151,7 @@ describe("GlContextRegistry forward channel", () => {
   it("detachMainForward clears both pending and active channels", () => {
     const reg = new GlContextRegistry();
     const channel = {
-      onCreateContext: () => {},
+      onCreateContext: () => 0,
       onDestroyContext: () => {},
       onSubmit: () => {},
     };
@@ -163,7 +170,7 @@ describe("GlContextRegistry forward channel", () => {
     const reg = new GlContextRegistry();
     reg.bind({ pid: 7, cmdbufAddr: 0, cmdbufLen: 4 });
     reg.attachMainForward(7, {
-      onCreateContext: () => {},
+      onCreateContext: () => 0,
       onDestroyContext: () => {},
       onSubmit: () => {},
     });
@@ -175,6 +182,49 @@ describe("GlContextRegistry forward channel", () => {
 });
 
 describe("main-thread synchronous query transport", () => {
+  it.each(["unavailable", "lost", "throwing"])("acknowledges %s renderer failure and allows retry", mode => {
+    const worker = new FakeWorker();
+    let failed = true;
+    const gl = new RecordingGl();
+    const liveCanvas = fakeCanvas(gl).canvas;
+    const canvas = {
+      width: 16, height: 16,
+      getContext() {
+        if (failed && mode === "throwing") throw new Error("no renderer");
+        if (failed && mode === "unavailable") return null;
+        gl.isContextLost = () => failed && mode === "lost";
+        return liveCanvas.getContext("webgl2");
+      },
+    } as unknown as HTMLCanvasElement;
+    const dispose = setupMainForward(worker, canvas, 7);
+    const channel = createMainForwardChannel({ postMessage: message => worker.fire(message) }, 7);
+    expect(channel.onCreateContext()).toBeLessThan(0);
+    expect(channel.onQuery!(O.QOP_GET_ERROR, new Uint8Array(), 4).rc).toBe(-1);
+    failed = false;
+    expect(channel.onCreateContext()).toBe(0);
+    expect(channel.onQuery!(O.QOP_GET_ERROR, new Uint8Array(), 4).rc).toBe(4);
+    dispose();
+  });
+
+  it("does not allocate a context for a timed-out creation delivered late", () => {
+    const worker = new FakeWorker();
+    const { canvas, getContextCalls } = fakeCanvas(new RecordingGl());
+    const dispose = setupMainForward(worker, canvas, 7);
+    const messages: GlForwardMessage[] = [];
+    const channel = createMainForwardChannel({ postMessage: m => messages.push(m) }, 7);
+    const wait = vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
+    try { expect(channel.onCreateContext()).toBe(-5); }
+    finally { wait.mockRestore(); }
+    expect(messages.map(m => m.type)).toEqual([
+      "gl_forward_create_context", "gl_forward_destroy_context",
+    ]);
+    for (const message of messages) worker.fire(message);
+    expect(getContextCalls).toEqual([]);
+    expect(channel.onCreateContext()).toBe(-5); // retired mailbox cannot be reused
+    expect(getContextCalls).toEqual([]);
+    dispose();
+  });
+
   it("orders submits before queries, reuses bounded storage, and copies guest bytes", () => {
     const worker = new FakeWorker();
     const gl = new RecordingGl();

@@ -51,7 +51,8 @@ export function auditBrowserMessageTypes(candidate = "KernelToMainMessage | GlFo
       return;
     }
     if (checker.isTypeAssignableTo(type, shared)) {
-      if (path !== "fb_bind.pixels" && path !== "gl_forward_query.mailbox") {
+      if (path !== "fb_bind.pixels" && path !== "gl_forward_query.mailbox"
+          && path !== "gl_forward_create_context.mailbox") {
         failures.push(`${path}: unreviewed SharedArrayBuffer payload`);
       }
       return;

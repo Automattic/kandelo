@@ -182,7 +182,7 @@ test("forwarded synchronous queries isolate owners with one mailbox per channel"
           const results = [];
           for (let round = 0; round < 3; round++) {
             channels.forEach((channel,index) => {
-              channel.onCreateContext();
+              if (channel.onCreateContext() !== 0) throw new Error("renderer did not acknowledge context creation");
               view.setUint16(0, O.OP_CLEAR_COLOR, true); view.setUint16(2, 16, true);
               [index, 1-index, 0, 1].forEach((v,j) => view.setFloat32(4+4*j,v,true));
               channel.onSubmit(bytes.subarray(0,20));
@@ -253,6 +253,66 @@ test("forwarded synchronous queries isolate owners with one mailbox per channel"
       pixelsRc: 4, pixels: index % 2 ? [255,0,0,255] : [0,255,0,255],
       errorRc: 4, error: [0,0,0,0] });
   });
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
+
+test("forwarded creation acknowledges real context loss and restoration", async ({ page }) => {
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const results = await page.evaluate(async sourceRoot => {
+    const moduleUrl = new URL(`/@fs/${sourceRoot}host/src/webgl/main-forward.ts`, location.href).href;
+    const { setupMainForward } = await import(moduleUrl);
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 8;
+    document.body.replaceChildren(canvas);
+    const gl = canvas.getContext("webgl2");
+    if (!gl) throw new Error("WebGL2 is required");
+    const loss = gl.getExtension("WEBGL_lose_context");
+    if (!loss) throw new Error("WEBGL_lose_context is required for the loss regression");
+    const source = `
+      import { createMainForwardChannel } from ${JSON.stringify(moduleUrl)};
+      const channel = createMainForwardChannel({ postMessage: m => postMessage(m) }, 75);
+      onmessage = ({ data }) => {
+        if (data.retry) channel.onDestroyContext();
+        postMessage({ type: "creation_result", rc: channel.onCreateContext() });
+      };
+    `;
+    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    const worker = new Worker(url, { type: "module" });
+    const dispose = setupMainForward(worker, canvas, 75);
+    const create = (retry: boolean) => new Promise<number>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("creation acknowledgement timed out")), 35_000);
+      const receive = ({ data }: MessageEvent) => {
+        if (data.type !== "creation_result") return;
+        clearTimeout(timeout); worker.removeEventListener("message", receive);
+        resolve(data.rc);
+      };
+      worker.addEventListener("message", receive);
+      worker.postMessage({ retry });
+    });
+    function contextEvent(name: "webglcontextlost" | "webglcontextrestored") {
+      return new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`${name} did not arrive`)), 10_000);
+        canvas.addEventListener(name, event => {
+          event.preventDefault(); clearTimeout(timeout); resolve();
+        }, { once: true });
+      });
+    }
+    try {
+      const accepted = await create(false);
+      const lost = contextEvent("webglcontextlost");
+      loss.loseContext(); await lost;
+      const rejected = await create(true);
+      const restored = contextEvent("webglcontextrestored");
+      loss.restoreContext(); await restored;
+      const retried = await create(false);
+      return [accepted, rejected, retried];
+    } finally {
+      worker.terminate(); dispose(); URL.revokeObjectURL(url);
+    }
+  }, root);
+  expect(results).toEqual([0, -19, 0]);
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 

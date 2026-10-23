@@ -20,7 +20,7 @@ clang -g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" -fn
     "$output_dir/glue/libegl_stub.c" "$output_dir/glue/libglesv2_stub.c" \
     "$repo_root/tests/graphics/libc/image-ownership.c" -o "$output_dir/image-ownership"
 status=0
-for case_name in lifetime redefine context invalid framebuffer cycle namespace boolean query-vector query-error config-selection config-validation config-list thread-error api-error thread-current destroy-current surface-current terminate-current bind-rollback; do
+for case_name in lifetime redefine context invalid framebuffer cycle namespace boolean query-vector query-error config-selection config-validation config-list thread-error api-error thread-current destroy-current surface-current terminate-current bind-rollback create-rollback; do
     python3 - "$output_dir/image-ownership" "$case_name" <<'PYTHON' || status=1
 import subprocess, sys
 try:

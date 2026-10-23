@@ -77,17 +77,19 @@ test("memory probe rejects oversized, growable, and disguised shared pixel buffe
   }).length, 1);
 });
 
-test("memory probe admits only the fixed independent query mailbox", () => {
-  const mailbox = new SharedArrayBuffer(20 + 65536);
-  assert.deepEqual(persistentRealmMemoryFailures({ type: "gl_forward_query", mailbox }), []);
-  for (const invalid of [
-    new SharedArrayBuffer(65536),
-    new SharedArrayBuffer(20 + 65536, { maxByteLength: 20 + 65536 }),
-    new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }).buffer,
-  ]) {
-    assert.equal(persistentRealmMemoryFailures({ type: "gl_forward_query", mailbox: invalid }).length, 1);
-  }
-  assert.equal(persistentRealmMemoryFailures({ type: "response", result: { mailbox } }).length, 1);
-  assert.equal(persistentRealmMemoryFailures({ type: "gl_forward_query", mailbox,
-    input: new Uint8Array(new SharedArrayBuffer(65536), 0, 1) }).length, 1);
-});
+for (const type of ["gl_forward_query", "gl_forward_create_context"]) {
+  test(`memory probe admits only the fixed independent ${type} mailbox`, () => {
+    const mailbox = new SharedArrayBuffer(20 + 65536);
+    assert.deepEqual(persistentRealmMemoryFailures({ type, mailbox }), []);
+    for (const invalid of [
+      new SharedArrayBuffer(65536),
+      new SharedArrayBuffer(20 + 65536, { maxByteLength: 20 + 65536 }),
+      new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true }).buffer,
+    ]) {
+      assert.equal(persistentRealmMemoryFailures({ type, mailbox: invalid }).length, 1);
+    }
+    assert.equal(persistentRealmMemoryFailures({ type: "response", result: { mailbox } }).length, 1);
+    assert.equal(persistentRealmMemoryFailures({ type, mailbox,
+      input: new Uint8Array(new SharedArrayBuffer(65536), 0, 1) }).length, 1);
+  });
+}

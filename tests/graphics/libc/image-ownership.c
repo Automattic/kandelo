@@ -43,7 +43,7 @@ static unsigned char command_storage[2][WPK_GL_CMDBUF_LEN];
 static unsigned char *commands;
 static unsigned mappings;
 static unsigned destroyed_contexts, destroyed_surfaces, submit_batches, clear_commands;
-static int fail_make_current;
+static int fail_make_current, fail_create_context;
 static uint32_t shader_names[2], program_names[2];
 static unsigned shaders_created, programs_created;
 static int numeric_queries;
@@ -90,6 +90,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         uint32_t *words = arg;
         assert(words[0] == 77);
         words[3] = 0x60000000u;
+    } else if (request == GLIO_CREATE_CONTEXT && fail_create_context) {
+        errno = ENOMEM;
+        return -1;
     } else if (request == GLIO_SUBMIT) {
         submit_batches++;
         struct gl_submit_info *submit = arg;
@@ -197,9 +200,24 @@ int main(int argc, char **argv) {
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    if (!strcmp(argv[1], "create-rollback")) {
+        fail_create_context = 1;
+        assert(eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs) == EGL_NO_CONTEXT);
+        assert(eglGetError() == EGL_BAD_ALLOC);
+        assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
+        EGLint value = 17;
+        assert(!eglQueryContext(dpy, (EGLContext)1, EGL_CONTEXT_CLIENT_VERSION, &value));
+        assert(eglGetError() == EGL_BAD_CONTEXT && value == 17);
+        fail_create_context = 0;
+    }
     EGLContext ctx = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
     assert(ctx != EGL_NO_CONTEXT);
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "create-rollback")) {
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS create-rollback");
+        return 0;
+    }
     if (!strcmp(argv[1], "bind-rollback")) {
         EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, 0, NULL);
         assert(surface != EGL_NO_SURFACE);

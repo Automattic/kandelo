@@ -478,8 +478,12 @@ pub trait HostIO {
 
     /// Allocate a host-side WebGL context. `ctx_id` is the per-fd id chosen
     /// by the kernel; `attrs` is a marshalled `shared::gl::GlContextAttrs`.
+    /// Return zero only after a live renderer accepts creation, or negative
+    /// errno. Failure must leave no published context or device ownership.
     #[allow(unused_variables)]
-    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) {}
+    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     #[allow(unused_variables)]
     fn gl_destroy_context(&mut self, pid: i32, ctx_id: u32) {}

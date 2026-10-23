@@ -1707,7 +1707,7 @@ Semantic changes: none visible to programs. A timed-out wait keeps waiting on
 the same request, so syscall results, blocking behaviour, signals and errno
 values are unchanged.
 
-### ABI 53 wlroots-compatible DRM master and framebuffers
+### ABI 53 graphics ownership and renderer acknowledgement
 
 ABI 53 changes the meaning of existing DRM ioctls so an unmodified wlroots
 compositor (cage) can drive `/dev/dri/card0`:
@@ -1760,6 +1760,14 @@ serializes a card0 file's framebuffers or framebuffer id counter.
 ABI-bound artifacts require rebuilding for ABI 53; the strict
 `__abi_version` equality check rejects earlier programs. Validation of the
 combined implementation is tracked in the graphics compatibility inventory.
+
+The kernel's `host_gl_create_context` import now returns `i32`: zero
+acknowledges a live native or forwarded renderer, and a negative errno
+rejects creation without publishing a context in the kernel. This replaces
+the old void result, under which renderer-less hosts and failed WebGL
+allocations appeared to create a context successfully. The host rolls back
+partial device ownership and permits a subsequent attempt. EGL reports
+`EGL_NO_CONTEXT` with `EGL_BAD_ALLOC` when this allocation fails.
 
 ## The snapshot
 

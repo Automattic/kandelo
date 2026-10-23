@@ -17,12 +17,13 @@ export function persistentRealmMemoryFailures(
     }
     if (value instanceof SharedArrayBuffer) {
       // Independently allocated device storage only: the pixel mirror and
-      // the fixed query mailbox. The latter is 20 header + 65536 payload
+      // the fixed query/creation mailbox. The latter is 20 header + 65536 payload
       // bytes, which cannot be a page-aligned Wasm memory backing buffer.
       // Provenance/reuse are also covered by the real forwarded-query test.
       const pixels = root?.type === "fb_bind" && path === "message.pixels"
         && value.byteLength === root.len;
-      const query = root?.type === "gl_forward_query" && path === "message.mailbox"
+      const query = (root?.type === "gl_forward_query" || root?.type === "gl_forward_create_context")
+        && path === "message.mailbox"
         && value.byteLength === 20 + 65536;
       if ((!pixels && !query)
           || (value as SharedArrayBuffer & { growable?: boolean }).growable) {

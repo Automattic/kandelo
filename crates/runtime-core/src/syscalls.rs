@@ -1636,9 +1636,22 @@ fn handle_dri_ioctl(
                     return Err(Errno::EBUSY);
                 }
                 ctx_id = 1u32;
-                gls.context_id = Some(ctx_id);
             }
-            host.gl_create_context(pid, ctx_id, attrs_bytes);
+            // Do not publish a context the host could not actually create.
+            // In particular, a renderer-less host must not turn GL calls
+            // into successful no-ops behind a live EGL context handle.
+            let rc = host.gl_create_context(pid, ctx_id, attrs_bytes);
+            if rc != 0 {
+                return Err(rc
+                    .checked_neg()
+                    .and_then(|n| Errno::from_u32(n as u32))
+                    .unwrap_or(Errno::EIO));
+            }
+            dri_state_mut(proc, ofd_idx)?
+                .gl
+                .as_mut()
+                .ok_or(Errno::EINVAL)?
+                .context_id = Some(ctx_id);
             Ok(())
         }
         gl::GLIO_DESTROY_CONTEXT => {
@@ -23109,6 +23122,7 @@ mod tests {
         /// Override for `gl_submit`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gl_submit_rc: i32,
+        gl_create_context_rc: i32,
         net_connect_result: Result<(), Errno>,
         net_connect_status_result: Result<(), Errno>,
         net_shutdown_calls: Vec<(i32,u32)>,
@@ -23256,6 +23270,7 @@ mod tests {
                 proc_memory: alloc::vec![0u8; 65536],
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
+                gl_create_context_rc: 0,
                 net_connect_result: Err(Errno::ECONNREFUSED),
                 net_connect_status_result: Err(Errno::ECONNREFUSED),
                 net_shutdown_calls: Vec::new(),
@@ -24117,6 +24132,9 @@ mod tests {
         }
         fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize) -> i32 {
             self.gl_submit_rc
+        }
+        fn gl_create_context(&mut self, _pid: i32, _ctx_id: u32, _attrs: &[u8]) -> i32 {
+            self.gl_create_context_rc
         }
         fn proc_write_bytes(&mut self, pid: i32, ptr: u64, bytes: &[u8]) -> i32 {
             let Some(offset) = Self::proc_range(&self.proc_memory, ptr, bytes.len()) else {
@@ -51869,6 +51887,45 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(
             sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err(),
             Errno::EBUSY,
+        );
+    }
+
+    #[test]
+    fn glio_create_context_preserves_backend_failure_and_allows_retry() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut version = gl::OP_VERSION.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut version).unwrap();
+        let mut attrs = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        attrs[..4].copy_from_slice(&2u32.to_le_bytes());
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        for (rc, expected) in [
+            (-(Errno::ENOMEM as i32), Errno::ENOMEM),
+            (-(Errno::ENODEV as i32), Errno::ENODEV),
+            (1, Errno::EIO),
+            (i32::MIN, Errno::EIO),
+        ] {
+            host.gl_create_context_rc = rc;
+            assert_eq!(
+                sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut attrs),
+                Err(expected),
+            );
+            let gls = dri_state(&proc, ofd_idx).unwrap().gl.as_ref().unwrap();
+            assert_eq!(gls.context_id, None);
+            assert!(!gls.current);
+        }
+        host.gl_create_context_rc = 0;
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut attrs).unwrap();
+        assert_eq!(
+            dri_state(&proc, ofd_idx)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .context_id,
+            Some(1),
         );
     }
 

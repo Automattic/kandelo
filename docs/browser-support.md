@@ -501,8 +501,9 @@ The Wayland desktop machine (launched from the gallery, or directly with
 The Modeset pane bridges card0 to an OffscreenCanvas.
 
 **GPU compositing (default in the browser).** At boot wlcompositor
-probes the `/dev/dri/renderD128` GLES bridge (shader compile via sync
-queries, which fail cleanly on headless hosts) and, when available,
+probes the `/dev/dri/renderD128` GLES bridge (context creation requires a
+live renderer acknowledgement and fails cleanly on renderer-less hosts;
+shader compilation uses synchronous queries) and, when available,
 composites with GLES3: each client `wl_shm` buffer — a gbm dumb bo
 whose prime-fd arrived over `SCM_RIGHTS` — is imported on the EGL fd
 and bound as a `WebGLTexture` through the

@@ -38,7 +38,8 @@ export type GlBindingInput = {
 /** Bytes handed to `onSubmit` are non-shared — the caller copies them
  *  out of the SAB-backed cmdbuf so the channel may transfer the buffer. */
 export type GlForwardChannel = {
-  onCreateContext(): void;
+  /** Zero acknowledges a live renderer; negative errno leaves no context. */
+  onCreateContext(): number;
   onDestroyContext(): void;
   onSubmit(bytes: Uint8Array): void;
   onQuery?(op: number, input: Uint8Array, outLen: number): { rc: number; bytes: Uint8Array };

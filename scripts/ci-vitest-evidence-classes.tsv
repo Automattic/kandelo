@@ -488,3 +488,5 @@ host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
 host/test/egl-image-ownership.test.ts	prepared-product
 host/test/futex-deadlines.test.ts	prepared-product
+host/test/webgl-context-creation.test.ts	source-only
+host/test/dri-kms-gl-attach-ordering.test.ts	source-only

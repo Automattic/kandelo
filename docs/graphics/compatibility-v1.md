@@ -67,7 +67,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | open |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; exclusive ownership, thread release/exit, unique C handles and deferred destruction implemented for the single backend context/surface. Multiple contexts, sharing, display generations and full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; exclusive ownership, thread release/exit, unique C handles and deferred destruction implemented for the single backend context/surface. Backend creation now requires a live renderer acknowledgement, with rollback/retry on failure. Multiple contexts, sharing, display generations and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Pbuffer always fails; several core symbols absent; GBM sizing exists | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context | Main requires a live surface; cage adds a path needing validation | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | open |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/alias/FBO references now retain GEM storage; CPU coherence and complete object semantics remain open | EGL, GLES alias model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | open |
@@ -85,7 +85,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Main authoritative final BO destruction; preserve its recent memory and exec fixes | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Both branches independently used 51; old branch 44 is stale | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics changes are combined under ABI 53; generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -536,3 +536,46 @@ by resolver bundle generation, its consistency test and the ABI checker.
 Logs: `.context/graphics-abi53-generation.log` and
 `.context/graphics-abi53-verification.log`. This builds a kernel for ABI
 export inspection; it does not publish or validate package/image artifacts.
+
+### Renderer creation acknowledgement
+
+`host_gl_create_context` now returns an acknowledged result through the
+Rust host trait and Wasm import. The kernel installs its context only after
+zero success; negative errno is preserved, while malformed positive or
+minimum-integer results fail with `EIO`. The default Rust host rejects an
+unimplemented renderer with `ENOSYS`. TypeScript hosts reject missing, lost
+or throwing rendering backends, roll back KMS ownership and allow retry.
+An unrelated later modeset cannot revive a failed creation request. EGL's
+existing ioctl-failure path returns `EGL_NO_CONTEXT` and `EGL_BAD_ALLOC`,
+consistent with [EGL 1.5 allocation errors](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf).
+
+Forwarded creation uses the existing independent 65,556-byte device mailbox
+for a synchronous result. Timeouts retire it permanently; late creation
+requests cannot allocate a renderer. Failure requests ordered renderer
+cleanup. This extends the explicit memory-boundary audit for that one
+message's mailbox; oversized, growable and guest-memory backing remain
+rejected. Production automatic forwarding setup is still an ordinary open
+gap, and the current kernel remains limited to one context per GL session.
+
+Before the fix, all five initial source regressions fail against merge
+`95ad65f40f9352eca6e8d6543ddc08b8396a19e9`:
+`.context/graphics-context-create-baseline.log`. Updated bounded checks:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Host source graphics/KMS/scratch | 265 passed, 16 files, no skips | `.context/graphics-context-create-host-verified.log` |
+| Rust `runtime-core` GLIO tests, native host target, serial | 10 passed, no failures/ignored | `.context/graphics-context-create-rust.log` |
+| Actual EGL/GLES C sources with device double and UBSan | 21 cases passed | `.context/graphics-context-create-native.log` |
+| Browser protocol/memory-boundary audit and negative probes | 9 passed, no skips | `.context/graphics-context-create-boundary-fixed.log` |
+| Real source-rendered Chromium/Firefox/WebKit | 12 passed, no skips | `.context/graphics-context-create-browser-loss.log` |
+| Host declarations, both Node/browser entry points | passed | `.context/graphics-context-create-typecheck.log` |
+| ABI regeneration/check and resolver consistency | passed | `.context/graphics-context-create-abi.log` |
+
+Browser checks use Playwright 1.63.0's bundled Chromium 153.0.8010.12,
+Firefox 155.0 and WebKit 26.6 from the worktree lockfile/browser manifest.
+They include real context loss, failed creation while lost, restoration and
+successful retry, copied command/query storage, alternating rendered owners
+and failed relink recovery. These are source-host checks, not guest,
+compositor, full browser-memory or complete CTS evidence. Normal ABI 53
+SDK/package/image builds and the broader combined-tree suites remain
+required in the deferred rebuild/test phase.

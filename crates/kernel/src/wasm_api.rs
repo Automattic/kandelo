@@ -308,7 +308,7 @@ unsafe extern "C" {
     fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
     fn host_gl_bind(pid: i32, addr: usize, len: usize);
     fn host_gl_unbind(pid: i32);
-    fn host_gl_create_context(pid: i32, ctx_id: u32, attrs_ptr: *const u8, attrs_len: usize);
+    fn host_gl_create_context(pid: i32, ctx_id: u32, attrs_ptr: *const u8, attrs_len: usize) -> i32;
     fn host_gl_destroy_context(pid: i32, ctx_id: u32);
     fn host_gl_create_surface(pid: i32, surface_id: u32, attrs_ptr: *const u8, attrs_len: usize);
     fn host_gl_destroy_surface(pid: i32, surface_id: u32);
@@ -1127,7 +1127,7 @@ impl HostIO for WasmHostIO {
         unsafe { host_gl_unbind(pid) }
     }
 
-    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) {
+    fn gl_create_context(&mut self, pid: i32, ctx_id: u32, attrs: &[u8]) -> i32 {
         unsafe { host_gl_create_context(pid, ctx_id, attrs.as_ptr(), attrs.len()) }
     }
 

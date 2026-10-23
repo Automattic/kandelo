@@ -1065,6 +1065,7 @@ export class WasmPosixKernel {
       stencil: true,
       preserveDrawingBuffer: true,
     }) as WebGL2RenderingContext | null;
+    if (ctx?.isContextLost()) return;
     if (ctx) {
       // Mirror main-forward.ts: enable the WebGL2 float extensions so
       // RGBA16F framebuffers are renderable and float textures accept
@@ -2483,46 +2484,41 @@ export class WasmPosixKernel {
         host_gl_create_context: (
           pid: number, ctxId: number,
           _attrsPtr: KernelPointer, _attrsLen: KernelPointer,
-        ): void => {
+        ): number => {
           const b = this.gl.get(pid);
-          if (!b) return;
-          b.contextId = ctxId;
-          if (b.forward) {
-            b.forward.onCreateContext();
-            return;
-          }
-          // GPU-tier producer routing (PR10 §7.1): a non-master GL client
-          // has no display canvas to build a context on. Route it onto
-          // the shared multiplexer context — the DRM-master compositor's
-          // scanout context — so its GPU-bo FBO renders live on the same
-          // context the compositor samples zero-copy. The existing
-          // `GlMuxer` (keyed by the WebGL2 context) multiplexes the two
-          // sessions by replaying each binding's shadow on `switchTo`.
-          //
-          // Ordering: the compositor (DRM master) must have created its
-          // context first, or `sharedGlContext()` is null and we fall
-          // through — leaving `b.gl = null`, i.e. inert (submit/query
-          // no-op), exactly as before. That also keeps this path inert on
-          // headless Node (no WebGL at all). The client's render target
-          // is redirected to its bo's FBO at `gl_create_surface` time; the
-          // viewport is seeded from the bo dims there.
-          if (!b.canvas && !this.kms.isMasterPid(pid)) {
-            const shared = this.#sharedGlContext();
-            if (shared) {
-              b.gl = shared;
-              // The window surface may have been created before this
-              // context (SDL2 order); apply any pending GPU-bo render
-              // target now that `b.gl` exists.
-              this.gl.applyRenderTarget(b);
-              return;
+          if (!b) return -5; // EIO: no session owns this request.
+          if (b.contextId !== null) return -16; // EBUSY
+          const previousCanvas = b.canvas;
+          try {
+            if (b.forward) {
+              const rc = b.forward.onCreateContext();
+              if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
+              b.contextId = ctxId;
+              return 0;
             }
+            // GPU producers use the compositor's physical context so BO
+            // storage is visible without a CPU readback. Logical state
+            // remains isolated by the ordinary context multiplexer.
+            if (!b.canvas && !this.kms.isMasterPid(pid)) {
+              const shared = this.#sharedGlContext();
+              if (shared && !shared.isContextLost()) {
+                b.gl = shared;
+                this.gl.applyRenderTarget(b);
+              }
+            }
+            // tryAttachKmsGlCanvas needs the pending identity while it
+            // attaches the drawable. Roll it back unless creation succeeds.
+            b.contextId = ctxId;
+            this.tryAttachKmsGlCanvas(pid);
+            if (b.gl && !b.gl.isContextLost()) return 0;
+          } catch {
+            // Native allocation and extension setup can throw. They must
+            // follow the same rollback as a null/lost context.
           }
-          // Auto-attach the KMS scanout canvas and build the WebGL2
-          // context. This handles both the modeset ordering (SETCRTC
-          // before eglCreateContext) and the SDL2 KMSDRM ordering
-          // (eglCreateContext, then shader compiles, then the first
-          // SETCRTC on the first SwapWindow) — see tryAttachKmsGlCanvas.
-          this.tryAttachKmsGlCanvas(pid);
+          this.releaseClaimedKmsCanvas(pid);
+          this.gl.destroyContext(pid);
+          b.canvas = previousCanvas;
+          return -19; // ENODEV: no live rendering backend.
         },
         host_gl_destroy_context: (pid: number, _ctxId: number): void => {
           this.releaseClaimedKmsCanvas(pid);

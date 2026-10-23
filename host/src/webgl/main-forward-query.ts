@@ -48,6 +48,11 @@ export function glForwardQueryCapacity(mailbox: SharedArrayBuffer): number {
   return requested;
 }
 
+/** A timed-out creation request must not allocate resources when delivered late. */
+export function glForwardRequestPending(mailbox: SharedArrayBuffer): boolean {
+  return Atomics.load(header(mailbox), STATE) === PENDING;
+}
+
 export function completeGlForwardQuery(mailbox: SharedArrayBuffer, rc: number, bytes: Uint8Array): void {
   const words = header(mailbox);
   // A late completion has no authority to revive a timed-out channel.

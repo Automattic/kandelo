@@ -1411,7 +1411,7 @@ it.each([4, 8] as const)("forwarded GL queries preflight and copy replies at was
   const output = new Uint8Array(memory.buffer, memory.buffer.byteLength - 4, 4);
   const reply = vi.fn(() => ({ rc: 4, bytes: new Uint8Array([1,2,3,4]) }));
   kernel.gl.attachMainForward(7, {
-    onCreateContext() {}, onDestroyContext() {}, onSubmit() {}, onQuery: reply,
+    onCreateContext() { return 0; }, onDestroyContext() {}, onSubmit() {}, onQuery: reply,
   });
   const imports = kernel.testAuthority.buildImportObject(memory) as {
     env: Record<string, (...args: any[]) => any>;

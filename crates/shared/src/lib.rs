@@ -222,6 +222,8 @@ pub mod process_layout;
 ///     shared across fork, GET_CAP of an unknown capability fails with
 ///     EINVAL, and new KMS ioctls get contracts. AF_NETLINK uevent sockets
 ///     (with the new ESOCKTNOSUPPORT) and a read-only /sys appear.
+///     The host_gl_create_context import returns a status; a failed native
+///     allocation is not published as a live guest context.
 ///     docs/abi-versioning.md ("ABI 53") lists each.
 pub const ABI_VERSION: u32 = 53;
 

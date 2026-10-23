@@ -3825,6 +3825,14 @@ limit. Input and command bytes are copied out of guest memory. A timed-out
 mailbox is retired permanently; a late reply cannot satisfy a later query.
 Forwarded owners sharing a native context also use the multiplexer. The
 persistent browser realm receives no guest memory or guest-backed view.
+Context creation uses this mailbox for a synchronous acknowledgement too.
+The host import returns success only after a live renderer accepts creation;
+the kernel publishes its context identity afterwards. Missing, lost or
+throwing renderers leave creation retryable and do not claim the KMS canvas.
+Timed-out creation requests retire their mailbox and cannot allocate a
+context on late delivery. EGL exposes backend allocation failure as
+`EGL_NO_CONTEXT` and `EGL_BAD_ALLOC`. A Node host without a rendering
+backend follows the same failure path as a browser without a usable context.
 Shader/program attachment records retain deleted shaders and current
 programs until their last logical reference releases. Native program deletion
 is deferred while the program is current in its owner, allowing muxer replay
