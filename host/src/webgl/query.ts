@@ -21,6 +21,7 @@ import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
 import { checkedGlCall, currentProgramName } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
+import { boundFramebuffer, isDefaultFramebuffer, validFramebufferTarget, GL_FRAMEBUFFER_UNDEFINED } from "./framebuffer.js";
 
 const GL_VENDOR = 0x1F00;
 const GL_RENDERER = 0x1F01;
@@ -285,7 +286,7 @@ export function runGlQuery(
       const type = normalizeHalfFloatType(inDv.getUint32(20, true));
       // WebGL2 readPixels requires the destination view to match `type`.
       const view = readPixelsViewForType(type, out);
-      gl.readPixels(x, y, w, h, format, type, view);
+      if (!checkedGlCall(b, () => { gl.readPixels(x, y, w, h, format, type, view); })) return -22;
       copyReadPixelsResult(view, out);
       // gl.readPixels writes into `out` directly. Bytes-written depends
       // on (format,type,w,h); the kernel cap (`MAX_QUERY_OUT_LEN`) is
@@ -317,7 +318,10 @@ export function runGlQuery(
     // in: u32 target; out: u32 status
     case O.QOP_CHECK_FB_STATUS: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
-      const status = gl.checkFramebufferStatus(inDv.getUint32(0, true));
+      const target = inDv.getUint32(0, true);
+      const surface = target === 0x8ca8 ? b.currentDrawable?.readSurfaceId : b.currentDrawable?.drawSurfaceId;
+      const status = validFramebufferTarget(target) && surface === 0 && isDefaultFramebuffer(b, boundFramebuffer(b, target))
+        ? GL_FRAMEBUFFER_UNDEFINED : gl.checkFramebufferStatus(target);
       outDv.setUint32(0, status, true);
       return 4;
     }
@@ -389,6 +393,7 @@ function queryParameter(b: GlBinding, pname: number): unknown {
     case 0x8514: // TEXTURE_BINDING_CUBE_MAP
       return nameForObject(b.textures, value as WebGLTexture | null);
     case 0x8ca6: // FRAMEBUFFER_BINDING
+    case 0x8caa: // READ_FRAMEBUFFER_BINDING
       return nameForObject(b.fbos, value as WebGLFramebuffer | null);
     case 0x8ca7: // RENDERBUFFER_BINDING
       return nameForObject(b.rbos, value as WebGLRenderbuffer | null);

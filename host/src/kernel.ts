@@ -35,6 +35,7 @@ import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry, type GlBinding } from "./webgl/registry";
 import { applyCurrentDrawable, validCurrentDrawable } from "./webgl/current";
+import { replaceDefaultFramebuffer } from "./webgl/framebuffer";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
@@ -2636,7 +2637,7 @@ export class WasmPosixKernel {
             b.surfaceSize = size;
             if (b.gl) {
               b.renderTargetFbo = target.fbo;
-              if (b.shadow.fbo === previous) b.shadow.fbo = target.fbo;
+              replaceDefaultFramebuffer(b, previous);
             }
             b.currentDrawable = drawable;
             return 0;
@@ -2655,8 +2656,9 @@ export class WasmPosixKernel {
           // re-apply a stale redirect.
           b.pendingRenderTargetBoId = 0;
           if (b.renderTargetFbo) {
-            if (b.shadow.fbo === b.renderTargetFbo) b.shadow.fbo = null;
+            const previous = b.renderTargetFbo;
             b.renderTargetFbo = null;
+            replaceDefaultFramebuffer(b, previous);
           }
           // The canvas-backed present target IS owned by this binding, so
           // dropping the redirect above has to free it as well; a later
@@ -2699,8 +2701,9 @@ export class WasmPosixKernel {
               if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
             } catch { return -5; }
           }
-          applyCurrentDrawable(b, drawable);
           if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+          try { if (!applyCurrentDrawable(b, drawable)) return -12; }
+          catch { return -5; }
           return 0;
         },
         host_gl_submit: (

@@ -23,6 +23,7 @@
  */
 import { defaultShadow, type GlShadowState } from "./shadow.js";
 import type { GlDrawableBinding } from "./current.js";
+import { replaceDefaultFramebuffer } from "./framebuffer.js";
 
 export type GlContextHandle = number;
 export type GlSurfaceHandle = number;
@@ -56,6 +57,9 @@ export type GlBinding = GlBindingInput & {
   sessionId: number;
   currentDrawable: GlDrawableBinding | null;
   hasBeenCurrent: boolean;
+  /** No attachments: native framebuffer operations enforce surfaceless
+   * incompleteness. This object never has a guest-visible name. */
+  undefinedDefaultFbo: WebGLFramebuffer | null;
   /** Lazy view of `[cmdbufAddr, cmdbufAddr+cmdbufLen)` of the process's
    *  wasm Memory SAB. Built on the first submit and dropped to `null`
    *  by `rebindMemory` after a `Memory.grow()`. */
@@ -219,6 +223,7 @@ export class GlContextRegistry {
       sessionId,
       currentDrawable: null,
       hasBeenCurrent: false,
+      undefinedDefaultFbo: null,
       cmdbufView: null,
       gl: null,
       canvas,
@@ -313,6 +318,8 @@ export class GlContextRegistry {
     b.programAttributeBindings.clear();
     b.uniformLocationPrograms.clear();
     b.errors.length = 0;
+    if (b.undefinedDefaultFbo) gl?.deleteFramebuffer(b.undefinedDefaultFbo);
+    b.undefinedDefaultFbo = null;
     if (b.shadow.defaultVao) {
       b.gl?.deleteVertexArray(b.shadow.defaultVao);
       b.shadow.defaultVao = null;
@@ -513,7 +520,7 @@ export class GlContextRegistry {
     const gpu = this.gpuBos.get(b.pendingRenderTargetBoId);
     if (!gpu || b.gl !== gpu.gl) return false;
     b.renderTargetFbo = gpu.fbo;
-    if (b.shadow.fbo === null) b.shadow.fbo = gpu.fbo;
+    replaceDefaultFramebuffer(b, null);
     if (!b.hasBeenCurrent) b.shadow.viewport = [0, 0, gpu.w, gpu.h];
     return true;
   }

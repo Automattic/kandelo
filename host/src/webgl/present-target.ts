@@ -19,6 +19,7 @@
  * their output is sampled by a compositor, never composited by the browser.
  */
 import type { GlBinding } from "./registry.js";
+import { replaceDefaultFramebuffer } from "./framebuffer.js";
 
 const GL_READ_FRAMEBUFFER = 0x8ca8;
 const GL_DRAW_FRAMEBUFFER = 0x8ca9;
@@ -87,7 +88,7 @@ export function ensurePresentTarget(b: GlBinding): boolean {
     // A failed resize destroys the old target too. Do not retain a deleted
     // framebuffer in either the default-target redirect or context replay.
     if (b.renderTargetFbo === fbo) b.renderTargetFbo = null;
-    if (b.shadow.fbo === fbo) b.shadow.fbo = null;
+    replaceDefaultFramebuffer(b, fbo);
     if (prevRead === fbo) gl.bindFramebuffer(GL_READ_FRAMEBUFFER, null);
     if (prevDraw === fbo) gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, null);
     gl.deleteFramebuffer(fbo);
@@ -99,8 +100,9 @@ export function ensurePresentTarget(b: GlBinding): boolean {
   }
 
   b.presentTarget = { fbo, tex, depthStencil, w, h };
+  const previous = b.renderTargetFbo;
   b.renderTargetFbo = fbo;
-  b.shadow.fbo = fbo;
+  replaceDefaultFramebuffer(b, previous);
   return true;
 }
 

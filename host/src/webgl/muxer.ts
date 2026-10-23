@@ -35,6 +35,7 @@ export class GlMuxer {
     if (s.vao === null && s.defaultVao === null) s.defaultVao = gl.createVertexArray();
     gl.bindVertexArray(s.vao ?? s.defaultVao);
     gl.bindFramebuffer(GL_FRAMEBUFFER, s.fbo);
+    if (s.readFbo !== s.fbo) gl.bindFramebuffer(0x8ca8, s.readFbo);
     gl.viewport(...s.viewport);
 
     if (s.scissor.enabled) gl.enable(GL_SCISSOR_TEST); else gl.disable(GL_SCISSOR_TEST);

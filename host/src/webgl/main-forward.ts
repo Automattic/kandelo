@@ -129,14 +129,18 @@ export function setupMainForward(
           }
           if (!glForwardRequestPending(msg.mailbox)) return;
           const previous = { drawable: b.currentDrawable, initialized: b.hasBeenCurrent,
-            viewport: b.shadow.viewport, scissor: b.shadow.scissor.rect };
-          applyCurrentDrawable(b, msg.drawable);
+            viewport: b.shadow.viewport, scissor: b.shadow.scissor.rect, fbo: b.shadow.fbo, readFbo: b.shadow.readFbo };
           muxer(b.gl).invalidateCurrent();
+          if (!applyCurrentDrawable(b, msg.drawable)) {
+            completeGlForwardQuery(msg.mailbox, -12, new Uint8Array());
+            return;
+          }
           if (!completeGlForwardQuery(msg.mailbox, 0, new Uint8Array())) {
             // A caller that timed out did not commit a new kernel binding.
             // Roll back before processing any commands it sends afterwards.
             b.currentDrawable = previous.drawable; b.hasBeenCurrent = previous.initialized;
             b.shadow.viewport = previous.viewport; b.shadow.scissor.rect = previous.scissor;
+            b.shadow.fbo = previous.fbo; b.shadow.readFbo = previous.readFbo;
           }
         } catch {
           try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); } catch { /* no reply authority */ }

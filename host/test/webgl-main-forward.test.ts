@@ -48,7 +48,7 @@ function fakeCanvas(stub: RecordingGl): { canvas: HTMLCanvasElement; getContextC
       calls.push(args);
       return new Proxy(stub, {
         get(target, name) {
-          if (name === "createVertexArray") return () => ({});
+          if (name === "createVertexArray" || name === "createFramebuffer") return () => ({});
           return Reflect.get(target, name) ?? (() => {});
         },
       });

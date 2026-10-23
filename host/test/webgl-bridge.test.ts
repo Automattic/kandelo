@@ -6,6 +6,7 @@ import {
 import { runGlQuery } from "../src/webgl/query.js";
 import * as O from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
+import { applyCurrentDrawable } from "../src/webgl/current.js";
 
 /**
  * Hand-rolled WebGL2 stand-in. Records every dispatched call as
@@ -118,6 +119,7 @@ class RecordingGl {
   bindVertexArray(v: unknown) { this.log.push(["bindVertexArray", [v]]); }
   deleteVertexArray(v: unknown) { this.log.push(["deleteVertexArray", [v]]); }
   bindFramebuffer(t: number, f: unknown) { this.log.push(["bindFramebuffer", [t, f]]); }
+  deleteFramebuffer(f: unknown) { this.log.push(["deleteFramebuffer", [f]]); }
   framebufferTexture2D(...a: unknown[]) { this.log.push(["framebufferTexture2D", a]); }
   bindRenderbuffer(t: number, r: unknown) { this.log.push(["bindRenderbuffer", [t, r]]); }
   deleteRenderbuffer(r: unknown) { this.log.push(["deleteRenderbuffer", [r]]); }
@@ -195,6 +197,56 @@ class Tlv {
     return { p: start };
   }
 }
+
+describe("logical framebuffer bindings", () => {
+  function setup() {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const send = (op: number, words: number[]) => {
+      const t = new Tlv(b.cmdbufView!.buffer);
+      const { p } = t.op(op, words.length * 4);
+      words.forEach((word,index) => t.view.setUint32(p+index*4,word,true));
+      expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    };
+    return { b, gl, send };
+  }
+
+  it("rejects an invalid target before allocating or changing a framebuffer", () => {
+    const { b, gl, send } = setup();
+    send(O.OP_BIND_FRAMEBUFFER,[0xdead,71]);
+    expect(b.errors).toEqual([0x500]);
+    expect(b.fbos.size).toBe(0);
+    expect(b.shadow.fbo).toBeNull(); expect(b.shadow.readFbo).toBeNull();
+    expect(gl.log).toEqual([]);
+  });
+
+  it("creates names on first bind and returns deleted bindings to the undefined default", () => {
+    const { b, gl, send } = setup();
+    expect(applyCurrentDrawable(b,{drawSurfaceId:0,readSurfaceId:0,width:0,height:0})).toBe(true);
+    const missing = b.undefinedDefaultFbo;
+    send(O.OP_BIND_FRAMEBUFFER,[0x8d40,71]);
+    const user = b.fbos.get(71);
+    expect(user).toBeTruthy(); expect(user).not.toBe(missing);
+    expect(b.shadow.fbo).toBe(user); expect(b.shadow.readFbo).toBe(user);
+    send(O.OP_DELETE_FRAMEBUFFERS,[1,71]);
+    expect(b.fbos.has(71)).toBe(false);
+    expect(b.shadow.fbo).toBe(missing); expect(b.shadow.readFbo).toBe(missing);
+    expect(gl.log.filter(([name]) => name === "bindFramebuffer")).toEqual([
+      ["bindFramebuffer",[0x8d40,user]],
+      ["bindFramebuffer",[0x8ca9,missing]], ["bindFramebuffer",[0x8ca8,missing]],
+    ]);
+  });
+
+  it.each([O.OP_FRAMEBUFFER_TEXTURE_2D,O.OP_FRAMEBUFFER_RENDERBUFFER])("keeps default framebuffer attachments immutable for operation %i", op => {
+    const { b, gl, send } = setup();
+    expect(applyCurrentDrawable(b,{drawSurfaceId:0,readSurfaceId:0,width:0,height:0})).toBe(true);
+    const missing = b.undefinedDefaultFbo;
+    gl.log.length = 0;
+    send(op,op === O.OP_FRAMEBUFFER_TEXTURE_2D ? [0x8d40,0x8ce0,0x0de1,0,0] : [0x8d40,0x8ce0,0x8d41,0]);
+    expect(b.errors).toEqual([0x502]);
+    expect(gl.log).toEqual([]);
+    expect(b.shadow.fbo).toBe(missing); expect(b.shadow.readFbo).toBe(missing);
+  });
+});
 
 describe("cmdbuf decoder — TLV walker", () => {
   it("rejects a malformed trailing command before changing any GL state", () => {
@@ -668,6 +720,20 @@ describe("query handler", () => {
     const o = out(4);
     expect(runGlQuery(b, O.QOP_GET_ERROR, input([]), o)).toBe(4);
     expect(o[0]).toBe(0); // RecordingGl.getError() returns 0
+  });
+
+  it("does not publish readback bytes after a framebuffer error", () => {
+    const { b, gl } = setup();
+    let pending = 0;
+    gl.getError = () => { const error = pending; pending = 0; return error; };
+    gl.readPixels = () => { pending = 0x506; };
+    const request = new Uint8Array(24);
+    [0,0,1,1,0x1908,0x1401].forEach((word, index) => new DataView(request.buffer).setUint32(index * 4, word, true));
+    const reply = new Uint8Array(4).fill(0xa5);
+    expect(runGlQuery(b, O.QOP_READ_PIXELS, request, reply)).toBe(-22);
+    expect([...reply]).toEqual([0xa5,0xa5,0xa5,0xa5]);
+    expect(runGlQuery(b, O.QOP_GET_ERROR, input([]), reply)).toBe(4);
+    expect(new DataView(reply.buffer).getUint32(0, true)).toBe(0x506);
   });
 
   it("merges native and retained error flags before consuming a duplicate", () => {

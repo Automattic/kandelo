@@ -51,6 +51,7 @@ export interface GlShadowState {
    *  the binding; bound whenever the program has vertex array 0 bound. */
   defaultVao: WebGLVertexArrayObject | null;
   fbo: WebGLFramebuffer | null;
+  readFbo: WebGLFramebuffer | null;
   vertexAttribValues: Map<number, [number, number, number, number]>;
 
   activeTexture: number;
@@ -121,6 +122,7 @@ export function defaultShadow(): GlShadowState {
     vao: null,
     defaultVao: null,
     fbo: null,
+    readFbo: null,
     vertexAttribValues: new Map(),
     activeTexture: 0,
     textureUnits: new Array(32).fill(null),

@@ -23,6 +23,37 @@ function harness(callbacks = {}) {
 }
 
 describe("context creation acknowledgement", () => {
+  it("rolls back a failed surfaceless allocation and retires its successful retry", () => {
+    const { kernel, create, imports } = harness();
+    kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
+    let allocate = false;
+    const framebuffer = {} as WebGLFramebuffer, deleted: unknown[] = [];
+    const gl = { getExtension: () => null, isContextLost: () => false, getError: () => 0,
+      createFramebuffer: () => allocate ? framebuffer : null,
+      deleteFramebuffer: (value: unknown) => deleted.push(value) };
+    kernel.gl.attachCanvas(7, { width: 100, height: 80, getContext: () => gl } as unknown as OffscreenCanvas);
+    expect(create(7, 21, 11)).toBe(0);
+    const b = kernel.gl.get(7, 11)!; b.surfaceId = 31;
+    expect(imports.host_gl_make_current(7, 21, 31, 31, 11)).toBe(0);
+    const prior = b.currentDrawable;
+    expect(imports.host_gl_make_current(7, 21, 0, 0, 11)).toBe(-12);
+    expect(b.currentDrawable).toBe(prior);
+    expect(b.shadow.fbo).toBeNull(); expect(b.shadow.readFbo).toBeNull();
+    expect(b.shadow.viewport).toEqual([0,0,100,80]);
+    allocate = true;
+    expect(imports.host_gl_make_current(7, 21, 0, 0, 11)).toBe(0);
+    expect(b.shadow.fbo).toBe(framebuffer); expect(b.shadow.readFbo).toBe(framebuffer);
+    const user = {} as WebGLFramebuffer;
+    b.shadow.fbo = user; b.shadow.readFbo = user;
+    expect(imports.host_gl_make_current(7, 21, 31, 31, 11)).toBe(0);
+    expect(b.shadow.fbo).toBe(user); expect(b.shadow.readFbo).toBe(user);
+    expect(imports.host_gl_make_current(7, 21, 0, 0, 11)).toBe(0);
+    expect(b.shadow.fbo).toBe(user); expect(b.shadow.readFbo).toBe(user);
+    imports.host_gl_destroy_context(7,21);
+    expect(deleted).toEqual([framebuffer]);
+    expect(b.undefinedDefaultFbo).toBeNull();
+  });
+
   it("uses a GPU window's real buffer size when no canvas is attached", () => {
     const { kernel, create, imports, memory } = harness();
     const gl = new Proxy({
@@ -59,7 +90,8 @@ describe("context creation acknowledgement", () => {
   it.each([false, true])("initializes drawable state once (surfaceless first: %s)", surfaceless => {
     const { kernel, create, imports } = harness();
     kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
-    const gl = { getExtension: () => null, isContextLost: () => false };
+    const gl = { getExtension: () => null, isContextLost: () => false,
+      createFramebuffer: () => ({}), getError: () => 0 };
     kernel.gl.attachCanvas(7, { width: 320, height: 240, getContext: () => gl } as unknown as OffscreenCanvas);
     expect(create(7, 21, 11)).toBe(0);
     const b = kernel.gl.get(7, 11)!;

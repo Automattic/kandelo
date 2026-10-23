@@ -23,6 +23,7 @@ import { checkedGlCall, currentProgramName, finalizeProgram, finalizeShader, lin
 import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
+import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget } from "./framebuffer.js";
 import {
   GL_BACK,
   GL_FRONT,
@@ -1173,7 +1174,16 @@ function dispatch(
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
         const obj = b.fbos.get(name);
-        if (obj) gl.deleteFramebuffer(obj);
+        if (obj && checkedGlCall(b, () => { gl.deleteFramebuffer(obj); })) {
+          if (b.shadow.fbo === obj) {
+            b.shadow.fbo = defaultFramebuffer(b);
+            gl.bindFramebuffer(0x8ca9, b.shadow.fbo);
+          }
+          if (b.shadow.readFbo === obj) {
+            b.shadow.readFbo = defaultFramebuffer(b, true);
+            gl.bindFramebuffer(GL_READ_FRAMEBUFFER, b.shadow.readFbo);
+          }
+        } else if (obj) continue;
         b.fbos.delete(name);
       }
       return;
@@ -1181,23 +1191,31 @@ function dispatch(
     case O.OP_BIND_FRAMEBUFFER: {
       const target = v.getUint32(p, true);
       const name = v.getUint32(p + 4, true);
-      let fbo = b.fbos.get(name) ?? null;
-      // GPU-tier producer redirect: "bind default framebuffer 0" (the
-      // client's window) becomes "render into the target bo's FBO" so a
-      // routed client's output lands in the bo the compositor samples.
-      // Only name 0 is remapped — a real FBO name the client generated
-      // (offscreen ping-pong, etc.) is honored as-is.
-      if (fbo === null && name === 0 && b.renderTargetFbo) {
-        fbo = b.renderTargetFbo;
+      if (!validFramebufferTarget(target)) { recordGlError(b, 0x500); return; }
+      let fbo = name === 0 ? defaultFramebuffer(b, target === GL_READ_FRAMEBUFFER) : b.fbos.get(name) ?? null;
+      const allocate = name !== 0 && fbo === null;
+      if (allocate) {
+        if (!checkedGlCall(b, () => { fbo = gl.createFramebuffer(); }) || !fbo) {
+          recordGlError(b, 0x505); return;
+        }
       }
-      gl.bindFramebuffer(target, fbo);
+      // Only name zero selects the host's window or incomplete surfaceless
+      // target; guest FBO objects always retain their independent identity.
+      if (!checkedGlCall(b, () => { gl.bindFramebuffer(target, fbo); })) {
+        if (allocate && fbo) gl.deleteFramebuffer(fbo);
+        return;
+      }
+      if (allocate && fbo) b.fbos.set(name, fbo);
       if (target !== GL_READ_FRAMEBUFFER) b.shadow.fbo = fbo;
+      if (target !== 0x8ca9) b.shadow.readFbo = fbo;
       return;
     }
     // Payload: u32 target, u32 attachment, u32 textarget, u32 textureName,
     //          i32 level
     case O.OP_FRAMEBUFFER_TEXTURE_2D: {
       const target = v.getUint32(p, true);
+      if (!validFramebufferTarget(target)) { recordGlError(b, 0x500); return; }
+      if (isDefaultFramebuffer(b, boundFramebuffer(b, target))) { recordGlError(b, 0x502); return; }
       const attachment = v.getUint32(p + 4, true);
       const textarget = v.getUint32(p + 8, true);
       const tex = b.textures.get(v.getUint32(p + 12, true)) ?? null;
@@ -1241,6 +1259,8 @@ function dispatch(
     // Payload: u32 target, u32 attachment, u32 rbtarget, u32 rboName
     case O.OP_FRAMEBUFFER_RENDERBUFFER: {
       const target = v.getUint32(p, true);
+      if (!validFramebufferTarget(target)) { recordGlError(b, 0x500); return; }
+      if (isDefaultFramebuffer(b, boundFramebuffer(b, target))) { recordGlError(b, 0x502); return; }
       const attachment = v.getUint32(p + 4, true);
       const rbtarget = v.getUint32(p + 8, true);
       const rbo = b.rbos.get(v.getUint32(p + 12, true)) ?? null;

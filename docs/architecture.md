@@ -3856,8 +3856,22 @@ without destroying its current EGL surface. Failed updates preserve the old
 target and attached size. This path currently requires an existing GPU
 window target on the same native renderer; forwarded GPU and mixed canvas
 targets still need the full surface model. The public EGL facade remains
-single-context. Share groups, separate surface objects, complete surfaceless
-framebuffer errors and the full lifecycle model remain incomplete.
+single-context. Share groups, separate surface objects and the full
+lifecycle model remain incomplete.
+
+Surfaceless bindings use a context-owned native framebuffer with no
+attachments to represent the absent default framebuffer. It has no guest
+name, cannot accept guest attachments, and is retired with its context.
+Native completeness checks therefore reject clear/draw/copy/read commands;
+the status query exposes `GL_FRAMEBUFFER_UNDEFINED_OES`. The GLES extension
+list includes `GL_OES_surfaceless_context` for this host behavior. First-bind
+allocation failure preserves the prior drawable and reports failure to EGL.
+User framebuffer objects remain usable. Read/draw framebuffer state is
+retained independently through native context switches; deleting a bound
+user FBO restores the appropriate default target. Native readback errors
+are retained for glGetError and return no output bytes, so libc does not
+overwrite the caller's buffer with an unsuccessful reply. These source
+semantics still require guest CTS and combined-artifact validation.
 Native GL errors are drained into the outgoing session's error flags before
 renderer switching or invalidation. Error queries merge native and retained flags before
 consumption, so another session cannot consume them or repeat a duplicate.

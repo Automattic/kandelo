@@ -5,6 +5,7 @@ it("advertises WebGL2 core equivalents without claiming optional float rendering
   const extensions = getGlesExtensionString({getExtension: () => null}).split(" ");
   expect(extensions).toContain("GL_OES_texture_npot");
   expect(extensions).toContain("GL_OES_packed_depth_stencil");
+  expect(extensions).toContain("GL_OES_surfaceless_context");
   expect(extensions).not.toContain("GL_EXT_color_buffer_float");
   expect(extensions).not.toContain("GL_OES_texture_float_linear");
 });

@@ -38,6 +38,8 @@ validation cover it; a passing demo does not close an API family.
   plane metadata, formats and modifiers.
 - [KHR_surfaceless_context](https://registry.khronos.org/EGL/extensions/KHR/EGL_KHR_surfaceless_context.txt):
   current context without draw/read surfaces; framebuffer zero is undefined.
+- [OES_surfaceless_context](https://registry.khronos.org/OpenGL/extensions/OES/OES_surfaceless_context.txt):
+  absent default framebuffer, incompleteness and initial viewport/scissor.
 - [Mesa GBM header](https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/gbm/main/gbm.h):
   allocation/import, plane metadata, mapping and surface lock/release.
 - [Linux DRM UAPI](https://www.kernel.org/doc/html/latest/gpu/drm-uapi.html):
@@ -63,13 +65,13 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
-| G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | FBO redirection exists; imported renderbuffer siblings absent on main | encoder, registry, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
+| G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user FBO identities remain distinct; read/draw bindings replay separately; bound deletion restores the current default. Full attachment/query/storage and CTS coverage remains open | encoder, registry, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
 | E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles and deferred destruction implemented for one context/surface per backend session. Creation/bind failure preserves prior state. Multiple public EGL contexts, sharing, display generations and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Pbuffer always fails; several core symbols absent; GBM sizing exists | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
-| E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context | Explicit kernel/host surfaceless bind and first-current zero viewport/scissor implemented. Undefined framebuffer-zero status and operation errors remain ordinary gaps | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
+| E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/alias/FBO references now retain GEM storage; CPU coherence and complete object semantics remain open | EGL, GLES alias model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | open |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | Texture redefinition now detaches storage and updates retained FBO references; sampler independence and complete negative API coverage remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | open |
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Cage supports one linear plane; must audit metadata and rollback | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
@@ -694,8 +696,8 @@ log; no old cached library was linked. These checks do not install archives
 or build guest programs/packages/images. Normal ABI 55 provisioning and
 full Rust/package, guest CTS/compositor, browser-memory and POSIX validation
 remain deferred and required. Multiple public contexts/share groups,
-context-owned encoder state, display generations and complete surfaceless
-framebuffer behavior remain implementation work.
+context-owned encoder state and display generations remain implementation
+work. Subsequent surfaceless framebuffer repairs are recorded below.
 
 ### Native error ownership across renderer switches
 
@@ -728,3 +730,56 @@ This is a GL contract bug fix without a wire-layout change; ABI remains 55.
 No guest artifacts were rebuilt. Full negative-API/CTS, guest compositor,
 browser-memory and POSIX validation remain required after normal current
 artifact provisioning. Performance was not measured.
+
+### Surfaceless default framebuffer and rejected readback
+
+`GL_OES_surfaceless_context` specifies an incomplete default framebuffer
+when no drawable is associated. A context-owned native FBO with no
+attachments now represents that state. It has no guest name and guest
+attachment operations cannot alter it. The status query returns
+`GL_FRAMEBUFFER_UNDEFINED_OES` (`0x8219`); native completeness checking
+rejects clear, arrays/indexed draws, texture copy and readback with
+`GL_INVALID_FRAMEBUFFER_OPERATION`. A complete user FBO remains usable.
+The shared host extension string now includes this implemented extension.
+
+First-bind allocation is acknowledged before publication; a failed
+allocation leaves the old drawable and viewport/scissor intact. Switching
+drawables preserves user FBO bindings. Independent native read/draw state
+survives muxer replay, and deleting a bound user FBO restores the correct
+window or absent default target. Nonzero FBO names are created on first
+bind; invalid targets do not allocate or mutate bindings.
+
+Readback now checks native errors before returning bytes. Failure retains
+the GL flag and returns a negative host-query result, so the existing
+kernel probe-before-write and libc copy-on-success path preserve guest
+output. The focused readback regression fails on `17b334712b` (45 pass,
+1 fail): `.context/graphics-surfaceless-read-baseline.log`. A real
+surfaceless regression also fails on that revision in all three engines:
+`.context/graphics-surfaceless-verified-baseline-browser.log` (3 fail).
+The first browser fixture's index upload had an incorrect packet shape;
+the verified baseline corrects it before any production change.
+
+Focused ABI 55 source validation (2026-10-23):
+
+| Check | Result | Evidence |
+|---|---|---|
+| Host graphics/KMS/scratch and Node/browser declarations | 295 cases passed in 16 files, declarations passed | `.context/graphics-surfaceless-verified-final-host.log` |
+| Chromium/Firefox/WebKit source WebGL | 24 cases passed, no skips | `.context/graphics-surfaceless-final-browser.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed, no skips | `.context/graphics-surfaceless-memory-boundary.log` |
+
+The browser check uses a real Worker and the ordinary acknowledged main
+forwarder. It verifies all six framebuffer-dependent operation errors,
+unchanged canvas pixels and copy destination storage, failed readback,
+default attachment rejection, successful user-FBO clear/draw/readback,
+split read/draw bindings and bound deletion. Allocation rollback/retry,
+retirement and replay are also covered in Node source-host tests. The
+engine versions match the preceding checks. Early host runs found an old
+single-FBO fixture assumption and a missing delete operation in the device
+double; logs remain under `.context/graphics-surfaceless-host.log` and
+`.context/graphics-surfaceless-final-host.log`.
+
+No wire layout changed; ABI remains 55. No SDK archive, guest program,
+package or image was rebuilt. These checks do not execute guest CTS or
+prove the complete GLES/EGL baseline. Normal current-artifact provisioning,
+full browser-memory, guest compositor/CTS and POSIX suites remain required
+in the deferred rebuild/test phase. Performance was not measured.

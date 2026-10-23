@@ -171,13 +171,27 @@ describe("GlMuxer.switchTo", () => {
     expect(gl.callsOf("useProgram")).toEqual([[prog]]);
   });
 
-  it("bindFramebuffer always targets FRAMEBUFFER (draw+read)", () => {
+  it("restores a shared draw/read framebuffer with one bind", () => {
     const { gl, mux } = mk();
     const fbo = { id: 13 };
     const t = newTarget();
     t.shadow.fbo = fbo as unknown as WebGLFramebuffer;
+    t.shadow.readFbo = t.shadow.fbo;
     mux.switchTo(t);
     expect(gl.callsOf("bindFramebuffer")).toEqual([[GL_FRAMEBUFFER, fbo]]);
+  });
+
+  it("restores distinct read and draw framebuffer bindings", () => {
+    const { gl, mux } = mk();
+    const a = newTarget(), b = newTarget();
+    a.shadow.fbo = { draw: 1 } as WebGLFramebuffer;
+    a.shadow.readFbo = { read: 1 } as WebGLFramebuffer;
+    mux.switchTo(a); mux.switchTo(b); mux.switchTo(a);
+    expect(gl.callsOf("bindFramebuffer")).toEqual([
+      [GL_FRAMEBUFFER,a.shadow.fbo],[0x8ca8,a.shadow.readFbo],
+      [GL_FRAMEBUFFER,null],
+      [GL_FRAMEBUFFER,a.shadow.fbo],[0x8ca8,a.shadow.readFbo],
+    ]);
   });
 
   it("scissor enabled → gl.enable; disabled → gl.disable; rect is always replayed", () => {

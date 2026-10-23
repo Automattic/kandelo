@@ -4,6 +4,122 @@ import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./sup
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
+test("surfaceless framebuffer zero rejects rendering while user framebuffers remain usable", async ({ page }) => {
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const result = await page.evaluate(async sourceRoot => {
+    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
+    const { setupMainForward } = await import(base + "main-forward.ts");
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    document.body.replaceChildren(canvas);
+    const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true })!;
+    if (!gl) throw new Error("WebGL2 is required");
+    gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    const source = `
+      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
+      import * as O from ${JSON.stringify(base + "ops.ts")};
+      onmessage = () => {
+        try {
+          const c = createMainForwardChannel({ postMessage: m => postMessage(m) }, 81, 101);
+          if (c.onCreateContext() !== 0 || c.onMakeCurrent({drawSurfaceId:0,readSurfaceId:0,width:0,height:0}) !== 0)
+            throw new Error("surfaceless bind failed");
+          const send = (op, words, tail = new Uint8Array(), float = false) => {
+            const bytes = new Uint8Array(4+words.length*4+tail.length), v = new DataView(bytes.buffer);
+            v.setUint16(0,op,true); v.setUint16(2,bytes.length-4,true);
+            words.forEach((word,i) => float ? v.setFloat32(4+i*4,word,true) : v.setUint32(4+i*4,word,true));
+            bytes.set(tail,4+words.length*4); c.onSubmit(bytes);
+          };
+          const query = (op, words = [], size = 4) => {
+            const bytes = new Uint8Array(words.length*4), v = new DataView(bytes.buffer);
+            words.forEach((word,i) => v.setUint32(i*4,word,true));
+            return c.onQuery(op,bytes,size);
+          };
+          const number = (op,words = []) => {
+            const reply = query(op,words); if (reply.rc !== 4) throw new Error("query failed: "+reply.rc);
+            return new DataView(reply.bytes.buffer).getUint32(0,true);
+          };
+          const error = () => number(O.QOP_GET_ERROR);
+          const status = () => number(O.QOP_CHECK_FB_STATUS,[0x8d40]);
+          const initialStatus = status();
+          const viewportReply = query(O.QOP_GET_INTEGERV,[0x0ba2],16);
+          const viewport = [...new Int32Array(viewportReply.bytes.buffer)];
+          for (const [name,type,text] of [
+            [11,0x8b31,"void main(){gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=1.;}"],
+            [12,0x8b30,"precision mediump float;void main(){gl_FragColor=vec4(0.,1.,0.,1.);}"]]) {
+            send(O.OP_CREATE_SHADER,[type,name]);
+            const bytes = new TextEncoder().encode(text); send(O.OP_SHADER_SOURCE,[name,bytes.length],bytes);
+            send(O.OP_COMPILE_SHADER,[name]);
+            if (number(O.QOP_GET_SHADERIV,[name,0x8b81]) !== 1) throw new Error("shader failed");
+          }
+          send(O.OP_CREATE_PROGRAM,[13]); send(O.OP_ATTACH_SHADER,[13,11]); send(O.OP_ATTACH_SHADER,[13,12]);
+          send(O.OP_LINK_PROGRAM,[13]); if(number(O.QOP_GET_PROGRAMIV,[13,0x8b82]) !== 1) throw new Error("link failed");
+          send(O.OP_USE_PROGRAM,[13]); send(O.OP_VIEWPORT,[0,0,1,1]);
+          send(O.OP_GEN_TEXTURES,[2,7,8]); send(O.OP_BIND_TEXTURE,[0x0de1,7]);
+          send(O.OP_TEX_IMAGE_2D,[0x0de1,0,0x1908,1,1,0,0x1908,0x1401,4],new Uint8Array([255,0,0,255]));
+          send(O.OP_GEN_BUFFERS,[1,5]); send(O.OP_BIND_BUFFER,[0x8893,5]);
+          send(O.OP_BUFFER_DATA,[0x8893,2,0x88e4]);
+          const setupError = error(), errors = [];
+          for (const [op,words] of [
+            [O.OP_CLEAR,[0x4000]], [O.OP_DRAW_ARRAYS,[0,0,1]], [O.OP_DRAW_ELEMENTS,[0,1,0x1403,0]],
+            [O.OP_COPY_TEX_IMAGE_2D,[0x0de1,0,0x1908,0,0,1,1,0]],
+            [O.OP_COPY_TEX_SUB_IMAGE_2D,[0x0de1,0,0,0,0,0,1,1]]]) {
+            send(op,words); errors.push(error());
+          }
+          const read = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]);
+          errors.push(error());
+          send(O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,7,0]);
+          const attachmentError = error(), statusAfterAttachment = status();
+          send(O.OP_GEN_FRAMEBUFFERS,[1,4]); send(O.OP_BIND_FRAMEBUFFER,[0x8d40,4]);
+          send(O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,7,0]);
+          const copiedTexture = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]);
+          send(O.OP_BIND_TEXTURE,[0x0de1,8]); send(O.OP_TEX_IMAGE_2D,[0x0de1,0,0x1908,1,1,0,0x1908,0x1401,0]);
+          send(O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,8,0]);
+          const userStatus = status();
+          send(O.OP_CLEAR_COLOR,[0,1,0,1],new Uint8Array(),true); send(O.OP_CLEAR,[0x4000]);
+          send(O.OP_DRAW_ARRAYS,[0,0,1]); send(O.OP_DRAW_ELEMENTS,[0,1,0x1403,0]);
+          const userPixels = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]), userError = error();
+          send(O.OP_BIND_FRAMEBUFFER,[0x8ca9,0]);
+          const splitPixels = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]);
+          const split = {draw:status(),read:number(O.QOP_CHECK_FB_STATUS,[0x8ca8]),
+            drawName:number(O.QOP_GET_INTEGERV,[0x8ca6]),readName:number(O.QOP_GET_INTEGERV,[0x8caa]),
+            pixels:[...splitPixels.bytes],error:error()};
+          send(O.OP_CLEAR,[0x4000]); split.clearError = error();
+          send(O.OP_BIND_FRAMEBUFFER,[0x8d40,4]);
+          send(O.OP_DELETE_FRAMEBUFFERS,[1,4]); const deletedStatus = status();
+          send(O.OP_CLEAR,[0x4000]); const deletedError = error();
+          c.onDestroyContext();
+          postMessage({type:"surface_done",results:{initialStatus,viewport,setupError,errors,
+            readRc:read.rc,readBytes:[...read.bytes],attachmentError,statusAfterAttachment,
+            copiedTextureRc:copiedTexture.rc,copiedTexture:[...copiedTexture.bytes],
+            userStatus,userPixels:[...userPixels.bytes],userError,split,deletedStatus,deletedError}});
+        } catch(error) { postMessage({type:"surface_failed",error:String(error)}); }
+      };
+    `;
+    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    const worker = new Worker(url, { type: "module" }); const dispose = setupMainForward(worker,canvas,81);
+    try {
+      const results = await new Promise<Record<string, unknown>>((resolve,reject) => {
+        const timeout = setTimeout(() => reject(new Error("surfaceless test timed out")),45_000);
+        worker.addEventListener("error", event => { clearTimeout(timeout); reject(new Error(event.message)); });
+        worker.addEventListener("message",({data}) => {
+          if(data.type === "surface_done") { clearTimeout(timeout); resolve(data.results); }
+          if(data.type === "surface_failed") { clearTimeout(timeout); reject(new Error(data.error)); }
+        }); worker.postMessage({type:"start"});
+      });
+      gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+      const canvasPixels = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,canvasPixels);
+      return {...results,canvasPixels:[...canvasPixels]};
+    } finally { dispose(); worker.terminate(); URL.revokeObjectURL(url); }
+  },root);
+  expect(result).toEqual({initialStatus:0x8219,viewport:[0,0,0,0],setupError:0,
+    errors:Array(6).fill(0x506),readRc:-22,readBytes:[],attachmentError:0x502,statusAfterAttachment:0x8219,
+    copiedTextureRc:4,copiedTexture:[255,0,0,255],userStatus:0x8cd5,userPixels:[0,255,0,255],userError:0,
+    split:{draw:0x8219,read:0x8cd5,drawName:0,readName:4,pixels:[0,255,0,255],error:0,clearError:0x506},
+    deletedStatus:0x8219,deletedError:0x506,canvasPixels:[0,0,255,255]});
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
+
 test("forwarded native errors stay with their owner across switches and invalidation", async ({ page }) => {
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");
