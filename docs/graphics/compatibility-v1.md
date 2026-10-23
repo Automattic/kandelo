@@ -1,7 +1,9 @@
 # Graphics compatibility inventory, version 1
 
 This is the implementation and evidence ledger for the GLES 2.0, EGL 1.5,
-GBM and single-display legacy DRM/KMS baseline. It is not a conformance
+GBM and single-display legacy DRM/KMS baseline. Userspace graphics uses
+the existing wasm32 SDK; Node/browser host parity is required. Kernel DRM
+pointer-marshalling tests retain both guest address widths. It is not a conformance
 claim. An ordinary defect remains open until implementation and executable
 validation cover it; a passing demo does not close an API family.
 
@@ -97,6 +99,12 @@ ownership, completion and import/export semantics; serialized command order
 alone does not supply that contract. Multiple displays and non-linear or
 multi-plane dma-bufs require distinct format/layout and display authority.
 These are outside this baseline and cannot excuse EGL1.5 core sync gaps.
+Wasm64 userspace graphics is also a separate expansion: today libdrm's recipe
+explicitly accepts only wasm32, and the graphics archive builders target
+wasm32 and run only for that sysroot. Extending it requires architecture-aware
+archive builders, the libdrm recipe, high-address GL query marshalling and
+executed wasm64 coverage. This records absent support, not a hard platform
+boundary and not a reduction of an existing advertised graphics API.
 
 ## Implementation evidence
 
@@ -202,3 +210,19 @@ Evidence: `.context/graphics-state-baseline.log`,
 `.context/graphics-query-baseline-clear.log`, and
 `.context/graphics-source-query-fixed.log`. These prove the named host
 contracts, not complete GLES2/EGL compatibility or compositor integration.
+
+### Broader validation status
+
+The canonical serialized Rust workspace suite passes 2,992 tests across 44
+unit/doc binaries, with no failures or ignored tests. Its job is
+`graphics-rust-serial-1023-115303-a5a2`. A preceding run overrode the
+repository's required RUST_TEST_THREADS=1 with 4 and failed on shared image
+export state; it is invalid validation and is retained, not attributed to
+this graphics change. The initial four KMS failures were fixed by selecting
+explicit master/cursor-capability preconditions in the imported tests.
+
+The CTS subset builds through the normal resolver for wasm32 at artifact
+closure `66d2fdd5462558a721c2445316484a4e6f5cd88ae1d554be53effcb3221e63c7`
+(before its manifest was corrected to the existing wasm32 graphics scope).
+Guest execution is still required; a linked artifact is not a CTS pass.
+The full setup graph now classifies the new package as test support.

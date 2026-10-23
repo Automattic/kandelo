@@ -35,7 +35,9 @@ Verify the assertions with:
 python3 tests/graphics/verify-cts-source.py /path/to/pinned/VK-GL-CTS
 ```
 
-Build the guest through the normal package resolver:
+Build the wasm32 guest through the normal package resolver. The existing
+graphics SDK archives and libdrm recipe are wasm32-only; this package does
+not advertise a wasm64 graphics build:
 
 ```
 scripts/dev-shell.sh cargo xtask build-deps resolve graphics-cts-egl --arch wasm32

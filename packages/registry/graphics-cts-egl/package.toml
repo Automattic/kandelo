@@ -2,7 +2,7 @@ kind = "program"
 name = "graphics-cts-egl"
 version = "1.0.0"
 kernel_abi = 52
-arches = ["wasm32", "wasm64"]
+arches = ["wasm32"]
 depends_on = ["libcxx@21.1.7"]
 
 [source]

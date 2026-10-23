@@ -10,8 +10,11 @@ kandelo_package_select_source_root "$repo_root"
 source_root="$KANDELO_PACKAGE_SOURCE_ROOT"
 python3 "$source_root/tests/graphics/verify-cts-source.py"
 : "${WASM_POSIX_DEP_LIBCXX_DIR:?declare libcxx dependency}"
+if [ "$arch" != wasm32 ]; then
+    echo "graphics-cts-egl requires the supported wasm32 graphics SDK" >&2
+    exit 2
+fi
 base_sysroot="$repo_root/sysroot"
-if [ "$arch" = wasm64 ]; then base_sysroot="$repo_root/sysroot64"; fi
 export WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot graphics-cts-egl "$base_sysroot" libcxx)"
 "${arch}posix-c++" -std=c++17 -O2 \
     "$source_root/tests/graphics/cts/egl-adapter.cpp" \
