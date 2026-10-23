@@ -148,7 +148,9 @@ engine, Node.js, Bun, LLVM, wasm-ld, wasm-opt, Rust) needs a registry entry
 in `tests/runtime-workarounds/` and a `[RUNTIME-WORKAROUND: <ID>]` tag at
 every code site. Blaming a runtime needs a standalone reproduction that
 contains no Kandelo code and judges its own result; until one exists the
-defect is "suspected", and docs, comments and PRs must say so. See
+defect is "suspected", and docs, comments and PRs must say so. Agents
+never file, comment on, or vote on upstream trackers unless the entry has
+`reports = "agents-allowed"` with a named channel. See
 `tests/runtime-workarounds/README.md`.
 
 See `docs/agent-guidance/debugging-and-posix.md` before changing syscall,

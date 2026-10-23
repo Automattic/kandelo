@@ -58,9 +58,9 @@ its own verdict lets an entry be called confirmed; anything less is a
 suspected runtime defect, and docs, comments and PRs must say "suspected".
 A workaround for such a defect gets a registry entry and a tagged comment
 at each site. `tests/runtime-workarounds/README.md` is the guide: statuses,
-the tag form, reproduction rules, the `check`/`run`/`list` commands, and
-the rule that agents never file or comment on upstream trackers without
-the maintainer's permission.
+the tag form, reproduction rules, and the `check`/`run`/`list` commands.
+Agents never file, comment on, or vote on upstream trackers unless the
+entry has `reports = "agents-allowed"` with a named channel.
 
 ## POSIX And Process
 
