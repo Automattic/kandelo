@@ -1,0 +1,27 @@
+id = "WEBKIT-TEXTDECODER-WRAPPER-CRASH"
+kind = "bug"
+status = "suspected"
+runtimes = ["webkit"]
+summary = "Suspected: WebKit's page process crashes in cacheWrapper<TextDecoder> during bursts of TextDecoder construction in a newly started worker"
+reports = "human-only"
+
+# Attempted reduction; it has not crashed. A page crash would count as
+# reproduced, but the entry stays suspected until a reduction crashes.
+[repro]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["webkit"]
+self_judging = true
+attempts = 5
+min_reproduced = 1
+timeout_seconds = 180
+crash_is_reproduced = true
+
+[[observed]]
+runtime = "webkit"
+version = "26.6"
+os = "macos"
+reproduced = false
+date = 2026-10-22
+source = "suite"
+released = false
