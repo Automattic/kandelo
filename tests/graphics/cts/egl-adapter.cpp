@@ -100,10 +100,10 @@ int main() {
     if (eglInitialize(display,&major,&minor)) {
         try {
             EGLint count = 0;
-            if (!eglChooseConfig(display,nullptr,nullptr,0,&count) || count <= 0)
+            if (!eglGetConfigs(display,nullptr,0,&count) || count <= 0)
                 throw std::runtime_error("no EGL configs");
             vector<EGLConfig> configs(count);
-            if (!eglChooseConfig(display,nullptr,configs.data(),count,&count))
+            if (!eglGetConfigs(display,configs.data(),count,&count))
                 throw std::runtime_error("config enumeration failed");
             unsigned tested = 0;
             result = 0;

@@ -3736,6 +3736,15 @@ TLV commands, the kernel validates the submitted range, and the host decodes
 the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
+EGL's existing single window config uses one attribute table for enumeration,
+selection and queries. Selection honors size minima, masks, exact values,
+defaults and explicit config IDs. Config operations require an initialized
+display and publish outputs only after validation. The config's renderable
+mask remains ES2-only; EGL's default ES1 selection filter consequently matches
+none. Tools enumerating all configurations use eglGetConfigs. Pbuffers,
+multiple contexts and other EGL core gaps remain tracked in the graphics
+compatibility inventory.
+
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
 accepts versions 1 and 2, and rejects zero or newer versions with `ENOSYS`.

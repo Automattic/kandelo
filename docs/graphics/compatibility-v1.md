@@ -66,7 +66,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | FBO redirection exists; imported renderbuffer siblings absent on main | encoder, registry, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | open |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
-| E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | Single config ignores selection attributes; missing eglGetConfigs; advertised 1.5 | EGL library, surface metadata | CTS query_config/choose_config/negative API | open |
+| E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
 | E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Fixed handles, no actual current tracking, no sharing/multiple contexts | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | open |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Pbuffer always fails; several core symbols absent; GBM sizing exists | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context | Main requires a live surface; cage adds a path needing validation | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | open |
@@ -360,6 +360,36 @@ green/red draws, recovery to a blue executable and retirement of the old
 executable. This updated browser case has not yet run; the earlier nine-pass
 browser result predates these latest changes. Full CTS shader/reflection and
 guest execution remain pending. No hard platform boundary is claimed.
+
+### EGL configuration selection and enumeration
+
+The existing single RGBA8/depth24/stencil8, non-multisampled window config now
+has one shared attribute table for eglGetConfigs, eglChooseConfig and
+eglGetConfigAttrib. Selection uses the specification's minima, masks,
+exact matches, defaults and CONFIG_ID override. Unknown attributes, invalid
+values, unknown config handles, absent output counts and uninitialized
+displays fail without partially publishing outputs. Config queries no longer
+return successful zero for every unknown enum. Core enumeration, selection
+and attribute-query functions also resolve through eglGetProcAddress.
+
+This preserves the existing ES2 renderable mask, surface capabilities and
+EGL version. EGL's empty selection list defaults to an ES1 renderable filter,
+which correctly matches none of this backend's ES2-only configs. The CTS
+adapter now enumerates all configs with eglGetConfigs rather than accidentally
+applying that filter. Its upstream assertion method remains unchanged and
+the pinned-source provenance verifier passes. Pbuffers and broader EGL
+lifecycle/API gaps remain open; this is not an EGL conformance claim.
+
+Three new native cases reproduce against `607a10699b`: mismatched requests
+incorrectly select a config, uninitialized config queries succeed, and core
+enumeration does not resolve. The prior ten cases pass on that baseline;
+the repaired harness passes all thirteen under UBSan. Additional assertions
+cover masks, duplicate attributes, explicit IDs, zero-capacity output arrays,
+validation after an earlier mismatch and unchanged outputs after rejection.
+Logs: `.context/graphics-egl-config-baseline.log`,
+`.context/graphics-egl-config-final.log`,
+`.context/graphics-continued-cts-provenance.log`. SDK/guest rebuilding and
+guest CTS execution remain deferred.
 
 ### Numeric conversion and complete query vectors
 

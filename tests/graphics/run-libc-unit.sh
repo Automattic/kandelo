@@ -20,7 +20,7 @@ clang -g -O1 -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" -fno-omit-fr
     "$output_dir/glue/libegl_stub.c" "$output_dir/glue/libglesv2_stub.c" \
     "$repo_root/tests/graphics/libc/image-ownership.c" -o "$output_dir/image-ownership"
 status=0
-for case_name in lifetime redefine context invalid framebuffer cycle namespace boolean query-vector query-error; do
+for case_name in lifetime redefine context invalid framebuffer cycle namespace boolean query-vector query-error config-selection config-validation config-list; do
     python3 - "$output_dir/image-ownership" "$case_name" <<'PYTHON' || status=1
 import subprocess, sys
 try:

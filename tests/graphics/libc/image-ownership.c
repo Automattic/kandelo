@@ -145,11 +145,113 @@ static EGLImageKHR image(EGLDisplay dpy) {
 int main(int argc, char **argv) {
     assert(argc == 2);
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (!strcmp(argv[1], "config-validation")) {
+        EGLint value = 17;
+        assert(!eglGetConfigAttrib(dpy, (EGLConfig)1, EGL_RED_SIZE, &value));
+        assert(eglGetError() == EGL_NOT_INITIALIZED && value == 17);
+    }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
     EGLContext ctx = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
     assert(ctx != EGL_NO_CONTEXT);
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "config-selection")) {
+        const EGLint requests[][7] = {
+            { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_RED_SIZE, 9, EGL_NONE },
+            { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SAMPLE_BUFFERS, 1, EGL_NONE },
+            { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE },
+        };
+        for (unsigned i = 0; i < sizeof requests / sizeof requests[0]; i++) {
+            EGLConfig selected = (EGLConfig)(uintptr_t)0x1234;
+            EGLint count = 17;
+            assert(eglChooseConfig(dpy, requests[i], &selected, 1, &count));
+            assert(count == 0 && selected == (EGLConfig)(uintptr_t)0x1234);
+        }
+        const EGLint matching[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+            EGL_RED_SIZE, 8, EGL_DEPTH_SIZE, 16, EGL_NONE };
+        EGLConfig selected = NULL;
+        EGLint count = 17;
+        assert(eglChooseConfig(dpy, matching, &selected, 1, &count));
+        assert(count == 1 && selected == (EGLConfig)1);
+        /* A configuration ID overrides otherwise incompatible selection. */
+        const EGLint by_id[] = { EGL_CONFIG_ID, 1, EGL_RED_SIZE, 99, EGL_NONE };
+        assert(eglChooseConfig(dpy, by_id, &selected, 1, &count));
+        assert(count == 1 && selected == (EGLConfig)1);
+        const EGLint by_missing_id[] = { EGL_CONFIG_ID, 2, EGL_NONE };
+        assert(eglChooseConfig(dpy, by_missing_id, &selected, 1, &count));
+        assert(count == 0);
+        /* Default renderable type is ES1; this config already advertises
+         * ES2 only. Enumeration must use eglGetConfigs, not this filter. */
+        assert(eglChooseConfig(dpy, NULL, &selected, 1, &count) && count == 0);
+        const EGLint masks[] = { EGL_RENDERABLE_TYPE, 0, EGL_SURFACE_TYPE, 0,
+            EGL_RED_SIZE, EGL_DONT_CARE, EGL_NONE };
+        assert(eglChooseConfig(dpy, masks, &selected, 1, &count) && count == 1);
+        const EGLint duplicate[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+            EGL_RED_SIZE, 99, EGL_RED_SIZE, 8, EGL_NONE };
+        assert(eglChooseConfig(dpy, duplicate, &selected, 1, &count) && count == 1);
+        assert(eglDestroyContext(dpy, ctx) && eglTerminate(dpy));
+        puts("PASS config-selection");
+        return 0;
+    }
+    if (!strcmp(argv[1], "config-validation")) {
+        const EGLint invalid[][3] = {
+            { EGL_RED_SIZE, -2, EGL_NONE }, { EGL_BIND_TO_TEXTURE_RGB, 4, EGL_NONE },
+            { EGL_COLOR_BUFFER_TYPE, 0, EGL_NONE }, { EGL_NATIVE_RENDERABLE, 6, EGL_NONE },
+            { EGL_TRANSPARENT_TYPE, 6, EGL_NONE }, { EGL_LEVEL, EGL_DONT_CARE, EGL_NONE },
+            { -1 }, /* Undefined name must be rejected without reading its value. */
+        };
+        for (unsigned i = 0; i < sizeof invalid / sizeof invalid[0]; i++) {
+            EGLConfig selected = (EGLConfig)(uintptr_t)0x1234;
+            EGLint count = 17;
+            assert(!eglChooseConfig(dpy, invalid[i], &selected, 1, &count));
+            assert(eglGetError() == EGL_BAD_ATTRIBUTE);
+            assert(count == 17 && selected == (EGLConfig)(uintptr_t)0x1234);
+        }
+        EGLint value = 17;
+        assert(!eglGetConfigAttrib(dpy, (EGLConfig)2, EGL_RED_SIZE, &value));
+        assert(eglGetError() == EGL_BAD_CONFIG && value == 17);
+        assert(!eglGetConfigAttrib(dpy, (EGLConfig)1, 0, &value));
+        assert(eglGetError() == EGL_BAD_ATTRIBUTE && value == 17);
+        assert(!eglGetConfigAttrib(dpy, (EGLConfig)1, EGL_RED_SIZE, NULL));
+        assert(eglGetError() == EGL_BAD_PARAMETER);
+        assert(!eglChooseConfig(dpy, NULL, NULL, 0, NULL));
+        assert(eglGetError() == EGL_BAD_PARAMETER);
+        const EGLint invalid_after_mismatch[] = { EGL_RED_SIZE, 99,
+            EGL_NATIVE_RENDERABLE, 6, EGL_NONE };
+        EGLConfig selected = (EGLConfig)(uintptr_t)0x1234;
+        EGLint count = 17;
+        assert(!eglChooseConfig(dpy, invalid_after_mismatch, &selected, 1, &count));
+        assert(eglGetError() == EGL_BAD_ATTRIBUTE && count == 17);
+        const EGLint undefined_name[] = { -1 };
+        assert(!eglChooseConfig(dpy, undefined_name, &selected, 1, &count));
+        assert(eglGetError() == EGL_BAD_ATTRIBUTE && count == 17);
+        assert(eglDestroyContext(dpy, ctx) && eglTerminate(dpy));
+        puts("PASS config-validation");
+        return 0;
+    }
+    if (!strcmp(argv[1], "config-list")) {
+        PFNEGLGETCONFIGSPROC enumerate = (PFNEGLGETCONFIGSPROC)eglGetProcAddress("eglGetConfigs");
+        assert(enumerate != NULL);
+        EGLint count = 17;
+        assert(enumerate(dpy, NULL, 0, &count) && count == 1);
+        EGLConfig configs[2] = { NULL, (EGLConfig)(uintptr_t)0x1234 };
+        assert(enumerate(dpy, configs, 0, &count) && count == 0);
+        assert(configs[0] == NULL);
+        assert(enumerate(dpy, configs, 2, &count) && count == 1);
+        assert(configs[0] == (EGLConfig)1 && configs[1] == (EGLConfig)(uintptr_t)0x1234);
+        EGLint buffer_bits = 17;
+        assert(eglGetConfigAttrib(dpy, configs[0], EGL_BUFFER_SIZE, &buffer_bits));
+        assert(buffer_bits == 32);
+        assert(eglGetProcAddress("eglGetConfigs") != NULL);
+        assert(!enumerate(dpy, configs, -1, &count));
+        assert(eglGetError() == EGL_BAD_PARAMETER);
+        assert(eglDestroyContext(dpy, ctx) && eglTerminate(dpy));
+        count = 17;
+        assert(!enumerate(dpy, configs, 2, &count));
+        assert(eglGetError() == EGL_NOT_INITIALIZED && count == 17);
+        puts("PASS config-list");
+        return 0;
+    }
     if (!strcmp(argv[1], "namespace")) {
         GLuint names[] = { glCreateShader(GL_VERTEX_SHADER), glCreateProgram(),
             glCreateShader(GL_FRAGMENT_SHADER), glCreateProgram() };

@@ -179,33 +179,140 @@ EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
     return EGL_TRUE;
 }
 
+enum config_match { CFG_MINIMUM, CFG_EXACT, CFG_BOOLEAN, CFG_COLOR, CFG_CAVEAT,
+    CFG_TRANSPARENT, CFG_API_MASK, CFG_SURFACE_MASK, CFG_ID, CFG_LEVEL,
+    CFG_IGNORED, CFG_TRANSPARENT_COMPONENT, CFG_PIXMAP };
+struct config_attribute {
+    EGLint name, value, default_value;
+    enum config_match match;
+};
+/* One source for enumeration, selection and queries. These are the existing
+ * RGBA8/depth24/stencil8, non-multisampled window buffers. Pbuffers, native
+ * rendering and API conformance are not inferred from WebGL2. */
+static const struct config_attribute config_attributes[] = {
+    { EGL_BUFFER_SIZE, 32, 0, CFG_MINIMUM },
+    { EGL_RED_SIZE, 8, 0, CFG_MINIMUM },
+    { EGL_GREEN_SIZE, 8, 0, CFG_MINIMUM },
+    { EGL_BLUE_SIZE, 8, 0, CFG_MINIMUM },
+    { EGL_ALPHA_SIZE, 8, 0, CFG_MINIMUM },
+    { EGL_LUMINANCE_SIZE, 0, 0, CFG_MINIMUM },
+    { EGL_ALPHA_MASK_SIZE, 0, 0, CFG_MINIMUM },
+    { EGL_DEPTH_SIZE, 24, 0, CFG_MINIMUM },
+    { EGL_STENCIL_SIZE, 8, 0, CFG_MINIMUM },
+    { EGL_SAMPLE_BUFFERS, 0, 0, CFG_MINIMUM },
+    { EGL_SAMPLES, 0, 0, CFG_MINIMUM },
+    { EGL_BIND_TO_TEXTURE_RGB, EGL_FALSE, EGL_DONT_CARE, CFG_BOOLEAN },
+    { EGL_BIND_TO_TEXTURE_RGBA, EGL_FALSE, EGL_DONT_CARE, CFG_BOOLEAN },
+    { EGL_COLOR_BUFFER_TYPE, EGL_RGB_BUFFER, EGL_RGB_BUFFER, CFG_COLOR },
+    { EGL_CONFIG_CAVEAT, EGL_NONE, EGL_DONT_CARE, CFG_CAVEAT },
+    { EGL_CONFIG_ID, 1, EGL_DONT_CARE, CFG_ID },
+    { EGL_CONFORMANT, 0, 0, CFG_API_MASK },
+    { EGL_LEVEL, 0, 0, CFG_LEVEL },
+    { EGL_MAX_SWAP_INTERVAL, 0, EGL_DONT_CARE, CFG_EXACT },
+    { EGL_MIN_SWAP_INTERVAL, 0, EGL_DONT_CARE, CFG_EXACT },
+    { EGL_NATIVE_RENDERABLE, EGL_FALSE, EGL_DONT_CARE, CFG_BOOLEAN },
+    { EGL_NATIVE_VISUAL_ID, 0, EGL_DONT_CARE, CFG_IGNORED },
+    { EGL_NATIVE_VISUAL_TYPE, EGL_NONE, EGL_DONT_CARE, CFG_IGNORED },
+    { EGL_MAX_PBUFFER_WIDTH, 0, EGL_DONT_CARE, CFG_IGNORED },
+    { EGL_MAX_PBUFFER_HEIGHT, 0, EGL_DONT_CARE, CFG_IGNORED },
+    { EGL_MAX_PBUFFER_PIXELS, 0, EGL_DONT_CARE, CFG_IGNORED },
+    { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_OPENGL_ES_BIT, CFG_API_MASK },
+    { EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_WINDOW_BIT, CFG_SURFACE_MASK },
+    { EGL_TRANSPARENT_TYPE, EGL_NONE, EGL_NONE, CFG_TRANSPARENT },
+    { EGL_TRANSPARENT_RED_VALUE, 0, EGL_DONT_CARE, CFG_TRANSPARENT_COMPONENT },
+    { EGL_TRANSPARENT_GREEN_VALUE, 0, EGL_DONT_CARE, CFG_TRANSPARENT_COMPONENT },
+    { EGL_TRANSPARENT_BLUE_VALUE, 0, EGL_DONT_CARE, CFG_TRANSPARENT_COMPONENT },
+    { EGL_MATCH_NATIVE_PIXMAP, EGL_NONE, EGL_NONE, CFG_PIXMAP },
+};
+#define CONFIG_ATTRIBUTE_COUNT (sizeof config_attributes / sizeof config_attributes[0])
+
+static int config_attribute_index(EGLint name) {
+    for (unsigned i = 0; i < CONFIG_ATTRIBUTE_COUNT; i++)
+        if (config_attributes[i].name == name) return (int)i;
+    return -1;
+}
+
+static EGLBoolean config_display_ready(EGLDisplay dpy) {
+    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
+    if (!g_initialized) { g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE; }
+    return EGL_TRUE;
+}
+
+static EGLBoolean return_configs(EGLConfig *configs, EGLint config_size,
+                                 EGLint *num_config, int matches) {
+    if (!num_config || (configs && config_size < 0)) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_FALSE;
+    }
+    const EGLint count = matches && (!configs || config_size > 0) ? 1 : 0;
+    if (configs && count) configs[0] = EGL_CONFIG_HANDLE;
+    *num_config = count;
+    return EGL_TRUE;
+}
+
+EGLBoolean eglGetConfigs(EGLDisplay dpy, EGLConfig *configs,
+                         EGLint config_size, EGLint *num_config) {
+    if (!config_display_ready(dpy)) return EGL_FALSE;
+    return return_configs(configs, config_size, num_config, 1);
+}
+
 EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
                            EGLConfig *configs, EGLint config_size,
                            EGLint *num_config) {
-    (void)attrib_list;
-    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
-    if (configs && config_size > 0) configs[0] = EGL_CONFIG_HANDLE;
-    if (num_config) *num_config = 1;
-    return EGL_TRUE;
+    if (!config_display_ready(dpy)) return EGL_FALSE;
+    if (!num_config || (configs && config_size < 0)) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_FALSE;
+    }
+    EGLint wanted[CONFIG_ATTRIBUTE_COUNT];
+    for (unsigned i = 0; i < CONFIG_ATTRIBUTE_COUNT; i++) wanted[i] = config_attributes[i].default_value;
+    if (attrib_list) {
+        for (const EGLint *a = attrib_list; a[0] != EGL_NONE; a += 2) {
+            const int i = config_attribute_index(a[0]);
+            /* Reject an undefined name before reading its nonexistent value. */
+            if (i < 0) { g_last_error = EGL_BAD_ATTRIBUTE; return EGL_FALSE; }
+            wanted[i] = a[1];
+        }
+    }
+    const EGLint id = wanted[config_attribute_index(EGL_CONFIG_ID)];
+    if (id != EGL_DONT_CARE) return return_configs(configs, config_size, num_config, id == 1);
+    const EGLint transparency = wanted[config_attribute_index(EGL_TRANSPARENT_TYPE)];
+    int matches = 1;
+    for (unsigned i = 0; i < CONFIG_ATTRIBUTE_COUNT; i++) {
+        const struct config_attribute *attribute = &config_attributes[i];
+        const EGLint value = wanted[i];
+        const enum config_match kind = attribute->match;
+        if (kind == CFG_IGNORED ||
+            (kind == CFG_TRANSPARENT_COMPONENT && transparency == EGL_NONE)) continue;
+        if (value == EGL_DONT_CARE && kind != CFG_LEVEL && kind != CFG_PIXMAP) continue;
+        int valid = value >= 0;
+        if (kind == CFG_LEVEL) valid = value != EGL_DONT_CARE;
+        if (kind == CFG_BOOLEAN) valid = value == EGL_FALSE || value == EGL_TRUE;
+        if (kind == CFG_COLOR) valid = value == EGL_RGB_BUFFER || value == EGL_LUMINANCE_BUFFER;
+        if (kind == CFG_CAVEAT) valid = value == EGL_NONE || value == EGL_SLOW_CONFIG || value == EGL_NON_CONFORMANT_CONFIG;
+        if (kind == CFG_TRANSPARENT) valid = value == EGL_NONE || value == EGL_TRANSPARENT_RGB;
+        if (kind == CFG_PIXMAP) valid = value != EGL_DONT_CARE;
+        if (kind == CFG_API_MASK) valid = value >= 0 && !(value & ~(EGL_OPENGL_ES_BIT |
+            EGL_OPENVG_BIT | EGL_OPENGL_ES2_BIT | EGL_OPENGL_BIT | EGL_OPENGL_ES3_BIT));
+        if (kind == CFG_SURFACE_MASK) valid = value >= 0 && !(value & ~(EGL_WINDOW_BIT |
+            EGL_PIXMAP_BIT | EGL_PBUFFER_BIT | EGL_VG_COLORSPACE_LINEAR_BIT |
+            EGL_VG_ALPHA_FORMAT_PRE_BIT | EGL_MULTISAMPLE_RESOLVE_BOX_BIT | EGL_SWAP_BEHAVIOR_PRESERVED_BIT));
+        if (!valid) { g_last_error = EGL_BAD_ATTRIBUTE; return EGL_FALSE; }
+        if (kind == CFG_MINIMUM) matches &= attribute->value >= value;
+        else if (kind == CFG_API_MASK || kind == CFG_SURFACE_MASK) matches &= (attribute->value & value) == value;
+        else matches &= attribute->value == value;
+    }
+    return return_configs(configs, config_size, num_config, matches);
 }
 
 EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
                               EGLint attribute, EGLint *value) {
-    (void)config;
-    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
-    if (!value) return EGL_FALSE;
-    switch (attribute) {
-        case EGL_CONFIG_ID:        *value = 1; break;
-        case EGL_RED_SIZE:
-        case EGL_GREEN_SIZE:
-        case EGL_BLUE_SIZE:
-        case EGL_ALPHA_SIZE:       *value = 8; break;
-        case EGL_DEPTH_SIZE:       *value = 24; break;
-        case EGL_STENCIL_SIZE:     *value = 8; break;
-        case EGL_SURFACE_TYPE:     *value = EGL_WINDOW_BIT; break;
-        case EGL_RENDERABLE_TYPE:  *value = EGL_OPENGL_ES2_BIT; break;
-        default:                   *value = 0; break;
-    }
+    if (!config_display_ready(dpy)) return EGL_FALSE;
+    if (config != EGL_CONFIG_HANDLE) { g_last_error = EGL_BAD_CONFIG; return EGL_FALSE; }
+    if (!value) { g_last_error = EGL_BAD_PARAMETER; return EGL_FALSE; }
+    const int i = config_attribute_index(attribute);
+    if (i < 0 || attribute == EGL_MATCH_NATIVE_PIXMAP) { g_last_error = EGL_BAD_ATTRIBUTE; return EGL_FALSE; }
+    *value = config_attributes[i].value;
     return EGL_TRUE;
 }
 
@@ -473,7 +580,7 @@ EGLint eglGetError(void) {
  * eglGetSyncAttrib), the core images (eglCreateImage/eglDestroyImage;
  * EGL_KHR_image_base's eglCreateImageKHR imports dma-bufs),
  * eglCreatePlatformWindowSurface/eglCreatePlatformPixmapSurface, and
- * several 1.0-1.4 queries (eglGetConfigs, eglQuerySurface,
+ * several 1.0-1.4 queries (eglQuerySurface,
  * eglSurfaceAttrib, eglBindTexImage,
  * eglReleaseTexImage, eglCopyBuffers, eglCreatePixmapSurface,
  * eglCreatePbufferFromClientBuffer) are all absent. That gap is
@@ -514,6 +621,9 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
 
 __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname) {
     if (!procname) return NULL;
+    WPK_MAP_GL(eglGetConfigs);
+    WPK_MAP_GL(eglChooseConfig);
+    WPK_MAP_GL(eglGetConfigAttrib);
     WPK_MAP_GL(glActiveTexture);
     WPK_MAP_GL(glAttachShader);
     WPK_MAP_GL(glBindAttribLocation);
