@@ -11,7 +11,7 @@ kind = "library"
 # The logind and builtin backends and the seatd server are disabled.
 name = "libseat"
 version = "0.9.3"
-kernel_abi = 48
+kernel_abi = 52
 
 [[host_tools]]
 name = "meson"

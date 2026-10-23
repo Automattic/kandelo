@@ -9,7 +9,7 @@ kind = "library"
 # build machine's hwdata.
 name = "libdisplay-info"
 version = "0.3.0"
-kernel_abi = 48
+kernel_abi = 52
 
 [[host_tools]]
 name = "meson"

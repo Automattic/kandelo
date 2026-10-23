@@ -19,7 +19,7 @@ kind = "library"
 
 name = "xkeyboard-config"
 version = "2.48"
-kernel_abi = 48
+kernel_abi = 52
 depends_on = []
 
 [[host_tools]]

@@ -5,7 +5,7 @@ kind = "program"
 # gdk-pixbuf, so it reads PNG images through cairo; without man pages.
 name = "swaybg"
 version = "1.2.1"
-kernel_abi = 48
+kernel_abi = 52
 depends_on = [
   "libwayland@1.24.0",
   "wayland-protocols@1.47",
