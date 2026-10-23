@@ -10,7 +10,11 @@ kind = "bug"
 # suspected | confirmed | reported | fixed-upstream | retired.
 # Start at "suspected" unless a standalone repro judges itself.
 status = "suspected"
-# Affected engines or runtimes, for example ["webkit", "bun"].
+# Affected engines, runtimes or tools, for example ["webkit", "bun"]. Names:
+# a repro target (chromium, firefox, webkit, node, bun, clang, wasm-ld,
+# wasm-opt, rustc) or a released browser recorded by hand (safari,
+# ios-safari, chrome, firefox-stable). Toolchain entries use the tool's name
+# (clang, wasm-opt), not the project's (llvm, binaryen).
 runtimes = ["webkit"]
 # One line.
 summary = "What the runtime does wrong, in one line"
@@ -37,7 +41,9 @@ self_judging = false
 # One record per affected runtime (listed in `runtimes`), version and OS.
 # Controls that never had the defect go in entry.md, not here.
 # source = "suite" when the driver produced it; released = false for
-# Playwright builds.
+# Playwright builds. runtime uses the same names as `runtimes`; native Safari
+# is "safari" (released = true), never "webkit". os is macos, linux or
+# windows.
 # [[observed]]
 # runtime = "webkit"
 # version = "26.6"

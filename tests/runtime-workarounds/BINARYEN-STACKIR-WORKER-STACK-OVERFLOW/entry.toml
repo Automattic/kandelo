@@ -1,7 +1,7 @@
 id = "BINARYEN-STACKIR-WORKER-STACK-OVERFLOW"
 kind = "bug"
 status = "suspected"
-runtimes = ["binaryen"]
+runtimes = ["wasm-opt"]
 summary = "Suspected: Binaryen's recursive StackIR writer overflows macOS's small native worker stacks on large instrumented LLVM functions (may be a host-tool stack limit, not a defect)"
 reports = "human-only"
 

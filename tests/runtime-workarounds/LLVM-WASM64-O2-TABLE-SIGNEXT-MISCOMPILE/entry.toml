@@ -1,7 +1,7 @@
 id = "LLVM-WASM64-O2-TABLE-SIGNEXT-MISCOMPILE"
 kind = "bug"
 status = "suspected"
-runtimes = ["llvm"]
+runtimes = ["clang"]
 summary = "Suspected: LLVM 21's wasm64 backend miscompiles sign extension of i32 to i64 in table lookups at -O2, so MariaDB wasm64 builds at -O1"
 reports = "human-only"
 

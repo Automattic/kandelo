@@ -101,8 +101,8 @@ The schema is strict: an unknown field is an error, so a misspelled field
 cannot silently drop a claim. `_template/entry.toml` lists every field with
 a comment. In short:
 
-- `id`, `kind` (`bug` or `gap`), `status`, `runtimes` (affected engines or
-  runtimes), `summary` (one line).
+- `id`, `kind` (`bug` or `gap`), `status`, `runtimes` (affected engines,
+  runtimes or tools; see [Names](#names)), `summary` (one line).
 - `reports`: `human-only` (the default) or `agents-allowed`, which also needs
   `reports_channel` naming the channel the upstream project sanctions for
   automated or agent reports.
@@ -117,7 +117,8 @@ a comment. In short:
   `version` **and** `os` (Playwright's WebKit differs between macOS and
   Linux, and a defect can be specific to one OS), with `reproduced`, `date`,
   `source` (`suite` when the driver produced it, `manual` otherwise) and
-  `released`. Record only the affected runtimes (those in `runtimes`) here.
+  `released`. `runtime` and `os` use the names below. Record only the
+  affected runtimes (those in `runtimes`) here.
   Results on control runtimes that never had the defect go in `entry.md`:
   they are useful evidence, but a control's "not reproduced" says nothing
   about a fix.
@@ -128,6 +129,24 @@ a comment. In short:
   (for example a package build script), where a comment would force an
   unneeded rebuild; the note says so. Prose in docs is listed the same way.
 - `retired_reason`, `retired_commit` for retired entries.
+
+### Names
+
+`check` accepts only these names, so `run` and `list` can match records by
+name:
+
+- **`os`**: `macos`, `linux` or `windows` (what the driver reports).
+- **Repro `targets`**: the Playwright engines `chromium`, `firefox` and
+  `webkit`; the JavaScript hosts `node` and `bun`; the toolchain tools
+  `clang`, `wasm-ld`, `wasm-opt` and `rustc`.
+- **`runtimes` and `observed.runtime`**: any target name, or a released
+  browser that is not automated here: `safari`, `ios-safari`, `chrome`,
+  `firefox-stable`. Playwright builds are development builds, so native
+  Safari is recorded by hand as `safari` with `released = true`, never as
+  `webkit`; `run` then never compares a Playwright verdict with a Safari
+  result.
+- **Toolchain entries** name the tool that misbehaves (`clang`,
+  `wasm-opt`), not the project (`llvm`, `binaryen`).
 
 ### `entry.md`
 
@@ -240,8 +259,8 @@ for scripts. Write down which Playwright build a version came from in
 `entry.md` when it matters (for example `webkit-2359`), because the version
 string alone does not identify a build. Playwright builds are development
 builds: record them with `released = false`. Native Safari and iOS are not
-automated; record results there by hand with `source = "manual"` and
-`released = true`.
+automated; record results there by hand as `safari` or `ios-safari` with
+`source = "manual"` and `released = true`.
 
 ## Commands
 

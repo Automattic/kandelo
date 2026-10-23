@@ -1,7 +1,7 @@
 id = "LLVM-WASM32-O2-ERLANG-MISCOMPILE"
 kind = "bug"
 status = "suspected"
-runtimes = ["llvm"]
+runtimes = ["clang"]
 summary = "Suspected: LLVM's wasm32 backend miscompiles Erlang/OTP code at -O2 (shadow-stack aggregate initialization and three BEAM translation units)"
 reports = "human-only"
 

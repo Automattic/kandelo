@@ -1,6 +1,9 @@
 //! Consistency between the registry's entries and the tags in tracked source.
 
-use super::entry::{load_registry, Entry, ReportPolicy, Status, TARGETS};
+use super::entry::{
+    is_runtime_name, load_registry, Entry, ReportPolicy, Status, OS_NAMES, RELEASED_RUNTIMES,
+    TARGETS,
+};
 use super::registry;
 use super::scan::{scan, tracked_files, TAG_WORD};
 use std::collections::{BTreeMap, BTreeSet};
@@ -160,6 +163,36 @@ fn entry_problems(
             .as_deref()
             .map_or(true, |c| c.trim().is_empty()) {
         problem("reports = agents-allowed requires reports_channel".to_string());
+    }
+
+    // One vocabulary for runtime and OS names, so `run` and `list` can match
+    // records by name and never mix a Playwright build with a released
+    // browser recorded by hand.
+    let vocabulary = || {
+        format!(
+            "one of {:?} or a released name {RELEASED_RUNTIMES:?}",
+            TARGETS
+        )
+    };
+    for runtime in &entry.runtimes {
+        if !is_runtime_name(runtime) {
+            problem(format!("runtimes entry {runtime:?} is not {}", vocabulary()));
+        }
+    }
+    for obs in &entry.observed {
+        if !is_runtime_name(&obs.runtime) {
+            problem(format!(
+                "observed runtime {:?} is not {}",
+                obs.runtime,
+                vocabulary()
+            ));
+        }
+        if !OS_NAMES.contains(&obs.os.as_str()) {
+            problem(format!(
+                "observed os {:?} is not one of {OS_NAMES:?}",
+                obs.os
+            ));
+        }
     }
 
     let mut declared: BTreeSet<&str> = BTreeSet::new();
@@ -660,6 +693,43 @@ summary = "a defect"
         let problems = repo.problems();
         assert!(has(&problems, "netscape"), "{problems:?}");
         assert!(has(&problems, "missing.mjs"), "{problems:?}");
+    }
+
+    #[test]
+    fn observed_os_must_be_a_known_name() {
+        let repo = Repo::new();
+        repo.write("src/a.ts", format!("// {}\n", tag(ID)));
+        repo.entry(ID, &confirmed_toml(ID, true).replace("os = \"linux\"", "os = \"darwin\""));
+        let problems = repo.problems();
+        assert!(has(&problems, "observed os \"darwin\""), "{problems:?}");
+    }
+
+    #[test]
+    fn runtime_names_come_from_the_vocabulary() {
+        let repo = Repo::new();
+        repo.write("src/a.ts", format!("// {}\n", tag(ID)));
+        // `llvm` is a project, not a tool; `webkit-2359` is a build, not a runtime.
+        let toml = confirmed_toml(ID, true)
+            .replace("runtimes = [\"node\"]", "runtimes = [\"node\", \"llvm\"]")
+            + "\n[[observed]]\nruntime = \"webkit-2359\"\nversion = \"26.6\"\n\
+               os = \"macos\"\nreproduced = false\ndate = 2026-10-22\n";
+        repo.entry(ID, &toml);
+        let problems = repo.problems();
+        assert!(has(&problems, "runtimes entry \"llvm\""), "{problems:?}");
+        assert!(has(&problems, "observed runtime \"webkit-2359\""), "{problems:?}");
+    }
+
+    #[test]
+    fn released_browser_names_are_accepted_for_hand_records() {
+        let repo = Repo::new();
+        repo.write("src/a.ts", format!("// {}\n", tag(ID)));
+        let toml = confirmed_toml(ID, true).replace(
+            "runtimes = [\"node\"]",
+            "runtimes = [\"node\", \"safari\", \"ios-safari\", \"chrome\", \"firefox-stable\"]",
+        ) + "\n[[observed]]\nruntime = \"safari\"\nversion = \"26.1\"\nos = \"macos\"\n\
+             reproduced = true\ndate = 2026-10-22\nreleased = true\n";
+        repo.entry(ID, &toml);
+        assert_eq!(repo.problems(), Vec::<String>::new());
     }
 
     #[test]

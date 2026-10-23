@@ -12,6 +12,22 @@ pub const TARGETS: &[&str] = &[
     "chromium", "firefox", "webkit", "node", "bun", "clang", "wasm-ld", "wasm-opt", "rustc",
 ];
 
+/// Released browsers that are not automated here, so their results are
+/// recorded by hand (`released = true`). They are distinct from the
+/// Playwright engines in `TARGETS`, which are development builds: native
+/// Safari is `safari`, never `webkit`, so `run` never compares a Playwright
+/// verdict with a hand-recorded Safari result.
+pub const RELEASED_RUNTIMES: &[&str] = &["safari", "ios-safari", "chrome", "firefox-stable"];
+
+/// Host operating systems an observation can be keyed by (the names the
+/// driver reports).
+pub const OS_NAMES: &[&str] = &["macos", "linux", "windows"];
+
+/// A name `runtimes` and `observed.runtime` may use.
+pub fn is_runtime_name(name: &str) -> bool {
+    TARGETS.contains(&name) || RELEASED_RUNTIMES.contains(&name)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Kind {
