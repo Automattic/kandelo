@@ -1998,6 +1998,7 @@ export function buildDlopenImports(
       nameRange.length,
     );
     // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
+    // The copy also guards against memory grow/detach, so it stays even if the engine is fixed.
     // WHY: compilation may grow/detach memory, and Firefox/Chrome reject
     // TextDecoder views backed directly by SharedArrayBuffer.
     return {

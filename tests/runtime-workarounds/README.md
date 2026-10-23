@@ -123,7 +123,10 @@ a comment. In short:
   about a fix.
 - `[[upstream]]`: `project`, `url`, `filed`, `filed_by`. Empty until filed.
 - `[[sites_without_tags]]`: `path` and `note` for places that cannot hold a
-  comment (build flags, generated files, JSON, binary fixtures).
+  comment (build flags, generated files, JSON, binary fixtures). It may also
+  list a site that could hold a comment but whose file is a cache-key input
+  (for example a package build script), where a comment would force an
+  unneeded rebuild; the note says so. Prose in docs is listed the same way.
 - `retired_reason`, `retired_commit` for retired entries.
 
 ### `entry.md`

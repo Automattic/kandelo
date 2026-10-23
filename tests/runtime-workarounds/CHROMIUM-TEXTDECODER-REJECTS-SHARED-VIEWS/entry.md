@@ -10,8 +10,10 @@ AllowSharedBufferSource input, ...)` (checked against
 https://encoding.spec.whatwg.org/#interface-textdecoder on 2026-10-22),
 so a view over a `SharedArrayBuffer` is a valid argument. Code comments in
 the host say that Chrome throws a `TypeError` for such a view, and one
-comment says Firefox does too. No one has re-run that claim for this entry,
-and the comments give no browser versions.
+comment says Firefox does too. The Firefox claim rests on that single
+comment (`host/src/worker-main.ts`, the dlopen name decode). No one has
+re-run any of these claims for this entry, and the comments give no
+browser versions.
 
 ## Why Kandelo is affected
 
@@ -52,4 +54,11 @@ string), actual (TypeError), versions.
 ## Removal criteria
 
 A released Chromium (and Firefox, if it is confirmed there) accepts shared
-views. Then remove the copies at every tagged site, and retire the entry.
+views. Then remove the copies whose only reason is this defect, and retire
+the entry. Two sites keep their copy even then, because it also guards
+against another hazard: `host/src/worker-main.ts` (the dlopen name read,
+where compilation may grow or detach memory) and `host/src/webgl/bridge.ts`
+(the shader source read, where the copy also protects against
+SharedArrayBuffer grow races). Their tag comments say so; when retiring,
+reword those two comments and remove the tag rather than the copy. Check
+the other sites for the same second reason before deleting them.

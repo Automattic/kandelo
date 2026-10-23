@@ -14,3 +14,7 @@ note = "Build script; a comment here would change the package's cache key (the s
 [[sites_without_tags]]
 path = "packages/registry/erlang/patches/patch-global-h.py"
 note = "Rewrites ESTACK/WSTACK initialization in global.h field by field; its docstring names the suspected LLVM miscompile. Not edited so the package cache key stays unchanged."
+
+[[sites_without_tags]]
+path = "docs/package-management.md"
+note = "Prose ('Optimization-level workarounds') describing the Erlang erl_unicode.c -O1 rule; prose is not a code site."
