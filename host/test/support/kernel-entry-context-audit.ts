@@ -191,7 +191,7 @@ const DETACHED_EFFECT_METHODS = new Map<string, DetachedEffectKind>([
   ["deferProtocolTransactionStart", "transaction-start"],
 ]);
 const SERIALIZED_HOST_OPERATION_METHOD =
-  "#invokeSharedMmapHostOperation";
+  "#invokeSerializedHostOperation";
 const PROTOCOL_EFFECT_ROOT_METHODS = new Set([
   ...ROOT_INGRESS_METHODS.keys(),
   "failKernelInstance",

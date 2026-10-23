@@ -55,6 +55,12 @@ git diff abi/snapshot.json
 bash scripts/check-abi-version.sh
 ```
 
+After a version bump, also run `bash scripts/build-resolve-binary-bundle.sh`
+and `bash scripts/test-resolve-binary-bundle.sh`. The committed standalone
+resolver embeds the generated ABI constants; regenerating only the snapshot
+and TypeScript bindings leaves shell build/conformance entry points rejecting
+new artifacts with "rejected by artifact policy".
+
 If `ABI_VERSION` changes, expect package-release consequences: existing package
 archives for the prior ABI do not satisfy the new ABI, package indexes resolve
 through `binaries-abi-v{abi}`, and ABI-bound VFS images/packages need
