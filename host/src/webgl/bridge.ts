@@ -19,6 +19,7 @@
  * ioctl-style device operation instead of hiding the failure in host code.
  */
 import type { GlBinding } from "./registry.js";
+import { checkedGlCall, finalizeProgram, finalizeShader, recordGlError, useProgramIfAccepted } from "./program-objects.js";
 import * as O from "./ops.js";
 import {
   GL_BACK,
@@ -859,20 +860,32 @@ function dispatch(
     case O.OP_DELETE_SHADER: {
       const name = v.getUint32(p, true);
       const sh = b.shaders.get(name);
-      if (sh) gl.deleteShader(sh);
-      b.shaders.delete(name);
+      if (!sh) { if (name !== 0) recordGlError(b, 0x501); return; }
+      if (!b.shaderDeletePending.has(name) && checkedGlCall(b, () => gl.deleteShader(sh))) {
+        b.shaderDeletePending.add(name);
+        finalizeShader(b, name);
+      }
       return;
     }
     case O.OP_CREATE_PROGRAM: {
       const name = v.getUint32(p, true);
       const prog = gl.createProgram();
-      if (prog) b.programs.set(name, prog);
+      if (prog) {
+        b.programs.set(name, prog);
+        b.programShaders.set(name, new Set());
+      }
       return;
     }
     case O.OP_ATTACH_SHADER: {
-      const prog = b.programs.get(v.getUint32(p, true));
-      const sh = b.shaders.get(v.getUint32(p + 4, true));
-      if (prog && sh) gl.attachShader(prog, sh);
+      const programName = v.getUint32(p, true), shaderName = v.getUint32(p + 4, true);
+      const prog = b.programs.get(programName), sh = b.shaders.get(shaderName);
+      if (!prog || !sh) { recordGlError(b, 0x501); return; }
+      if (b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
+      if (checkedGlCall(b, () => gl.attachShader(prog, sh))) {
+        let attached = b.programShaders.get(programName);
+        if (!attached) { attached = new Set(); b.programShaders.set(programName, attached); }
+        attached.add(shaderName);
+      }
       return;
     }
     case O.OP_LINK_PROGRAM: {
@@ -881,10 +894,7 @@ function dispatch(
       return;
     }
     case O.OP_USE_PROGRAM: {
-      const prog = b.programs.get(v.getUint32(p, true)) ?? null;
-      gl.useProgram(prog);
-      b.currentProgram = prog;
-      b.shadow.currentProgram = prog;
+      useProgramIfAccepted(b, v.getUint32(p, true));
       return;
     }
     // Payload: u32 program, u32 index, u32 nameLen, u8 name[nameLen]
@@ -903,14 +913,20 @@ function dispatch(
     case O.OP_DELETE_PROGRAM: {
       const name = v.getUint32(p, true);
       const prog = b.programs.get(name);
-      if (prog) gl.deleteProgram(prog);
-      b.programs.delete(name);
+      if (!prog) { if (name !== 0) recordGlError(b, 0x501); return; }
+      b.programDeletePending.add(name);
+      finalizeProgram(b, name);
       return;
     }
     case O.OP_DETACH_SHADER: {
-      const prog = b.programs.get(v.getUint32(p, true));
-      const sh = b.shaders.get(v.getUint32(p + 4, true));
-      if (prog && sh) gl.detachShader(prog, sh);
+      const programName = v.getUint32(p, true), shaderName = v.getUint32(p + 4, true);
+      const prog = b.programs.get(programName), sh = b.shaders.get(shaderName);
+      if (!prog || !sh) { recordGlError(b, 0x501); return; }
+      if (!b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
+      if (checkedGlCall(b, () => gl.detachShader(prog, sh))) {
+        b.programShaders.get(programName)!.delete(shaderName);
+        finalizeShader(b, shaderName);
+      }
       return;
     }
 

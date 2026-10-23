@@ -18,6 +18,7 @@ import {
 } from "../src/webgl/shadow.js";
 
 class StubGl {
+  getError() { return 0; }
   colorMask(...a: boolean[]) {  }
   depthMask(...a: boolean[]) {  }
   stencilFuncSeparate(...a: number[]) {  }

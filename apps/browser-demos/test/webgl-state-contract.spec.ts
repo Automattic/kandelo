@@ -255,3 +255,89 @@ test("forwarded synchronous queries isolate owners with one mailbox per channel"
   });
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
+
+test("deleted current programs survive owner switches and retire after their last reference", async ({ page }) => {
+  await page.goto("/trap-signal-test.html");
+  const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT
+    ?? fileURLToPath(new URL("../../../", import.meta.url));
+  const result = await page.evaluate(async (sourceRoot) => {
+    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const { GlContextRegistry } = await import(base + "registry.ts");
+    const { GlMuxer } = await import(base + "muxer.ts");
+    const { decodeAndDispatch } = await import(base + "bridge.ts");
+    const { runGlQuery } = await import(base + "query.ts");
+    const O = await import(base + "ops.ts");
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 8;
+    document.body.replaceChildren(canvas);
+    const gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
+    if (!gl) throw new Error("WebGL2 is required");
+    const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+    const bindings = [1,2].map(pid => {
+      reg.bind({pid,cmdbufAddr:0,cmdbufLen:1024});
+      const b = reg.get(pid)!;
+      b.gl=gl; b.cmdbufView=new Uint8Array(1024);
+      b.shadow.viewport=[0,0,8,8]; b.shadow.scissor.rect=[0,0,8,8];
+      return b;
+    });
+    const send = (b: typeof bindings[0], op: number, words: number[], tail = new Uint8Array()) => {
+      mux.switchTo(b);
+      const bytes=b.cmdbufView!, view=new DataView(bytes.buffer);
+      view.setUint16(0,op,true); view.setUint16(2,words.length*4+tail.length,true);
+      words.forEach((word,i) => view.setUint32(4+i*4,word,true));
+      bytes.set(tail,4+words.length*4);
+      const rc=decodeAndDispatch(b,0,4+words.length*4+tail.length);
+      if(rc) throw new Error(`command ${op}: ${rc}`);
+    };
+    const query = (b: typeof bindings[0], op: number, words: number[] = []) => {
+      mux.switchTo(b);
+      const input=new Uint8Array(words.length*4), output=new Uint8Array(4);
+      words.forEach((word,i) => new DataView(input.buffer).setUint32(i*4,word,true));
+      const rc=runGlQuery(b,op,input,output);
+      if(rc!==4) throw new Error(`query ${op}: ${rc}`);
+      return new DataView(output.buffer).getUint32(0,true);
+    };
+    bindings.forEach((b,index) => {
+      for (const [name,type,source] of [
+        [11,gl.VERTEX_SHADER,"void main(){gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=4.;}"],
+        [12,gl.FRAGMENT_SHADER,`precision mediump float;void main(){gl_FragColor=vec4(${index}.,${1-index}.,0.,1.);}`],
+      ] as [number,number,string][]) {
+        send(b,O.OP_CREATE_SHADER,[type,name]);
+        const bytes=new TextEncoder().encode(source);
+        send(b,O.OP_SHADER_SOURCE,[name,bytes.length],bytes);
+        send(b,O.OP_COMPILE_SHADER,[name]);
+        if(query(b,O.QOP_GET_SHADERIV,[name,gl.COMPILE_STATUS])!==1) throw new Error("shader compile failed");
+      }
+      send(b,O.OP_CREATE_PROGRAM,[13]);
+      send(b,O.OP_ATTACH_SHADER,[13,11]); send(b,O.OP_ATTACH_SHADER,[13,12]);
+      send(b,O.OP_LINK_PROGRAM,[13]);
+      if(query(b,O.QOP_GET_PROGRAMIV,[13,gl.LINK_STATUS])!==1) throw new Error("program link failed");
+      send(b,O.OP_USE_PROGRAM,[13]);
+      send(b,O.OP_DELETE_SHADER,[11]); send(b,O.OP_DELETE_SHADER,[12]);
+    });
+    send(bindings[0],O.OP_DELETE_PROGRAM,[13]);
+    const current=query(bindings[0],O.QOP_GET_INTEGERV,[gl.CURRENT_PROGRAM]);
+    const deleted=query(bindings[0],O.QOP_GET_PROGRAMIV,[13,gl.DELETE_STATUS]);
+    // An unlinked program is a driver rejection, not a state transition.
+    send(bindings[0],O.OP_CREATE_PROGRAM,[14]);
+    send(bindings[0],O.OP_USE_PROGRAM,[14]);
+    const rejected=query(bindings[0],O.QOP_GET_ERROR);
+    const pixels: number[][]=[];
+    for(const index of [0,1,0,1,0,1]) {
+      const b=bindings[index];
+      send(b,O.OP_DRAW_ARRAYS,[gl.POINTS,0,1]);
+      const pixel=new Uint8Array(4);
+      gl.readPixels(4,4,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
+      pixels.push([...pixel]);
+      if(query(b,O.QOP_GET_ERROR)!==0) throw new Error("draw error");
+    }
+    send(bindings[0],O.OP_USE_PROGRAM,[0]);
+    const retired=!bindings[0].programs.has(13) && !bindings[0].shaders.has(11) && !bindings[0].shaders.has(12);
+    const otherLive=gl.isProgram(bindings[1].programs.get(13)!);
+    for(const b of bindings) { mux.invalidateCurrent(); reg.destroyContext(b.pid); }
+    return { current,deleted,rejected,pixels,retired,otherLive,error:gl.getError() };
+  },root);
+  expect(result).toEqual({ current:13,deleted:1,rejected:0x502,
+    pixels:Array.from({length:6},(_,i) => i%2 ? [255,0,0,255] : [0,255,0,255]),
+    retired:true,otherLive:true,error:0 });
+});

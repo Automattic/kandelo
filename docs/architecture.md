@@ -3773,6 +3773,13 @@ limit. Input and command bytes are copied out of guest memory. A timed-out
 mailbox is retired permanently; a late reply cannot satisfy a later query.
 Forwarded owners sharing a native context also use the multiplexer. The
 persistent browser realm receives no guest memory or guest-backed view.
+Shader/program attachment records retain deleted shaders and current
+programs until their last logical reference releases. Native program deletion
+is deferred while the program is current in its owner, allowing muxer replay
+after another owner temporarily uses the shared WebGL context. Rejected
+program switches and attachments preserve the prior ownership state and keep
+the driver's error observable. Destroying a context unbinds its physically
+current program before deleting objects, without unbinding another owner.
 Foreign BO uploads save the physical context's alignment and unpack skips,
 neutralize them for the upload, and restore them even on failure. A failed
 new upload does not publish a texture name. Node

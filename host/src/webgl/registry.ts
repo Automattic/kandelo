@@ -70,6 +70,10 @@ export type GlBinding = GlBindingInput & {
   textures: Map<number, WebGLTexture>;
   shaders: Map<number, WebGLShader>;
   programs: Map<number, WebGLProgram>;
+  shaderDeletePending: Set<number>;
+  programDeletePending: Set<number>;
+  programShaders: Map<number, Set<number>>;
+  errors: number[];
   vaos: Map<number, WebGLVertexArrayObject>;
   fbos: Map<number, WebGLFramebuffer>;
   rbos: Map<number, WebGLRenderbuffer>;
@@ -77,6 +81,7 @@ export type GlBinding = GlBindingInput & {
    *  cleanly. Indices are assigned by `++nextUniformLoc` and never
    *  reused so insert/delete cycles cannot collide. */
   uniformLocations: Map<number, WebGLUniformLocation>;
+  uniformLocationPrograms: Map<number, number>;
   /** Monotonic counter for `uniformLocations`; never decremented. */
   nextUniformLoc: number;
 
@@ -203,10 +208,15 @@ export class GlContextRegistry {
       textures: new Map(),
       shaders: new Map(),
       programs: new Map(),
+      shaderDeletePending: new Set(),
+      programDeletePending: new Set(),
+      programShaders: new Map(),
+      errors: [],
       vaos: new Map(),
       fbos: new Map(),
       rbos: new Map(),
       uniformLocations: new Map(),
+      uniformLocationPrograms: new Map(),
       nextUniformLoc: 0,
       foreignTextures: new Map(),
       nextForeignTexId: 0x4000_0000,
@@ -236,6 +246,13 @@ export class GlContextRegistry {
     const b = this.bindings.get(pid);
     if (!b) return;
     const gl = b.gl;
+    // A deleted native program remains alive while physically current.
+    // Release only this binding's program; another owner's context may be
+    // the one currently selected on the shared WebGL context.
+    if (gl && b.programs.size > 0) {
+      const current = gl.getParameter(0x8b8d) as WebGLProgram | null;
+      if ([...b.programs.values()].includes(current!)) gl.useProgram(null);
+    }
     // Foreign GPU textures belong to their BO, independently of this
     // context. CPU upload textures and ordinary guest textures are owned.
     const boTextures = new Set([...this.gpuBos.values()].map(bo => bo.tex));
@@ -251,6 +268,11 @@ export class GlContextRegistry {
     for (const object of b.rbos.values()) gl?.deleteRenderbuffer(object);
     for (const map of [b.buffers, b.textures, b.shaders, b.programs, b.vaos,
       b.fbos, b.rbos, b.uniformLocations, b.foreignTextures]) map.clear();
+    b.shaderDeletePending.clear();
+    b.programDeletePending.clear();
+    b.programShaders.clear();
+    b.uniformLocationPrograms.clear();
+    b.errors.length = 0;
     if (b.shadow.defaultVao) {
       b.gl?.deleteVertexArray(b.shadow.defaultVao);
       b.shadow.defaultVao = null;

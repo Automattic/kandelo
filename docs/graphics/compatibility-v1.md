@@ -59,7 +59,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Monotonic guest names and per-process WebGL maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Cube/2D targets, dither and pixel-store state now replay separately; invalid-state rollback, hints and multi-context/thread ownership still need work | shadow, muxer, decoder | Alternating contexts/processes; real rendered cube/2D and mask tests | open |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Chunked encoder and transient client staging; bound index buffer plus client attributes rejected | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
-| G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Shader/program forwarding exists; deletion/reference state and several queries incomplete | encoder, query, registry | CTS shader API and reflection; delete attached/current objects | partial |
+| G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current programs and attached shaders now retain mappings until final release; failed use/attach calls preserve ownership. Core reflection functions, relink semantics and the C shader/program name namespace still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
@@ -290,3 +290,37 @@ open query/object audit; this is not complete GLES query coverage.
 Logs: `.context/graphics-query-shape-baseline.log`,
 `.context/graphics-query-shape-fixed.log`,
 `.context/graphics-query-shape-browser.log`.
+
+### Shader and program references
+
+Adapted deferred object ownership and accepted-program-switch handling from
+Brandon Payton's older graphics work (`2d4258ad3ffd` and `8594aae153c6`),
+preserving main's native-object shadow layout. Program attachment sets retain
+deleted shaders. A deleted current program retains its native executable and
+name until a successful switch releases it; DELETE_STATUS remains observable.
+Native errors from rejected switches/attachments are preserved, and ownership
+changes commit only on acceptance. Final program release retires its uniform
+location handles and attached shader references. Context destruction unbinds
+a physically current program only when it belongs to that context.
+
+Three initial source regressions fail before repair. Additional tests cover
+rejected attachment and context cleanup without disturbing another owner.
+The resulting graphics source gate passes 212 tests in 13 files without skips,
+and host declaration generation passes. The rendered program-lifetime case
+fails against recorded main in all three engines, then passes on the candidate:
+deleted current executables survive alternating green/red draws, an unlinked
+program is rejected without changing current state, and final references retire.
+The complete source-rendered selection now passes 9 cases across Chromium,
+Firefox and WebKit. Logs: `.context/graphics-program-lifetime-baseline.log`,
+`.context/graphics-program-lifetime-final.log`,
+`.context/graphics-program-lifetime-browser-baseline.log`,
+`.context/graphics-program-lifetime-browser-fixed.log`.
+
+This remains bounded ownership evidence. The C encoder still allocates shader
+and program names from separate counters, several core reflection APIs are
+missing, and complete relink behavior needs implementation. In particular,
+WebGL invalidates the current executable after an unsuccessful relink whereas
+GLES retains the installed executable. That difference requires a retained
+executable model and tests; it is not evidence that implementing the GLES
+behavior is impossible. See the [WebGL program-object clarification](https://registry.khronos.org/webgl/specs/latest/1.0/#5.14.9)
+and GLES2 §2.10.

@@ -91,6 +91,7 @@ class RecordingGl {
   compileShader(s: unknown) { this.log.push(["compileShader", [s]]); }
   deleteShader(s: unknown) { this.log.push(["deleteShader", [s]]); }
   attachShader(p: unknown, s: unknown) { this.log.push(["attachShader", [p, s]]); }
+  detachShader(p: unknown, s: unknown) { this.log.push(["detachShader", [p, s]]); }
   linkProgram(p: unknown) { this.log.push(["linkProgram", [p]]); }
   useProgram(p: unknown) { this.log.push(["useProgram", [p]]); }
   bindAttribLocation(p: unknown, i: number, n: string) { this.log.push(["bindAttribLocation", [p, i, n]]); }
@@ -512,6 +513,95 @@ describe("cmdbuf decoder — TLV walker", () => {
     t.op(O.OP_CLEAR, 4);
     expect(() => decodeAndDispatch(b, 0, t.p)).not.toThrow();
     expect(gl.log).toEqual([]);
+  });
+});
+
+describe("shader/program deferred deletion", () => {
+  function setup() {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const send = (op: number, ...words: number[]) => {
+      const tlv = new Tlv(b.cmdbufView!.buffer);
+      const record = tlv.op(op, words.length*4);
+      words.forEach((word, i) => tlv.view.setUint32(record.p+i*4, word, true));
+      expect(decodeAndDispatch(b,0,tlv.p)).toBe(0);
+    };
+    const query = (op: number, ...words: number[]) => {
+      const input = new Uint8Array(words.length*4), output = new Uint8Array(4);
+      words.forEach((word, i) => new DataView(input.buffer).setUint32(i*4,word,true));
+      expect(runGlQuery(b,op,input,output)).toBe(4);
+      return new DataView(output.buffer).getUint32(0,true);
+    };
+    return { b, gl, send, query };
+  }
+
+  it("retains a deleted current program and its shaders until a successful switch", () => {
+    const { b, gl, send, query } = setup();
+    send(O.OP_CREATE_SHADER, 0x8b31, 11);
+    send(O.OP_CREATE_PROGRAM, 12);
+    send(O.OP_ATTACH_SHADER,12,11);
+    send(O.OP_USE_PROGRAM,12);
+    send(O.OP_DELETE_SHADER,11);
+    send(O.OP_DELETE_PROGRAM,12);
+    expect(b.programs.has(12)).toBe(true);
+    expect(b.shaders.has(11)).toBe(true);
+    expect(query(O.QOP_GET_INTEGERV,0x8b8d)).toBe(12);
+    expect(query(O.QOP_GET_PROGRAMIV,12,0x8b80)).toBe(1); // DELETE_STATUS
+    expect(gl.log.filter(([method]) => method === "deleteProgram")).toHaveLength(0);
+    const program = b.currentProgram;
+    send(O.OP_USE_PROGRAM,999);
+    expect(b.currentProgram).toBe(program);
+    expect(b.programs.has(12)).toBe(true);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x501);
+    send(O.OP_USE_PROGRAM,0);
+    expect(b.programs.has(12)).toBe(false);
+    expect(b.shaders.has(11)).toBe(false);
+    expect(gl.log.filter(([method]) => method === "deleteProgram")).toHaveLength(1);
+  });
+
+  it("can detach a deleted shader, retaining it until its last program releases it", () => {
+    const { b, gl, send } = setup();
+    send(O.OP_CREATE_SHADER,0x8b31,11);
+    for (const name of [12,13]) {
+      send(O.OP_CREATE_PROGRAM,name);
+      send(O.OP_ATTACH_SHADER,name,11);
+    }
+    send(O.OP_DELETE_SHADER,11);
+    send(O.OP_DETACH_SHADER,12,11);
+    expect(b.shaders.has(11)).toBe(true);
+    send(O.OP_DETACH_SHADER,13,11);
+    expect(b.shaders.has(11)).toBe(false);
+    expect(gl.log.filter(([method]) => method === "detachShader")).toHaveLength(2);
+  });
+
+  it("preserves the prior program when the driver rejects a switch", () => {
+    const { b, gl, send, query } = setup();
+    send(O.OP_CREATE_PROGRAM,12);
+    send(O.OP_CREATE_PROGRAM,13);
+    send(O.OP_USE_PROGRAM,12);
+    send(O.OP_DELETE_PROGRAM,12);
+    let pending = 0;
+    gl.getError = () => { const error = pending; pending = 0; return error; };
+    gl.useProgram = () => { pending = 0x502; };
+    send(O.OP_USE_PROGRAM,13);
+    expect(b.currentProgram).toBe(b.programs.get(12));
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    expect(query(O.QOP_GET_INTEGERV,0x8b8d)).toBe(12);
+    expect(b.programs.has(12)).toBe(true);
+  });
+
+  it("does not retain a shader when the driver rejects attachment", () => {
+    const { b, gl, send, query } = setup();
+    send(O.OP_CREATE_SHADER,0x8b31,11);
+    send(O.OP_CREATE_PROGRAM,12);
+    let pending=0;
+    gl.getError=() => { const error=pending; pending=0; return error; };
+    gl.attachShader=() => { pending=0x502; };
+    send(O.OP_ATTACH_SHADER,12,11);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    send(O.OP_DELETE_SHADER,11);
+    expect(b.shaders.has(11)).toBe(false);
+    expect(b.programShaders.get(12)?.size).toBe(0);
   });
 });
 

@@ -80,6 +80,30 @@ describe("GlContextRegistry", () => {
     expect(() => reg.rebindMemory(999)).not.toThrow();
   });
 
+  it("unbinds a physically current owned program without changing another owner's program", () => {
+    const reg = new GlContextRegistry();
+    const own={} as WebGLProgram, other={} as WebGLProgram;
+    let current: WebGLProgram | null = own;
+    const calls: (WebGLProgram | null)[]=[];
+    const gl=new Proxy({}, { get(_target,key) {
+      if(key === "getParameter") return () => current;
+      if(key === "useProgram") return (program: WebGLProgram | null) => { current=program; calls.push(program); };
+      return () => {};
+    } }) as WebGL2RenderingContext;
+    for (const pid of [1,2]) {
+      reg.bind({pid,cmdbufAddr:0,cmdbufLen:0});
+      reg.get(pid)!.gl=gl;
+      reg.get(pid)!.programs.set(1,own);
+    }
+    reg.destroyContext(1);
+    expect(current).toBeNull();
+    expect(calls).toEqual([null]);
+    current=other;
+    reg.destroyContext(2);
+    expect(current).toBe(other);
+    expect(calls).toEqual([null]);
+  });
+
   it("attachCanvas wires the surface but does not build a context", () => {
     const reg = new GlContextRegistry();
     reg.bind({ pid: 7, cmdbufAddr: 0, cmdbufLen: 4 });

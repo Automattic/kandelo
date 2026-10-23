@@ -109,7 +109,7 @@ export function runGlQuery(
   switch (op) {
     case O.QOP_GET_ERROR:
       if (out.byteLength < 4) return -22;
-      outDv.setUint32(0, gl.getError(), true);
+      outDv.setUint32(0, b.errors.shift() ?? gl.getError(), true);
       return 4;
 
     // in: u32 name, optional u32 opVersion for extensions;
@@ -170,6 +170,7 @@ export function runGlQuery(
       if (loc) {
         const idx = ++b.nextUniformLoc;
         b.uniformLocations.set(idx, loc);
+        b.uniformLocationPrograms.set(idx, programName);
         outDv.setInt32(0, idx, true);
       } else {
         outDv.setInt32(0, -1, true);
@@ -199,7 +200,8 @@ export function runGlQuery(
         return 4;
       }
       const pname = inDv.getUint32(4, true);
-      const v = pname === GL_INFO_LOG_LENGTH
+      const v = pname === 0x8b80 ? b.shaderDeletePending.has(inDv.getUint32(0, true))
+        : pname === GL_INFO_LOG_LENGTH
         ? ((gl.getShaderInfoLog(sh) ?? "").length + 1)
         : gl.getShaderParameter(sh, pname);
       outDv.setInt32(0, typeof v === "boolean" ? (v ? 1 : 0) : Number(v ?? 0), true);
@@ -232,7 +234,9 @@ export function runGlQuery(
       }
       const pname = inDv.getUint32(4, true);
       let v: unknown;
-      if (pname === GL_INFO_LOG_LENGTH) {
+      if (pname === 0x8b80) {
+        v = b.programDeletePending.has(inDv.getUint32(0, true));
+      } else if (pname === GL_INFO_LOG_LENGTH) {
         v = (gl.getProgramInfoLog(prog) ?? "").length + 1;
       } else if (pname === GL_ACTIVE_UNIFORM_MAX_LENGTH) {
         const n = Number(gl.getProgramParameter(prog, GL_ACTIVE_UNIFORMS) ?? 0);
