@@ -106,7 +106,7 @@ export function useDockActions(
           if (followingGenerationRef.current !== generation) throw new Error("Dock action cancelled");
           setRunning({ id: buttonId, phase });
           if (phase !== "starting" || frameCountRef.current === null) return;
-          // From here on the stage is dark until the replacement draws.
+          // Follow this command until its display starts presenting.
           baselineRef.current = readFrameCount?.() ?? frameCountRef.current;
           setFollowing({ label: action.label, progress: { status: null, percent: null } });
           const unsubscribe = await followShellOutput(host, (text) => {
