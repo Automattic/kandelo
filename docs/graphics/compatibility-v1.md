@@ -67,7 +67,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | open |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API selection are thread-local; current context ownership, fixed handles, sharing and multiple contexts still need work | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | open |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; exclusive ownership, thread release/exit, unique C handles and deferred destruction implemented for the single backend context/surface. Multiple contexts, sharing, display generations and full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Pbuffer always fails; several core symbols absent; GBM sizing exists | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context | Main requires a live surface; cage adds a path needing validation | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | open |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/alias/FBO references now retain GEM storage; CPU coherence and complete object semantics remain open | EGL, GLES alias model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | open |
@@ -467,6 +467,49 @@ state while its creator retains an unread error. Logs:
 `.context/graphics-egl-thread-error-baseline.log`,
 `.context/graphics-egl-thread-error-fixed.log`. Guest thread execution remains
 pending the deferred rebuild.
+
+### Current references and deferred EGL destruction
+
+Current bindings now belong to individual threads. A mutex protects the
+single backend context's owner and lifecycle transitions; binding a context
+owned by another thread fails with BAD_ACCESS. Explicit release and pthread
+exit flush queued commands before releasing ownership. eglReleaseThread resets
+thread API/error state and leaves unreferenced, non-deleted objects alive.
+The command encoder exposes no command buffer to an unbound thread, and its
+query/error path cannot read the bound thread's pending renderer error.
+
+Current references defer context/surface destruction and display termination.
+Pending objects retire when those references end, preserving image siblings
+until actual context teardown. C-visible context and surface handles are
+monotonic, so a destroyed handle does not acquire a later object's identity.
+A rejected window bind preserves the prior current binding. Failed surface
+creation no longer publishes a replacement native window or consumes its
+pending target. The guest ownership fixture explicitly releases its current
+reference before checking final teardown.
+
+Owner records are heap-backed pthread-key values, retired by eglReleaseThread
+or the key destructor. They never retain pointers into C TLS beyond that
+storage's lifetime. A first model used a retained TLS address; the native
+thread-exit regression exposed the missing flush, and the heap-backed model
+passes it. The initial three current/destroy regressions fail before repair.
+The expanded native harness passes twenty cases under UBSan. Both real
+library sources also compile to wasm32 objects with the declared graphics
+archive flags and unwrapped LLVM compiler; this proves compilation, not
+guest execution. Logs: `.context/graphics-egl-current-baseline.log`,
+`.context/graphics-egl-current-expanded-baseline.log`,
+`.context/graphics-egl-current-first-fixed.log`,
+`.context/graphics-egl-current-rollback-final.log`,
+`.context/graphics-egl-current-wasm-compile.log`.
+
+This is a single-context foundation. The backend still identifies one context
+and surface as ID 1 and routes submits/queries by process. Simultaneous
+contexts, share groups, independent read/draw surfaces and overlapping
+terminated/reinitialized display generations require kernel/host routing and
+encoder changes. Reinitialization while an old terminated generation still
+has a current reference presently fails NOT_INITIALIZED; this remains an
+ordinary implementation gap, not a platform boundary. Fork/crash transitions,
+complete backend-failure propagation, guest threads and the browser-memory
+gate remain pending. No full EGL thread/lifecycle conformance is claimed.
 
 ### Integration checkpoint after the build pause
 

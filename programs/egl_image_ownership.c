@@ -80,6 +80,7 @@ int main(void) {
     CHECK(!eglDestroyImageKHR(display,first));
     CHECK(eglGetError() == EGL_BAD_PARAMETER);
     CHECK(eglDestroyContext(display,context));
+    CHECK(eglReleaseThread());
     CHECK(eglTerminate(display));
     gbm_device_destroy(device);
     close(card);

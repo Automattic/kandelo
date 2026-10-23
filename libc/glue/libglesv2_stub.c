@@ -480,6 +480,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
 static int _wpk_gl_query_into(uint32_t op,
                               const void *in, uint32_t in_len,
                               void *dst, uint32_t dst_len) {
+    if (_wpk_gl_cmdbuf_base() == NULL) return -1;
     int fd = _wpk_gl_fd();
     if (fd < 0) return -1;
     _wpk_gl_flush();
@@ -499,6 +500,7 @@ static int _wpk_gl_query_into(uint32_t op,
 }
 
 GLenum glGetError(void) {
+    if (_wpk_gl_cmdbuf_base() == NULL) return GL_NO_ERROR;
     if (_wpk_gl_client_error != GL_NO_ERROR) {
         GLenum e = _wpk_gl_client_error;
         _wpk_gl_client_error = GL_NO_ERROR;

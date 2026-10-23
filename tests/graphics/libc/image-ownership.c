@@ -42,6 +42,8 @@ static uint32_t bound_texture, redefined_texture;
 static unsigned char command_storage[2][WPK_GL_CMDBUF_LEN];
 static unsigned char *commands;
 static unsigned mappings;
+static unsigned destroyed_contexts, destroyed_surfaces, submit_batches, clear_commands;
+static int fail_make_current;
 static uint32_t shader_names[2], program_names[2];
 static unsigned shaders_created, programs_created;
 static int numeric_queries;
@@ -89,6 +91,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         assert(words[0] == 77);
         words[3] = 0x60000000u;
     } else if (request == GLIO_SUBMIT) {
+        submit_batches++;
         struct gl_submit_info *submit = arg;
         size_t at = submit->offset, end = at + submit->length;
         while (at < end) {
@@ -99,6 +102,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             uint32_t words[2] = {0};
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
             if (op == OP_BIND_TEXTURE) bound_texture = words[1];
+            if (op == OP_CLEAR) clear_commands++;
             if (op == OP_TEX_IMAGE_2D) redefined_texture = bound_texture;
             if (op == OP_CREATE_SHADER && shaders_created < 2)
                 shader_names[shaders_created++] = words[1];
@@ -106,6 +110,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 program_names[programs_created++] = words[0];
             at += 4 + len;
         }
+    } else if (request == GLIO_MAKE_CURRENT && fail_make_current) {
+        errno = EIO;
+        return -1;
+    } else if (request == GLIO_DESTROY_CONTEXT) {
+        destroyed_contexts++;
+    } else if (request == GLIO_DESTROY_SURFACE) {
+        destroyed_surfaces++;
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
         if (numeric_queries == 3) { errno = EINVAL; return -1; }
@@ -154,6 +165,28 @@ static void *check_thread_error(void *unused) {
     return NULL;
 }
 
+struct thread_context { EGLDisplay display; EGLContext context; };
+static void *check_busy_context(void *arg) {
+    struct thread_context *input = arg;
+    assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
+    assert(eglGetCurrentDisplay() == EGL_NO_DISPLAY);
+    assert(eglGetCurrentSurface(EGL_DRAW) == EGL_NO_SURFACE);
+    assert(!eglMakeCurrent(input->display, EGL_NO_SURFACE, EGL_NO_SURFACE, input->context));
+    assert(eglGetError() == EGL_BAD_ACCESS);
+    assert(eglReleaseThread());
+    assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
+    return NULL;
+}
+
+static void *take_context_then_exit(void *arg) {
+    struct thread_context *input = arg;
+    assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
+    assert(eglMakeCurrent(input->display, EGL_NO_SURFACE, EGL_NO_SURFACE, input->context));
+    glClear(GL_COLOR_BUFFER_BIT);
+    /* Thread destruction must flush and release this current reference. */
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -167,6 +200,106 @@ int main(int argc, char **argv) {
     EGLContext ctx = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
     assert(ctx != EGL_NO_CONTEXT);
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "bind-rollback")) {
+        EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, 0, NULL);
+        assert(surface != EGL_NO_SURFACE);
+        fail_make_current = 1;
+        assert(!eglMakeCurrent(dpy, surface, surface, ctx));
+        assert(eglGetError() == EGL_BAD_ACCESS);
+        assert(eglGetCurrentContext() == ctx);
+        assert(eglGetCurrentSurface(EGL_DRAW) == EGL_NO_SURFACE);
+        assert(eglGetCurrentSurface(EGL_READ) == EGL_NO_SURFACE);
+        fail_make_current = 0;
+        assert(eglDestroySurface(dpy, surface) && destroyed_surfaces == 1);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS bind-rollback");
+        return 0;
+    }
+    if (!strcmp(argv[1], "terminate-current")) {
+        assert(eglTerminate(dpy));
+        assert(eglGetCurrentContext() == ctx);
+        assert(destroyed_contexts == 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        assert(eglReleaseThread());
+        assert(destroyed_contexts == 1 && submit_batches == 1 && clear_commands == 1);
+        assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
+        assert(eglInitialize(dpy, NULL, NULL));
+        EGLContext replacement = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
+        assert(replacement != EGL_NO_CONTEXT && replacement != ctx);
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, replacement));
+        assert(eglDestroyContext(dpy, replacement) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS terminate-current");
+        return 0;
+    }
+    if (!strcmp(argv[1], "thread-current")) {
+        pthread_t thread;
+        struct thread_context input = { dpy, ctx };
+        assert(pthread_create(&thread, NULL, check_busy_context, &input) == 0);
+        assert(pthread_join(thread, NULL) == 0);
+        assert(eglGetCurrentContext() == ctx);
+        assert(!eglBindAPI(EGL_OPENGL_API));
+        assert(eglReleaseThread());
+        assert(eglGetError() == EGL_SUCCESS);
+        assert(eglQueryAPI() == EGL_OPENGL_ES_API);
+        assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
+        EGLint config_id = 0;
+        assert(eglQueryContext(dpy, ctx, EGL_CONFIG_ID, &config_id) && config_id == 1);
+        const unsigned before = submit_batches;
+        assert(pthread_create(&thread, NULL, take_context_then_exit, &input) == 0);
+        assert(pthread_join(thread, NULL) == 0);
+        assert(submit_batches == before + 1 && clear_commands == 1);
+        assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+        assert(eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread());
+        assert(destroyed_contexts == 1);
+        assert(eglTerminate(dpy));
+        puts("PASS thread-current");
+        return 0;
+    }
+    if (!strcmp(argv[1], "destroy-current")) {
+        glClear(GL_COLOR_BUFFER_BIT);
+        assert(eglDestroyContext(dpy, ctx));
+        assert(eglGetCurrentContext() == ctx);
+        assert(destroyed_contexts == 0 && submit_batches == 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        assert(eglMakeCurrent(EGL_NO_DISPLAY, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(destroyed_contexts == 1 && submit_batches == 1 && clear_commands == 2);
+        EGLint value = 17;
+        assert(!eglQueryContext(dpy, ctx, EGL_CONFIG_ID, &value));
+        assert(eglGetError() == EGL_BAD_CONTEXT && value == 17);
+        EGLContext replacement = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
+        assert(replacement != EGL_NO_CONTEXT && replacement != ctx);
+        assert(!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+        assert(eglGetError() == EGL_BAD_CONTEXT);
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, replacement));
+        assert(eglDestroyContext(dpy, replacement) && eglReleaseThread());
+        assert(eglTerminate(dpy));
+        puts("PASS destroy-current");
+        return 0;
+    }
+    if (!strcmp(argv[1], "surface-current")) {
+        const EGLint size[] = { EGL_WIDTH, 64, EGL_HEIGHT, 64, EGL_NONE };
+        EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, 0, size);
+        assert(surface != EGL_NO_SURFACE);
+        assert(eglMakeCurrent(dpy, surface, surface, ctx));
+        assert(eglDestroySurface(dpy, surface));
+        assert(eglGetCurrentSurface(EGL_DRAW) == surface);
+        assert(destroyed_surfaces == 0);
+        assert(eglSwapBuffers(dpy, surface));
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+        assert(destroyed_surfaces == 1);
+        assert(eglGetCurrentSurface(EGL_DRAW) == EGL_NO_SURFACE);
+        EGLSurface replacement = eglCreateWindowSurface(dpy, (EGLConfig)1, 0, size);
+        assert(replacement != EGL_NO_SURFACE && replacement != surface);
+        assert(!eglMakeCurrent(dpy, surface, surface, ctx));
+        assert(eglGetError() == EGL_BAD_SURFACE);
+        assert(eglDestroySurface(dpy, replacement));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread());
+        assert(eglTerminate(dpy));
+        puts("PASS surface-current");
+        return 0;
+    }
     if (!strcmp(argv[1], "thread-error")) {
         assert(!eglInitialize(EGL_NO_DISPLAY, NULL, NULL));
         pthread_t thread;
@@ -174,7 +307,7 @@ int main(int argc, char **argv) {
         assert(pthread_join(thread, NULL) == 0);
         assert(eglGetError() == EGL_BAD_DISPLAY);
         assert(eglGetError() == EGL_SUCCESS);
-        assert(eglDestroyContext(dpy, ctx) && eglTerminate(dpy));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS thread-error");
         return 0;
     }
@@ -187,7 +320,7 @@ int main(int argc, char **argv) {
         }
         assert(eglBindAPI(EGL_OPENGL_ES_API));
         assert(eglGetError() == EGL_SUCCESS);
-        assert(eglDestroyContext(dpy, ctx) && eglTerminate(dpy));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS api-error");
         return 0;
     }
@@ -225,7 +358,7 @@ int main(int argc, char **argv) {
         const EGLint duplicate[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
             EGL_RED_SIZE, 99, EGL_RED_SIZE, 8, EGL_NONE };
         assert(eglChooseConfig(dpy, duplicate, &selected, 1, &count) && count == 1);
-        assert(eglDestroyContext(dpy, ctx) && eglTerminate(dpy));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS config-selection");
         return 0;
     }
@@ -261,7 +394,7 @@ int main(int argc, char **argv) {
         const EGLint undefined_name[] = { -1 };
         assert(!eglChooseConfig(dpy, undefined_name, &selected, 1, &count));
         assert(eglGetError() == EGL_BAD_ATTRIBUTE && count == 17);
-        assert(eglDestroyContext(dpy, ctx) && eglTerminate(dpy));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS config-validation");
         return 0;
     }
@@ -281,7 +414,7 @@ int main(int argc, char **argv) {
         assert(eglGetProcAddress("eglGetConfigs") != NULL);
         assert(!enumerate(dpy, configs, -1, &count));
         assert(eglGetError() == EGL_BAD_PARAMETER);
-        assert(eglDestroyContext(dpy, ctx) && eglTerminate(dpy));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         count = 17;
         assert(!enumerate(dpy, configs, 2, &count));
         assert(eglGetError() == EGL_NOT_INITIALIZED && count == 17);
@@ -302,6 +435,7 @@ int main(int argc, char **argv) {
         assert(glCreateShader(GL_TEXTURE_2D) == 0);
         assert(glGetError() == GL_INVALID_ENUM);
         assert(eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread());
         assert(eglTerminate(dpy));
         puts("PASS namespace");
         return 0;
@@ -313,6 +447,7 @@ int main(int argc, char **argv) {
         assert(result[0] == GL_FALSE && result[1] == GL_TRUE);
         assert(result[2] == GL_TRUE && result[3] == GL_TRUE);
         assert(eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread());
         assert(eglTerminate(dpy));
         puts("PASS boolean");
         return 0;
@@ -331,6 +466,7 @@ int main(int argc, char **argv) {
         glGetBooleanv(GL_UNPACK_ROW_LENGTH_EXT, result);
         assert(result[0] == GL_TRUE);
         assert(eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread());
         assert(eglTerminate(dpy));
         puts("PASS query-vector");
         return 0;
@@ -345,6 +481,7 @@ int main(int argc, char **argv) {
         glGetBooleanv(0xffffffffu, &boolean);
         assert(integer == 17 && floating == 6.25f && boolean == 7);
         assert(eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread());
         assert(eglTerminate(dpy));
         puts("PASS query-error");
         return 0;
@@ -389,6 +526,8 @@ int main(int argc, char **argv) {
         assert(closes == 1);
     } else if (!strcmp(argv[1], "context")) {
         assert(eglDestroyContext(dpy, ctx));
+        assert(closes == 0); // Current reference keeps siblings alive.
+        assert(eglReleaseThread());
         assert(closes == 1);
         assert(eglTerminate(dpy));
         puts("PASS context");
@@ -403,6 +542,7 @@ int main(int argc, char **argv) {
         assert(eglGetError() == EGL_BAD_PARAMETER);
     }
     assert(eglDestroyContext(dpy, ctx));
+    assert(eglReleaseThread());
     assert(eglTerminate(dpy));
     assert(closes == 1);
     if (!strcmp(argv[1], "cycle")) {
@@ -413,6 +553,7 @@ int main(int argc, char **argv) {
         glClear(GL_COLOR_BUFFER_BIT);
         glFlush();
         assert(eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread());
         assert(eglTerminate(dpy));
     }
     printf("PASS %s\n", argv[1]);

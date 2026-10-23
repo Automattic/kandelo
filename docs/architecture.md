@@ -3746,6 +3746,12 @@ multiple contexts and other EGL core gaps remain tracked in the graphics
 compatibility inventory.
 EGL error status and bound client API are thread-local; an unsupported API
 bind reports BAD_PARAMETER while preserving the calling thread's prior API.
+Current bindings use heap-backed pthread-key records with exclusive context
+ownership. Release and thread exit flush before dropping current references;
+destroy-current and terminate-current defer backend retirement until release.
+User-visible context/surface handles are monotonic. The backend still admits
+one context and surface per process; multiple contexts, share groups and
+overlapping display generations remain implementation gaps in the inventory.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
