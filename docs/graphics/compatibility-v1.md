@@ -59,7 +59,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Monotonic guest names and per-process WebGL maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Cube/2D targets, dither and pixel-store state replay separately; state argument validation and native texture/viewport limits implemented; broader rollback, hints and multi-context/thread ownership still need work | shadow, muxer, decoder | Alternating contexts/processes; real rendered cube/2D and mask tests | open |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Chunked encoder and transient client staging; bound index buffer plus client attributes rejected | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
-| G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current programs and attached shaders retain mappings until final release; failed use/attach calls preserve ownership; shader/program names share a namespace. Core reflection and relink semantics still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners | partial |
+| G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core reflection and complete executable/attribute/uniform validation still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
@@ -316,18 +316,50 @@ Firefox and WebKit. Logs: `.context/graphics-program-lifetime-baseline.log`,
 `.context/graphics-program-lifetime-browser-baseline.log`,
 `.context/graphics-program-lifetime-browser-fixed.log`.
 
-This remains bounded ownership evidence. Several core reflection APIs are
-missing, and complete relink behavior needs implementation. In particular,
-WebGL invalidates the current executable after an unsuccessful relink whereas
-GLES retains the installed executable. That difference requires a retained
-executable model and tests; it is not evidence that implementing the GLES
-behavior is impossible. See the [WebGL program-object clarification](https://registry.khronos.org/webgl/specs/latest/1.0/#5.14.9)
+This remains bounded ownership evidence. Several core reflection APIs and
+broader shader/uniform validation remain missing. The later relink repair
+below addresses the distinct installed-executable model described by the
+[WebGL program-object clarification](https://registry.khronos.org/webgl/specs/latest/1.0/#5.14.9)
 and GLES2 §2.10.
 
 The C encoder now allocates shader and program names from one shared monotonic
 namespace, rejects an invalid shader type with zero and INVALID_ENUM, and
 rejects namespace exhaustion before wrapping through name zero. This does not
 complete native allocation-failure propagation through asynchronous creation.
+
+### Link state and installed executables
+
+A current logical program now owns its installed native executable separately
+from its latest link target. Relinking an installed executable creates a new
+native target, reproduces the logical shader attachments and explicit attribute
+bindings, then attempts the link. A failed link is queryable without replacing
+the executable used for draws or muxer replay. A later successful link installs
+the replacement, invalidates old uniform handles and releases the prior
+executable. Switching away releases a retained executable; deletion-pending
+programs remain alive until their logical current reference ends.
+
+Native shader deletion now waits for the last logical attachment, keeping a
+deletion-pending shader available to a replacement native link target. Its
+logical DELETE_STATUS remains observable. Context destruction retires both
+the latest link target and the retained executable, without disturbing another
+owner. Uniform updates reject missing or foreign location handles before
+native calls; successful relink retires handles from the earlier generation.
+
+Five of six new model regressions fail on `f2436b4d57`. The repaired source
+gate passes 243 tests in 14 files without skips and declaration generation
+passes. The model covers failed relink/replay, successful replacement,
+recovery, deletion-pending attachments, allocation failure and exact-once
+teardown. Three encoder test fixtures now supply the current program and
+location owner instead of an unowned synthetic location; their encoding
+assertions are unchanged. Logs: `.context/graphics-program-link-baseline.log`,
+`.context/graphics-program-link-fixed.log`,
+`.context/graphics-program-link-final.log`.
+
+The rendered lifetime case now also checks failed relinking during alternating
+green/red draws, recovery to a blue executable and retirement of the old
+executable. This updated browser case has not yet run; the earlier nine-pass
+browser result predates these latest changes. Full CTS shader/reflection and
+guest execution remain pending. No hard platform boundary is claimed.
 
 ### Numeric conversion and complete query vectors
 

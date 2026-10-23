@@ -315,6 +315,15 @@ test("deleted current programs survive owner switches and retire after their las
       send(b,O.OP_USE_PROGRAM,[13]);
       send(b,O.OP_DELETE_SHADER,[11]); send(b,O.OP_DELETE_SHADER,[12]);
     });
+    // GLES keeps the installed executable after a failed relink, even
+    // while another owner temporarily occupies the native WebGL context.
+    const oldExecutable=bindings[0].currentProgram!;
+    const invalidSource=new TextEncoder().encode("this is not a shader");
+    send(bindings[0],O.OP_SHADER_SOURCE,[12,invalidSource.length],invalidSource);
+    send(bindings[0],O.OP_COMPILE_SHADER,[12]);
+    if(query(bindings[0],O.QOP_GET_SHADERIV,[12,gl.COMPILE_STATUS])!==0) throw new Error("invalid shader compiled");
+    send(bindings[0],O.OP_LINK_PROGRAM,[13]);
+    const failedLink=query(bindings[0],O.QOP_GET_PROGRAMIV,[13,gl.LINK_STATUS]);
     send(bindings[0],O.OP_DELETE_PROGRAM,[13]);
     const current=query(bindings[0],O.QOP_GET_INTEGERV,[gl.CURRENT_PROGRAM]);
     const deleted=query(bindings[0],O.QOP_GET_PROGRAMIV,[13,gl.DELETE_STATUS]);
@@ -331,13 +340,24 @@ test("deleted current programs survive owner switches and retire after their las
       pixels.push([...pixel]);
       if(query(b,O.QOP_GET_ERROR)!==0) throw new Error("draw error");
     }
+    const blueSource=new TextEncoder().encode("precision mediump float;void main(){gl_FragColor=vec4(0.,0.,1.,1.);}");
+    send(bindings[0],O.OP_SHADER_SOURCE,[12,blueSource.length],blueSource);
+    send(bindings[0],O.OP_COMPILE_SHADER,[12]);
+    send(bindings[0],O.OP_LINK_PROGRAM,[13]);
+    const recoveredLink=query(bindings[0],O.QOP_GET_PROGRAMIV,[13,gl.LINK_STATUS]);
+    send(bindings[0],O.OP_DRAW_ARRAYS,[gl.POINTS,0,1]);
+    const recoveredPixels=new Uint8Array(4);
+    gl.readPixels(4,4,1,1,gl.RGBA,gl.UNSIGNED_BYTE,recoveredPixels);
+    const oldExecutableRetired=!gl.isProgram(oldExecutable);
     send(bindings[0],O.OP_USE_PROGRAM,[0]);
     const retired=!bindings[0].programs.has(13) && !bindings[0].shaders.has(11) && !bindings[0].shaders.has(12);
     const otherLive=gl.isProgram(bindings[1].programs.get(13)!);
     for(const b of bindings) { mux.invalidateCurrent(); reg.destroyContext(b.pid); }
-    return { current,deleted,rejected,pixels,retired,otherLive,error:gl.getError() };
+    return { current,deleted,rejected,pixels,retired,otherLive,failedLink,recoveredLink,
+      recoveredPixels:[...recoveredPixels],oldExecutableRetired,error:gl.getError() };
   },root);
   expect(result).toEqual({ current:13,deleted:1,rejected:0x502,
     pixels:Array.from({length:6},(_,i) => i%2 ? [255,0,0,255] : [0,255,0,255]),
-    retired:true,otherLive:true,error:0 });
+    retired:true,otherLive:true,failedLink:0,recoveredLink:1,
+    recoveredPixels:[0,0,255,255],oldExecutableRetired:true,error:0 });
 });

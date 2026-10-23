@@ -73,6 +73,7 @@ export type GlBinding = GlBindingInput & {
   shaderDeletePending: Set<number>;
   programDeletePending: Set<number>;
   programShaders: Map<number, Set<number>>;
+  programAttributeBindings: Map<number, Map<string, number>>;
   errors: number[];
   vaos: Map<number, WebGLVertexArrayObject>;
   fbos: Map<number, WebGLFramebuffer>;
@@ -111,6 +112,9 @@ export type GlBinding = GlBindingInput & {
   /** Last `glUseProgram` target, kept for handlers that need the
    *  current program (e.g. uniform setters). */
   currentProgram: WebGLProgram | null;
+  /** Logical name remains current when the latest link attempt failed and
+   * currentProgram still holds an earlier installed native executable. */
+  currentProgramId: number;
 
   /** GPU-tier producer render target (PR10 §7.1): the FBO whose color
    *  attachment IS a GPU bo's texture. Set when the client's EGL window
@@ -211,6 +215,7 @@ export class GlContextRegistry {
       shaderDeletePending: new Set(),
       programDeletePending: new Set(),
       programShaders: new Map(),
+      programAttributeBindings: new Map(),
       errors: [],
       vaos: new Map(),
       fbos: new Map(),
@@ -222,6 +227,7 @@ export class GlContextRegistry {
       nextForeignTexId: 0x4000_0000,
       claimedKmsCrtc: null,
       currentProgram: null,
+      currentProgramId: 0,
       renderTargetFbo: null,
       presentTarget: null,
       pendingRenderTargetBoId: 0,
@@ -249,9 +255,11 @@ export class GlContextRegistry {
     // A deleted native program remains alive while physically current.
     // Release only this binding's program; another owner's context may be
     // the one currently selected on the shared WebGL context.
-    if (gl && b.programs.size > 0) {
+    const programs = new Set(b.programs.values());
+    if (b.currentProgram) programs.add(b.currentProgram);
+    if (gl && programs.size > 0) {
       const current = gl.getParameter(0x8b8d) as WebGLProgram | null;
-      if ([...b.programs.values()].includes(current!)) gl.useProgram(null);
+      if (programs.has(current!)) gl.useProgram(null);
     }
     // Foreign GPU textures belong to their BO, independently of this
     // context. CPU upload textures and ordinary guest textures are owned.
@@ -262,7 +270,7 @@ export class GlContextRegistry {
     for (const texture of textures) if (!boTextures.has(texture)) gl?.deleteTexture(texture);
     for (const object of b.buffers.values()) gl?.deleteBuffer(object);
     for (const object of b.shaders.values()) gl?.deleteShader(object);
-    for (const object of b.programs.values()) gl?.deleteProgram(object);
+    for (const object of programs) gl?.deleteProgram(object);
     for (const object of b.vaos.values()) gl?.deleteVertexArray(object);
     for (const object of b.fbos.values()) gl?.deleteFramebuffer(object);
     for (const object of b.rbos.values()) gl?.deleteRenderbuffer(object);
@@ -271,6 +279,7 @@ export class GlContextRegistry {
     b.shaderDeletePending.clear();
     b.programDeletePending.clear();
     b.programShaders.clear();
+    b.programAttributeBindings.clear();
     b.uniformLocationPrograms.clear();
     b.errors.length = 0;
     if (b.shadow.defaultVao) {
@@ -285,6 +294,7 @@ export class GlContextRegistry {
     }
     b.renderTargetFbo = null;
     b.currentProgram = null;
+    b.currentProgramId = 0;
     b.shadow = defaultShadow();
     b.contextId = null;
     b.gl = null;

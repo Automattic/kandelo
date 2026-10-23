@@ -3780,6 +3780,14 @@ after another owner temporarily uses the shared WebGL context. Rejected
 program switches and attachments preserve the prior ownership state and keep
 the driver's error observable. Destroying a context unbinds its physically
 current program before deleting objects, without unbinding another owner.
+The logical current program name is distinct from its installed native
+executable. Relinking a current program uses a separate native link target:
+failure updates link status/logs while keeping the installed executable;
+success installs the replacement and retires old uniform handles. Shader
+attachments and explicit attribute bindings seed replacement targets. Native
+shader deletion is deferred while these logical attachments retain it.
+Context teardown releases both the latest link target and any older installed
+executable. This shared model also applies to main-thread forwarding.
 Foreign BO uploads save the physical context's alignment and unpack skips,
 neutralize them for the upload, and restore them even on failure. A failed
 new upload does not publish a texture name. Node

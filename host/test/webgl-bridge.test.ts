@@ -155,6 +155,15 @@ function setupBinding(gl: RecordingGl, capacity = 4096) {
   return { reg, b };
 }
 
+function seedUniform(b: ReturnType<typeof setupBinding>["b"]): void {
+  const program = {} as WebGLProgram;
+  b.programs.set(1, program);
+  b.shadow.currentProgram = b.currentProgram = program;
+  b.currentProgramId = 1;
+  b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
+  b.uniformLocationPrograms.set(1, 1);
+}
+
 it("preserves legacy extension queries and gates new capabilities by table version", () => {
   const { b } = setupBinding(new RecordingGl());
   const input = new Uint8Array(8);
@@ -340,7 +349,7 @@ describe("cmdbuf decoder — TLV walker", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
     // Fake a uniform location at index 1.
-    b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
+    seedUniform(b);
     const mat: number[] = [];
     for (let i = 0; i < 16; i++) mat.push(i * 0.5);
 
@@ -364,7 +373,7 @@ describe("cmdbuf decoder — TLV walker", () => {
   it("UniformMatrix3fv reads nine floats per matrix", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
-    b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
+    seedUniform(b);
     const mat: number[] = [];
     for (let i = 0; i < 18; i++) mat.push(i * 0.25);
 
@@ -414,7 +423,7 @@ describe("cmdbuf decoder — TLV walker", () => {
     // later frame with the stale one.
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
-    b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
+    seedUniform(b);
     const mat: number[] = [];
     for (let i = 0; i < 16; i++) mat.push(i * 0.25);
     const vec = [0.5, -1, 2, 8];

@@ -19,7 +19,7 @@
  * ioctl-style device operation instead of hiding the failure in host code.
  */
 import type { GlBinding } from "./registry.js";
-import { checkedGlCall, finalizeProgram, finalizeShader, recordGlError, useProgramIfAccepted } from "./program-objects.js";
+import { checkedGlCall, currentProgramName, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
@@ -431,6 +431,14 @@ function dispatch(
   if (error !== 0) {
     recordGlError(b, error);
     return;
+  }
+  if (op >= O.OP_UNIFORM1I && op <= O.OP_UNIFORM_MATRIX3FV) {
+    const location = v.getInt32(p, true);
+    if (location !== -1 && (!b.uniformLocations.has(location) ||
+        b.uniformLocationPrograms.get(location) !== currentProgramName(b))) {
+      recordGlError(b, 0x502); // INVALID_OPERATION
+      return;
+    }
   }
   switch (op) {
     // ----- state ----------------------------------------------------------
@@ -882,7 +890,9 @@ function dispatch(
       const name = v.getUint32(p, true);
       const sh = b.shaders.get(name);
       if (!sh) { if (name !== 0) recordGlError(b, 0x501); return; }
-      if (!b.shaderDeletePending.has(name) && checkedGlCall(b, () => gl.deleteShader(sh))) {
+      if (!b.shaderDeletePending.has(name)) {
+        // Keep the native shader attachable while logical programs retain
+        // it, including a replacement native program for current relinking.
         b.shaderDeletePending.add(name);
         finalizeShader(b, name);
       }
@@ -910,8 +920,7 @@ function dispatch(
       return;
     }
     case O.OP_LINK_PROGRAM: {
-      const prog = b.programs.get(v.getUint32(p, true));
-      if (prog) gl.linkProgram(prog);
+      linkProgramRetainingExecutable(b, v.getUint32(p, true));
       return;
     }
     case O.OP_USE_PROGRAM: {
@@ -920,7 +929,8 @@ function dispatch(
     }
     // Payload: u32 program, u32 index, u32 nameLen, u8 name[nameLen]
     case O.OP_BIND_ATTRIB_LOCATION: {
-      const prog = b.programs.get(v.getUint32(p, true));
+      const programName = v.getUint32(p, true);
+      const prog = b.programs.get(programName);
       const index = v.getUint32(p + 4, true);
       const nameLen = v.getUint32(p + 8, true);
       // Copy off the (possibly shared) cmdbuf — TextDecoder rejects
@@ -928,7 +938,11 @@ function dispatch(
       const nameBytes = new Uint8Array(nameLen);
       nameBytes.set(new Uint8Array(v.buffer, v.byteOffset + p + 12, nameLen));
       const name = new TextDecoder().decode(nameBytes);
-      if (prog) gl.bindAttribLocation(prog, index, name);
+      if (prog && checkedGlCall(b, () => gl.bindAttribLocation(prog, index, name))) {
+        let attributes = b.programAttributeBindings.get(programName);
+        if (!attributes) { attributes = new Map(); b.programAttributeBindings.set(programName, attributes); }
+        attributes.set(name, index);
+      }
       return;
     }
     case O.OP_DELETE_PROGRAM: {

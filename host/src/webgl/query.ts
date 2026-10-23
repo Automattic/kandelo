@@ -19,7 +19,7 @@
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
-import { checkedGlCall } from "./program-objects.js";
+import { checkedGlCall, currentProgramName } from "./program-objects.js";
 
 const GL_VENDOR = 0x1F00;
 const GL_RENDERER = 0x1F01;
@@ -369,7 +369,7 @@ function nameForObject<T>(objects: Map<number, T>, object: T | null): number {
 /** Native objects never cross the GLES numeric query protocol. Name zero
  * includes host-owned default-FBO redirects absent from the guest map. */
 function queryParameter(b: GlBinding, pname: number): unknown {
-  if (pname === GL_CURRENT_PROGRAM) return nameForObject(b.programs, b.currentProgram);
+  if (pname === GL_CURRENT_PROGRAM) return currentProgramName(b);
   // WebGL exposes source compilation and its compressed-format vector, but
   // does not expose GLES's binary-compiler and vector-count query enums.
   if (pname === 0x8df8) return []; // SHADER_BINARY_FORMATS: no binary loader
