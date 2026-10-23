@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { isDeepStrictEqual } from "node:util";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { resolveBinary } from "../src/binary-resolver";
 
-const programBinary = tryResolveBinary("programs/egl_dmabuf_smoke.wasm");
+const programBinary = resolveBinary("programs/egl_dmabuf_smoke.wasm");
 
 const GL_TEXTURE_2D = 0x0de1;
 const GL_UNSIGNED_BYTE = 0x1401;
@@ -66,7 +66,7 @@ function rgbaFromBgrx(
 }
 
 describe("EGL dma-buf import over the GLES stubs", () => {
-  it.skipIf(!programBinary)(
+  it(
     "validates dma-buf planes and forwards EGLImage and unpack uploads to WebGL",
     async () => {
       const { log, gl } = makeLoggingGl();

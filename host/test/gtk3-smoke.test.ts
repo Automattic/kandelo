@@ -25,8 +25,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { tryResolveBinary } from "../src/binary-resolver";
-import { WLROOTS_ENV, compositorBytes, hasSession, sessionRootfs } from "./wlroots-session";
+import { resolveBinary } from "../src/binary-resolver";
+import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./wlroots-session";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -35,8 +35,8 @@ const INCONSOLATA = join(
   "third_party/Inconsolata-Regular.ttf",
 );
 
-const gtkSmokeBin = tryResolveBinary("programs/gtk3_smoke.wasm");
-const hasBinaries = hasSession("cage") && !!gtkSmokeBin;
+const gtkSmokeBin = resolveBinary("programs/gtk3_smoke.wasm");
+requireSession("cage");
 
 const FONT_DIR = "/usr/share/fonts";
 const FONTS_CONF = `<?xml version="1.0"?>
@@ -66,7 +66,7 @@ async function waitFor(
 }
 
 describe("gtk3 — unmodified GTK 3.24 wayland client on cage", () => {
-  it.skipIf(!hasBinaries)(
+  it(
     "maps a window, renders a label, exits clean",
     async () => {
       const out = { value: "" };

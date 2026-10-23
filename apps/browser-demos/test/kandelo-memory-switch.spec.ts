@@ -61,8 +61,8 @@ async function leaveDetachedTmuxSession(page: Page, cycle: number): Promise<void
   // must release them through normal host teardown in this same page realm.
 }
 
-test("@slow framebuffer games, Freeciv, LÖVE, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
-  test.setTimeout(900_000);
+test("@slow games, cage, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
+  test.setTimeout(1_200_000);
   const required = process.env.KANDELO_MEMORY_SWITCH_REQUIRED === "1";
   // This follows the same external-data boundary as the Quake demo spec.
   const archive = await fetch(QUAKE_ZIP_URL, { method: "HEAD" }).catch(() => null);
@@ -113,6 +113,20 @@ test("@slow framebuffer games, Freeciv, LÖVE, tmux and WordPress survive repeat
       Number(text.match(/(\d+)\s*flips\s*·/i)?.[1] ?? -1));
     const initialFlips = await loveFlips();
     await expect.poll(loveFlips, { timeout: 60_000 }).toBeGreaterThan(initialFlips + 5);
+    await launch(page, "cage kiosk", "cage");
+    const cageCanvas = page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
+    await expect(cageCanvas).toBeVisible({ timeout: 180_000 });
+    await expect.poll(() => page.locator(".kdemo-surface-controls").allInnerTexts()
+      .then(text => text.join(" ")), { timeout: 180_000 }).toMatch(/webgl2-gl/);
+    await expect.poll(async () => (await cageCanvas.screenshot()).byteLength,
+      { timeout: 120_000 }).toBeGreaterThan(8_000);
+    const beforeInput = await cageCanvas.screenshot();
+    await page.locator("body").click({ position: { x: 5, y: 5 } });
+    await page.keyboard.type(`printf 'CAGE_MEMORY_${cycle}\\n'\n`, { delay: 20 });
+    await expect.poll(async () => (await cageCanvas.screenshot()).equals(beforeInput),
+      { timeout: 60_000 }).toBe(false);
+    // Leave the compositor and terminal alive. The next launch must retire
+    // their pending flips, GL context, imported buffers and process memories.
     await launch(page, "Bare shell", "shell");
     await leaveDetachedTmuxSession(page, cycle);
     await launch(page, "WordPress MariaDB", "wordpress-mariadb");

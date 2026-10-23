@@ -16,17 +16,16 @@
  *     inside the button, and a button press there is routed through libkwl
  *     to KWL_POINTER_BUTTON → ON_CLICK.
  *
- * kwldemo exits 0, and cage exits with its status. Skips if the binaries
- * aren't built (bare checkout).
+ * kwldemo exits 0, and cage exits with its status. Required artifacts are resolved before the test runs.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { tryResolveBinary } from "../src/binary-resolver";
-import { WLROOTS_ENV, compositorBytes, hasSession, sessionRootfs } from "./wlroots-session";
+import { resolveBinary } from "../src/binary-resolver";
+import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./wlroots-session";
 
-const kwldemoBin = tryResolveBinary("programs/kwldemo.wasm");
-const hasBinaries = hasSession("cage") && !!kwldemoBin;
+const kwldemoBin = resolveBinary("programs/kwldemo.wasm");
+requireSession("cage");
 
 // The input canvas matches card0's output (1920x1080) so an injected
 // absolute pointer coordinate maps 1:1 to the cursor position. cage places
@@ -65,7 +64,7 @@ async function waitFor(
 }
 
 describe("libkwl — toolkit window maps and routes input", () => {
-  it.skipIf(!hasBinaries)(
+  it(
     "kwldemo maps; injected button + key reach the app",
     async () => {
       const out = { value: "" };

@@ -29,14 +29,14 @@
  * tree).
  */
 import { describe, expect, it } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { tryResolveBinary } from "../src/binary-resolver";
-import { WLROOTS_ENV, compositorBytes, hasSession, sessionRootfs } from "./wlroots-session";
+import { resolveBinary } from "../src/binary-resolver";
+import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./wlroots-session";
 
-const wltermBin = tryResolveBinary("programs/wayland-demo/wlterm.wasm");
-const shellBin = tryResolveBinary("programs/bash.wasm");
-const hasBinaries = hasSession("cage") && !!wltermBin && !!shellBin && existsSync(shellBin!);
+const wltermBin = resolveBinary("programs/wayland-demo/wlterm.wasm");
+const shellBin = resolveBinary("programs/bash.wasm");
+requireSession("cage");
 
 // Input canvas dims are arbitrary here — wlterm is keyboard-driven, and the
 // compositor routes keys by keycode independent of the pointer scale. We match
@@ -76,7 +76,7 @@ async function waitFor(
 }
 
 describe("wlterm — libkwl terminal renders shell output and routes typed input", () => {
-  it.skipIf(!hasBinaries)(
+  it(
     "shell output reaches the grid; a typed line round-trips back through it",
     async () => {
       const out = { value: "" };
@@ -147,7 +147,7 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
     60_000,
   );
 
-  it.skipIf(!hasBinaries)(
+  it(
     "a shell killed by a signal is reported as a signal death, not a clean exit",
     async () => {
       const out = { value: "" };

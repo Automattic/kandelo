@@ -24,11 +24,11 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { tryResolveBinary } from "../src/binary-resolver";
-import { WLROOTS_ENV, compositorBytes, hasSession, sessionRootfs } from "./wlroots-session";
+import { resolveBinary } from "../src/binary-resolver";
+import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./wlroots-session";
 
-const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
-const hasBinaries = hasSession("cage") && !!clientBin;
+const clientBin = resolveBinary("programs/wlclient-test.wasm");
+requireSession("cage");
 
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
@@ -59,7 +59,7 @@ async function waitFor(
 }
 
 describe("cage — a wlroots kiosk compositor runs a client session", () => {
-  it.skipIf(!hasBinaries)(
+  it(
     "the client maps on a page flip, receives a key and a button, and cage exits with its status",
     async () => {
       const out = { value: "" };

@@ -257,3 +257,20 @@ Logs: `.context/graphics-forward-baseline.log`,
 assertion compared SAB wrapper identity across structured clone; its failure
 is preserved in `.context/graphics-forward-browser.log`. The corrected
 assertion observes shared backing, since clones have distinct wrappers.
+
+### Current browser launch integration
+
+The imported cage/sway browser tests used a bare profile URL from the older
+branch. They now resolve the current shell image and profile together, and
+both profiles appear in the gallery roster. Imported guest/compositor tests
+require their artifacts instead of treating missing products as skipped
+coverage. The persistent browser-memory sequence now launches cage, observes
+its GL-rendered terminal and input repaint, and leaves it live for ordinary
+machine-switch teardown. Execution of those integration cases is pending the
+combined build.
+
+The gallery/identity source selection passes 38 tests in two files without
+skips. Its initial 35-pass/one-fail run reproduced an existing roster assertion
+that omitted Freeciv before the cage/sway additions. The assertion now pins
+the complete existing order plus the two new entries. Logs:
+`.context/graphics-gallery-baseline.log`, `.context/graphics-gallery-fixed.log`.

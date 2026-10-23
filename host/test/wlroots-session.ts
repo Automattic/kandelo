@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { resolveBinary } from "../src/binary-resolver";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
 import type { VfsImageFilesystem } from "../src/vfs/vfs-image-filesystem";
 import { extractZipEntry, parseZipCentralDirectory } from "../src/vfs/zip";
@@ -24,15 +24,14 @@ interface SessionFile {
 
 function sessionArtifacts(compositor: Compositor) {
   return {
-    program: tryResolveBinary(`programs/${compositor}/${compositor}.wasm`),
-    xkb: tryResolveBinary(`programs/${compositor}/xkeyboard-config.zip`),
-    quirks: tryResolveBinary(`programs/${compositor}/libinput-quirks.zip`),
+    program: resolveBinary(`programs/${compositor}/${compositor}.wasm`),
+    xkb: resolveBinary(`programs/${compositor}/xkeyboard-config.zip`),
+    quirks: resolveBinary(`programs/${compositor}/libinput-quirks.zip`),
   };
 }
 
-export function hasSession(compositor: Compositor): boolean {
-  const { program, xkb, quirks } = sessionArtifacts(compositor);
-  return !!program && !!xkb && !!quirks;
+export function requireSession(compositor: Compositor): void {
+  sessionArtifacts(compositor);
 }
 
 export function compositorBytes(compositor: Compositor): ArrayBuffer {

@@ -1846,8 +1846,8 @@ alone is therefore enough to boot a first-party machine or a stranger's image,
 and both travel one code path.
 
 An image may declare several profiles — the shell image carries `shell`,
-`node`, `doom`, `quake`, `modeset`, `sdl2`, `scummvm`, `wayland`, and
-`omarchy` — so one channel selects one:
+`node`, `doom`, `quake`, `freeciv`, `modeset`, `sdl2`, `scummvm`, `love`,
+`cage`, `sway`, `wayland`, and `omarchy` — so one channel selects one:
 
 1. `&profile=<id>` on the page URL.
 2. else the image's own `defaultProfile`.
@@ -1865,6 +1865,13 @@ An id no profile in the image declares is a **loud boot error** naming the
 profiles the image does declare — never a silent fall back to its default. An
 image with no `/etc/kandelo/demo.json`, or a malformed one, fails the boot
 with that reason; nothing synthesizes a fallback machine.
+
+The gallery roster includes the cage kiosk and sway desktop profiles from
+the shell image. Their browser tests resolve that image through the current
+`?vfs=...&profile=...` launch path and require built products. The repeated
+browser-memory sequence includes cage with a live terminal, then switches
+away through ordinary machine teardown. The graphics inventory records which
+combined-tree integration checks have actually run.
 
 The older `?demo=<id>` parameter is **removed**. It named one of a dozen ids
 the app held, which is exactly what image-owned machine definitions delete. It

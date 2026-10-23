@@ -23,19 +23,18 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { tryResolveBinary } from "../src/binary-resolver";
-import { WLROOTS_ENV, compositorBytes, hasSession, sessionRootfs } from "./wlroots-session";
+import { resolveBinary } from "../src/binary-resolver";
+import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./wlroots-session";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const INCONSOLATA = join(__dirname, "../../third_party/Inconsolata-Regular.ttf");
 
-const swaymsgBin = tryResolveBinary("programs/sway/swaymsg.wasm");
-const swaybarBin = tryResolveBinary("programs/sway/swaybar.wasm");
-const swaynagBin = tryResolveBinary("programs/sway/swaynag.wasm");
-const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
-const dashBin = tryResolveBinary("programs/dash.wasm");
-const hasBinaries = hasSession("sway") && !!swaymsgBin && !!swaybarBin
-  && !!swaynagBin && !!clientBin && !!dashBin;
+const swaymsgBin = resolveBinary("programs/sway/swaymsg.wasm");
+const swaybarBin = resolveBinary("programs/sway/swaybar.wasm");
+const swaynagBin = resolveBinary("programs/sway/swaynag.wasm");
+const clientBin = resolveBinary("programs/wlclient-test.wasm");
+const dashBin = resolveBinary("programs/dash.wasm");
+requireSession("sway");
 
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
@@ -182,7 +181,7 @@ async function startSway(config: string) {
 }
 
 describe("sway — a wlroots tiling compositor runs a client session", () => {
-  it.skipIf(!hasBinaries)(
+  it(
     "tiles two clients, routes input to each, answers IPC, and exits with status 0",
     async () => {
       const sway = await startSway("exec wlclient-test\nexec wlclient-test\n");
@@ -231,7 +230,7 @@ describe("sway — a wlroots tiling compositor runs a client session", () => {
     180_000,
   );
 
-  it.skipIf(!hasBinaries)(
+  it(
     "runs swaybar at the bottom of the output with its status_command",
     async () => {
       const sway = await startSway(`bar {
@@ -258,7 +257,7 @@ exec wlclient-test
     180_000,
   );
 
-  it.skipIf(!hasBinaries)(
+  it(
     "shows config errors in swaynag, whose Exit sway button ends the session",
     async () => {
       const sway = await startSway("not_a_sway_command\nexec wlclient-test\n");

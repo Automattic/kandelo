@@ -1,17 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+import { gotoMachine } from "./support/kandelo-machine";
 
 /** Show the Internals syslog, the demo canvas, or the machine's terminal.
  *  Internals is an overlay toggle in the dock; showing another view means
@@ -160,7 +149,7 @@ async function clickOutput({ canvas, ...size }: Output, x: number, y: number) {
 test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 renderer", async ({ page }) => {
   test.setTimeout(420_000);
 
-  await gotoOrSkip(page, "/?profile=sway");
+  await gotoMachine(page, "sway");
 
   await openSurface(page, "Internals");
   await expect

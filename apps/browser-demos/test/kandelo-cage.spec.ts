@@ -1,17 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
+import { gotoMachine } from "./support/kandelo-machine";
 
 /** Show the Internals syslog, the demo canvas, or the machine's terminal.
  *  Internals is an overlay toggle in the dock; showing another view means
@@ -85,7 +74,7 @@ async function chipText(page: Page): Promise<string> {
 test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async ({ page }) => {
   test.setTimeout(300_000);
 
-  await gotoOrSkip(page, "/?profile=cage");
+  await gotoMachine(page, "cage");
 
   await openSurface(page, "Internals");
   await expect
