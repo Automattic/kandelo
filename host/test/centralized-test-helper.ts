@@ -248,7 +248,6 @@ export interface RunProgramResult {
   /** Final fork counter captured before main-thread-mode teardown. Main-thread
    *  test fixtures do not use the production host-owned reaping path. */
   forkCount?: bigint;
-  spawnScratchCapacity?: number;
   kernelMemoryPages?: number;
 }
 
@@ -283,14 +282,6 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   let capturedPid: number | undefined;
   const forkCountSamplePromises: Promise<bigint>[] = [];
 
-  // Convert execPrograms Map to plain object for the worker
-  let execPrograms: Record<string, string> | undefined;
-  if (options.execPrograms) {
-    execPrograms = {};
-    for (const [k, v] of options.execPrograms) {
-      execPrograms[k] = v;
-    }
-  }
 
   const rootfsImage = await prepareExecTargetTestRootfs(options);
 
@@ -312,7 +303,6 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     maxWorkers: 4,
     maxPages: options.maxPages,
     maxProcessMemoryBytes: options.maxProcessMemoryBytes,
-    execPrograms,
     rootfsImage,
     rootfsMountSpec: options.rootfsNosuid === undefined
       ? undefined
@@ -398,7 +388,6 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
 
   let exitCode: number;
   let forkCountSamples: bigint[] | undefined;
-  let spawnScratchCapacity: number | undefined;
   let kernelMemoryPages: number | undefined;
   try {
     exitCode = await Promise.race([exitPromise, timeoutPromise]);
@@ -409,7 +398,6 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
       }
     }
     if (options.captureSpawnScratchStats) {
-      spawnScratchCapacity = await host.getSpawnScratchCapacity();
       kernelMemoryPages = await host.getKernelMemoryPages();
     }
   } finally {
@@ -432,7 +420,6 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     hostDiagnostics,
     stdoutBytes,
     forkCountSamples,
-    spawnScratchCapacity,
     kernelMemoryPages,
   };
 }
@@ -529,7 +516,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const externrefGenerations = new Map<number, ForkExternrefGeneration>();
   const processForkHostImports = new Map<number, ForkHostImportOwnerWorker>();
   let mainThreadForkCount: bigint | undefined;
-  let spawnScratchCapacity: number | undefined;
   let kernelMemoryPages: number | undefined;
 
   let pid = 0;
@@ -548,21 +534,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true, enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG },
     io,
     {
-      onResolveSpawn: async (path, argv) => {
-        const mappedProgram = options.execPrograms?.get(path);
-        if (!mappedProgram) return null;
-        const spawnProgramBytes = loadProgramWasm(mappedProgram);
-        try {
-          return {
-            programBytes: spawnProgramBytes,
-            programModule: await WebAssembly.compile(spawnProgramBytes),
-            argv,
-          };
-        } catch (error) {
-          if (error instanceof WebAssembly.CompileError) return { errno: 8 };
-          throw error;
-        }
-      },
       onSpawn: async (_parentPid, childPid, program, envp) => {
         if (!kernelWorker.shouldLaunchPendingChild(childPid)) return 0;
         const childPtrWidth = detectPtrWidth(program.programBytes);
@@ -1347,7 +1318,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     kernelWorker.unregisterProcess(pid);
   }
   if (options.captureSpawnScratchStats) {
-    spawnScratchCapacity = kernelWorker.getSpawnScratchCapacity();
     kernelMemoryPages = kernelWorker.getKernelMemoryPages();
   }
 
@@ -1366,7 +1336,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     hostDiagnostics: [],
     stdoutBytes,
     forkCount: mainThreadForkCount,
-    spawnScratchCapacity,
     kernelMemoryPages,
   };
 }

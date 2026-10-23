@@ -7,7 +7,6 @@ export type {
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
-  GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
@@ -51,7 +50,6 @@ import type {
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
-  GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
   ReadProcMapsRequestMessage,
   SetSyscallTraceMessage,
@@ -444,7 +442,6 @@ export type MainToKernelMessage =
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
-  | GetSpawnScratchCapacityRequestMessage
   | MouseInjectMessage
   | InputEventInjectMessage
   | InputEventBatchInjectMessage

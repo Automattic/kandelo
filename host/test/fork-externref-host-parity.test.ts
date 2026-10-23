@@ -32,7 +32,7 @@ describe.each([
     const exec = functionSource(
       entry,
       "async function handleExec(",
-      "async function handlePosixSpawnResolve(",
+      "async function handlePosixSpawn(",
     );
     const commit = exec.indexOf(
       "kernelWorker.prepareProcessForExec(pid, initiatingInfo.memory)",

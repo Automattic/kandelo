@@ -211,6 +211,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_create_process_with_stdio
     kernel_dequeue_signal
     kernel_exec_commit
+    kernel_exec_target_admit
     kernel_exec_target_cancel
     kernel_exec_target_prepare
     kernel_exec_target_read
@@ -239,6 +240,8 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_ipc_shmdt_for_process
     kernel_ipc_shmdt_for_task
     kernel_is_fd_nonblock
+    kernel_kms_cursor_configure
+    kernel_kms_cursor_read
     kernel_mark_process_signaled
     kernel_pcm_claim_transport
     kernel_pcm_clock_update
@@ -252,6 +255,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_process_metadata_begin
     kernel_process_metadata_cancel
     kernel_process_metadata_commit
+    kernel_process_metadata_read
     kernel_process_metadata_stage
     kernel_process_secure_exec
     kernel_publish_spawn_child
@@ -263,12 +267,6 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_spawn_exec_commit
     kernel_spawn_exec_target_prepare
     kernel_spawn_process
-    kernel_spawn_reserved_process
-    kernel_spawn_scratch_begin
-    kernel_spawn_scratch_cancel
-    kernel_spawn_scratch_capacity
-    kernel_spawn_scratch_pointer
-    kernel_spawn_scratch_retained_capacity
     kernel_take_process_timer_cleanup
     kernel_tcp_connection_id
     kernel_thread_exit

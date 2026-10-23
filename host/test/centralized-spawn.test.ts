@@ -120,13 +120,13 @@ describe("non-forking posix_spawn", () => {
     }
   });
 
-  it("reports ENOEXEC for malformed Wasm before creating the spawn child", async () => {
+  it("reports ENOEXEC for malformed Wasm through the kernel's admission", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "kandelo-malformed-wasm-"));
     const malformedWasm = join(tempDir, "malformed.wasm");
     try {
-      // Valid magic/version, followed by a truncated type section. A magic-only
-      // check accepts this; WebAssembly compilation must reject it in spawn's
-      // side-effect-free preflight, before the kernel applies file actions.
+      // Valid magic/version, followed by a truncated type section. The
+      // kernel's spawn probe checks only the header, so this reaches the
+      // kernel's admission of the retained target, which refuses it.
       writeFileSync(malformedWasm, Buffer.from([
         0x00, 0x61, 0x73, 0x6d,
         0x01, 0x00, 0x00, 0x00,
