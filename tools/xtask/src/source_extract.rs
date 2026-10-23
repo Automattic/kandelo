@@ -42,7 +42,9 @@ impl ArchiveFormat {
         let path = path.split_once('#').map(|(p, _)| p).unwrap_or(path);
         let lc = path.to_ascii_lowercase();
         // Order matters: .tar.gz must be checked before .gz, etc.
-        if lc.ends_with(".tar.gz") || lc.ends_with(".tgz") {
+        // crates.io publishes gzip-compressed tar archives with a .crate
+        // suffix; they use the same verified extraction path as .tar.gz.
+        if lc.ends_with(".tar.gz") || lc.ends_with(".tgz") || lc.ends_with(".crate") {
             Ok(Self::TarGz)
         } else if lc.ends_with(".tar.xz") || lc.ends_with(".txz") {
             Ok(Self::TarXz)
@@ -62,7 +64,7 @@ impl ArchiveFormat {
         } else {
             Err(format!(
                 "could not detect archive format from URL extension: {url:?} \
-                 (supported: .tar.gz, .tgz, .tar.xz, .txz, .tar.bz2, .tbz2, .tbz, \
+                 (supported: .tar.gz, .tgz, .crate, .tar.xz, .txz, .tar.bz2, .tbz2, .tbz, \
                   .tar.zst, .tzst, .zip, .tar, .gem, .phar)"
             ))
         }
@@ -1084,7 +1086,7 @@ mod tests {
         let tar = wrapper_tar();
         match suffix {
             ".tar" => tar,
-            ".tar.gz" | ".tgz" => {
+            ".tar.gz" | ".tgz" | ".crate" => {
                 let mut out = Vec::new();
                 let mut encoder =
                     flate2::write::GzEncoder::new(&mut out, flate2::Compression::default());
@@ -1128,7 +1130,7 @@ mod tests {
     #[test]
     fn verified_extraction_supports_every_suffix_and_flattens_real_wrapper() {
         for suffix in [
-            ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tbz", ".tar.zst", ".tzst",
+            ".tar.gz", ".tgz", ".crate", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tbz", ".tar.zst", ".tzst",
             ".zip", ".tar",
         ] {
             let root = tempfile::tempdir().unwrap();

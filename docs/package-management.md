@@ -2127,7 +2127,7 @@ Rejected at parse time (the parser surfaces a clear error):
 
 When `[build].script_path` is absent, the resolver fetches `source.url`,
 verifies `source.sha256`, and extracts in-place. Format detection
-is by URL extension: `.tar.gz` / `.tgz`, `.tar.xz` / `.txz`,
+is by URL extension: `.tar.gz` / `.tgz` / `.crate`, `.tar.xz` / `.txz`,
 `.tar.bz2` / `.tbz2` / `.tbz`, `.tar.zst` / `.tzst`, `.zip`, and
 plain `.tar`. Unrecognized extensions fail loudly rather than
 guessing.
