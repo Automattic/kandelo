@@ -1,0 +1,12 @@
+# Unix Wasm targets have std::time::Instant; do not import a JavaScript
+# clock named now. Retain the platform clock through the ordinary Rust std.
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,6 +1,6 @@
+ cfg_if::cfg_if! {
+     if #[cfg(any(
+-        all(target_arch = "wasm32", not(target_os = "wasi")),
++        all(target_arch = "wasm32", not(unix), not(target_os = "wasi")),
+         target_arch = "asmjs"
+     ))] {
+         #[cfg(all(feature = "stdweb", not(feature = "wasm-bindgen")))]

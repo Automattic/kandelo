@@ -1949,7 +1949,7 @@ build_target() {
         waybar)     build_waybar ;;
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
-        lua|love)   bootstrap_target "$target" ;;
+        lua|love|termchat)   bootstrap_target "$target" ;;
         openssl)    build_openssl ;;
         libcurl)    build_libcurl ;;
         vim)        build_vim ;;

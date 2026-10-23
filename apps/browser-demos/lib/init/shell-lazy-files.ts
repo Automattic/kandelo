@@ -31,6 +31,7 @@ import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
 import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 import tmuxWasmUrl from "@binaries/programs/wasm32/tmux.wasm?url";
+import termchatWasmUrl from "@binaries/programs/wasm32/termchat.wasm?url";
 import sqlite3WasmUrl from "@binaries/programs/wasm32/sqlite3.wasm?url";
 import lhaWasmUrl from "@binaries/programs/wasm32/lha.wasm?url";
 import quakeWasmUrl from "@binaries/programs/wasm32/quake.wasm?url";
@@ -107,6 +108,7 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/lsof.wasm": lsofWasmUrl,
   "programs/nano.wasm": nanoWasmUrl,
   "programs/tmux.wasm": tmuxWasmUrl,
+  "programs/termchat.wasm": termchatWasmUrl,
   "programs/sqlite3.wasm": sqlite3WasmUrl,
   "programs/lha.wasm": lhaWasmUrl,
   "programs/quake.wasm": quakeWasmUrl,

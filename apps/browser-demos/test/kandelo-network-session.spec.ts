@@ -79,6 +79,48 @@ async function join(browser: Browser, link: string, expected: string) {
   return { page, context };
 }
 
+test("termchat discovers and chats between session joiners through the normal shell", async ({ browser, page, browserName }) => {
+  test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
+  test.setTimeout(480_000);
+  const errors: string[] = [];
+  const link = await host(page, "termchat room");
+  const alice = await join(browser, link, "10.89.0.2");
+  const bob = await join(browser, link, "10.89.0.3");
+  const screen = (target: Page) => target.locator(".xterm-rows").first().innerText();
+  try {
+    for (const target of [page, alice.page, bob.page]) {
+      target.on("pageerror", error => errors.push(error.message));
+      await closePanel(target);
+    }
+    expect((await runTerminalCommand(alice.page, "printf 'termchat RTC file\\n' > /tmp/rtc.txt")).exitCode).toBe(0);
+    await typeAtPrompt(alice.page, "termchat -u alice; echo termchat_exit=$?");
+    await expect.poll(() => screen(alice.page), { timeout: 60_000 }).toContain("LAN Room");
+    await typeAtPrompt(bob.page, "termchat -u bob; echo termchat_exit=$?");
+    await expect.poll(() => screen(alice.page), { timeout: 60_000 }).toContain("bob is online");
+    await expect.poll(() => screen(bob.page), { timeout: 60_000 }).toContain("alice is online");
+    await typeAtPrompt(alice.page, "hello from alice over WebRTC");
+    await expect.poll(() => screen(bob.page)).toContain("hello from alice over WebRTC");
+    await typeAtPrompt(bob.page, "hello from bob over WebRTC");
+    await expect.poll(() => screen(alice.page)).toContain("hello from bob over WebRTC");
+    await typeAtPrompt(alice.page, "?send /tmp/rtc.txt");
+    await expect.poll(() => screen(bob.page), { timeout: 30_000 }).toContain("Successfully received file");
+    await alice.page.screenshot({ path: "../../.context/termchat-session-alice.png" });
+    await bob.page.screenshot({ path: "../../.context/termchat-session-bob.png" });
+    for (const target of [bob.page, alice.page]) {
+      await target.locator(".kshell-host").first().click();
+      await target.keyboard.press("Escape");
+      await expect.poll(() => screen(target)).toContain("termchat_exit=0");
+    }
+    const received = await runTerminalCommand(bob.page, "cat /tmp/termchat/alice/rtc.txt");
+    expect(received.exitCode).toBe(0);
+    expect(received.output).toContain("termchat RTC file");
+    expect(errors).toEqual([]);
+  } finally {
+    await alice.context.close();
+    await bob.context.close();
+  }
+});
+
 test("computers join one hosted session from its link and talk over guest TCP", async ({ browser, page, browserName }) => {
   test.skip(browserName !== "chromium", "the local ICE fixture uses Chromium's loopback candidate flag");
   test.setTimeout(480_000);

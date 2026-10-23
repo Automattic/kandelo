@@ -140,6 +140,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
   { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: ["/bin/nano"] },
   { id: "tmux", resolverPath: "programs/tmux.wasm", vfsPath: "/usr/bin/tmux", symlinks: ["/bin/tmux"] },
+  { id: "termchat", resolverPath: "programs/termchat.wasm", vfsPath: "/usr/bin/termchat", symlinks: ["/bin/termchat"] },
   // The Omarchy desktop's terminal. Large, so it stays lazy: no other
   // machine sharing this image pays to fetch it.
   { id: "foot", resolverPath: "programs/foot.wasm", vfsPath: "/usr/local/bin/foot", symlinks: [] },

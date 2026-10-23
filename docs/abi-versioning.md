@@ -59,7 +59,12 @@ Existing ABI release and VFS behavior is unchanged.
 
 ## ABI 52 futex deadlines and multicast delivery
 
-ABI 52 corrects `FUTEX_WAIT_BITSET` to interpret its timeout as an
+The termchat changes join the same ABI 52 batch as the heap safepoint
+process import described below. Regenerate the complete snapshot and
+rebuild artifacts against the combined contract; sharing the version does
+not make artifacts from an earlier ABI 52 snapshot interchangeable.
+
+This batch also corrects `FUTEX_WAIT_BITSET` to interpret its timeout as an
 absolute deadline in `CLOCK_MONOTONIC`, or `CLOCK_REALTIME` when requested.
 `FUTEX_WAIT` retains a relative timeout. Rust's timed thread parking uses
 the absolute form; treating it as relative could make short waits last
@@ -71,9 +76,10 @@ authority for group membership, interface and source filtering. Disabling
 multicast loopback suppresses local copies while retaining remote delivery.
 Virtual TCP bindings no longer also reserve a physical Node listener port.
 
-These change existing blocking and networking semantics, so artifacts must
-be rebuilt through the ordinary ABI-bound build path. No syscall numbers,
-channel layouts, or public Wasm import/export signatures change.
+These corrections change existing blocking and networking semantics, so
+artifacts must be rebuilt through the ordinary ABI-bound build path. The
+termchat changes introduce no further syscall numbers, channel layouts, or
+public Wasm import/export signatures.
 
 ## ABI 51 epoll delivery and stream readiness
 
