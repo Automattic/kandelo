@@ -23,6 +23,10 @@ const MSG_PEEK = 0x0002;
 
 const ANY = "0.0.0.0";
 
+export function isIpv4Multicast(addr: Uint8Array): boolean {
+  return addr.length === 4 && addr[0] >= 224 && addr[0] <= 239;
+}
+
 function ipKey(addr: Uint8Array): string {
   return `${addr[0]}.${addr[1]}.${addr[2]}.${addr[3]}`;
 }
@@ -410,7 +414,8 @@ export class LocalVirtualNetwork {
       if (
         endpoint.machineId === machineId &&
         endpoint.port === port &&
-        addrConflicts(endpoint.addrKey, addrKey)
+        addrConflicts(endpoint.addrKey, addrKey) &&
+        !(endpoint.target.kernelReceiver && target.kernelReceiver)
       ) {
         return EADDRINUSE;
       }
@@ -432,6 +437,12 @@ export class LocalVirtualNetwork {
   }
 
   sendDatagram(datagram: UdpDatagram): number {
+    if (isIpv4Multicast(datagram.dstAddr)) {
+      // The sender's kernel already performed its optional local loopback.
+      this.multicastDatagram(datagram, (machine) =>
+        machine !== this.addressOwners.get(ipKey(datagram.srcAddr)));
+      return 0;
+    }
     // A broadcast reaches every machine on the link, the sender's included.
     if (this.isBroadcast(datagram.dstAddr)) {
       this.broadcastDatagram(datagram, () => true);
@@ -471,6 +482,21 @@ export class LocalVirtualNetwork {
         dstPort: datagram.dstPort,
         data: datagram.data.slice(),
       });
+    }
+  }
+
+  /** Link-level group flooding; kernel socket membership remains authoritative.
+   * Deliver once per receive domain, not once per socket sharing the port. */
+  multicastDatagram(datagram: UdpDatagram, reaches: (machineId: string) => boolean): void {
+    const delivered = new Set<string>();
+    for (const endpoint of [...this.udpEndpoints]) {
+      if (endpoint.port !== datagram.dstPort || !addrMatches(endpoint.addrKey, ipKey(datagram.dstAddr))
+        || !reaches(endpoint.machineId)) continue;
+      const domain = `${endpoint.machineId}:${endpoint.target.kernelReceiver ?? endpoint.endpointId}`;
+      if (delivered.has(domain)) continue;
+      delivered.add(domain);
+      endpoint.target.receive({ ...datagram, srcAddr: copyAddr(datagram.srcAddr),
+        dstAddr: copyAddr(datagram.dstAddr), data: datagram.data.slice() });
     }
   }
 
@@ -514,7 +540,7 @@ export class VirtualNetworkBackend implements NetworkIO {
   get localNetmask(): Uint8Array { return copyAddr(this.network.netmask); }
 
   udpSourceAddress(destination: Uint8Array): Uint8Array | number {
-    return this.network.hasAddress(destination) || this.network.isBroadcast(destination)
+    return this.network.hasAddress(destination) || this.network.isBroadcast(destination) || isIpv4Multicast(destination)
       ? copyAddr(this.localAddress) : 101;
   }
 
@@ -602,6 +628,10 @@ export class VirtualNetworkBackend implements NetworkIO {
 
   listenTcp(listenerId: string, addr: Uint8Array, port: number, target: TcpListenTarget): number {
     return this.network.listenTcp(this.machineId, this.scopedId(listenerId), addr, port, target);
+  }
+
+  ownsTcpListener(addr: Uint8Array): boolean {
+    return ipKey(addr) === ANY || ipKey(addr) === ipKey(this.localAddress);
   }
 
   closeTcpListener(listenerId: string): void {

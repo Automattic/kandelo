@@ -35,6 +35,33 @@ Standard triage shape:
    contract.
 6. Report what was run and what was not run.
 
+## Runtime Defects Versus Kandelo Defects
+
+Kandelo runs on browser engines, Node.js and Bun, and is built with LLVM,
+wasm-ld, wasm-opt and Rust. When a failure seems to come from one of them,
+assume first that it is Kandelo's, and rule that out before writing that a
+runtime is wrong:
+
+- Check syscall semantics: a wrong return value, a missed wakeup, or a wait
+  that should not block can look like an engine hang.
+- Check host lifetime and ownership: a worker, `WebAssembly.Memory`,
+  `SharedArrayBuffer`, pending `Atomics.waitAsync`, or audio node that the
+  host still references looks like an engine leak.
+- Check ABI drift and stale artifacts: rebuild programs, packages and VFS
+  images through the normal path before blaming the runtime.
+- A failure on one engine only is a clue, not proof. Kandelo may rely on
+  behavior the specification leaves open.
+
+Then reproduce the defect without Kandelo, in the smallest page or script
+that does what Kandelo does. Only a standalone reproduction that reports
+its own verdict lets an entry be called confirmed; anything less is a
+suspected runtime defect, and docs, comments and PRs must say "suspected".
+A workaround for such a defect gets a registry entry and a tagged comment
+at each site. `tests/runtime-workarounds/README.md` is the guide: statuses,
+the tag form, reproduction rules, and the `check`/`run`/`list` commands.
+Agents never file, comment on, or vote on upstream trackers unless the
+entry has `reports = "agents-allowed"` with a named channel.
+
 ## POSIX And Process
 
 Kandelo presents an OS contract to user programs. Syscalls, libc glue, process

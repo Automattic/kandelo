@@ -57,6 +57,30 @@ update a GitHub Check, create or protect an ABI branch, or deploy Pages. Those
 operations require the later staging layers and their hosted evidence.
 Existing ABI release and VFS behavior is unchanged.
 
+## ABI 52 futex deadlines and multicast delivery
+
+The termchat changes join the same ABI 52 batch as the heap safepoint
+process import described below. Regenerate the complete snapshot and
+rebuild artifacts against the combined contract; sharing the version does
+not make artifacts from an earlier ABI 52 snapshot interchangeable.
+
+This batch also corrects `FUTEX_WAIT_BITSET` to interpret its timeout as an
+absolute deadline in `CLOCK_MONOTONIC`, or `CLOCK_REALTIME` when requested.
+`FUTEX_WAIT` retains a relative timeout. Rust's timed thread parking uses
+the absolute form; treating it as relative could make short waits last
+far longer than requested. Timeout values retain the existing time64 layout.
+
+IPv4 multicast now reaches matching sockets in other local processes and
+machines on a connected virtual network session. The kernel remains the
+authority for group membership, interface and source filtering. Disabling
+multicast loopback suppresses local copies while retaining remote delivery.
+Virtual TCP bindings no longer also reserve a physical Node listener port.
+
+These corrections change existing blocking and networking semantics, so
+artifacts must be rebuilt through the ordinary ABI-bound build path. The
+termchat changes introduce no further syscall numbers, channel layouts, or
+public Wasm import/export signatures.
+
 ## ABI 51 epoll delivery and stream readiness
 
 ABI 51 changes existing observable semantics: edge and one-shot delivery,
@@ -1651,14 +1675,46 @@ added before anything shipped under the number:
   reports no `AF_PACKET` or IPv6 entries, because the kernel models neither
   on these interfaces.
 
-### ABI 52 wlroots-compatible DRM master and framebuffers
+### ABI 52 heap safepoints in the syscall wait
 
-ABI 52 changes the meaning of existing DRM ioctls so an unmodified wlroots
+ABI 52 gives every process a new required host import so a process blocked
+in a syscall does not deadlock JavaScriptCore's garbage collector. The
+suspected cause (not a confirmed WebKit defect) is that JavaScriptCore keeps
+a blocked worker's heap access, so a collection that began in a blocked
+process's VM can finish only when that thread allocates from JavaScript; until
+then it would pin the engine's shared GC helper threads, which stalled the
+kernel and kept exited processes' memory from being released. The stall and
+the effect of the safepoint are measured (see
+[the browser boundary](browser-support.md#javascriptcore-garbage-collection-and-blocked-workers)).
+`__abi_version` equality is exact, so every program, package archive and VFS
+image is rebuilt for 52.
+
+Structural changes (recorded in the snapshot):
+
+- **`kernel.kernel_heap_safepoint() -> i64`** is a new process import, declared
+  once as `shared::abi::HEAP_SAFEPOINT_PROCESS_IMPORT` and recorded under
+  `program_artifact.heap_safepoint_import`. `libc/glue/channel_syscall.c` bounds
+  its channel wait (first bound 100 ms) and calls the import after each
+  timeout; the host allocates from JavaScript and returns the next bound in
+  nanoseconds, or a negative value for an unbounded wait. The host answers
+  100 ms on JavaScriptCore (WebKit, Bun) and -1 on V8 and SpiderMonkey. The
+  glue declares the import outside `libc.a`, so the package import audit adds
+  it to the SDK contract from the shared declaration, as it does for
+  `kernel_fork`. A host built for ABI 51 rejects a new program at
+  instantiation (`Unsupported kernel import kernel.kernel_heap_safepoint`).
+
+Semantic changes: none visible to programs. A timed-out wait keeps waiting on
+the same request, so syscall results, blocking behaviour, signals and errno
+values are unchanged.
+
+### ABI 53 wlroots-compatible DRM master and framebuffers
+
+ABI 53 changes the meaning of existing DRM ioctls so an unmodified wlroots
 compositor (cage) can drive `/dev/dri/card0`:
 
 - **The first open of `card0` becomes the DRM master.** While no open file
   is master, `open("/dev/dri/card0")` makes the new open file the master,
-  as Linux's `drm_master_open` does. Before ABI 52 a process had to call
+  as Linux's `drm_master_open` does. Before ABI 53 a process had to call
   `DRM_IOCTL_SET_MASTER`. A second process that opens `card0` while the
   first still holds it now gets `EBUSY` from `SET_MASTER` and `EACCES`
   from the master-only ioctls (SETCRTC, PAGE_FLIP, cursor, property
@@ -1668,11 +1724,11 @@ compositor (cage) can drive `/dev/dri/card0`:
   scanout one on screen until SETCRTC or PAGE_FLIP latches another.
 - **fstat of a PRIME fd succeeds.** It reports mode `0600` with no file
   type bits, `st_size` equal to the buffer size, like Linux's anonymous
-  inode. Before ABI 52 it failed with `EBADF`, so a host `MAP_SHARED`
+  inode. Before ABI 53 it failed with `EBADF`, so a host `MAP_SHARED`
   mapping of a PRIME fd failed.
 - **Framebuffer ids are device-wide.** `ADDFB2` takes ids from one
   counter that starts after the fixed mode objects, so two open files
-  never share an fb id. Before ABI 52 each open file counted from 1.
+  never share an fb id. Before ABI 53 each open file counted from 1.
 - **Framebuffers belong to the open file, not to each process holding
   it.** A `fork()` or `posix_spawn()` child shares its parent's
   framebuffers, and only the last close of the open file in any process
@@ -1682,7 +1738,7 @@ compositor (cage) can drive `/dev/dri/card0`:
 - **SETCRTC without a mode disables the CRTC**, as on Linux: the request's
   `fb_id` is ignored. More than one connector fails with `EINVAL`.
 - **`DRM_IOCTL_GET_CAP` of an unknown capability fails with `EINVAL`**, as
-  on Linux. Before ABI 52 it reported 0.
+  on Linux. Before ABI 53 it reported 0.
 - **A null array pointer with a nonzero count fails with `EFAULT`** in the
   KMS queries that copy arrays out.
 - **`/dev/dri/card0` and `/dev/dri/renderD128` report `st_rdev` 226:0 and
@@ -1701,7 +1757,7 @@ carries each card0 open file's `DRM_CLIENT_CAP_UNIVERSAL_PLANES` and magic
 token and each AF_NETLINK socket's port id and groups, and no longer
 serializes a card0 file's framebuffers or framebuffer id counter.
 
-ABI-bound artifacts require rebuilding for ABI 52; the strict
+ABI-bound artifacts require rebuilding for ABI 53; the strict
 `__abi_version` equality check rejects earlier programs. Validation of the
 combined implementation is tracked in the graphics compatibility inventory.
 

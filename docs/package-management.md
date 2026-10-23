@@ -1836,24 +1836,32 @@ Real issues encountered during D.1–D.5 and how to avoid them.
 
 ### 5. Optimization-level workarounds
 
-A few cross-compiles trip LLVM 21 wasm32 codegen bugs at higher
-`-O` levels. The migration pattern doesn't change this — these
-are pre-existing issues that surface independent of the cache —
-but consumers must keep the per-file workaround in place when
-porting their build script:
+A few cross-compiles use a lower `-O` level for specific files
+because of a suspected LLVM 21 wasm32 codegen bug at higher levels.
+None of these has a standalone reduction yet, so the compiler bug
+is unverified; the per-file rules stay until one exists or the
+fault is found elsewhere. The migration pattern doesn't change
+this — these are pre-existing issues that surface independent of
+the cache — but consumers must keep the per-file workaround in
+place when porting their build script:
 
 - **Erlang `erl_unicode.c`** — compiled at `-O1` (rest of OTP
-  builds at `-O2`). At `-O2`, LLVM miscompiles aggregate
-  initialization of structs that hold shadow-stack pointers,
+  builds at `-O2`). At `-O2`, aggregate initialization of structs
+  that hold shadow-stack pointers appears to be miscompiled,
   breaking ESTACK iodata traversal. Adding `fprintf` inside the
-  function changes code layout enough to mask the bug, hence the
-  Heisenbug character. See `packages/registry/erlang/build-erlang.sh`
-  comments.
-- **Redis `tls.c`** — at `-O1` and above, LLVM 21.1.8 crashes
-  inside `llvm::AsmPrinter::emitGlobalVariable`. Currently the
-  file is stubbed out to dodge the issue; re-enabling TLS for
-  the Redis build would require a per-target Makefile rule that
-  compiles just `tls.c` at `-O0`.
+  function changes code layout enough to mask the failure, hence
+  the Heisenbug character. Suspected, not verified: see the
+  registry entry
+  [`LLVM-WASM32-O2-ERLANG-MISCOMPILE`](../tests/runtime-workarounds/LLVM-WASM32-O2-ERLANG-MISCOMPILE/entry.md)
+  and the `packages/registry/erlang/build-erlang.sh` comments.
+- **Redis `tls.c`** — the build notes record LLVM 21.1.8 crashing
+  inside `llvm::AsmPrinter::emitGlobalVariable` at `-O1` and above.
+  That crash claim is unverified and has no registry entry: the
+  Redis build has TLS turned off, and stubbing `tls.c` out is a
+  configuration choice that follows from that, not a workaround
+  tied to a measured compiler defect. Re-enabling TLS would first
+  need the crash reproduced; if it holds, a per-target Makefile
+  rule could compile just `tls.c` at `-O0`.
 
 The general pattern: identify the offending file, give it a
 per-target rule in the consumer's Makefile (or invoke `clang`
@@ -2119,7 +2127,7 @@ Rejected at parse time (the parser surfaces a clear error):
 
 When `[build].script_path` is absent, the resolver fetches `source.url`,
 verifies `source.sha256`, and extracts in-place. Format detection
-is by URL extension: `.tar.gz` / `.tgz`, `.tar.xz` / `.txz`,
+is by URL extension: `.tar.gz` / `.tgz` / `.crate`, `.tar.xz` / `.txz`,
 `.tar.bz2` / `.tbz2` / `.tbz`, `.tar.zst` / `.tzst`, `.zip`, and
 plain `.tar`. Unrecognized extensions fail loudly rather than
 guessing.

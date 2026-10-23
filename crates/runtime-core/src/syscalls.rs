@@ -12995,6 +12995,27 @@ fn udp_purge_unaccepted_datagrams(proc: &mut Process, sock_idx: usize) -> Result
     Ok(())
 }
 
+/// Select multicast egress from socket state and the real host interface.
+/// An unconfigured host retains local-only multicast; loopback never escapes.
+fn udp_multicast_interface(sock: &crate::socket::SocketInfo, host: &mut dyn HostIO) -> [u8; 4] {
+    use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_IF};
+    let configured = sock
+        .get_option(IPPROTO_IP, IP_MULTICAST_IF)
+        .unwrap_or(0)
+        .to_le_bytes();
+    if configured != [0; 4] {
+        configured
+    } else if sock.bind_device.as_deref() == Some(b"lo") {
+        [127, 0, 0, 1]
+    } else if sock.bind_addr != [0; 4] {
+        sock.bind_addr
+    } else {
+        host.host_network_interface()
+            .map(|iface| iface.address)
+            .unwrap_or([0; 4])
+    }
+}
+
 fn udp_send_datagram(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -13055,28 +13076,19 @@ fn udp_send_datagram(
     };
     let (src_pid, src_uid, src_gid) = (proc.pid, proc.real_uid(), proc.real_gid());
     if is_ipv4_multicast_addr(dst_addr) {
-        use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_IF, IP_MULTICAST_LOOP};
+        use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_LOOP};
 
-        let (loop_enabled, outgoing_interface) = {
-            let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
-            let loop_enabled = sock.get_option(IPPROTO_IP, IP_MULTICAST_LOOP).unwrap_or(1) != 0;
-            let configured = sock
-                .get_option(IPPROTO_IP, IP_MULTICAST_IF)
-                .unwrap_or(0)
-                .to_le_bytes();
-            let outgoing_interface = if configured != [0; 4] {
-                configured
-            } else if sock.bind_device.as_deref() == Some(b"lo") {
-                [127, 0, 0, 1]
-            } else if is_loopback_addr(sock.bind_addr) || is_virtual_network_addr(sock.bind_addr) {
-                sock.bind_addr
-            } else {
-                [0; 4]
-            };
-            (loop_enabled, outgoing_interface)
-        };
-        if src_addr == [0; 4] && outgoing_interface != [0; 4] {
+        let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
+        let loop_enabled = sock.get_option(IPPROTO_IP, IP_MULTICAST_LOOP).unwrap_or(1) != 0;
+        let outgoing_interface = udp_multicast_interface(sock, host);
+        if src_addr == [0; 4] {
             src_addr = outgoing_interface;
+        }
+        // Local loop suppression must not suppress transmission to other
+        // machines. The fabric excludes the source machine; the kernel owns
+        // the local copy and its membership/source filtering.
+        if outgoing_interface != [0; 4] && !is_loopback_addr(outgoing_interface) {
+            host.host_udp_send(&src_addr, src_port, &dst_addr, dst_port, buf)?;
         }
         if !loop_enabled {
             return Ok(buf.len());
@@ -13475,8 +13487,11 @@ pub fn inject_udp_datagram_into(
     src_addr: [u8; 4],
     src_port: u16,
     data: &[u8],
+    ingress_interface: [u8; 4],
 ) -> i32 {
     use crate::socket::Datagram;
+    let multicast = is_ipv4_multicast_addr(dst_addr);
+    let mut delivered = false;
 
     let endpoints = crate::socket::udp_lookup(dst_addr, dst_port);
     for endpoint in endpoints {
@@ -13486,7 +13501,19 @@ pub fn inject_udp_datagram_into(
         let accepts = proc
             .sockets
             .get(endpoint.sock_idx)
-            .map(|sock| udp_socket_accepts_datagram(sock, src_addr, src_port))
+            .map(|sock| {
+                if multicast {
+                    udp_socket_accepts_multicast_datagram(
+                        sock,
+                        dst_addr,
+                        src_addr,
+                        src_port,
+                        ingress_interface,
+                    )
+                } else {
+                    udp_socket_accepts_datagram(sock, src_addr, src_port)
+                }
+            })
             .unwrap_or(false);
         if !accepts {
             continue;
@@ -13506,10 +13533,17 @@ pub fn inject_udp_datagram_into(
                 src_gid: 0,
                 ancillary_fds: Vec::new(),
             });
-            return 0;
+            delivered = true;
+            if !multicast {
+                return 0;
+            }
         }
     }
-    -(Errno::ECONNREFUSED as i32)
+    if delivered || multicast {
+        0
+    } else {
+        -(Errno::ECONNREFUSED as i32)
+    }
 }
 
 /// Owned routing facts captured after a successful process-local UDP send.
@@ -13525,16 +13559,18 @@ pub struct CrossProcessLoopbackUdpRoute {
     sender_uid: u32,
     sender_gid: u32,
     connected: bool,
+    multicast_interface: Option<[u8; 4]>,
     dst_addr: [u8; 4],
     dst_port: u16,
     src_addr: [u8; 4],
     src_port: u16,
 }
 
-/// Capture an IPv4 loopback route after `send`, `sendto`, or `sendmsg` has
+/// Capture an IPv4 loopback or multicast route after `send`, `sendto`, or `sendmsg` has
 /// completed its process-local work.
 pub fn cross_process_loopback_udp_route(
     proc: &Process,
+    host: &mut dyn HostIO,
     fd: i32,
     addr: Option<&[u8]>,
 ) -> Option<CrossProcessLoopbackUdpRoute> {
@@ -13557,11 +13593,21 @@ pub fn cross_process_loopback_udp_route(
         None => return None,
     };
     let dst_addr = udp_canonical_dst_addr(dst_addr);
-    if !is_loopback_addr(dst_addr) {
+    let multicast = is_ipv4_multicast_addr(dst_addr);
+    if !is_loopback_addr(dst_addr) && !multicast {
         return None;
     }
+    let multicast_interface = if multicast {
+        use wasm_posix_shared::socket::{IPPROTO_IP, IP_MULTICAST_LOOP};
+        if sock.get_option(IPPROTO_IP, IP_MULTICAST_LOOP).unwrap_or(1) == 0 {
+            return None;
+        }
+        Some(udp_multicast_interface(sock, host))
+    } else {
+        None
+    };
     let src_addr = if sock.bind_addr == [0; 4] {
-        udp_route_local_addr(dst_addr)
+        multicast_interface.unwrap_or_else(|| udp_route_local_addr(dst_addr))
     } else {
         sock.bind_addr
     };
@@ -13572,6 +13618,7 @@ pub fn cross_process_loopback_udp_route(
         sender_uid: proc.real_uid(),
         sender_gid: proc.real_gid(),
         connected: sock.state == SocketState::Connected,
+        multicast_interface,
         dst_addr,
         dst_port,
         src_addr,
@@ -13579,13 +13626,14 @@ pub fn cross_process_loopback_udp_route(
     })
 }
 
-/// Deliver one successful IPv4 loopback send to an accepting socket owned by
-/// another process on this machine.
+/// Deliver one successful IPv4 loopback send to an accepting foreign socket,
+/// or a multicast send to every matching foreign socket on this machine.
 ///
 /// Process-local UDP delivery already chooses one accepting endpoint. If the
 /// sender owns such an endpoint, it has already received the datagram and this
 /// function must not duplicate it into an inherited or `SO_REUSEADDR` peer.
-/// Otherwise, choose the first accepting foreign endpoint by the same registry
+/// Multicast instead fans out to all matching foreign sockets. For unicast,
+/// choose the first accepting foreign endpoint by the same registry
 /// order. A full UDP queue still counts as delivery because UDP drops incoming
 /// datagrams rather than reporting receiver backpressure to the sender.
 pub fn deliver_cross_process_loopback_udp(
@@ -13599,15 +13647,12 @@ pub fn deliver_cross_process_loopback_udp(
     let sender_already_received = table.get(route.sender_pid).is_some_and(|sender| {
         endpoints.iter().any(|endpoint| {
             endpoint.pid == route.sender_pid
-                && sender
-                    .sockets
-                    .get(endpoint.sock_idx)
-                    .is_some_and(|sock| {
-                        udp_socket_accepts_datagram(sock, route.src_addr, route.src_port)
-                    })
+                && sender.sockets.get(endpoint.sock_idx).is_some_and(|sock| {
+                    udp_socket_accepts_datagram(sock, route.src_addr, route.src_port)
+                })
         })
     });
-    if sender_already_received {
+    if sender_already_received && route.multicast_interface.is_none() {
         return false;
     }
 
@@ -13619,12 +13664,19 @@ pub fn deliver_cross_process_loopback_udp(
         let Some(target) = table.get_mut(endpoint.pid) else {
             continue;
         };
-        let accepts = target
-            .sockets
-            .get(endpoint.sock_idx)
-            .is_some_and(|sock| {
+        let accepts = target.sockets.get(endpoint.sock_idx).is_some_and(|sock| {
+            if let Some(interface) = route.multicast_interface {
+                udp_socket_accepts_multicast_datagram(
+                    sock,
+                    route.dst_addr,
+                    route.src_addr,
+                    route.src_port,
+                    interface,
+                )
+            } else {
                 udp_socket_accepts_datagram(sock, route.src_addr, route.src_port)
-            });
+            }
+        });
         if !accepts {
             continue;
         }
@@ -13648,7 +13700,9 @@ pub fn deliver_cross_process_loopback_udp(
             ancillary_fds: Vec::new(),
         });
         delivered = true;
-        break;
+        if route.multicast_interface.is_none() {
+            break;
+        }
     }
 
     if delivered && route.connected {
@@ -41674,7 +41728,7 @@ impl HostIO for NetMock {
                 .unwrap(),
                 20,
             );
-            cross_process_loopback_udp_route(sender, send_fd, Some(&destination)).unwrap()
+            cross_process_loopback_udp_route(sender, &mut host, send_fd, Some(&destination)).unwrap()
         };
         assert!(deliver_cross_process_loopback_udp(
             &mut table,
@@ -41711,7 +41765,7 @@ impl HostIO for NetMock {
                 sys_send(sender, &mut host, send_fd, b"connected one", 0).unwrap(),
                 13,
             );
-            cross_process_loopback_udp_route(sender, send_fd, None).unwrap()
+            cross_process_loopback_udp_route(sender, &mut host, send_fd, None).unwrap()
         };
         assert!(deliver_cross_process_loopback_udp(
             &mut table,
@@ -41732,7 +41786,7 @@ impl HostIO for NetMock {
 
         let route = {
             let sender = table.get(sender_pid).unwrap();
-            cross_process_loopback_udp_route(sender, send_fd, None).unwrap()
+            cross_process_loopback_udp_route(sender, &mut host, send_fd, None).unwrap()
         };
         assert!(deliver_cross_process_loopback_udp(
             &mut table,
@@ -42288,6 +42342,93 @@ impl HostIO for NetMock {
         }
         for path in [send_path.as_slice(), recv_path.as_slice()] {
             sys_unlink(&mut proc, &mut host, path).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_multicast_cross_process_fanout_filters_and_loop_suppression() {
+        use wasm_posix_shared::socket::*;
+        let mut table = crate::process_table::ProcessTable::new();
+        let pids = [
+            table.create_process().unwrap(),
+            table.create_process().unwrap(),
+            table.create_process().unwrap(),
+        ];
+        let mut host = MockHostIO::new();
+        let group = [238, 255, 0, 1];
+        let lo = [127, 0, 0, 1];
+        let mut bind = [0u8; 16];
+        bind[0] = AF_INET as u8;
+        bind[2..4].copy_from_slice(&35877u16.to_be_bytes());
+        let mut receivers = Vec::new();
+        for pid in pids {
+            let proc = table.get_mut(pid).unwrap();
+            let fd = sys_socket(proc, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+            sys_setsockopt(proc, fd, SOL_SOCKET, SO_REUSEADDR, 1).unwrap();
+            sys_bind(proc, &mut host, fd, &bind).unwrap();
+            sys_setsockopt_ipv4_multicast(proc, fd, IP_ADD_MEMBERSHIP, group, lo, None).unwrap();
+            receivers.push((pid, fd));
+        }
+        let sender = table.get_mut(pids[0]).unwrap();
+        let fd = sys_socket(sender, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+        sys_setsockopt(
+            sender,
+            fd,
+            IPPROTO_IP,
+            IP_MULTICAST_IF,
+            u32::from_le_bytes(lo),
+        )
+        .unwrap();
+        let mut destination = bind;
+        destination[4..8].copy_from_slice(&group);
+        sys_sendto(sender, &mut host, fd, b"all", 0, &destination).unwrap();
+        let route =
+            cross_process_loopback_udp_route(sender, &mut host, fd, Some(&destination)).unwrap();
+        assert!(deliver_cross_process_loopback_udp(
+            &mut table, route, b"all"
+        ));
+        for (pid, receiver) in &receivers {
+            let proc = table.get_mut(*pid).unwrap();
+            let idx = test_socket_idx(proc, *receiver);
+            let sock = proc.sockets.get_mut(idx).unwrap();
+            assert_eq!(sock.dgram_queue.remove(0).data, b"all");
+            assert!(
+                sock.dgram_queue.is_empty(),
+                "one copy per subscribed socket"
+            );
+        }
+        let receiver = table.get_mut(pids[2]).unwrap();
+        sys_setsockopt_ipv4_multicast(
+            receiver,
+            receivers[2].1,
+            IP_DROP_MEMBERSHIP,
+            group,
+            lo,
+            None,
+        )
+        .unwrap();
+        let sender = table.get_mut(pids[0]).unwrap();
+        sys_sendto(sender, &mut host, fd, b"remaining", 0, &destination).unwrap();
+        let route =
+            cross_process_loopback_udp_route(sender, &mut host, fd, Some(&destination)).unwrap();
+        assert!(deliver_cross_process_loopback_udp(
+            &mut table,
+            route,
+            b"remaining"
+        ));
+        let receiver = table.get_mut(pids[2]).unwrap();
+        assert!(receiver
+            .sockets
+            .get(test_socket_idx(receiver, receivers[2].1))
+            .unwrap()
+            .dgram_queue
+            .is_empty());
+        let sender = table.get_mut(pids[0]).unwrap();
+        sys_setsockopt(sender, fd, IPPROTO_IP, IP_MULTICAST_LOOP, 0).unwrap();
+        sys_sendto(sender, &mut host, fd, b"no-loop", 0, &destination).unwrap();
+        assert!(cross_process_loopback_udp_route(sender, &mut host, fd, Some(&destination)).is_none());
+        for pid in pids {
+            crate::socket::udp_cleanup_process(pid);
         }
     }
 

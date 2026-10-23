@@ -1,0 +1,115 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Worker.terminate() on a worker blocked in Atomics.wait / memory.atomic.wait32</title>
+<pre id="out"></pre>
+<script>
+// Standalone reproduction; nothing here comes from Kandelo. Serve this
+// directory cross-origin isolated:
+//   Cross-Origin-Opener-Policy: same-origin
+//   Cross-Origin-Embedder-Policy: require-corp
+// and open repro.html. The verdict is written to window.__reproVerdict and
+// printed on the page.
+//
+// Question: after the parent calls terminate() on a dedicated worker that is
+// blocked in an infinite atomic wait, is that worker still waiting?
+//
+// Atomics.notify() returns how many waiters it woke. So, some time after
+// terminate(), the parent notifies the word the terminated worker waited on:
+//   0  the terminated worker is no longer waiting (its thread was stopped);
+//   >0 the terminated worker is still parked in the wait. Its thread, and
+//      everything the worker holds, cannot be released.
+//
+// Two waits are tested, because they are separate code paths in engines:
+//   js    Atomics.wait() on an Int32Array over a SharedArrayBuffer;
+//   wasm  memory.atomic.wait32 inside a WebAssembly function.
+// Each worker first commits 16 MiB of a shared WebAssembly.Memory, so a
+// leak has a visible memory cost in a process monitor.
+//
+// Sanity check: a worker that is blocked and NOT terminated must be counted
+// by notify (count 1). If it is not, notify counts are meaningless here and
+// the verdict is inconclusive.
+const params = new URLSearchParams(location.search);
+const ROUNDS = Number(params.get('rounds') ?? '2');
+const BLOCK_SETTLE_MS = 300; // time for a worker to enter its wait
+// Time for terminate() to take effect before the parent looks. Chromium
+// still counted the terminated worker after 1 s and no longer after 2 s, so
+// 5 s leaves margin; WebKit build 2311 still counted it after 10 s.
+const TERMINATE_SETTLE_MS = Number(params.get('settle') ?? '5000');
+const out = document.getElementById('out');
+const log = (line) => { out.textContent += line + '\n'; };
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// (module (import "env" "memory" (memory 1 16384 shared))
+//   (func (export "wait") (param i32 i64) (result i32)
+//     (memory.atomic.wait32 (local.get 0) (i32.const 0) (local.get 1))))
+const wasmBytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0,
+  1, 0x07, 1, 0x60, 2, 0x7f, 0x7e, 1, 0x7f,
+  2, 0x12, 1, 3, 0x65, 0x6e, 0x76, 6, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 2, 3, 1, 0x80, 0x80, 1,
+  3, 2, 1, 0,
+  7, 0x08, 1, 4, 0x77, 0x61, 0x69, 0x74, 0, 0,
+  0x0a, 0x0e, 1, 0x0c, 0, 0x20, 0, 0x41, 0, 0x20, 1, 0xfe, 1, 2, 0, 0x0b]);
+
+function workerMain() {
+  onmessage = async ({ data }) => {
+    const { memory, module, how } = data;
+    // Commit 16 MiB so the worker holds real memory.
+    const view = new Int32Array(memory.buffer);
+    for (let i = 1024; i < view.length; i += 1024) view[i] = i;
+    const wait = how === 'wasm'
+      ? (await WebAssembly.instantiate(module, { env: { memory } })).exports.wait
+      : null;
+    postMessage('blocking');
+    // Word 0 is never changed, so either wait lasts until notified.
+    if (wait) wait(0, -1n); else Atomics.wait(view, 0, 0);
+    postMessage('woke');
+  };
+}
+
+const workerUrl = URL.createObjectURL(new Blob([`(${workerMain})();`], { type: 'text/javascript' }));
+
+async function blockedWorker(how, module) {
+  const memory = new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true });
+  const worker = new Worker(workerUrl);
+  await new Promise((resolve, reject) => {
+    worker.onmessage = ({ data }) => { if (data === 'blocking') resolve(); };
+    worker.onerror = (event) => reject(new Error(event.message));
+    worker.postMessage({ memory, module, how });
+  });
+  await sleep(BLOCK_SETTLE_MS);
+  return { worker, word: new Int32Array(memory.buffer) };
+}
+
+async function main() {
+  const module = await WebAssembly.compile(wasmBytes);
+  const results = {};
+  for (const how of ['js', 'wasm']) {
+    // Sanity: a blocked, live worker is counted.
+    const live = await blockedWorker(how, module);
+    const liveCount = Atomics.notify(live.word, 0);
+    live.worker.terminate();
+    if (liveCount !== 1) {
+      return { verdict: 'inconclusive', details: `${how}: notify counted ${liveCount} waiters for a live blocked worker (expected 1)` };
+    }
+    // Test: a blocked worker, terminated, then notified.
+    const counts = [];
+    for (let round = 0; round < ROUNDS; round++) {
+      const { worker, word } = await blockedWorker(how, module);
+      worker.terminate();
+      await sleep(TERMINATE_SETTLE_MS);
+      counts.push(Atomics.notify(word, 0));
+    }
+    results[how] = counts;
+    log(`${how}: waiters still parked after terminate(): ${counts.join(', ')}`);
+  }
+  const still = Object.entries(results).filter(([, counts]) => counts.some((c) => c > 0));
+  const summary = Object.entries(results).map(([how, counts]) => `${how} [${counts.join(',')}]`).join('; ');
+  return still.length
+    ? { verdict: 'reproduced', details: `terminated workers still waiting (${still.map(([how]) => how).join(', ')}): ${summary}` }
+    : { verdict: 'not-reproduced', details: `no terminated worker still waiting: ${summary}` };
+}
+
+main().then(
+  (verdict) => { window.__reproVerdict = verdict; log(`${verdict.verdict}: ${verdict.details}`); },
+  (error) => { window.__reproVerdict = { verdict: 'inconclusive', details: `repro failed: ${error}` }; log(String(error)); },
+);
+</script>

@@ -40,8 +40,9 @@ interface Following {
  * when the machine is not running or its image declares no actions.
  *
  * `frameCount` is the display's presented-frame counter. With one, the
- * command's own status lines are shown on the stage until the display is
- * presenting again, because the stage is dark in between. Without one
+ * command's output is followed until the display is presenting again. An
+ * ownerless KMS display returns to the terminal, where that output is visible;
+ * the stage's toasts are only visible when the stage is selected. Without one
  * (null) there is no signal for "running again", so no progress is shown.
  * `readFrameCount` samples the live counter at restart: rendered UI state
  * can lag behind presentations made while the old process was stopping.
@@ -75,6 +76,9 @@ export function useDockActions(
     setFollowing(null);
   }, []);
   React.useEffect(() => stopFollowing, [stopFollowing]);
+  React.useEffect(() => {
+    if (status !== "running") stopFollowing();
+  }, [status, stopFollowing]);
 
   // A new presentation is sufficient: static menus may draw once and
   // then wait for input, so requiring animation leaves them "starting".
@@ -89,6 +93,7 @@ export function useDockActions(
   const run = React.useCallback(async (action: DemoDockCommandConfig, buttonId: string) => {
     if (running !== null) return;
     stopFollowing();
+    const generation = followingGenerationRef.current;
     setError(null);
     setRunning({ id: buttonId, phase: "stopping" });
     const programName = dockActionProgramName(action.restart);
@@ -97,11 +102,12 @@ export function useDockActions(
       await runDemoDockAction(host, action, {
         stop,
         onPhase: async (phase) => {
+          // Dispatch may still be waiting on the old prompt during teardown.
+          if (followingGenerationRef.current !== generation) throw new Error("Dock action cancelled");
           setRunning({ id: buttonId, phase });
           if (phase !== "starting" || frameCountRef.current === null) return;
-          // From here on the stage is dark until the replacement draws.
+          // Follow this command until its display starts presenting.
           baselineRef.current = readFrameCount?.() ?? frameCountRef.current;
-          const generation = followingGenerationRef.current;
           setFollowing({ label: action.label, progress: { status: null, percent: null } });
           const unsubscribe = await followShellOutput(host, (text) => {
             // A queued notification must not revive completed progress.
@@ -118,11 +124,15 @@ export function useDockActions(
             setFollowing({ label: action.label, progress });
           });
           // A frame can arrive while attachPty is still in flight.
-          if (followingGenerationRef.current !== generation) unsubscribe();
-          else stopFollowingRef.current = unsubscribe;
+          if (followingGenerationRef.current !== generation) {
+            unsubscribe();
+            throw new Error("Dock action cancelled");
+          }
+          stopFollowingRef.current = unsubscribe;
         },
       });
     } catch (err) {
+      if (followingGenerationRef.current !== generation) return;
       stopFollowing();
       setError(`${action.label}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {

@@ -129,7 +129,7 @@ Rendered, guest, conformance and complete lifecycle validation remain open.
 
 The sysfs/netlink and KMS changes were adapted from mho22's `f758e3fe4b`
 and `ea2bae402f`, retaining that author on both derived commits. The
-combined contract uses ABI 52 and fork record version 20. Main's cursor
+combined contract uses ABI 53 and fork record version 20. Main's cursor
 references, complete mode catalog and deferred cleanup effects are retained.
 The first integrated DRI selection passed 50 Rust tests after migrating its
 connector lookup to the new device-wide object ID.
@@ -523,8 +523,16 @@ projection publication is claimed. Commands and progress are recorded in
 Origin/main was fetched at `1ddfafc871638785a26675a28899e9af69c0274a`.
 That commit independently introduces ABI 52 for a required heap-safepoint
 import. This branch's graphics ABI 52 is not interchangeable with main's ABI
-52. Main has not yet been integrated; the combined implementation needs a
-fresh ABI allocation, regenerated outputs, normal artifact rebuilds and
-combined-tree validation. The earlier measurements retain their original
+52. Main through `f3cb7041f6` is now integrated, including multicast routing
+and the heap-safepoint import. The combined implementation uses fresh ABI
+53, with graphics package ABI floors advanced to match. Normal artifact
+rebuilds and combined-tree validation remain required. The earlier measurements retain their original
 baseline and artifact identities. Expensive rebuild and integration checks
 remain deferred at the user's request while implementation continues.
+
+ABI 53 metadata regeneration and verification passed after the merge:
+`scripts/dev-shell.sh bash scripts/check-abi-version.sh update`, followed
+by resolver bundle generation, its consistency test and the ABI checker.
+Logs: `.context/graphics-abi53-generation.log` and
+`.context/graphics-abi53-verification.log`. This builds a kernel for ABI
+export inspection; it does not publish or validate package/image artifacts.

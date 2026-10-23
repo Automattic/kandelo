@@ -1,5 +1,5 @@
 {
-  "abi_version": 52,
+  "abi_version": 53,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1164,7 +1164,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 52,
+      "abi_version": 53,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -7143,6 +7143,15 @@
         "section": "kandelo.wpk_fork.unwind_transport",
         "version": 1
       }
+    },
+    "heap_safepoint_import": {
+      "kind": "func",
+      "module": "kernel",
+      "name": "kernel_heap_safepoint",
+      "params": [],
+      "results": [
+        "i64"
+      ]
     }
   },
   "spawn_contract": {

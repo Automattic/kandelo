@@ -208,7 +208,12 @@ pub mod process_layout;
 ///     routed local address. docs/abi-versioning.md ("ABI 50") lists each.
 /// 51: epoll notification delivery, edge/one-shot rearming, registration
 ///     lifetime, nesting validation, fairness, and stream half-close readiness.
-/// 52: wlroots-compatible DRM master and framebuffers. The first open of
+/// 52: processes import `kernel_heap_safepoint`. The syscall glue bounds its
+///     channel wait and calls it after a timeout so a JavaScriptCore VM can
+///     finish a collection that is suspected to be handed to a blocked thread
+///     and to starve other workers' collections. docs/abi-versioning.md
+///     ("ABI 52").
+/// 53: wlroots-compatible DRM master and framebuffers. The first open of
 ///     `/dev/dri/card0` while no file is master becomes the master, as
 ///     Linux's `drm_master_open` does. RMFB of the scanout framebuffer
 ///     disables the CRTC; the new DRM_IOCTL_MODE_CLOSEFB keeps it on screen
@@ -217,8 +222,8 @@ pub mod process_layout;
 ///     shared across fork, GET_CAP of an unknown capability fails with
 ///     EINVAL, and new KMS ioctls get contracts. AF_NETLINK uevent sockets
 ///     (with the new ESOCKTNOSUPPORT) and a read-only /sys appear.
-///     docs/abi-versioning.md ("ABI 52") lists each.
-pub const ABI_VERSION: u32 = 52;
+///     docs/abi-versioning.md ("ABI 53") lists each.
+pub const ABI_VERSION: u32 = 53;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -2900,6 +2905,25 @@ pub mod abi {
         name: "kernel_fork",
         params: &[I32],
         results: &[I32],
+    };
+
+    /// Process-worker import the syscall glue calls after a bounded wait
+    /// times out (ABI 52).
+    ///
+    /// JavaScriptCore is suspected to keep a blocked worker's heap access, so
+    /// a collection that began in its VM could finish only when that thread
+    /// allocates from JavaScript (suspected cause, not a confirmed WebKit
+    /// defect; see docs/browser-support.md). The host import allocates, then
+    /// returns the next wait bound in nanoseconds, or a negative value when
+    /// its engine needs no bound.
+    /// `libc/glue/channel_syscall.c` declares it outside `libc.a`, so the
+    /// package import audit adds it to the SDK contract from this
+    /// declaration.
+    pub const HEAP_SAFEPOINT_PROCESS_IMPORT: ProgramArtifactImport = ProgramArtifactImport {
+        module: "kernel",
+        name: "kernel_heap_safepoint",
+        params: &[],
+        results: &[I64],
     };
 
     pub const WPK_FORK_REQUIRED_IMPORTS: &[ProgramArtifactImport] = &[

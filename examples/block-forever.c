@@ -2,7 +2,7 @@
  * block-forever.c — parks in a blocking syscall indefinitely.
  *
  * Test fixture for the host teardown-reclamation path
- * ([JSC-TERMINATE-ATOMICS-WAIT-LEAK], see
+ * ([RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK], see
  * docs/jsc-terminate-atomics-wait-workaround.md). The process sits in a
  * blocking nanosleep — i.e. Atomics.wait on its syscall channel — modeling an
  * idle daemon (nginx in accept(), php-fpm in epoll, a shell in read()). On

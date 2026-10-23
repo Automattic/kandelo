@@ -216,7 +216,7 @@ pipe pair.
 ### Networking
 - POSIX AF_INET TCP and UDP inside the kernel, including local loopback and virtual IPv4 machine-to-machine networking
 - Partial AF_INET6 streams and datagrams for `::`/`::1`; loopback streams have a cross-process path, while datagrams remain process-local, and neither provides external or virtual-network IPv6
-- In-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast are process-local; machine-wide datagram routing is still pending
+- IPv4 loopback unicast and multicast route between processes; IPv6 loopback and AF_UNIX datagrams remain process-local
 - `LocalVirtualNetwork` attaches multiple browser Kandelo machines to virtual IPv4 addresses in one browser session
 - Browser networking backends preserve valid decimal one-, two-, three-, and four-component IPv4 forms, reject malformed/overflowing numeric forms, enforce ASCII host-label syntax and DNS length limits, and synthesize IPv4 addresses only for acceptable hostnames; they do not provide AF_INET6 DNS/transport
 - The network lab at `/pages/network/` is intended to run GNU Netcat (`nc`)
@@ -391,8 +391,10 @@ capture, window blur, and input teardown, retaining the last absolute position.
   a source processor returning true retains its transport inside the
   page-wide AudioContext. Isolating that transport also bounds any wrappers
   awaiting collection in this persistent realm. The shared context stays open to
-  avoid WebKit's per-context rendering-thread leak; explicitly supplied private
-  contexts are closed. A suspended or interrupted context is never resumed
+  avoid WebKit's per-context rendering-thread leak, a suspected WebKit defect
+  recorded in the runtime workaround registry
+  ([`WEBKIT-AUDIOWORKLET-CLOSE-LEAK`](../tests/runtime-workarounds/WEBKIT-AUDIOWORKLET-CLOSE-LEAK/entry.md));
+  explicitly supplied private contexts are closed. A suspended or interrupted context is never resumed
   implicitly during teardown.
 - **A user gesture is required.** Preparing the PCM driver may leave its
   `AudioContext` suspended. The application must call the session audio-resume
@@ -2202,6 +2204,17 @@ reopens the surface. Dock replacements stop the actual display owner, even
 when it was launched from a second terminal. Exiting an unrelated process
 leaves it unchanged; a Wayland client exiting does not close its compositor's display.
 
+A dock replacement is a real quit followed by a new start. When the old
+owner exits, the terminal becomes selected and Demo is unavailable. The
+terminal shows the replacement script's progress and any errors. Demo and
+its dock controls return when a new process takes display ownership; a
+failed command leaves the terminal visible without a display owner.
+Progress subscribes through `dispatchShellCommand`'s awaited `beforeWrite`
+hook, after the previous command's queue and prompt readiness. The old
+program's returning prompt must not be treated as the replacement exiting.
+Prompt readiness checks the end of the complete terminal history, so an
+earlier prompt cannot make a currently busy terminal appear ready.
+
 A bitmap interface can declare `presentation.displayScale` (0.5–4 CSS
 pixels per guest pixel). The browser advertises a virtual display sized
 from the CSS content box divided by that scale, at 96 reference DPI.
@@ -2774,6 +2787,11 @@ Outbound internet traffic leaves through the fetch and TLS bridges, which the gu
 
 ### Purpose-checked browser peer connections
 
+Network sessions carry IPv4 multicast as well as unicast and broadcast, so
+[termchat](termchat.md) can discover other running instances and exchange
+messages/files through ordinary guest sockets. Membership and filtering stay
+in the kernel. This does not expose raw physical LAN sockets to browser code.
+
 The Kandelo app's dock has a network button for **network sessions** between
 independent computers that are already running. Creating a session makes this
 computer the host of a `10.89.0.0/24` link (`10.89.0.1`) and shows an invite
@@ -3004,6 +3022,17 @@ recycling the backing. Whole-kernel destroy terminates nested process/thread
 Workers before terminating the containing kernel Worker realm, which is the
 final fallback for incomplete graceful detach.
 
+Teardown first wakes blocked Workers into a cooperative exit instead of
+terminating them while they wait. `Worker.terminate()` on a Worker blocked
+in an atomic wait leaves it waiting, with its thread and memory unreleased,
+on Bun 1.3.3 today; Playwright WebKit showed the same on build webkit-2311
+and no longer does on webkit-2359, and released Safari has not been
+rechecked. The mechanism is described in
+[the terminate workaround page](jsc-terminate-atomics-wait-workaround.md);
+the evidence, the standalone reproductions and the removal criteria are in
+the registry entry
+[`JSC-TERMINATE-ATOMICS-WAIT-LEAK`](../tests/runtime-workarounds/JSC-TERMINATE-ATOMICS-WAIT-LEAK/entry.md).
+
 Audio and framebuffer presentation use independent bounded shared buffers.
 A view into kernel or guest memory retains the full address space, even when
 only a tiny ring or pixel window is visible. Persistent page and worklet realms
@@ -3052,6 +3081,128 @@ new churn after it is crossed, but an already-grown generation or simultaneous
 exits can exceed it. JavaScript cannot hard-bound native backing that the
 browser engine has not reclaimed. Garbage-collection observations and bounded,
 coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
+
+### JavaScriptCore garbage collection and blocked workers
+
+This is a suspected JavaScriptCore behavior with a tagged workaround in
+the syscall glue, recorded in the runtime workaround registry as
+[`JSC-BLOCKED-WAIT-GC-STARVATION`](../tests/runtime-workarounds/JSC-BLOCKED-WAIT-GC-STARVATION/entry.md)
+(evidence, self-judging attempts, draft report). It is not yet a confirmed
+WebKit defect: the standalone page below shows helper-thread pinning only
+through a manual stack sample, so the cause is a hypothesis that fits every
+measurement. It would apply to JavaScriptCore everywhere: Safari on every
+device, and Bun. The machine hang and the effect of the workaround are
+measured and do not depend on the hypothesis.
+
+A Kandelo process makes each syscall by writing its channel and waiting in
+`memory.atomic.wait32` until the kernel answers. The wait stays inside Wasm,
+so the worker does not return to JavaScript or its event loop while it
+waits. The suspected mechanism is that JavaScriptCore does not release a
+worker's heap access during that wait (reading
+`WaiterListManager::waitSyncImpl` suggests a `VMBlockingScope`, not a
+heap-access release). A garbage collection that began in the worker's VM
+before it blocked, for example because `memory.grow` reported more memory,
+needs that worker to stop. Under this hypothesis JavaScriptCore hands the
+collection back to the blocked thread, so it finishes only when that thread
+runs JavaScript that reaches an allocation slow path.
+
+Until then, under this hypothesis, the collection keeps every shared GC
+helper thread that joined it. JavaScriptCore has one small pool of helpers
+(six on the tested Mac) for all the page's workers, and helpers choose a
+collecting heap at random. A machine with a few idle processes (a shell at
+its prompt, a database waiting for a client, PHP-FPM waiting for requests)
+would soon pin all of them. Other workers' concurrent collections would
+then depend on helpers that never return, which matches what was observed:
+
+- an exiting process worker cannot finish destroying its VM
+  (`~VM` → `Heap::lastChanceToFinalize`), so its `WebAssembly.Memory` and
+  the reservation it charges (see [Memory per process](#memory-per-process))
+  are never released;
+- the kernel worker's own collection stalls. When retired reservations have
+  filled the pool, creating the next process's memory runs a synchronous
+  collection in the kernel worker, which never returns, and every process
+  waiting for a syscall answer waits forever.
+
+On the WordPress + MariaDB machine in Playwright's WebKit this hung the
+machine within the first few terminal commands (4 of 4 runs stopped after
+the first). Stack samples showed all six helpers in
+`SlotVisitor::drainFromShared`, six collector threads in
+`drainInParallelPassively`, four exiting workers in
+`lastChanceToFinalize`, and the kernel in `Heap::waitForCollection`. With
+JavaScriptCore's helper threads disabled (`JSC_numberOfGCMarkers=1`), the
+same 20-command run passed twice. Web content cannot change that option.
+With the workaround below, every run that booted completed all 20
+commands (5 of 5; a sixth crashed during boot from the separate
+[TextDecoder crash](#webkit-page-process-crash-while-creating-textdecoders)
+before its mitigation), and the WebKit cases of
+`apps/browser-demos/test/php-web-image-cli.spec.ts` passed 9 of 9.
+
+**Workaround.** On JavaScriptCore each syscall wait is bounded at 100 ms.
+After a timeout the glue calls the host import `kernel.kernel_heap_safepoint`
+(ABI 52), which allocates a small `ArrayBuffer` and keeps waiting on the same
+request. Under this hypothesis the allocation gives the VM an allocation
+slow path at which it finishes the handed-off collection and releases its
+helpers, so a blocked process is expected to hold a collection for at most
+one interval instead of indefinitely. The kernel's answer, and the
+syscall's blocking and errno semantics, are unchanged; the timeout is not
+visible to the program. V8 and SpiderMonkey are not known to need
+safepoints, so on Chromium, Firefox, and Node the host answers the first
+timeout with an unbounded wait and the process waits exactly as before. The
+host import lives in `host/src/heap-safepoint.ts`; the bounded wait is in
+`libc/glue/channel_syscall.c`.
+
+The cost on JavaScriptCore is one wakeup per blocked thread per 100 ms. A
+standalone reproduction (24 workers that start a collection and then block)
+left all six helpers pinned and seven to eleven collections unfinished; with
+safepoints it left none, and waking up without allocating did not help.
+This entry stays suspected, for two reasons the measurements do not remove.
+The standalone page's helper pinning is read from a manual stack sample, not
+reported by the page itself, and a reproduction that needs a manual
+observation does not judge itself. It becomes a confirmed WebKit defect only
+when a standalone page reports the hang or the pinned helpers on its own,
+without a person reading a sample, and the same page passes with the
+workaround's allocation. Remove the workaround when JavaScriptCore releases
+heap access while a thread is blocked in a synchronous atomic wait, or stops
+handing a collection to such a thread.
+
+### WebKit page-process crash while creating TextDecoders
+
+This is a suspected WebKit problem with a tagged mitigation in the host
+runtime, recorded in the runtime workaround registry as
+[`WEBKIT-TEXTDECODER-WRAPPER-CRASH`](../tests/runtime-workarounds/WEBKIT-TEXTDECODER-WRAPPER-CRASH/entry.md). It is not a confirmed WebKit
+bug: there is no standalone reduction, so the cause is a hypothesis that fits
+the crash reports and the effect of the mitigation. The WebKit page process
+could crash with `SIGSEGV` in
+`HashMap<void*, Weak<JSObject>>::add`, called from
+`cacheWrapper<TextDecoder>` while JavaScript constructed a `TextDecoder`.
+The faulting addresses were data-like (for example `0x0403020100000008`),
+so a table WebKit uses to track the worker's DOM wrappers appears to have
+been corrupted. JavaScript cannot corrupt WebKit's native heap. In 24 of 25
+crash reports the faulting thread was the newest worker, handling its first
+message in interpreted code, which is a Kandelo process starting; in the
+other it was the kernel worker.
+
+The trigger was the burst of wrappers a process start created. The host
+parsed each program's export and import names with a new `TextDecoder` per
+name, in the kernel and again in the new process worker, and a PHP binary
+exports about 22,000 names. In Playwright's WebKit, booting the
+WordPress + MariaDB machine crashed in 5 of 32 runs, 8 of 32 without the
+disposable memory-allocation workers, and 8 of 32 with JavaScriptCore's
+concurrent collector off, so the crash is not the
+[garbage-collection deadlock](#javascriptcore-garbage-collection-and-blocked-workers)
+above. It also occurred before the PHP 8.5 upgrade. With one shared decoder
+for those names, 32 of 32 boots succeeded. A standalone page that starts
+nested workers which each construct 25,000 decoders did not crash, so the
+reduction to a WebKit test case is incomplete. The entry becomes a confirmed
+WebKit defect only when a standalone page reproduces the crash by itself and
+judges its own outcome.
+
+**Mitigation.** Wasm name parsing (`host/src/constants.ts`) and the
+thread-patching export scans (`host/src/worker-main.ts`) share one
+`TextDecoder`; `decode()` without `stream` keeps no state between calls.
+Other host code still constructs decoders per call. A recurrence elsewhere
+would be evidence for the hypothesis and a reason to build the standalone
+reduction, not a reason to avoid `TextDecoder` as a rule.
 
 ### Compiler engine limits
 

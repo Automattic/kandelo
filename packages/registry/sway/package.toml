@@ -8,7 +8,7 @@ kind = "program"
 # fork the programs they start, so those three are fork-instrumented.
 name = "sway"
 version = "1.12"
-kernel_abi = 52
+kernel_abi = 53
 depends_on = [
   "wlroots@0.20.2",
   "libwayland@1.24.0",

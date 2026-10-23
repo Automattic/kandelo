@@ -985,6 +985,16 @@ Process Worker                          Kernel Worker (host)
 15. Return to caller
 ```
 
+Step 4 is a bounded wait on JavaScriptCore, a workaround for a suspected
+engine behavior (not a confirmed WebKit defect). When it times out with the
+request still pending, the glue calls the host import
+`kernel.kernel_heap_safepoint`, which allocates from JavaScript so the
+worker's VM can finish a garbage collection that is suspected to have been
+handed to the blocked thread, and waits again on the same request. The host
+answers V8 and SpiderMonkey with an unbounded wait, so there the step is a
+single wait. The program observes the same result either way. See
+[the browser boundary](browser-support.md#javascriptcore-garbage-collection-and-blocked-workers).
+
 Steps 10–15 normally include caught-signal publication and libc handler
 dispatch. A request marked `REQUEST_FLAG_DEFER_SIGNAL_DELIVERY` deliberately
 omits that publication because JavaScript owns its completion and has no
@@ -2518,6 +2528,28 @@ Offset   Size   Field
 
 ## Networking
 
+IPv4 multicast can also cross local virtual links and remote Kandelo network
+sessions. The kernel selects the outgoing interface and owns multicast group
+membership, connected-peer/source filters, and local loopback delivery.
+Disabling `IP_MULTICAST_LOOP` suppresses the local copy without suppressing
+remote transmission. Virtual fabrics exclude the source machine and deliver
+one copy per kernel receive domain; a kernel fans out to its matching sockets.
+The session's existing bounded datagram transport forwards multicast through
+its host, with the same source-ownership checks and group-traffic budget used
+for broadcasts. Physical LAN UDP remains a host-backend boundary.
+
+This remains partial IPv4 multicast support. The default interface follows
+the active backend, including `10.89.*` sessions; explicit interface-address
+validation still recognizes only loopback and the `10.88.*` virtual range.
+Bind receivers to the wildcard address: binding a multicast group address
+is not implemented. `IP_MULTICAST_TTL` is stored but is not propagated or
+enforced by virtual transports. IPv6 multicast remains unsupported.
+
+A network backend may declare `ownsTcpListener(addr)` for a virtual binding.
+The host runtime then registers only the virtual listener: separate Kandelo
+machines may listen on identical ports without opening or contending for
+physical host sockets. Other Node listeners retain the native bridge.
+
 User-visible networking is POSIX-first. Guest programs call normal AF_UNIX, AF_INET, and partial AF_INET6 socket syscalls (`socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `poll`, and `select`). The Rust kernel owns the socket file descriptors, datagram queues, stream listener state, loopback routing, and errno behavior. Host transports plug in below that layer through `NetworkIO`; they are backends, not the userspace-visible abstraction.
 
 ### Readiness is a kernel decision; backends report facts
@@ -2599,7 +2631,7 @@ prefix length or the full datagram length. `MSG_CMSG_CLOEXEC` installs every
 received descriptor with `FD_CLOEXEC`, and that reflected flag is published
 atomically with the returned control data.
 
-Loopback addresses are scoped to one Kandelo machine, but not every socket path is machine-wide yet. IPv4 and IPv6 loopback TCP and AF_UNIX streams have explicit cross-process paths. Current in-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast delivery are confined to the sending process. Forked sockets retain their kernel-local bind reservations and local lookup targets, but host-backed UDP endpoint registrations are not yet shared or transferred between processes. AF_INET6 represents `sockaddr_in6`, supports `::`/`::1`, and models dual-stack wildcard stream-port reservation, but it has no external or virtual-network IPv6 transport and no IPv6 multicast delivery. AF_INET6 datagrams therefore report `IPV6_V6ONLY=1`; disabling it fails until dual-stack datagram routing exists.
+Loopback addresses are scoped to one Kandelo machine, but not every socket path is machine-wide yet. IPv4 and IPv6 loopback TCP and AF_UNIX streams have explicit cross-process paths. IPv4 loopback unicast and IPv4 multicast have machine-wide cross-process delivery paths. IPv6 loopback datagrams and AF_UNIX datagrams remain process-local. Forked sockets retain their kernel-local bind reservations and local lookup targets, but host-backed UDP endpoint registrations are not yet shared or transferred between processes. AF_INET6 represents `sockaddr_in6`, supports `::`/`::1`, and models dual-stack wildcard stream-port reservation, but it has no external or virtual-network IPv6 transport and no IPv6 multicast delivery. AF_INET6 datagrams therefore report `IPV6_V6ONLY=1`; disabling it fails until dual-stack datagram routing exists.
 
 Routed virtual IPv4 addresses are explicit backend addresses. For example, the browser network lab attaches separate machines to addresses such as `10.88.0.2`, `10.88.0.3`, and `10.88.0.4`; traffic to `127.0.0.1` stays inside one machine, while traffic to those virtual addresses can cross machines through the backend.
 
@@ -2678,8 +2710,11 @@ copy and sends one to the host, which delivers to every other member and never
 back to the sender. Because the host copies each broadcast up to 31 times, it
 meters what each member may originate (a burst of 64, refilled at 64 per
 second); excess broadcasts are dropped and counted in the snapshot. The kernel
-requires `SO_BROADCAST` for both addresses. Multicast and external raw UDP
-delivery are outside this segment's contract.
+requires `SO_BROADCAST` for both addresses. IPv4 multicast uses the same
+bounded forwarding and shared traffic budget, excluding the source computer;
+the kernel owns its optional local loopback and membership filtering.
+Multicast does not require `SO_BROADCAST`. External raw UDP delivery remains
+outside this segment's contract.
 
 The interface the kernel reports follows the host's assignment. A `NetworkIO`
 that reports `localAddress` also reports `localNetmask`, and every

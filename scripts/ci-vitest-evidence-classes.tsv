@@ -93,6 +93,7 @@ host/test/fork-from-dlopen-side-module-e2e.test.ts	prepared-product
 host/test/fork-from-thread.test.ts	prepared-product
 host/test/fork-function-catalog.test.ts	source-only
 host/test/fork-gc-codec.test.ts	source-only
+host/test/fork-host-import-retirement.test.ts	source-only
 host/test/fork-host-import-runtime.test.ts	source-only
 host/test/fork-imported-globals.test.ts	source-only
 host/test/fork-instrument-coverage.test.ts	prepared-product
@@ -125,6 +126,7 @@ host/test/getdents-boundary.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
+host/test/heap-safepoint.test.ts	prepared-product
 host/test/host-adapter-manifest.test.ts	source-only
 host/test/host-diagnostic-routing.test.ts	source-only
 host/test/host-file-offset.test.ts	source-only
@@ -440,6 +442,7 @@ packages/registry/spidermonkey/test/spidermonkey-node-parity.test.ts	prepared-pr
 packages/registry/spidermonkey/test/spidermonkey-tls-source.test.ts	source-only
 packages/registry/spidermonkey/test/spidermonkey.test.ts	prepared-product
 packages/registry/tmux/test/tmux.test.ts	prepared-product
+packages/registry/termchat/test/termchat.test.ts	prepared-product
 packages/registry/unzip/test/unzip.test.ts	prepared-product
 packages/registry/wordpress/test/php-sanity.test.ts	prepared-product
 packages/registry/wordpress/test/service-vfs-demo.test.ts	prepared-product
@@ -484,3 +487,4 @@ host/test/webgl-capabilities.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
 host/test/egl-image-ownership.test.ts	prepared-product
+host/test/futex-deadlines.test.ts	prepared-product

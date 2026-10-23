@@ -1,0 +1,57 @@
+id = "JSC-TERMINATE-ATOMICS-WAIT-LEAK"
+kind = "bug"
+status = "confirmed"
+runtimes = ["bun", "webkit"]
+summary = "terminate() leaves a worker blocked in an atomic wait still waiting, its thread and memory unreleased: reproduces on Bun 1.3.3; reproduced on WebKit build 2311, not on 2359"
+reports = "human-only"
+
+# The same probe twice: a script for JavaScript hosts and a page for
+# browsers. Controls (Node.js, Chromium, Firefox) are in entry.md, not in
+# `observed`, which holds only the affected runtimes.
+[[repro]]
+kind = "script"
+entry = "repro.mjs"
+targets = ["bun"]
+self_judging = true
+attempts = 2
+min_reproduced = 2
+timeout_seconds = 120
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["webkit"]
+self_judging = true
+timeout_seconds = 120
+
+[[observed]]
+runtime = "bun"
+version = "1.3.3"
+os = "macos"
+reproduced = true
+date = 2026-10-22
+source = "suite"
+released = true
+
+# Playwright webkit-2311 (Playwright 1.61.0), run with a scratch launcher
+# because the repo's Playwright 1.63.0 cannot drive that build.
+[[observed]]
+runtime = "webkit"
+version = "26.5"
+os = "macos"
+reproduced = true
+date = 2026-10-22
+source = "manual"
+released = false
+
+# Playwright webkit-2359, repro.html through driver.mjs. Listed after the
+# 26.5 record so it is the latest webkit/macos observation.
+[[observed]]
+runtime = "webkit"
+version = "26.6"
+os = "macos"
+reproduced = false
+date = 2026-10-22
+source = "suite"
+released = false
+

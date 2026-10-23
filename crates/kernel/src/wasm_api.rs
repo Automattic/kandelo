@@ -10795,7 +10795,7 @@ pub fn kernel_sendmsg(
             Err(e) => -(e as i32),
         };
     let cross_process_udp = (result >= 0)
-        .then(|| syscalls::cross_process_loopback_udp_route(proc, fd, addr))
+        .then(|| syscalls::cross_process_loopback_udp_route(proc, &mut host, fd, addr))
         .flatten();
     if result == -(Errno::EAGAIN as i32) {
         if let Err(error) = syscalls::ensure_blocking_retry_ofd_binding(
@@ -12043,7 +12043,7 @@ pub extern "C" fn kernel_send(fd: i32, buf_ptr: *const u8, buf_len: u32, flags: 
         Err(e) => -(e as i32),
     };
     let cross_process_udp = (result >= 0)
-        .then(|| syscalls::cross_process_loopback_udp_route(proc, fd, None))
+        .then(|| syscalls::cross_process_loopback_udp_route(proc, &mut host, fd, None))
         .flatten();
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     complete_cross_process_loopback_udp(cross_process_udp, buf);
@@ -12544,6 +12544,7 @@ pub fn kernel_sendto(
         .then(|| {
             syscalls::cross_process_loopback_udp_route(
                 proc,
+                &mut host,
                 fd,
                 (!addr.is_empty()).then_some(addr),
             )
@@ -14800,6 +14801,10 @@ pub extern "C" fn kernel_inject_datagram(
         ],
         src_port as u16,
         data,
+        WasmHostIO
+            .host_network_interface()
+            .map(|iface| iface.address)
+            .unwrap_or([0; 4]),
     )
 }
 

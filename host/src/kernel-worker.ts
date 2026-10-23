@@ -986,8 +986,8 @@ const SIGSEGV = 11;
  *  glue after Rust has already committed process death (see
  *  killAllBlockedForTeardown and borrowed-process completion below). It is never
  *  delivered as a catchable guest signal, so the glue treats it unambiguously.
- *  [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — part of the workaround; see
- *  docs/jsc-terminate-atomics-wait-workaround.md. */
+ *  [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+ *  Part of the workaround; see docs/jsc-terminate-atomics-wait-workaround.md. */
 const SIGKILL = 9;
 
 /** Ioctl syscall number */
@@ -3883,6 +3883,7 @@ export class CentralizedKernelWorker {
           new Uint8Array(addr),
           port,
           {
+            kernelReceiver: String(pid),
             receive: (datagram) => this.injectUdpDatagram(pid, datagram),
           },
         );
@@ -11332,6 +11333,7 @@ export class CentralizedKernelWorker {
     const mem = new Uint8Array(memory.buffer);
     let len = 0;
     while (len < maxLen && ptr + len < mem.length && mem[ptr + len] !== 0) len++;
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // TextDecoder.decode() rejects views over SharedArrayBuffer in Chrome;
     // copy into a non-shared scratch first.
     const copy = new Uint8Array(len);
@@ -12162,14 +12164,14 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Execute one synchronous MAP_SHARED backend operation under a real entry
+   * Execute one synchronous backend operation under a real entry
    * lease, or only while the gate is completely idle for host-only teardown.
    *
    * WHY: PlatformIO implementations can synchronously call back into public
    * worker roots. The exact scope keeps void ingress queued and result-bearing
    * ingress rejected until the caller validates its staged result and commits.
    */
-  #invokeSharedMmapHostOperation<T>(
+  #invokeSerializedHostOperation<T>(
     entry: KernelWorkerEntryContext | undefined,
     operation: () => T,
   ): T {
@@ -12177,7 +12179,7 @@ export class CentralizedKernelWorker {
       return entry.invokeSerializedHostOperation(operation);
     }
     return this.#kernelEntryGate.runSerializedHostOperation(
-      "MAP_SHARED host operation",
+      "serialized host operation",
       operation,
     );
   }
@@ -15559,17 +15561,19 @@ export class CentralizedKernelWorker {
   /**
    * Host-teardown reclamation.
    *
-   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
-   * is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+   * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+   * WORKAROUND, remove when the engine bug is fixed; see
+   * docs/jsc-terminate-atomics-wait-workaround.md.
    *
-   * On JSC (Safari, and Bun via `bun`'s JavaScriptCore), `Worker.terminate()`
-   * cannot kill (or free the memory of) a worker parked in `Atomics.wait` on
-   * its syscall channel — which is where every idle/blocked process worker sits
-   * (accept, read, poll, select, sleep, futex, the channel round-trip).
-   * Terminating them directly leaks their threads + committed working set, so
-   * each image switch accumulates a whole machine and the tab OOMs. V8 (Chrome,
-   * Node) interrupts the wait on terminate and reclaims, so this is a no-op cost
-   * there and is invoked unconditionally by both host entries for parity.
+   * Where the defect is present (Bun today; older WebKit and Safari builds, see
+   * the registry entry), `Worker.terminate()` cannot kill (or free the memory
+   * of) a worker parked in `Atomics.wait` on its syscall channel — which is
+   * where every idle/blocked process worker sits (accept, read, poll, select,
+   * sleep, futex, the channel round-trip). Terminating them directly leaks
+   * their threads + committed working set, so each image switch accumulates a
+   * whole machine and the tab OOMs. V8 (Chrome, Node) interrupts the wait on
+   * terminate and reclaims, so this is a no-op cost there and is invoked
+   * unconditionally by both host entries for parity.
    *
    * For every worker currently parked at CH_PENDING we complete its syscall
    * with EINTR AND queue a SIGKILL into the channel signal slot. The glue's
@@ -15690,20 +15694,24 @@ export class CentralizedKernelWorker {
    * so it runs the guest glue's cooperative `kernel_exit` and returns to its JS
    * event loop, where a subsequent `Worker.terminate()` can actually reclaim it.
    *
-   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] `terminate_process` (host force-kill; how
-   * a terminal session's process is torn down on every machine switch) used to
-   * hard-terminate the worker while it was still parked in `Atomics.wait`. On
-   * JavaScriptCore (Safari, Bun) `Worker.terminate()` cannot reap an
-   * `Atomics.wait`-parked worker, so its OS thread + committed working set
-   * leaked — one per switch, until Safari/iOS OOMed. `killAllBlockedForTeardown`
-   * fixes the same class at whole-machine destroy, but is unusable for a single
-   * `kill(pid)` because it wakes (and thus exits) *every* live process. This
-   * variant is scoped so sibling processes keep running (e.g. tearing down one
-   * of several servers). Delivering SIGKILL through the ordinary signal path is
-   * not sufficient: it only wakes *registered* blockers (signal-waits, futex,
-   * wait4, pipe readers), never a channel merely parked at `CH_PENDING` on a
-   * blocked `read`/`accept`. The wake must be driven off `CH_STATUS`, exactly as
-   * the global method does. See docs/jsc-terminate-atomics-wait-workaround.md.
+   * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+   * `terminate_process` (host force-kill; how a terminal session's process is
+   * torn down on every machine switch) used to hard-terminate the worker while
+   * it was still parked in `Atomics.wait`. On Playwright webkit-2336
+   * (2026-09) the app then leaked one `WebCore: Worker` thread per switch,
+   * sampled in `operationMemoryAtomicWait32`, until this per-process wake was
+   * added. The standalone reduction was flat on that same build, so whether
+   * that leak was this engine defect or had another cause is unresolved (see
+   * the entry). Bun 1.3.3 reproduces the reduction today.
+   * `killAllBlockedForTeardown` fixes the same class at whole-machine destroy,
+   * but is unusable for a single `kill(pid)` because it wakes (and thus exits)
+   * *every* live process. This variant is scoped so sibling processes keep
+   * running (e.g. tearing down one of several servers). Delivering SIGKILL
+   * through the ordinary signal path is not sufficient: it only wakes
+   * *registered* blockers (signal-waits, futex, wait4, pipe readers), never a
+   * channel merely parked at `CH_PENDING` on a blocked `read`/`accept`. The
+   * wake must be driven off `CH_STATUS`, exactly as the global method does. See
+   * docs/jsc-terminate-atomics-wait-workaround.md.
    */
   killBlockedProcessForTeardown(pid: number): Promise<Set<number>> {
     if (this.#kernelFatalError !== null) {
@@ -15920,7 +15928,7 @@ export class CentralizedKernelWorker {
 
   /** Complete a blocked channel with EINTR and queue SIGKILL so the guest glue
    *  runs its cooperative exit. See {@link killAllBlockedForTeardown}.
-   *  [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — see
+   *  [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK] — see
    *  docs/jsc-terminate-atomics-wait-workaround.md. */
   private wakeChannelForTeardownExit(
     channel: ChannelInfo,
@@ -22132,6 +22140,7 @@ export class CentralizedKernelWorker {
       path = resolvedPath.value;
     }
 
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // .slice copies into a regular ArrayBuffer (TextDecoder rejects SAB views).
     const blobBytes = processMem.slice(
       checkedBlobPtr,
@@ -23040,6 +23049,7 @@ export class CentralizedKernelWorker {
     while (ptr + len < mem.length && mem[ptr + len] !== 0 && len < maxLen) {
       len++;
     }
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // .slice() copies from SharedArrayBuffer into a regular ArrayBuffer
     // because TextDecoder.decode() doesn't accept SharedArrayBuffer views.
     return new TextDecoder().decode(mem.slice(ptr, ptr + len));
@@ -23069,6 +23079,7 @@ export class CentralizedKernelWorker {
     }
 
     return {
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // .slice() copies from SharedArrayBuffer for TextDecoder compatibility.
       value: new TextDecoder().decode(mem.slice(ptr, ptr + byteLength)),
     };
@@ -23136,6 +23147,7 @@ export class CentralizedKernelWorker {
         return { errno: E2BIG };
       }
 
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // .slice() copies from SharedArrayBuffer for TextDecoder compatibility.
       values.push(new TextDecoder().decode(mem.slice(strPtr, strPtr + byteLength)));
     }
@@ -25502,8 +25514,23 @@ export class CentralizedKernelWorker {
           // WHY: validate and cap in bigint before converting to Number.
           // Otherwise a large signed timespec can round to a different wait,
           // while an invalid nanosecond field can silently carry into seconds.
-          const requestedMs =
-            sec * 1000n + (nsec + 999_999n) / 1_000_000n;
+          let remainingNs = sec * 1_000_000_000n + nsec;
+          if (baseOp === FUTEX_WAIT_BITSET) {
+            // WAIT_BITSET takes an absolute deadline, unlike WAIT's
+            // relative duration. Use the same provider as clock_gettime:
+            // worker-local performance.now() has a different epoch on Node.
+            const clockId = (op & FUTEX_CLOCK_REALTIME) !== 0 ? 0 : 1;
+            // PlatformIO can call back into the worker. Keep that callback
+            // serialized without lending it Wasm authority, and consume its
+            // result fields before returning to the scoped syscall handler.
+            const nowNs = this.#invokeSerializedHostOperation(entry, () => {
+              const now = this.io.clockGettime(clockId);
+              return BigInt(now.sec) * 1_000_000_000n + BigInt(now.nsec);
+            });
+            remainingNs -= nowNs;
+            if (remainingNs < 0n) remainingNs = 0n;
+          }
+          const requestedMs = (remainingNs + 999_999n) / 1_000_000n;
           const cappedMs =
             requestedMs > 2_147_483_647n
               ? 2_147_483_647n
@@ -25527,6 +25554,7 @@ export class CentralizedKernelWorker {
         }
       }
     } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
       this.#rejectScratchTransfer(channel, error, entry);
       return;
     }
@@ -27207,7 +27235,7 @@ export class CentralizedKernelWorker {
     entry?: KernelWorkerEntryContext,
   ): SharedMmapHostResult<string> {
     try {
-      const key = this.#invokeSharedMmapHostOperation(
+      const key = this.#invokeSerializedHostOperation(
         entry,
         () => this.io.fileHandleIdentity?.(
           handle,
@@ -27467,7 +27495,7 @@ export class CentralizedKernelWorker {
     const expectedHandle = backing.handle;
     const expectedKey = backing.key;
     try {
-      const snapshot = this.#invokeSharedMmapHostOperation(entry, () => {
+      const snapshot = this.#invokeSerializedHostOperation(entry, () => {
         const stat = this.io.fstat(expectedHandle);
         const dev = BigInt(stat.dev);
         const ino = BigInt(stat.ino);
@@ -27581,7 +27609,7 @@ export class CentralizedKernelWorker {
       0,
       Math.min(FILE_PAGE_SIZE, expectedSize - pageOffset),
     );
-    const staged = this.#invokeSharedMmapHostOperation(entry, () => {
+    const staged = this.#invokeSerializedHostOperation(entry, () => {
       const bytes = new Uint8Array(FILE_PAGE_SIZE);
       let total = 0;
       while (total < readable) {
@@ -27864,7 +27892,7 @@ export class CentralizedKernelWorker {
     const expectedKey = backing.key;
     const ownedSource = new Uint8Array(source);
     try {
-      const success = this.#invokeSharedMmapHostOperation(entry, () => {
+      const success = this.#invokeSerializedHostOperation(entry, () => {
         let written = 0;
         while (written < ownedSource.length) {
           const remaining = ownedSource.length - written;
@@ -28027,6 +28055,7 @@ export class CentralizedKernelWorker {
       let end = pathPtr;
       while (end < limit && memory[end] !== 0) end++;
       if (end === limit) return { kind: "error", errno: ENAMETOOLONG };
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // Chrome's TextDecoder rejects views backed by SharedArrayBuffer. Copy
       // the guest pathname into ordinary host memory before decoding.
       const pathBytes = new Uint8Array(end - pathPtr);
@@ -28081,7 +28110,7 @@ export class CentralizedKernelWorker {
   ): SharedMmapBacking | null {
     if (this.sharedMmapBackings.size === 0) return null;
     try {
-      const snapshot = this.#invokeSharedMmapHostOperation(entry, () => {
+      const snapshot = this.#invokeSerializedHostOperation(entry, () => {
         const stat = this.io.stat(path);
         const dev = BigInt(stat.dev);
         const ino = BigInt(stat.ino);
@@ -31112,6 +31141,10 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // A guest virtual link has its own TCP namespace. Opening a physical
+    // listener here would make independent machines contend for the same
+    // host port and expose a virtual-only service outside its link.
+    if (this.io.network?.ownsTcpListener?.(new Uint8Array(addr))) return;
     if (!this.netModule) return; // Not in Node.js environment — no real TCP server
     if (reusableListener) {
       this.tcpListeners.set(key, {
