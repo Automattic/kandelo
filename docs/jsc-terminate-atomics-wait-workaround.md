@@ -1,4 +1,4 @@
-# Workaround: JSC `Worker.terminate()` does not reclaim `Atomics.wait`-blocked workers
+# Workaround: `Worker.terminate()` leaves `Atomics.wait`-blocked workers waiting (Bun; older WebKit)
 
 **Status:** active workaround for a runtime defect confirmed on Bun.
 The defect, its evidence, its standalone reproduction, the draft upstream
@@ -15,28 +15,32 @@ git grep -n "RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK"
 
 ## The defect in short
 
-On **JavaScriptCore (JSC)**, `Worker.terminate()` on a worker blocked in
-`Atomics.wait()` or `memory.atomic.wait32` leaves it blocked, so its OS
-thread and committed memory are not freed. In Kandelo every process and
-thread worker spends nearly all its life in such a wait (the JS side in
-`worker-main.ts`, or `memory.atomic.wait32` in the musl channel glue),
-waiting for the kernel to service a syscall. Tearing a machine down by
+`Worker.terminate()` on a worker blocked in `Atomics.wait()` or
+`memory.atomic.wait32` can leave it blocked, so its OS thread and committed
+memory are not freed. In Kandelo every process and thread worker spends
+nearly all its life in such a wait (the JS side in `worker-main.ts`, or
+`memory.atomic.wait32` in the musl channel glue), waiting for the kernel to
+service a syscall. Where the defect is present, tearing a machine down by
 terminating those workers leaks all of them, and repeatedly booting or
 switching machines in one tab grows memory until the tab throws "Out of
-Memory".
+Memory". That is what Safari did in July 2026 (PR #863).
 
-The boundary is the JavaScript engine, not "browser vs Node":
+Where it has been observed (details in the entry):
 
-| Engine | Runtimes | `terminate()` on a blocked worker |
-|---|---|---|
-| **JSC** | **Safari, Bun** | leaks thread + memory: needs this workaround (reproduced on Bun 1.3.3 and Playwright WebKit webkit-2311; not on webkit-2359; released Safari not rechecked; see the entry) |
-| **V8** | Chrome, Node.js | interrupts the wait and reclaims: the workaround is a no-op |
+| Runtime | `terminate()` on a blocked worker |
+|---|---|
+| Bun 1.3.3 (`node:worker_threads`) | leaks thread + memory; `terminate()` never settles |
+| Playwright WebKit webkit-2311 | the terminated worker stays a registered waiter; leaked thread + memory measured |
+| Playwright WebKit webkit-2359 | reclaimed |
+| Released Safari | not rechecked since July 2026 |
+| Node.js, Chromium, Firefox | reclaimed: the workaround is a no-op |
 
-Because Bun embeds JSC, the **Node host entry** (`node-kernel-worker-entry.ts`)
-is affected too when run under Bun. The workaround is therefore applied in
-**both** host entries, unconditionally: it is required on JSC and a small,
-bounded no-op cost on V8, which is cheaper and less fragile than sniffing the
-engine at runtime.
+Because Bun is affected, the **Node host entry** (`node-kernel-worker-entry.ts`)
+needs the workaround too when run under Bun, not just the browser. The
+workaround is therefore applied in **both** host entries, unconditionally:
+it is required where the defect is present and a small, bounded no-op cost
+elsewhere, which is cheaper and less fragile than sniffing the engine at
+runtime.
 
 ## How the workaround reaches a clean exit
 

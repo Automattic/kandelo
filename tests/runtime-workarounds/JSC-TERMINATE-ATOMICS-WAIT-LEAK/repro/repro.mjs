@@ -10,6 +10,10 @@
 // released. Both JavaScript Atomics.wait and WebAssembly
 // memory.atomic.wait32 are tested. A blocked worker that is not terminated
 // must be counted (sanity check), or the verdict is inconclusive.
+//
+// The details also say how many terminate() promises settled. Node.js
+// documents that terminate() stops all JavaScript in the worker "as soon as
+// possible" and returns a promise fulfilled when the 'exit' event fires.
 import { Worker } from 'node:worker_threads';
 
 const ROUNDS = 2;
@@ -55,6 +59,7 @@ async function blockedWorker(how) {
 
 async function main() {
   const results = {};
+  const terminations = {};
   for (const how of ['js', 'wasm']) {
     const live = await blockedWorker(how);
     const liveCount = Atomics.notify(live.word, 0);
@@ -63,18 +68,24 @@ async function main() {
       return { verdict: 'inconclusive', details: `${how}: notify counted ${liveCount} waiters for a live blocked worker (expected 1)` };
     }
     const counts = [];
+    let settled = 0;
     for (let round = 0; round < ROUNDS; round++) {
       const { worker, word } = await blockedWorker(how);
       // Do not await: a terminate() that never completes is the defect.
-      worker.terminate().catch(() => {});
+      let done = false;
+      worker.terminate().then(() => { done = true; }, () => { done = true; });
       await sleep(TERMINATE_SETTLE_MS);
+      if (done) settled++;
       counts.push(Atomics.notify(word, 0));
     }
     results[how] = counts;
+    terminations[how] = settled;
     console.log(`${how}: waiters still parked after terminate(): ${counts.join(', ')}`);
   }
   const still = Object.entries(results).filter(([, counts]) => counts.some((c) => c > 0));
-  const summary = Object.entries(results).map(([how, counts]) => `${how} [${counts.join(',')}]`).join('; ');
+  const summary = Object.entries(results)
+    .map(([how, counts]) => `${how} [${counts.join(',')}], ${terminations[how]}/${counts.length} terminate() settled before notify`)
+    .join('; ');
   return still.length
     ? { verdict: 'reproduced', details: `terminated workers still waiting (${still.map(([how]) => how).join(', ')}): ${summary}` }
     : { verdict: 'not-reproduced', details: `no terminated worker still waiting: ${summary}` };

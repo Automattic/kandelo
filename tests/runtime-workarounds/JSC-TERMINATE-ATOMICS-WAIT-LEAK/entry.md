@@ -1,22 +1,35 @@
 # JSC-TERMINATE-ATOMICS-WAIT-LEAK
 
-Status: confirmed on Bun 1.3.3 (macOS). Not reproduced on Playwright WebKit
-webkit-2359; reproduced on webkit-2311. Released Safari not yet checked.
-Not filed.
+Status: confirmed on Bun 1.3.3 (macOS), through `node:worker_threads`.
+Playwright WebKit reproduced it on build webkit-2311 and does not on
+webkit-2359. Released Safari has not been checked. Not filed.
 
 ## Defect
 
-On JavaScriptCore (JSC), `Worker.terminate()` does not stop a worker that is
-blocked in an infinite atomic wait, either JavaScript `Atomics.wait()` or
-WebAssembly `memory.atomic.wait32`. The worker stays registered as a waiter
-on the word it waited on, and its OS thread and everything it holds (its
-`WebAssembly.Memory`, its JavaScript heap) are not released. Repeating
-create, block, terminate leaks one thread and the worker's committed memory
-each time, until the process runs out of memory.
+On Bun 1.3.3, `worker.terminate()` (`node:worker_threads`) does not stop a
+worker that is blocked in an infinite atomic wait, either JavaScript
+`Atomics.wait()` or WebAssembly `memory.atomic.wait32`. The worker stays
+registered as a waiter on the word it waited on, the promise `terminate()`
+returns never settles, no `'exit'` event fires, and the worker's OS thread
+and everything it holds (its `WebAssembly.Memory`, its JavaScript heap)
+are not released. Repeating create, block, terminate leaks one thread and
+the worker's committed memory each time. A worker terminated while idle is
+reclaimed.
 
-The HTML specification's "terminate a worker" steps abort the script
-running in the worker; a worker that cannot be terminated while it waits
-breaks that, and the leaked resources are never reclaimable.
+Bun implements the Node.js `worker_threads` API, whose documentation says
+`worker.terminate()` stops all JavaScript execution in the worker thread as
+soon as possible and returns a promise fulfilled when the `'exit'` event is
+emitted. Node.js 24 does that for the same script in about 5 ms; on Bun
+the promise has not settled 5 s later.
+
+Earlier WebKit builds showed the same in a browser: on Playwright WebKit
+webkit-2311 a dedicated worker (`new Worker` in a page) blocked in either
+wait was still a registered waiter 10 s after `terminate()`, and the
+maintainer measured one leaked thread and the committed memory per
+iteration there. webkit-2359 no longer does this. Whether the cause is in
+JavaScriptCore itself, which Bun and WebKit share, or separately in Bun's
+worker layer and WebKit's, is not known; the ID names JSC because that is
+where the defect was first seen.
 
 ## Why Kandelo is affected
 
@@ -24,10 +37,10 @@ Every Kandelo process and thread runs in a worker, and that worker spends
 almost all its life blocked in `memory.atomic.wait32` (in the musl syscall
 glue) or `Atomics.wait` (in `host/src/worker-main.ts`), waiting for the
 kernel to answer a syscall on its channel. Tearing a machine down by
-terminating those workers leaked all of them on Safari: repeatedly booting
-or switching machines in one tab grew memory until Safari threw "Out of
-memory" (PR #863). Bun embeds JSC, so the Node.js host entry is affected
-when it runs under Bun.
+terminating those workers leaked all of them on Safari in July 2026:
+repeatedly booting or switching machines in one tab grew memory until
+Safari threw "Out of memory" (PR #863). The Node.js host entry is affected
+when it runs under Bun, which reproduces the leak today.
 
 ## Workaround and its cost
 
@@ -48,12 +61,15 @@ Cost: destroy and `terminate_process` wait up to
 special case for `SIGKILL`; teardown has more states to get right. It runs
 on every engine (on V8 it is a small no-op cost) because that is cheaper and
 less fragile than detecting the engine. A guest stuck in a loop that never
-makes a syscall never sees the wake and still leaks its worker on JSC.
+makes a syscall never sees the wake and still leaks its worker on an
+affected runtime.
 
 ## Evidence
 
 `repro/repro.mjs` (JavaScript hosts, `node:worker_threads`) and
-`repro/repro.html` (browsers) run the same probe. A worker commits 16 MiB of
+`repro/repro.html` (browsers) run the same probe. Both are declared
+`[[repro]]` tables, so the suite runs the script on Bun and the page on
+WebKit. A worker commits 16 MiB of
 a shared `WebAssembly.Memory` and blocks in an infinite wait on word 0. The
 parent terminates it, waits 5 s, and calls `Atomics.notify()` on word 0.
 `notify` returns how many waiters it woke, so 0 means the terminated worker
@@ -61,12 +77,15 @@ is gone and 1 means it is still parked. A sanity check runs first: a
 blocked worker that is *not* terminated must be counted as 1. Both waits are
 tested (`js` = `Atomics.wait`, `wasm` = `memory.atomic.wait32`).
 
-Driver results on macOS 27, 2026-10-22 (counts per round):
+Driver results on macOS 27, 2026-10-22 (counts per round). Node.js,
+Chromium and Firefox are controls: they are recorded only here, because
+`entry.toml`'s `observed` holds the affected runtimes (a control that never
+had the defect is not evidence of a fix).
 
 | runtime | version | result |
 |---|---|---|
-| Bun | 1.3.3 | reproduced: js [1,1], wasm [1,1] |
-| Node.js (V8, control) | v24.15.0 | not reproduced: js [0,0], wasm [0,0] |
+| Bun | 1.3.3 | reproduced: js [1,1], wasm [1,1]; no `terminate()` promise settled before the notify |
+| Node.js (V8, control) | v24.15.0 | not reproduced: js [0,0], wasm [0,0]; every `terminate()` settled |
 | Playwright WebKit webkit-2311 (Playwright 1.61.0) | 26.5 | reproduced: js [1,1,1], wasm [1,1,1]; still 1 after 10 s |
 | Playwright WebKit webkit-2359 | 26.6 | not reproduced: js [0,0,0], wasm [0,0,0] |
 | Playwright Chromium | 153.0.8010.12 | not reproduced with the 5 s wait |
@@ -102,15 +121,17 @@ History from the maintainer's notes:
 ## Why this is not a Kandelo defect
 
 The reproduction contains no Kandelo code: a worker, a shared memory, one
-wait, `terminate()`. It reproduces on Bun and on an older WebKit build, and
-not on V8 or SpiderMonkey, and the sanity check shows the probe counts a
-blocked worker correctly. Whether released Safari still leaks is not yet
-known.
+wait, `terminate()`. It reproduces on Bun 1.3.3 and reproduced on WebKit
+build webkit-2311; it does not on Node.js (V8), Chromium, Firefox or
+webkit-2359, and the sanity check shows the probe counts a blocked worker
+correctly. Whether released Safari leaks today is not known, and neither
+is whether the cause lies in JavaScriptCore or in each embedder's worker
+layer.
 
 ## Draft upstream report
 
-Not filed. Two candidate trackers: Bun (github.com/oven-sh/bun) for the Bun
-result, and bugs.webkit.org (JavaScriptCore) if released Safari still
+Not filed. The Bun result goes to Bun (github.com/oven-sh/bun); a WebKit
+report (bugs.webkit.org, JavaScriptCore) only if released Safari still
 reproduces. Related WebKit bugs, neither of which covers this case:
 
 | Bug | Title | Status | Relevance |
@@ -118,27 +139,25 @@ reproduces. Related WebKit bugs, neither of which covers this case:
 | [278866](https://bugs.webkit.org/show_bug.cgi?id=278866) | [JSC] Fix `Atomics.wait` by handling termination cases | RESOLVED FIXED, Aug 2024 (`282974@main`) | Made JSC wake infinite-timeout waiters on VM termination. Touched `AtomicsObject.cpp`, `VMTraps.cpp`, `WaiterListManager.{h,cpp}`; JS `Atomics.wait` only. webkit-2311 still reproduced after it. |
 | [250569](https://bugs.webkit.org/show_bug.cgi?id=250569) | Terminated worker memory leak | RESOLVED CONFIGURATION CHANGED (disputed) | Child workers not collected after the parent terminates. The reporter said it still reproduced in Safari 18.0.1; the WebKit engineer asked for a fresh bug with a concrete reproduction. |
 
-> **Title:** `Worker.terminate()` does not reclaim a worker blocked in
-> `Atomics.wait` or `memory.atomic.wait32`; the terminated worker stays a
-> registered waiter and its thread and memory leak
+> **Title:** `worker.terminate()` (`node:worker_threads`) never completes
+> for a worker blocked in `Atomics.wait` or `memory.atomic.wait32`; the
+> worker's thread and memory leak
 >
-> **Environment:** Bun 1.3.3 (macOS 27); WebKit: Playwright WebKit
-> webkit-2311 (26.5) reproduces, webkit-2359 (26.6) does not; Safari
-> _<version to check>_. Browsers need a cross-origin-isolated page
-> (`Cross-Origin-Opener-Policy: same-origin`,
-> `Cross-Origin-Embedder-Policy: require-corp`) for shared memory.
+> **Environment:** Bun 1.3.3, macOS 27.
 >
 > **Summary:** When a worker is blocked in an infinite `Atomics.wait()` or
-> WebAssembly `memory.atomic.wait32`, `worker.terminate()` does not stop it.
-> Five seconds later `Atomics.notify()` on the word it waited on still wakes
-> one waiter, and the worker's OS thread and committed memory are still in
-> the process: 10 such workers, each holding 64 MiB, added 12 threads and
-> 691 MiB RSS to a Bun process. A worker terminated while idle is
-> reclaimed. Node.js (V8) and Firefox reclaim the blocked worker.
+> WebAssembly `memory.atomic.wait32`, `worker.terminate()` does not stop
+> it: the returned promise does not settle and no `'exit'` event fires.
+> Five seconds later `Atomics.notify()` on the word it waited on still
+> wakes one waiter, and the worker's OS thread and committed memory are
+> still in the process: 10 such workers, each holding 64 MiB, added 12
+> threads and 691 MiB RSS. A worker terminated while idle is reclaimed.
+> Node.js 24 terminates the same blocked worker in about 5 ms, as its
+> `worker.terminate()` documentation describes.
 >
-> **Steps:** run `bun repro.mjs` (attached `repro/` directory), or serve
-> `repro/` cross-origin isolated and open `repro.html`. Each prints a
-> verdict line with the waiter counts per round.
+> **Steps:** run `bun repro.mjs` in the attached `repro/` directory. It
+> prints a `REPRO-VERDICT` line with the waiter counts per round and how
+> many `terminate()` promises settled. Compare `node repro.mjs`.
 >
 > **Expected:** after `terminate()`, the worker's wait ends, its thread
 > exits, and its memory is released; `notify` counts 0.
@@ -149,7 +168,9 @@ reproduces. Related WebKit bugs, neither of which covers this case:
 > a worker blocked on a syscall channel leaks every worker it tears down,
 > and repeated restarts run the tab or process out of memory.
 >
-> **References:** WebKit bugs 278866 (`282974@main`) and 250569.
+> **References:** possibly related WebKit bugs 278866 (`282974@main`) and
+> 250569; Playwright WebKit webkit-2311 showed the same with
+> `repro/repro.html`, webkit-2359 does not.
 
 The original draft for bugs.webkit.org, written 2026-07-09 against
 webkit-2311 with the manual harness (watch threads and RSS in Activity

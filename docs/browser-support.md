@@ -2998,13 +2998,15 @@ recycling the backing. Whole-kernel destroy terminates nested process/thread
 Workers before terminating the containing kernel Worker realm, which is the
 final fallback for incomplete graceful detach.
 
-On JavaScriptCore (Safari, Bun), `Worker.terminate()` does not reclaim a
-Worker blocked in an atomic wait, so teardown first wakes blocked Workers
-into a cooperative exit. The mechanism is described in
+Teardown first wakes blocked Workers into a cooperative exit instead of
+terminating them while they wait. `Worker.terminate()` on a Worker blocked
+in an atomic wait leaves it waiting, with its thread and memory unreleased,
+on Bun 1.3.3 today; Playwright WebKit showed the same on build webkit-2311
+and no longer does on webkit-2359, and released Safari has not been
+rechecked. The mechanism is described in
 [the terminate workaround page](jsc-terminate-atomics-wait-workaround.md);
-the defect, its standalone reproduction (confirmed on Bun 1.3.3, no longer
-reproducing on Playwright WebKit webkit-2359) and its removal criteria are
-in the registry entry
+the evidence, the standalone reproductions and the removal criteria are in
+the registry entry
 [`JSC-TERMINATE-ATOMICS-WAIT-LEAK`](../tests/runtime-workarounds/JSC-TERMINATE-ATOMICS-WAIT-LEAK/entry.md).
 
 Audio and framebuffer presentation use independent bounded shared buffers.
