@@ -1,0 +1,16 @@
+id = "LLVM-WASM64-O2-TABLE-SIGNEXT-MISCOMPILE"
+kind = "bug"
+status = "suspected"
+runtimes = ["llvm"]
+summary = "Suspected: LLVM 21's wasm64 backend miscompiles sign extension of i32 to i64 in table lookups at -O2, so MariaDB wasm64 builds at -O1"
+reports = "human-only"
+
+# No [[repro]]: no standalone reduction exists yet (see entry.md).
+
+[[sites_without_tags]]
+path = "packages/registry/mariadb/build-mariadb.sh"
+note = "Build script; a comment here would change the package's cache key (the script is a declared input) and force an unneeded rebuild, so it is listed here until the file is next edited for another reason. The site is the MARIADB_OPT_LEVEL default of -O1 for wasm64."
+
+[[sites_without_tags]]
+path = "docs/profiling.md"
+note = "Prose describing the wasm64 -O1 choice; prose is not a code site."

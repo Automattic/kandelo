@@ -1997,6 +1997,7 @@ export function buildDlopenImports(
       nameRange.offset,
       nameRange.length,
     );
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // WHY: compilation may grow/detach memory, and Firefox/Chrome reject
     // TextDecoder views backed directly by SharedArrayBuffer.
     return {
@@ -2200,6 +2201,7 @@ export function buildDlopenImports(
         );
         // Copy bytes since memory.buffer may detach during Wasm instantiation
         const bytesCopy = new Uint8Array(bytes);
+        // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
         // TextDecoder.decode() rejects views backed by SharedArrayBuffer
         // in Firefox (and recent Chrome), so copy the name bytes through
         // a non-shared Uint8Array before decoding. Same shape as

@@ -833,6 +833,7 @@ function dispatch(
     case O.OP_SHADER_SOURCE: {
       const name = v.getUint32(p, true);
       const srcLen = v.getUint32(p + 4, true);
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // TextDecoder rejects views over SharedArrayBuffer, which the
       // cmdbuf is when the user program runs against shared memory
       // (the wasm-posix-kernel default). Copy into a fresh
@@ -885,6 +886,7 @@ function dispatch(
       const prog = b.programs.get(v.getUint32(p, true));
       const index = v.getUint32(p + 4, true);
       const nameLen = v.getUint32(p + 8, true);
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // Copy off the (possibly shared) cmdbuf — TextDecoder rejects
       // views over SharedArrayBuffer.
       const nameBytes = new Uint8Array(nameLen);

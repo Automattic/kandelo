@@ -11332,6 +11332,7 @@ export class CentralizedKernelWorker {
     const mem = new Uint8Array(memory.buffer);
     let len = 0;
     while (len < maxLen && ptr + len < mem.length && mem[ptr + len] !== 0) len++;
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // TextDecoder.decode() rejects views over SharedArrayBuffer in Chrome;
     // copy into a non-shared scratch first.
     const copy = new Uint8Array(len);
@@ -22136,6 +22137,7 @@ export class CentralizedKernelWorker {
       path = resolvedPath.value;
     }
 
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // .slice copies into a regular ArrayBuffer (TextDecoder rejects SAB views).
     const blobBytes = processMem.slice(
       checkedBlobPtr,
@@ -23044,6 +23046,7 @@ export class CentralizedKernelWorker {
     while (ptr + len < mem.length && mem[ptr + len] !== 0 && len < maxLen) {
       len++;
     }
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // .slice() copies from SharedArrayBuffer into a regular ArrayBuffer
     // because TextDecoder.decode() doesn't accept SharedArrayBuffer views.
     return new TextDecoder().decode(mem.slice(ptr, ptr + len));
@@ -23073,6 +23076,7 @@ export class CentralizedKernelWorker {
     }
 
     return {
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // .slice() copies from SharedArrayBuffer for TextDecoder compatibility.
       value: new TextDecoder().decode(mem.slice(ptr, ptr + byteLength)),
     };
@@ -23140,6 +23144,7 @@ export class CentralizedKernelWorker {
         return { errno: E2BIG };
       }
 
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // .slice() copies from SharedArrayBuffer for TextDecoder compatibility.
       values.push(new TextDecoder().decode(mem.slice(strPtr, strPtr + byteLength)));
     }
@@ -28025,6 +28030,7 @@ export class CentralizedKernelWorker {
       let end = pathPtr;
       while (end < limit && memory[end] !== 0) end++;
       if (end === limit) return { kind: "error", errno: ENAMETOOLONG };
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // Chrome's TextDecoder rejects views backed by SharedArrayBuffer. Copy
       // the guest pathname into ordinary host memory before decoding.
       const pathBytes = new Uint8Array(end - pathPtr);
