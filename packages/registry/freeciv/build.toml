@@ -1,7 +1,7 @@
 script_path = "packages/registry/freeciv/build-freeciv.sh"
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 22
+revision = 23
 inputs = [
   "packages/registry/freeciv/build-freeciv.sh",
   "packages/registry/freeciv/patches",
