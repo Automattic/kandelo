@@ -127,6 +127,9 @@ host realms.
 
 ## Boundaries and validation
 
+Remaining completeness work and its acceptance criteria are tracked in
+[future improvements](future-improvements.md#close-the-remaining-epoll-completeness-gaps).
+
 This is not a claim of complete Linux compatibility. Kandelo has no system
 suspend controller, Linux capability service, `/proc/sys/fs/epoll` quota
 controls, or epoll busy-poll ioctl API. `epoll_pwait2` is not exposed. Those
