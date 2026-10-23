@@ -391,8 +391,10 @@ capture, window blur, and input teardown, retaining the last absolute position.
   a source processor returning true retains its transport inside the
   page-wide AudioContext. Isolating that transport also bounds any wrappers
   awaiting collection in this persistent realm. The shared context stays open to
-  avoid WebKit's per-context rendering-thread leak; explicitly supplied private
-  contexts are closed. A suspended or interrupted context is never resumed
+  avoid WebKit's per-context rendering-thread leak, a suspected WebKit defect
+  recorded in the runtime workaround registry
+  ([`WEBKIT-AUDIOWORKLET-CLOSE-LEAK`](../tests/runtime-workarounds/WEBKIT-AUDIOWORKLET-CLOSE-LEAK/entry.md));
+  explicitly supplied private contexts are closed. A suspended or interrupted context is never resumed
   implicitly during teardown.
 - **A user gesture is required.** Preparing the PCM driver may leave its
   `AudioContext` suspended. The application must call the session audio-resume
@@ -2996,6 +2998,15 @@ recycling the backing. Whole-kernel destroy terminates nested process/thread
 Workers before terminating the containing kernel Worker realm, which is the
 final fallback for incomplete graceful detach.
 
+On JavaScriptCore (Safari, Bun), `Worker.terminate()` does not reclaim a
+Worker blocked in an atomic wait, so teardown first wakes blocked Workers
+into a cooperative exit. The mechanism is described in
+[the terminate workaround page](jsc-terminate-atomics-wait-workaround.md);
+the defect, its standalone reproduction (confirmed on Bun 1.3.3, no longer
+reproducing on Playwright WebKit webkit-2359) and its removal criteria are
+in the registry entry
+[`JSC-TERMINATE-ATOMICS-WAIT-LEAK`](../tests/runtime-workarounds/JSC-TERMINATE-ATOMICS-WAIT-LEAK/entry.md).
+
 Audio and framebuffer presentation use independent bounded shared buffers.
 A view into kernel or guest memory retains the full address space, even when
 only a tiny ring or pixel window is visible. Persistent page and worklet realms
@@ -3048,7 +3059,9 @@ coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 ### JavaScriptCore garbage collection and blocked workers
 
 This is a suspected JavaScriptCore behavior with a tagged workaround in
-the syscall glue (`JSC-BLOCKED-WAIT-GC-STARVATION`). It is not yet a confirmed
+the syscall glue, recorded in the runtime workaround registry as
+[`JSC-BLOCKED-WAIT-GC-STARVATION`](../tests/runtime-workarounds/JSC-BLOCKED-WAIT-GC-STARVATION/entry.md)
+(evidence, self-judging attempts, draft report). It is not yet a confirmed
 WebKit defect: the standalone page below shows helper-thread pinning only
 through a manual stack sample, so the cause is a hypothesis that fits every
 measurement. It would apply to JavaScriptCore everywhere: Safari on every
@@ -3129,7 +3142,8 @@ handing a collection to such a thread.
 ### WebKit page-process crash while creating TextDecoders
 
 This is a suspected WebKit problem with a tagged mitigation in the host
-runtime (`WEBKIT-TEXTDECODER-WRAPPER-CRASH`). It is not a confirmed WebKit
+runtime, recorded in the runtime workaround registry as
+[`WEBKIT-TEXTDECODER-WRAPPER-CRASH`](../tests/runtime-workarounds/WEBKIT-TEXTDECODER-WRAPPER-CRASH/entry.md). It is not a confirmed WebKit
 bug: there is no standalone reduction, so the cause is a hypothesis that fits
 the crash reports and the effect of the mitigation. The WebKit page process
 could crash with `SIGSEGV` in

@@ -597,10 +597,9 @@ summary = "a defect"
         assert_eq!(repo.problems(), Vec::<String>::new());
     }
 
-    // Enforces the real registry from `cargo test -p xtask` once the existing
-    // workarounds have entries.
+    // Enforces the real registry from `cargo test -p xtask`, so the
+    // cargo-xtask suite fails when a tag and its entry disagree.
     #[test]
-    #[ignore = "enabled in Task 4 after migration"]
     fn registry_in_repo_is_consistent() {
         let problems = problems(&crate::repo_root()).unwrap();
         assert!(problems.is_empty(), "{problems:#?}");
