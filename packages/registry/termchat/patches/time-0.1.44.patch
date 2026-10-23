@@ -1,0 +1,53 @@
+# Kandelo is both Unix and Wasm: use the Unix implementation once, not
+# the browser-only Wasm backend too. Zero-initialize timespec so private
+# padding in 32-bit musl time64 is initialized without a struct literal.
+--- a/src/sys.rs
++++ b/src/sys.rs
+@@ -3,7 +3,7 @@
+ pub use self::inner::*;
+ 
+ #[cfg(any(
+-    all(target_arch = "wasm32", not(target_os = "emscripten")),
++    all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))),
+     target_env = "sgx"
+ ))]
+ mod common {
+@@ -69,7 +69,7 @@
+     }
+ }
+ 
+-#[cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi"))))]
++#[cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo"))))]
+ mod inner {
+     use std::ops::{Add, Sub};
+     use Tm;
+@@ -518,13 +518,13 @@
+         use Duration;
+ 
+         pub fn get_time() -> (i64, i32) {
+-            let mut tv = libc::timespec { tv_sec: 0, tv_nsec: 0 };
++            let mut tv = unsafe { std::mem::zeroed::<libc::timespec>() };
+             unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut tv); }
+             (tv.tv_sec as i64, tv.tv_nsec as i32)
+         }
+ 
+         pub fn get_precise_ns() -> u64 {
+-            let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
++            let mut ts = unsafe { std::mem::zeroed::<libc::timespec>() };
+             unsafe {
+                 libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+             }
+--- a/src/sys.rs
++++ b/src/sys.rs
+@@ -552,10 +552,7 @@
+         impl SteadyTime {
+             pub fn now() -> SteadyTime {
+                 let mut t = SteadyTime {
+-                    t: libc::timespec {
+-                        tv_sec: 0,
+-                        tv_nsec: 0,
+-                    }
++                    t: unsafe { std::mem::zeroed::<libc::timespec>() }
+                 };
+                 unsafe {
+                     assert_eq!(0, libc::clock_gettime(libc::CLOCK_MONOTONIC,

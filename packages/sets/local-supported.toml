@@ -645,6 +645,10 @@ name = "tmux"
 class = "user-software"
 
 [[packages]]
+name = "termchat"
+class = "user-software"
+
+[[packages]]
 name = "tcl"
 class = "user-software"
 

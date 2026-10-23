@@ -437,6 +437,7 @@ packages/registry/spidermonkey/test/spidermonkey-node-parity.test.ts	prepared-pr
 packages/registry/spidermonkey/test/spidermonkey-tls-source.test.ts	source-only
 packages/registry/spidermonkey/test/spidermonkey.test.ts	prepared-product
 packages/registry/tmux/test/tmux.test.ts	prepared-product
+packages/registry/termchat/test/termchat.test.ts	prepared-product
 packages/registry/unzip/test/unzip.test.ts	prepared-product
 packages/registry/wordpress/test/php-sanity.test.ts	prepared-product
 packages/registry/wordpress/test/service-vfs-demo.test.ts	prepared-product
