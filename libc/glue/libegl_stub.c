@@ -38,7 +38,10 @@ static void retire_imported_images(void);
 
 static int      g_fd            = -1;
 static uint8_t *g_cmdbuf_base   = NULL;
-static EGLint   g_last_error    = EGL_SUCCESS;
+/* EGL error and bound client API are thread state, independently of the
+ * display and its shared context/surface objects (EGL 1.5 sections 3.7/3.12). */
+static _Thread_local EGLint g_last_error = EGL_SUCCESS;
+static _Thread_local EGLenum g_bound_api = EGL_OPENGL_ES_API;
 static int      g_initialized   = 0;
 static int      g_context_made  = 0;
 static int      g_surface_made  = 0;
@@ -317,7 +320,12 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
 }
 
 EGLBoolean eglBindAPI(EGLenum api) {
-    return api == EGL_OPENGL_ES_API ? EGL_TRUE : EGL_FALSE;
+    if (api != EGL_OPENGL_ES_API) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return EGL_FALSE;
+    }
+    g_bound_api = api;
+    return EGL_TRUE;
 }
 
 EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
@@ -821,7 +829,7 @@ EGLBoolean eglWaitNative(EGLint engine) {
 }
 
 EGLenum eglQueryAPI(void) {
-    return EGL_OPENGL_ES_API;
+    return g_bound_api;
 }
 
 EGLSurface eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config,

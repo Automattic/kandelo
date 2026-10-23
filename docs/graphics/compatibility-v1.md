@@ -67,7 +67,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | open |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Fixed handles, no actual current tracking, no sharing/multiple contexts | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | open |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API selection are thread-local; current context ownership, fixed handles, sharing and multiple contexts still need work | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | open |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Pbuffer always fails; several core symbols absent; GBM sizing exists | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context | Main requires a live surface; cage adds a path needing validation | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | open |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/alias/FBO references now retain GEM storage; CPU coherence and complete object semantics remain open | EGL, GLES alias model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | open |
@@ -452,6 +452,21 @@ new reset-before-invalidation case fails before repair; the resulting source
 gate passes 244 tests in 14 files without skips. Logs:
 `.context/graphics-unit-retirement-baseline.log`,
 `.context/graphics-unit-retirement-fixed.log`.
+
+### EGL thread error and API state
+
+EGL error status and the bound client API now use thread-local storage. An
+unsupported API bind reports BAD_PARAMETER and preserves the prior API.
+Errors in one thread cannot be consumed or replaced by another thread's
+eglGetError. This is the first part of E02; current-context ownership and
+thread release remain separate implementation work.
+
+Both new native cases fail on `003fdb1133`. The current harness passes all
+fifteen cases under UBSan, including a real pthread checking its initial
+state while its creator retains an unread error. Logs:
+`.context/graphics-egl-thread-error-baseline.log`,
+`.context/graphics-egl-thread-error-fixed.log`. Guest thread execution remains
+pending the deferred rebuild.
 
 ### Integration checkpoint after the build pause
 

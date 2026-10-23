@@ -3744,6 +3744,8 @@ mask remains ES2-only; EGL's default ES1 selection filter consequently matches
 none. Tools enumerating all configurations use eglGetConfigs. Pbuffers,
 multiple contexts and other EGL core gaps remain tracked in the graphics
 compatibility inventory.
+EGL error status and bound client API are thread-local; an unsupported API
+bind reports BAD_PARAMETER while preserving the calling thread's prior API.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`

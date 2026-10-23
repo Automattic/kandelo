@@ -55,11 +55,12 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The thirteen current cases cover image siblings and retained framebuffer storage,
+The fifteen current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
-selection/enumeration/negative queries. Native query
+selection/enumeration/negative queries, thread-local errors and API binding.
+Native query
 tests resolve the library's recorded heap allocation explicitly because the
 guest wire format uses u32 pointers. They do not execute guest marshalling or
 substitute for WebAssembly/browser tests.

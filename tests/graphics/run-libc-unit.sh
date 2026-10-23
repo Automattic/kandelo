@@ -14,13 +14,13 @@ for name in gl_abi.h libegl_stub.c libglesv2_stub.c; do
         cp "$repo_root/libc/glue/$name" "$output_dir/glue/$name"
     fi
 done
-clang -g -O1 -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" -fno-omit-frame-pointer \
+clang -g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" -fno-omit-frame-pointer \
     -I"$output_dir/include" -I"$output_dir/glue" \
     -include "$repo_root/tests/graphics/libc/device-double.h" \
     "$output_dir/glue/libegl_stub.c" "$output_dir/glue/libglesv2_stub.c" \
     "$repo_root/tests/graphics/libc/image-ownership.c" -o "$output_dir/image-ownership"
 status=0
-for case_name in lifetime redefine context invalid framebuffer cycle namespace boolean query-vector query-error config-selection config-validation config-list; do
+for case_name in lifetime redefine context invalid framebuffer cycle namespace boolean query-vector query-error config-selection config-validation config-list thread-error api-error; do
     python3 - "$output_dir/image-ownership" "$case_name" <<'PYTHON' || status=1
 import subprocess, sys
 try:

@@ -15,6 +15,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <pthread.h>
 #include "gl_abi.h"
 
 /* Native pointers exceed the guest's u32 query fields. Resolve the query's
@@ -142,6 +143,17 @@ static EGLImageKHR image(EGLDisplay dpy) {
     assert(img != EGL_NO_IMAGE_KHR);
     return img;
 }
+
+static void *check_thread_error(void *unused) {
+    (void)unused;
+    assert(eglGetError() == EGL_SUCCESS);
+    assert(eglQueryAPI() == EGL_OPENGL_ES_API);
+    assert(!eglBindAPI(EGL_OPENGL_API));
+    assert(eglGetError() == EGL_BAD_PARAMETER);
+    assert(eglQueryAPI() == EGL_OPENGL_ES_API);
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -155,6 +167,30 @@ int main(int argc, char **argv) {
     EGLContext ctx = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
     assert(ctx != EGL_NO_CONTEXT);
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "thread-error")) {
+        assert(!eglInitialize(EGL_NO_DISPLAY, NULL, NULL));
+        pthread_t thread;
+        assert(pthread_create(&thread, NULL, check_thread_error, NULL) == 0);
+        assert(pthread_join(thread, NULL) == 0);
+        assert(eglGetError() == EGL_BAD_DISPLAY);
+        assert(eglGetError() == EGL_SUCCESS);
+        assert(eglDestroyContext(dpy, ctx) && eglTerminate(dpy));
+        puts("PASS thread-error");
+        return 0;
+    }
+    if (!strcmp(argv[1], "api-error")) {
+        for (unsigned i = 0; i < 3; i++) {
+            const EGLenum invalid[] = { EGL_OPENGL_API, EGL_OPENVG_API, 0xffffffffu };
+            assert(!eglBindAPI(invalid[i]));
+            assert(eglGetError() == EGL_BAD_PARAMETER);
+            assert(eglQueryAPI() == EGL_OPENGL_ES_API);
+        }
+        assert(eglBindAPI(EGL_OPENGL_ES_API));
+        assert(eglGetError() == EGL_SUCCESS);
+        assert(eglDestroyContext(dpy, ctx) && eglTerminate(dpy));
+        puts("PASS api-error");
+        return 0;
+    }
     if (!strcmp(argv[1], "config-selection")) {
         const EGLint requests[][7] = {
             { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_RED_SIZE, 9, EGL_NONE },
