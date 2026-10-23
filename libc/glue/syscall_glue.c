@@ -1363,7 +1363,7 @@ static long __do_syscall(long n, long a1, long a2, long a3,
         );
 
     /* ============================================================== */
-    /* epoll stubs — return ENOSYS, programs fall back to poll()        */
+    /* epoll interfaces                                                  */
     /* ============================================================== */
 
     case SYS_EPOLL_CREATE1:
@@ -1729,6 +1729,7 @@ static long __do_syscall(long n, long a1, long a2, long a3,
 
     /* Legacy epoll aliases */
     case SYS_EPOLL_CREATE:
+        if ((int32_t)a1 <= 0) return -EINVAL;
         return (long)kernel_epoll_create1(0);
     case SYS_EPOLL_WAIT:
         return (long)kernel_epoll_pwait((int32_t)a1, (uint8_t *)(uintptr_t)a2, (int32_t)a3, (int32_t)a4, 0);

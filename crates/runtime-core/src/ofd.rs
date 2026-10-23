@@ -447,6 +447,23 @@ struct SharedOfdStateInner {
     offset: Cell<i64>,
     owner_pid: Cell<u32>,
     position_generation: Cell<u64>,
+    epoll_identity: Cell<Option<OfdId>>,
+}
+
+impl Drop for SharedOfdStateInner {
+    fn drop(&mut self) {
+        if let Some(id) = self.epoll_identity.get() {
+            // A sender waiting on this datagram receiver's full queue can
+            // write without blocking once its last owner closes (and fail).
+            crate::epoll::notify(
+                crate::epoll::Source::DatagramCapacity(id),
+                wasm_posix_shared::epoll::EPOLLOUT
+                    | wasm_posix_shared::epoll::EPOLLWRNORM
+                    | wasm_posix_shared::epoll::EPOLLWRBAND,
+            );
+            crate::epoll::forget(id);
+        }
+    }
 }
 
 /// Exact-ownership handle for the mutable POSIX portion of an OFD.
@@ -462,6 +479,7 @@ impl SharedOfdState {
             offset: Cell::new(offset),
             owner_pid: Cell::new(owner_pid),
             position_generation: Cell::new(0),
+            epoll_identity: Cell::new(None),
         }))
     }
 
@@ -528,6 +546,10 @@ impl OpenFileDesc {
 
     pub fn set_owner_pid(&self, value: u32) {
         self.shared_state.set_owner_pid(value);
+    }
+
+    pub fn mark_epoll_watched(&self) {
+        self.shared_state.0.epoll_identity.set(Some(self.ofd_id));
     }
 
     pub fn shared_state(&self) -> SharedOfdState {

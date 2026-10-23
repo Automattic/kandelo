@@ -1,5 +1,5 @@
 {
-  "abi_version": 50,
+  "abi_version": 51,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1164,7 +1164,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 50,
+      "abi_version": 51,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1239,8 +1239,6 @@
       "kernel_clipboard_guest_read",
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
-      "kernel_kms_cursor_configure",
-      "kernel_kms_cursor_read",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
@@ -1256,6 +1254,8 @@
       "kernel_create_process",
       "kernel_create_process_with_stdio",
       "kernel_dequeue_signal",
+      "kernel_epoll_wait_finish",
+      "kernel_epoll_wait_token",
       "kernel_exec_commit",
       "kernel_exec_target_cancel",
       "kernel_exec_target_prepare",
@@ -1285,6 +1285,8 @@
       "kernel_ipc_shmdt_for_process",
       "kernel_ipc_shmdt_for_task",
       "kernel_is_fd_nonblock",
+      "kernel_kms_cursor_configure",
+      "kernel_kms_cursor_read",
       "kernel_mark_process_signaled",
       "kernel_pcm_claim_transport",
       "kernel_pcm_clock_update",
@@ -1451,6 +1453,46 @@
       {
         "name": "EPOLLHUP",
         "value": 16
+      },
+      {
+        "name": "EPOLLPRI",
+        "value": 2
+      },
+      {
+        "name": "EPOLLRDNORM",
+        "value": 64
+      },
+      {
+        "name": "EPOLLRDBAND",
+        "value": 128
+      },
+      {
+        "name": "EPOLLWRNORM",
+        "value": 256
+      },
+      {
+        "name": "EPOLLWRBAND",
+        "value": 512
+      },
+      {
+        "name": "EPOLLRDHUP",
+        "value": 8192
+      },
+      {
+        "name": "EPOLLEXCLUSIVE",
+        "value": 268435456
+      },
+      {
+        "name": "EPOLLWAKEUP",
+        "value": 536870912
+      },
+      {
+        "name": "EPOLLONESHOT",
+        "value": 1073741824
+      },
+      {
+        "name": "EPOLLET",
+        "value": 2147483648
       }
     ],
     "net_readiness": {
@@ -1511,6 +1553,26 @@
       {
         "name": "POLLNVAL",
         "value": 32
+      },
+      {
+        "name": "POLLRDNORM",
+        "value": 64
+      },
+      {
+        "name": "POLLRDBAND",
+        "value": 128
+      },
+      {
+        "name": "POLLWRNORM",
+        "value": 256
+      },
+      {
+        "name": "POLLWRBAND",
+        "value": 512
+      },
+      {
+        "name": "POLLRDHUP",
+        "value": 8192
       }
     ],
     "select": {
@@ -2354,6 +2416,16 @@
       "kind": "func",
       "name": "kernel_environ_get",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_epoll_wait_finish",
+      "signature": "(i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_epoll_wait_token",
+      "signature": "(i32,i32) -> (i64)"
     },
     {
       "kind": "func",

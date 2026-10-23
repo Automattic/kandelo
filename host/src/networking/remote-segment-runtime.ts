@@ -148,6 +148,12 @@ export class SessionNetwork implements NetworkIO {
     return this.fallback!.recv(handle, maxLen, flags);
   }
 
+  readinessGeneration(handle: number, direction: number): bigint {
+    if (this.resetHandles.has(handle)) return 0x7fffffffffffffffn;
+    if (this.segmentHandles.has(handle)) return this.segment?.readinessGeneration(handle, direction) ?? -1n;
+    return this.fallback?.readinessGeneration?.(handle, direction) ?? -1n;
+  }
+
   readiness(handle: number): number {
     if (this.resetHandles.has(handle)) {
       return NET_READINESS.ERROR | (ECONNRESET << NET_READINESS.ERRNO_SHIFT)

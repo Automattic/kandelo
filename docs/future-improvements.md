@@ -43,6 +43,54 @@ browser product that ships them.
 
 ## Kernel
 
+### Close the remaining epoll completeness gaps
+
+Completeness is a core Kandelo feature and a platform advantage. Exposed
+interfaces should provide faithful semantics across processes, guest widths,
+and Node/browser hosts. Track missing behavior as platform work with explicit
+completion criteria. Passing a port's exercised paths is supporting evidence;
+the full supported interface contract remains the goal. Epoll is a Linux
+extension, alongside Kandelo's broader POSIX conformance work.
+
+The [epoll contract and behavior matrix](epoll.md) records the implemented
+semantics and current gaps. Complete the following work:
+
+- **Expose `epoll_pwait2` through the normal platform path.** Add both SDK
+  targets' headers and libc wrappers, syscall assignment and metadata,
+  marshalling, kernel dispatch, and Node/browser wait handling. Validate
+  timespec precision, invalid arguments, null/infinite and zero timeouts,
+  monotonic deadlines, interruption, cancellation, and atomic signal-mask
+  restoration. Account for semantic and structural ABI changes normally.
+- **Share inherited datagram and display-device readiness state correctly.**
+  Move datagram queues and the mutable socket state that belongs to an open
+  file description into shared backing. Give inherited Kernel Mode Setting
+  (KMS) descriptors the correct shared event state instead of reconstructing
+  an empty event ring on fork. Preserve process-owned state
+  separately. Parent and child must observe the same queue mutations,
+  shutdowns, readiness notifications, and final-owner cleanup through aliases
+  and sibling-only retained descriptors. These are platform correctness gaps
+  to fix, including their effects on poll and epoll.
+- **Complete notification history for supported network adapters.** Define
+  and validate the adapter contract for real receive/send notifications,
+  including arrivals while an object remains ready and drain/refill between
+  waits. Provide reusable adapter conformance tests and add history wherever
+  the backend can support faithful edge/exclusive delivery. Keep explicit
+  `EOPNOTSUPP` for adapters that cannot provide it until that gap is closed.
+
+Audit the remaining Linux facilities separately: suspend/capability behavior,
+watch quotas, busy-poll controls, and entropy-pool readiness. Record which need
+implementation and which have a demonstrated host boundary, with accurate
+observable behavior. The current unprivileged no-effect `EPOLLWAKEUP` behavior
+does not establish support for system suspend control.
+
+Completion requires kernel and guest regressions, relevant conformance
+coverage, Linux reference comparisons, and wasm32/wasm64 execution on Node
+and Chromium, Firefox, and WebKit. Exercise cross-process queue consumption,
+capacity edges, close/shutdown, one-shot rearming, exclusive waits, and cleanup.
+Also validate an actual mio consumer once Kandelo target selection is added;
+direct syscall probes alone do not establish that integration. Update the
+behavior matrix and support status only after the corresponding evidence.
+
 ### `sys_openat` duplicates `sys_open` logic
 `sys_openat` reimplements umask application, file type determination, creation flag stripping, and O_CLOEXEC handling rather than sharing code with `sys_open`. Consider extracting a shared internal helper or implementing `sys_open` as `sys_openat(proc, host, AT_FDCWD, path, oflags, mode)`.
 

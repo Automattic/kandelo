@@ -65,6 +65,9 @@ function installSuccessfulEngine(
       () => implementations,
       allocator,
       pointerWidth,
+      // Expose only the operations modeled by this engine. In particular,
+      // absent cursor mocks must remain absent for transport negotiation.
+      Object.keys(implementations),
     );
   });
   return {
@@ -177,6 +180,8 @@ describe("WasmPosixKernel initialization lifetime", () => {
         memory,
         () => ({}),
         () => 4_096,
+        4,
+        [],
       );
     });
     const instance = kernel({ compile, instantiate });
@@ -212,6 +217,7 @@ describe("WasmPosixKernel initialization lifetime", () => {
         () => ({}),
         () => 4_096n,
         8,
+        [],
       );
     });
     const instance = kernel({ compile, instantiate });

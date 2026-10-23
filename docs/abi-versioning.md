@@ -57,6 +57,31 @@ update a GitHub Check, create or protect an ABI branch, or deploy Pages. Those
 operations require the later staging layers and their hosted evidence.
 Existing ABI release and VFS behavior is unchanged.
 
+## ABI 51 epoll delivery and stream readiness
+
+ABI 51 changes existing observable semantics: edge and one-shot delivery,
+rearming, stream read-half-close, unsupported-object rejection, nested-epoll
+validation, fair batching, original-description lifetime, raw create size
+validation, and DEL's ignored event pointer. These require a new ABI even
+where the event layout itself remains unchanged. Both guest targets retain
+the 16-byte event stride and data at offset eight.
+
+The host adapter requires `kernel_epoll_wait_token` and
+`kernel_epoll_wait_finish(pid, tid, token)` for exact parked-wait lifetime.
+The kernel additionally requires the host import
+`host_net_readiness_generation(handle, direction) -> i64`; negative means
+that a backend cannot provide notification history, in which case
+edge/exclusive waits report EOPNOTSUPP. This import is required for kernel
+instantiation and must be supplied on both hosts, even when networking is
+unavailable. The snapshot includes the expanded event constants and wait
+exports. ABI 51 also reaches the existing scheduled promotion of the KMS
+cursor exports; their implementation is unchanged.
+
+Rebuild kernels, hosts, libc, programs, package archives and VFS products
+through the ordinary ABI-bound build path. Prior-ABI artifacts must not be
+restamped or admitted as ABI 51. See the [epoll contract](epoll.md) for the
+behavior matrix and remaining boundaries.
+
 ## What counts as an ABI change
 
 ### Scheduled optional kernel exports

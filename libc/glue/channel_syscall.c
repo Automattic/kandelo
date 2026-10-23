@@ -1128,7 +1128,8 @@ static long kandelo_marshal_special(long n, const long long *args_in,
         break;
     }
     case KANDELO_SYS_EPOLL_CTL: {
-        /* One input event struct at arg 3 (null for EPOLL_CTL_DEL). */
+        /* DEL ignores event even if it is a non-null invalid address. */
+        if ((int)sargs[1] == EPOLL_CTL_DEL) { sargs[3] = 0; break; }
         uintptr_t p = (uintptr_t)(unsigned long long)sargs[3];
         if (p != 0) {
             plan[nplan].kind = KANDELO_MARSHAL_SPAN_IN_PTR;

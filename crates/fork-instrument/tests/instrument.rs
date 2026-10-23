@@ -2537,6 +2537,42 @@ fn fixed_main_and_pthread_resume_boundaries_dispatch_inside_wasm() {
 }
 
 #[test]
+fn pthread_resume_supports_independent_memory_and_table_index_widths() {
+    for memory64 in [false, true] {
+        for table64 in [false, true] {
+            let ptr = if memory64 { "i64" } else { "i32" };
+            let index = if table64 { "i64" } else { "i32" };
+            let table_width = if table64 { "i64 " } else { "" };
+            let memory_width = if memory64 { "i64 " } else { "" };
+            let wat = format!(r#"
+                (module
+                  (import "kernel" "kernel_fork" (func $fork (result i32)))
+                  (type $thread_ty (func (param {ptr}) (result {ptr})))
+                  (table $functions (export "__indirect_function_table") {table_width}1 1 funcref)
+                  (elem ({index}.const 0) $thread)
+                  (func $thread (type $thread_ty) (param $arg {ptr}) (result {ptr})
+                    call $fork
+                    drop
+                    local.get $arg)
+                  (func (export "_start")
+                    call $fork
+                    drop)
+                  (memory {memory_width}1))
+            "#);
+            let bytes = instrument_wat(&wat);
+            validate(&bytes);
+            let module = Module::from_buffer(&bytes).expect("instrumented module");
+            let wrapper = func_by_name(&module, "wpk_fork_resume_thread");
+            let signature = module.types.get(module.funcs.get(wrapper).ty());
+            let ptr_type = if memory64 { ValType::I64 } else { ValType::I32 };
+            assert_eq!(signature.params(), &[ValType::I32, ptr_type]);
+            assert_eq!(signature.results(), &[ptr_type]);
+            assert_resume_routing(&module, "wpk_fork_resume_thread");
+        }
+    }
+}
+
+#[test]
 fn references_outside_the_fork_closure_remain_legal() {
     let bytes = instrument_wat(
         r#"

@@ -525,6 +525,13 @@ export class RemoteVirtualNetwork implements NetworkIO {
     if (!this.fallback || this.connectErrors.has(handle)) throw Object.assign(new Error("ENOTCONN"), {errno:ENOTCONN});
     return this.fallback.recv(handle,maxLen,flags);
   }
+  readinessGeneration(handle: number, direction: number): bigint {
+    if (this.tcp?.has(handle)) return this.tcp.connection(handle).readinessGeneration(direction);
+    if (this.localTcpHandles.has(handle)) return this.local?.readinessGeneration(handle, direction) ?? -1n;
+    if (this.connectErrors.has(handle)) return 0x7fffffffffffffffn;
+    return this.fallback?.readinessGeneration?.(handle, direction) ?? -1n;
+  }
+
   readiness(handle: number): number {
     const failed = this.connectErrors.get(handle);
     if (failed !== undefined) {

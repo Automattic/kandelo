@@ -287,6 +287,14 @@ name = "libepoxy"
 class = "platform"
 
 [[packages]]
+name = "libevent"
+class = "platform"
+
+[[packages]]
+name = "libevent-tests"
+class = "test-support"
+
+[[packages]]
 name = "libevdev"
 class = "platform"
 
@@ -630,6 +638,10 @@ class = "platform"
 
 [[packages]]
 name = "tar"
+class = "user-software"
+
+[[packages]]
+name = "tmux"
 class = "user-software"
 
 [[packages]]

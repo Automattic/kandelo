@@ -1,0 +1,9 @@
+script_path = "packages/registry/tmux/build-tmux.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+inputs = [
+  "packages/registry/tmux/build-tmux.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+]

@@ -77,6 +77,13 @@ impl<T> SharedBackingTable<T> {
         idx
     }
 
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (usize, &mut T)> {
+        self.entries
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(idx, slot)| slot.as_mut().map(|entry| (idx, &mut entry.value)))
+    }
+
     pub fn get(&self, idx: usize) -> Option<&T> {
         self.entries
             .get(idx)

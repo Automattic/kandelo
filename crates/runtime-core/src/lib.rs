@@ -20,6 +20,7 @@ pub mod credentials;
 pub mod descriptor_backing;
 pub mod devfs;
 pub mod dri;
+pub mod epoll;
 pub mod exec_target;
 pub mod fd;
 pub mod fifo;

@@ -79,6 +79,7 @@ pub fn push_event(
                     ring.dropped = true;
                 }
                 push_record(&mut ring.event_ring, &ev);
+                crate::epoll::notify(crate::epoll::Source::Description(ofd.ofd_id), 0x41);
                 delivered += 1;
             }
         }

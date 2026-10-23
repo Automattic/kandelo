@@ -313,6 +313,11 @@ pub trait HostIO {
         let _ = handle;
         Ok(wasm_posix_shared::net_readiness::UNOBSERVABLE)
     }
+    /// Notification counter for the transport's receive (0) or send (1) side.
+    /// None means that edge/exclusive polling cannot be provided faithfully.
+    fn host_net_readiness_generation(&mut self, _handle: i32, _direction: u32) -> Option<u64> {
+        None
+    }
     fn host_net_local_endpoint(&mut self, handle: i32) -> Result<([u8; 4], u16), Errno> {
         let _ = handle;
         Err(Errno::EOPNOTSUPP)
@@ -871,6 +876,12 @@ pub struct EpollInterest {
     pub ofd_id: crate::lock::OfdId,
     pub events: u32,
     pub data: u64,
+    /// Readiness callbacks enqueue a candidate; delivery rechecks the backing.
+    pub pending: bool,
+    pub disabled: bool,
+    pub sources: Vec<crate::epoll::Source>,
+    pub network_generations: [Option<u64>; 2],
+    pub device_generation: Option<(u64, u32)>,
 }
 
 /// An epoll instance: a set of monitored open file descriptions.
@@ -883,12 +894,16 @@ pub struct EpollInterest {
 #[derive(Debug, Clone)]
 pub struct EpollInstance {
     pub interests: Vec<EpollInterest>,
+    pub cursor: usize,
+    pub waiters: u32,
 }
 
 impl EpollInstance {
     pub fn new() -> Self {
         EpollInstance {
             interests: Vec::new(),
+            cursor: 0,
+            waiters: 0,
         }
     }
 }
@@ -1083,6 +1098,7 @@ pub struct Process {
     pub blocked_retries: crate::blocked_retry::BlockingRetryState,
     pub pipes: Vec<Option<PipeBuffer>>,
     pub sockets: SocketTable,
+    pub epoll_waits: Vec<(u32, crate::epoll::WaitLease)>,
     pub cwd: Vec<u8>,
     pub dir_streams: Vec<Option<DirStream>>,
     /// Process-directed pending signals and process-wide dispositions. The
@@ -1393,6 +1409,7 @@ impl Process {
             blocked_retries: crate::blocked_retry::BlockingRetryState::new(),
             pipes: Vec::new(),
             sockets: SocketTable::new(),
+            epoll_waits: Vec::new(),
             cwd: alloc::vec![b'/'],
             dir_streams: Vec::new(),
             signals: SignalState::new(),
@@ -1749,6 +1766,7 @@ impl Process {
 
     /// Remove a thread by TID.
     pub fn remove_thread(&mut self, tid: u32) -> Option<ThreadState> {
+        crate::epoll::finish_wait(self, tid);
         if let Some(idx) = self.identity.threads.iter().position(|t| t.tid == tid) {
             Some(self.identity.threads.swap_remove(idx).into_state())
         } else {
@@ -1922,6 +1940,17 @@ impl Process {
         } else {
             false
         }
+    }
+
+    pub fn signal_readiness_generations(&self, tid: u32) -> [Option<u64>; 2] {
+        let directed = if self.is_main_thread(tid) {
+            self.main_thread_signals.readiness_generation
+        } else {
+            self.get_thread(tid)
+                .map(|t| t.signals.readiness_generation)
+                .unwrap_or(0)
+        };
+        [Some(self.signals.readiness_generation), Some(directed)]
     }
 
     /// Union of the process's shared pending bits and TID's directed pending

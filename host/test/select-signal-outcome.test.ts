@@ -117,6 +117,7 @@ function createHarness(options: {
     return handlerSignal;
   });
   const setCurrentTid = vi.fn(() => 0);
+  const swapSignalMask = vi.fn(() => 0);
   const implementations: Record<string, unknown> = {
     kernel_blocking_retry_release: () => 0,
     kernel_blocking_retry_token: () => 0n,
@@ -126,6 +127,7 @@ function createHarness(options: {
     kernel_get_process_exit_signal: vi.fn(() => exitSignal),
     kernel_handle_channel: handleChannel,
     kernel_set_current_tid: setCurrentTid,
+    kernel_swap_poll_sigmask: swapSignalMask,
     kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
   };
   const gate = new KernelEntryGate();
@@ -145,6 +147,7 @@ function createHarness(options: {
         "kernel_get_process_exit_signal",
         "kernel_handle_channel",
         "kernel_set_current_tid",
+        "kernel_swap_poll_sigmask",
         "kernel_take_process_timer_cleanup",
       ],
     ),
@@ -163,7 +166,11 @@ function createHarness(options: {
   );
 
   const completeChannel = vi.fn();
+  const completeChannelRaw = vi.fn();
   worker.testAuthority.configureScratchBoundaryHooksForTest({
+    completeChannelRaw: (channel, retVal, errVal) => {
+      completeChannelRaw(channel, retVal, errVal);
+    },
     completeChannel: (
       channel,
       syscallNr,
@@ -194,11 +201,13 @@ function createHarness(options: {
   return {
     channel,
     completeChannel,
+    completeChannelRaw,
     dequeueSignal,
     handleChannel,
     onExit,
     processMemory,
     setCurrentTid,
+    swapSignalMask,
     state: worker as unknown as SelectState,
     worker,
   };
@@ -233,6 +242,25 @@ function expectCompletion(
 }
 
 describe("select and pselect signal outcomes", () => {
+  it("rejects an invalid epoll output range before installing a temporary mask", () => {
+    const harness = createHarness({ handlerSignal: 10 });
+    const maskPointer = 2048;
+    new DataView(harness.processMemory.buffer).setBigUint64(maskPointer, 0n, true);
+    const args = syscallArgs(
+      3,
+      harness.processMemory.buffer.byteLength - 8,
+      1,
+      0,
+      maskPointer,
+      8,
+    );
+    dispatchSyscall(harness, ABI_SYSCALLS.EpollPwait, args);
+    expect(harness.swapSignalMask).not.toHaveBeenCalled();
+    expect(harness.handleChannel).not.toHaveBeenCalled();
+    expect(harness.dequeueSignal).not.toHaveBeenCalled();
+    expect(harness.completeChannelRaw).toHaveBeenCalledWith(harness.channel, -1, 14);
+  });
+
   it("returns EINTR instead of re-parking pselect after a caught signal", () => {
     const harness = createHarness({ handlerSignal: 10 });
     const readfdsPointer = 1024;
@@ -302,6 +330,7 @@ describe("select and pselect signal outcomes", () => {
     dispatchSyscall(harness, ABI_SYSCALLS.Select, args);
 
     expect(harness.onExit).toHaveBeenCalledWith(PID, 128 + 15);
+    expect(harness.dequeueSignal).not.toHaveBeenCalled();
     expect(harness.state.hostReaped.has(PID)).toBe(true);
     expect(harness.completeChannel).not.toHaveBeenCalled();
     expect(harness.state.pendingSelectRetries.size).toBe(0);
@@ -309,6 +338,23 @@ describe("select and pselect signal outcomes", () => {
       new DataView(harness.processMemory.buffer).getUint32(CH_STATUS, true),
     ).toBe(CHANNEL_STATUS_PENDING);
   });
+
+  it.each([ABI_SYSCALLS.Pselect6, ABI_SYSCALLS.EpollPwait])(
+    "settles signal death in wait syscall %s before querying the exited task",
+    (syscallNr) => {
+      const harness = createHarness({ exitSignal: 15, errno: EAGAIN });
+      harness.dequeueSignal.mockImplementation(() => {
+        throw new Error("an exited task cannot dequeue a signal");
+      });
+      const args = syscallNr === ABI_SYSCALLS.EpollPwait
+        ? syscallArgs(3, 1024, 1, -1, 0, 0)
+        : syscallArgs(1, 1024, 0, 0, 0, 0);
+      dispatchSyscall(harness, syscallNr, args);
+      expect(harness.onExit).toHaveBeenCalledWith(PID, 128 + 15);
+      expect(harness.dequeueSignal).not.toHaveBeenCalled();
+      expect(harness.completeChannel).not.toHaveBeenCalled();
+    },
+  );
 
   it("preserves a ready select result when a handler signal arrives concurrently", () => {
     const harness = createHarness({

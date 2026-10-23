@@ -5803,6 +5803,21 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
         builder.name(RESUME_THREAD_EXPORT.into());
         let wrapper = builder.finish(vec![table_index, argument], &mut module.funcs);
         let entry = local_mut(module, wrapper).entry_block();
+        // The host entry ABI keeps an i32 function index, independently of
+        // memory width. A table64 lexical call needs that unsigned index
+        // widened; using the memory's pointer type here breaks mixed widths.
+        let (call_index, index_ty) = if module.tables.get(function_table).table64 {
+            let wide_index = module.locals.add(ValType::I64);
+            local_mut(module, wrapper)
+                .builder_mut()
+                .instr_seq(entry)
+                .local_get(table_index)
+                .unop(UnaryOp::I64ExtendUI32)
+                .local_set(wide_index);
+            (wide_index, ValType::I64)
+        } else {
+            (table_index, ValType::I32)
+        };
         emit_resume_selected_call(
             local_mut(module, wrapper),
             entry,
@@ -5816,8 +5831,8 @@ fn emit_fixed_resume_boundaries(module: &mut Module, runtime: &Runtime) {
                 // call_indirect consumes function parameters first and its
                 // table index last; the public wrapper keeps the ergonomic
                 // host ABI `(table_index, arg)`.
-                locals: vec![argument, table_index],
-                types: vec![ptr_ty, ValType::I32],
+                locals: vec![argument, call_index],
+                types: vec![ptr_ty, index_ty],
             },
             &no_scratch,
             memory,

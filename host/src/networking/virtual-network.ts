@@ -1,3 +1,4 @@
+import { notifyReadiness, readinessGeneration } from "./readiness-generation";
 import type {
   NetworkAddress,
   NetworkIO,
@@ -62,6 +63,7 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   enqueue(data: Uint8Array): void {
     if (this.readClosed || this.reset) return;
     this.recvBuf = concatBytes(this.recvBuf, data);
+    if (data.length) notifyReadiness(this, 0);
   }
 
   send(data: Uint8Array, _flags: number): number {
@@ -119,6 +121,8 @@ class VirtualTcpPeer implements TcpConnectionPeer {
    * Report the fabric-observable state of this endpoint. No POSIX readiness
    * decision is made here — `runtime_core::net_readiness` makes it.
    */
+  readinessGeneration(direction: number): bigint { return readinessGeneration(this, direction); }
+
   readiness(): number {
     // A reset takes the connection down in both directions at once.
     if (this.reset) {
@@ -150,6 +154,8 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   }
 
   shutdown(how: number): void {
+    notifyReadiness(this);
+    if (this.peer) notifyReadiness(this.peer);
     if (how === 0 || how === 2) {
       this.readClosed = true;
       this.recvBuf = new Uint8Array(0);
@@ -160,6 +166,8 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   }
 
   close(): void {
+    notifyReadiness(this);
+    if (this.peer) notifyReadiness(this.peer);
     this.writeClosed = true;
     this.orphanedReceive = true;
     this.recvBuf = new Uint8Array(0);
@@ -167,6 +175,8 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   }
 
   abort(): void {
+    notifyReadiness(this);
+    if (this.peer) notifyReadiness(this.peer);
     this.readClosed = true;
     this.writeClosed = true;
     this.orphanedReceive = false;
@@ -177,6 +187,8 @@ class VirtualTcpPeer implements TcpConnectionPeer {
   }
 
   resetPeer(): void {
+    notifyReadiness(this);
+    if (this.peer) notifyReadiness(this.peer);
     this.reset = true;
     this.recvBuf = new Uint8Array(0);
   }
@@ -545,6 +557,10 @@ export class VirtualNetworkBackend implements NetworkIO {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: ENOTCONN });
     return conn.recv(maxLen, flags);
+  }
+
+  readinessGeneration(handle: number, direction: number): bigint {
+    return this.connections.get(handle)?.readinessGeneration?.(direction) ?? -1n;
   }
 
   readiness(handle: number): number {

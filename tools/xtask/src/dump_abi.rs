@@ -4497,7 +4497,7 @@ fn wakeup_event_wire() -> Value {
     })
 }
 
-fn poll_events() -> [(&'static str, i16); 6] {
+fn poll_events() -> [(&'static str, i16); 11] {
     use shared::poll::*;
 
     [
@@ -4507,10 +4507,15 @@ fn poll_events() -> [(&'static str, i16); 6] {
         ("POLLERR", POLLERR),
         ("POLLHUP", POLLHUP),
         ("POLLNVAL", POLLNVAL),
+        ("POLLRDNORM", POLLRDNORM),
+        ("POLLRDBAND", POLLRDBAND),
+        ("POLLWRNORM", POLLWRNORM),
+        ("POLLWRBAND", POLLWRBAND),
+        ("POLLRDHUP", POLLRDHUP),
     ]
 }
 
-fn epoll_events() -> [(&'static str, u32); 4] {
+fn epoll_events() -> [(&'static str, u32); 14] {
     use shared::epoll::*;
 
     [
@@ -4518,6 +4523,16 @@ fn epoll_events() -> [(&'static str, u32); 4] {
         ("EPOLLOUT", EPOLLOUT),
         ("EPOLLERR", EPOLLERR),
         ("EPOLLHUP", EPOLLHUP),
+        ("EPOLLPRI", EPOLLPRI),
+        ("EPOLLRDNORM", EPOLLRDNORM),
+        ("EPOLLRDBAND", EPOLLRDBAND),
+        ("EPOLLWRNORM", EPOLLWRNORM),
+        ("EPOLLWRBAND", EPOLLWRBAND),
+        ("EPOLLRDHUP", EPOLLRDHUP),
+        ("EPOLLEXCLUSIVE", EPOLLEXCLUSIVE),
+        ("EPOLLWAKEUP", EPOLLWAKEUP),
+        ("EPOLLONESHOT", EPOLLONESHOT),
+        ("EPOLLET", EPOLLET),
     ]
 }
 
@@ -8307,12 +8322,27 @@ mod tests {
                     { "name": "POLLERR", "value": 8 },
                     { "name": "POLLHUP", "value": 16 },
                     { "name": "POLLNVAL", "value": 32 },
+                    { "name": "POLLRDNORM", "value": 64 },
+                    { "name": "POLLRDBAND", "value": 128 },
+                    { "name": "POLLWRNORM", "value": 256 },
+                    { "name": "POLLWRBAND", "value": 512 },
+                    { "name": "POLLRDHUP", "value": 8192 },
                 ],
                 "epoll_events": [
                     { "name": "EPOLLIN", "value": 1 },
                     { "name": "EPOLLOUT", "value": 4 },
                     { "name": "EPOLLERR", "value": 8 },
                     { "name": "EPOLLHUP", "value": 16 },
+                    { "name": "EPOLLPRI", "value": 2 },
+                    { "name": "EPOLLRDNORM", "value": 64 },
+                    { "name": "EPOLLRDBAND", "value": 128 },
+                    { "name": "EPOLLWRNORM", "value": 256 },
+                    { "name": "EPOLLWRBAND", "value": 512 },
+                    { "name": "EPOLLRDHUP", "value": 8192 },
+                    { "name": "EPOLLEXCLUSIVE", "value": 268435456 },
+                    { "name": "EPOLLWAKEUP", "value": 536870912 },
+                    { "name": "EPOLLONESHOT", "value": 1073741824 },
+                    { "name": "EPOLLET", "value": 2147483648_u32 },
                 ],
                 "select": {
                     "fd_setsize": 1024,

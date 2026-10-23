@@ -445,8 +445,20 @@ pub fn release_deferred_in_flight_resource(
                 if let Some(pty) = crate::pty::get_pty(pty_idx) {
                     if release.file_type == FileType::PtyMaster {
                         pty.master_refs = pty.master_refs.saturating_sub(1);
+                        if pty.master_refs == 0 {
+                            crate::epoll::notify(
+                                crate::epoll::Source::Pty(pty.index, false),
+                                wasm_posix_shared::epoll::EPOLLHUP,
+                            );
+                        }
                     } else {
                         pty.slave_refs = pty.slave_refs.saturating_sub(1);
+                        if pty.slave_refs == 0 {
+                            crate::epoll::notify(
+                                crate::epoll::Source::Pty(pty.index, true),
+                                wasm_posix_shared::epoll::EPOLLHUP,
+                            );
+                        }
                     }
                     if !pty.is_alive() {
                         crate::pty::free_pty(pty_idx);
@@ -494,6 +506,8 @@ pub struct PipeBuffer {
     orphaned_read: bool,
     /// Sticky transport failure shared by inherited socket pipe endpoints.
     stream_error: u32,
+    socket_read_shutdown: bool,
+    socket_write_shutdown: bool,
     tcp_connection_id: u32,
     stream_error_pending: bool,
     /// Index of this pipe in the PipeTable (for wakeup events).
@@ -534,12 +548,58 @@ pub struct PipeBuffer {
 }
 
 impl PipeBuffer {
+    /// A socket shutdown is a connection-half transition, independent of how
+    /// many processes still retain references to that half after fork.
+    pub fn shutdown_read(&mut self) {
+        if !self.socket_read_shutdown {
+            self.socket_read_shutdown = true;
+            self.head = 0;
+            self.tail = 0;
+            self.len = 0;
+            self.ancillary_fds.clear();
+            crate::epoll::notify(
+                crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_READABLE),
+                0x2041,
+            );
+            crate::epoll::notify(
+                crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_WRITABLE),
+                0x18,
+            );
+            crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
+            crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
+        }
+    }
+    pub fn shutdown_write(&mut self) {
+        if !self.socket_write_shutdown {
+            self.socket_write_shutdown = true;
+            crate::epoll::notify(
+                crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_READABLE),
+                0x2051,
+            );
+            crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
+        }
+    }
+    pub fn read_shutdown(&self) -> bool {
+        self.socket_read_shutdown
+    }
+    pub fn write_shutdown(&self) -> bool {
+        self.socket_write_shutdown
+    }
+
     /// Reset stream data without releasing endpoint references. Ordinary pipes
     /// never set this state; the host invokes it for an actual socket reset.
     pub fn reset_stream(&mut self, error: Errno) {
         if self.stream_error != 0 {
             return;
         }
+        crate::epoll::notify(
+            crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_READABLE),
+            0x18,
+        );
+        crate::epoll::notify(
+            crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_WRITABLE),
+            0x18,
+        );
         self.stream_error = error as u32;
         self.stream_error_pending = true;
         self.head = 0;
@@ -581,6 +641,8 @@ impl PipeBuffer {
             in_flight_write_count: 0,
             orphaned_read: false,
             stream_error: 0,
+            socket_read_shutdown: false,
+            socket_write_shutdown: false,
             tcp_connection_id: 0,
             stream_error_pending: false,
             pipe_idx: 0,
@@ -1184,6 +1246,12 @@ impl PipeBuffer {
 
     /// Close one read end of the pipe. Decrements the read reference count.
     pub fn close_read_end(&mut self) {
+        if self.read_count == 1 {
+            crate::epoll::notify(
+                crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_WRITABLE),
+                0x18,
+            );
+        }
         self.read_count = self.read_count.saturating_sub(1);
         if self.read_count == 0 {
             self.orphaned_read = false;
@@ -1225,6 +1293,12 @@ impl PipeBuffer {
 
     /// Close one write end of the pipe. Decrements the write reference count.
     pub fn close_write_end(&mut self) {
+        if self.write_count == 1 {
+            crate::epoll::notify(
+                crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_READABLE),
+                0x18,
+            );
+        }
         self.write_count = self.write_count.saturating_sub(1);
         if self.write_count == 0 {
             self.orphaned_read = false;
@@ -1284,7 +1358,7 @@ impl PipeBuffer {
 
     /// Returns true if the read end is still open (any readers remain).
     pub fn is_read_end_open(&self) -> bool {
-        self.read_count > 0 || self.orphaned_read
+        !self.socket_read_shutdown && (self.read_count > 0 || self.orphaned_read)
     }
 
     /// Returns true if an application-owned reader remains.
@@ -1297,7 +1371,7 @@ impl PipeBuffer {
 
     /// Returns true if the write end is still open (any writers remain).
     pub fn is_write_end_open(&self) -> bool {
-        self.write_count > 0
+        !self.socket_write_shutdown && self.write_count > 0
     }
 
     /// Whether an empty read must return EOF. Blocking FIFO readers reserve an

@@ -905,6 +905,7 @@ fn release_process_fb_binding(proc: &mut Process, host: &mut dyn HostIO) {
 }
 
 pub fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
+    proc.epoll_waits.clear();
     // A non-CLOEXEC fb fd survives exec, so it keeps device ownership.
     release_process_fb_binding(proc, host);
     // Device state belongs to surviving open descriptions, not the discarded
@@ -986,6 +987,7 @@ fn commit_exec_state_impl(
         }
     }
     cancel_fifo_opens_for_process(proc);
+    proc.epoll_waits.clear();
 
     let cloexec_fds: Vec<i32> = proc
         .fd_table
@@ -3575,7 +3577,9 @@ pub fn cancel_fifo_open_for_owner(proc: &mut Process, owner: u64) -> bool {
 /// Taking the saved value makes duplicate cancellation idempotent.
 pub fn cancel_host_owned_wait_for_tid(proc: &mut Process, tid: u32) -> bool {
     let owner = ((proc.pid as u64) << 32) | tid as u64;
-    let mut cancelled = cancel_fifo_open_for_owner(proc, owner);
+    let epoll_wait = proc.epoll_waits.iter().any(|(owner, _)| *owner == tid);
+    crate::epoll::finish_wait(proc, tid);
+    let mut cancelled = cancel_fifo_open_for_owner(proc, owner) || epoll_wait;
     if proc.cancel_signal_mask_wait_for(tid) {
         cancelled = true;
     }
@@ -5010,6 +5014,9 @@ fn release_ofd_reference_impl(
                     if pty.master_refs > 0 {
                         pty.master_refs -= 1;
                         if pty.master_refs == 0 {
+                            crate::epoll::notify(crate::epoll::Source::Pty(pty.index, false), 0x10);
+                        }
+                        if pty.master_refs == 0 {
                             crate::wakeup::push_pty_readiness();
                         }
                     }
@@ -5023,6 +5030,9 @@ fn release_ofd_reference_impl(
                 if let Some(pty) = crate::pty::get_pty(pty_idx) {
                     if pty.slave_refs > 0 {
                         pty.slave_refs -= 1;
+                        if pty.slave_refs == 0 {
+                            crate::epoll::notify(crate::epoll::Source::Pty(pty.index, true), 0x10);
+                        }
                         if pty.slave_refs == 0 {
                             crate::wakeup::push_pty_readiness();
                         }
@@ -5698,7 +5708,7 @@ pub fn sys_read(
             let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
             let domain = sock.domain;
             let sock_type = sock.sock_type;
-            let shut_rd = sock.shut_rd;
+            let shut_rd = socket_read_shutdown(sock);
             if shut_rd {
                 return Ok(0);
             }
@@ -5830,6 +5840,10 @@ pub fn sys_read(
                     Ok(value)
                 }
             })?;
+            crate::epoll::notify(
+                crate::epoll::Source::Backing(FileType::EventFd, host_handle),
+                0x104,
+            );
             buf[..8].copy_from_slice(&value.to_le_bytes());
             Ok(8)
         }
@@ -6235,7 +6249,7 @@ pub fn sys_write(
             let sock = proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
             let domain = sock.domain;
             let sock_type = sock.sock_type;
-            let shut_wr = sock.shut_wr;
+            let shut_wr = socket_write_shutdown(sock);
             if shut_wr {
                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                 return Err(Errno::EPIPE);
@@ -6315,6 +6329,10 @@ pub fn sys_write(
                 efd.counter += value;
                 Ok(())
             })?;
+            crate::epoll::notify(
+                crate::epoll::Source::Backing(FileType::EventFd, host_handle),
+                0x41,
+            );
             Ok(8)
         }
         FileType::PtyMaster => {
@@ -10678,6 +10696,7 @@ fn cleanup_process_for_exit(
     mut locks: Option<&mut AdvisoryLockManager>,
     host: &mut dyn HostIO,
 ) {
+    proc.epoll_waits.clear();
     // Prepared executable tokens are exact OFD leases owned by this image,
     // not guest descriptors. Retire them before the ordinary fd walk so exit,
     // signal death, and trap cleanup cannot leave host-visible authority alive.
@@ -12312,6 +12331,9 @@ fn udp_queue_datagram(
         return;
     }
     sock.dgram_queue.push(make_datagram());
+    if let Some(id) = sock.poll_identity.get() {
+        crate::epoll::notify(crate::epoll::Source::Description(id), 0x41);
+    }
 }
 
 fn unix_queue_datagram(
@@ -12326,6 +12348,9 @@ fn unix_queue_datagram(
     }
     sock.dgram_queue.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
     sock.dgram_queue.push(make_datagram()?);
+    if let Some(id) = sock.poll_identity.get() {
+        crate::epoll::notify(crate::epoll::Source::Description(id), 0x41);
+    }
     Ok(())
 }
 
@@ -13361,6 +13386,7 @@ pub fn sys_shutdown(
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
     if let Some(send_idx) = send_idx {
         if let Some(pipe) = pipe_table.get_mut(send_idx) {
+            pipe.shutdown_write();
             pipe.close_write_end();
             // Wake a local writer that was blocked before shut_wr became true.
             crate::wakeup::push(send_idx as u32, crate::wakeup::WAKE_WRITABLE);
@@ -13369,6 +13395,7 @@ pub fn sys_shutdown(
     }
     if let Some(recv_idx) = recv_idx {
         if let Some(pipe) = pipe_table.get_mut(recv_idx) {
+            pipe.shutdown_read();
             pipe.close_read_end();
             // Wake a local reader that was blocked before shut_rd became true.
             crate::wakeup::push(recv_idx as u32, crate::wakeup::WAKE_READABLE);
@@ -13380,8 +13407,42 @@ pub fn sys_shutdown(
     // next send blocks or fails, so ask the host to retry them broadly.
     if datagram_send_state_changed {
         crate::wakeup::push_datagram_writable();
+        if matches!(how, SHUT_RD | SHUT_RDWR) {
+            if let Some(id) = proc.sockets.get(sock_idx).and_then(|s| s.poll_identity.get()) {
+                crate::epoll::notify(
+                    crate::epoll::Source::DatagramCapacity(id),
+                    wasm_posix_shared::epoll::EPOLLOUT
+                        | wasm_posix_shared::epoll::EPOLLWRNORM
+                        | wasm_posix_shared::epoll::EPOLLWRBAND,
+                );
+            }
+        }
     }
+    notify_socket_readiness(
+        proc,
+        sock_idx,
+        match how {
+            SHUT_RD => 0x2041,
+            SHUT_WR => 0x304,
+            _ => 0x2151,
+        },
+    );
     Ok(())
+}
+
+fn socket_read_shutdown(sock: &crate::socket::SocketInfo) -> bool {
+    sock.shut_rd
+        || sock
+            .recv_buf_idx
+            .and_then(|idx| unsafe { crate::pipe::global_pipe_table().get(idx) })
+            .is_some_and(|p| p.read_shutdown())
+}
+fn socket_write_shutdown(sock: &crate::socket::SocketInfo) -> bool {
+    sock.shut_wr
+        || sock
+            .send_buf_idx
+            .and_then(|idx| unsafe { crate::pipe::global_pipe_table().get(idx) })
+            .is_some_and(|p| p.write_shutdown())
 }
 
 /// Send data on a connected socket.
@@ -13439,7 +13500,7 @@ pub fn sys_send(
     if sock.state != SocketState::Connected {
         return Err(Errno::ENOTCONN);
     }
-    if sock.shut_wr {
+    if socket_write_shutdown(sock) {
         if flags & MSG_NOSIGNAL == 0 {
             proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
         }
@@ -13469,6 +13530,9 @@ pub fn sys_send(
             return Err(Errno::EPIPE);
         };
         peer_sock.oob_byte = Some(oob_byte);
+        if let Some(id) = peer_sock.poll_identity.get() {
+            crate::epoll::notify(crate::epoll::Source::Description(id), 2);
+        }
         return Ok(buf.len());
     }
 
@@ -13546,7 +13610,7 @@ pub fn sys_recv(
     if sock.state != SocketState::Connected {
         return Err(Errno::ENOTCONN);
     }
-    if sock.shut_rd {
+    if socket_read_shutdown(sock) {
         return Ok(0);
     }
 
@@ -14374,6 +14438,28 @@ pub fn sys_listen(
     proc: &mut Process,
     host: &mut dyn HostIO,
     fd: i32,
+    backlog: u32,
+) -> Result<(), Errno> {
+    let result = sys_listen_impl(proc, host, fd, backlog);
+    if result.is_ok() || matches!(result, Err(Errno::EINPROGRESS)) {
+        if let Some(ofd) = proc
+            .fd_table
+            .get(fd)
+            .ok()
+            .and_then(|e| proc.ofd_table.get(e.ofd_ref.0))
+        {
+            if ofd.file_type == FileType::Socket {
+                notify_socket_readiness(proc, (-(ofd.host_handle + 1)) as usize, 0x215f);
+            }
+        }
+    }
+    result
+}
+
+fn sys_listen_impl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
     _backlog: u32,
 ) -> Result<(), Errno> {
     use crate::socket::{SocketDomain, SocketState, SocketType};
@@ -14636,6 +14722,28 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
 /// For AF_UNIX SOCK_DGRAM, connects validate a live same-process datagram
 /// endpoint; unsupported cross-process routing fails without misdelivery.
 pub fn sys_connect(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+    addr: &[u8],
+) -> Result<(), Errno> {
+    let result = sys_connect_impl(proc, host, fd, addr);
+    if result.is_ok() || matches!(result, Err(Errno::EINPROGRESS)) {
+        if let Some(ofd) = proc
+            .fd_table
+            .get(fd)
+            .ok()
+            .and_then(|e| proc.ofd_table.get(e.ofd_ref.0))
+        {
+            if ofd.file_type == FileType::Socket {
+                notify_socket_readiness(proc, (-(ofd.host_handle + 1)) as usize, 0x215f);
+            }
+        }
+    }
+    result
+}
+
+fn sys_connect_impl(
     proc: &mut Process,
     host: &mut dyn HostIO,
     fd: i32,
@@ -15418,6 +15526,9 @@ fn recv_datagram_message(
         )
     } else {
         let mut datagram = sock.dgram_queue.remove(datagram_idx);
+        if let Some(id) = sock.poll_identity.get() {
+            crate::epoll::notify(crate::epoll::Source::DatagramCapacity(id), 0x304);
+        }
         let copy_len = buf.len().min(datagram.data.len());
         buf[..copy_len].copy_from_slice(&datagram.data[..copy_len]);
         let ancillary_fds = if receive_ancillary {
@@ -15503,8 +15614,18 @@ pub fn sys_poll(
     fds: &mut [WasmPollFd],
     timeout_ms: i32,
 ) -> Result<i32, Errno> {
+    sys_poll_with_peers(proc, host, fds, timeout_ms, &mut [])
+}
+
+pub fn sys_poll_with_peers(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fds: &mut [WasmPollFd],
+    timeout_ms: i32,
+    peers: &mut [&mut Process],
+) -> Result<i32, Errno> {
     // First non-blocking check
-    let ready = poll_check(proc, host, fds);
+    let ready = poll_check_depth(proc, host, fds, 0, peers);
     if ready > 0 || timeout_ms == 0 {
         return Ok(ready);
     }
@@ -15518,14 +15639,14 @@ pub fn sys_poll(
 
 /// Single non-blocking pass checking fd readiness. Used by sys_poll's loop.
 fn poll_check(proc: &mut Process, host: &mut dyn HostIO, fds: &mut [WasmPollFd]) -> i32 {
-    poll_check_depth(proc, host, fds, 0)
+    poll_check_depth(proc, host, fds, 0, &mut [])
 }
 
 /// Maximum epoll-on-epoll recursion depth for readiness checks. Real
 /// nesting (a compositor registering libinput's epoll fd inside
 /// `wl_event_loop`'s epoll) is one level; this caps pathological cycles
 /// where an epoll transitively monitors itself through a different fd.
-const POLL_CHECK_MAX_DEPTH: u32 = 4;
+const POLL_CHECK_MAX_DEPTH: u32 = 5;
 
 /// Single non-blocking pass checking fd readiness, tracking nested-epoll
 /// recursion depth. Used by `sys_poll`'s loop and by the `FileType::Epoll`
@@ -15535,6 +15656,7 @@ fn poll_check_depth(
     host: &mut dyn HostIO,
     fds: &mut [WasmPollFd],
     depth: u32,
+    peers: &mut [&mut Process],
 ) -> i32 {
     use wasm_posix_shared::poll::*;
 
@@ -15574,6 +15696,24 @@ fn poll_check_depth(
             continue;
         }
 
+        let requested_events = pollfd.events;
+        let normal_aliases = !matches!(
+            ofd.file_type,
+            FileType::EventFd | FileType::TimerFd | FileType::SignalFd | FileType::Epoll
+        );
+        if normal_aliases && pollfd.events & POLLRDNORM != 0 {
+            pollfd.events |= POLLIN;
+        }
+        let write_aliases = if ofd.file_type == FileType::Socket {
+            POLLWRNORM | POLLWRBAND
+        } else if normal_aliases {
+            POLLWRNORM
+        } else {
+            0
+        };
+        if pollfd.events & write_aliases != 0 {
+            pollfd.events |= POLLOUT;
+        }
         let mut revents: i16 = 0;
 
         match ofd.file_type {
@@ -15611,62 +15751,12 @@ fn poll_check_depth(
                 }
             }
             FileType::Epoll => {
-                // A nested epoll fd is readable when any fd in its own interest
-                // list is ready; recurse a non-blocking pass over that list.
                 if pollfd.events & POLLIN != 0 && depth < POLL_CHECK_MAX_DEPTH {
-                    const EPOLLIN: u32 = 0x001;
-                    const EPOLLOUT: u32 = 0x004;
-
-                    // Owned list (the shared instance lives in
-                    // `descriptor_backing::with_epolls`, keyed by this epoll
-                    // OFD), resolved to descriptors this process holds that
-                    // still reach each registration's description.
-                    let interests: Vec<crate::process::EpollInterest> =
-                        epoll_resolved_interests(proc, pollfd.fd)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|(fd, mut i)| {
-                                i.fd = fd;
-                                i
-                            })
-                            .collect();
+                    let idx = (-(ofd.host_handle + 1)) as usize;
+                                if epoll_evaluate(proc, host, idx, 1, false, depth + 1, peers)
+                        .is_ok_and(|out| !out.is_empty())
                     {
-                        let mut tmp: Vec<WasmPollFd> = interests
-                            .iter()
-                            // Guard against a direct self-monitoring cycle.
-                            .filter(|i| i.fd != pollfd.fd)
-                            .map(|i| {
-                                let mut ev: i16 = 0;
-                                if i.events & EPOLLIN != 0 {
-                                    ev |= POLLIN;
-                                }
-                                if i.events & EPOLLOUT != 0 {
-                                    ev |= POLLOUT;
-                                }
-                                WasmPollFd {
-                                    fd: i.fd,
-                                    events: ev,
-                                    revents: 0,
-                                }
-                            })
-                            .collect();
-                        if !tmp.is_empty() {
-                            poll_check_depth(proc, host, &mut tmp, depth + 1);
-                            // Count only conditions epoll_wait would actually
-                            // report. `live_epoll_interests` already drops
-                            // registrations whose description closed (as
-                            // Linux does), but `poll_check_depth`'s return
-                            // also counts POLLNVAL, which epoll_wait never
-                            // reports. Counting it would make the outer epoll
-                            // report ready forever while epoll_wait on the
-                            // inner one yields no events — a 100% CPU spin.
-                            let ready = tmp.iter().any(|p| {
-                                p.revents & (POLLIN | POLLOUT | POLLERR | POLLHUP) != 0
-                            });
-                            if ready {
                                 revents |= POLLIN;
-                            }
-                        }
                     }
                 }
             }
@@ -15730,6 +15820,9 @@ fn poll_check_depth(
                 } else if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle)
                         == Some(VirtualDevice::DriCard0)
+                    || ofd.file_type == FileType::CharDevice
+                        && VirtualDevice::from_host_handle(ofd.host_handle)
+                            == Some(VirtualDevice::DriRenderD128)
                 {
                     // /dev/dri/card0 gates POLLIN on the per-fd
                     // `event_ring` actually holding a DRM event.
@@ -15826,7 +15919,8 @@ fn poll_check_depth(
                             O_WRONLY => {
                                 if !pipe.has_readers() {
                                     revents |= POLLERR;
-                                } else if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
+                                }
+                                if pollfd.events & POLLOUT != 0 && pipe.free_space() > 0 {
                                     revents |= POLLOUT;
                                 }
                             }
@@ -15847,15 +15941,24 @@ fn poll_check_depth(
                 let sock_idx = (-(ofd.host_handle + 1)) as usize;
                 if let Some(sock) = proc.sockets.get(sock_idx) {
                     use crate::socket::{SocketState, SocketType};
-                    let stream_write_shutdown = sock.sock_type != SocketType::Dgram && sock.shut_wr;
-                    // POLLERR: report full shutdown as an error for stream sockets.
+                    let stream_write_shutdown = sock.sock_type != SocketType::Dgram && socket_write_shutdown(sock);
+                    // Full local shutdown is a hangup, not a synthetic error.
                     // Datagram sockets handle shutdown readiness below: read shutdown
                     // is EOF-like for poll, while write shutdown suppresses POLLOUT.
-                    if sock.sock_type != SocketType::Dgram && sock.shut_wr && sock.shut_rd {
-                        revents |= POLLERR;
+                    if sock.sock_type != SocketType::Dgram && socket_write_shutdown(sock)
+                        && socket_read_shutdown(sock)
+                    {
+                        revents |= POLLHUP;
                     }
                     if sock.sock_type != SocketType::Dgram
-                        && sock.shut_rd
+                        && socket_read_shutdown(sock) {
+                        revents |= pollfd.events & POLLRDHUP;
+                    }
+                    if sock.oob_byte.is_some() {
+                        revents |= pollfd.events & POLLPRI;
+                    }
+                    if sock.sock_type != SocketType::Dgram
+                        && socket_read_shutdown(sock)
                         && (pollfd.events & POLLIN != 0)
                     {
                         revents |= POLLIN;
@@ -15881,10 +15984,10 @@ fn poll_check_depth(
                         if sock.connect_error != 0 {
                             revents |= POLLERR;
                         }
-                        if sock.shut_wr {
+                        if socket_write_shutdown(sock) {
                             revents |= POLLHUP;
                         }
-                        if pollfd.events & POLLIN != 0 && sock.shut_rd {
+                        if pollfd.events & POLLIN != 0 && socket_read_shutdown(sock) {
                             revents |= POLLIN;
                         } else if pollfd.events & POLLIN != 0
                             && sock
@@ -15910,7 +16013,8 @@ fn poll_check_depth(
                                         && unix_dgram_target_accepts_sender(peer, sock_idx)
                                         && peer.dgram_queue.len() >= UDP_DATAGRAM_QUEUE_LIMIT
                                 });
-                        if pollfd.events & POLLOUT != 0 && !sock.shut_wr && !unix_peer_queue_full {
+                        if pollfd.events & POLLOUT != 0 && !socket_write_shutdown(sock)
+                            && !unix_peer_queue_full {
                             revents |= POLLOUT;
                         }
                     }
@@ -15923,7 +16027,18 @@ fn poll_check_depth(
                                 revents |= POLLIN;
                             }
                             if !pipe.is_write_end_open() {
-                                revents |= POLLHUP;
+                                revents |= pollfd.events & POLLRDHUP;
+                                if socket_write_shutdown(sock)
+                                    || sock.domain == crate::socket::SocketDomain::Unix
+                                        && sock
+                                            .send_buf_idx
+                                            .and_then(|idx| unsafe {
+                                                crate::pipe::global_pipe_table().get(idx)
+                                            })
+                                            .is_some_and(|send| !send.is_read_end_open())
+                                {
+                                    revents |= POLLHUP;
+                                }
                             }
                         }
                     }
@@ -16048,33 +16163,18 @@ fn poll_check_depth(
                     if stream_write_shutdown {
                         revents &= !POLLOUT;
                     }
-                    // NOTE: POSIX XSH poll() also requires that "POLLHUP and
-                    // POLLOUT are mutually exclusive: a stream can never be
-                    // writable if a hangup has occurred", and the pipe-backed
-                    // path above can still report both — its recv-pipe hangup
-                    // check and its send-pipe writability check are
-                    // independent. That is deliberately NOT fixed here by
-                    // masking POLLOUT off, because the real divergence is one
-                    // step earlier: the pipe-backed path raises POLLHUP for a
-                    // peer that merely closed its write end, and never sets
-                    // POLLIN at end-of-file, so POLLHUP is doing double duty
-                    // as the reader's EOF wakeup. Linux treats that state as
-                    // RCV_SHUTDOWN — EPOLLIN|EPOLLRDHUP with EPOLLOUT intact
-                    // — and reserves EPOLLHUP for `sk_shutdown ==
-                    // SHUTDOWN_MASK`. Masking POLLOUT off would make this
-                    // POSIX-valid but move it further from Linux and stop
-                    // writers on a half-closed AF_UNIX socket. Correcting it
-                    // properly means reporting EOF as POLLIN there, which
-                    // changes wakeups for every AF_UNIX and loopback socket
-                    // and needs the conformance suites to validate.
-                    //
-                    // The host-delegated path above has no such ambiguity:
-                    // its facts distinguish RECV_EOF from HANGUP, and
-                    // `net_readiness::stream_revents` applies the exclusion.
                 }
             }
         }
 
+        if normal_aliases && revents & POLLIN != 0 {
+            revents |= requested_events & POLLRDNORM;
+        }
+        if revents & POLLOUT != 0 {
+            revents |= requested_events & write_aliases;
+        }
+        revents &= requested_events | POLLERR | POLLHUP | POLLNVAL;
+        pollfd.events = requested_events;
         pollfd.revents = revents;
         if revents != 0 {
             ready_count += 1;
@@ -17721,6 +17821,17 @@ pub fn sys_ppoll(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
+    sys_ppoll_with_peers(proc, host, fds, timeout_ms, mask, &mut [])
+}
+
+pub fn sys_ppoll_with_peers(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    fds: &mut [WasmPollFd],
+    timeout_ms: i32,
+    mask: Option<u64>,
+    peers: &mut [&mut Process],
+) -> Result<i32, Errno> {
     // A per-task LIFO context keeps this swap distinct from waits nested in a
     // caught handler while host retries reuse the active top context.
     let tid = current_tid_for_process(proc);
@@ -17732,7 +17843,7 @@ pub fn sys_ppoll(
             return Err(Errno::EINTR);
         }
     }
-    let result = sys_poll(proc, host, fds, timeout_ms);
+    let result = sys_poll_with_peers(proc, host, fds, timeout_ms, peers);
     if mask.is_some()
         && !matches!(result, Err(Errno::EAGAIN))
         && proc.deliverable_for(tid) == 0
@@ -17754,6 +17865,30 @@ pub fn sys_pselect6(
     timeout_ms: i32,
     mask: Option<u64>,
 ) -> Result<i32, Errno> {
+    sys_pselect6_with_peers(
+        proc,
+        host,
+        nfds,
+        readfds,
+        writefds,
+        exceptfds,
+        timeout_ms,
+        mask,
+        &mut [],
+    )
+}
+
+pub fn sys_pselect6_with_peers(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    nfds: i32,
+    readfds: Option<&mut [u8]>,
+    writefds: Option<&mut [u8]>,
+    exceptfds: Option<&mut [u8]>,
+    timeout_ms: i32,
+    mask: Option<u64>,
+    peers: &mut [&mut Process],
+) -> Result<i32, Errno> {
     // A per-task LIFO context keeps this swap distinct from waits nested in a
     // caught handler while host retries reuse the active top context.
     let tid = current_tid_for_process(proc);
@@ -17765,7 +17900,8 @@ pub fn sys_pselect6(
             return Err(Errno::EINTR);
         }
     }
-    let result = sys_select(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms);
+    let result = sys_select_with_peers(proc, host, nfds, readfds, writefds, exceptfds, timeout_ms, peers,
+    );
     if mask.is_some()
         && !matches!(result, Err(Errno::EAGAIN))
         && proc.deliverable_for(tid) == 0
@@ -17874,10 +18010,9 @@ pub fn sys_epoll_create1(proc: &mut Process, flags: u32) -> Result<i32, Errno> {
 ///
 /// An epoll interest names a *description*, so the descriptor that reaches it
 /// can differ from the registration number after `dup`, and can exist in a
-/// `fork` child that never called `epoll_ctl` itself. `None` means this
-/// process holds no descriptor for the description — either it was released
-/// (Linux removes such an interest) or only another process still holds it
-/// (see the `epoll_pwait()` row of `docs/posix-status.md`).
+/// `fork` child that never called `epoll_ctl` itself. `None` means the
+/// caller has no descriptor for the description; event delivery also searches
+/// the disjoint peer process records before consulting descriptor-free backings.
 fn fd_naming_ofd_id(
     proc: &Process,
     ofd_id: crate::lock::OfdId,
@@ -17899,25 +18034,11 @@ fn fd_naming_ofd_id(
         .map(|(fd, _)| fd)
 }
 
-/// Resolve `epfd`'s shared interest list into descriptors `proc` currently
-/// holds.
-///
-/// The instance is owned by the open file description `epfd` names, not by the
-/// process (see [`crate::descriptor_backing::with_epolls`]), so this is the one
-/// place that turns registrations back into per-caller descriptor numbers. The
-/// registration number an interest carries is only a hint: after `dup` the same
-/// description is reachable at another number, after close/reopen the same
-/// number names something else, and in a `fork` child the number may never have
-/// been used for `epoll_ctl` at all.
-///
-/// An interest whose description this process can no longer reach contributes
-/// nothing and is dropped — see the `epoll_pwait()` row of
-/// `docs/posix-status.md` for the residual divergence when only a sibling still
-/// holds the description.
-///
-/// Errors mirror `epoll_pwait`: `EBADF` for a descriptor that is not open or an
-/// instance that is gone, `EINVAL` for a descriptor that is not an epoll
-/// instance.
+/// Resolve caller-local descriptors for host wake hints and fd introspection.
+/// This is not the event-delivery resolver: an interest can remain live while
+/// only a sibling process or a queued descriptor transfer owns its description.
+/// The delivery engine consults those owners independently of these hints.
+/// Errors are EBADF for an absent fd/backing and EINVAL for a non-epoll fd.
 pub fn epoll_resolved_interests(
     proc: &Process,
     epfd: i32,
@@ -17941,6 +18062,25 @@ pub fn epoll_resolved_interests(
             fd_naming_ofd_id(proc, interest.ofd_id, interest.fd).map(|fd| (fd, interest))
         })
         .collect())
+}
+
+pub fn epoll_wait_resolved_interests(
+    proc: &Process,
+    epfd: i32,
+) -> Result<Vec<(i32, crate::process::EpollInterest)>, Errno> {
+    let tid = current_tid_for_process(proc);
+    if let Some((_, lease)) = proc.epoll_waits.iter().find(|(owner, _)| *owner == tid) {
+        let interests = crate::descriptor_backing::with_epolls(|t| {
+            t.get(lease.index)
+                .map(|ep| ep.interests.clone())
+                .ok_or(Errno::EBADF)
+        })?;
+        return Ok(interests
+            .into_iter()
+            .filter_map(|i| fd_naming_ofd_id(proc, i.ofd_id, i.fd).map(|fd| (fd, i)))
+            .collect());
+    }
+    epoll_resolved_interests(proc, epfd)
 }
 
 /// Whether an `epoll_ctl` operation reads the caller's `struct epoll_event`.
@@ -17988,9 +18128,157 @@ pub fn epoll_watched_fd(proc: &Process, index: usize) -> Option<i32> {
         .nth(index)
 }
 
-/// epoll_ctl — modify an epoll interest list.
-///
-/// op: EPOLL_CTL_ADD (1), EPOLL_CTL_DEL (2), EPOLL_CTL_MOD (3).
+fn epoll_index(proc: &Process,
+    epfd: i32) -> Result<usize, Errno> {
+    let entry = proc.fd_table.get(epfd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.file_type != FileType::Epoll {
+        return Err(Errno::EINVAL);
+    }
+    Ok((-(ofd.host_handle + 1)) as usize)
+}
+
+pub fn notify_socket_readiness(proc: &Process, sock_idx: usize, events: u32) {
+    for (fd, entry) in proc.fd_table.iter() {
+        if proc.ofd_table.get(entry.ofd_ref.0).is_some_and(|o| {
+            o.file_type == FileType::Socket && o.host_handle == -(sock_idx as i64 + 1)
+        }) {
+            if let Ok(sources) = epoll_sources(proc, fd) {
+                let id = proc.ofd_table
+            .get(entry.ofd_ref.0)
+            .unwrap().ofd_id;
+
+    crate::descriptor_backing::with_epolls(|table| {
+                    for (_, ep) in table.iter_mut() {
+                        for i in &mut ep.interests {
+                            if i.ofd_id == id {
+                                i.sources = sources.clone();
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+    for (_, ofd) in proc.ofd_table.iter() {
+        if ofd.file_type == FileType::Socket && ofd.host_handle == -(sock_idx as i64 + 1) {
+            crate::epoll::notify(crate::epoll::Source::Description(ofd.ofd_id), events);
+        }
+    }
+}
+
+fn epoll_sources(proc: &Process, fd: i32) -> Result<Vec<crate::epoll::Source>, Errno> {
+    use crate::epoll::Source;
+    let entry = proc.fd_table.get(fd)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    let mut sources = alloc::vec![
+        Source::Description(ofd.ofd_id),
+        Source::Backing(ofd.file_type, ofd.host_handle)
+    ];
+    match ofd.file_type {
+        FileType::Pipe if ofd.host_handle < 0 => {
+            let idx = (-(ofd.host_handle + 1)) as u32;
+            if ofd.status_flags() & O_ACCMODE != O_WRONLY {
+                sources.push(Source::Pipe(idx, crate::wakeup::WAKE_READABLE));
+            }
+            if ofd.status_flags() & O_ACCMODE != O_RDONLY {
+                sources.push(Source::Pipe(idx, crate::wakeup::WAKE_WRITABLE));
+            }
+        }
+        FileType::Socket => {
+            let sock = proc
+                .sockets
+                .get((-(ofd.host_handle + 1)) as usize)
+                .ok_or(Errno::EBADF)?;
+            sock.poll_identity.set(Some(ofd.ofd_id));
+            if sock.sock_type == crate::socket::SocketType::Dgram {
+                if let Some(peer_idx) = sock.peer_idx {
+                    if let Some((_, peer_ofd)) = proc.ofd_table.iter().find(|(_, o)| {
+                        o.file_type == FileType::Socket && o.host_handle == -(peer_idx as i64 + 1)
+                    }) {
+                        peer_ofd.mark_epoll_watched();
+                        if let Some(peer) = proc.sockets.get(peer_idx) {
+                            peer.poll_identity.set(Some(peer_ofd.ofd_id));
+                        }
+                        sources.push(Source::DatagramCapacity(peer_ofd.ofd_id));
+                    }
+                }
+            }
+            if let Some(idx) = sock.recv_buf_idx {
+                sources.push(Source::Pipe(idx as u32, crate::wakeup::WAKE_READABLE));
+            }
+            if let Some(idx) = sock.send_buf_idx {
+                sources.push(Source::Pipe(idx as u32, crate::wakeup::WAKE_WRITABLE));
+            }
+            if let Some(idx) = sock.accept_wake_idx {
+                sources.push(Source::Accept(idx));
+            }
+            if let Some(handle) = sock.host_net_handle {
+                sources.push(Source::Network(handle));
+            }
+        }
+        FileType::PtyMaster | FileType::PtySlave => {
+            sources.push(Source::Pty(
+                ofd.host_handle as u32,
+                ofd.file_type == FileType::PtyMaster,
+            ));
+        }
+        FileType::CharDevice => sources.push(Source::Device(ofd.host_handle)),
+        _ => {}
+    }
+    Ok(sources)
+}
+
+/// Reject cycles and chains containing more than five epoll instances. Linux
+/// counts the four edges between them, including paths entering the changed fd.
+fn epoll_check_graph(parent: usize, child: usize) -> Result<(), Errno> {
+    crate::descriptor_backing::with_epolls(|table| {
+        let graph: Vec<(usize, Vec<usize>)> = table
+            .iter_mut()
+            .map(|(idx, ep)| {
+                let mut children: Vec<usize> = ep
+                    .interests
+                    .iter()
+                    .flat_map(|i| i.sources.iter())
+                    .filter_map(|s| match s {
+                        crate::epoll::Source::Backing(FileType::Epoll, h) => {
+                            Some((-(h + 1)) as usize)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if idx == parent {
+                    children.push(child);
+                }
+                (idx, children)
+            })
+            .collect();
+        fn visit(graph: &[(usize, Vec<usize>)], node: usize, path: &mut Vec<usize>) -> bool {
+            if path.contains(&node) || path.len() >= 5 {
+                return false;
+            }
+            path.push(node);
+            let valid = graph
+                .iter()
+                .find(|(idx, _)| *idx == node)
+                .is_none_or(|(_, children)| {
+                    children.iter().all(|child| visit(graph, *child, path))
+                });
+            path.pop();
+            valid
+        }
+        if graph
+            .iter()
+            .all(|(idx, _)| visit(&graph, *idx, &mut Vec::new()))
+        {
+            Ok(())
+        } else {
+            Err(Errno::ELOOP)
+        }
+    })
+}
+
+/// Change a registration keyed by (descriptor number, open file description).
 pub fn sys_epoll_ctl(
     proc: &mut Process,
     epfd: i32,
@@ -17999,78 +18287,450 @@ pub fn sys_epoll_ctl(
     events: u32,
     data: u64,
 ) -> Result<(), Errno> {
-    const EPOLL_CTL_ADD: i32 = 1;
-    const EPOLL_CTL_DEL: i32 = 2;
-    const EPOLL_CTL_MOD: i32 = 3;
-
-    // Look up the epoll instance
-    let entry = proc.fd_table.get(epfd)?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
-    if ofd.file_type != FileType::Epoll {
+    use wasm_posix_shared::epoll::*;
+    let ep_idx = epoll_index(proc, epfd)?;
+    let target_entry = proc.fd_table.get(fd)?;
+    let target = proc
+        .ofd_table
+        .get(target_entry.ofd_ref.0)
+        .ok_or(Errno::EBADF)?;
+    let target_id = target.ofd_id;
+    if target.is_path_only() {
+        return Err(Errno::EBADF);
+    }
+    if target.file_type == FileType::Epoll && target.host_handle == -(ep_idx as i64 + 1) {
         return Err(Errno::EINVAL);
     }
-    let ep_idx = (-(ofd.host_handle + 1)) as usize;
-
-    // Verify the target fd exists, and take the identity of the open file
-    // description it names. Linux keys an interest on `(struct file *, fd)`,
-    // so a descriptor number reused by a later `open` is a *different*
-    // registration and a `dup` at another number is a second one.
-    let target_ofd_id = {
-        let entry = proc.fd_table.get(fd)?;
-        proc.ofd_table
-            .get(entry.ofd_ref.0)
-            .ok_or(Errno::EBADF)?
-            .ofd_id
-    };
-
-    crate::descriptor_backing::with_epolls(|table| {
-        let ep = table.get_mut(ep_idx).ok_or(Errno::EBADF)?;
-        let existing = ep
+    // Linux regular files, directories, and devices without ->poll cannot be
+    // attached. poll()'s always-ready regular-file rule is not epoll support.
+    if matches!(
+        target.file_type,
+        FileType::Regular | FileType::Directory | FileType::MemFd
+    ) || target.file_type == FileType::CharDevice
+        && matches!(
+            VirtualDevice::from_host_handle(target.host_handle),
+            Some(
+                VirtualDevice::Null
+                    | VirtualDevice::Zero
+                    | VirtualDevice::Full
+                    | VirtualDevice::Urandom
+                    | VirtualDevice::Fb0
+            )
+        )
+    {
+        return Err(Errno::EPERM);
+    }
+    if !matches!(op, 1..=3) {
+        return Err(Errno::EINVAL);
+    }
+    let existing = crate::descriptor_backing::with_epolls(|table| {
+        let ep = table.get(ep_idx).ok_or(Errno::EBADF)?;
+        Ok(ep
             .interests
             .iter()
-            .position(|e| e.fd == fd && e.ofd_id == target_ofd_id);
-
-        match op {
-            EPOLL_CTL_ADD => {
-                if existing.is_some() {
-                    return Err(Errno::EEXIST);
-                }
-                // An interest carrying this descriptor number but a different
-                // description survives on Linux only while that description
-                // does. One this process can no longer reach is dead here, so
-                // drop it instead of letting a close/reopen loop grow the
-                // interest list without bound.
-                ep.interests
-                    .retain(|e| e.fd != fd || fd_naming_ofd_id(proc, e.ofd_id, e.fd).is_some());
-                ep.interests.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-                ep.interests.push(crate::process::EpollInterest {
-                    fd,
-                    ofd_id: target_ofd_id,
-                    events,
-                    data,
-                });
-                Ok(())
-            }
-            EPOLL_CTL_DEL => {
-                let pos = existing.ok_or(Errno::ENOENT)?;
-                ep.interests.swap_remove(pos);
-                Ok(())
-            }
-            EPOLL_CTL_MOD => {
-                let pos = existing.ok_or(Errno::ENOENT)?;
-                ep.interests[pos].events = events;
-                ep.interests[pos].data = data;
-                Ok(())
-            }
-            _ => Err(Errno::EINVAL),
+            .find(|i| i.fd == fd && i.ofd_id == target_id)
+            .cloned())
+    })?;
+    if op != 2 {
+        // EPOLLWAKEUP has no effect without CAP_BLOCK_SUSPEND; Kandelo exposes
+        // no system suspend or capability to prevent it, matching that case.
+        if events & EPOLLEXCLUSIVE != 0
+            && (op != 1
+                || target.file_type == FileType::Epoll
+                || events
+                    & !(EPOLLIN
+                        | EPOLLOUT
+                        | EPOLLERR
+                        | EPOLLHUP
+                        | EPOLLWAKEUP
+                        | EPOLLET
+                        | EPOLLEXCLUSIVE)
+                    != 0)
+            || op == 3
+                && existing
+                    .as_ref()
+                    .is_some_and(|i| i.events & EPOLLEXCLUSIVE != 0)
+        {
+            return Err(Errno::EINVAL);
         }
-    })
+    }
+    if op == 1 && existing.is_some() {
+        return Err(Errno::EEXIST);
+    }
+    if op != 1 && existing.is_none() {
+        return Err(Errno::ENOENT);
+    }
+    if op == 1 && target.file_type == FileType::Epoll {
+        epoll_check_graph(ep_idx, (-(target.host_handle + 1)) as usize)?;
+    }
+    let sources = epoll_sources(proc, fd)?;
+    target.mark_epoll_watched();
+    crate::descriptor_backing::with_epolls(|table| {
+        let ep = table.get_mut(ep_idx).ok_or(Errno::EBADF)?;
+        let pos = ep
+            .interests
+            .iter()
+            .position(|i| i.fd == fd && i.ofd_id == target_id);
+        if op == 2 {
+            ep.interests.remove(pos.ok_or(Errno::ENOENT)?);
+            ep.cursor %= ep.interests.len().max(1);
+        } else {
+            let interest = crate::process::EpollInterest {
+                fd,
+                ofd_id: target_id,
+                events: events | EPOLLERR | EPOLLHUP,
+                data,
+                pending: true,
+                disabled: false,
+                sources,
+                network_generations: [None; 2],
+                device_generation: None,
+            };
+            if let Some(pos) = pos {
+                ep.interests[pos] = interest;
+            } else {
+                ep.interests.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+                ep.interests.push(interest);
+            }
+        }
+        Ok(())
+    })?;
+    // ADD/MOD may make an already-ready child visible to an outer epoll.
+    crate::epoll::notify(
+        crate::epoll::Source::Backing(FileType::Epoll, -(ep_idx as i64 + 1)),
+        EPOLLIN,
+    );
+    Ok(())
 }
 
-/// epoll_pwait — wait for events on an epoll instance.
-///
-/// Builds pollfds from the interest list, delegates to sys_poll,
-/// then maps the results back to epoll_event format.
+fn epoll_backing_readiness(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    i: &crate::process::EpollInterest,
+) -> Result<u32, Errno> {
+    use crate::epoll::Source;
+    use wasm_posix_shared::epoll::*;
+    let mut ready = 0;
+    for source in &i.sources {
+        match *source {
+            Source::Pipe(idx, direction) => {
+                if let Some(pipe) = unsafe { crate::pipe::global_pipe_table().get(idx as usize) } {
+                    if direction == crate::wakeup::WAKE_READABLE {
+                        if pipe.available() != 0 {
+                            ready |= EPOLLIN | EPOLLRDNORM;
+                        }
+                        if pipe.read_end_has_hangup() {
+                            ready |= EPOLLHUP;
+                        }
+                    } else {
+                        if pipe.free_space() != 0 {
+                            ready |= EPOLLOUT | EPOLLWRNORM;
+                        }
+                        if !pipe.has_readers() {
+                            ready |= EPOLLERR;
+                        }
+                    }
+                }
+            }
+            Source::Backing(FileType::EventFd, h) => {
+                if let Some(counter) = crate::descriptor_backing::with_eventfds(|t| {
+                    t.get((-(h + 1)) as usize).map(|e| e.counter)
+                }) {
+                    if counter != 0 {
+                        ready |= EPOLLIN;
+                    }
+                    if counter < u64::MAX - 1 {
+                        ready |= EPOLLOUT;
+                    }
+                }
+            }
+            Source::Backing(FileType::TimerFd, h) => {
+                let idx = (-(h + 1)) as usize;
+                timerfd_refresh(host, idx)?;
+                if crate::descriptor_backing::with_timerfds(|t| {
+                    t.get(idx).is_some_and(|e| e.expirations != 0)
+                }) {
+                    ready |= EPOLLIN;
+                }
+            }
+            Source::Backing(FileType::SignalFd, h) => {
+                crate::epoll::signal_generation(
+                    i.ofd_id,
+                    proc.signal_readiness_generations(current_tid_for_process(proc)),
+                );
+                let mask = crate::descriptor_backing::with_signalfds(|t| {
+                    t.get((-(h + 1)) as usize).map(|e| e.mask)
+                })
+                .unwrap_or(0);
+                if proc.pending_for(current_tid_for_process(proc)) & mask != 0 {
+                    ready |= EPOLLIN;
+                }
+            }
+            Source::Backing(FileType::PcmPlayback, h) => {
+                crate::epoll::device_generation(
+                    *source,
+                    crate::audio::readiness_generation(),
+                    EPOLLOUT | EPOLLWRNORM | EPOLLERR,
+                );
+                if crate::audio::has_fatal_error(h).unwrap_or(false) {
+                    ready |= EPOLLERR;
+                } else if crate::audio::poll_writable(h).unwrap_or(false) {
+                    ready |= EPOLLOUT | EPOLLWRNORM;
+                }
+            }
+            Source::Pty(idx, master) => {
+                if let Some(pty) = crate::pty::get_pty(idx as usize) {
+                    if if master {
+                        pty.master_has_data()
+                    } else {
+                        pty.slave_has_data()
+                    } {
+                        ready |= EPOLLIN | EPOLLRDNORM;
+                    }
+                    ready |= EPOLLOUT | EPOLLWRNORM;
+                    if if master {
+                        pty.slave_refs == 0
+                    } else {
+                        pty.master_refs == 0
+                    } {
+                        ready |= EPOLLHUP;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(ready & i.events)
+}
+
+fn epoll_socket_readiness(sock: &crate::socket::SocketInfo, mut ready: u32) -> u32 {
+    use crate::socket::{SocketDomain, SocketState, SocketType};
+    use wasm_posix_shared::epoll::*;
+    let stream = sock.sock_type == SocketType::Stream;
+    let mut writable = EPOLLOUT | EPOLLWRNORM;
+    if sock.domain == SocketDomain::Unix || !stream {
+        writable |= EPOLLWRBAND;
+    } else {
+        ready &= !EPOLLWRBAND;
+    }
+    let read_shutdown = socket_read_shutdown(sock);
+    let write_shutdown = socket_write_shutdown(sock);
+    if !stream {
+        // A datagram write shutdown alone is not a hangup. Receive shutdown
+        // is local EOF; a peer's send shutdown does not close our receive side.
+        ready &= !EPOLLHUP;
+        if read_shutdown {
+            ready |= EPOLLIN | EPOLLRDNORM | EPOLLRDHUP;
+            if write_shutdown {
+                ready |= EPOLLHUP;
+            }
+        }
+    } else if matches!(
+        sock.state,
+        SocketState::Unbound | SocketState::Bound | SocketState::Closed
+    ) {
+        ready |= EPOLLHUP | writable;
+    }
+    let peer_refuses_writes = sock
+        .send_buf_idx
+        .and_then(|idx| unsafe { crate::pipe::global_pipe_table().get(idx) })
+        .is_some_and(|pipe| !pipe.is_read_end_open());
+    // Linux epoll keeps immediate write failures observable as writable,
+    // including OUT together with HUP. Its socket mask is distinct from the
+    // POSIX poll policy: suppressing OUT here can strand an epoll writer.
+    if write_shutdown || peer_refuses_writes || stream && ready & EPOLLHUP != 0 {
+        ready |= writable;
+    }
+    ready
+}
+
+fn epoll_interest_readiness(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    interest: &crate::process::EpollInterest,
+    depth: u32,
+    peers: &mut [&mut Process],
+) -> Result<u32, Errno> {
+    use wasm_posix_shared::epoll::*;
+    let mut owner_index = None;
+    let fd = if let Some(fd) = fd_naming_ofd_id(proc, interest.ofd_id, interest.fd) {
+        Some(fd)
+    } else {
+        peers.iter().enumerate().find_map(|(idx, peer)| {
+            fd_naming_ofd_id(peer, interest.ofd_id, interest.fd).map(|fd| {
+                owner_index = Some(idx);
+                fd
+            })
+        })
+    };
+    let Some(fd) = fd else {
+        return epoll_backing_readiness(proc, host, interest);
+    };
+    let owner: &Process = if let Some(idx) = owner_index {
+        &peers[idx]
+    } else {
+        proc
+    };
+    let Some(ofd) = owner
+        .fd_table
+        .get(fd)
+        .ok()
+        .and_then(|e| owner.ofd_table.get(e.ofd_ref.0))
+    else {
+        return Ok(0);
+    };
+    if ofd.file_type == FileType::Epoll {
+        let idx = (-(ofd.host_handle + 1)) as usize;
+        return Ok(
+            if depth < POLL_CHECK_MAX_DEPTH
+                && epoll_evaluate(proc, host, idx, 1, false, depth + 1, peers)
+                    .is_ok_and(|v| !v.is_empty())
+            {
+                EPOLLIN & interest.events
+            } else {
+                0
+            },
+        );
+    }
+    // A signalfd observes the waiting task's signal queue, even if its open
+    // description is retained only by a sibling process.
+    if ofd.file_type == FileType::PcmPlayback {
+        crate::epoll::device_generation(
+            crate::epoll::Source::Backing(FileType::PcmPlayback, ofd.host_handle),
+            crate::audio::readiness_generation(),
+            EPOLLOUT | EPOLLWRNORM | EPOLLERR,
+        );
+    }
+    if ofd.file_type == FileType::SignalFd {
+        crate::epoll::signal_generation(
+            interest.ofd_id,
+            proc.signal_readiness_generations(current_tid_for_process(proc)),
+        );
+        let idx = (-(ofd.host_handle + 1)) as usize;
+        let mask =
+            crate::descriptor_backing::with_signalfds(|t| t.get(idx).map(|s| s.mask)).unwrap_or(0);
+        return Ok(
+            if proc.pending_for(current_tid_for_process(proc)) & mask != 0 {
+                EPOLLIN & interest.events
+            } else {
+                0
+            },
+        );
+    }
+    let socket_idx = (ofd.file_type == FileType::Socket)
+        .then(|| (-(ofd.host_handle + 1)) as usize);
+    let mut pollfd = [WasmPollFd {
+        fd,
+        events: interest.events as i16,
+        revents: 0,
+    }];
+    let owner = if let Some(idx) = owner_index {
+        &mut *peers[idx]
+    } else {
+        proc
+    };
+    if let Ok(sources) = epoll_sources(owner, fd) {
+        for source in &sources {
+            if let crate::epoll::Source::Network(handle) = source {
+                let generations = [
+                    host.host_net_readiness_generation(*handle, 0),
+                    host.host_net_readiness_generation(*handle, 1),
+                ];
+                if interest.events & (EPOLLET | EPOLLEXCLUSIVE) != 0
+                    && generations.iter().any(Option::is_none)
+                {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                let terminal = host
+                    .host_net_readiness(*handle)
+                    .map(|facts| crate::net_readiness::stream_revents(facts, 0) as u32)
+                    .unwrap_or(EPOLLERR);
+                crate::epoll::network_generation(*handle, generations, terminal);
+            }
+        }
+        crate::descriptor_backing::with_epolls(|table| {
+            for (_, ep) in table.iter_mut() {
+                for i in &mut ep.interests {
+                    if i.ofd_id == interest.ofd_id {
+                        i.sources = sources.clone();
+                    }
+                }
+            }
+        });
+    }
+    poll_check_depth(owner, host, &mut pollfd, depth, &mut []);
+    let mut ready = pollfd[0].revents as u16 as u32;
+    if let Some(sock) = socket_idx.and_then(|idx| owner.sockets.get(idx)) {
+        ready = epoll_socket_readiness(sock, ready);
+    }
+    Ok(ready & interest.events & !(wasm_posix_shared::poll::POLLNVAL as u32))
+}
+
+/// Peek or consume one fair batch. The global backing lock is never held
+/// across a readiness check: timer refreshes and nested epolls can notify it.
+fn epoll_evaluate(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    idx: usize,
+    maxevents: usize,
+    consume: bool,
+    depth: u32,
+    peers: &mut [&mut Process],
+) -> Result<Vec<(u32, u64)>, Errno> {
+    use wasm_posix_shared::epoll::*;
+    let (interests, cursor) = crate::descriptor_backing::with_epolls(|table| {
+        table
+            .get(idx)
+            .map(|ep| (ep.interests.clone(), ep.cursor))
+            .ok_or(Errno::EBADF)
+    })?;
+    let mut out = Vec::new();
+    for offset in 0..interests.len() {
+        let pos = (cursor + offset) % interests.len();
+        let interest = &interests[pos];
+        if interest.disabled {
+            continue;
+        }
+        // Always refresh backing readiness, including lazy timers. Only a
+        // notification (or ADD/MOD) can enqueue another edge-triggered event.
+        let ready = epoll_interest_readiness(proc, host, interest, depth, peers)?;
+        let pending = crate::descriptor_backing::with_epolls(|table| {
+            table
+                .get(idx)
+                .and_then(|ep| ep.interests.get(pos))
+                .is_some_and(|i| i.pending)
+        });
+        let gated = interest.events & (EPOLLET | EPOLLEXCLUSIVE) != 0;
+        if ready == 0 {
+            crate::descriptor_backing::with_epolls(|table| {
+                if let Some(i) = table.get_mut(idx).and_then(|ep| ep.interests.get_mut(pos)) {
+                    i.pending = false;
+                }
+            });
+            continue;
+        }
+        if gated && !pending {
+            continue;
+        }
+        out.push((ready, interest.data));
+        if consume {
+            crate::descriptor_backing::with_epolls(|table| {
+                if let Some(ep) = table.get_mut(idx) {
+                    if let Some(i) = ep.interests.get_mut(pos) {
+                        i.pending = i.events & EPOLLET == 0;
+                        i.disabled = i.events & EPOLLONESHOT != 0;
+                    }
+                    ep.cursor = (pos + 1) % ep.interests.len().max(1);
+                }
+            });
+        }
+        if out.len() == maxevents {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 pub fn sys_epoll_pwait(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -18079,116 +18739,75 @@ pub fn sys_epoll_pwait(
     timeout_ms: i32,
     sigmask: Option<u64>,
 ) -> Result<(i32, Vec<(u32, u64)>), Errno> {
-    use wasm_posix_shared::poll::*;
+    sys_epoll_pwait_with_peers(proc, host, epfd, maxevents, timeout_ms, sigmask, &mut [])
+}
 
-    if maxevents <= 0 {
-        return Err(Errno::EINVAL);
-    }
-
-    let interests = epoll_resolved_interests(proc, epfd)?;
-
-    // The same atomic mask swap as sys_ppoll/sys_pselect6, in a per-task
-    // LIFO wait context. The mask stays swapped across EAGAIN retries so a
-    // cross-process signal arriving while parked is deliverable, wakes the
-    // retry loop, and surfaces as EINTR — foot's SIGCHLD reaper blocks the
-    // signal everywhere except inside epoll_pwait. (Main #948/DRI desktop;
-    // a host that runs the wait itself scopes the same context through
-    // `kernel_swap_poll_sigmask`/`kernel_restore_poll_sigmask`.)
+/// The kernel passes disjoint process records so interests remain observable
+/// when the caller closed its last alias but another process retains the OFD.
+pub fn sys_epoll_pwait_with_peers(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    epfd: i32,
+    maxevents: i32,
+    timeout_ms: i32,
+    sigmask: Option<u64>,
+    peers: &mut [&mut Process],
+) -> Result<(i32, Vec<(u32, u64)>), Errno> {
     let tid = current_tid_for_process(proc);
-    if let Some(new_mask) = sigmask {
-        use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
-        let m = new_mask
-            & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
+    if let Some(mask) = sigmask {
         proc.enter_signal_mask_wait_for(
             tid,
             crate::signal::SignalMaskWaitKind::EpollPwait,
-            m,
-        );
-        if proc.deliverable_for(tid) != 0 {
-            return Err(Errno::EINTR);
-        }
-    }
-
-    if interests.is_empty() {
-        // No interests: there is nothing that can ever become ready, so this
-        // evaluation is complete with zero events. The caller owns the wait,
-        // and reports the timeout when it expires.
-        //
-        // This deliberately does not sleep. A `host_nanosleep` here would run
-        // on the single kernel thread that multiplexes every process in the
-        // machine, stalling all of them for the caller's whole timeout.
-        let _ = timeout_ms;
-        if sigmask.is_some() && proc.deliverable_for(tid) == 0 {
-            proc.finish_signal_mask_wait_for(
-                tid,
-                crate::signal::SignalMaskWaitKind::EpollPwait,
-            );
-        }
-        return Ok((0, Vec::new()));
-    }
-
-    // Map EPOLL events to poll events
-    use wasm_posix_shared::epoll::{EPOLLERR, EPOLLHUP, EPOLLIN, EPOLLOUT};
-    #[allow(dead_code)]
-    const EPOLLRDHUP: u32 = 0x2000;
-
-    // Build pollfds from interests
-    let mut pollfds: Vec<WasmPollFd> = interests
-        .iter()
-        .map(|(fd, interest)| {
-            let mut poll_events: i16 = 0;
-            if interest.events & EPOLLIN != 0 {
-                poll_events |= POLLIN;
-            }
-            if interest.events & EPOLLOUT != 0 {
-                poll_events |= POLLOUT;
-            }
-            WasmPollFd {
-                fd: *fd,
-                events: poll_events,
-                revents: 0,
-            }
-        })
-        .collect();
-
-    // Delegate to sys_poll; on anything but an EAGAIN park, restore the
-    // saved mask unless a signal is pending (then kernel_dequeue_signal
-    // restores it after the dequeue picks the signal that ended the wait).
-    let ready = sys_poll(proc, host, &mut pollfds, timeout_ms);
-    if sigmask.is_some()
-        && !matches!(ready, Err(Errno::EAGAIN))
-        && proc.deliverable_for(tid) == 0
-    {
-        proc.finish_signal_mask_wait_for(
-            tid,
-            crate::signal::SignalMaskWaitKind::EpollPwait,
+            mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP)),
         );
     }
-
-    let _ready_count = ready?;
-
-    // Map poll results back to epoll events
-    let mut events_out: Vec<(u32, u64)> = Vec::new();
-    for (i, pollfd) in pollfds.iter().enumerate() {
-        if pollfd.revents != 0 && events_out.len() < maxevents as usize {
-            let mut ep_events: u32 = 0;
-            if pollfd.revents & POLLIN != 0 {
-                ep_events |= EPOLLIN;
-            }
-            if pollfd.revents & POLLOUT != 0 {
-                ep_events |= EPOLLOUT;
-            }
-            if pollfd.revents & POLLERR != 0 {
-                ep_events |= EPOLLERR;
-            }
-            if pollfd.revents & POLLHUP != 0 {
-                ep_events |= EPOLLHUP;
-            }
-            events_out.push((ep_events, interests[i].1.data));
+    let result = (|| {
+        if maxevents <= 0 || maxevents > wasm_posix_shared::epoll::MAX_EVENTS {
+            return Err(Errno::EINVAL);
         }
+        let idx = if let Some((_, lease)) = proc.epoll_waits.iter().find(|(owner, _)| *owner == tid)
+        {
+            lease.index
+        } else {
+            epoll_index(proc, epfd)?
+        };
+        let result =
+            epoll_evaluate(proc, host, idx, maxevents as usize, true, 0, peers).and_then(|out| {
+                if !out.is_empty() || timeout_ms == 0 {
+                    Ok((out.len() as i32, out))
+                } else if proc.deliverable_for(tid) != 0 {
+                    Err(Errno::EINTR)
+                } else {
+                    Err(Errno::EAGAIN)
+                }
+            });
+        if matches!(result, Err(Errno::EAGAIN))
+            && !proc.epoll_waits.iter().any(|(owner, _)| *owner == tid)
+        {
+            let entry = proc.fd_table.get(epfd)?;
+            let state = proc
+                .ofd_table
+                .get(entry.ofd_ref.0)
+                .ok_or(Errno::EBADF)?
+                .shared_state();
+            proc.epoll_waits.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            let lease = crate::epoll::WaitLease::new(idx, state)?;
+            proc.epoll_waits.push((tid, lease));
+        }
+        result
+    })();
+    if !matches!(result, Err(Errno::EAGAIN)) {
+        crate::epoll::finish_wait(proc, tid);
     }
-
-    Ok((events_out.len() as i32, events_out))
+    // Linux restores the original mask before the signal boundary on ready,
+    // timeout and error returns. Only an interrupted wait needs its temporary
+    // mask for handler delivery; EAGAIN is our internal parked-wait sentinel.
+    // Include validation/allocation errors and host-preinstalled mask scopes
+    // even when this retry's sigmask argument is None.
+    if !matches!(result, Err(Errno::EAGAIN | Errno::EINTR)) {
+        proc.finish_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::EpollPwait);
+    }
+    result
 }
 
 /// timerfd_create — create a timer file descriptor.
@@ -18378,11 +18997,21 @@ fn timerfd_refresh(host: &mut dyn HostIO, tfd_idx: usize) -> Result<(), Errno> {
         return Ok(());
     };
     let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
-    crate::descriptor_backing::with_timerfds(|table| {
+    let changed = crate::descriptor_backing::with_timerfds(|table| {
         if let Some(tfd) = table.get_mut(tfd_idx) {
+            let before = tfd.expirations;
             timerfd_compute_expirations(tfd, now_sec, now_nsec);
+            tfd.expirations != before
+        } else {
+            false
         }
     });
+    if changed {
+        crate::epoll::notify(
+            crate::epoll::Source::Backing(FileType::TimerFd, -(tfd_idx as i64 + 1)),
+            0x41,
+        );
+    }
     Ok(())
 }
 
@@ -19591,10 +20220,32 @@ pub fn sys_select(
     proc: &mut Process,
     host: &mut dyn HostIO,
     nfds: i32,
+    readfds: Option<&mut [u8]>,
+    writefds: Option<&mut [u8]>,
+    exceptfds: Option<&mut [u8]>,
+    timeout_ms: i32,
+) -> Result<i32, Errno> {
+    sys_select_with_peers(
+        proc,
+        host,
+        nfds,
+        readfds,
+        writefds,
+        exceptfds,
+        timeout_ms,
+        &mut [],
+    )
+}
+
+pub fn sys_select_with_peers(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    nfds: i32,
     mut readfds: Option<&mut [u8]>,
     mut writefds: Option<&mut [u8]>,
     mut exceptfds: Option<&mut [u8]>,
     timeout_ms: i32,
+    peers: &mut [&mut Process],
 ) -> Result<i32, Errno> {
     use wasm_posix_shared::poll::{POLLERR, POLLHUP, POLLIN, POLLOUT, POLLPRI};
     use wasm_posix_shared::select::{FD_SETSIZE, FD_SET_BYTES};
@@ -19663,7 +20314,7 @@ pub fn sys_select(
             events,
             revents: 0,
         };
-        poll_check(proc, host, core::slice::from_mut(&mut pollfd));
+        poll_check_depth(proc, host, core::slice::from_mut(&mut pollfd), 0, peers);
 
         let revents = pollfd.revents;
         let mut counted = false;
@@ -20405,6 +21056,9 @@ pub fn sys_memfd_create(proc: &mut Process, name: &[u8], flags: u32) -> Result<i
 
 #[cfg(test)]
 mod tests {
+    mod epoll_semantics {
+        include!("epoll_tests.rs");
+    }
     use super::*;
     use wasm_posix_shared::abi::extended_syscalls;
     use wasm_posix_shared::Syscall;
@@ -37267,7 +37921,7 @@ mod tests {
     }
 
     #[test]
-    fn test_poll_socket_pollerr() {
+    fn test_poll_socket_shutdown_hup() {
         use wasm_posix_shared::poll::*;
         use wasm_posix_shared::socket::*;
 
@@ -37275,7 +37929,7 @@ mod tests {
         let mut host = MockHostIO::new();
         let (fd0, _fd1) = sys_socketpair(&mut proc, &mut host, AF_UNIX, SOCK_STREAM, 0).unwrap();
 
-        // Shutdown both directions to trigger POLLERR
+        // An orderly full shutdown is HUP; it is not a transport error.
         sys_shutdown(&mut proc, &mut host, fd0, SHUT_RDWR).unwrap();
 
         let mut fds = [WasmPollFd {
@@ -37285,7 +37939,8 @@ mod tests {
         }];
         let result = sys_poll(&mut proc, &mut host, &mut fds, 0).unwrap();
         assert!(result > 0);
-        assert_ne!(fds[0].revents & POLLERR, 0);
+        assert_ne!(fds[0].revents & POLLHUP, 0);
+        assert_eq!(fds[0].revents & POLLERR, 0);
     }
 
     #[test]
@@ -42807,7 +43462,7 @@ impl HostIO for NetMock {
         let ofd = proc.ofd_table.get(entry.ofd_ref.0).unwrap();
         let ep_idx = (-(ofd.host_handle + 1)) as usize;
         let interests = epoll_interests(ep_idx);
-        assert_eq!(interests[0].events, epollout);
+        assert_eq!(interests[0].events, epollout | 0x18);
         assert_eq!(interests[0].data, 20);
     }
 

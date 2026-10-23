@@ -342,6 +342,7 @@ fn remove_timer_info(pending: &mut u64, queue: &mut VecDeque<RtSigEntry>, timer_
 /// and its own `pending` / `rt_queue` for directed deliveries.
 #[derive(Debug, Clone)]
 pub struct PerThreadSignalState {
+    pub readiness_generation: u64,
     /// Bitmask of signals currently blocked by this thread.
     pub blocked: u64,
     /// Bitmask of signals directed to this thread but not yet delivered.
@@ -386,6 +387,7 @@ pub struct SignalMaskWaitContext {
 impl PerThreadSignalState {
     pub fn new() -> Self {
         PerThreadSignalState {
+            readiness_generation: 0,
             blocked: 0,
             pending: 0,
             rt_queue: VecDeque::new(),
@@ -434,6 +436,7 @@ impl PerThreadSignalState {
         if signum == 0 || signum >= NSIG {
             return false;
         }
+        self.readiness_generation = self.readiness_generation.wrapping_add(1);
         if signum >= SIGRTMIN {
             // RT signals: always queue (multiple instances allowed)
             self.rt_queue.push_back(RtSigEntry {
@@ -480,6 +483,7 @@ impl PerThreadSignalState {
         if signum == 0 || signum >= NSIG {
             return false;
         }
+        self.readiness_generation = self.readiness_generation.wrapping_add(1);
         if signum < SIGRTMIN
             && (self.pending & sig_bit(signum)) != 0
             && !self.rt_queue.iter().any(|entry| entry.signum == signum)
@@ -562,6 +566,7 @@ impl PerThreadSignalState {
 
 /// Per-process signal state.
 pub struct SignalState {
+    pub readiness_generation: u64,
     /// Full action for each signal (indexed by signal number, 0 unused).
     actions: [SignalAction; 65],
     /// Bitmask of blocked signals.
@@ -577,6 +582,7 @@ pub struct SignalState {
 impl SignalState {
     pub fn new() -> Self {
         SignalState {
+            readiness_generation: 0,
             actions: [SignalAction::default(); 65],
             blocked: 0,
             pending: 0,
@@ -710,6 +716,7 @@ impl SignalState {
         if should_discard_pending(signum, &self.actions[signum as usize].handler) {
             return true;
         }
+        self.readiness_generation = self.readiness_generation.wrapping_add(1);
         if signum >= SIGRTMIN {
             // RT signals: always queue (multiple instances allowed)
             self.rt_queue.push_back(RtSigEntry {
@@ -756,6 +763,7 @@ impl SignalState {
         if signum == 0 || signum >= NSIG {
             return false;
         }
+        self.readiness_generation = self.readiness_generation.wrapping_add(1);
         if signum < SIGRTMIN
             && (self.pending & sig_bit(signum)) != 0
             && !self.rt_queue.iter().any(|entry| entry.signum == signum)
@@ -893,6 +901,7 @@ impl SignalState {
             actions[i].handler = *h;
         }
         SignalState {
+            readiness_generation: 0,
             actions,
             blocked,
             pending: 0,
@@ -903,6 +912,7 @@ impl SignalState {
     /// Reconstruct signal state from full actions array (preserves flags/mask).
     pub fn from_actions(actions: [SignalAction; 65], blocked: u64) -> Self {
         SignalState {
+            readiness_generation: 0,
             actions,
             blocked,
             pending: 0,
@@ -935,6 +945,7 @@ impl SignalState {
             }
         }
         SignalState {
+            readiness_generation: 0,
             actions,
             blocked,
             pending,

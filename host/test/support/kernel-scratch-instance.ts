@@ -104,6 +104,18 @@ function signatures(
       parameters: [i32, i32],
       result: i32,
     },
+    kernel_epoll_wait_token: {
+      parameters: [i32, i32],
+      result: i64,
+    },
+    kernel_epoll_wait_finish: {
+      parameters: [i32, i32, i64],
+      result: i32,
+    },
+    kernel_swap_poll_sigmask: {
+      parameters: [i32, i32, i64],
+      result: i32,
+    },
     kernel_fd_supports_mmap_writeback: {
       parameters: [i32, i32],
       result: i32,
@@ -731,11 +743,7 @@ export function createKernelScratchTestInstance(
   const entries = Object.entries(signatures(pointerWidth)).filter(
     ([name]) =>
       (selected === undefined || selected.has(name))
-      && !excluded.has(name)
-      // Optional transports must be absent unless the fixture supplies them;
-      // a zero-returning stub would falsely negotiate unsupported hardware.
-      && (!(name === "kernel_kms_cursor_configure" || name === "kernel_kms_cursor_read")
-        || selected?.has(name) || typeof resolveExports()[name] === "function"),
+      && !excluded.has(name),
   );
   if (selected !== undefined) {
     const known = new Set(entries.map(([name]) => name));
