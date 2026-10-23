@@ -1,6 +1,6 @@
 //! `xtask runtime-workarounds list`: the weekly report.
 
-use super::entry::{load_registry, Entry, Verdict};
+use super::entry::{Entry, Verdict, load_registry};
 use super::registry;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -229,10 +229,7 @@ fn build(entries: &[(String, Entry)], last: Option<&LastRun>) -> Report {
                     .filter(|r| r.verdict == Verdict::NotReproduced)
                     .map(|r| format!("{} {} ({})", r.target, r.version, r.os))
                     .collect();
-                let still = it
-                    .last_run
-                    .iter()
-                    .any(|r| r.verdict == Verdict::Reproduced);
+                let still = it.last_run.iter().any(|r| r.verdict == Verdict::Reproduced);
                 // An inconclusive run says nothing either way: it neither
                 // counts as "did not reproduce" nor lets the others stand for
                 // the whole entry.
@@ -405,7 +402,7 @@ fn read_last_run(repo: &Path) -> (Option<LastRun>, Option<String>) {
             return (
                 None,
                 Some(format!("ignored {}: read failed: {e}", path.display())),
-            )
+            );
         }
     };
     match serde_json::from_str::<LastRun>(&text) {
@@ -696,7 +693,10 @@ filed_by = "brandon"
             ),
             "{out}"
         );
-        assert!(!ready.contains("note: last run did not reproduce on bun"), "{out}");
+        assert!(
+            !ready.contains("note: last run did not reproduce on bun"),
+            "{out}"
+        );
         assert!(
             !section(&out, "Possibly retirable").contains("C-CONFIRMED"),
             "{out}"
@@ -717,11 +717,16 @@ filed_by = "brandon"
         let retirable = section(&out, "Possibly retirable");
         assert!(retirable.contains("C-CONFIRMED"), "{out}");
         assert!(
-            retirable.contains("why: last run did not reproduce on bun 1.4.0 (macos), webkit 26.6 (macos)"),
+            retirable.contains(
+                "why: last run did not reproduce on bun 1.4.0 (macos), webkit 26.6 (macos)"
+            ),
             "{out}"
         );
         assert!(!retirable.contains("note:"), "{out}");
-        assert!(!section(&out, "Ready to file").contains("C-CONFIRMED"), "{out}");
+        assert!(
+            !section(&out, "Ready to file").contains("C-CONFIRMED"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -819,9 +824,11 @@ filed_by = "brandon"
         assert!(out.contains("K-BROKEN"), "{out}");
         assert!(section(&out, "Needs reduction").contains("J-GOOD"), "{out}");
         let clean = repo_with(&[("J-GOOD", GOOD)]);
-        assert!(!list(clean.path(), false)
-            .unwrap()
-            .contains("Broken entries"));
+        assert!(
+            !list(clean.path(), false)
+                .unwrap()
+                .contains("Broken entries")
+        );
     }
 
     #[test]
@@ -895,8 +902,14 @@ filed_by = "brandon"
         assert!(!out.contains("chromium 140"), "{out}");
         assert!(!out.contains("rustc"), "{out}");
         // Ignoring them leaves the entry where its status puts it.
-        assert!(section(&out, "Ready to file").contains("C-CONFIRMED"), "{out}");
-        assert!(section(&out, "Possibly retirable").contains("(none)"), "{out}");
+        assert!(
+            section(&out, "Ready to file").contains("C-CONFIRMED"),
+            "{out}"
+        );
+        assert!(
+            section(&out, "Possibly retirable").contains("(none)"),
+            "{out}"
+        );
         assert!(declares(&entries, "C-CONFIRMED", "webkit"));
         assert!(!declares(&entries, "C-CONFIRMED", "chromium"));
         assert!(!declares(&entries, "GONE-ENTRY", "webkit"));

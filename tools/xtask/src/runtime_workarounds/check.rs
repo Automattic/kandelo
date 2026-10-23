@@ -1,11 +1,11 @@
 //! Consistency between the registry's entries and the tags in tracked source.
 
 use super::entry::{
-    is_runtime_name, load_registry, Entry, ReportPolicy, Status, OS_NAMES, RELEASED_RUNTIMES,
-    TARGETS,
+    Entry, OS_NAMES, RELEASED_RUNTIMES, ReportPolicy, Status, TARGETS, is_runtime_name,
+    load_registry,
 };
 use super::registry;
-use super::scan::{scan, tracked_files, TAG_WORD};
+use super::scan::{TAG_WORD, scan, tracked_files};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -161,7 +161,8 @@ fn entry_problems(
         && entry
             .reports_channel
             .as_deref()
-            .map_or(true, |c| c.trim().is_empty()) {
+            .map_or(true, |c| c.trim().is_empty())
+    {
         problem("reports = agents-allowed requires reports_channel".to_string());
     }
 
@@ -176,7 +177,10 @@ fn entry_problems(
     };
     for runtime in &entry.runtimes {
         if !is_runtime_name(runtime) {
-            problem(format!("runtimes entry {runtime:?} is not {}", vocabulary()));
+            problem(format!(
+                "runtimes entry {runtime:?} is not {}",
+                vocabulary()
+            ));
         }
     }
     for obs in &entry.observed {
@@ -461,14 +465,19 @@ summary = "a defect"
             "<p>\n",
         );
         let problems = repo.problems();
-        assert!(has(&problems, "self-judging repro's target"), "{problems:?}");
+        assert!(
+            has(&problems, "self-judging repro's target"),
+            "{problems:?}"
+        );
     }
 
     #[test]
     fn two_repros_may_not_share_a_target() {
         let repo = Repo::new();
         repo.write("src/a.ts", format!("// {}\n", tag(ID)));
-        let twin = PAGE.replace("page.html", "repro.mjs").replace("webkit", "node");
+        let twin = PAGE
+            .replace("page.html", "repro.mjs")
+            .replace("webkit", "node");
         repo.entry(ID, &format!("{}{twin}", confirmed_toml(ID, true)));
         let problems = repo.problems();
         assert!(has(&problems, "more than one repro"), "{problems:?}");
@@ -516,10 +525,7 @@ summary = "a defect"
     #[test]
     fn valid_tag_plus_bad_bracketed_opening_is_malformed() {
         let repo = clean_repo();
-        repo.write(
-            "src/b.ts",
-            format!("// {} and [{TAG_WORD}:x]\n", tag(ID)),
-        );
+        repo.write("src/b.ts", format!("// {} and [{TAG_WORD}:x]\n", tag(ID)));
         let problems = repo.problems();
         assert_eq!(malformed_count(&problems), 1, "{problems:?}");
     }
@@ -527,7 +533,10 @@ summary = "a defect"
     #[test]
     fn broken_entry_toml_is_a_problem_and_other_checks_continue() {
         let repo = clean_repo();
-        repo.write("tests/runtime-workarounds/BROKEN-ONE/entry.toml", "not toml {{");
+        repo.write(
+            "tests/runtime-workarounds/BROKEN-ONE/entry.toml",
+            "not toml {{",
+        );
         repo.write("src/b.ts", format!("// {}\n", tag("NOPE-THING")));
         let problems = repo.problems();
         assert!(
@@ -550,7 +559,10 @@ summary = "a defect"
         let repo = clean_repo();
         repo.write("tests/runtime-workarounds/NO-TOML/entry.md", "# notes\n");
         let problems = repo.problems();
-        assert!(has(&problems, "NO-TOML: missing entry.toml"), "{problems:?}");
+        assert!(
+            has(&problems, "NO-TOML: missing entry.toml"),
+            "{problems:?}"
+        );
     }
 
     #[test]
@@ -577,7 +589,10 @@ summary = "a defect"
         );
         repo.write("src/a.ts", format!("// {}\n", tag(ID)));
         let problems = repo.problems();
-        assert!(has(&problems, "status fixed-upstream requires"), "{problems:?}");
+        assert!(
+            has(&problems, "status fixed-upstream requires"),
+            "{problems:?}"
+        );
     }
 
     #[test]
@@ -699,7 +714,10 @@ summary = "a defect"
     fn observed_os_must_be_a_known_name() {
         let repo = Repo::new();
         repo.write("src/a.ts", format!("// {}\n", tag(ID)));
-        repo.entry(ID, &confirmed_toml(ID, true).replace("os = \"linux\"", "os = \"darwin\""));
+        repo.entry(
+            ID,
+            &confirmed_toml(ID, true).replace("os = \"linux\"", "os = \"darwin\""),
+        );
         let problems = repo.problems();
         assert!(has(&problems, "observed os \"darwin\""), "{problems:?}");
     }
@@ -716,7 +734,10 @@ summary = "a defect"
         repo.entry(ID, &toml);
         let problems = repo.problems();
         assert!(has(&problems, "runtimes entry \"llvm\""), "{problems:?}");
-        assert!(has(&problems, "observed runtime \"webkit-2359\""), "{problems:?}");
+        assert!(
+            has(&problems, "observed runtime \"webkit-2359\""),
+            "{problems:?}"
+        );
     }
 
     #[test]
@@ -736,8 +757,11 @@ summary = "a defect"
     fn directory_name_and_entry_md_are_checked() {
         let repo = Repo::new();
         repo.entry("OTHER-DIR", &suspected_toml(ID, ""));
-        std::fs::remove_file(repo.path().join("tests/runtime-workarounds/OTHER-DIR/entry.md"))
-            .unwrap();
+        std::fs::remove_file(
+            repo.path()
+                .join("tests/runtime-workarounds/OTHER-DIR/entry.md"),
+        )
+        .unwrap();
         repo.write("src/a.ts", format!("// {}\n", tag(ID)));
         let problems = repo.problems();
         assert!(has(&problems, "differs from id"), "{problems:?}");
@@ -747,7 +771,10 @@ summary = "a defect"
     #[test]
     fn fixture_directories_are_skipped() {
         let repo = clean_repo();
-        repo.write("tests/runtime-workarounds/_fixture/entry.toml", "not toml {{");
+        repo.write(
+            "tests/runtime-workarounds/_fixture/entry.toml",
+            "not toml {{",
+        );
         assert_eq!(repo.problems(), Vec::<String>::new());
     }
 

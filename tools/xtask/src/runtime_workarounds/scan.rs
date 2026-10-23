@@ -55,10 +55,8 @@ pub fn tracked_files(repo: &Path) -> Result<Vec<String>, String> {
 }
 
 pub fn scan(repo: &Path, known_ids: &BTreeSet<String>) -> Result<Scan, String> {
-    let strict = Regex::new(&format!(
-        r"\[{TAG_WORD}: ([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\]"
-    ))
-    .expect("tag regex is valid");
+    let strict = Regex::new(&format!(r"\[{TAG_WORD}: ([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\]"))
+        .expect("tag regex is valid");
     // Only a bracketed opening is a tag attempt; prose may name the tag.
     let opening = Regex::new(&format!(r"\[{TAG_WORD}")).expect("opening regex is valid");
     // The documentation form shown in guides is a pattern, not a tag.
@@ -102,7 +100,10 @@ pub fn scan(repo: &Path, known_ids: &BTreeSet<String>) -> Result<Scan, String> {
                 result.tags.push(site(&caps[1]));
             }
             accounted.extend(placeholder.find_iter(line).map(|m| m.start()));
-            if opening.find_iter(line).any(|m| !accounted.contains(&m.start())) {
+            if opening
+                .find_iter(line)
+                .any(|m| !accounted.contains(&m.start()))
+            {
                 result.malformed.push(site(""));
             }
             if let Some(legacy) = &legacy {

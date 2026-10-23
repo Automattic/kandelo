@@ -57,9 +57,11 @@
 //!                         local kernel artifact (local-binaries/source-only-v1/
 //!                         kernel.wasm) declares a stale ABI version
 //!                         relative to the source tree. Backs `./run.sh test`.
-//!   runtime-workarounds   Registry of workarounds for outside runtime/toolchain defects:
+//!   runtime-workarounds check|list|run
+//!                         Registry of workarounds for outside runtime/toolchain defects:
 //!                         `check` keeps source tags and tests/runtime-workarounds entries
-//!                         consistent.
+//!                         consistent, `run` runs the self-judging reproductions, and
+//!                         `list` prints the weekly report.
 //!   set-build-commit      Stamp `[build].commit = <sha>` into one
 //!                         `packages/registry/<name>/package.toml`. Used by the
 //!                         publish flow to record source provenance.
@@ -109,7 +111,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh, runtime-workarounds"
+                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh, runtime-workarounds check|list|run"
             );
             return ExitCode::from(2);
         }

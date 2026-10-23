@@ -6,11 +6,9 @@
 //! driver's verdict line, compares it with `entry.toml`, and records the run
 //! for `list`.
 
-use super::entry::{
-    load_entries, Entry, Observation, Repro, ReproKind, Status, Verdict, TARGETS,
-};
-use super::report::{declares, last_run_path, LastRun, LastRunRecord};
+use super::entry::{Entry, Observation, Repro, ReproKind, Status, TARGETS, Verdict, load_entries};
 use super::registry;
+use super::report::{LastRun, LastRunRecord, declares, last_run_path};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -542,7 +540,10 @@ summary = "s"
         assert!(err.contains("WK-1"), "{err}");
         assert!(err.contains("webkit"), "{err}");
         assert!(err.contains("exit status: 3"), "{err}");
-        assert!(err.contains("could not launch webkit: no executable"), "{err}");
+        assert!(
+            err.contains("could not launch webkit: no executable"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -579,7 +580,10 @@ summary = "s"
         let r = record("firefox", "macos", "130", Verdict::Reproduced);
         assert_eq!(compare(&e, &r), Outcome::Unrecorded);
         assert_eq!(
-            compare(&entry(""), &record("webkit", "macos", "18.2", Verdict::Reproduced)),
+            compare(
+                &entry(""),
+                &record("webkit", "macos", "18.2", Verdict::Reproduced)
+            ),
             Outcome::Unrecorded
         );
     }
@@ -708,7 +712,12 @@ summary = "s"
         };
         // Only A on webkit is still declared.
         let declared = |id: &str, target: &str| id == "A" && target == "webkit";
-        let merged = merge(Some(previous), vec![], "2026-10-22T00:00:00Z".to_string(), &declared);
+        let merged = merge(
+            Some(previous),
+            vec![],
+            "2026-10-22T00:00:00Z".to_string(),
+            &declared,
+        );
         let kept: Vec<_> = merged
             .records
             .iter()
@@ -716,7 +725,10 @@ summary = "s"
             .collect();
         assert_eq!(kept, [("A", "webkit")]);
         // The kept record keeps its own time; `finished` is the new run's.
-        assert_eq!(merged.records[0].recorded.as_deref(), Some("2026-10-01T00:00:00Z"));
+        assert_eq!(
+            merged.records[0].recorded.as_deref(),
+            Some("2026-10-01T00:00:00Z")
+        );
         assert_eq!(merged.finished, "2026-10-22T00:00:00Z");
     }
 
@@ -755,19 +767,37 @@ summary = "s"
             )
         };
         let entries = vec![
-            ("A".to_string(), toml::from_str::<Entry>(&text("A", "confirmed")).unwrap()),
-            ("B".to_string(), toml::from_str::<Entry>(&text("B", "suspected")).unwrap()),
-            ("C".to_string(), toml::from_str::<Entry>(&text("C", "fixed-upstream")).unwrap()),
+            (
+                "A".to_string(),
+                toml::from_str::<Entry>(&text("A", "confirmed")).unwrap(),
+            ),
+            (
+                "B".to_string(),
+                toml::from_str::<Entry>(&text("B", "suspected")).unwrap(),
+            ),
+            (
+                "C".to_string(),
+                toml::from_str::<Entry>(&text("C", "fixed-upstream")).unwrap(),
+            ),
         ];
         let none_installed = |_: &str| false;
         let p = plan(&entries, &[], &[], &none_installed);
         let jobs: Vec<_> = p.jobs.iter().map(|j| (j.dir, j.target)).collect();
         assert_eq!(jobs, [("A", "node"), ("C", "node")]);
         assert_eq!(p.skipped.len(), 2);
-        assert!(p.skipped[0].contains("A on clang: clang is not on PATH"), "{:?}", p.skipped);
+        assert!(
+            p.skipped[0].contains("A on clang: clang is not on PATH"),
+            "{:?}",
+            p.skipped
+        );
 
         let all_installed = |_: &str| true;
-        let p = plan(&entries, &["C".to_string()], &["clang".to_string()], &all_installed);
+        let p = plan(
+            &entries,
+            &["C".to_string()],
+            &["clang".to_string()],
+            &all_installed,
+        );
         let jobs: Vec<_> = p.jobs.iter().map(|j| (j.dir, j.target)).collect();
         assert_eq!(jobs, [("C", "clang")]);
     }
