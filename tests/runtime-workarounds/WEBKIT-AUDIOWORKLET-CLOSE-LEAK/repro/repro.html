@@ -23,15 +23,18 @@
 //   sample <WebContent pid> 1 | grep -c 'WebCore: AudioWorklet'
 // gives CYCLES threads instead of 0.
 //
-// The page also records whether each closed context's worklet still
-// answers a message on its port well after close(). An answer shows the
-// worklet's thread is alive, but it is not a verdict: the Web Audio
-// specification does not say when a closed context's AudioWorkletGlobalScope
-// ends while the page still holds its node, and Firefox answers too
-// (Chromium does not). It is kept as a clue for whoever reduces this
-// further.
+// By default (ping=0) the page keeps no reference to a node or context
+// after close(), so nothing on the page can keep a worklet alive.
+//
+// With ping=1 the page instead keeps the closed nodes and, well after
+// close(), messages each closed node's port. An answer shows the worklet's
+// thread is alive, but it is not a verdict: the Web Audio specification does
+// not say when a closed context's AudioWorkletGlobalScope ends while the
+// page still holds its node, and Firefox answers too (Chromium does not).
+// It is kept as a clue for whoever reduces this further.
 const params = new URLSearchParams(location.search);
 const CYCLES = Number(params.get('cycles') ?? '3');
+const PING = params.get('ping') === '1';
 // Wait well past any deferred cleanup before looking; WebKit kept the
 // threads for at least 25 s when sampled.
 const SETTLE_MS = Number(params.get('settle') ?? '10000');
@@ -57,7 +60,7 @@ async function cycle(i) {
   node.disconnect();
   await context.close();
   log(`cycle ${i + 1}: answered while running: ${live}; context ${context.state}`);
-  return { node, live, state: context.state };
+  return { node: PING ? node : null, live, state: context.state };
 }
 
 function ping(node, tag) {
@@ -75,6 +78,14 @@ async function main() {
   for (let i = 0; i < CYCLES; i++) closed.push(await cycle(i));
   if (closed.some((c) => !c.live || c.state !== 'closed')) {
     return { verdict: 'inconclusive', details: `a worklet did not answer while running, or a context did not close: ${JSON.stringify(closed.map(({ live, state }) => ({ live, state })))}` };
+  }
+  if (!PING) {
+    for (const c of closed) c.node = null;
+    log('done; count WebCore: AudioWorklet threads in the page process now');
+    return {
+      verdict: 'inconclusive',
+      details: `${CYCLES} contexts closed and released; count WebCore: AudioWorklet threads in a stack sample to judge`,
+    };
   }
   await sleep(SETTLE_MS);
   const answers = await Promise.all(closed.map((c, i) => ping(c.node, `closed-${i}`)));

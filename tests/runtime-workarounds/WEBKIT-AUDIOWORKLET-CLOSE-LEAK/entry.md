@@ -47,29 +47,28 @@ worklet module, node with a `SharedArrayBuffer` in `processorOptions`,
 close) did **not** reproduce it then.
 
 2026-10-22 (Playwright WebKit webkit-2359, `26.6`, macOS 27): the reduced
-page `repro/repro.html` **does** leave the threads. Counting
-`WebCore: AudioWorklet` threads with `sample <WebContent pid> 1` about 25 s
-after the last `close()`:
+page `repro/repro.html` **does** leave the threads. By default the page
+keeps no reference to any node or context after `close()`, so nothing on
+the page can keep a worklet alive. `WebCore: AudioWorklet` threads counted
+with `sample <WebContent pid> 1` about 25 s after the page printed "done":
 
-| cycles (contexts created and closed) | worklet threads left |
+| committed page | worklet threads left |
 |---|---|
-| 0 | 0 |
-| 1 | 1 |
-| 3 | 3 |
-| 4 | 4 (three runs, sampled at about 1 s and 30 s: 4 and 4) |
-| 8 | 8 |
+| `repro.html?cycles=0` | 0 |
+| `repro.html?cycles=3` | 3 |
+| `repro.html?cycles=8` | 8 |
+| `repro.html?cycles=3&ping=1` (keeps the closed nodes, pings them) | 3 |
 
-The 0, 1, 4 and 8 rows come from a first version of the page that kept no
-reference to the node or context after `close()` (so nothing on the page
-could keep the worklet alive); the 3 row is the committed page, which also
-pings the closed nodes (below). 200 cycles in one page produced no failure the page could
-see (every context closed; no error).
+An earlier, uncommitted draft of the page (also without references) gave
+1 for 1 cycle, 4 for 4 cycles (three runs, sampled at about 1 s and 30 s)
+and 8 for 8 cycles. 200 cycles in one page produced no failure the page
+could see (every context closed; no error).
 
 ### Self-judging attempt (negative)
 
 The processor answers every message on its port, so an answer after
 `close()` shows the worklet's thread is still running. Ten seconds (and
-thirty) after closing three contexts:
+thirty) after closing three contexts (`repro.html?ping=1`):
 
 | engine | closed worklets that answered |
 |---|---|
@@ -80,8 +79,8 @@ thirty) after closing three contexts:
 This does not qualify as a verdict. The specification does not say a
 closed context's worklet must stop answering while the page still holds its
 node, and Firefox answers too; whether Firefox also keeps a thread per
-closed context was not measured. The page keeps the probe as a clue and
-always reports `inconclusive`. A page cannot count threads, so a
+closed context was not measured. The page keeps the probe as a clue
+(`ping=1`) and always reports `inconclusive`. A page cannot count threads, so a
 self-judging reproduction needs some other observable consequence of the
 leaked thread.
 
@@ -108,12 +107,14 @@ Audio:
 > (`Cross-Origin-Opener-Policy: same-origin`,
 > `Cross-Origin-Embedder-Policy: require-corp`), open
 > `repro.html?cycles=8`, wait for "done" plus 25 s, then run
-> `sample <WebContent pid> 1 | grep -c 'WebCore: AudioWorklet'`.
+> `sample <WebContent pid> 1 | grep -c 'WebCore: AudioWorklet'`. The page
+> keeps no reference to any node or context after `close()`.
 >
 > **Expected:** 0 (or 1 for a page-wide pool); every closed context's
 > rendering thread is released.
-> **Actual:** 8; one thread per closed context, for as long as the page
-> lives (Playwright WebKit webkit-2359, 26.6, macOS 27).
+> **Actual:** 8; one thread per closed context, still present 25 s after
+> the last `close()` (Playwright WebKit webkit-2359, 26.6, macOS 27;
+> `cycles=0` gives 0 and `cycles=3` gives 3).
 >
 > **Impact:** an application that creates and closes an audio context per
 > session leaks a realtime thread per session.
