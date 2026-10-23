@@ -3843,8 +3843,21 @@ GL context identities are also kernel-issued and returned by creation;
 foreign texture imports select the exact context. Cross-process inherited
 descriptions cannot operate another process's renderer or invalidate its
 command mapping; final cleanup retains the renderer's original process.
-The EGL facade, share groups and per-thread backend binding model remain
-incomplete; these session identities are a foundation for that work.
+The kernel owns each session's current thread identity. Bind requests name
+the context and both draw/read surfaces; zero surfaces bind surfaceless,
+while an all-zero request releases the caller's bindings. Submit, query and
+foreign-texture operations require that authoritative thread identity.
+Another thread cannot acquire a live binding. A replacement is acknowledged
+before displacing the caller's prior binding, and thread exit revokes it.
+The first accepted bind initializes viewport/scissor from the drawable,
+including zero dimensions for surfaceless; later binds preserve client state.
+Native Wayland window resizing updates an existing GPU target atomically
+without destroying its current EGL surface. Failed updates preserve the old
+target and attached size. This path currently requires an existing GPU
+window target on the same native renderer; forwarded GPU and mixed canvas
+targets still need the full surface model. The public EGL facade remains
+single-context. Share groups, separate surface objects, complete surfaceless
+framebuffer errors and the full lifecycle model remain incomplete.
 Shader/program attachment records retain deleted shaders and current
 programs until their last logical reference releases. Native program deletion
 is deferred while the program is current in its owner, allowing muxer replay

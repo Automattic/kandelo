@@ -229,7 +229,11 @@ pub mod process_layout;
 ///     identities through host imports. Context creation returns a fresh
 ///     identity in GlContextAttrs, which is now an InOut ioctl argument.
 ///     Cross-process cleanup retains the renderer's actual owner.
-pub const ABI_VERSION: u32 = 54;
+/// 55: make-current explicitly names its context/draw/read bindings and
+///     the kernel enforces current ownership by its validated caller TID.
+///     The host acknowledges a bind before ownership changes.
+///     UpdateSurface atomically replaces a native window's GPU target.
+pub const ABI_VERSION: u32 = 55;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -5188,6 +5192,7 @@ pub mod gl {
     pub const GLIO_SUBMIT: u32 = 0x47;
     pub const GLIO_PRESENT: u32 = 0x48;
     pub const GLIO_QUERY: u32 = 0x49;
+    pub const GLIO_UPDATE_SURFACE: u32 = 0x4A;
 
     // --- surface kind tags -------------------------------------------------
 
@@ -5360,6 +5365,16 @@ pub mod gl {
         pub offset: u32,
         /// Number of bytes to decode (must end on a TLV boundary).
         pub length: u32,
+    }
+
+    /// Argument to `GLIO_MAKE_CURRENT`. All zero releases the caller's
+    /// current context. A nonzero context with zero surfaces is surfaceless.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlMakeCurrent {
+        pub context_id: u32,
+        pub draw_surface_id: u32,
+        pub read_surface_id: u32,
     }
 
     /// Argument to `GLIO_CREATE_CONTEXT`. Total: 16 bytes.

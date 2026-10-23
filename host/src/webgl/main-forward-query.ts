@@ -53,10 +53,10 @@ export function glForwardRequestPending(mailbox: SharedArrayBuffer): boolean {
   return Atomics.load(header(mailbox), STATE) === PENDING;
 }
 
-export function completeGlForwardQuery(mailbox: SharedArrayBuffer, rc: number, bytes: Uint8Array): void {
+export function completeGlForwardQuery(mailbox: SharedArrayBuffer, rc: number, bytes: Uint8Array): boolean {
   const words = header(mailbox);
   // A late completion has no authority to revive a timed-out channel.
-  if (Atomics.load(words, STATE) === RETIRED) return;
+  if (Atomics.load(words, STATE) === RETIRED) return false;
   if (Atomics.load(words, STATE) !== PENDING) throw new Error("GL query is not pending");
   if (!Number.isSafeInteger(rc) || rc < -0x8000_0000 || rc > 0x7fff_ffff) {
     throw new RangeError("invalid GL query result");
@@ -68,8 +68,9 @@ export function completeGlForwardQuery(mailbox: SharedArrayBuffer, rc: number, b
   new Uint8Array(mailbox, HEADER_BYTES, written).set(bytes.subarray(0, written));
   Atomics.store(words, RC, rc);
   Atomics.store(words, WRITTEN, written);
-  Atomics.compareExchange(words, STATE, PENDING, COMPLETE);
+  const accepted = Atomics.compareExchange(words, STATE, PENDING, COMPLETE) === PENDING;
   Atomics.notify(words, STATE);
+  return accepted;
 }
 
 export function retireGlForwardQuery(mailbox: SharedArrayBuffer): void {

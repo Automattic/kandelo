@@ -196,6 +196,22 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     expect(calls.deletedTextures).toEqual([bo.tex]);
   });
 
+  it("preserves current context state when a new drawable targets a GPU buffer", () => {
+    const { gl } = makeFakeGl();
+    const reg = new GlContextRegistry();
+    reg.createGpuBo(3, gl, 8, 8);
+    reg.bind({ pid: 7, cmdbufAddr: 0, cmdbufLen: 4 });
+    const b = reg.get(7)!;
+    b.gl = gl; b.hasBeenCurrent = true; b.pendingRenderTargetBoId = 3;
+    b.shadow.viewport = [1, 2, 5, 6];
+    const framebuffer = gl.createFramebuffer();
+    b.shadow.fbo = framebuffer;
+    expect(reg.applyRenderTarget(b)).toBe(true);
+    expect(b.renderTargetFbo).toBe(reg.gpuBo(3)!.fbo);
+    expect(b.shadow.viewport).toEqual([1, 2, 5, 6]);
+    expect(b.shadow.fbo).toBe(framebuffer);
+  });
+
   it("createGpuBo returns null when the context cannot allocate", () => {
     const { gl } = makeFakeGl();
     // A context that fails to create a framebuffer must roll back the

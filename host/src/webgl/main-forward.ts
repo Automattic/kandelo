@@ -2,6 +2,7 @@ import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
 import { decodeAndDispatch } from "./bridge.js";
 import { runGlQuery } from "./query.js";
 import { GlMuxer } from "./muxer.js";
+import { applyCurrentDrawable, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
 import {
   completeGlForwardQuery, createGlForwardQueryMailbox, glForwardQueryCapacity,
   glForwardRequestPending, GL_FORWARD_QUERY_MAX_BYTES, prepareGlForwardQuery, retireGlForwardQuery,
@@ -23,6 +24,7 @@ export interface ForwardWorkerLike {
 
 export type GlForwardMessage =
   | { type: "gl_forward_create_context"; pid: number; sessionId: number; mailbox: SharedArrayBuffer }
+  | { type: "gl_forward_make_current"; pid: number; sessionId: number; drawable: GlDrawableBinding; mailbox: SharedArrayBuffer }
   | { type: "gl_forward_destroy_context"; pid: number; sessionId: number }
   | { type: "gl_forward_submit"; pid: number; sessionId: number; bytes: Uint8Array }
   | { type: "gl_forward_query"; pid: number; sessionId: number; op: number; input: Uint8Array; mailbox: SharedArrayBuffer }
@@ -58,6 +60,18 @@ export function createMainForwardChannel(
       return rc;
     },
     onDestroyContext(sessionId = defaultSessionId) { port.postMessage({ type: "gl_forward_destroy_context", pid, sessionId }); },
+    onMakeCurrent(drawable, sessionId = defaultSessionId) {
+      // Copy only reviewed scalars. Spreading a structurally compatible
+      // caller object could send extra guest-memory fields to browser main.
+      const copy = {
+        drawSurfaceId: drawable.drawSurfaceId, readSurfaceId: drawable.readSurfaceId,
+        width: drawable.width, height: drawable.height,
+      };
+      if (!validCurrentDrawable(copy)) return -22;
+      return request(0, mailbox => port.postMessage({
+        type: "gl_forward_make_current", pid, sessionId, drawable: copy, mailbox,
+      })).rc;
+    },
     onUnbind(sessionId) { port.postMessage({ type: "gl_forward_unbind", pid, sessionId }); },
     onSubmit(bytes, sessionId = defaultSessionId) { port.postMessage({ type: "gl_forward_submit", pid, sessionId, bytes: bytes.slice() }); },
     onQuery(op, input, outLen, sessionId = defaultSessionId) {
@@ -95,12 +109,40 @@ export function setupMainForward(
       }
     }
     if (!b) {
-      if (msg.type === "gl_forward_create_context" || msg.type === "gl_forward_query") {
+      if (msg.type === "gl_forward_create_context" || msg.type === "gl_forward_query"
+          || msg.type === "gl_forward_make_current") {
         completeGlForwardQuery(msg.mailbox, -5, new Uint8Array());
       }
       return;
     }
     switch (msg.type) {
+      case "gl_forward_make_current": {
+        try {
+          if (!glForwardRequestPending(msg.mailbox)) return;
+          if (glForwardQueryCapacity(msg.mailbox) !== 0 || !validCurrentDrawable(msg.drawable)) {
+            completeGlForwardQuery(msg.mailbox, -22, new Uint8Array());
+            return;
+          }
+          if (!b.gl || b.gl.isContextLost()) {
+            completeGlForwardQuery(msg.mailbox, -5, new Uint8Array());
+            return;
+          }
+          if (!glForwardRequestPending(msg.mailbox)) return;
+          const previous = { drawable: b.currentDrawable, initialized: b.hasBeenCurrent,
+            viewport: b.shadow.viewport, scissor: b.shadow.scissor.rect };
+          applyCurrentDrawable(b, msg.drawable);
+          muxer(b.gl).invalidateCurrent();
+          if (!completeGlForwardQuery(msg.mailbox, 0, new Uint8Array())) {
+            // A caller that timed out did not commit a new kernel binding.
+            // Roll back before processing any commands it sends afterwards.
+            b.currentDrawable = previous.drawable; b.hasBeenCurrent = previous.initialized;
+            b.shadow.viewport = previous.viewport; b.shadow.scissor.rect = previous.scissor;
+          }
+        } catch {
+          try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); } catch { /* no reply authority */ }
+        }
+        return;
+      }
       case "gl_forward_create_context": {
         try {
           if (!glForwardRequestPending(msg.mailbox)) return;
@@ -135,7 +177,9 @@ export function setupMainForward(
           b.gl = gl;
           b.shadow.viewport = [0, 0, canvas.width, canvas.height];
           b.shadow.scissor.rect = [0, 0, canvas.width, canvas.height];
-          completeGlForwardQuery(msg.mailbox, 0, new Uint8Array());
+          if (!completeGlForwardQuery(msg.mailbox, 0, new Uint8Array())) {
+            reg.destroyContext(pid, msg.sessionId);
+          }
         } catch {
           try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); }
           catch { /* A malformed mailbox has no reply authority. */ }

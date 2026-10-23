@@ -22,6 +22,7 @@
  * cleanly without `Map<string, ...>` / `Map<number, ...>` mismatches.
  */
 import { defaultShadow, type GlShadowState } from "./shadow.js";
+import type { GlDrawableBinding } from "./current.js";
 
 export type GlContextHandle = number;
 export type GlSurfaceHandle = number;
@@ -46,12 +47,15 @@ export type GlForwardChannel = {
   onCreateContext(sessionId?: number): number;
   onDestroyContext(sessionId?: number): void;
   onUnbind?(sessionId: number): void;
+  onMakeCurrent?(drawable: GlDrawableBinding, sessionId?: number): number;
   onSubmit(bytes: Uint8Array, sessionId?: number): void;
   onQuery?(op: number, input: Uint8Array, outLen: number, sessionId?: number): { rc: number; bytes: Uint8Array };
 };
 
 export type GlBinding = GlBindingInput & {
   sessionId: number;
+  currentDrawable: GlDrawableBinding | null;
+  hasBeenCurrent: boolean;
   /** Lazy view of `[cmdbufAddr, cmdbufAddr+cmdbufLen)` of the process's
    *  wasm Memory SAB. Built on the first submit and dropped to `null`
    *  by `rebindMemory` after a `Memory.grow()`. */
@@ -213,6 +217,8 @@ export class GlContextRegistry {
     this.bindings.set(`${b.pid}:${sessionId}`, {
       ...b,
       sessionId,
+      currentDrawable: null,
+      hasBeenCurrent: false,
       cmdbufView: null,
       gl: null,
       canvas,
@@ -320,6 +326,8 @@ export class GlContextRegistry {
     b.renderTargetFbo = null;
     b.currentProgram = null;
     b.currentProgramId = 0;
+    b.currentDrawable = null;
+    b.hasBeenCurrent = false;
     b.shadow = defaultShadow();
     b.contextId = null;
     b.gl = null;
@@ -505,8 +513,8 @@ export class GlContextRegistry {
     const gpu = this.gpuBos.get(b.pendingRenderTargetBoId);
     if (!gpu || b.gl !== gpu.gl) return false;
     b.renderTargetFbo = gpu.fbo;
-    b.shadow.fbo = gpu.fbo;
-    b.shadow.viewport = [0, 0, gpu.w, gpu.h];
+    if (b.shadow.fbo === null) b.shadow.fbo = gpu.fbo;
+    if (!b.hasBeenCurrent) b.shadow.viewport = [0, 0, gpu.w, gpu.h];
     return true;
   }
 

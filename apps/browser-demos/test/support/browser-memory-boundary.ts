@@ -22,7 +22,8 @@ export function persistentRealmMemoryFailures(
       // Provenance/reuse are also covered by the real forwarded-query test.
       const pixels = root?.type === "fb_bind" && path === "message.pixels"
         && value.byteLength === root.len;
-      const query = (root?.type === "gl_forward_query" || root?.type === "gl_forward_create_context")
+      const query = (root?.type === "gl_forward_query" || root?.type === "gl_forward_create_context"
+        || root?.type === "gl_forward_make_current")
         && path === "message.mailbox"
         && value.byteLength === 20 + 65536;
       if ((!pixels && !query)

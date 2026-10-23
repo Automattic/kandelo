@@ -23,6 +23,81 @@ function harness(callbacks = {}) {
 }
 
 describe("context creation acknowledgement", () => {
+  it("uses a GPU window's real buffer size when no canvas is attached", () => {
+    const { kernel, create, imports, memory } = harness();
+    const gl = new Proxy({
+      getExtension: () => null, isContextLost: () => false, getParameter: () => null,
+      createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}),
+      FRAMEBUFFER_COMPLETE: 0x8cd5, checkFramebufferStatus: () => 0x8cd5,
+    }, { get: (target, key) => Reflect.get(target, key) ?? (() => null) });
+    kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.attachCanvas(7, { width: 320, height: 240, getContext: () => gl } as unknown as OffscreenCanvas);
+    expect(create(7, 21, 11)).toBe(0);
+    const b = kernel.gl.get(7, 11)!;
+    expect(kernel.gl.createGpuBo(37, b.gl!, 64, 32)).not.toBeNull();
+    b.canvas = null; b.surfaceId = 1; b.pendingRenderTargetBoId = 37;
+    expect(imports.host_gl_make_current(7, 21, 1, 1, 11)).toBe(0);
+    expect(b.shadow.viewport).toEqual([0, 0, 64, 32]);
+    expect(b.shadow.scissor.rect).toEqual([0, 0, 64, 32]);
+    expect(kernel.gl.createGpuBo(38, b.gl!, 96, 48)).not.toBeNull();
+    kernel.gl.applyRenderTarget(b);
+    b.shadow.viewport = [1, 2, 5, 6]; b.shadow.scissor.rect = [0, 1, 4, 5];
+    const attrs = new DataView(memory.buffer, 64, 32);
+    attrs.setUint32(0, 1, true); attrs.setUint32(12, 1, true); attrs.setUint32(16, 38, true);
+    expect(imports.host_gl_update_surface(7, 1, 64, 32, 11)).toBe(0);
+    expect(b.renderTargetFbo).toBe(kernel.gl.gpuBo(38)!.fbo);
+    expect(b.surfaceSize).toEqual({ width: 96, height: 48 });
+    expect(b.shadow.viewport).toEqual([1, 2, 5, 6]);
+    expect(b.shadow.scissor.rect).toEqual([0, 1, 4, 5]);
+    const target = b.renderTargetFbo;
+    attrs.setUint32(16, 99, true);
+    expect(imports.host_gl_update_surface(7, 1, 64, 32, 11)).toBe(-5);
+    expect(b.renderTargetFbo).toBe(target);
+    expect(b.surfaceSize).toEqual({ width: 96, height: 48 });
+  });
+
+  it.each([false, true])("initializes drawable state once (surfaceless first: %s)", surfaceless => {
+    const { kernel, create, imports } = harness();
+    kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
+    const gl = { getExtension: () => null, isContextLost: () => false };
+    kernel.gl.attachCanvas(7, { width: 320, height: 240, getContext: () => gl } as unknown as OffscreenCanvas);
+    expect(create(7, 21, 11)).toBe(0);
+    const b = kernel.gl.get(7, 11)!;
+    b.surfaceId = 31;
+    b.surfaceSize = { width: 100, height: 80 };
+    const firstSurface = surfaceless ? 0 : 31;
+    expect(imports.host_gl_make_current(7, 21, firstSurface, firstSurface, 11)).toBe(0);
+    expect(b.shadow.viewport).toEqual(surfaceless ? [0, 0, 0, 0] : [0, 0, 100, 80]);
+    expect(b.shadow.scissor.rect).toEqual(b.shadow.viewport);
+    b.shadow.viewport = [1, 2, 5, 6]; b.shadow.scissor.rect = [0, 1, 4, 5];
+    expect(imports.host_gl_make_current(7, 0, 0, 0, 11)).toBe(0);
+    expect(b.currentDrawable).toBeNull();
+    expect(imports.host_gl_make_current(7, 21, 31, 31, 11)).toBe(0);
+    expect(b.shadow.viewport).toEqual([1, 2, 5, 6]);
+    expect(b.shadow.scissor.rect).toEqual([0, 1, 4, 5]);
+  });
+
+  it("keeps client binding state unchanged after a rejected forwarded make-current", () => {
+    const { kernel, create, imports } = harness();
+    kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
+    let result: number | Error = -12;
+    kernel.gl.attachMainForward(7, {
+      onCreateContext: () => 0, onDestroyContext() {}, onSubmit() {},
+      onMakeCurrent() { if (result instanceof Error) throw result; return result; },
+    });
+    expect(create(7, 21, 11)).toBe(0);
+    const b = kernel.gl.get(7, 11)!;
+    for (const value of [-12, 1, new Error("port closed")]) {
+      result = value;
+      expect(imports.host_gl_make_current(7, 21, 0, 0, 11)).toBe(value === -12 ? -12 : -5);
+      expect(b.currentDrawable).toBeNull();
+      expect(b.hasBeenCurrent).toBe(false);
+    }
+    result = 0;
+    expect(imports.host_gl_make_current(7, 21, 0, 0, 11)).toBe(0);
+    expect(b.hasBeenCurrent).toBe(true);
+  });
+
   it("routes command buffers and context retirement independently within one process", () => {
     const { kernel, imports, create, memory } = harness();
     let color: number[] = [];

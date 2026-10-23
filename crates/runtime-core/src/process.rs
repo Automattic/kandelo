@@ -494,12 +494,26 @@ pub trait HostIO {
     #[allow(unused_variables)]
     fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], session_id: u32) {}
 
+    /// Atomically replace a window surface's GPU target while preserving
+    /// its identity and any current-context reference. Failure preserves it.
+    #[allow(unused_variables)]
+    fn gl_update_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], session_id: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
     #[allow(unused_variables)]
     fn gl_destroy_surface(&mut self, pid: i32, surface_id: u32, session_id: u32) {}
 
-    /// Bind ctx + surface as the current rendering target for `pid`.
+    /// Acknowledge a drawable binding before the kernel publishes it. The
+    /// kernel owns thread authority. Zero surfaces bind surfaceless; ctx zero
+    /// releases cached metadata and must succeed without a renderer operation.
     #[allow(unused_variables)]
-    fn gl_make_current(&mut self, pid: i32, ctx_id: u32, surface_id: u32) {}
+    fn gl_make_current(
+        &mut self, pid: i32, ctx_id: u32, draw_surface_id: u32,
+        read_surface_id: u32, session_id: u32,
+    ) -> i32 {
+        if ctx_id == 0 { 0 } else { -(Errno::ENOSYS as i32) }
+    }
 
     /// Decode and dispatch one cmdbuf submit. `offset` / `length` are
     /// within the bound cmdbuf region (validated by the kernel against

@@ -186,6 +186,8 @@ test(`forwarded synchronous queries isolate ${sameProcess ? "sessions in one pro
           for (let round = 0; round < 3; round++) {
             channels.forEach((channel,index) => {
               if (channel.onCreateContext() !== 0) throw new Error("renderer did not acknowledge context creation");
+              if (channel.onMakeCurrent({ drawSurfaceId: 1, readSurfaceId: 1, width: 8, height: 8 }) !== 0)
+                throw new Error("renderer did not acknowledge current drawable");
               view.setUint16(0, O.OP_CLEAR_COLOR, true); view.setUint16(2, 16, true);
               [index, 1-index, 0, 1].forEach((v,j) => view.setFloat32(4+4*j,v,true));
               channel.onSubmit(bytes.subarray(0,20));
@@ -260,6 +262,63 @@ test(`forwarded synchronous queries isolate ${sameProcess ? "sessions in one pro
 });
 
 }
+
+test("forwarded first-current initializes viewport and scissor once", async ({ page }) => {
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const result = await page.evaluate(async sourceRoot => {
+    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
+    const { setupMainForward } = await import(base + "main-forward.ts");
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 8;
+    document.body.replaceChildren(canvas);
+    const source = `
+      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
+      import * as O from ${JSON.stringify(base + "ops.ts")};
+      onmessage = () => {
+        try {
+          const channel = createMainForwardChannel({ postMessage: m => postMessage(m) }, 77, 321);
+          if (channel.onCreateContext() !== 0) throw new Error("creation failed");
+          const current = (surface) => channel.onMakeCurrent({ drawSurfaceId: surface, readSurfaceId: surface, width: 8, height: 8 });
+          const state = (pname) => {
+            const input = new Uint8Array(4); new DataView(input.buffer).setUint32(0, pname, true);
+            const reply = channel.onQuery(O.QOP_GET_INTEGERV, input, 16);
+            if (reply.rc !== 16) throw new Error("state query failed: " + reply.rc);
+            return [...new Int32Array(reply.bytes.buffer)];
+          };
+          if (current(0) !== 0) throw new Error("surfaceless bind failed");
+          const first = [state(0x0ba2), state(0x0c10)];
+          for (const [op, values] of [[O.OP_VIEWPORT, [1,2,5,6]], [O.OP_SCISSOR, [0,1,4,5]]]) {
+            const bytes = new Uint8Array(20), view = new DataView(bytes.buffer);
+            view.setUint16(0, op, true); view.setUint16(2, 16, true);
+            values.forEach((value, index) => view.setInt32(4 + index * 4, value, true));
+            channel.onSubmit(bytes);
+          }
+          if (current(1) !== 0) throw new Error("window bind failed");
+          const rebound = [state(0x0ba2), state(0x0c10)];
+          postMessage({ type: "first_current_result", first, rebound });
+        } catch (error) { postMessage({ type: "first_current_failed", error: String(error) }); }
+      };
+    `;
+    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    const worker = new Worker(url, { type: "module" });
+    const dispose = setupMainForward(worker, canvas, 77);
+    try {
+      return await new Promise<{ first: number[][]; rebound: number[][] }>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("first-current contract timed out")), 35_000);
+        worker.addEventListener("message", ({ data }) => {
+          if (data.type === "first_current_result") { clearTimeout(timeout); resolve(data); }
+          if (data.type === "first_current_failed") { clearTimeout(timeout); reject(new Error(data.error)); }
+        });
+        worker.postMessage({ start: true });
+      });
+    } finally { worker.terminate(); dispose(); URL.revokeObjectURL(url); }
+  }, root);
+  expect(result.first).toEqual([[0, 0, 0, 0], [0, 0, 0, 0]]);
+  expect(result.rebound).toEqual([[1, 2, 5, 6], [0, 1, 4, 5]]);
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
 
 test("forwarded creation acknowledges real context loss and restoration", async ({ page }) => {
   await installBrowserMemoryBoundaryProbe(page);

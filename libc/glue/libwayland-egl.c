@@ -76,7 +76,7 @@ struct wpk_wlegl {
 };
 
 /* libEGL re-targets the live window surface at the window's current bo. */
-__attribute__((weak)) void _wpk_egl_window_retarget(void *egl_window);
+__attribute__((weak)) int _wpk_egl_window_retarget(void *egl_window);
 
 /* ---- zwp_linux_dmabuf_v1 bind (private-queue registry roundtrip) --------- */
 
@@ -249,7 +249,7 @@ void wl_egl_window_destroy(struct wl_egl_window *win) {
  * bo at the new size now, and libEGL re-targets the live window surface at
  * it, so the frame the client draws next lands in a buffer of the size it
  * draws at. The replaced buffer stays alive until the next present has
- * attached its successor. If the new bo cannot be allocated the window
+ * attached its successor. If allocation or backend retargeting fails the window
  * keeps rendering into the old one at the old size, and the attached size
  * (which SDL can read back) still reports it. */
 void wl_egl_window_resize(struct wl_egl_window *win, int width, int height,
@@ -278,13 +278,16 @@ void wl_egl_window_resize(struct wl_egl_window *win, int width, int height,
         w->bo_handle = old.bo_handle;
         return;
     }
+    if (_wpk_egl_window_retarget && !_wpk_egl_window_retarget(win)) {
+        free_buffer(w);
+        *w = old;
+        return;
+    }
     w->retired_gbm = old.gbm;
     w->retired_bo = old.bo;
     w->retired_buffer = old.buffer;
     win->attached_width = win->width;
     win->attached_height = win->height;
-    if (_wpk_egl_window_retarget)
-        _wpk_egl_window_retarget(win);
 }
 
 void wl_egl_window_get_attached_size(struct wl_egl_window *win,

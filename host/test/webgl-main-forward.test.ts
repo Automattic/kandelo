@@ -182,6 +182,76 @@ describe("GlContextRegistry forward channel", () => {
 });
 
 describe("main-thread synchronous query transport", () => {
+  it("copies only drawable scalars, excluding extra guest-memory properties", () => {
+    const worker = new FakeWorker();
+    const dispose = setupMainForward(worker, fakeCanvas(new RecordingGl()).canvas, 7);
+    const messages: GlForwardMessage[] = [];
+    const channel = createMainForwardChannel({ postMessage(message) { messages.push(message); worker.fire(message); } }, 7);
+    expect(channel.onCreateContext()).toBe(0);
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const drawable = { drawSurfaceId: 0, readSurfaceId: 0, width: 0, height: 0, memory };
+    expect(channel.onMakeCurrent!(drawable)).toBe(0);
+    const sent = messages.find(message => message.type === "gl_forward_make_current")!;
+    expect(Object.keys(sent.drawable).sort()).toEqual(["drawSurfaceId", "height", "readSurfaceId", "width"]);
+    expect(sent.drawable).not.toBe(drawable);
+    dispose();
+  });
+
+  it("retires creation whose acknowledgement loses to timeout", () => {
+    const worker = new FakeWorker();
+    const dispose = setupMainForward(worker, fakeCanvas(new RecordingGl()).canvas, 7);
+    const channel = createMainForwardChannel({ postMessage(message) {
+      if (message.type === "gl_forward_destroy_context") throw new Error("cleanup notification lost");
+      worker.fire(message);
+    } }, 7);
+    const compare = Atomics.compareExchange;
+    const intercept = vi.spyOn(Atomics, "compareExchange").mockImplementation(((words: Int32Array, index: number, expected: number, value: number) => {
+      if (expected === 1 && value === 2) Atomics.store(words, index, 3);
+      return compare(words, index, expected, value);
+    }) as typeof Atomics.compareExchange);
+    try { expect(channel.onCreateContext()).toBe(-5); }
+    finally { intercept.mockRestore(); }
+    const retry = createMainForwardChannel({ postMessage: message => worker.fire(message) }, 7);
+    expect(retry.onCreateContext()).toBe(0);
+    dispose();
+  });
+
+  it.each(["late", "completion race"])("rolls back an unacknowledged current binding: %s", mode => {
+    const worker = new FakeWorker();
+    let viewport = [0, 0, 0, 0];
+    const gl = Object.assign(new RecordingGl(), {
+      viewport(...value: number[]) { viewport = value; },
+      getParameter(p: number) { return p === 0x0ba2 ? viewport : null; },
+    });
+    const { canvas } = fakeCanvas(gl);
+    canvas.width = 320; canvas.height = 240;
+    const dispose = setupMainForward(worker, canvas, 7);
+    const late: GlForwardMessage[] = [];
+    const channel = createMainForwardChannel({ postMessage(message) {
+      if (message.type === "gl_forward_make_current" && mode === "late") late.push(message);
+      else worker.fire(message);
+    } }, 7);
+    expect(channel.onCreateContext()).toBe(0);
+    const compare = Atomics.compareExchange;
+    const intercept = mode === "late"
+      ? vi.spyOn(Atomics, "wait").mockReturnValue("timed-out")
+      : vi.spyOn(Atomics, "compareExchange").mockImplementation(((words: Int32Array, index: number, expected: number, value: number) => {
+        if (expected === 1 && value === 2) Atomics.store(words, index, 3);
+        return compare(words, index, expected, value);
+      }) as typeof Atomics.compareExchange);
+    try { expect(channel.onMakeCurrent!({ drawSurfaceId: 0, readSurfaceId: 0, width: 0, height: 0 })).toBe(-5); }
+    finally { intercept.mockRestore(); }
+    if (mode === "late") worker.fire(late[0]);
+    const next = createMainForwardChannel({ postMessage: message => worker.fire(message) }, 7);
+    const input = new Uint8Array(4); new DataView(input.buffer).setUint32(0, 0x0ba2, true);
+    const query = () => next.onQuery!(O.QOP_GET_INTEGERV, input, 16);
+    expect([...new Int32Array(query().bytes.buffer)]).toEqual([0, 0, 320, 240]);
+    expect(next.onMakeCurrent!({ drawSurfaceId: 0, readSurfaceId: 0, width: 0, height: 0 })).toBe(0);
+    expect([...new Int32Array(query().bytes.buffer)]).toEqual([0, 0, 0, 0]);
+    expect(next.onMakeCurrent!({ drawSurfaceId: 1, readSurfaceId: 0, width: 8, height: 8 })).toBe(-22);
+    dispose();
+  });
+
   it("routes two sessions of one process through one channel and retires only one", () => {
     const worker = new FakeWorker();
     const gl = new RecordingGl();

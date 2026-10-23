@@ -30,8 +30,11 @@ void graphics_free(void *ptr) {
     free(ptr);
 }
 
-/* Optional window backends are absent in this device-only harness. */
-uint32_t _wpk_wlegl_bo_handle(void *window) { (void)window; return 0; }
+/* A small native-window identity exercises the real EGL resize hook. */
+static int native_window;
+static uint32_t native_window_bo;
+extern int _wpk_egl_window_retarget(void *);
+uint32_t _wpk_wlegl_bo_handle(void *window) { return window == &native_window ? native_window_bo : 0; }
 void _wpk_wlegl_present(void *window) { (void)window; }
 int _wpk_gbm_surface_dimensions(const void *window, uint32_t *w, uint32_t *h) {
     (void)window; (void)w; (void)h; return 0;
@@ -44,7 +47,12 @@ static unsigned char *commands;
 static unsigned mappings;
 static unsigned destroyed_contexts, destroyed_surfaces, submit_batches, clear_commands;
 static int fail_make_current, fail_create_context;
+static int make_current_errno = EACCES;
 static uint32_t next_backend_context = 31;
+static int has_current_thread;
+static pthread_t current_thread;
+static uint32_t current_surface, surface_target;
+static int fail_surface_update;
 static uint32_t shader_names[2], program_names[2];
 static unsigned shaders_created, programs_created;
 static int numeric_queries;
@@ -119,12 +127,31 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 program_names[programs_created++] = words[0];
             at += 4 + len;
         }
-    } else if (request == GLIO_MAKE_CURRENT && fail_make_current) {
-        errno = EIO;
-        return -1;
+    } else if (request == GLIO_CREATE_SURFACE) {
+        surface_target = ((struct gl_surface_attrs *)arg)->reserved[0];
+    } else if (request == GLIO_UPDATE_SURFACE) {
+        if (fail_surface_update) { errno = ENOMEM; return -1; }
+        surface_target = ((struct gl_surface_attrs *)arg)->reserved[0];
+    } else if (request == GLIO_MAKE_CURRENT) {
+        if (fail_make_current) { errno = make_current_errno; return -1; }
+        assert(arg);
+        const struct gl_make_current *binding = arg;
+        if (binding->context_id == 0) {
+            assert(binding->draw_surface_id == 0 && binding->read_surface_id == 0);
+            if (has_current_thread && pthread_equal(current_thread, pthread_self())) { has_current_thread = 0; current_surface = 0; }
+        } else {
+            assert(binding->context_id == next_backend_context - 1);
+            assert(binding->draw_surface_id == binding->read_surface_id);
+            if (has_current_thread && !pthread_equal(current_thread, pthread_self())) { errno = EACCES; return -1; }
+            current_thread = pthread_self();
+            has_current_thread = 1;
+            current_surface = binding->draw_surface_id;
+        }
     } else if (request == GLIO_DESTROY_CONTEXT) {
+        assert(!has_current_thread);
         destroyed_contexts++;
     } else if (request == GLIO_DESTROY_SURFACE) {
+        assert(current_surface == 0);
         destroyed_surfaces++;
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
@@ -218,7 +245,64 @@ int main(int argc, char **argv) {
     }
     EGLContext ctx = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
     assert(ctx != EGL_NO_CONTEXT);
+    if (!strcmp(argv[1], "surfaceless-bind")) {
+        fail_make_current = 1;
+        assert(!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+        assert(eglGetError() == EGL_BAD_ACCESS);
+        assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
+        fail_make_current = 0;
+    }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "surface-retarget")) {
+        native_window_bo = 77;
+        EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, &native_window, NULL);
+        assert(surface != EGL_NO_SURFACE && surface_target == 77);
+        assert(eglMakeCurrent(dpy, surface, surface, ctx));
+        native_window_bo = 78;
+        assert(_wpk_egl_window_retarget(&native_window));
+        assert(surface_target == 78 && destroyed_surfaces == 0);
+        assert(eglGetCurrentSurface(EGL_DRAW) == surface && eglGetCurrentContext() == ctx);
+        fail_surface_update = 1; native_window_bo = 79;
+        assert(!_wpk_egl_window_retarget(&native_window));
+        assert(surface_target == 78 && destroyed_surfaces == 0);
+        assert(eglGetCurrentSurface(EGL_DRAW) == surface && eglSwapBuffers(dpy, surface));
+        assert(eglDestroySurface(dpy, surface));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS surface-retarget");
+        return 0;
+    }
+    if (!strcmp(argv[1], "bind-errors")) {
+        const int failures[] = { EACCES, ENOMEM, EIO };
+        const EGLint errors[] = { EGL_BAD_ACCESS, EGL_BAD_ALLOC, EGL_CONTEXT_LOST };
+        fail_make_current = 1;
+        for (unsigned i = 0; i < 3; i++) {
+            make_current_errno = failures[i];
+            assert(!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+            assert(eglGetError() == errors[i] && eglGetCurrentContext() == ctx);
+        }
+        fail_make_current = 0;
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS bind-errors");
+        return 0;
+    }
+    if (!strcmp(argv[1], "release-rollback")) {
+        assert(eglDestroyContext(dpy, ctx));
+        fail_make_current = 1;
+        assert(!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglGetError() == EGL_BAD_ACCESS && eglGetCurrentContext() == ctx);
+        assert(destroyed_contexts == 0);
+        assert(!eglReleaseThread());
+        assert(eglGetError() == EGL_BAD_ACCESS && eglGetCurrentContext() == ctx);
+        fail_make_current = 0;
+        assert(eglReleaseThread() && destroyed_contexts == 1 && eglTerminate(dpy));
+        puts("PASS release-rollback");
+        return 0;
+    }
+    if (!strcmp(argv[1], "surfaceless-bind")) {
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS surfaceless-bind");
+        return 0;
+    }
     if (!strcmp(argv[1], "create-rollback")) {
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS create-rollback");

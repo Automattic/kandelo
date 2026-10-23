@@ -77,7 +77,7 @@ test("memory probe rejects oversized, growable, and disguised shared pixel buffe
   }).length, 1);
 });
 
-for (const type of ["gl_forward_query", "gl_forward_create_context"]) {
+for (const type of ["gl_forward_query", "gl_forward_create_context", "gl_forward_make_current"]) {
   test(`memory probe admits only the fixed independent ${type} mailbox`, () => {
     const mailbox = new SharedArrayBuffer(20 + 65536);
     assert.deepEqual(persistentRealmMemoryFailures({ type, mailbox }), []);

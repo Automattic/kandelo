@@ -188,6 +188,13 @@ pub struct CmdbufBinding {
     pub submit_seq: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct GlCurrentState {
+    pub owner_tid: u32,
+    pub draw_surface_id: u32,
+    pub read_surface_id: u32,
+}
+
 /// Per-fd GL state for `/dev/dri/renderD128` handles, hung off
 /// [`DriFdState`] below. Each fresh `open()` of renderD128 yields a
 /// new `GlState`; `dup` / fork-inherit shares one. A renderer's address-space
@@ -199,7 +206,7 @@ pub struct GlState {
     pub initialized: bool,
     pub context_id: Option<u32>,
     pub surface_id: Option<u32>,
-    pub current: bool,
+    pub current: Option<GlCurrentState>,
     pub cmdbuf: Option<CmdbufBinding>,
 }
 

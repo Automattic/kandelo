@@ -34,6 +34,7 @@ import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry, type GlBinding } from "./webgl/registry";
+import { applyCurrentDrawable, validCurrentDrawable } from "./webgl/current";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
@@ -2607,6 +2608,40 @@ export class WasmPosixKernel {
             this.gl_muxers.get(b.gl)?.invalidateCurrent();
           }
         },
+        host_gl_update_surface: (
+          pid: number, surfaceId: number, attrsPtr: KernelPointer, attrsLen: KernelPointer, sessionId: number,
+        ): number => {
+          const b = this.gl.get(pid, sessionId);
+          if (!b || b.surfaceId !== (surfaceId >>> 0)) return -5;
+          try {
+            if (this.#checkedKernelIndex(attrsLen, "surface update length") !== 32) return -22;
+            const bytes = this.#readKernelBytes(attrsPtr, 32);
+            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            if (view.getUint32(0, true) !== 1 || view.getUint32(12, true) !== 1) return -22;
+            const targetId = view.getUint32(16, true);
+            const target = this.gl.gpuBo(targetId);
+            if (!target || !b.pendingRenderTargetBoId || b.presentTarget || b.forward
+                || (b.contextId !== null && !b.gl) || target.gl.isContextLost()
+                || (b.gl && b.gl !== target.gl)) return -5;
+            const width = view.getUint32(4, true), height = view.getUint32(8, true);
+            if ((width !== 0 && width !== target.w) || (height !== 0 && height !== target.h)) return -22;
+            const size = { width: target.w, height: target.h };
+            const drawable = b.currentDrawable?.drawSurfaceId === b.surfaceId ? {
+              drawSurfaceId: b.currentDrawable.drawSurfaceId, readSurfaceId: b.currentDrawable.readSurfaceId,
+              width: target.w, height: target.h,
+            } : b.currentDrawable;
+            if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+            const previous = b.renderTargetFbo;
+            b.pendingRenderTargetBoId = targetId;
+            b.surfaceSize = size;
+            if (b.gl) {
+              b.renderTargetFbo = target.fbo;
+              if (b.shadow.fbo === previous) b.shadow.fbo = target.fbo;
+            }
+            b.currentDrawable = drawable;
+            return 0;
+          } catch { return -5; }
+        },
         host_gl_destroy_surface: (pid: number, _surfaceId: number, sessionId?: number): void => {
           const b = this.gl.get(pid, sessionId);
           if (!b) return;
@@ -2620,8 +2655,8 @@ export class WasmPosixKernel {
           // re-apply a stale redirect.
           b.pendingRenderTargetBoId = 0;
           if (b.renderTargetFbo) {
+            if (b.shadow.fbo === b.renderTargetFbo) b.shadow.fbo = null;
             b.renderTargetFbo = null;
-            b.shadow.fbo = null;
           }
           // The canvas-backed present target IS owned by this binding, so
           // dropping the redirect above has to free it as well; a later
@@ -2634,10 +2669,39 @@ export class WasmPosixKernel {
           }
         },
         host_gl_make_current: (
-          _pid: number, _ctxId: number, _surfaceId: number,
-        ): void => {
-          // No-op: WebGL2 binds context per `getContext()`; we already
-          // track ctx + surface ids on the binding.
+          pid: number, ctxId: number, drawId: number, readId: number, sessionId: number,
+        ): number => {
+          ctxId >>>= 0; drawId >>>= 0; readId >>>= 0;
+          const b = this.gl.get(pid, sessionId);
+          if (ctxId === 0) {
+            if (drawId !== 0 || readId !== 0) return -22;
+            // Revoking a kernel binding does not alter the cached native
+            // context or wait on a renderer. Queued forwarded commands still
+            // observe their old drawable; a new bind is acknowledged in order.
+            if (b) b.currentDrawable = null;
+            return 0;
+          }
+          if (!b || b.contextId !== ctxId || (!b.gl && !b.forward)) return -5;
+          if ((drawId === 0) !== (readId === 0)
+              || (drawId !== 0 && (b.surfaceId !== drawId || b.surfaceId !== readId))) return -22;
+          if (b.gl?.isContextLost()) return -5;
+          const target = this.gl.gpuBo(b.pendingRenderTargetBoId);
+          const drawable = {
+            drawSurfaceId: drawId, readSurfaceId: readId,
+            width: drawId === 0 ? 0 : b.surfaceSize?.width ?? target?.w ?? b.canvas?.width ?? 0,
+            height: drawId === 0 ? 0 : b.surfaceSize?.height ?? target?.h ?? b.canvas?.height ?? 0,
+          };
+          if (!validCurrentDrawable(drawable)) return -22;
+          if (b.forward) {
+            if (!b.forward.onMakeCurrent) return -38;
+            try {
+              const rc = b.forward.onMakeCurrent(drawable, b.sessionId);
+              if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
+            } catch { return -5; }
+          }
+          applyCurrentDrawable(b, drawable);
+          if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+          return 0;
         },
         host_gl_submit: (
           pid: number, offset: KernelPointer, length: KernelPointer, sessionId?: number,

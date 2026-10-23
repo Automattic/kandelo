@@ -6,7 +6,7 @@ kind = "program"
 # package. It forks its session program, so it is fork-instrumented.
 name = "cage"
 version = "0.3.1"
-kernel_abi = 54
+kernel_abi = 55
 depends_on = [
   "wlroots@0.20.2",
   "libwayland@1.24.0",

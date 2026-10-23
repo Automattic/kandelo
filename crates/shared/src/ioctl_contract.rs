@@ -306,12 +306,13 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     no_arg!(crate::gl::GLIO_DESTROY_CONTEXT),
     pointer!(crate::gl::GLIO_CREATE_SURFACE, In, 32),
     no_arg!(crate::gl::GLIO_DESTROY_SURFACE),
-    no_arg!(crate::gl::GLIO_MAKE_CURRENT),
+    pointer!(crate::gl::GLIO_MAKE_CURRENT, In, 12),
     pointer!(crate::gl::GLIO_SUBMIT, In, 8),
     no_arg!(crate::gl::GLIO_PRESENT),
     // WHY: GlQueryInfo contains wasm32 pointers. Until a native wasm64 wire
     // structure exists, rejecting the known request is safer than truncating.
     pointer!(crate::gl::GLIO_QUERY, In, wasm32 24),
+    pointer!(crate::gl::GLIO_UPDATE_SURFACE, In, 32),
     pointer!(crate::fbdev::FBIOGET_VSCREENINFO, Out, 160),
     pointer!(crate::fbdev::FBIOPUT_VSCREENINFO, In, 160),
     pointer!(crate::fbdev::FBIOGET_FSCREENINFO, Out, 80),

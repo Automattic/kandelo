@@ -67,9 +67,9 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | open |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; exclusive ownership, thread release/exit, unique C handles and deferred destruction implemented for the single backend context/surface. Backend creation now requires a live renderer acknowledgement, with rollback/retry on failure. Multiple contexts, sharing, display generations and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles and deferred destruction implemented for one context/surface per backend session. Creation/bind failure preserves prior state. Multiple public EGL contexts, sharing, display generations and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Pbuffer always fails; several core symbols absent; GBM sizing exists | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
-| E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context | Main requires a live surface; cage adds a path needing validation | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | open |
+| E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context | Explicit kernel/host surfaceless bind and first-current zero viewport/scissor implemented. Undefined framebuffer-zero status and operation errors remain ordinary gaps | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/alias/FBO references now retain GEM storage; CPU coherence and complete object semantics remain open | EGL, GLES alias model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | open |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | Texture redefinition now detaches storage and updates retained FBO references; sampler independence and complete negative API coverage remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | open |
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Cage supports one linear plane; must audit metadata and rollback | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
@@ -85,7 +85,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Main authoritative final BO destruction; preserve its recent memory and exec fixes | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session changes are combined under ABI 54; generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session/thread-current changes are combined under ABI 55; generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -577,7 +577,7 @@ Firefox 155.0 and WebKit 26.6 from the worktree lockfile/browser manifest.
 They include real context loss, failed creation while lost, restoration and
 successful retry, copied command/query storage, alternating rendered owners
 and failed relink recovery. These are source-host checks, not guest,
-compositor, full browser-memory or complete CTS evidence. Normal ABI 54
+compositor, full browser-memory or complete CTS evidence. Normal ABI 55
 SDK/package/image builds and the broader combined-tree suites remain
 required in the deferred rebuild/test phase.
 
@@ -637,5 +637,62 @@ The browser versions match the preceding renderer-acknowledgement check.
 No installed SDK archive, guest executable, package or image was rebuilt by
 these checks. Full Rust workspace/package automation, guest CTS,
 compositors, full browser-memory and POSIX suites remain required after
-normal ABI 54 provisioning. Those deferred checks are not substituted by
+normal ABI 55 provisioning. Those deferred checks are not substituted by
 these source-host/native results.
+
+### Authoritative thread binding and atomic resize (ABI 55)
+
+GLIO_MAKE_CURRENT now carries context, draw-surface and read-surface ids.
+The kernel obtains the caller's TID from dispatch state, rejects another
+thread's ownership and permits only one current session per TID. A failed
+host acknowledgement leaves the prior binding untouched. All-zero release
+revokes ownership without a renderer operation; canonical thread-exit
+cleanup also releases it. Submit, query and foreign-texture operations
+check current-thread authority before host execution. Destroying a current
+context or attached surface fails EBUSY; an unused surface can be destroyed
+while the context remains surfaceless.
+
+Both native and forwarded hosts initialize viewport/scissor once, from
+the first drawable or to zero when surfaceless. Later binds preserve client
+state. Forwarded acknowledgements use the existing independent bounded
+mailbox; retirement cannot publish late creation or bind state. Messages
+copy exactly four drawable scalars and never forward guest memory.
+
+The destruction guard exposed Wayland's old destroy/recreate resize path.
+GLIO_UPDATE_SURFACE now replaces an existing GPU window target without
+changing its surface identity or current references. EGL flushes before
+the update; rejection keeps the old native buffer, attached size, binding
+and client state. This currently covers existing GPU window targets on the
+same native renderer. Forwarded GPU updates and mixed canvas targets remain
+ordinary surface-model gaps. Initial surface creation still needs complete
+failure propagation. No full E02/E03/E04 conformance is claimed.
+
+Baseline evidence: the new kernel ownership regression fails on
+`c5237892a7`, and its native surfaceless-bind regression also fails there
+(21 pass, 1 fail): `.context/graphics-current-kernel-baseline.log` and
+`.context/graphics-current-wire-native-baseline.log`. The later
+failed-release regression fails against the archived intermediate C source
+`.context/graphics-current-release-before.c`; its log is
+`.context/graphics-current-release-baseline.log`.
+
+Focused source evidence for ABI 55 (2026-10-23):
+
+| Check | Result | Evidence |
+|---|---|---|
+| Native Rust runtime-core `gl` / `dri` filters | 48 / 80 passed; overlapping selections, no failures or ignored | `.context/graphics-current-retarget-rust.log` |
+| Shared ioctl-contract tests | 12 passed | `.context/graphics-current-retarget-rust.log` |
+| Actual native EGL/GLES with UBSan/device double | 25 cases passed | `.context/graphics-current-retarget-native.log` |
+| Host graphics/KMS/scratch plus Node/browser declarations | 281 passed in 16 files; declarations passed | `.context/graphics-current-final-host.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed | `.context/graphics-current-final-memory-boundary.log` |
+| Chromium/Firefox/WebKit source rendering | 18 passed, no skips | `.context/graphics-current-final-browser.log` |
+| Private wasm32 EGL and Wayland-EGL objects | compiled with archive flags and generated protocol header | `.context/graphics-current-compile.log` |
+| ABI 55 generation/check and resolver | passed | `.context/graphics-current-retarget-abi55.log` |
+
+Browser versions match the preceding checks. The private Wayland header
+uses the exact cached wayland-protocols 1.47 XML, whose hash is in the compile
+log; no old cached library was linked. These checks do not install archives
+or build guest programs/packages/images. Normal ABI 55 provisioning and
+full Rust/package, guest CTS/compositor, browser-memory and POSIX validation
+remain deferred and required. Multiple public contexts/share groups,
+context-owned encoder state, display generations and complete surfaceless
+framebuffer behavior remain implementation work.

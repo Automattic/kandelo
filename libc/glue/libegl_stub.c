@@ -46,10 +46,9 @@ static _Thread_local EGLenum g_bound_api = EGL_OPENGL_ES_API;
 static int      g_initialized   = 0;
 static int      g_context_made  = 0;
 static int      g_surface_made  = 0;
-/* eglMakeCurrent state. The host has one GL context per process and keeps
- * no notion of "current", so binding and releasing are bookkeeping here;
- * a surfaceless bind (EGL_KHR_surfaceless_context) renders only into
- * framebuffer objects. */
+/* Client thread records retain handles for queries and deferred destruction.
+ * The kernel owns current-thread authority, including thread-exit cleanup.
+ * Every bind reaches it, including surfaceless binding and release. */
 struct egl_thread_binding {
     int current, surfaceless;
     EGLContext context;
@@ -488,41 +487,51 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
     return EGL_SURFACE_HANDLE;
 }
 
-/* Called by libwayland-egl after wl_egl_window_resize gave the window a new
- * bo: re-aim the live window surface's default framebuffer at it. The
- * surface is destroyed and re-created with the new target, which the host
- * applies at once because the context already exists. Commands queued
- * against the old target are flushed first, so they still land in the old
- * bo, which libwayland-egl keeps alive until its successor is committed. */
-void _wpk_egl_window_retarget(void *egl_window) {
+/* Native window resize replaces its backing buffer, not the EGL surface.
+ * Publish a replacement only after the backend accepts it. The caller keeps
+ * the old buffer alive until its successor is committed, or rolls back. */
+int _wpk_egl_window_retarget(void *egl_window) {
+    pthread_mutex_lock(&g_context_mutex);
+    int accepted = 1;
     if (!egl_window || egl_window != g_current_egl_window || !g_surface_made
         || g_fd < 0 || !_wpk_wlegl_bo_handle)
-        return;
+        goto done;
     uint32_t target = _wpk_wlegl_bo_handle(egl_window);
-    if (!target) return;
+    if (!target) { accepted = 0; goto done; }
     _wpk_gl_flush();
-    ioctl(g_fd, GLIO_DESTROY_SURFACE, NULL);
     struct gl_surface_attrs surf = {
         .kind = WPK_SURFACE_DEFAULT,
         .width = 0, .height = 0, .config_id = 1,
         .reserved = {target, 0, 0, 0},
     };
-    if (ioctl(g_fd, GLIO_CREATE_SURFACE, &surf) != 0) {
-        /* The surface is gone and nothing replaced it: eglMakeCurrent and
-         * eglSwapBuffers now fail rather than render into a stale target. */
-        g_surface_made = 0;
-        g_current_egl_window = NULL;
+    accepted = ioctl(g_fd, GLIO_UPDATE_SURFACE, &surf) == 0;
+done:
+    pthread_mutex_unlock(&g_context_mutex);
+    return accepted;
+}
+
+static EGLint current_binding_error(void) {
+    switch (errno) {
+    case ENOMEM: return EGL_BAD_ALLOC;
+    case EIO: case ENODEV: case EBADF: return EGL_CONTEXT_LOST;
+    default: return EGL_BAD_ACCESS;
     }
 }
 
-static void release_current_locked(void) {
+static EGLBoolean release_current_locked(void) {
     if (g_context_owner == &g_thread_binding) {
         _wpk_gl_flush();
+        const struct gl_make_current release = {0, 0, 0};
+        if (ioctl(g_fd, GLIO_MAKE_CURRENT, &release) != 0) {
+            g_last_error = current_binding_error();
+            return EGL_FALSE;
+        }
         g_context_owner = NULL;
         g_surface_current = 0;
     }
     g_thread_binding = (struct egl_thread_binding){0};
     retire_pending_resources_locked();
+    return EGL_TRUE;
 }
 
 EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
@@ -535,8 +544,7 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
         } else if (draw != EGL_NO_SURFACE || read != EGL_NO_SURFACE) {
             g_last_error = EGL_BAD_MATCH;
         } else {
-            release_current_locked();
-            result = EGL_TRUE;
+            result = release_current_locked();
         }
         goto done;
     }
@@ -552,14 +560,16 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
         g_last_error = EGL_BAD_SURFACE;
         goto done;
     }
-    if (g_context_owner && g_context_owner != &g_thread_binding) {
-        g_last_error = EGL_BAD_ACCESS;
-        goto done;
-    }
+    /* The kernel knows whether a former owner has exited, including a
+     * thread that never ran its TLS destructor. A retained client pointer
+     * must not overrule that authoritative lifetime check. */
     if (!register_binding_thread()) { g_last_error = EGL_BAD_ALLOC; goto done; }
     if (g_current) _wpk_gl_flush();
-    if (!surfaceless && ioctl(g_fd, GLIO_MAKE_CURRENT, NULL) != 0) {
-        g_last_error = EGL_BAD_ACCESS;
+    const struct gl_make_current binding = {
+        g_backend_context_id, surfaceless ? 0 : 1, surfaceless ? 0 : 1,
+    };
+    if (ioctl(g_fd, GLIO_MAKE_CURRENT, &binding) != 0) {
+        g_last_error = current_binding_error();
         goto done;
     }
     g_context_owner = &g_thread_binding;
@@ -932,7 +942,10 @@ EGLBoolean eglWaitClient(void) {
 EGLBoolean eglReleaseThread(void) {
     pthread_mutex_lock(&g_context_mutex);
     struct egl_thread_binding *binding = &g_thread_binding;
-    release_current_locked();
+    if (!release_current_locked()) {
+        pthread_mutex_unlock(&g_context_mutex);
+        return EGL_FALSE;
+    }
     if (g_binding_key_status == 0) {
         pthread_setspecific(g_binding_key, NULL);
         if (binding != &g_empty_binding) free(binding);
