@@ -1142,6 +1142,21 @@ describe("binary resolver policy selection (characterization)", () => {
     expect(resolveBinary("kernel.wasm")).toContain("source-only-v1");
   });
 
+  it("keeps SourceOnly lazy reads independent of the mutable registry freshness checker", () => {
+    const root = mkdtempSync(join(tmpdir(), "kandelo-source-only-lazy-"));
+    cleanupDirs.add(root);
+    writeSourceOnlyProjectionWithKernel(root);
+    process.env.WASM_POSIX_RESOLUTION_POLICY = "source-only-v1";
+    process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = root;
+    setProgramIndexContextCheckerForTests(() => {
+      throw new Error("SourceOnly must not regenerate the default registry");
+    });
+    // This archive is absent from the verified generation. That must stay a
+    // per-asset resolution failure, without invoking another policy's checker.
+    const result = resolveLazyAssetPaths(["composer.zip"]);
+    expect(result.get("composer.zip")).toHaveProperty("error");
+  });
+
   it("throws when source-only policy is on but WASM_POSIX_SOURCE_ONLY_BINARY_ROOT is unset", () => {
     process.env.WASM_POSIX_RESOLUTION_POLICY = "source-only-v1";
     delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
@@ -1178,6 +1193,19 @@ describe("binary resolver unified tier", () => {
 });
 
 describe("image-relative lazy asset paths", () => {
+  it("resolves shell placeholders and package archives through the shared image grammar", () => {
+    const repo = makeTempRepo();
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
+    for (const [url, artifact] of [
+      ["kandelo-lazy:programs/php/php.dat", "programs/wasm32/php/php.dat"],
+      ["composer.zip", "programs/wasm32/composer.zip"],
+      ["love-examples.zip", "programs/wasm32/love/share/love-examples.zip"],
+    ]) {
+      const local = writeCandidate(join(repo, "local-binaries"), artifact!, new Uint8Array([1, 2, 3]));
+      expect(resolveLazyAssetPath(url!)).toBe(local);
+    }
+  });
+
   it("serves a binaries/ lazy URL from the resolver tiers, not only the literal tree", () => {
     const repo = makeTempRepo();
     const local = writeCandidate(

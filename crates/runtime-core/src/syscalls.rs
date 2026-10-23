@@ -890,11 +890,11 @@ fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
     }
 }
 
-pub fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
-    proc.epoll_waits.clear();
-    // /dev/fb0 cleanup: exec wipes the address-space binding. Tell the host
-    // before its memory snapshot is invalidated, but retain device ownership
-    // while a non-CLOEXEC fb fd remains open in this same process.
+/// Drop the `/dev/fb0` binding when munmap, exec, or exit discards its
+/// mapping. Tell the host while the process Memory is still valid, and
+/// retain device ownership while an fb fd remains open in this process; the
+/// last close releases it.
+fn release_process_fb_binding(proc: &mut Process, host: &mut dyn HostIO) {
     if proc.fb_binding.is_some() {
         host.unbind_framebuffer(proc.pid as i32);
         proc.fb_binding = None;
@@ -902,6 +902,12 @@ pub fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
             maybe_release_fb0(proc.pid);
         }
     }
+}
+
+pub fn release_exec_image_state(proc: &mut Process, host: &mut dyn HostIO) {
+    proc.epoll_waits.clear();
+    // A non-CLOEXEC fb fd survives exec, so it keeps device ownership.
+    release_process_fb_binding(proc, host);
     // Device state belongs to surviving open descriptions, not the discarded
     // Wasm image. A final PCM CLOEXEC close leaves its tail to the audio clock.
     release_process_dri_mappings(proc, host);
@@ -10719,6 +10725,10 @@ fn cleanup_process_for_exit(
     // ProcessTable removal would leak both resources past process exit.
     cancel_fifo_opens_for_process(proc);
 
+    // Exit discards the address space, like Linux do_exit's exit_mm. Drop
+    // the framebuffer mapping here rather than at reap, so the fd walk below
+    // releases /dev/fb0 ownership instead of leaving it with the zombie.
+    release_process_fb_binding(proc, host);
     release_process_dri_mappings(proc, host);
 
     // Snapshot the sparse table because sys_close mutates it. RLIMIT_NOFILE
@@ -11623,12 +11633,7 @@ pub fn sys_munmap(
         false
     };
     if fb_release {
-        proc.fb_binding = None;
-        host.unbind_framebuffer(proc.pid as i32);
-        // Release ownership if the process also has no remaining Fb0 fds.
-        if !proc_has_fb0_fd(proc) {
-            maybe_release_fb0(proc.pid);
-        }
+        release_process_fb_binding(proc, host);
     }
 
     // GL cmdbuf cleanup: any munmap overlap invalidates the host's
@@ -46828,6 +46833,67 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
     }
 
+    /// Map `/dev/fb0` in `proc`, leaving the fd open unless `close_fd`.
+    fn map_fb0_for_exit_test(proc: &mut Process, host: &mut TrackingHostIO, close_fd: bool) {
+        use core::sync::atomic::Ordering;
+        use wasm_posix_shared::flags::O_RDWR;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        crate::process_table::FB0_OWNER.store(-1, Ordering::SeqCst);
+
+        let fd = sys_open(proc, host, b"/dev/fb0", O_RDWR, 0).unwrap();
+        let len = (640 * 400 * 4) as usize;
+        sys_mmap(proc, host, 0, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+        if close_fd {
+            // The mapping outlives its fd, so ownership must survive close.
+            sys_close(proc, host, fd).unwrap();
+        }
+        assert_eq!(
+            crate::process_table::FB0_OWNER.load(Ordering::SeqCst),
+            proc.pid as i32
+        );
+    }
+
+    /// Linux tears down the address space and closes files in do_exit,
+    /// before the process becomes a zombie. A zombie can stay unreaped
+    /// indefinitely, so it must not keep /dev/fb0 busy for other processes.
+    #[test]
+    fn exit_releases_mapped_fb0_before_reap() {
+        use core::sync::atomic::Ordering;
+        for close_fd in [false, true] {
+            let mut proc = Process::new(41);
+            let mut host = TrackingHostIO::new();
+            map_fb0_for_exit_test(&mut proc, &mut host, close_fd);
+
+            sys_exit(&mut proc, &mut host, 0);
+
+            assert_eq!(proc.state, ProcessState::Exited);
+            assert!(proc.fb_binding.is_none());
+            assert_eq!(host.unbind_framebuffer_calls, alloc::vec![proc.pid as i32]);
+            assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+
+            // Another process can claim the device while the zombie is unreaped.
+            let mut successor = Process::new(42);
+            let fd = sys_open(&mut successor, &mut host, b"/dev/fb0", O_RDWR, 0).unwrap();
+            sys_close(&mut successor, &mut host, fd).unwrap();
+            assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+        }
+    }
+
+    #[test]
+    fn signal_exit_releases_mapped_fb0_before_reap() {
+        use core::sync::atomic::Ordering;
+        let mut proc = Process::new(43);
+        let mut host = TrackingHostIO::new();
+        map_fb0_for_exit_test(&mut proc, &mut host, true);
+
+        sys_exit_by_signal(&mut proc, &mut host, wasm_posix_shared::signal::SIGKILL);
+
+        assert_eq!(proc.state, ProcessState::Exited);
+        assert!(proc.fb_binding.is_none());
+        assert_eq!(host.unbind_framebuffer_calls, alloc::vec![proc.pid as i32]);
+        assert_eq!(crate::process_table::FB0_OWNER.load(Ordering::SeqCst), -1);
+    }
+
     #[test]
     fn open_dev_fb0_is_single_owner() {
         use core::sync::atomic::Ordering;
@@ -46923,6 +46989,25 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn exit_releases_mice_before_reap() {
+        use core::sync::atomic::Ordering;
+        let _g = MICE_OWNER_LOCK.lock().unwrap();
+        reset_mice_state();
+
+        let mut owner = Process::new(1);
+        let mut successor = Process::new(2);
+        let mut host = MockHostIO::new();
+        sys_open(&mut owner, &mut host, b"/dev/input/mice", O_RDONLY, 0).unwrap();
+
+        sys_exit(&mut owner, &mut host, 0);
+
+        assert_eq!(owner.state, ProcessState::Exited);
+        assert_eq!(crate::mouse::MICE_OWNER.load(Ordering::SeqCst), -1);
+        let fd = sys_open(&mut successor, &mut host, b"/dev/input/mice", O_RDONLY, 0).unwrap();
+        sys_close(&mut successor, &mut host, fd).unwrap();
+    }
+
+    #[test]
     fn read_mice_drains_injected_packets() {
         let _g = MICE_OWNER_LOCK.lock().unwrap();
         reset_mice_state();
@@ -46988,6 +47073,26 @@ impl HostIO for RelSymlinkMock {
         assert!(!crate::clipboard::has_data());
         let fd2 = sys_open(&mut other, &mut host, b"/dev/kandelo/clipboard", O_RDWR, 0).unwrap();
         sys_close(&mut other, &mut host, fd2).unwrap();
+    }
+
+    #[test]
+    fn exit_releases_clipboard_before_reap() {
+        use core::sync::atomic::Ordering;
+        let _g = crate::clipboard::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::clipboard::reset_for_test();
+        let mut agent = Process::new(1);
+        let mut other = Process::new(2);
+        let mut host = MockHostIO::new();
+        sys_open(&mut agent, &mut host, b"/dev/kandelo/clipboard", O_RDWR, 0).unwrap();
+        crate::clipboard::offer(b"private").unwrap();
+
+        sys_exit(&mut agent, &mut host, 0);
+
+        assert_eq!(agent.state, ProcessState::Exited);
+        assert_eq!(crate::clipboard::CLIPBOARD_OWNER.load(Ordering::SeqCst), -1);
+        assert!(!crate::clipboard::has_data());
+        let fd = sys_open(&mut other, &mut host, b"/dev/kandelo/clipboard", O_RDWR, 0).unwrap();
+        sys_close(&mut other, &mut host, fd).unwrap();
     }
 
     #[test]

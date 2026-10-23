@@ -1,3 +1,6 @@
+import caCertificatesZipUrl from "@binaries/programs/wasm32/ca-certificates.zip?url";
+import espeakNgDataZipUrl from "@binaries/programs/wasm32/espeak-ng/espeak-ng-data.zip?url";
+import desktopDataZipUrl from "@binaries/programs/wasm32/wayland-demo/kandelo-desktop-data.zip?url";
 import loveExamplesZipUrl from "@binaries/programs/wasm32/love/share/love-examples.zip?url";
 import vimZipUrl from "@binaries/programs/vim.zip?url";
 import freecivZipUrl from "@binaries/programs/freeciv.zip?url";
@@ -6,12 +9,16 @@ import rubyZipUrl from "@binaries/programs/ruby.zip?url";
 import pythonZipUrl from "@binaries/programs/python.zip?url";
 import nodeZipUrl from "@binaries/programs/node.zip?url";
 import perlZipUrl from "@binaries/programs/perl.zip?url";
+import composerZipUrl from "@binaries/programs/composer.zip?url";
 import manZipUrl from "@binaries/programs/man.zip?url";
 import coreutilsDocsZipUrl from "@binaries/programs/coreutils-docs.zip?url";
 import lsofDocsZipUrl from "@binaries/programs/lsof-docs.zip?url";
 import kandeloSdkZipUrl from "@binaries/programs/kandelo-sdk.zip?url";
 
 export const SHELL_LAZY_ARCHIVES: Record<string, string> = {
+  "ca-certificates.zip": caCertificatesZipUrl,
+  "espeak-ng-data.zip": espeakNgDataZipUrl,
+  "kandelo-desktop-data.zip": desktopDataZipUrl,
   "love-examples.zip": loveExamplesZipUrl,
   "vim.zip": vimZipUrl,
   "freeciv.zip": freecivZipUrl,
@@ -21,6 +28,7 @@ export const SHELL_LAZY_ARCHIVES: Record<string, string> = {
   "python.zip": pythonZipUrl,
   "node.zip": nodeZipUrl,
   "perl.zip": perlZipUrl,
+  "composer.zip": composerZipUrl,
   "man.zip": manZipUrl,
   "coreutils-docs.zip": coreutilsDocsZipUrl,
   "lsof-docs.zip": lsofDocsZipUrl,

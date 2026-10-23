@@ -246,6 +246,7 @@ describe("PHP PHPT verdict semantics", () => {
     const argv = runner.argvByKind.get("file") ?? [];
     expect(argv).toContain("zend.exception_string_param_max_len=15");
     expect(argv).toContain("short_open_tag=0");
+    expect(argv).toContain("fatal_error_backtraces=0");
   });
 
   it.each([
@@ -333,6 +334,29 @@ $cmd = [
 
     expect(result.status).toBe("pass");
     expect(runner.calls).toEqual(["file"]);
+  });
+
+  it.each(['"{TMP}"', "'/tmp/cache path'"])(
+    "allows built-in OPcache with the quoted file-cache path %s",
+    async (path) => {
+      const runner = new ScriptedRunner({ file: runResult({ stdout: "ok" }) });
+      const result = await runPhpt(phpt({
+        EXTENSIONS: "opcache",
+        INI: `opcache.enable_cli=1\nopcache.file_cache_only=1\nopcache.file_cache=${path}`,
+      }), runner, new Set(["opcache"]), 1000);
+      expect(result.status).toBe("pass");
+      expect(runner.calls).toEqual(["file"]);
+    },
+  );
+
+  it("rejects an empty quoted OPcache file-cache path", async () => {
+    const runner = new ScriptedRunner({});
+    const result = await runPhpt(phpt({
+      EXTENSIONS: "opcache",
+      INI: 'opcache.file_cache_only=1\nopcache.file_cache=""',
+    }), runner, new Set(["opcache"]), 1000);
+    expect(result.status).toBe("unsupported");
+    expect(runner.calls).toEqual([]);
   });
 
   it("reports PHPDBG unsupported even when the standard phpdbg variable is set", async () => {

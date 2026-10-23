@@ -19,16 +19,30 @@ const symlinkTargetDecoder = new TextDecoder("utf-8", {
 });
 const textEncoder = new TextEncoder();
 
+/** Shared guest paths whose trust roots are published by ca-certificates. */
+export const SHELL_CA_BUNDLE = {
+  uri: "ca-certificates.zip",
+  guestPaths: ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"],
+} as const;
+
 export interface ShellLazyArchiveSpec {
   id: string;
   dependency: string;
   resolverPath: string;
   archiveUrl: string;
-  mountPrefix: "/usr/";
+  mountPrefix: "/" | `/${string}/`;
   requiredMember: string;
 }
 
 export const SHELL_LAZY_ARCHIVE_SPECS = [
+  {
+    id: "composer",
+    dependency: "composer",
+    resolverPath: "programs/wasm32/composer.zip",
+    archiveUrl: "composer.zip",
+    mountPrefix: "/usr/",
+    requiredMember: "bin/composer",
+  },
   {
     id: "freeciv",
     dependency: "freeciv-browser-bundle",
@@ -124,6 +138,37 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     archiveUrl: "kandelo-sdk.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/wasm32posix-cc",
+  },
+] as const satisfies readonly ShellLazyArchiveSpec[];
+
+/** Data the canonical shell can load on first use: trust roots, speech and desktops.
+ * Kept separate from the shared tool archives: service-image builders do not
+ * declare espeak-ng or wayland-demo and must not acquire those dependencies.
+ */
+export const SHELL_LAZY_DATA_ARCHIVE_SPECS = [
+  {
+    id: "ca-certificates",
+    dependency: "ca-certificates",
+    resolverPath: "programs/ca-certificates.zip",
+    archiveUrl: SHELL_CA_BUNDLE.uri,
+    mountPrefix: "/",
+    requiredMember: "etc/ssl/cert.pem",
+  },
+  {
+    id: "espeak-ng-data",
+    dependency: "espeak-ng",
+    resolverPath: "programs/espeak-ng/espeak-ng-data.zip",
+    archiveUrl: "espeak-ng-data.zip",
+    mountPrefix: "/usr/share/espeak-ng-data/",
+    requiredMember: "phondata",
+  },
+  {
+    id: "desktop-data",
+    dependency: "wayland-demo",
+    resolverPath: "programs/wayland-demo/kandelo-desktop-data.zip",
+    archiveUrl: "kandelo-desktop-data.zip",
+    mountPrefix: "/usr/share/kandelo/",
+    requiredMember: "themes/tokyo-night/theme.conf",
   },
 ] as const satisfies readonly ShellLazyArchiveSpec[];
 

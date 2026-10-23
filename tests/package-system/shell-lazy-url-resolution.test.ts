@@ -7,7 +7,7 @@ import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
 } from "../../images/vfs/lib/init/shell-binaries";
-import { SHELL_LAZY_ARCHIVE_SPECS } from "../../images/vfs/scripts/shell-lazy-archives";
+import { SHELL_LAZY_ARCHIVE_SPECS, SHELL_LAZY_DATA_ARCHIVE_SPECS } from "../../images/vfs/scripts/shell-lazy-archives";
 
 /**
  * Shell lazy deployment URL closure: every token the shell image can DECLARE is
@@ -34,7 +34,7 @@ describe("shell lazy deployment URL closure", () => {
       expect(table[token], `${spec.id} declares ${token}, which nothing serves`)
         .toBeTruthy();
     }
-    for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
+    for (const spec of [...SHELL_LAZY_ARCHIVE_SPECS, ...SHELL_LAZY_DATA_ARCHIVE_SPECS]) {
       expect(
         table[spec.archiveUrl],
         `${spec.id} declares ${spec.archiveUrl}, which nothing serves`,
@@ -47,7 +47,7 @@ describe("shell lazy deployment URL closure", () => {
     // than read from a build-time table. Both must cover the same tokens, or a
     // demo works in one deployment and not the other.
     const map = imageOwnedRuntimeUrlMapper(AUTHORITY);
-    for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
+    for (const spec of [...SHELL_LAZY_ARCHIVE_SPECS, ...SHELL_LAZY_DATA_ARCHIVE_SPECS]) {
       const member = spec.resolverPath.replace(
         /^programs\/(?!wasm32\/)/,
         "programs/wasm32/",
@@ -56,6 +56,14 @@ describe("shell lazy deployment URL closure", () => {
         `https://demo.invalid/a/assets-group/assets/${member}`,
       );
     }
+  });
+
+  it("maps the file-type database in ordinary and grouped deployments", () => {
+    const token = "binaries/programs/wasm32/file/file-magic.lite";
+    expect(imageOwnedRuntimeUrlTable()[token]).toBeTruthy();
+    expect(imageOwnedRuntimeUrlMapper(AUTHORITY)(token)).toBe(
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/file/file-magic.lite",
+    );
   });
 
   it("rejects unknown build-time file and archive tokens", () => {

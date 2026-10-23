@@ -201,19 +201,27 @@ impl TerminalState {
     /// ISIG is checked independently of ICANON — signal characters generate
     /// signals in both canonical and raw modes when ISIG is set.
     pub fn process_input_byte(&mut self, byte: u8) -> (Vec<u8>, Option<u32>) {
+        match self.translate_input_byte(byte) {
+            Some(byte) => self.process_translated_input_byte(byte),
+            None => (Vec::new(), None),
+        }
+    }
+
+    /// Input mappings apply before signal handling and in both canonical and
+    /// noncanonical mode. IGNCR takes precedence over ICRNL; INLCR only maps
+    /// an original newline, not a carriage return already mapped by ICRNL.
+    pub(crate) fn translate_input_byte(&self, byte: u8) -> Option<u8> {
+        match byte {
+            b'\r' if self.c_iflag & IGNCR != 0 => None,
+            b'\r' if self.c_iflag & ICRNL != 0 => Some(b'\n'),
+            b'\n' if self.c_iflag & INLCR != 0 => Some(b'\r'),
+            _ => Some(byte),
+        }
+    }
+
+    pub(crate) fn process_translated_input_byte(&mut self, byte: u8) -> (Vec<u8>, Option<u32>) {
         let mut echo = Vec::new();
         let do_echo = self.c_lflag & ECHO != 0;
-
-        // Input processing (c_iflag)
-        let byte = if self.c_iflag & ICRNL != 0 && byte == b'\r' {
-            b'\n'
-        } else if self.c_iflag & INLCR != 0 && byte == b'\n' {
-            b'\r'
-        } else if self.c_iflag & IGNCR != 0 && byte == b'\r' {
-            return (echo, None); // discard CR
-        } else {
-            byte
-        };
 
         // ISIG: check for signal-generating characters before line editing.
         // This works in both canonical and raw modes.

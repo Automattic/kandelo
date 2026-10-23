@@ -2245,6 +2245,11 @@ served by tmpfs. This connects directory metadata; it does not add a host
 API for reading generated procfs file contents.
 The existing `/dev/mqueue` directory provider returns an empty listing.
 
+Node resolves the shell's `kandelo-lazy:programs/...` references and named ZIP
+archives through the same image-owned reference grammar used by browser
+deployments, then authenticates their package artifacts through the resolver.
+Under `source-only-v1`, the emitted projection is the artifact authority;
+lazy reads do not regenerate the default policy's mutable registry index.
 Node takes the validated rootfs's deduplicated lazy URI cohort after
 kernel initialization and gives it to `NodeLazyAssetResolver`. The first
 use starts one off-thread freshness checkpoint; successful paths and

@@ -2969,9 +2969,11 @@ fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessR
     for handle in result.host_closes {
         unsafe { host_close(handle) };
     }
-    // /dev/fb0 cleanup: if the exiting process held a live mmap, tell the host
-    // to drop the canvas binding before the process Memory disappears. Then
-    // release the global owner claim — best-effort CAS makes this idempotent.
+    // /dev/fb0 backstop: exit cleanup already unbinds the framebuffer and
+    // releases ownership, so an exited zombie arrives here with neither.
+    // A process removed without reaching sys_exit can still hold a live
+    // mmap; tell the host to drop the canvas binding before the process
+    // Memory disappears, then release the owner claim (idempotent CAS).
     if result.had_framebuffer_binding {
         unsafe { host_unbind_framebuffer(pid as i32) };
     }

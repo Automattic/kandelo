@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { readFileSync } from "node:fs";
 import {
   gotoInPreview,
   gotoMachineOrSkip,
@@ -8,6 +9,9 @@ import {
 
 // The machine's own identity.title from its image's /etc/kandelo/demo.json.
 const MACHINE_TITLE = "nginx + PHP";
+const declaredPhpVersion = readFileSync(
+  new URL("../../../packages/registry/php/package.toml", import.meta.url), "utf8",
+).match(/^version = "([^"]+)"/m)![1];
 
 // The nginx + PHP-FPM demo serves Adminer as its landing page, auto-connected
 // to a SQLite database that PHP-FPM seeds on the first request. A successful
@@ -39,4 +43,5 @@ test("@slow Kandelo nginx+PHP demo auto-logs Adminer into the seeded SQLite data
   await expect(frame.locator("body")).toContainText("PHP-FPM on WebAssembly", {
     timeout: 120_000,
   });
+  await expect(frame.locator("body")).toContainText(declaredPhpVersion);
 });

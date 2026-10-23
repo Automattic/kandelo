@@ -5,21 +5,17 @@ import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import {
   ensureDirRecursive,
-  writeVfsBinary,
   writeVfsFile,
 } from "../src/vfs/image-helpers";
 import { tryResolveBinary } from "../src/binary-resolver";
 import { prewarmOpcache } from "../../images/vfs/scripts/opcache-prewarm";
 
 const phpPath = tryResolveBinary("programs/php/php.wasm");
-const opcachePath = tryResolveBinary("programs/php/opcache.so");
 const OPCACHE_AVAILABLE =
-  !!phpPath && existsSync(phpPath) &&
-  !!opcachePath && existsSync(opcachePath);
+  !!phpPath && existsSync(phpPath);
 
 const PHP_RUNTIME_INI_ARGS = [
   "-d", "extension_dir=/usr/lib/php/extensions",
-  "-d", "zend_extension=opcache",
   "-d", "opcache.enable=1",
   "-d", "opcache.enable_cli=1",
   "-d", "opcache.file_cache=/var/cache/opcache",
@@ -42,13 +38,6 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
       ]) {
         ensureDirRecursive(fs, dir);
       }
-
-      writeVfsBinary(
-        fs,
-        "/usr/lib/php/extensions/opcache.so",
-        readFileSync(opcachePath!),
-        0o755,
-      );
       writeVfsFile(
         fs,
         "/var/www/a.php",
@@ -80,7 +69,8 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
 
     try {
       const fs = createPrewarmFs();
-      writeVfsFile(fs, "/var/www/hit.php", "<?php echo 'cached-ok';\n");
+      writeVfsFile(fs, "/var/www/hit.php",
+        '<?php function cached_value(string $name = "cached-ok"): string { return $name; }\n');
 
       const written = await prewarmOpcache(fs, {
         sourceRoots: ["/var/www"],
@@ -92,10 +82,51 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
 
       const { exitCode, stdout, stderr } = await runPhpFromImage(
         await fs.saveImage(),
-        "require '/var/www/hit.php';",
+        "require '/var/www/hit.php'; echo cached_value(), '/', (new ReflectionParameter('cached_value', 0))->getDefaultValue();",
       );
       expect(stderr).toBe("");
-      expect(stdout).toBe("cached-ok");
+      expect(stdout).toBe("cached-ok/cached-ok");
+      expect(exitCode).toBe(0);
+    } finally {
+      if (previousSkip === undefined) {
+        delete process.env.KANDELO_NO_OPCACHE_PREWARM;
+      } else {
+        process.env.KANDELO_NO_OPCACHE_PREWARM = previousSkip;
+      }
+    }
+  }, 60_000);
+
+  it("lets the unprivileged FPM owner read prewarmed entries and cache new scripts", async () => {
+    const previousSkip = process.env.KANDELO_NO_OPCACHE_PREWARM;
+    delete process.env.KANDELO_NO_OPCACHE_PREWARM;
+    try {
+      const fs = createPrewarmFs();
+      writeVfsFile(fs, "/var/www/hit.php", "<?php echo 'cached-ok:';\n");
+      const written = await prewarmOpcache(fs, {
+        sourceRoots: ["/var/www"],
+        label: "fpm-cache-owner-test",
+        cacheOwner: { uid: 65534, gid: 65534 },
+      });
+      expect(written).toBeGreaterThanOrEqual(1);
+      writeVfsFile(fs, "/var/www/hit.php", "<?php this is invalid php ;\n");
+      writeVfsFile(fs, "/var/www/new.php", "<?php echo 'new';\n");
+      const { exitCode, stdout, stderr } = await runPhpFromImage(
+        await fs.saveImage(),
+        `require '/var/www/hit.php';
+         if (!opcache_compile_file('/var/www/new.php')) { exit(2); }
+         $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator('/var/cache/opcache'));
+         foreach ($files as $file) {
+             if ($file->getFilename() === 'new.php.bin') {
+                 echo 'new-cache-owner=', $file->getOwner();
+                 exit(0);
+             }
+         }
+         exit(3);`,
+        ["-d", "opcache.file_update_protection=0"],
+        { uid: 65534, gid: 65534 },
+      );
+      expect(stderr).toBe("");
+      expect(stdout).toBe("cached-ok:new-cache-owner=65534");
       expect(exitCode).toBe(0);
     } finally {
       if (previousSkip === undefined) {
@@ -172,7 +203,9 @@ describe.skipIf(!OPCACHE_AVAILABLE)("opcache prewarmer", () => {
         writeVfsFile(
           fs,
           "/var/www/index.php",
-          "<?php function greet($n) { return \"hi $n\"; }\necho greet('x');\n",
+          '<?php function greet(string $n = "x"): string { return "hi $n"; }\n'
+            + 'function sum(int ...$values): int { return array_sum($values); }\n'
+            + 'echo greet(), sum(1, 2);\n',
         );
         const written = await prewarmOpcache(fs, {
           sourceRoots: ["/var/www"],
@@ -231,12 +264,6 @@ function createPrewarmFs(): KandeloImageFs {
   ]) {
     ensureDirRecursive(fs, dir);
   }
-  writeVfsBinary(
-    fs,
-    "/usr/lib/php/extensions/opcache.so",
-    readFileSync(opcachePath!),
-    0o755,
-  );
   return fs;
 }
 
@@ -244,6 +271,7 @@ async function runPhpFromImage(
   imageBytes: Uint8Array,
   script: string,
   extraIniArgs: string[] = [],
+  identity: { uid?: number; gid?: number } = {},
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const phpBytes = readFileSync(phpPath!);
   const programBytes = phpBytes.buffer.slice(
@@ -264,7 +292,7 @@ async function runPhpFromImage(
     const exitCode = await host.spawn(
       programBytes,
       ["php", ...PHP_RUNTIME_INI_ARGS, ...extraIniArgs, "-r", script],
-      { env: ["HOME=/tmp", "TMPDIR=/tmp"] },
+      { env: ["HOME=/tmp", "TMPDIR=/tmp"], ...identity },
     );
     return {
       exitCode,

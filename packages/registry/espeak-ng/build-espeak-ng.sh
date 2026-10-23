@@ -325,10 +325,10 @@ cp -R "$NATIVE_BUILD_DIR/espeak-ng-data" "$INSTALL_DIR/share/espeak-ng-data"
 mv "$DATA_CMAKE_BACKUP" "$DATA_CMAKE"
 mv "$DEPS_CMAKE_BACKUP" "$DEPS_CMAKE"
 
-# Pack the data dir into the declared runtime file. Stored-only, sorted, with
+# Pack the data dir into the declared runtime file. Deflated, sorted, with
 # a fixed timestamp and mode, so the archive bytes follow the voice data alone
-# and the package cache key stays stable across rebuilds. Same shape as
-# cpython's python-runtime.zip.
+# and the package cache key stays stable across rebuilds. Lazy consumers
+# fetch this complete ZIP on first read, so compress its optional data.
 DATA_ZIP="$INSTALL_DIR/share/espeak-ng-data.zip"
 rm -f "$DATA_ZIP"
 python3 - "$INSTALL_DIR/share/espeak-ng-data" "$DATA_ZIP" <<'PY'
@@ -340,13 +340,13 @@ import zipfile
 root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 timestamp = (1980, 1, 1, 0, 0, 0)
-with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED, strict_timestamps=True) as archive:
+with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9, strict_timestamps=True) as archive:
     for path in sorted((item for item in root.rglob("*") if item.is_file()), key=lambda item: item.as_posix()):
         info = zipfile.ZipInfo(path.relative_to(root).as_posix(), date_time=timestamp)
         info.create_system = 3
         info.external_attr = (stat.S_IFREG | 0o644) << 16
-        info.compress_type = zipfile.ZIP_STORED
-        archive.writestr(info, path.read_bytes())
+        info.compress_type = zipfile.ZIP_DEFLATED
+        archive.writestr(info, path.read_bytes(), compresslevel=9)
 PY
 
 # Both filenames exactly match the package.toml [[outputs]] and

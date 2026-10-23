@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -31,8 +32,10 @@ import {
 import { SHELL_LAZY_BINARY_SPECS, shellLazySpecDependency } from "../../images/vfs/lib/init/shell-binaries";
 import {
   NCURSES_TERMINFO_RUNTIME_FILE,
+  SHELL_CA_BUNDLE,
   registerShellProfileScripts,
   SHELL_LAZY_ARCHIVE_SPECS,
+  SHELL_LAZY_DATA_ARCHIVE_SPECS,
   SHELL_PROFILE_SCRIPT_PATHS,
   type ShellLazyArchiveResolver,
 } from "../../images/vfs/scripts/shell-lazy-archives";
@@ -74,6 +77,7 @@ const canonicalDependencyContract = join(
 );
 const roots: string[] = [];
 const MiB = 1024 * 1024;
+const CA_FIXTURE = new TextEncoder().encode("rootfs CA fixture\n");
 const ROOTFS_LAZY_IDS = new Set([
   "coreutils",
   "grep",
@@ -126,6 +130,10 @@ async function writeRootfs(
   );
   ensureDirRecursive(fs, "/bin");
   ensureDirRecursive(fs, "/etc/kandelo");
+  ensureDirRecursive(fs, "/etc/ssl/certs");
+  for (const path of SHELL_CA_BUNDLE.guestPaths) {
+    writeVfsBinary(fs, path, CA_FIXTURE, 0o644);
+  }
   // The real rootfs group database: the shell composer resolves NetHack's
   // `games` group from it.
   writeVfsBinary(
@@ -238,10 +246,14 @@ function text(bytes: Uint8Array): string {
 
 function fixturePaths(root: string) {
   const rootfsPath = join(root, "rootfs.vfs.zst");
+  const caBundlePath = join(root, "ca-certificates.zip");
+  writeFileSync(caBundlePath, zipSync(Object.fromEntries(
+    SHELL_CA_BUNDLE.guestPaths.map(path => [path.slice(1), CA_FIXTURE]),
+  )));
   const bashPath = join(root, "bash.wasm");
   const espeakNgDataPath = join(root, "espeak-ng-data.zip");
-  // The files the composer writes eagerly: the desktops' launchers and the
-  // data archives. Their programs are lazy files, written below with every
+  // Explicit composer inputs include eager launcher scripts and optional
+  // data archives. Their programs are lazy files, registered below with every
   // other SHELL_LAZY_BINARY_SPECS entry.
   const wldesktopPath = join(root, "wldesktop");
   const omarchydesktopPath = join(root, "omarchydesktop");
@@ -279,7 +291,8 @@ function fixturePaths(root: string) {
   writeFileSync(
     espeakNgDataPath,
     zipSync({
-      "en/en_dict": new TextEncoder().encode("espeak voice data fixture"),
+      "phondata": new TextEncoder().encode("espeak phoneme fixture"),
+      "en_dict": new TextEncoder().encode("espeak voice data fixture"),
     }),
   );
   const dependencyRoots = new Map<string, string>();
@@ -358,6 +371,7 @@ function fixturePaths(root: string) {
   };
   return {
     rootfsPath,
+    caBundlePath,
     bashPath,
     espeakNgDataPath,
     wldesktopPath,
@@ -611,6 +625,18 @@ describe("canonical source-rootfs shell", () => {
     const fs = KandeloImageFs.create();
     fs.loadImage(first);
     const composed = fs.lazyEntries();
+    for (const path of SHELL_CA_BUNDLE.guestPaths) {
+      expect(fs.stat(path)).toMatchObject({
+        uid: 0, gid: 0, size: CA_FIXTURE.length, deferred: true,
+      });
+      expect(fs.stat(path).mode & 0o7777).toBe(0o644);
+      expect(composed.files.find(file => file.path === path)).toMatchObject({
+        sourcePath: path.slice(1),
+        archiveId: composed.archives.find(archive => archive.uri === SHELL_CA_BUNDLE.uri)!.archiveId,
+      });
+    }
+    expect(fs.stat(SHELL_CA_BUNDLE.guestPaths[0]).ino)
+      .not.toBe(fs.stat(SHELL_CA_BUNDLE.guestPaths[1]).ino);
     const composedFiles = composed.files.map((file) =>
       ({ path: file.path, uri: file.uri, size: file.size })
     );
@@ -637,6 +663,9 @@ describe("canonical source-rootfs shell", () => {
     expect(fs.stat("/usr/bin/php").mode & 0o777).toBe(0o755);
     expect(fs.readlink("/bin/php")).toBe("/usr/bin/php");
     expect(fs.stat("/bin/php").ino).toBe(fs.stat("/usr/bin/php").ino);
+    expect(fs.isPathDeferred("/usr/bin/composer")).toBe(true);
+    expect(fs.readlink("/bin/composer")).toBe("/usr/bin/composer");
+    expect(fs.stat("/bin/composer").ino).toBe(fs.stat("/usr/bin/composer").ino);
     // FFmpeg's three programs are lazy files provided by the ffmpeg package.
     for (const id of ["ffmpeg", "ffprobe", "ffplay"]) {
       const spec = SHELL_LAZY_BINARY_SPECS.find((candidate) => candidate.id === id);
@@ -707,11 +736,23 @@ describe("canonical source-rootfs shell", () => {
       ).toMatchObject({ uri: url, size: `${spec!.id} fixture`.length });
       expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
     }
-    // PATH_ESPEAK_DATA is compiled into the binary as /usr/share, so the
-    // voice-data zip must land unpacked rather than staying a lazy archive.
-    expect(text(readVfsFile(fs, "/usr/share/espeak-ng-data/en/en_dict"))).toBe(
-      "espeak voice data fixture",
+    // Fixed guest paths retain real metadata without downloading optional
+    // voice data. The serialized image must retain the exact ZIP identity.
+    expect(fs.isPathDeferred("/usr/share/espeak-ng-data/en_dict")).toBe(true);
+    expect(fs.stat("/usr/share/espeak-ng-data/en_dict").size).toBe(
+      "espeak voice data fixture".length,
     );
+    for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
+      const source = spec.id === "ca-certificates" ? paths.caBundlePath
+        : spec.id === "desktop-data" ? paths.desktopDataPath : paths.espeakNgDataPath;
+      const bytes = readFileSync(source);
+      expect(fs.isPathDeferred(`${spec.mountPrefix}${spec.requiredMember}`)).toBe(true);
+      expect(composed.archives.find(({ uri }) => uri === spec.archiveUrl))
+        .toMatchObject({
+          bytes: bytes.byteLength,
+          digest: new Uint8Array(createHash("sha256").update(bytes).digest()),
+        });
+    }
     // The ScummVM machine's dock actions run this script, so it must be an
     // eager executable, and every game it can fetch must be pinned in the
     // catalog it reads: an unverified download would let a changed file
@@ -764,15 +805,14 @@ describe("canonical source-rootfs shell", () => {
       );
       expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
     }
-    // The desktops' data is image bytes under /usr/share/kandelo.
-    expect(
-      new TextDecoder().decode(
-        readVfsFile(fs, "/usr/share/kandelo/themes/tokyo-night/theme.conf"),
-      ),
-    ).toBe("# Tokyo Night\n");
-    expect(
-      new TextDecoder().decode(readVfsFile(fs, "/usr/share/kandelo/apps/terminal.conf")),
-    ).toBe("name = Terminal\n");
+    // Desktop paths exist at boot; their contents wait for the first read.
+    for (const [path, content] of [
+      ["/usr/share/kandelo/themes/tokyo-night/theme.conf", "# Tokyo Night\n"],
+      ["/usr/share/kandelo/apps/terminal.conf", "name = Terminal\n"],
+    ]) {
+      expect(fs.isPathDeferred(path), path).toBe(true);
+      expect(fs.stat(path).size, path).toBe(content.length);
+    }
     expect(
       text(readVfsFile(fs, "/usr/share/libinput/10-generic-keyboard.quirks")),
     ).toBe("[Generic Keyboard]\n");
@@ -883,7 +923,7 @@ describe("canonical source-rootfs shell", () => {
     expect(loveProfile.presentation?.hostPointer).toBeUndefined();
     expect(loveProfile.dockActions).toEqual([{
       id: "games", label: "Games",
-      description: "Start the selected game. Audio is unavailable in this port.",
+      description: "Start the selected game. Enable audio to hear sound.",
       menu: [
         ["pong", "Pong"], ["snake", "Snake"], ["breakout", "Breakout"],
         ["asteroids", "Asteroids"], ["bytepath", "BYTEPATH"], ["snkrx", "SNKRX"],
@@ -1128,6 +1168,19 @@ describe("canonical source-rootfs shell", () => {
   // programs accumulate one convenient addition at a time. A Wasm program
   // threaded through an eagerly written input must fail the build, while
   // the rootfs's own eager login (written by writeRootfs) stays allowed.
+  it("rejects a CA artifact that differs from the base image trust roots", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    writeFileSync(paths.caBundlePath, zipSync(Object.fromEntries(
+      SHELL_CA_BUNDLE.guestPaths.map(path => [path.slice(1), new TextEncoder().encode("different trust roots\n")]),
+    )));
+    const outFile = join(root, "wrong-ca.vfs.zst");
+    await expect(buildSourceRootfsShellImage({ ...paths, outFile }))
+      .rejects.toThrow("rootfs CA bundle does not match its declared artifact");
+    expect(existsSync(outFile)).toBe(false);
+  });
+
   it("rejects a Wasm program the composer would write eagerly", async () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
@@ -1226,6 +1279,7 @@ describe("canonical source-rootfs shell", () => {
     const espeakNgDir = extendedDependencyDirs.get("espeak-ng")!;
     const waylandDemoDir = extendedDependencyDirs.get("wayland-demo")!;
     writeFileSync(join(rootfsDir, "rootfs.vfs.zst"), "rootfs");
+    writeFileSync(join(extendedDependencyDirs.get("ca-certificates")!, "ca-certificates.zip"), "CA ZIP");
     writeFileSync(join(bashDir, "bash.wasm"), "bash");
     writeFileSync(join(espeakNgDir, "espeak-ng-data.zip"), "espeak-ng-data");
     for (const name of [
@@ -1304,6 +1358,7 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(readdirSync(workDir)).toEqual([]);
     const invocation = readFileSync(logPath, "utf8");
     expect(invocation).toContain(`--rootfs ${rootfsDir}/rootfs.vfs.zst`);
+    expect(invocation).toContain(`--ca-bundle ${extendedDependencyDirs.get("ca-certificates")}/ca-certificates.zip`);
     expect(invocation).toContain(`--bash ${bashDir}/bash.wasm`);
     for (const lazyProgram of [
       "--fbdoom",

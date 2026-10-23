@@ -81,6 +81,7 @@ impl PtyPair {
     /// Returns an optional signal number if ISIG matched a signal character.
     /// Echo bytes are appended to the output buffer (master read side).
     pub fn process_master_input(&mut self, byte: u8) -> Option<u32> {
+        let byte = self.terminal.translate_input_byte(byte)?;
         let old_input = self.input_buf.len() + self.terminal.cooked_buffer.len();
         let old_eof = self.terminal.eof_pending();
         let old_output = self.output_buf.len();
@@ -89,8 +90,9 @@ impl PtyPair {
         let opost = self.terminal.c_oflag & crate::terminal::OPOST != 0;
         let onlcr = self.terminal.c_oflag & crate::terminal::ONLCR != 0;
 
-        // process_input_byte handles both ISIG (in any mode) and ICANON line editing
-        let (echo, signal) = self.terminal.process_input_byte(byte);
+        // Translate once, then use that same byte for signals, canonical
+        // editing, noncanonical delivery, and echo.
+        let (echo, signal) = self.terminal.process_translated_input_byte(byte);
 
         // If a signal was generated, flush input_buf too (unless NOFLSH)
         if signal.is_some() && self.terminal.c_lflag & crate::terminal::NOFLSH == 0 {
@@ -114,7 +116,7 @@ impl PtyPair {
         }
 
         // In raw mode (non-canonical), pass byte directly to slave input.
-        // process_input_byte only handles ISIG in raw mode, not regular input.
+        // process_translated_input_byte only handles ISIG in raw mode.
         if !self.terminal.is_canonical() {
             self.input_buf.push_back(byte);
             if self.terminal.c_lflag & crate::terminal::ECHO != 0 {
@@ -324,6 +326,69 @@ fn reset_table() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_mappings_apply_in_both_terminal_modes() {
+        use crate::terminal::{ECHO, ICANON, ICRNL, IGNCR, INLCR, VEOL};
+
+        let cases: &[(u32, &[u8])] = &[
+            (0, b"0\r\nx!"),
+            (ICRNL, b"0\n\nx!"),
+            (INLCR, b"0\r\rx!"),
+            (ICRNL | INLCR, b"0\n\rx!"),
+            (IGNCR, b"0\nx!"),
+            (IGNCR | ICRNL, b"0\nx!"),
+            (IGNCR | INLCR, b"0\rx!"),
+            (IGNCR | ICRNL | INLCR, b"0\rx!"),
+        ];
+        for canonical in [false, true] {
+            for &(flags, expected) in cases {
+                let mut pty = PtyPair::new(0, 0);
+                pty.terminal.c_iflag = flags;
+                pty.terminal.c_lflag &= !ECHO;
+                if !canonical {
+                    pty.terminal.c_lflag &= !ICANON;
+                }
+                pty.terminal.c_cc[VEOL] = b'!';
+                for &byte in b"0\r\nx!" {
+                    assert_eq!(pty.process_master_input(byte), None);
+                }
+                let mut bytes = [0; 16];
+                let n = pty.slave_read(&mut bytes);
+                assert_eq!(
+                    &bytes[..n],
+                    expected,
+                    "canonical={canonical}, flags={flags:o}"
+                );
+                assert_eq!(pty.slave_read(&mut bytes), 0);
+                assert!(!pty.master_has_data(), "echo remains disabled");
+            }
+        }
+    }
+
+    #[test]
+    fn noncanonical_echo_uses_the_translated_input_byte() {
+        use crate::terminal::{ICANON, ICRNL, IGNCR};
+
+        let mut pty = PtyPair::new(0, 0);
+        pty.terminal.c_lflag &= !ICANON;
+        pty.terminal.c_iflag = ICRNL;
+        pty.process_master_input(b'\r');
+        let mut bytes = [0; 8];
+        assert_eq!(pty.slave_read(&mut bytes), 1);
+        assert_eq!(bytes[0], b'\n');
+        let n = pty.master_read(&mut bytes);
+        assert_eq!(
+            &bytes[..n],
+            b"\r\n",
+            "echo applies output processing after input mapping"
+        );
+
+        pty.terminal.c_iflag |= IGNCR;
+        pty.process_master_input(b'\r');
+        assert!(!pty.slave_has_data());
+        assert!(!pty.master_has_data());
+    }
 
     #[test]
     fn readiness_notifications_follow_input_output_and_mode_transitions() {

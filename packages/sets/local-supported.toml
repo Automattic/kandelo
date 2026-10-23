@@ -63,6 +63,10 @@ name = "bzip2"
 class = "user-software"
 
 [[packages]]
+name = "ca-certificates"
+class = "platform"
+
+[[packages]]
 name = "cairo"
 class = "platform"
 
@@ -80,6 +84,10 @@ class = "platform"
 
 [[packages]]
 name = "coreutils"
+class = "user-software"
+
+[[packages]]
+name = "composer"
 class = "user-software"
 
 [[packages]]

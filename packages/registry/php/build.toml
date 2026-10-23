@@ -1,7 +1,6 @@
 script_path = "packages/registry/php/build-php.sh"
 inputs = [
   "packages/registry/php/build-php.sh",
-  "packages/registry/php/fork-side-module-abi.c",
   "packages/registry/php/intl-icu-data-loader.c",
   "scripts/install-local-binary.sh",
   "scripts/package-build-roots.sh",
@@ -15,5 +14,8 @@ commit      = "UNPUBLISHED"
 # for the fork-instrumented opcache side module (16), then make every dylink
 # output carry complete ABI 43 side-boundary instrumentation (17), then
 # stop opcache's file cache from writing wall-clock bookkeeping into each .bin
-# so build-time prewarmed caches are reproducible (18).
-revision    = 18
+# so build-time prewarmed caches are reproducible (18), then upgrade the
+# single CLI/FPM runtime and its shared extensions to PHP 8.5.12, including
+# built-in, opt-in OPcache with a deterministic file-cache arena (19).
+revision = 19
+publication_state = "pending"

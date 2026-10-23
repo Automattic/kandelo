@@ -46,6 +46,8 @@ export interface OpcachePrewarmOptions {
   sourceRoots: string[];
   /** Label used in log lines. */
   label: string;
+  /** Runtime cache writer, including ownership of prewarmed subdirectories. */
+  cacheOwner?: { uid: number; gid: number };
   /** Absolute VFS paths that must not be compiled into the file cache. */
   excludePaths?: string[];
   /** Exact staged build inputs. Omit only for the legacy interactive path. */
@@ -66,7 +68,6 @@ const LIST_END = "===PHPLIST_END===\n";
 
 const PHP_INI_ARGS = [
   "-d", "extension_dir=/usr/lib/php/extensions",
-  "-d", "zend_extension=opcache",
   "-d", "opcache.enable=1",
   "-d", "opcache.enable_cli=1",
   "-d", "opcache.file_cache_only=1",
@@ -93,6 +94,9 @@ export async function prewarmOpcache(
   options: OpcachePrewarmOptions,
 ): Promise<number> {
   ensureDirRecursive(fs, CACHE_DIR);
+  if (options.cacheOwner) {
+    fs.chown(CACHE_DIR, options.cacheOwner.uid, options.cacheOwner.gid);
+  }
 
   if (process.env.KANDELO_NO_OPCACHE_PREWARM === "1") {
     console.log("[opcache-prewarm] skipped (KANDELO_NO_OPCACHE_PREWARM=1)");
@@ -205,6 +209,28 @@ export async function prewarmOpcache(
       `[opcache-prewarm:${label}] skipped after failure: ${summarizeError(err)}`,
     );
     return 0;
+  } finally {
+    const owner = options.cacheOwner;
+    if (owner) {
+      // The build runs as root, but FPM workers drop privileges. Transfer
+      // the whole tree so they can replace entries and cache new scripts.
+      const ownCacheTree = (path: string): void => {
+        fs.chown(path, owner.uid, owner.gid);
+        if ((fs.lstat(path).mode & 0o170000) === 0o040000) {
+          const handle = fs.opendir(path);
+          try {
+            for (let entry; (entry = fs.readdir(handle)) !== null;) {
+              if (entry.name !== "." && entry.name !== "..") {
+                ownCacheTree(`${path}/${entry.name}`);
+              }
+            }
+          } finally {
+            fs.closedir(handle);
+          }
+        }
+      };
+      ownCacheTree(CACHE_DIR);
+    }
   }
 }
 

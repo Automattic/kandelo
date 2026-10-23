@@ -266,11 +266,25 @@ package outputs. All three privileged commands are installed as root-owned
 effect. The image-owned experimental terminal declaration starts
 `login -p -f maker` once and then uses `login -p` after logout.
 
-The shell and new login packages are pending publication while this change is
-under review. Their `commit = "UNPUBLISHED"` placeholders must be stamped with
-the truthful producer commit before release. Changes to the base image, shell
-composition, or terminal declaration rebuild the reverse-dependent image
-closure:
+The browser shell embeds Bash because the default login immediately runs it.
+Optional eSpeak voice data and desktop assets are verified lazy ZIP archives
+at `/usr/share/espeak-ng-data` and `/usr/share/kandelo`; ordinary file reads
+fetch the complete archive on first use and inflate members as needed. The
+rootfs's `/usr/share/misc/magic` is a standalone lazy file, fetched when
+`file` loads its database. The browser's ordinary and grouped deployments and
+the Node resolver map these image-owned references to the same package bytes.
+The shell also defers both CA bundle paths to the verified
+`ca-certificates.zip` data package. They remain separate guest files:
+replacing the browser session's `/etc/ssl/certs/ca-certificates.crt`
+does not change `/etc/ssl/cert.pem`. The base rootfs still embeds its
+trust roots. Terminal definitions and libinput device quirks remain
+eager.
+
+The shell, CA data, and new login packages are pending publication while
+this change is under review. Their `commit = "UNPUBLISHED"` placeholders
+must be stamped with the truthful producer commit before release.
+Changes to the base image, shell composition, or terminal declaration
+rebuild the reverse-dependent image closure:
 
 - `rootfs` revision 11;
 - `shell` revision 29;
@@ -341,11 +355,14 @@ What each producer step does to keep its bytes a function of its inputs:
   second (`dynamic_members.revalidate`), which the file-cache loader never
   reads. The PHP recipe (`packages/registry/php/build-php.sh`, "Upstream
   reproducibility defect") clears those fields and the header's padding in
-  the serialized copy, so the prewarm is reproducible in both validation
-  modes. `host/test/opcache-prewarm.test.ts` ("writes byte-identical cache
+  the serialized copy and zeroes the file-cache persistence arena (matching
+  upstream's shared-memory path), so allocator padding cannot leak into
+  cache files. It also clears the unused user-function argument-default field
+  in the serialized copy; actual defaults remain in their bytecode. The
+  prewarm is reproducible in both validation modes. `host/test/opcache-prewarm.test.ts` ("writes byte-identical cache
   files when run again later") runs the prewarm twice, more than a second
   apart, and requires identical `.bin` files; it fails against the unpatched
-  `opcache.so`. Opcache also records each source file's mtime, and a runtime
+  OPcache implementation (built into PHP since 8.5). OPcache also records each source file's mtime, and a runtime
   with `opcache.validate_timestamps=1` (`nginx-php-vfs`) unlinks any entry
   whose recorded mtime differs from the shipped file's; "writes entries a
   timestamp-validating runtime accepts" in the same file covers that.
@@ -582,6 +599,8 @@ files = ["share/runtime-data.bin"]                   # other runtime data
 
 - `archive` requires a nonzero 64-character lowercase SHA-256 and a supported
   archive suffix. Query strings and fragments do not affect suffix detection.
+  Executable PHP archives (`.phar`) are staged intact as `source.phar` so
+  PHP can verify their signatures at runtime; member exclusions are unsupported.
 - `repository` requires the all-zero SHA sentinel. Its source-only identity is
   the declared `build.toml.inputs` closure from the current repository, not a
   Git branch, `HEAD`, or `build.toml.commit`.

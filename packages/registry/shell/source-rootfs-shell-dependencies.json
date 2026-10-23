@@ -7,6 +7,11 @@
       "role": "base-image"
     },
     {
+      "name": "ca-certificates",
+      "version": "0.1.0",
+      "role": "lazy-archive"
+    },
+    {
       "name": "bash",
       "version": "5.2.37",
       "role": "eager-program"
@@ -78,8 +83,13 @@
     },
     {
       "name": "php",
-      "version": "8.3.15",
+      "version": "8.5.12",
       "role": "lazy-file"
+    },
+    {
+      "name": "composer",
+      "version": "2.10.3",
+      "role": "lazy-archive"
     },
     {
       "name": "gzip",
