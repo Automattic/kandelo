@@ -986,8 +986,8 @@ const SIGSEGV = 11;
  *  glue after Rust has already committed process death (see
  *  killAllBlockedForTeardown and borrowed-process completion below). It is never
  *  delivered as a catchable guest signal, so the glue treats it unambiguously.
- *  [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — part of the workaround; see
- *  docs/jsc-terminate-atomics-wait-workaround.md. */
+ *  [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+ *  Part of the workaround; see docs/jsc-terminate-atomics-wait-workaround.md. */
 const SIGKILL = 9;
 
 /** Ioctl syscall number */
@@ -11332,6 +11332,7 @@ export class CentralizedKernelWorker {
     const mem = new Uint8Array(memory.buffer);
     let len = 0;
     while (len < maxLen && ptr + len < mem.length && mem[ptr + len] !== 0) len++;
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // TextDecoder.decode() rejects views over SharedArrayBuffer in Chrome;
     // copy into a non-shared scratch first.
     const copy = new Uint8Array(len);
@@ -15559,17 +15560,19 @@ export class CentralizedKernelWorker {
   /**
    * Host-teardown reclamation.
    *
-   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
-   * is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+   * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+   * WORKAROUND, remove when the engine bug is fixed; see
+   * docs/jsc-terminate-atomics-wait-workaround.md.
    *
-   * On JSC (Safari, and Bun via `bun`'s JavaScriptCore), `Worker.terminate()`
-   * cannot kill (or free the memory of) a worker parked in `Atomics.wait` on
-   * its syscall channel — which is where every idle/blocked process worker sits
-   * (accept, read, poll, select, sleep, futex, the channel round-trip).
-   * Terminating them directly leaks their threads + committed working set, so
-   * each image switch accumulates a whole machine and the tab OOMs. V8 (Chrome,
-   * Node) interrupts the wait on terminate and reclaims, so this is a no-op cost
-   * there and is invoked unconditionally by both host entries for parity.
+   * Where the defect is present (Bun today; older WebKit and Safari builds, see
+   * the registry entry), `Worker.terminate()` cannot kill (or free the memory
+   * of) a worker parked in `Atomics.wait` on its syscall channel — which is
+   * where every idle/blocked process worker sits (accept, read, poll, select,
+   * sleep, futex, the channel round-trip). Terminating them directly leaks
+   * their threads + committed working set, so each image switch accumulates a
+   * whole machine and the tab OOMs. V8 (Chrome, Node) interrupts the wait on
+   * terminate and reclaims, so this is a no-op cost there and is invoked
+   * unconditionally by both host entries for parity.
    *
    * For every worker currently parked at CH_PENDING we complete its syscall
    * with EINTR AND queue a SIGKILL into the channel signal slot. The glue's
@@ -15690,20 +15693,24 @@ export class CentralizedKernelWorker {
    * so it runs the guest glue's cooperative `kernel_exit` and returns to its JS
    * event loop, where a subsequent `Worker.terminate()` can actually reclaim it.
    *
-   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] `terminate_process` (host force-kill; how
-   * a terminal session's process is torn down on every machine switch) used to
-   * hard-terminate the worker while it was still parked in `Atomics.wait`. On
-   * JavaScriptCore (Safari, Bun) `Worker.terminate()` cannot reap an
-   * `Atomics.wait`-parked worker, so its OS thread + committed working set
-   * leaked — one per switch, until Safari/iOS OOMed. `killAllBlockedForTeardown`
-   * fixes the same class at whole-machine destroy, but is unusable for a single
-   * `kill(pid)` because it wakes (and thus exits) *every* live process. This
-   * variant is scoped so sibling processes keep running (e.g. tearing down one
-   * of several servers). Delivering SIGKILL through the ordinary signal path is
-   * not sufficient: it only wakes *registered* blockers (signal-waits, futex,
-   * wait4, pipe readers), never a channel merely parked at `CH_PENDING` on a
-   * blocked `read`/`accept`. The wake must be driven off `CH_STATUS`, exactly as
-   * the global method does. See docs/jsc-terminate-atomics-wait-workaround.md.
+   * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+   * `terminate_process` (host force-kill; how a terminal session's process is
+   * torn down on every machine switch) used to hard-terminate the worker while
+   * it was still parked in `Atomics.wait`. On Playwright webkit-2336
+   * (2026-09) the app then leaked one `WebCore: Worker` thread per switch,
+   * sampled in `operationMemoryAtomicWait32`, until this per-process wake was
+   * added. The standalone reduction was flat on that same build, so whether
+   * that leak was this engine defect or had another cause is unresolved (see
+   * the entry). Bun 1.3.3 reproduces the reduction today.
+   * `killAllBlockedForTeardown` fixes the same class at whole-machine destroy,
+   * but is unusable for a single `kill(pid)` because it wakes (and thus exits)
+   * *every* live process. This variant is scoped so sibling processes keep
+   * running (e.g. tearing down one of several servers). Delivering SIGKILL
+   * through the ordinary signal path is not sufficient: it only wakes
+   * *registered* blockers (signal-waits, futex, wait4, pipe readers), never a
+   * channel merely parked at `CH_PENDING` on a blocked `read`/`accept`. The
+   * wake must be driven off `CH_STATUS`, exactly as the global method does. See
+   * docs/jsc-terminate-atomics-wait-workaround.md.
    */
   killBlockedProcessForTeardown(pid: number): Promise<Set<number>> {
     if (this.#kernelFatalError !== null) {
@@ -15920,7 +15927,7 @@ export class CentralizedKernelWorker {
 
   /** Complete a blocked channel with EINTR and queue SIGKILL so the guest glue
    *  runs its cooperative exit. See {@link killAllBlockedForTeardown}.
-   *  [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — see
+   *  [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK] — see
    *  docs/jsc-terminate-atomics-wait-workaround.md. */
   private wakeChannelForTeardownExit(
     channel: ChannelInfo,
@@ -22132,6 +22139,7 @@ export class CentralizedKernelWorker {
       path = resolvedPath.value;
     }
 
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // .slice copies into a regular ArrayBuffer (TextDecoder rejects SAB views).
     const blobBytes = processMem.slice(
       checkedBlobPtr,
@@ -23040,6 +23048,7 @@ export class CentralizedKernelWorker {
     while (ptr + len < mem.length && mem[ptr + len] !== 0 && len < maxLen) {
       len++;
     }
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // .slice() copies from SharedArrayBuffer into a regular ArrayBuffer
     // because TextDecoder.decode() doesn't accept SharedArrayBuffer views.
     return new TextDecoder().decode(mem.slice(ptr, ptr + len));
@@ -23069,6 +23078,7 @@ export class CentralizedKernelWorker {
     }
 
     return {
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // .slice() copies from SharedArrayBuffer for TextDecoder compatibility.
       value: new TextDecoder().decode(mem.slice(ptr, ptr + byteLength)),
     };
@@ -23136,6 +23146,7 @@ export class CentralizedKernelWorker {
         return { errno: E2BIG };
       }
 
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // .slice() copies from SharedArrayBuffer for TextDecoder compatibility.
       values.push(new TextDecoder().decode(mem.slice(strPtr, strPtr + byteLength)));
     }
@@ -28021,6 +28032,7 @@ export class CentralizedKernelWorker {
       let end = pathPtr;
       while (end < limit && memory[end] !== 0) end++;
       if (end === limit) return { kind: "error", errno: ENAMETOOLONG };
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // Chrome's TextDecoder rejects views backed by SharedArrayBuffer. Copy
       // the guest pathname into ordinary host memory before decoding.
       const pathBytes = new Uint8Array(end - pathPtr);

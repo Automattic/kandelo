@@ -593,6 +593,39 @@ __attribute__((import_module("kernel"), import_name("kernel_exit")))
 _Noreturn void kernel_exit(int32_t status);
 
 /*
+ * [RUNTIME-WORKAROUND: JSC-BLOCKED-WAIT-GC-STARVATION] Heap safepoint for
+ * engines that may keep a blocked thread's heap access.
+ *
+ * WHY (suspected cause, not a confirmed WebKit defect): JavaScriptCore
+ * (Safari, Bun) appears not to release a worker's heap access while it is
+ * blocked in memory.atomic.wait32. A garbage collection that began in this
+ * worker's JavaScript VM before it blocked would then be handed back to this
+ * thread, and could not finish until this thread runs JavaScript that reaches
+ * an allocation slow path. Until then it would pin the engine's shared GC
+ * helper threads, which stalls collection in every other worker: the
+ * kernel's, and those of exiting processes whose memory can then never be
+ * released. A machine with idle processes deadlocks. The deadlock and the
+ * effect of the safepoint are measured (docs/browser-support.md); the helper
+ * pinning is established only by a manual stack sample, so the cause stays
+ * suspected until a standalone repro judges itself.
+ *
+ * Each wait is therefore bounded. After a timeout, the host's
+ * kernel_heap_safepoint import allocates from JavaScript so the VM can finish
+ * that collection, and returns the next bound in nanoseconds, or a negative
+ * value when its engine needs no safepoints. The first bound applies before
+ * the host has answered; after a negative answer every wait in this image is
+ * unbounded again. See docs/browser-support.md, "JavaScriptCore garbage
+ * collection and blocked workers".
+ */
+__attribute__((import_module("kernel"), import_name("kernel_heap_safepoint")))
+int64_t kernel_heap_safepoint(void);
+
+#define HEAP_SAFEPOINT_FIRST_BOUND_NS 100000000LL
+
+/* Shared by this image's threads; any thread may store the host's answer. */
+static int64_t heap_safepoint_bound_ns = HEAP_SAFEPOINT_FIRST_BOUND_NS;
+
+/*
  * Complete one ordinary guest-owned channel request after a host import that
  * performed channel work in JavaScript. Those host-owned completions leave
  * caught signals kernel-pending because they cannot invoke this file's signal
@@ -716,8 +749,8 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
 
     /* Cooperative hard-exit for host teardown.
      *
-     * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
-     * is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+     * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND,
+     * remove when the engine bug is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
      *
      * SIGKILL is never delivered to the guest in normal operation — it is
      * uncatchable, so the kernel enforces its default terminate action itself
@@ -727,10 +760,14 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
      *
      * We must reach the exit path that ends in a wasm trap so the worker
      * returns to its JS event loop and the host can actually reclaim it. This
-     * matters because on JSC (Safari, and Bun) Worker.terminate() cannot free a
+     * matters because on some JSC builds Worker.terminate() does not free a
      * worker parked in Atomics.wait on the syscall channel — the state every
-     * blocked process worker sits in. (V8 — Chrome, Node — reclaims such workers
-     * on terminate, so this path is simply never exercised there.)
+     * blocked process worker sits in. Measured scope: reproduces on Bun 1.3.3;
+     * Playwright WebKit build 2311 reproduced and build 2359 does not; released
+     * Safari is unchecked (see
+     * tests/runtime-workarounds/JSC-TERMINATE-ATOMICS-WAIT-LEAK). V8 (Chrome,
+     * Node) reclaimed such workers on terminate in the same probe, so this path
+     * is not needed there.
      *
      * Crucially we do NOT call musl _exit() here: on this port _exit() issues
      * SYS_exit_group over the channel (which returns normally) and then spins
@@ -739,9 +776,10 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
      * the kernel_exit import directly. worker-main services the SYS_EXIT, then
      * the _Noreturn import is followed by an `unreachable` trap that worker-main
      * catches as a clean exit, unwinding the wasm and idling the worker so the
-     * host terminate() can reclaim its thread + memory. Without this, each image
-     * switch leaks a machine's worth of un-killable worker threads and Safari
-     * OOMs. */
+     * host terminate() can reclaim its thread + memory. Without this, on an
+     * affected runtime each image switch leaks a machine's worth of
+     * un-killable worker threads; that is how Safari ran out of memory in
+     * July 2026 (PR #863). */
     if (signum == SIGKILL) {
         extern _Noreturn void kernel_exit(int32_t status)
             __attribute__((import_module("kernel"), import_name("kernel_exit")));
@@ -1754,7 +1792,13 @@ restart_wait_syscall:
      * shadow stack, where cross-thread memory writes can corrupt it.
      * Reading from the global (a per-instance register) is immune. */
     {
+        /* [RUNTIME-WORKAROUND: JSC-BLOCKED-WAIT-GC-STARVATION] The wait is
+         * bounded so a JavaScriptCore VM can finish a collection it is
+         * suspected to have handed to this blocked thread; see the comment
+         * at kernel_heap_safepoint. */
         int wait_ret;
+        int64_t bound = __atomic_load_n(&heap_safepoint_bound_ns,
+                                        __ATOMIC_RELAXED);
         do {
             uintptr_t addr;
             __asm__ volatile(
@@ -1763,8 +1807,16 @@ restart_wait_syscall:
                 : "=r"(addr)
             );
             wait_ret = __builtin_wasm_memory_atomic_wait32(
-                (int32_t *)(uintptr_t)(addr + CH_STATUS), CH_PENDING, -1);
-        } while (wait_ret == 0);
+                (int32_t *)(uintptr_t)(addr + CH_STATUS), CH_PENDING,
+                bound > 0 ? bound : -1);
+            /* 2 = timed out with the request still pending: let the host's
+             * VM finish a collection, then keep waiting. */
+            if (wait_ret == 2) {
+                bound = kernel_heap_safepoint();
+                __atomic_store_n(&heap_safepoint_bound_ns, bound,
+                                 __ATOMIC_RELAXED);
+            }
+        } while (wait_ret != 1);
     }
 
     /* Read result — re-read base from global for safety */

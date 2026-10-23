@@ -4,7 +4,7 @@
  * `killAllBlockedForTeardown` + the host `handleDestroy` wake/drain path on
  * both engines. See docs/jsc-terminate-atomics-wait-workaround.md.
  *
- * [JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+ * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
  *
  * The actual memory/thread reclamation (which only JSC gets wrong) is only
  * measurable out-of-process via RSS (Playwright). What we assert here is the

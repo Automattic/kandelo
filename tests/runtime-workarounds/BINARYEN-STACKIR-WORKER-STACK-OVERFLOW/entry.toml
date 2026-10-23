@@ -1,0 +1,16 @@
+id = "BINARYEN-STACKIR-WORKER-STACK-OVERFLOW"
+kind = "bug"
+status = "suspected"
+runtimes = ["wasm-opt"]
+summary = "Suspected: Binaryen's recursive StackIR writer overflows macOS's small native worker stacks on large instrumented LLVM functions (may be a host-tool stack limit, not a defect)"
+reports = "human-only"
+
+# No [[repro]]: no standalone reduction exists yet (see entry.md).
+
+[[sites_without_tags]]
+path = "packages/registry/clang/build-clang.sh"
+note = "Build script; a comment here would change the package's cache key (the script is a declared input) and force an unneeded rebuild, so it is listed here until the file is next edited for another reason. The site exports BINARYEN_CORES=1 before the post-link wasm-opt step."
+
+[[sites_without_tags]]
+path = "docs/porting-guide.md"
+note = "Prose describing BINARYEN_CORES=1 as the diagnosed-case remedy; prose is not a code site."

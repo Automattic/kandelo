@@ -311,13 +311,17 @@ export class ForkHostImportOwnerRuntime {
 export class ForkHostImportOwnerWorker {
   readonly init: ForkHostImportWorkerInit;
   private closed = false;
+  private endpoint: ForkExternrefImportOwnerEndpoint | undefined;
+  private readonly workerBinding: ForkExternrefImportBinding;
 
   constructor(
-    private readonly endpoint: ForkExternrefImportOwnerEndpoint,
+    endpoint: ForkExternrefImportOwnerEndpoint,
     private readonly exceptionCapabilities:
       ForkWorkerExceptionCapabilityOwner,
     ownerImports: readonly ForkOwnerImportWireRegistration[],
   ) {
+    this.endpoint = endpoint;
+    this.workerBinding = endpoint.binding;
     this.init = Object.freeze({
       mailbox: endpoint.mailbox,
       senderId: endpoint.binding.senderId,
@@ -326,21 +330,26 @@ export class ForkHostImportOwnerWorker {
   }
 
   get binding(): ForkExternrefImportBinding {
-    return this.endpoint.binding;
+    return this.workerBinding;
   }
 
   dispatch(wake: ForkExternrefImportWake): boolean {
-    if (this.closed) return false;
+    const endpoint = this.endpoint;
+    if (this.closed || !endpoint) return false;
     // This method is called only by the listener attached to this exact Worker
     // object; pass that independently observed binding into the core endpoint.
-    return this.endpoint.dispatch(wake, this.endpoint.binding);
+    return endpoint.dispatch(wake, endpoint.binding);
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.exceptionCapabilities.clearBinding(this.endpoint.binding);
-    this.endpoint.close();
+    this.exceptionCapabilities.clearBinding(this.workerBinding);
+    this.endpoint!.close();
+    // The authorization callback captures the exact process generation and
+    // its Memory. A closed Worker handle may outlive that generation, so its
+    // endpoint must stop retaining those callbacks when authority ends.
+    this.endpoint = undefined;
   }
 }
 

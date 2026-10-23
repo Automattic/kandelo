@@ -147,11 +147,17 @@ fn sdk_kernel_contract(sysroot: &Path) -> Result<KernelContract, String> {
     let value = |value: &abi::ProgramArtifactValueType| match value {
         abi::ProgramArtifactValueType::I32 => wasmparser::ValType::I32,
         abi::ProgramArtifactValueType::I64 => wasmparser::ValType::I64,
-        _ => unreachable!("kernel_fork has scalar arguments"),
+        _ => unreachable!("glue-declared kernel imports have scalar signatures"),
     };
     contract.entry(fork.name.into()).or_default().insert((
         fork.params.iter().map(value).collect(),
         fork.results.iter().map(value).collect(),
+    ));
+    // The bounded syscall wait in the same file calls this import.
+    let safepoint = abi::HEAP_SAFEPOINT_PROCESS_IMPORT;
+    contract.entry(safepoint.name.into()).or_default().insert((
+        safepoint.params.iter().map(value).collect(),
+        safepoint.results.iter().map(value).collect(),
     ));
     Ok(contract)
 }

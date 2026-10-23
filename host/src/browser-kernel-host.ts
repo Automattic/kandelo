@@ -65,7 +65,8 @@ import type { PcmOutputState } from "./audio/pcm-driver";
 
 // Allow the worker to drain exec retirement (5s), blocked guests (1.5s),
 // framebuffer acknowledgements and PCM (2s each) before terminating its realm.
-// Cutting cleanup short can strand Atomics.wait-blocked children on JSC.
+// Cutting cleanup short can strand Atomics.wait-blocked children on runtimes
+// whose terminate() cannot reclaim them (older WebKit and Safari builds).
 const DESTROY_REQUEST_TIMEOUT_MS = 15_000;
 const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
 const MAX_PENDING_PTY_OUTPUT_CHUNKS = 4_096;

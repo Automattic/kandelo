@@ -73,6 +73,7 @@ Core validation surface:
 |---|---|---|
 | Workspace Rust tests | `cargo test --workspace --exclude xtask --target <host-target>` | Any change under `crates/`: kernel, fork-instrument, shared, wasm-local-root-spill, and future workspace crates. `--target` is required because the default wasm32 target has no host runner; xtask has its own always-run suite. |
 | Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename |
+| Runtime workaround repros | `scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh runtime-workarounds` | Whether each confirmed outside defect still reproduces (registry: `tests/runtime-workarounds/`). Run it in the dev shell: the Bun repros judge the dev shell's pinned Bun version. |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
 | Browser native filesystem contracts | `cd apps/browser-demos && npx playwright test test/native-rootfs-lazy.spec.ts test/rootfs-inspection.spec.ts --project=chromium --project=firefox --project=webkit` | Native lazy fetch/read/exec and live filesystem inspection, including Safari/WebKit |
@@ -85,7 +86,7 @@ Core validation surface:
 For CI-shaped local runs, prefer:
 
 ```bash
-bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-workspace|cargo-xtask|vitest|browser|libc|posix|sortix> [group]
+bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-workspace|cargo-xtask|runtime-workarounds|vitest|browser|libc|posix|sortix> [group]
 ```
 
 When adding a Vitest file, update `scripts/ci-vitest-evidence-classes.tsv`.

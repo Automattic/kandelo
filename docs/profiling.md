@@ -384,8 +384,11 @@ removed after the run.
 Build requirements: `cmake` and the `wasm32posix-cc` / `wasm64posix-cc` SDK
 supplied through the declared development shell. The build is a two-phase
 cross-compilation (host build for code generators, then wasm cross-compile).
-The wasm64 build uses `-O1` instead of `-O2` to avoid an LLVM 21 wasm64 backend
-miscompilation in table-lookup sign-extension. A missing declared tool is a
+The wasm64 build uses `-O1` instead of `-O2` because of a suspected, unverified
+LLVM 21 wasm64 backend miscompilation in table-lookup sign-extension (no
+standalone reduction yet; see the registry entry
+[`LLVM-WASM64-O2-TABLE-SIGNEXT-MISCOMPILE`](../tests/runtime-workarounds/LLVM-WASM64-O2-TABLE-SIGNEXT-MISCOMPILE/entry.md)).
+A missing declared tool is a
 reported environment block, not permission to use an undeclared host binary.
 
 #### Checkout location does not change the numbers

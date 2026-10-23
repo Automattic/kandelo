@@ -28,7 +28,7 @@ activate_ci_test_workspace
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
-    echo "usage: $0 <cargo-workspace|cargo-xtask|vitest|browser|libc|posix|sortix> [group]" >&2
+    echo "usage: $0 <cargo-workspace|cargo-xtask|runtime-workarounds|vitest|browser|libc|posix|sortix> [group]" >&2
     exit 2
 fi
 group="${2:-${TEST_GROUP:-all}}"
@@ -670,6 +670,31 @@ case "$suite" in
         cargo test -p xtask --target "$HOST_TARGET" -- \
             "${disabled_software_cargo_test_args[@]}"
         ;;
+    runtime-workarounds)
+        # Does each confirmed outside-runtime defect still reproduce? Runs
+        # the registry's standalone reproductions (tests/runtime-workarounds/)
+        # in the runtimes installed on this machine and compares each verdict
+        # with its entry.toml. The driver imports Playwright from
+        # apps/browser-demos and needs its browsers installed.
+        install_node_deps
+        (
+            cd apps/browser-demos
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            # chromium is what driver.test.mjs drives; firefox and webkit are
+            # the other engines registry entries target. An engine that is
+            # missing would otherwise surface as "could not launch" verdicts.
+            if [ "$(uname -s)" = "Linux" ]; then
+                run_timed 30m "Install Playwright browsers" \
+                    env PATH="/usr/bin:/bin:$PATH" \
+                    npx playwright install --with-deps chromium firefox webkit
+            else
+                run_timed 30m "Install Playwright browsers" \
+                    npx playwright install chromium firefox webkit
+            fi
+        )
+        node --test tests/runtime-workarounds/driver.test.mjs
+        cargo run -p xtask --target "$(host_target)" --quiet -- runtime-workarounds run
+        ;;
     vitest)
         if [ "$group" = "exact-abi-source" ]; then
             install_node_deps
@@ -846,10 +871,14 @@ case "$suite" in
                 )
             done
         fi
-        # [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Re-run the teardown-reclamation tests
-        # on JSC (Bun) as well as V8, since the workaround exists for JSC (Safari
-        # and Bun) and is a no-op on V8. `bun` comes from the flake dev shell.
+        # [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+        # Re-run the teardown-reclamation tests on JSC (Bun) as well as V8,
+        # since the workaround exists for JSC (Safari and Bun) and is a no-op
+        # on V8. `bun` comes from the flake dev shell.
         # See docs/jsc-terminate-atomics-wait-workaround.md.
+        # The heap-safepoint test runs here too: only JSC receives repeated
+        # bounded waits (docs/browser-support.md, "JavaScriptCore garbage
+        # collection and blocked workers").
         # WHY: this is a separate cross-runtime check, not part of Vitest's V8
         # partition. Run it on one shard so CI retains the check exactly once.
         if [ "$group" = "all" ] || [ "$group" = "1/2" ]; then
@@ -857,7 +886,8 @@ case "$suite" in
                 cd host
                 KANDELO_VITEST_RUNTIME=bun bun x --bun vitest run \
                     test/teardown-reclaim.test.ts \
-                    test/pthread.test.ts
+                    test/pthread.test.ts \
+                    test/heap-safepoint.test.ts
             )
         fi
         ;;

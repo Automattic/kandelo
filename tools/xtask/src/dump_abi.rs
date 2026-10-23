@@ -2587,6 +2587,14 @@ fn render_ts_module() -> String {
         render_ts_program_artifact_types(process_fork_import.params),
         render_ts_program_artifact_types(process_fork_import.results),
     ));
+    let heap_safepoint_import = shared::abi::HEAP_SAFEPOINT_PROCESS_IMPORT;
+    out.push_str(&format!(
+        "export const HEAP_SAFEPOINT_PROCESS_IMPORT = {{ module: {:?}, name: {:?}, params: {}, results: {} }} as const;\n",
+        heap_safepoint_import.module,
+        heap_safepoint_import.name,
+        render_ts_program_artifact_types(heap_safepoint_import.params),
+        render_ts_program_artifact_types(heap_safepoint_import.results),
+    ));
     out.push_str(
         "/** The `env` imports the host supplies to user programs (besides the fork runtime's). */\n",
     );
@@ -7497,10 +7505,22 @@ fn program_artifact() -> Value {
     fork.insert("required_exports".into(), Value::Array(exports));
     fork.insert("required_imports".into(), Value::Array(imports));
 
+    let heap_safepoint = shared::abi::HEAP_SAFEPOINT_PROCESS_IMPORT;
+    let mut heap_safepoint_import: JsonMap = BTreeMap::new();
+    heap_safepoint_import.insert("kind".into(), json!("func"));
+    heap_safepoint_import.insert("module".into(), json!(heap_safepoint.module));
+    heap_safepoint_import.insert("name".into(), json!(heap_safepoint.name));
+    heap_safepoint_import.insert("params".into(), value_types(heap_safepoint.params));
+    heap_safepoint_import.insert("results".into(), value_types(heap_safepoint.results));
+
     let mut artifact: JsonMap = BTreeMap::new();
     artifact.insert(
         "fork_instrumentation".into(),
         Value::Object(fork.into_iter().collect()),
+    );
+    artifact.insert(
+        "heap_safepoint_import".into(),
+        Value::Object(heap_safepoint_import.into_iter().collect()),
     );
     Value::Object(artifact.into_iter().collect())
 }
@@ -8790,6 +8810,16 @@ mod tests {
             })
         );
         assert_eq!(fork["process_modes"], json!({"fork": 0, "vfork": 1}));
+        assert_eq!(
+            artifact["heap_safepoint_import"],
+            json!({
+                "kind": "func",
+                "module": "kernel",
+                "name": "kernel_heap_safepoint",
+                "params": [],
+                "results": ["i64"]
+            })
+        );
         let descriptor = &fork["linked_frame_descriptor"];
         assert_eq!(
             descriptor["section"],
