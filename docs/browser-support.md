@@ -3079,13 +3079,18 @@ return:
   waiting for a syscall answer waits forever.
 
 On the WordPress + MariaDB machine in Playwright's WebKit this hung the
-machine after one to five terminal commands. Stack samples showed all six
-helpers in `SlotVisitor::drainFromShared`, collector threads in
+machine within the first few terminal commands (4 of 4 runs stopped after
+the first). Stack samples showed all six helpers in
+`SlotVisitor::drainFromShared`, six collector threads in
 `drainInParallelPassively`, four exiting workers in
 `lastChanceToFinalize`, and the kernel in `Heap::waitForCollection`. With
-JavaScriptCore's helper threads disabled (`JSC_numberOfGCMarkers=1`) or
-concurrent collection off (`JSC_useConcurrentGC=false`), the same run
-passed every command. Web content cannot change either option.
+JavaScriptCore's helper threads disabled (`JSC_numberOfGCMarkers=1`), the
+same 20-command run passed twice. Web content cannot change that option.
+With the workaround below, every run that booted completed all 20
+commands (5 of 5; a sixth crashed during boot from the separate
+[TextDecoder defect](#webkit-page-process-crash-while-creating-textdecoders)
+before its mitigation), and the WebKit cases of
+`apps/browser-demos/test/php-web-image-cli.spec.ts` passed 9 of 9.
 
 **Workaround.** On JavaScriptCore each syscall wait is bounded at 100 ms.
 After a timeout the glue calls the host import `kernel.kernel_heap_safepoint`
@@ -3117,9 +3122,10 @@ WebKit page process could crash with `SIGSEGV` in
 `cacheWrapper<TextDecoder>` while JavaScript constructed a `TextDecoder`.
 The faulting addresses were data-like (for example `0x0403020100000008`),
 so a table WebKit uses to track the worker's DOM wrappers had been
-corrupted. JavaScript cannot corrupt WebKit's native heap. In every crash
-report the faulting thread was the newest worker, handling its first
-message in interpreted code, which is a Kandelo process starting.
+corrupted. JavaScript cannot corrupt WebKit's native heap. In 24 of 25
+crash reports the faulting thread was the newest worker, handling its first
+message in interpreted code, which is a Kandelo process starting; in the
+other it was the kernel worker.
 
 The trigger was the burst of wrappers a process start created. The host
 parsed each program's export and import names with a new `TextDecoder` per
