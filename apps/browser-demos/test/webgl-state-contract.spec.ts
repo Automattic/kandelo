@@ -13,6 +13,7 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     const { GlContextRegistry } = await import(base + "registry.ts");
     const { GlMuxer } = await import(base + "muxer.ts");
     const { decodeAndDispatch } = await import(base + "bridge.ts");
+    const { runGlQuery } = await import(base + "query.ts");
     const ops = await import(base + "ops.ts");
     const canvas = document.createElement("canvas");
     canvas.width = canvas.height = 16;
@@ -91,11 +92,25 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     send(bindings[0], ops.OP_PIXEL_STOREI, [gl.UNPACK_SKIP_ROWS,2]);
     send(bindings[0], ops.OP_PIXEL_STOREI, [gl.UNPACK_SKIP_PIXELS,1]);
     const observations = [];
+    const nameQueries: number[][] = [];
+    const objectQuery = (b: typeof bindings[0], pname: number, float = false) => {
+      const request = new Uint8Array(4), reply = new Uint8Array(4);
+      new DataView(request.buffer).setUint32(0, pname, true);
+      const count = runGlQuery(b, float ? ops.QOP_GET_FLOATV : ops.QOP_GET_INTEGERV, request, reply);
+      if (count !== 4) throw new Error(`object query failed: ${count}`);
+      return float ? new DataView(reply.buffer).getFloat32(0, true)
+        : new DataView(reply.buffer).getInt32(0, true);
+    };
     for (const index of [0,1,0,1,0,1]) {
       const b = bindings[index];
       send(b, ops.OP_DRAW_ARRAYS, [gl.TRIANGLES,0,3]);
       const pixels = new Uint8Array(4);
       gl.readPixels(8,8,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
+      send(b, ops.OP_ACTIVE_TEXTURE, [gl.TEXTURE0]);
+      const texture2d = objectQuery(b, gl.TEXTURE_BINDING_2D);
+      send(b, ops.OP_ACTIVE_TEXTURE, [gl.TEXTURE1]);
+      nameQueries.push([texture2d, objectQuery(b, gl.TEXTURE_BINDING_CUBE_MAP, true),
+        objectQuery(b, gl.CURRENT_PROGRAM, true), objectQuery(b, gl.ARRAY_BUFFER_BINDING)]);
       observations.push({ index, rgba: [...pixels], dither: gl.isEnabled(gl.DITHER),
         rowLength: gl.getParameter(gl.UNPACK_ROW_LENGTH),
         skipRows: gl.getParameter(gl.UNPACK_SKIP_ROWS),
@@ -130,11 +145,12 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     // These objects belong to this short-lived test realm.
     gl.deleteBuffer(vertices); gl.deleteProgram(program);
     gl.deleteShader(vertex); gl.deleteShader(fragment);
-    return { observations, physicalStatePreserved, importedPixels: [...importedPixels], importError };
+    return { observations, nameQueries, physicalStatePreserved, importedPixels: [...importedPixels], importError };
   }, root);
   expect(result.physicalStatePreserved).toBe(true);
   expect(result.importedPixels).toEqual([17,29,41,255]);
   expect(result.importError).toBe(0);
+  expect(result.nameQueries).toEqual(Array(6).fill([1,2,1,1]));
   for (const observation of result.observations) {
     const first = observation.index === 0;
     expect(observation).toEqual({ index: observation.index,

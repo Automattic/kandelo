@@ -274,3 +274,19 @@ skips. Its initial 35-pass/one-fail run reproduced an existing roster assertion
 that omitted Freeciv before the cage/sway additions. The assertion now pins
 the complete existing order plus the two new entries. Logs:
 `.context/graphics-gallery-baseline.log`, `.context/graphics-gallery-fixed.log`.
+
+### Numeric query protocol
+
+Numeric binding queries now translate native buffer, texture, framebuffer,
+renderbuffer and program objects back to guest names for both integer and
+float forms. Host-owned framebuffer redirects report name zero. A vector
+reply must fit completely before writing its destination; the former path
+silently returned a truncated success. Four regressions fail before repair.
+The resulting source selection passes 207 tests in 13 files, with no skips.
+The six rendered browser cases also pass, including ordinary 2D/cube texture,
+program and buffer name queries in all three engines. Image-alias logical
+names, deletion references and numeric conversion rules remain part of the
+open query/object audit; this is not complete GLES query coverage.
+Logs: `.context/graphics-query-shape-baseline.log`,
+`.context/graphics-query-shape-fixed.log`,
+`.context/graphics-query-shape-browser.log`.

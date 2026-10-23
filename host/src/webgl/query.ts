@@ -134,17 +134,13 @@ export function runGlQuery(
     case O.QOP_GET_INTEGERV: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
       const pname = inDv.getUint32(0, true);
-      if (pname === GL_CURRENT_PROGRAM) {
-        outDv.setInt32(0, nameForObject(b.programs, b.currentProgram), true);
-        return 4;
-      }
       if (pname === GL_VIEWPORT) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.viewport, false, pname);
       }
       if (pname === GL_SCISSOR_BOX) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.scissor.rect, false, pname);
       }
-      const value = gl.getParameter(pname);
+      const value = queryParameter(b, pname);
       return writeNumericValues(outDv, out.byteLength, value, false, pname);
     }
 
@@ -158,7 +154,7 @@ export function runGlQuery(
       if (pname === GL_SCISSOR_BOX) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.scissor.rect, true, pname);
       }
-      const value = gl.getParameter(pname);
+      const value = queryParameter(b, pname);
       return writeNumericValues(outDv, out.byteLength, value, true, pname);
     }
 
@@ -363,6 +359,26 @@ function nameForObject<T>(objects: Map<number, T>, object: T | null): number {
   return 0;
 }
 
+/** Native objects never cross the GLES numeric query protocol. Name zero
+ * includes host-owned default-FBO redirects absent from the guest map. */
+function queryParameter(b: GlBinding, pname: number): unknown {
+  if (pname === GL_CURRENT_PROGRAM) return nameForObject(b.programs, b.currentProgram);
+  const value = b.gl!.getParameter(pname);
+  switch (pname) {
+    case 0x8894: // ARRAY_BUFFER_BINDING
+    case 0x8895: // ELEMENT_ARRAY_BUFFER_BINDING (VAO-local)
+      return nameForObject(b.buffers, value as WebGLBuffer | null);
+    case 0x8069: // TEXTURE_BINDING_2D
+    case 0x8514: // TEXTURE_BINDING_CUBE_MAP
+      return nameForObject(b.textures, value as WebGLTexture | null);
+    case 0x8ca6: // FRAMEBUFFER_BINDING
+      return nameForObject(b.fbos, value as WebGLFramebuffer | null);
+    case 0x8ca7: // RENDERBUFFER_BINDING
+      return nameForObject(b.rbos, value as WebGLRenderbuffer | null);
+    default: return value;
+  }
+}
+
 function writeLengthPrefixedString(
   out: Uint8Array,
   outDv: DataView,
@@ -384,7 +400,8 @@ function writeNumericValues(
   pname: number,
 ): number {
   const values = normalizeNumericValues(value, pname);
-  const count = Math.min(values.length, Math.floor(outLen / 4));
+  const count = values.length;
+  if (count > Math.floor(outLen / 4)) return -22;
   for (let i = 0; i < count; i++) {
     if (asFloat) outDv.setFloat32(i * 4, values[i], true);
     else outDv.setInt32(i * 4, values[i] | 0, true);

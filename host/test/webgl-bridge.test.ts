@@ -528,6 +528,36 @@ describe("query handler", () => {
     return { gl, b };
   }
 
+  it.each([O.QOP_GET_INTEGERV, O.QOP_GET_FLOATV])("query %i returns guest object names instead of native objects", (op) => {
+    const { b, gl } = setup();
+    const cases: [number, Map<number, any>][] = [
+      [0x8894, b.buffers], [0x8895, b.buffers], // array/element buffers
+      [0x8069, b.textures], [0x8514, b.textures], // 2D/cube textures
+      [0x8ca6, b.fbos], [0x8ca7, b.rbos],
+    ];
+    for (const [pname, names] of cases) {
+      const object = {};
+      names.set(73, object);
+      gl.getParameter = () => object as any;
+      const request = new Uint8Array(4);
+      new DataView(request.buffer).setUint32(0, pname, true);
+      const reply = new Uint8Array(4);
+      expect(runGlQuery(b, op, request, reply)).toBe(4);
+      expect(op === O.QOP_GET_FLOATV ? new DataView(reply.buffer).getFloat32(0,true)
+        : new DataView(reply.buffer).getInt32(0,true)).toBe(73);
+    }
+  });
+
+  it.each([O.QOP_GET_INTEGERV, O.QOP_GET_FLOATV])("query %i rejects short vector destinations without partial writes", (op) => {
+    const { b, gl } = setup();
+    const request = new Uint8Array(4);
+    new DataView(request.buffer).setUint32(0, 0x0c22, true); // clear color
+    gl.getParameter = () => new Float32Array([0.25,0.5,0.75,1]) as any;
+    const reply = new Uint8Array(12).fill(0xa5);
+    expect(runGlQuery(b, op, request, reply)).toBe(-22);
+    expect([...reply]).toEqual(Array(12).fill(0xa5));
+  });
+
   it("QOP_FINISH finishes the context and writes nothing", () => {
     const { b, gl } = setup();
     expect(runGlQuery(b, O.QOP_FINISH, input([]), out(0))).toBe(0);
