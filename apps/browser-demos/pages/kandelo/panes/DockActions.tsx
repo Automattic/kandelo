@@ -5,7 +5,7 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { useDemoDockActions, useDisplayHandoff, useKernelHost, useStatus } from "../kernel-host/react";
+import { useDemoDockActions, useKernelHost, useStatus } from "../kernel-host/react";
 import type {
   DemoDockCommandConfig,
   DemoDockMenuActionConfig,
@@ -40,8 +40,9 @@ interface Following {
  * when the machine is not running or its image declares no actions.
  *
  * `frameCount` is the display's presented-frame counter. With one, the
- * command's own status lines are shown on the stage until the display is
- * presenting again, because the stage is dark in between. Without one
+ * command's output is followed until the display is presenting again. An
+ * ownerless KMS display returns to the terminal, where that output is visible;
+ * the stage's toasts are only visible when the stage is selected. Without one
  * (null) there is no signal for "running again", so no progress is shown.
  * `readFrameCount` samples the live counter at restart: rendered UI state
  * can lag behind presentations made while the old process was stopping.
@@ -58,7 +59,6 @@ export function useDockActions(
   const host = useKernelHost();
   const status = useStatus();
   const actions = useDemoDockActions();
-  const { begin: beginDisplayHandoff } = useDisplayHandoff();
   const [running, setRunning] = React.useState<{ id: string; phase: DockActionPhase } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [following, setFollowing] = React.useState<Following | null>(null);
@@ -67,15 +67,12 @@ export function useDockActions(
   const baselineRef = React.useRef<number | null>(null);
   const stopFollowingRef = React.useRef<(() => void) | null>(null);
   const followingGenerationRef = React.useRef(0);
-  const releaseHandoffRef = React.useRef<(() => void) | null>(null);
 
   const stopFollowing = React.useCallback(() => {
     followingGenerationRef.current++;
     stopFollowingRef.current?.();
     stopFollowingRef.current = null;
     baselineRef.current = null;
-    releaseHandoffRef.current?.();
-    releaseHandoffRef.current = null;
     setFollowing(null);
   }, []);
   React.useEffect(() => stopFollowing, [stopFollowing]);
@@ -96,9 +93,6 @@ export function useDockActions(
   const run = React.useCallback(async (action: DemoDockCommandConfig, buttonId: string) => {
     if (running !== null) return;
     stopFollowing();
-    // Acquire before stopping: ownership can disappear before "starting".
-    // Only displays with a first-frame signal can follow a replacement.
-    if (frameCountRef.current !== null) releaseHandoffRef.current = beginDisplayHandoff();
     const generation = followingGenerationRef.current;
     setError(null);
     setRunning({ id: buttonId, phase: "stopping" });
@@ -108,6 +102,7 @@ export function useDockActions(
       await runDemoDockAction(host, action, {
         stop,
         onPhase: async (phase) => {
+          // Dispatch may still be waiting on the old prompt during teardown.
           if (followingGenerationRef.current !== generation) throw new Error("Dock action cancelled");
           setRunning({ id: buttonId, phase });
           if (phase !== "starting" || frameCountRef.current === null) return;
@@ -143,7 +138,7 @@ export function useDockActions(
     } finally {
       setRunning(null);
     }
-  }, [host, running, stopFollowing, stop, readFrameCount, beginDisplayHandoff]);
+  }, [host, running, stopFollowing, stop, readFrameCount]);
 
   const controls = React.useMemo(() => {
     if (status !== "running" || actions.length === 0) return null;

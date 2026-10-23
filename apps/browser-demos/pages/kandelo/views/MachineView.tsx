@@ -8,7 +8,6 @@
 import * as React from "react";
 import {
   useDemoGuide,
-  useDisplayHandoff,
   usePresentation,
   useStatus,
   useSurfaceAvailability,
@@ -51,7 +50,6 @@ export function useMachineSurfaceController(): MachineSurfaceController {
   const status = useStatus();
   const presentation = usePresentation();
   const rawAvailability = useSurfaceAvailability();
-  const { pending: displayHandoffPending } = useDisplayHandoff();
   const [kmsOwnerPid, onKmsOwnerChange] = React.useState<number | null>(null);
   React.useEffect(() => {
     if (!rawAvailability.kms) onKmsOwnerChange(null);
@@ -59,16 +57,14 @@ export function useMachineSurfaceController(): MachineSurfaceController {
   const webPreview = useWebPreview();
   const availability = React.useMemo<SurfaceAvailability>(() => ({
     ...rawAvailability,
-    // A dock replacement keeps its stage/progress through the ownerless gap.
-    // Ordinary exits still return the screen and keyboard to the terminal.
-    kms: rawAvailability.kms && (kmsOwnerPid !== null || displayHandoffPending),
+    kms: rawAvailability.kms && kmsOwnerPid !== null,
     // Keep the web surface mounted while a machine is offline/reconnecting so
     // its pane can show that state instead of the view falling back elsewhere.
     web: rawAvailability.web &&
       (webPreview?.status === "running" ||
         webPreview?.status === "offline" ||
         webPreview?.status === "reconnecting"),
-  }), [rawAvailability, kmsOwnerPid, displayHandoffPending, webPreview?.status]);
+  }), [rawAvailability, kmsOwnerPid, webPreview?.status]);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
   const [primaryMode, setPrimaryMode] = React.useState<"following-demo" | "pinned">("following-demo");
   const previousAvailability = React.useRef(availability);

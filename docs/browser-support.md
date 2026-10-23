@@ -2191,15 +2191,11 @@ reopens the surface. Dock replacements stop the actual display owner, even
 when it was launched from a second terminal. Exiting an unrelated process
 leaves it unchanged; a Wayland client exiting does not close its compositor's display.
 
-A dock action that replaces the display owner is a presentation handoff.
-From before stopping the old owner until the replacement's first presented
-frame, the KMS Demo surface remains available and stays selected if the user
-has not switched views. The stage shows the replacement command's progress
-and keeps its dock controls visible. This app-local handoff does not create
-a display owner or change device/input ownership. A returned shell prompt,
-an action error, machine stop, or pane teardown ends the handoff too; without
-an owner, the usual terminal fallback then applies. Ordinary graphical Quit
-never starts a handoff and still restores the terminal and keyboard focus.
+A dock replacement is a real quit followed by a new start. When the old
+owner exits, the terminal becomes selected and Demo is unavailable. The
+terminal shows the replacement script's progress and any errors. Demo and
+its dock controls return when a new process takes display ownership; a
+failed command leaves the terminal visible without a display owner.
 Progress subscribes through `dispatchShellCommand`'s awaited `beforeWrite`
 hook, after the previous command's queue and prompt readiness. The old
 program's returning prompt must not be treated as the replacement exiting.
