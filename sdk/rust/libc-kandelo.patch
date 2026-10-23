@@ -1203,3 +1203,26 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
      ))] {
          mod linux_like;
          pub use self::linux_like::*;
+--- a/src/unix/linux_like/linux/musl/b64/mod.rs
++++ b/src/unix/linux_like/linux/musl/b64/mod.rs
+@@ -18,2 +18,6 @@
+     pub struct sigset_t {
++        // Kandelo uses musl's ILP32 sigset_t, not WALI's b64 layout.
++        #[cfg(all(target_os = "kandelo", target_arch = "wasm32"))]
++        __val: [c_ulong; 32],
++        #[cfg(not(all(target_os = "kandelo", target_arch = "wasm32")))]
+         __val: [c_ulong; 16],
+@@ -88 +92,13 @@
+ }
++
++// Match the SDK's musl signal.h. A shorter mask shifts sa_flags and makes
++// a three-argument SA_SIGINFO handler get invoked as a one-argument handler.
++#[cfg(all(target_os = "kandelo", target_arch = "wasm32"))]
++const _: () = {
++    core::assert!(core::mem::size_of::<crate::sigset_t>() == 128);
++    core::assert!(core::mem::align_of::<crate::sigset_t>() == 4);
++    core::assert!(core::mem::size_of::<crate::sigaction>() == 140);
++    core::assert!(core::mem::offset_of!(crate::sigaction, sa_mask) == 4);
++    core::assert!(core::mem::offset_of!(crate::sigaction, sa_flags) == 132);
++    core::assert!(core::mem::offset_of!(crate::sigaction, sa_restorer) == 136);
++};
