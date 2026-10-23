@@ -61,6 +61,25 @@ describe("a machine's session network without a session", () => {
 });
 
 describe("network sessions on running machines", () => {
+  it("routes multicast through the session wrapper and owns virtual TCP bindings", async () => {
+    const host = machine(); const joiner = machine();
+    const target = receiver();
+    host.runtime.host();
+    await link(host.runtime, joiner.runtime);
+    expect(joiner.network.bindUdp("100:3", any, 5877, target.target)).toBe(0);
+    await vi.waitFor(() => expect(host.runtime.snapshot().bindings).toHaveLength(1));
+    const group = new Uint8Array([238, 255, 0, 1]);
+    expect(host.network.udpSourceAddress(group)).toEqual(ip(1));
+    expect(joiner.network.ownsTcpListener(any)).toBe(true);
+    expect(host.network.sendDatagram({ srcAddr: any, srcPort: 40000, dstAddr: group,
+      dstPort: 5877, data: new Uint8Array([9]) })).toBe(0);
+    await vi.waitFor(() => expect(target.received).toHaveLength(1));
+    expect(target.received[0].srcAddr).toEqual(ip(1));
+    joiner.runtime.leave();
+    expect(joiner.network.ownsTcpListener(any)).toBe(false);
+    expect(joiner.network.udpSourceAddress(group)).toBe(101);
+  });
+
   it("hosts, then assigns a joiner's address while both machines run", async () => {
     const host = machine(); const joiner = machine();
     expect(host.runtime.host()).toBe("10.89.0.1");

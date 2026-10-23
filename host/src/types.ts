@@ -297,12 +297,19 @@ export interface UdpDatagram {
 }
 
 export interface UdpReceiveTarget {
+  /** Kernel-owned receive domain. The kernel validates bind conflicts and
+   * demultiplexes multicast to all matching sockets in this domain. A fabric
+   * delivers each group packet only once per domain, even with reused ports. */
+  readonly kernelReceiver?: string;
   receive(datagram: UdpDatagram): number;
 }
 
 export interface NetworkIO {
   /** IPv4 address owned by this guest network stack, when known. */
   readonly localAddress?: Uint8Array;
+  /** True when this binding belongs to a virtual link. The runtime must not
+   * also open the same port in the physical host's TCP namespace. */
+  ownsTcpListener?(addr: Uint8Array): boolean;
   /**
    * Netmask of the link `localAddress` is on, in network byte order. A
    * stack that reports an address must report its netmask: the kernel
