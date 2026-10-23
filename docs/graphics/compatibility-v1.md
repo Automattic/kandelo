@@ -116,3 +116,26 @@ before dispatch. This is structural validation, not transactional rollback
 of valid GL commands which later encounter GL errors. The source-only WebGL
 selection passed 120 tests in 12 files on 2026-10-23, with no skips.
 Rendered, guest, conformance and complete lifecycle validation remain open.
+
+### KMS integration and nested output validation
+
+The sysfs/netlink and KMS changes were adapted from mho22's `f758e3fe4b`
+and `ea2bae402f`, retaining that author on both derived commits. The
+combined contract uses ABI 52 and fork record version 20. Main's cursor
+references, complete mode catalog and deferred cleanup effects are retained.
+The first integrated DRI selection passed 50 Rust tests after migrating its
+connector lookup to the new device-wide object ID.
+
+Three new regression tests failed on the integrated cage implementation:
+property ID/value pairs, property enum/value pairs, and connector
+mode/encoder/property/value outputs. They now pass after preprobing every
+output before any write. The tests exercise null, full-width invalid and
+end-of-memory addresses in each position, assert unchanged top-level and
+nested bytes, and assert no host writes on failure. Logs:
+`.context/kms-output-baseline-final.log`, `.context/kms-output-fixed.log`.
+This closes the reproduced write-order defect, not the full KMS baseline.
+
+The initial setup job failed during package provisioning; its artifacts are
+not current-tree validation. Sources changed while that job was active,
+so no failure from it is attributed to main or to the candidate without a
+stable-tree reproduction. A full rebuild and broader suites remain required.

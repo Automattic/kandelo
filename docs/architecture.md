@@ -3596,6 +3596,13 @@ devices:
 - `/dev/fb0` remains the simpler framebuffer path for software that writes a
   linear BGRA buffer directly.
 
+KMS now uses device-wide object IDs and framebuffer IDs. Inherited open
+file descriptions share their framebuffer table; the last reference removes
+its entries. Connector and property queries preprobe every nested output
+before writing any of them. The full dynamic mode catalog and cursor path
+remain available. See [the compatibility inventory](graphics/compatibility-v1.md)
+for implementation and validation status.
+
 The kernel owns the device ABI, fd-local GEM handles, DRM-master ownership,
 KMS framebuffer refcounts, BO mmap authorization, and process lifecycle
 cleanup. User programs cannot mmap an arbitrary BO id: the mmap offset must

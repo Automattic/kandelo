@@ -1167,6 +1167,9 @@ fn probe_dri_process_pointer(
     pointer: u64,
     len: usize,
 ) -> Result<u64, Errno> {
+    if len != 0 && pointer == 0 {
+        return Err(Errno::EFAULT);
+    }
     let mut probe: alloc::vec::Vec<u8> = alloc::vec![0u8; len];
     if host.proc_read_bytes(pid, pointer, &mut probe) < 0 {
         return Err(Errno::EFAULT);
@@ -1175,7 +1178,8 @@ fn probe_dri_process_pointer(
 }
 
 fn write_dri_bytes(host: &mut dyn HostIO, pid: i32, pointer: u64, bytes: &[u8]) -> Result<(), Errno> {
-    if pointer == 0 && !bytes.is_empty() {
+    if bytes.is_empty() { return Ok(()); }
+    if pointer == 0 {
         return Err(Errno::EFAULT);
     }
     if host.proc_write_bytes(pid, pointer, bytes) < 0 {
@@ -1194,6 +1198,17 @@ fn write_dri_u64s(host: &mut dyn HostIO, pid: i32, pointer: u64, values: &[u64])
     write_dri_bytes(host, pid, pointer, &bytes)
 }
 
+/// Validate the complete pair even when called by a query with other outputs.
+fn probe_dri_properties(
+    host: &mut dyn HostIO, pid: i32, count: usize, ids: u64, values: u64,
+) -> Result<(), Errno> {
+    if count != 0 {
+        probe_dri_process_pointer(host, pid, ids, count * 4)?;
+        probe_dri_process_pointer(host, pid, values, count * 8)?;
+    }
+    Ok(())
+}
+
 /// Copy property ids and values as `drm_mode_object_get_properties` does:
 /// as many as the caller's `capacity` holds, while the caller learns the
 /// full count from the returned struct.
@@ -1206,6 +1221,7 @@ fn write_dri_properties(
     values_pointer: u64,
 ) -> Result<(), Errno> {
     let copied = &props[..props.len().min(capacity as usize)];
+    probe_dri_properties(host, pid, copied.len(), ids_pointer, values_pointer)?;
     let values: Vec<u64> = copied.iter().map(|&id| kms::property_value(id)).collect();
     write_dri_u32s(host, pid, ids_pointer, copied)?;
     write_dri_u64s(host, pid, values_pointer, &values)
@@ -1959,7 +1975,7 @@ fn handle_dri_card_ioctl(
             // Linux reports the available count on both calls, but copies
             // the list only if the caller supplied enough capacity. A resize
             // between the count and fill calls can therefore be retried.
-            let modes_ptr = (req.count_modes >= mode_count && req.modes_ptr != 0)
+            let modes_ptr = (req.count_modes >= mode_count)
                 .then(|| {
                     probe_dri_process_pointer(
                         host,
@@ -1969,17 +1985,11 @@ fn handle_dri_card_ioctl(
                     )
                 })
                 .transpose()?;
-            let encoders_ptr = (req.count_encoders >= 1 && req.encoders_ptr != 0)
+            let encoders_ptr = (req.count_encoders >= 1)
                 .then(|| probe_dri_process_pointer(host, pid, req.encoders_ptr, 4))
                 .transpose()?;
-            let prop_ptrs = (req.props_ptr != 0 && req.prop_values_ptr != 0)
-                .then(|| -> Result<(u64, u64), Errno> {
-                    Ok((
-                        req.props_ptr,
-                        req.prop_values_ptr,
-                    ))
-                })
-                .transpose()?;
+            let property_count = props.len().min(req.count_props as usize);
+            probe_dri_properties(host, pid, property_count, req.props_ptr, req.prop_values_ptr)?;
             if let Some(pointer) = modes_ptr {
                 let mode_bytes = unsafe {
                     core::slice::from_raw_parts(
@@ -1995,8 +2005,9 @@ fn handle_dri_card_ioctl(
             if let Some(pointer) = encoders_ptr {
                 write_dri_u32s(host, pid, pointer, &[kms::ENCODER_ID])?;
             }
-            if let Some((ids, values)) = prop_ptrs {
-                write_dri_properties(host, pid, props, req.count_props, ids, values)?;
+            if property_count != 0 {
+                write_dri_properties(host, pid, props, req.count_props,
+                    req.props_ptr, req.prop_values_ptr)?;
             }
             // The display's physical size is what a client derives its
             // output scale (DPI) from; the host knows it, the kernel reports
@@ -2379,6 +2390,16 @@ fn handle_dri_card_ioctl(
             let prop = kms::property(req.prop_id).ok_or(Errno::ENOENT)?;
             let values = prop.values();
             let copied = values.len().min(req.count_values as usize);
+            let enum_count = match prop.kind {
+                kms::PropertyKind::Enum(entries) => entries.len().min(req.count_enum_blobs as usize),
+                _ => 0,
+            };
+            if copied != 0 {
+                probe_dri_process_pointer(host, pid, req.values_ptr, copied * 8)?;
+            }
+            if enum_count != 0 {
+                probe_dri_process_pointer(host, pid, req.enum_blob_ptr, enum_count * 40)?;
+            }
             if copied > 0 {
                 let pointer = req.values_ptr;
                 write_dri_u64s(host, pid, pointer, &values[..copied])?;
@@ -48875,6 +48896,86 @@ impl HostIO for RelSymlinkMock {
         let mut buf = [0u8; 64];
         let err = sys_ioctl(&mut proc, &mut host, fd, 0xdead_beef, &mut buf).unwrap_err();
         assert_eq!(err, Errno::ENOSYS);
+    }
+
+    fn assert_kms_output_fault<T: Copy>(
+        proc: &mut Process, host: &mut MockHostIO, fd: i32, request: u32, value: T,
+    ) {
+        let mut argument = alloc::vec![0; core::mem::size_of::<T>()];
+        unsafe { core::ptr::write_unaligned(argument.as_mut_ptr() as *mut T, value); }
+        let before_argument = argument.clone();
+        host.proc_memory.fill(0xa5);
+        let before_memory = host.proc_memory.clone();
+        host.proc_write_calls.clear();
+        assert_eq!(sys_ioctl(proc, host, fd, request, &mut argument), Err(Errno::EFAULT));
+        assert_eq!(argument, before_argument, "top-level request changed on EFAULT");
+        assert!(host.proc_write_calls.is_empty(), "nested writes before complete validation");
+        assert_eq!(host.proc_memory, before_memory, "nested output changed on EFAULT");
+    }
+
+    #[test]
+    fn kms_property_outputs_are_probed_before_any_write() {
+        use wasm_posix_shared::dri::*;
+        use crate::dri::kms;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        for invalid in [0, u64::MAX, 65535] {
+            for invalid_ids in [false, true] {
+                assert_kms_output_fault(&mut proc, &mut host, fd,
+                    DRM_IOCTL_MODE_OBJ_GETPROPERTIES, WpkDrmModeObjGetProperties {
+                        props_ptr: if invalid_ids { invalid } else { 0x1000 },
+                        prop_values_ptr: if invalid_ids { 0x2000 } else { invalid },
+                        count_props: 4, obj_id: kms::CONNECTOR_ID,
+                        obj_type: DRM_MODE_OBJECT_CONNECTOR, pad: 0,
+                    });
+            }
+        }
+    }
+
+    #[test]
+    fn kms_property_enum_outputs_are_probed_before_any_write() {
+        use wasm_posix_shared::dri::*;
+        use crate::dri::kms;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        for invalid in [0, u64::MAX, 65535] {
+            for invalid_values in [false, true] {
+                assert_kms_output_fault(&mut proc, &mut host, fd,
+                    DRM_IOCTL_MODE_GETPROPERTY, WpkDrmModeGetProperty {
+                        values_ptr: if invalid_values { invalid } else { 0x1000 },
+                        enum_blob_ptr: if invalid_values { 0x2000 } else { invalid },
+                        prop_id: kms::PROP_DPMS, count_values: 4,
+                        count_enum_blobs: 4, ..Default::default()
+                    });
+            }
+        }
+    }
+
+    #[test]
+    fn kms_connector_all_outputs_are_probed_before_any_write() {
+        use wasm_posix_shared::dri::*;
+        use crate::dri::kms;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        for invalid in [0, u64::MAX, 65535] {
+            for index in 0..4 {
+                let mut pointers = [0x1000, 0x2000, 0x3000, 0x4000];
+                pointers[index] = invalid;
+                assert_kms_output_fault(&mut proc, &mut host, fd,
+                    DRM_IOCTL_MODE_GETCONNECTOR, WpkDrmModeGetConnector {
+                        modes_ptr: pointers[0], encoders_ptr: pointers[1],
+                        props_ptr: pointers[2], prop_values_ptr: pointers[3],
+                        count_modes: u32::MAX, count_encoders: 1, count_props: 4,
+                        connector_id: kms::CONNECTOR_ID, ..Default::default()
+                    });
+            }
+        }
     }
 
     fn kms_ioctl<T: Copy>(
