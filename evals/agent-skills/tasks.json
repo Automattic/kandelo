@@ -22,5 +22,25 @@
       "kernel_abi from ABI_VERSION": "ABI_VERSION",
       "registers in local-supported.toml": "local-supported\\.toml"
     }
+  },
+  {
+    "id": "register-runtime-workaround",
+    "prompt": "You just added a 100 ms bounded wait in libc glue to avoid a WebKit garbage-collector stall that you reproduced only inside Kandelo. This is read-only: do not edit files or run builds. What must you add to the repo, what status does it get, and how should code comments describe the cause?",
+    "checks": {
+      "uses the RUNTIME-WORKAROUND tag": "RUNTIME-WORKAROUND:",
+      "adds a registry entry under tests/runtime-workarounds": "tests/runtime-workarounds",
+      "starts as suspected": "suspected",
+      "needs a standalone repro without Kandelo": "standalone|without Kandelo"
+    }
+  },
+  {
+    "id": "weekly-filing-pass",
+    "prompt": "Prepare this week's upstream bug-filing pass. This is read-only: describe the plan, do not edit files or run anything. What do you run, what do you hand the maintainer, and what must you not do?",
+    "checks": {
+      "runs the list command": "runtime-workarounds list",
+      "runs the check command": "runtime-workarounds check",
+      "runs the suite": "ci-run-test-suite\\.sh runtime-workarounds",
+      "never files; a human files": "(do not|never) file|human"
+    }
   }
 ]

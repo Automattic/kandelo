@@ -47,6 +47,7 @@ def check_skill(skill_md):
 
     # Doc headings cited as `docs/x.md` "Heading" (possibly several per line).
     for doc, heading in re.findall(r"`((?:docs|sdk)/[^`\s]+\.md)` \"([^\"]+)\"", text):
+        heading = " ".join(heading.split())  # a citation may wrap across lines
         doc_path = REPO / doc
         if not doc_path.exists():
             fail(f"{rel}: cites missing doc {doc}")
@@ -79,10 +80,11 @@ def main():
         fail("no skills found under .claude/skills")
     for s in skill_files:
         check_skill(s)
-    porting_skill = SKILLS / "porting-software-to-kandelo"
-    shared = AGENT_SKILLS / porting_skill.name
-    if not shared.is_symlink() or shared.resolve() != porting_skill.resolve():
-        fail(f"{shared.relative_to(REPO)}: must link to {porting_skill.relative_to(REPO)}")
+    for s in skill_files:
+        skill_dir = s.parent
+        shared = AGENT_SKILLS / skill_dir.name
+        if not shared.is_symlink() or shared.resolve() != skill_dir.resolve():
+            fail(f"{shared.relative_to(REPO)}: must link to {skill_dir.relative_to(REPO)}")
     for f in failures:
         print("FAIL", f)
     print(f"agent skills: {len(skill_files)} skills, {len(failures)} failures")
