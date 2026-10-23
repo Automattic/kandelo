@@ -986,8 +986,8 @@ const SIGSEGV = 11;
  *  glue after Rust has already committed process death (see
  *  killAllBlockedForTeardown and borrowed-process completion below). It is never
  *  delivered as a catchable guest signal, so the glue treats it unambiguously.
- *  [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — part of the workaround; see
- *  docs/jsc-terminate-atomics-wait-workaround.md. */
+ *  [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+ *  Part of the workaround; see docs/jsc-terminate-atomics-wait-workaround.md. */
 const SIGKILL = 9;
 
 /** Ioctl syscall number */
@@ -15559,8 +15559,9 @@ export class CentralizedKernelWorker {
   /**
    * Host-teardown reclamation.
    *
-   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
-   * is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+   * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+   * WORKAROUND, remove when the engine bug is fixed; see
+   * docs/jsc-terminate-atomics-wait-workaround.md.
    *
    * On JSC (Safari, and Bun via `bun`'s JavaScriptCore), `Worker.terminate()`
    * cannot kill (or free the memory of) a worker parked in `Atomics.wait` on
@@ -15690,20 +15691,21 @@ export class CentralizedKernelWorker {
    * so it runs the guest glue's cooperative `kernel_exit` and returns to its JS
    * event loop, where a subsequent `Worker.terminate()` can actually reclaim it.
    *
-   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] `terminate_process` (host force-kill; how
-   * a terminal session's process is torn down on every machine switch) used to
-   * hard-terminate the worker while it was still parked in `Atomics.wait`. On
-   * JavaScriptCore (Safari, Bun) `Worker.terminate()` cannot reap an
-   * `Atomics.wait`-parked worker, so its OS thread + committed working set
-   * leaked — one per switch, until Safari/iOS OOMed. `killAllBlockedForTeardown`
-   * fixes the same class at whole-machine destroy, but is unusable for a single
-   * `kill(pid)` because it wakes (and thus exits) *every* live process. This
-   * variant is scoped so sibling processes keep running (e.g. tearing down one
-   * of several servers). Delivering SIGKILL through the ordinary signal path is
-   * not sufficient: it only wakes *registered* blockers (signal-waits, futex,
-   * wait4, pipe readers), never a channel merely parked at `CH_PENDING` on a
-   * blocked `read`/`accept`. The wake must be driven off `CH_STATUS`, exactly as
-   * the global method does. See docs/jsc-terminate-atomics-wait-workaround.md.
+   * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+   * `terminate_process` (host force-kill; how a terminal session's process is
+   * torn down on every machine switch) used to hard-terminate the worker while
+   * it was still parked in `Atomics.wait`. On JavaScriptCore (Safari, Bun)
+   * `Worker.terminate()` cannot reap an `Atomics.wait`-parked worker, so its OS
+   * thread + committed working set leaked — one per switch, until Safari/iOS
+   * OOMed. `killAllBlockedForTeardown` fixes the same class at whole-machine
+   * destroy, but is unusable for a single `kill(pid)` because it wakes (and
+   * thus exits) *every* live process. This variant is scoped so sibling
+   * processes keep running (e.g. tearing down one of several servers).
+   * Delivering SIGKILL through the ordinary signal path is not sufficient: it
+   * only wakes *registered* blockers (signal-waits, futex, wait4, pipe
+   * readers), never a channel merely parked at `CH_PENDING` on a blocked
+   * `read`/`accept`. The wake must be driven off `CH_STATUS`, exactly as the
+   * global method does. See docs/jsc-terminate-atomics-wait-workaround.md.
    */
   killBlockedProcessForTeardown(pid: number): Promise<Set<number>> {
     if (this.#kernelFatalError !== null) {
@@ -15920,7 +15922,7 @@ export class CentralizedKernelWorker {
 
   /** Complete a blocked channel with EINTR and queue SIGKILL so the guest glue
    *  runs its cooperative exit. See {@link killAllBlockedForTeardown}.
-   *  [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — see
+   *  [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK] — see
    *  docs/jsc-terminate-atomics-wait-workaround.md. */
   private wakeChannelForTeardownExit(
     channel: ChannelInfo,

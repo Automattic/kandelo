@@ -256,10 +256,11 @@ const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
 const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;
 const EXEC_WORKER_RETIREMENT_WAIT_MS = 5000;
 const FRAMEBUFFER_RELEASE_ACK_WAIT_MS = 2000;
-// [JSC-TERMINATE-ATOMICS-WAIT-LEAK] On destroy we wake every Atomics.wait-blocked
-// worker so it cooperatively exits (on JSC — Safari and Bun — Worker.terminate()
-// can't free a blocked worker). These bound the wait for those workers to run
-// their exit path and drain. See docs/jsc-terminate-atomics-wait-workaround.md.
+// [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+// On destroy we wake every Atomics.wait-blocked worker so it cooperatively
+// exits (on JSC — Safari and Bun — Worker.terminate() can't free a blocked
+// worker). These bound the wait for those workers to run their exit path and
+// drain. See docs/jsc-terminate-atomics-wait-workaround.md.
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
@@ -3845,20 +3846,21 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   const info = processes.get(pid);
   if (info) vmInterruptTimers.clear(pid, info);
 
-  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Wake the target to a cooperative exit
-  // before any hard `Worker.terminate()` below. WHY: a live process worker is
-  // never idle in its JS event loop — it is parked in an in-wasm `Atomics.wait`
-  // on its syscall channel (a blocked read/accept/wait, or musl's
-  // post-exit_group `_Exit` loop). On JavaScriptCore (Safari, and Bun),
-  // `Worker.terminate()` cannot reap a worker parked in `Atomics.wait`: its OS
-  // thread and committed working set survive the call. `terminate_process` is
-  // how a terminal session's process is torn down, so every machine switch that
-  // went straight to `terminateTrackedWorker` leaked one `WebCore: Worker`
-  // thread (measured +1 per switch, non-decaying) until Safari/iOS threw "Out
-  // of memory". Delivering SIGKILL through the normal kernel signal path
-  // completes each parked channel with EINTR and queues SIGKILL so the guest
-  // glue runs `kernel_exit`; worker-main then returns to its JS event loop and
-  // posts `{exit}`, whose `finishProcessExit` terminates the now-idle worker — a
+  // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+  // Wake the target to a cooperative exit before any hard `Worker.terminate()`
+  // below. WHY: a live process worker is never idle in its JS event loop — it
+  // is parked in an in-wasm `Atomics.wait` on its syscall channel (a blocked
+  // read/accept/wait, or musl's post-exit_group `_Exit` loop). On
+  // JavaScriptCore (Safari, and Bun), `Worker.terminate()` cannot reap a worker
+  // parked in `Atomics.wait`: its OS thread and committed working set survive
+  // the call. `terminate_process` is how a terminal session's process is torn
+  // down, so every machine switch that went straight to
+  // `terminateTrackedWorker` leaked one `WebCore: Worker` thread (measured +1
+  // per switch, non-decaying) until Safari/iOS threw "Out of memory".
+  // Delivering SIGKILL through the normal kernel signal path completes each
+  // parked channel with EINTR and queues SIGKILL so the guest glue runs
+  // `kernel_exit`; worker-main then returns to its JS event loop and posts
+  // `{exit}`, whose `finishProcessExit` terminates the now-idle worker — a
   // state JSC *can* reclaim. This mirrors `performDestroy`'s Phase-1 wake, but
   // scoped to a single pid so sibling processes (e.g. php-test tearing down
   // several servers) keep running. Delivering SIGKILL through the ordinary
@@ -4079,8 +4081,9 @@ function handlePickListenerTarget(
 
 async function performDestroy() {
   // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively exits.
-  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug is
-  // fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+  // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+  // WORKAROUND, remove when the engine bug is fixed; see
+  // docs/jsc-terminate-atomics-wait-workaround.md.
   // On JSC (Safari, and Bun), `Worker.terminate()` cannot kill (or free the
   // memory of) a worker parked in `Atomics.wait` on its syscall channel — the
   // state every idle/blocked process worker sits in — so terminating them

@@ -1,0 +1,59 @@
+id = "JSC-TERMINATE-ATOMICS-WAIT-LEAK"
+kind = "bug"
+status = "confirmed"
+runtimes = ["bun", "webkit"]
+summary = "Worker.terminate() leaves a JavaScriptCore worker that is blocked in an atomic wait still waiting, so its thread and memory are never released"
+reports = "human-only"
+
+# The Bun script is the suite check because Bun reproduces today. repro.html
+# runs the same probe in browsers; on Playwright WebKit it reproduced on
+# webkit-2311 and no longer does on webkit-2359 (see entry.md).
+[repro]
+kind = "script"
+entry = "repro.mjs"
+targets = ["bun"]
+self_judging = true
+attempts = 2
+min_reproduced = 2
+timeout_seconds = 120
+
+[[observed]]
+runtime = "bun"
+version = "1.3.3"
+os = "macos"
+reproduced = true
+date = 2026-10-22
+source = "suite"
+released = true
+
+# Control: V8 under Node.js reclaims the worker.
+[[observed]]
+runtime = "node"
+version = "v24.15.0"
+os = "macos"
+reproduced = false
+date = 2026-10-22
+source = "suite"
+released = true
+
+# Playwright webkit-2311 (Playwright 1.61.0), run with a scratch launcher
+# because the repo's Playwright 1.63.0 cannot drive that build.
+[[observed]]
+runtime = "webkit"
+version = "26.5"
+os = "macos"
+reproduced = true
+date = 2026-10-22
+source = "manual"
+released = false
+
+# Playwright webkit-2359, repro.html through driver.mjs.
+[[observed]]
+runtime = "webkit"
+version = "26.6"
+os = "macos"
+reproduced = false
+date = 2026-10-22
+source = "suite"
+released = false
+

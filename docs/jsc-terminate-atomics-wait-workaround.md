@@ -1,49 +1,42 @@
 # Workaround: JSC `Worker.terminate()` does not reclaim `Atomics.wait`-blocked workers
 
-**Status:** active workaround. Remove when the JavaScriptCore engine bug is fixed
-(see [Removal](#removal)).
+**Status:** active workaround for a runtime defect confirmed on Bun.
+The defect, its evidence, its standalone reproduction, the draft upstream
+report and the removal criteria live in the registry entry
+[`tests/runtime-workarounds/JSC-TERMINATE-ATOMICS-WAIT-LEAK/`](../tests/runtime-workarounds/JSC-TERMINATE-ATOMICS-WAIT-LEAK/entry.md).
+This page describes how the workaround works.
 
-**Marker:** every participating code site is tagged
-`[JSC-TERMINATE-ATOMICS-WAIT-LEAK]`. To find them all:
+**Marker:** every participating code site carries the registry tag for
+`JSC-TERMINATE-ATOMICS-WAIT-LEAK`. To find them all:
 
 ```
-git grep -n "JSC-TERMINATE-ATOMICS-WAIT-LEAK"
+git grep -n "RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK"
 ```
 
-## The engine bug
+## The defect in short
 
-On **JavaScriptCore (JSC)**, calling `Worker.terminate()` on a worker that is
-parked in `Atomics.wait()` does **not** free the worker's OS thread or its
-committed memory. In Kandelo every process/thread worker spends nearly all its
-life parked in `Atomics.wait` (JS side in `worker-main.ts`, or the wasm
-`memory.atomic.wait32` in the musl channel glue) waiting for the kernel to
-service a syscall on its shared channel. So tearing a machine down by terminating
-those workers leaks all of them — threads and working set — and repeatedly
-booting/switching machines in one tab grows memory without bound until the tab
-throws "Out of Memory".
+On **JavaScriptCore (JSC)**, `Worker.terminate()` on a worker blocked in
+`Atomics.wait()` or `memory.atomic.wait32` leaves it blocked, so its OS
+thread and committed memory are not freed. In Kandelo every process and
+thread worker spends nearly all its life in such a wait (the JS side in
+`worker-main.ts`, or `memory.atomic.wait32` in the musl channel glue),
+waiting for the kernel to service a syscall. Tearing a machine down by
+terminating those workers leaks all of them, and repeatedly booting or
+switching machines in one tab grows memory until the tab throws "Out of
+Memory".
 
-**This is engine-specific, not host-specific.** The relevant boundary is the
-JavaScript engine, not "browser vs Node":
+The boundary is the JavaScript engine, not "browser vs Node":
 
 | Engine | Runtimes | `terminate()` on a blocked worker |
 |---|---|---|
-| **JSC** | **Safari, Bun** | leaks thread + memory — needs this workaround |
-| **V8** | Chrome, Node.js | interrupts the wait and reclaims — workaround is a no-op |
+| **JSC** | **Safari, Bun** | leaks thread + memory: needs this workaround (reproduced on Bun 1.3.3 and Playwright WebKit webkit-2311; not on webkit-2359; released Safari not rechecked; see the entry) |
+| **V8** | Chrome, Node.js | interrupts the wait and reclaims: the workaround is a no-op |
 
 Because Bun embeds JSC, the **Node host entry** (`node-kernel-worker-entry.ts`)
-is affected too when run under Bun — not just the browser. The workaround is
-therefore applied in **both** host entries, unconditionally: it is required on
-JSC and merely a small, bounded no-op cost on V8, which is cheaper and less
-fragile than sniffing the engine at runtime.
-
-Upstream: closest existing WebKit bug is
-[#278866](https://bugs.webkit.org/show_bug.cgi?id=278866) ("[JSC] Fix
-`Atomics.wait` by handling termination cases", fixed 2024 but JS-only and does
-not resolve this case) and the disputed
-[#250569](https://bugs.webkit.org/show_bug.cgi?id=250569). A fresh, minimal
-reproduction + a draft bug report to file are in
-`~/notes/Agent-logs/2026-07-09-webkit-atomics-wait-terminate-leak.md`. The
-committed standalone repro is `apps/browser-demos/public/terminate-atomics-test.html`.
+is affected too when run under Bun. The workaround is therefore applied in
+**both** host entries, unconditionally: it is required on JSC and a small,
+bounded no-op cost on V8, which is cheaper and less fragile than sniffing the
+engine at runtime.
 
 ## How the workaround reaches a clean exit
 
@@ -131,7 +124,7 @@ allows the existing exec, process, framebuffer and PCM drains to finish.
 
 ## Participating code sites
 
-All tagged `[JSC-TERMINATE-ATOMICS-WAIT-LEAK]`:
+All carry the registry tag:
 
 - `libc/glue/channel_syscall.c` — the `signum == 9` branch in
   `__deliver_pending_signal` calling `kernel_exit`.
@@ -179,22 +172,8 @@ not a temporary JavaScriptCore workaround.
 
 ## Removal
 
-When JSC reclaims `Atomics.wait`-blocked workers on `terminate()` (verify against
-the target Safari/Bun versions using the repro above and
-`apps/browser-demos/public/terminate-atomics-test.html`):
-
-1. Delete the wake/drain phases from both `handleDestroy` (revert to a plain
-   terminate loop), the per-pid wake/drain preamble in the browser
-   `handleTerminateProcess`, and the `DESTROY_KILL_DRAIN_*` constants.
-2. Remove the guest-channel wake helpers only after preserving cancellation
-   of asynchronous futex waits in the ordinary teardown path. Do not delete
-   futex retirement, real Wasm exit traps, or exact-generation terminal fences:
-   those enforce portable resource and process-lifecycle contracts.
-3. Delete the `signum == 9` branch in `__deliver_pending_signal`, then rebuild
-   musl (`scripts/build-musl.sh`) and relink programs / rebuild VFS images.
-4. Re-run validation on **both** engines: the WordPress boot/destroy loop on
-   Safari **and Bun** should now stay flat (threads + RSS) with the workaround
-   removed. If it doesn't, the engine bug isn't fully fixed — keep the workaround.
+The removal criteria and steps are in the registry entry
+([Removal criteria](../tests/runtime-workarounds/JSC-TERMINATE-ATOMICS-WAIT-LEAK/entry.md#removal-criteria)).
 
 ## Validation (while the workaround is in place)
 

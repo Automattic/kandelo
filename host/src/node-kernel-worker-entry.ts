@@ -229,7 +229,8 @@ let injectedExecWorkerConstructionFailure = false;
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
 const ENOEXEC = 8;
-// [JSC-TERMINATE-ATOMICS-WAIT-LEAK] destroy-time drain bounds; see handleDestroy.
+// [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+// Destroy-time drain bounds; see handleDestroy.
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;
@@ -3444,8 +3445,9 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 
 async function performDestroy() {
   await repoLazyAssetResolver?.close();
-  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
-  // is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+  // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+  // WORKAROUND, remove when the engine bug is fixed; see
+  // docs/jsc-terminate-atomics-wait-workaround.md.
   //
   // On JSC-based runtimes, `Worker.terminate()` cannot free a worker parked in
   // Atomics.wait on its syscall channel — the state every blocked process/thread
