@@ -116,26 +116,41 @@ fn entry_problems(
         entry.status,
         Status::Confirmed | Status::Reported | Status::FixedUpstream
     ) {
-        match &entry.repro {
-            None => problem(format!("status {} requires a repro", entry.status)),
-            Some(repro) if !repro.self_judging => {
-                problem("repro is not self-judging, so the entry cannot be beyond suspected".into())
-            }
-            Some(_) => {}
-        }
-        if !entry.observed.iter().any(|o| o.reproduced) {
-            problem("no observed record with reproduced = true".to_string());
+        // Backed means: a self-judging repro, and a reproducing observation
+        // on one of that repro's own targets. An evidence page that needs a
+        // person, or a reproduction seen only on some other runtime, does not
+        // back the claim.
+        let judging: Vec<_> = entry.repro.iter().filter(|r| r.self_judging).collect();
+        if entry.repro.is_empty() {
+            problem(format!("status {} requires a repro", entry.status));
+        } else if judging.is_empty() {
+            problem("no repro is self-judging, so the entry cannot be beyond suspected".into());
+        } else if !entry
+            .observed
+            .iter()
+            .any(|o| o.reproduced && judging.iter().any(|r| r.targets.contains(&o.runtime)))
+        {
+            problem(
+                "no observed record with reproduced = true on a self-judging repro's target"
+                    .to_string(),
+            );
         }
     }
     if matches!(entry.status, Status::Reported | Status::FixedUpstream) && entry.upstream.is_empty()
     {
         problem("no upstream report recorded".to_string());
     }
+    // A control runtime that never had the defect is not evidence of a fix,
+    // so only the entry's affected runtimes count.
     if entry.status == Status::FixedUpstream
-        && !entry.observed.iter().any(|o| o.released && !o.reproduced)
+        && !entry
+            .observed
+            .iter()
+            .any(|o| o.released && !o.reproduced && entry.runtimes.contains(&o.runtime))
     {
         problem(
-            "fixed-upstream needs an observed record with released = true and reproduced = false"
+            "fixed-upstream needs an observed record for one of its runtimes with \
+             released = true and reproduced = false"
                 .to_string(),
         );
     }
@@ -147,10 +162,18 @@ fn entry_problems(
         problem("reports = agents-allowed requires reports_channel".to_string());
     }
 
-    if let Some(repro) = &entry.repro {
+    let mut declared: BTreeSet<&str> = BTreeSet::new();
+    for repro in &entry.repro {
         for target in &repro.targets {
             if !TARGETS.contains(&target.as_str()) {
                 problem(format!("repro target {target:?} is not one of {TARGETS:?}"));
+            }
+            // Observations and last-run records are keyed by target, so two
+            // repros on one target could not be told apart.
+            if !declared.insert(target) {
+                problem(format!(
+                    "repro target {target:?} is declared by more than one repro"
+                ));
             }
         }
         if !dir_path.join("repro").join(&repro.entry).is_file() {
@@ -236,10 +259,10 @@ mod tests {
 id = "{id}"
 kind = "bug"
 status = "confirmed"
-runtimes = ["webkit"]
+runtimes = ["node"]
 summary = "a defect"
 
-[repro]
+[[repro]]
 kind = "script"
 entry = "repro.mjs"
 targets = ["node"]
@@ -367,6 +390,55 @@ summary = "a defect"
         repo.write("src/a.ts", format!("// {}\n", tag(ID)));
         let problems = repo.problems();
         assert!(has(&problems, "self-judging"), "{problems:?}");
+    }
+
+    /// An evidence page that needs a person, as a second `[[repro]]`.
+    const PAGE: &str = "\n[[repro]]\nkind = \"browser-page\"\nentry = \"page.html\"\n\
+                        targets = [\"webkit\"]\nself_judging = false\n";
+
+    #[test]
+    fn every_repro_is_validated() {
+        let repo = Repo::new();
+        repo.write("src/a.ts", format!("// {}\n", tag(ID)));
+        repo.entry(ID, &format!("{}{PAGE}", confirmed_toml(ID, true)));
+        repo.write(
+            &format!("tests/runtime-workarounds/{ID}/repro/page.html"),
+            "<p>\n",
+        );
+        assert_eq!(repo.problems(), Vec::<String>::new());
+
+        std::fs::remove_file(
+            repo.path()
+                .join(format!("tests/runtime-workarounds/{ID}/repro/page.html")),
+        )
+        .unwrap();
+        let problems = repo.problems();
+        assert!(has(&problems, "repro/page.html"), "{problems:?}");
+    }
+
+    #[test]
+    fn confirmed_needs_reproduction_on_a_self_judging_repros_target() {
+        let repo = Repo::new();
+        repo.write("src/a.ts", format!("// {}\n", tag(ID)));
+        // The only reproducing record is for the evidence page's target.
+        let toml = confirmed_toml(ID, true).replace("runtime = \"node\"", "runtime = \"webkit\"");
+        repo.entry(ID, &format!("{toml}{PAGE}"));
+        repo.write(
+            &format!("tests/runtime-workarounds/{ID}/repro/page.html"),
+            "<p>\n",
+        );
+        let problems = repo.problems();
+        assert!(has(&problems, "self-judging repro's target"), "{problems:?}");
+    }
+
+    #[test]
+    fn two_repros_may_not_share_a_target() {
+        let repo = Repo::new();
+        repo.write("src/a.ts", format!("// {}\n", tag(ID)));
+        let twin = PAGE.replace("page.html", "repro.mjs").replace("webkit", "node");
+        repo.entry(ID, &format!("{}{twin}", confirmed_toml(ID, true)));
+        let problems = repo.problems();
+        assert!(has(&problems, "more than one repro"), "{problems:?}");
     }
 
     #[test]
@@ -537,6 +609,18 @@ summary = "a defect"
         repo.write("src/a.ts", format!("// {}\n", tag(ID)));
         let problems = repo.problems();
         assert!(has(&problems, "released = true"), "{problems:?}");
+
+        // A released, non-reproducing record for a control runtime that is
+        // not in `runtimes` says nothing about a fix.
+        repo.entry(
+            ID,
+            &toml(
+                "[[observed]]\nruntime = \"chromium\"\nversion = \"140\"\nos = \"linux\"\n\
+                 reproduced = false\ndate = 2026-10-23\nreleased = true\n",
+            ),
+        );
+        let problems = repo.problems();
+        assert!(has(&problems, "for one of its runtimes"), "{problems:?}");
 
         repo.entry(
             ID,

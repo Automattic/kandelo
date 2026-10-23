@@ -57,9 +57,9 @@ These do **not** get an entry:
 | Status | Meaning | The entry must have |
 |---|---|---|
 | `suspected` | Kandelo works around something believed to be a runtime defect, but no standalone reproduction judges it yet. | The evidence so far, what is still unknown, what would tell a Kandelo bug from a runtime bug, and the code sites. Docs and comments must call it "suspected". It never appears in the filing list. |
-| `confirmed` | A standalone reproduction judges itself and reproduces the defect on named runtime versions, so it runs in the suite. | A self-judging `[repro]` and at least one `observed` record with `reproduced = true`. |
+| `confirmed` | A standalone reproduction judges itself and reproduces the defect on named runtime versions, so it runs in the suite. | At least one self-judging `[[repro]]`, and an `observed` record with `reproduced = true` for one of that repro's targets. |
 | `reported` | Filed upstream. | Everything `confirmed` needs, plus `upstream` records (URL, date, who filed). |
-| `fixed-upstream` | The reproduction no longer reproduces on a released runtime version. | An `observed` record with `released = true` and `reproduced = false`, and in `entry.md` what still needs the workaround (older supported versions). |
+| `fixed-upstream` | The reproduction no longer reproduces on a released runtime version. | An `observed` record for one of the entry's `runtimes` with `released = true` and `reproduced = false`, and in `entry.md` what still needs the workaround (older supported versions). |
 | `retired` | The workaround is gone from the code. | `retired_reason`, and `retired_commit` when there is one. The entry stays so the history is searchable; its tag must no longer appear in code. |
 
 A `suspected` entry whose investigation shows the fault is Kandelo's is
@@ -106,16 +106,21 @@ a comment. In short:
 - `reports`: `human-only` (the default) or `agents-allowed`, which also needs
   `reports_channel` naming the channel the upstream project sanctions for
   automated or agent reports.
-- `[repro]`: `kind` (`browser-page` or `script`), `entry` (file under
-  `repro/`), `targets`, `self_judging`, and optionally `attempts`,
-  `min_reproduced`, `timeout_seconds`, `crash_is_reproduced`. A `suspected`
-  entry may have a `[repro]` with `self_judging = false` for an evidence
-  page; the suite does not run it.
+- `[[repro]]`, one table per reproduction: `kind` (`browser-page` or
+  `script`), `entry` (file under `repro/`), `targets`, `self_judging`, and
+  optionally `attempts`, `min_reproduced`, `timeout_seconds`,
+  `crash_is_reproduced`. An entry can have several, because a script
+  cannot run in a browser and a page cannot run in Bun or Node; no two may
+  declare the same target. A repro with `self_judging = false` is an
+  evidence page; the suite never runs it.
 - `[[observed]]`: one record per run that matters, keyed by `runtime`,
   `version` **and** `os` (Playwright's WebKit differs between macOS and
   Linux, and a defect can be specific to one OS), with `reproduced`, `date`,
   `source` (`suite` when the driver produced it, `manual` otherwise) and
-  `released`.
+  `released`. Record only the affected runtimes (those in `runtimes`) here.
+  Results on control runtimes that never had the defect go in `entry.md`:
+  they are useful evidence, but a control's "not reproduced" says nothing
+  about a fix.
 - `[[upstream]]`: `project`, `url`, `filed`, `filed_by`. Empty until filed.
 - `[[sites_without_tags]]`: `path` and `note` for places that cannot hold a
   comment (build flags, generated files, JSON, binary fixtures).
@@ -230,19 +235,27 @@ All three run from the repository root inside the dev shell:
 
 ```
 scripts/dev-shell.sh bash -c 'cargo run -p xtask --target "$(rustc -vV | awk "/^host/ {print \$2}")" --quiet -- runtime-workarounds check'
+scripts/dev-shell.sh bash -c 'cargo run -p xtask --target "$(rustc -vV | awk "/^host/ {print \$2}")" --quiet -- runtime-workarounds run'
+scripts/dev-shell.sh bash -c 'cargo run -p xtask --target "$(rustc -vV | awk "/^host/ {print \$2}")" --quiet -- runtime-workarounds list'
 ```
+
+`run` also takes `--id <ID>` and `--target <target>` (each repeatable) to
+narrow the run; `list` takes `--json`.
 
 - **`runtime-workarounds check`** keeps the tags and the entries consistent.
   It fails when a tag names an unknown ID, a bracketed tag is malformed, a
   bare legacy `[<ID>]` remains, a non-retired entry has neither a tag nor a
   `sites_without_tags` item, a retired entry still has tags, an entry past
-  `suspected` lacks a self-judging repro or a reproducing observation, a
-  `reported` entry has no upstream record, or a field is missing or
-  unknown. It runs in the `cargo-xtask` suite (the
+  `suspected` lacks a self-judging repro with a reproducing observation on
+  one of that repro's targets, two repros declare the same target, a
+  `reported` entry has no upstream record, a `fixed-upstream` entry has no
+  released, non-reproducing record for one of its `runtimes`, or a field
+  is missing or unknown. It runs in the `cargo-xtask` suite (the
   `registry_in_repo_is_consistent` test).
 - **`runtime-workarounds run [--id ID]... [--target T]...`** runs every
-  self-judging reproduction of a `confirmed`, `reported` or
-  `fixed-upstream` entry on each declared target installed here, and
+  self-judging `[[repro]]` of a `confirmed`, `reported` or
+  `fixed-upstream` entry on each target it declares that is installed
+  here (evidence repros with `self_judging = false` never run), and
   compares each verdict with the newest `observed` record for that runtime
   and OS. A verdict that differs fails the run with a message such as
   "no longer reproduces on bun 1.4.0 (macos); update entry.toml". Fix that
@@ -256,7 +269,10 @@ scripts/dev-shell.sh bash -c 'cargo run -p xtask --target "$(rustc -vV | awk "/^
      and reproduction paths and the observed versions;
   2. *Filed*: reported, with URLs and the last run's result;
   3. *Possibly retirable*: fixed upstream, or confirmed/reported entries
-     whose last run did not reproduce;
+     whose last run reproduced on none of their targets. When some targets
+     still reproduce and others no longer do, the entry stays in its group
+     with a `note:` line naming the targets and versions that did not
+     reproduce;
   4. *Needs reduction*: suspected entries;
   5. *Gaps*, by runtime.
 
@@ -284,10 +300,11 @@ it is still `source = "suite"`.
    follow its removal criteria.
 5. Hand the maintainer the list.
 
-**Never file, comment on, or vote on an upstream tracker without the
-maintainer's permission**, unless the entry says `reports = "agents-allowed"`
-and names the channel the upstream project sanctions. Reports are filed by
-a person, with a reproduction they have run. After filing, record the
+**Agents never file, comment on, or vote on upstream trackers unless the
+entry has `reports = "agents-allowed"` with a named channel**
+(`reports_channel`, the channel the upstream project sanctions for
+automated or agent reports). Otherwise reports are filed by a person, with
+a reproduction they have run. After filing, record the
 `upstream` entry and set `status = "reported"`.
 
 ## Runtime defect or Kandelo defect?

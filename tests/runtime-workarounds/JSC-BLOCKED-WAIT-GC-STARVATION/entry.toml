@@ -6,7 +6,7 @@ summary = "Suspected: a JavaScriptCore worker blocked in memory.atomic.wait32 ke
 reports = "human-only"
 
 # Evidence page only: the defect shows in a stack sample, not on the page.
-[repro]
+[[repro]]
 kind = "browser-page"
 entry = "repro.html"
 targets = ["webkit"]

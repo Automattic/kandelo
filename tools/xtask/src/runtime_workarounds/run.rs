@@ -7,7 +7,7 @@
 //! for `list`.
 
 use super::entry::{
-    load_entries, Entry, Observation, ReproKind, Status, Verdict, TARGETS,
+    load_entries, Entry, Observation, Repro, ReproKind, Status, Verdict, TARGETS,
 };
 use super::report::{last_run_path, LastRun, LastRunRecord};
 use super::registry;
@@ -73,6 +73,7 @@ pub fn compare(entry: &Entry, record: &LastRunRecord) -> Outcome {
 struct Job<'a> {
     dir: &'a str,
     entry: &'a Entry,
+    repro: &'a Repro,
     target: &'a str,
 }
 
@@ -96,9 +97,10 @@ fn runnable(status: Status) -> bool {
     )
 }
 
-/// What to run: every runnable entry with a reproduction, narrowed by `ids`
-/// and `targets` (empty means no narrowing), on each declared target whose
-/// binary `on_path` finds.
+/// What to run: every self-judging reproduction of every runnable entry,
+/// narrowed by `ids` and `targets` (empty means no narrowing), on each
+/// target it declares whose binary `on_path` finds. A repro that needs a
+/// person to read its result is evidence, not a check, so it never runs.
 fn plan<'a>(
     entries: &'a [(String, Entry)],
     ids: &[String],
@@ -110,23 +112,25 @@ fn plan<'a>(
         if !runnable(entry.status) || (!ids.is_empty() && !ids.contains(&entry.id)) {
             continue;
         }
-        let Some(repro) = &entry.repro else { continue };
-        for target in &repro.targets {
-            if !targets.is_empty() && !targets.contains(target) {
-                continue;
+        for repro in entry.repro.iter().filter(|r| r.self_judging) {
+            for target in &repro.targets {
+                if !targets.is_empty() && !targets.contains(target) {
+                    continue;
+                }
+                if needs_binary(target) && !on_path(target) {
+                    plan.skipped.push(format!(
+                        "runtime-workarounds: skipping {} on {target}: {target} is not on PATH",
+                        entry.id
+                    ));
+                    continue;
+                }
+                plan.jobs.push(Job {
+                    dir,
+                    entry,
+                    repro,
+                    target,
+                });
             }
-            if needs_binary(target) && !on_path(target) {
-                plan.skipped.push(format!(
-                    "runtime-workarounds: skipping {} on {target}: {target} is not on PATH",
-                    entry.id
-                ));
-                continue;
-            }
-            plan.jobs.push(Job {
-                dir,
-                entry,
-                target,
-            });
         }
     }
     plan
@@ -170,11 +174,7 @@ fn driver_path(repo: &Path) -> PathBuf {
 /// verdict; any other result is reported on stderr and recorded as
 /// inconclusive, because a broken driver says nothing about the runtime.
 fn drive(repo: &Path, job: &Job) -> Result<LastRunRecord, String> {
-    let repro = job
-        .entry
-        .repro
-        .as_ref()
-        .expect("planned jobs have a reproduction");
+    let repro = job.repro;
     let kind = match repro.kind {
         ReproKind::BrowserPage => "browser-page",
         ReproKind::Script => "script",
@@ -597,7 +597,7 @@ summary = "s"
         let text = |id: &str, status: &str| {
             format!(
                 "id = \"{id}\"\nkind = \"bug\"\nstatus = \"{status}\"\nruntimes = [\"clang\"]\n\
-                 summary = \"s\"\n[repro]\nkind = \"script\"\nentry = \"r.sh\"\n\
+                 summary = \"s\"\n[[repro]]\nkind = \"script\"\nentry = \"r.sh\"\n\
                  targets = [\"clang\", \"node\"]\nself_judging = true\n"
             )
         };
@@ -617,5 +617,25 @@ summary = "s"
         let p = plan(&entries, &["C".to_string()], &["clang".to_string()], &all_installed);
         let jobs: Vec<_> = p.jobs.iter().map(|j| (j.dir, j.target)).collect();
         assert_eq!(jobs, [("C", "clang")]);
+    }
+
+    #[test]
+    fn plan_runs_every_self_judging_repro_and_skips_evidence_pages() {
+        let text = "id = \"M\"\nkind = \"bug\"\nstatus = \"confirmed\"\n\
+                    runtimes = [\"bun\", \"webkit\"]\nsummary = \"s\"\n\
+                    [[repro]]\nkind = \"script\"\nentry = \"r.mjs\"\ntargets = [\"node\"]\n\
+                    self_judging = true\n\
+                    [[repro]]\nkind = \"browser-page\"\nentry = \"r.html\"\n\
+                    targets = [\"webkit\"]\nself_judging = true\n\
+                    [[repro]]\nkind = \"browser-page\"\nentry = \"sample.html\"\n\
+                    targets = [\"chromium\"]\nself_judging = false\n";
+        let entries = vec![("M".to_string(), toml::from_str::<Entry>(text).unwrap())];
+        let p = plan(&entries, &[], &[], &|_: &str| true);
+        let jobs: Vec<_> = p
+            .jobs
+            .iter()
+            .map(|j| (j.repro.entry.as_str(), j.target))
+            .collect();
+        assert_eq!(jobs, [("r.mjs", "node"), ("r.html", "webkit")]);
     }
 }

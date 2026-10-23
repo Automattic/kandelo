@@ -148,8 +148,12 @@ pub struct Entry {
     pub retired_reason: Option<String>,
     #[serde(default)]
     pub retired_commit: Option<String>,
+    /// Each `[[repro]]` table is one reproduction. An entry may need more
+    /// than one because a script cannot run in a browser and a page cannot
+    /// run in Bun or Node; no two may declare the same target, because
+    /// observations are keyed by runtime and OS.
     #[serde(default)]
-    pub repro: Option<Repro>,
+    pub repro: Vec<Repro>,
     #[serde(default)]
     pub observed: Vec<Observation>,
     #[serde(default)]

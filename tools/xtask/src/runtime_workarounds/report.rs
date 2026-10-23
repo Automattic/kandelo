@@ -66,11 +66,16 @@ struct Item {
     runtimes: Vec<String>,
     latest_observations: Vec<ObservationView>,
     upstream: Vec<UpstreamView>,
-    repro: Option<String>,
+    /// One path per `[[repro]]`; an evidence repro that needs a person is
+    /// marked so the reader does not mistake it for a check.
+    repros: Vec<String>,
     entry_md: String,
     last_run: Vec<LastRunRecord>,
     /// Why an entry is in `Possibly retirable`.
     why: Option<String>,
+    /// Targets whose last run did not reproduce while others still did; the
+    /// entry stays in its status group.
+    note: Option<String>,
     /// For `Gaps`, the runtime the item is grouped under.
     section: Option<String>,
 }
@@ -140,10 +145,18 @@ fn item(dir: &str, entry: &Entry, last: Option<&LastRun>) -> Item {
                 filed_by: u.filed_by.clone(),
             })
             .collect(),
-        repro: entry
+        repros: entry
             .repro
-            .as_ref()
-            .map(|r| format!("{base}/repro/{}", r.entry)),
+            .iter()
+            .map(|r| {
+                let path = format!("{base}/repro/{}", r.entry);
+                if r.self_judging {
+                    path
+                } else {
+                    format!("{path} (evidence; not self-judging)")
+                }
+            })
+            .collect(),
         entry_md: format!("{base}/entry.md"),
         last_run: last
             .map(|l| {
@@ -155,6 +168,7 @@ fn item(dir: &str, entry: &Entry, last: Option<&LastRun>) -> Item {
             })
             .unwrap_or_default(),
         why: None,
+        note: None,
         section: None,
     }
 }
@@ -189,12 +203,26 @@ fn build(entries: &[(String, Entry)], last: Option<&LastRun>) -> Report {
                     .last_run
                     .iter()
                     .filter(|r| r.verdict == Verdict::NotReproduced)
-                    .map(|r| format!("{} {}", r.target, r.os))
+                    .map(|r| format!("{} {} ({})", r.target, r.version, r.os))
                     .collect();
-                if !gone.is_empty() {
+                let still = it
+                    .last_run
+                    .iter()
+                    .any(|r| r.verdict == Verdict::Reproduced);
+                // Retirable only when no target reproduced any more. When some
+                // still do, the entry keeps its place and names the others.
+                if !gone.is_empty() && !still {
                     it.why = Some(format!("last run did not reproduce on {}", gone.join(", ")));
                     retirable.push(it);
-                } else if entry.status == Status::Confirmed && entry.upstream.is_empty() {
+                    continue;
+                }
+                if !gone.is_empty() {
+                    it.note = Some(format!(
+                        "last run did not reproduce on {}; it still reproduced elsewhere",
+                        gone.join(", ")
+                    ));
+                }
+                if entry.status == Status::Confirmed && entry.upstream.is_empty() {
                     ready.push(it);
                 } else {
                     // `reported`, or confirmed with a report already recorded.
@@ -269,6 +297,9 @@ fn render_report(report: &Report) -> String {
             if let Some(why) = &item.why {
                 out.push_str(&format!("      why: {why}\n"));
             }
+            if let Some(note) = &item.note {
+                out.push_str(&format!("      note: {note}\n"));
+            }
             out.push_str(&format!("      runtimes: {}\n", item.runtimes.join(", ")));
             for o in &item.latest_observations {
                 out.push_str(&format!(
@@ -300,7 +331,7 @@ fn render_report(report: &Report) -> String {
                     u.project, u.url, u.filed, u.filed_by
                 ));
             }
-            if let Some(repro) = &item.repro {
+            for repro in &item.repros {
                 out.push_str(&format!("      repro: {repro}\n"));
             }
             out.push_str(&format!("      entry: {}\n", item.entry_md));
@@ -393,7 +424,7 @@ summary = "summary of {id}"
     }
 
     const REPRO: &str = r#"
-[repro]
+[[repro]]
 kind = "script"
 entry = "repro.mjs"
 targets = ["node"]
@@ -545,6 +576,98 @@ filed_by = "brandon"
         );
         assert!(
             !section(&out, "Possibly retirable").contains("C-CONFIRMED"),
+            "{out}"
+        );
+    }
+
+    fn record(id: &str, target: &str, version: &str, verdict: Verdict) -> LastRunRecord {
+        LastRunRecord {
+            id: id.to_string(),
+            target: target.to_string(),
+            os: "macos".to_string(),
+            version: version.to_string(),
+            verdict,
+            details: String::new(),
+        }
+    }
+
+    #[test]
+    fn partly_reproducing_entry_keeps_its_group_with_a_note() {
+        let entries = [
+            entry("C-CONFIRMED", "bug", "confirmed", REPRO),
+            entry(
+                "D-REPORTED",
+                "bug",
+                "reported",
+                &format!("{REPRO}{UPSTREAM}"),
+            ),
+        ];
+        let mut records = Vec::new();
+        for id in ["C-CONFIRMED", "D-REPORTED"] {
+            records.push(record(id, "bun", "1.3.3", Verdict::Reproduced));
+            records.push(record(id, "webkit", "26.6", Verdict::NotReproduced));
+        }
+        let last = LastRun {
+            finished: "2026-10-22T10:00:00Z".to_string(),
+            records,
+        };
+        let out = render(&entries, Some(&last));
+        let ready = section(&out, "Ready to file");
+        assert!(ready.contains("C-CONFIRMED"), "{out}");
+        assert!(
+            ready.contains("note: last run did not reproduce on webkit 26.6 (macos)"),
+            "{out}"
+        );
+        assert!(!ready.contains("bun 1.3.3 (macos)"), "{out}");
+        assert!(section(&out, "Filed").contains("D-REPORTED"), "{out}");
+        assert!(
+            section(&out, "Filed").contains("note: last run did not reproduce on webkit 26.6"),
+            "{out}"
+        );
+        assert!(
+            section(&out, "Possibly retirable").contains("(none)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn entry_is_retirable_only_when_no_target_reproduced() {
+        let entries = [entry("C-CONFIRMED", "bug", "confirmed", REPRO)];
+        let last = LastRun {
+            finished: "2026-10-22T10:00:00Z".to_string(),
+            records: vec![
+                record("C-CONFIRMED", "bun", "1.4.0", Verdict::NotReproduced),
+                record("C-CONFIRMED", "webkit", "26.6", Verdict::NotReproduced),
+            ],
+        };
+        let out = render(&entries, Some(&last));
+        let retirable = section(&out, "Possibly retirable");
+        assert!(retirable.contains("C-CONFIRMED"), "{out}");
+        assert!(
+            retirable.contains("why: last run did not reproduce on bun 1.4.0 (macos), webkit 26.6 (macos)"),
+            "{out}"
+        );
+        assert!(!retirable.contains("note:"), "{out}");
+        assert!(!section(&out, "Ready to file").contains("C-CONFIRMED"), "{out}");
+    }
+
+    #[test]
+    fn every_repro_path_is_listed_and_evidence_is_marked() {
+        let two = REPRO.replace(
+            "self_judging = true\n",
+            "self_judging = true\n\n[[repro]]\nkind = \"browser-page\"\nentry = \"page.html\"\n\
+             targets = [\"webkit\"]\nself_judging = false\n",
+        );
+        let out = render(&[entry("A-READY", "bug", "confirmed", &two)], None);
+        let ready = section(&out, "Ready to file");
+        assert!(
+            ready.contains("repro: tests/runtime-workarounds/A-READY/repro/repro.mjs\n"),
+            "{out}"
+        );
+        assert!(
+            ready.contains(
+                "repro: tests/runtime-workarounds/A-READY/repro/page.html (evidence; not self-judging)"
+            ),
             "{out}"
         );
     }

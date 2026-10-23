@@ -7,7 +7,7 @@ reports = "human-only"
 
 # Evidence page only: the leaked thread shows in a thread listing, not on
 # the page.
-[repro]
+[[repro]]
 kind = "browser-page"
 entry = "repro.html"
 targets = ["webkit"]

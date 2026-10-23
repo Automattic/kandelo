@@ -18,8 +18,11 @@ summary = "What the runtime does wrong, in one line"
 # reports_channel naming the upstream's sanctioned channel.
 reports = "human-only"
 
-# Absent or self_judging = false while suspected.
-[repro]
+# One [[repro]] table per reproduction (a script cannot run in a browser,
+# a page cannot run in Bun or Node); no two may share a target. Absent, or
+# self_judging = false (an evidence page the suite never runs), while
+# suspected.
+[[repro]]
 # "browser-page" (sets window.__reproVerdict) or "script" (prints a
 # REPRO-VERDICT line).
 kind = "browser-page"
@@ -31,8 +34,10 @@ self_judging = false
 # Optional: attempts = 1, min_reproduced = 1, timeout_seconds = 120,
 # crash_is_reproduced = false.
 
-# One record per runtime, version and OS that matters. source = "suite"
-# when the driver produced it; released = false for Playwright builds.
+# One record per affected runtime (listed in `runtimes`), version and OS.
+# Controls that never had the defect go in entry.md, not here.
+# source = "suite" when the driver produced it; released = false for
+# Playwright builds.
 # [[observed]]
 # runtime = "webkit"
 # version = "26.6"

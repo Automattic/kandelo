@@ -7,7 +7,7 @@ reports = "human-only"
 
 # Attempted reduction; it has not crashed. A page crash would count as
 # reproduced, but the entry stays suspected until a reduction crashes.
-[repro]
+[[repro]]
 kind = "browser-page"
 entry = "repro.html"
 targets = ["webkit"]
