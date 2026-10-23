@@ -1021,6 +1021,62 @@ describe("LiveKernelHost: machine PCM lifecycle", () => {
 });
 
 describe("LiveKernelHost: shell command queue", () => {
+  it("attaches replacement output after the old prompt and awaits it before writing", async () => {
+    const encoder = new TextEncoder();
+    let onOutput!: (data: Uint8Array) => void;
+    const writes: string[] = [];
+    const host = new LiveKernelHost({
+      kernel: {
+        spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
+        onPtyOutput(_pid: number, callback: typeof onOutput) {
+          onOutput = callback;
+          callback(encoder.encode("kandelo$ "));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, bytes: Uint8Array) {
+          writes.push(new TextDecoder().decode(bytes));
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash", argv: ["bash", "-i"], env: ["PS1=kandelo$ "],
+    });
+    await host.dispatchShellCommand("old-display");
+
+    const output: string[] = [];
+    let stopFollowing!: () => void;
+    let attached!: () => void;
+    const followerAttached = new Promise<void>((resolve) => { attached = resolve; });
+    let allowWrite!: () => void;
+    const writeAllowed = new Promise<void>((resolve) => { allowWrite = resolve; });
+    const beforeWrite = vi.fn(async () => {
+      stopFollowing = await followShellOutput(host, (text) => output.push(text));
+      attached();
+      await writeAllowed;
+    });
+    const replacement = host.dispatchShellCommand("replacement", { beforeWrite });
+    expect(beforeWrite).not.toHaveBeenCalled();
+    onOutput(encoder.encode("\r\nkandelo$ "));
+    await followerAttached;
+    expect(output).toEqual([]);
+    expect(writes).toEqual(["old-display\n"]);
+    allowWrite();
+    await replacement;
+    expect(writes).toEqual(["old-display\n", "replacement\n"]);
+    onOutput(encoder.encode("replacement: Preparing\r\n"));
+    expect(output).toEqual(["replacement: Preparing\r\n"]);
+    stopFollowing();
+    onOutput(encoder.encode("kandelo$ "));
+
+    await expect(host.dispatchShellCommand("must-not-run", {
+      beforeWrite: () => { throw new Error("follower failed"); },
+    })).rejects.toThrow("follower failed");
+    expect(writes).toEqual(["old-display\n", "replacement\n"]);
+    await host.dispatchShellCommand("next-command");
+    expect(writes.at(-1)).toBe("next-command\n");
+    onOutput(encoder.encode("\r\nkandelo$ "));
+  });
+
   it("uses the worker-returned pid for a transferred shell binary", async () => {
     const outputPids: number[] = [];
     const writePids: number[] = [];

@@ -2191,6 +2191,19 @@ reopens the surface. Dock replacements stop the actual display owner, even
 when it was launched from a second terminal. Exiting an unrelated process
 leaves it unchanged; a Wayland client exiting does not close its compositor's display.
 
+A dock action that replaces the display owner is a presentation handoff.
+From before stopping the old owner until the replacement's first presented
+frame, the KMS Demo surface remains available and stays selected if the user
+has not switched views. The stage shows the replacement command's progress
+and keeps its dock controls visible. This app-local handoff does not create
+a display owner or change device/input ownership. A returned shell prompt,
+an action error, machine stop, or pane teardown ends the handoff too; without
+an owner, the usual terminal fallback then applies. Ordinary graphical Quit
+never starts a handoff and still restores the terminal and keyboard focus.
+Progress subscribes through `dispatchShellCommand`'s awaited `beforeWrite`
+hook, after the previous command's queue and prompt readiness. The old
+program's returning prompt must not be treated as the replacement exiting.
+
 A bitmap interface can declare `presentation.displayScale` (0.5–4 CSS
 pixels per guest pixel). The browser advertises a virtual display sized
 from the CSS content box divided by that scale, at 96 reference DPI.

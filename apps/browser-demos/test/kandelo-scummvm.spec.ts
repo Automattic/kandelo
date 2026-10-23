@@ -249,6 +249,10 @@ test("Beneath a Steel Sky from the freeware menu fetches the game and starts it 
   // The script reports the download against the archive's catalog size.
   await expect(page.getByTestId("kms-dock-action-status"))
     .toHaveText(/Downloading Beneath a Steel Sky.* \d+%/, { timeout: 120_000 });
+  await expect(page.getByLabel("Computer views").getByRole("button", { name: "Demo", exact: true }))
+    .toHaveAttribute("aria-current", "true");
+  await expect(play).toBeVisible();
+  await expect(play).toBeDisabled();
   await expect(page.getByTestId("kms-dock-action-progress"))
     .toBeHidden({ timeout: 300_000 });
   await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);

@@ -955,7 +955,10 @@ export interface KernelHost {
   /** Remove the logical PTY, including its process and pending restart. */
   removePty(path: string): void;
   /** Resolve after a command has been written, without waiting for a prompt. */
-  dispatchShellCommand(command: string): Promise<void>;
+  dispatchShellCommand(command: string, opts?: {
+    /** Awaited after queue/prompt readiness, immediately before writing. */
+    beforeWrite?: () => void | Promise<void>;
+  }): Promise<void>;
   runShellCommand(command: string): Promise<void>;
   /**
    * Show `text` on the terminal attached at `path` without sending anything
@@ -1612,6 +1615,7 @@ export class LiveKernelHost implements KernelHost {
 
   private async startShellCommand(
     command: string,
+    beforeWrite?: () => void | Promise<void>,
   ): Promise<{ completion: Promise<void> }> {
     const sessionKey = "/dev/pts/0";
     const previousCommandDone =
@@ -1640,6 +1644,9 @@ export class LiveKernelHost implements KernelHost {
         timeoutMs: 1200,
         prompt,
       }).catch(() => {});
+      // Output followers must attach after the previous command's prompt,
+      // or they can mistake that prompt for the new command exiting.
+      await beforeWrite?.();
       const completion = waitForPtyReadiness(pty, {
         includeHistory: false,
         timeoutMs: 300_000,
@@ -1659,8 +1666,10 @@ export class LiveKernelHost implements KernelHost {
    * write has succeeded. This is the truthful dispatch surface for long-lived
    * foreground programs that intentionally do not return to a shell prompt.
    */
-  async dispatchShellCommand(command: string): Promise<void> {
-    await this.startShellCommand(command);
+  async dispatchShellCommand(command: string, opts: {
+    beforeWrite?: () => void | Promise<void>;
+  } = {}): Promise<void> {
+    await this.startShellCommand(command, opts.beforeWrite);
   }
 
   /** Write a command and wait until the shell presents its next prompt. */

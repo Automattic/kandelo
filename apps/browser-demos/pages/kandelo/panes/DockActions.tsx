@@ -5,7 +5,7 @@
 
 import * as React from "react";
 import { createPortal } from "react-dom";
-import { useDemoDockActions, useKernelHost, useStatus } from "../kernel-host/react";
+import { useDemoDockActions, useDisplayHandoff, useKernelHost, useStatus } from "../kernel-host/react";
 import type {
   DemoDockCommandConfig,
   DemoDockMenuActionConfig,
@@ -58,6 +58,7 @@ export function useDockActions(
   const host = useKernelHost();
   const status = useStatus();
   const actions = useDemoDockActions();
+  const { begin: beginDisplayHandoff } = useDisplayHandoff();
   const [running, setRunning] = React.useState<{ id: string; phase: DockActionPhase } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [following, setFollowing] = React.useState<Following | null>(null);
@@ -66,15 +67,21 @@ export function useDockActions(
   const baselineRef = React.useRef<number | null>(null);
   const stopFollowingRef = React.useRef<(() => void) | null>(null);
   const followingGenerationRef = React.useRef(0);
+  const releaseHandoffRef = React.useRef<(() => void) | null>(null);
 
   const stopFollowing = React.useCallback(() => {
     followingGenerationRef.current++;
     stopFollowingRef.current?.();
     stopFollowingRef.current = null;
     baselineRef.current = null;
+    releaseHandoffRef.current?.();
+    releaseHandoffRef.current = null;
     setFollowing(null);
   }, []);
   React.useEffect(() => stopFollowing, [stopFollowing]);
+  React.useEffect(() => {
+    if (status !== "running") stopFollowing();
+  }, [status, stopFollowing]);
 
   // A new presentation is sufficient: static menus may draw once and
   // then wait for input, so requiring animation leaves them "starting".
@@ -89,6 +96,10 @@ export function useDockActions(
   const run = React.useCallback(async (action: DemoDockCommandConfig, buttonId: string) => {
     if (running !== null) return;
     stopFollowing();
+    // Acquire before stopping: ownership can disappear before "starting".
+    // Only displays with a first-frame signal can follow a replacement.
+    if (frameCountRef.current !== null) releaseHandoffRef.current = beginDisplayHandoff();
+    const generation = followingGenerationRef.current;
     setError(null);
     setRunning({ id: buttonId, phase: "stopping" });
     const programName = dockActionProgramName(action.restart);
@@ -97,11 +108,11 @@ export function useDockActions(
       await runDemoDockAction(host, action, {
         stop,
         onPhase: async (phase) => {
+          if (followingGenerationRef.current !== generation) throw new Error("Dock action cancelled");
           setRunning({ id: buttonId, phase });
           if (phase !== "starting" || frameCountRef.current === null) return;
           // From here on the stage is dark until the replacement draws.
           baselineRef.current = readFrameCount?.() ?? frameCountRef.current;
-          const generation = followingGenerationRef.current;
           setFollowing({ label: action.label, progress: { status: null, percent: null } });
           const unsubscribe = await followShellOutput(host, (text) => {
             // A queued notification must not revive completed progress.
@@ -118,17 +129,21 @@ export function useDockActions(
             setFollowing({ label: action.label, progress });
           });
           // A frame can arrive while attachPty is still in flight.
-          if (followingGenerationRef.current !== generation) unsubscribe();
-          else stopFollowingRef.current = unsubscribe;
+          if (followingGenerationRef.current !== generation) {
+            unsubscribe();
+            throw new Error("Dock action cancelled");
+          }
+          stopFollowingRef.current = unsubscribe;
         },
       });
     } catch (err) {
+      if (followingGenerationRef.current !== generation) return;
       stopFollowing();
       setError(`${action.label}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setRunning(null);
     }
-  }, [host, running, stopFollowing, stop, readFrameCount]);
+  }, [host, running, stopFollowing, stop, readFrameCount, beginDisplayHandoff]);
 
   const controls = React.useMemo(() => {
     if (status !== "running" || actions.length === 0) return null;

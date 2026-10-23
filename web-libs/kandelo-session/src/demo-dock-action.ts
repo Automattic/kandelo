@@ -45,10 +45,11 @@ export async function runDemoDockAction(
   await onPhase("stopping");
   if (stop) await stop();
   else await host.interruptShellForeground({ timeoutMs: stopTimeoutMs });
-  await onPhase("starting");
   // Like the machine's own command, the restart is usually a long-lived
   // foreground program: resolve on the PTY write, not on a later prompt.
-  await host.dispatchShellCommand(action.restart);
+  await host.dispatchShellCommand(action.restart, {
+    beforeWrite: () => onPhase("starting"),
+  });
   await onPhase("done");
 }
 

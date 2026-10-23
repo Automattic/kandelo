@@ -103,7 +103,10 @@ describe("runDemoDockAction", () => {
     const calls: string[] = [];
     const host = {
       interruptShellForeground: vi.fn(async () => { calls.push("interrupt"); }),
-      dispatchShellCommand: vi.fn(async (command: string) => { calls.push(command); }),
+      dispatchShellCommand: vi.fn(async (command: string, opts) => {
+        await opts?.beforeWrite?.();
+        calls.push(command);
+      }),
     } as unknown as KernelHost;
     const phases: DockActionPhase[] = [];
 
@@ -119,7 +122,10 @@ describe("runDemoDockAction", () => {
     const calls: string[] = [];
     const host = {
       interruptShellForeground: vi.fn(async () => { calls.push("interrupt"); }),
-      dispatchShellCommand: vi.fn(async (command: string) => { calls.push(command); }),
+      dispatchShellCommand: vi.fn(async (command: string, opts) => {
+        await opts?.beforeWrite?.();
+        calls.push(command);
+      }),
     } as unknown as KernelHost;
 
     await runDemoDockAction(host, ACTION, { stop: async () => { calls.push("stop"); } });

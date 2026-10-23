@@ -20,14 +20,43 @@ import type {
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 
 const KernelHostContext = React.createContext<KernelHost | null>(null);
+const DisplayHandoffContext = React.createContext<{
+  pending: boolean;
+  begin: () => () => void;
+} | null>(null);
 const LAZY_DOWNLOAD_COMPLETE_VISIBLE_MS = 2400;
 const LAZY_DOWNLOAD_ERROR_VISIBLE_MS = 5000;
 
 export const KernelHostProvider: React.FC<{
   host: KernelHost;
   children: React.ReactNode;
-}> = ({ host, children }) =>
-  <KernelHostContext.Provider value={host}>{children}</KernelHostContext.Provider>;
+}> = ({ host, children }) => {
+  // A retiring pane must not clear a successor's handoff during cleanup.
+  const [handoffs, setHandoffs] = React.useState<Set<symbol>>(() => new Set());
+  const begin = React.useCallback(() => {
+    const token = Symbol();
+    setHandoffs((current) => new Set(current).add(token));
+    return () => setHandoffs((current) => {
+      if (!current.has(token)) return current;
+      const next = new Set(current);
+      next.delete(token);
+      return next;
+    });
+  }, []);
+  const handoff = React.useMemo(() => ({ pending: handoffs.size > 0, begin }), [handoffs, begin]);
+  return (
+    <KernelHostContext.Provider value={host}>
+      <DisplayHandoffContext.Provider value={handoff}>{children}</DisplayHandoffContext.Provider>
+    </KernelHostContext.Provider>
+  );
+};
+
+/** App-local presentation intent; this does not confer display ownership. */
+export function useDisplayHandoff() {
+  const handoff = React.useContext(DisplayHandoffContext);
+  if (!handoff) throw new Error("useDisplayHandoff() called outside <KernelHostProvider>");
+  return handoff;
+}
 
 export function useKernelHost(): KernelHost {
   const host = React.useContext(KernelHostContext);
