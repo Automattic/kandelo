@@ -57,7 +57,7 @@ update a GitHub Check, create or protect an ABI branch, or deploy Pages. Those
 operations require the later staging layers and their hosted evidence.
 Existing ABI release and VFS behavior is unchanged.
 
-## ABI 52 absolute futex deadlines
+## ABI 52 futex deadlines and multicast delivery
 
 ABI 52 corrects `FUTEX_WAIT_BITSET` to interpret its timeout as an
 absolute deadline in `CLOCK_MONOTONIC`, or `CLOCK_REALTIME` when requested.
@@ -65,11 +65,15 @@ absolute deadline in `CLOCK_MONOTONIC`, or `CLOCK_REALTIME` when requested.
 the absolute form; treating it as relative could make short waits last
 far longer than requested. Timeout values retain the existing time64 layout.
 
-This changes the interpretation of an existing syscall argument and its
-blocking behavior. Kernels, host adapters, programs and ABI-bound VFS images
-must be rebuilt through the normal build path. No syscall numbers, channel
-layouts or public Wasm import/export signatures change. Selective bitset
-wake masks and realtime clock changes during an armed wait remain unsupported.
+IPv4 multicast now reaches matching sockets in other local processes and
+machines on a connected virtual network session. The kernel remains the
+authority for group membership, interface and source filtering. Disabling
+multicast loopback suppresses local copies while retaining remote delivery.
+Virtual TCP bindings no longer also reserve a physical Node listener port.
+
+These change existing blocking and networking semantics, so artifacts must
+be rebuilt through the ordinary ABI-bound build path. No syscall numbers,
+channel layouts, or public Wasm import/export signatures change.
 
 ## ABI 51 epoll delivery and stream readiness
 

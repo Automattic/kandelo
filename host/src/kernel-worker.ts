@@ -3883,6 +3883,7 @@ export class CentralizedKernelWorker {
           new Uint8Array(addr),
           port,
           {
+            kernelReceiver: String(pid),
             receive: (datagram) => this.injectUdpDatagram(pid, datagram),
           },
         );
@@ -31134,6 +31135,10 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // A guest virtual link has its own TCP namespace. Opening a physical
+    // listener here would make independent machines contend for the same
+    // host port and expose a virtual-only service outside its link.
+    if (this.io.network?.ownsTcpListener?.(new Uint8Array(addr))) return;
     if (!this.netModule) return; // Not in Node.js environment — no real TCP server
     if (reusableListener) {
       this.tcpListeners.set(key, {

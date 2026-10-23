@@ -1,5 +1,5 @@
 import type { NetworkIO, TcpListenTarget, UdpDatagram, UdpReceiveTarget } from "../types";
-import { LocalVirtualNetwork, type VirtualNetworkBackend } from "./virtual-network";
+import { isIpv4Multicast, LocalVirtualNetwork, type VirtualNetworkBackend } from "./virtual-network";
 import { IPV4_UDP_MAX_PAYLOAD } from "./remote-udp-codec";
 import { NET_READINESS } from "../generated/abi";
 
@@ -197,7 +197,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
   }
 
   udpSourceAddress(destination: Uint8Array): Uint8Array | number {
-    if (this.localAddress && (inSegment(destination) || this.network.isBroadcast(destination))) return this.localAddress.slice();
+    if (this.localAddress && (inSegment(destination) || this.network.isBroadcast(destination) || isIpv4Multicast(destination))) return this.localAddress.slice();
     return this.fallback?.udpSourceAddress?.(destination) ?? ENETUNREACH;
   }
 
@@ -238,11 +238,17 @@ export class RemoteVirtualNetwork implements NetworkIO {
         // A star's host authenticates the source on the ingress link. A
         // joiner receives forwarded sources from any member through the host.
         const broadcast = this.network.isBroadcast(datagram.dstAddr);
+        const multicast = isIpv4Multicast(datagram.dstAddr);
         if (!this.localId || !inSegment(datagram.srcAddr)
           || !this.members.has(datagram.srcAddr[3])
           || (this.role === "host" && datagram.srcAddr[3] !== id)
-          || (this.role === "joiner" && !broadcast && addressKey(datagram.dstAddr) !== addressKey(this.localAddress!))) {
+          || (this.role === "joiner" && !broadcast && !multicast && addressKey(datagram.dstAddr) !== addressKey(this.localAddress!))) {
           this.dropPeer(id, "the remote peer sent a datagram outside its address ownership");
+          return;
+        }
+        if (multicast) {
+          if (this.role === "joiner") this.network.multicastDatagram(datagram, (machine) => machine === machineName(this.localId!));
+          else if (this.admitBroadcast(id)) this.network.multicastDatagram(datagram, (machine) => machine !== machineName(id));
           return;
         }
         if (!broadcast) { this.network.sendDatagram(datagram); return; }
@@ -354,6 +360,7 @@ export class RemoteVirtualNetwork implements NetworkIO {
     const key = endpointKey(binding.owner, binding.id);
     const result = this.network.bindUdp(machineName(binding.owner), `remote:${key}`,
       new Uint8Array(binding.addr), binding.port, {
+        kernelReceiver: `remote:${binding.owner}`,
         receive: (datagram) => {
           const transport = this.peers.get(this.role === "host" ? binding.owner : 1);
           const limit = Math.min(transport?.maxPayload ?? 0, this.members.get(binding.owner)?.maxPayload ?? 0);
@@ -454,6 +461,17 @@ export class RemoteVirtualNetwork implements NetworkIO {
     if (!this.local || this.closed) return ENETUNREACH;
     if (addressKey(datagram.srcAddr) !== "0.0.0.0"
       && addressKey(datagram.srcAddr) !== addressKey(this.localAddress!)) return EADDRNOTAVAIL;
+    if (isIpv4Multicast(datagram.dstAddr)) {
+      const packet = { ...datagram, srcAddr: this.localAddress!.slice() };
+      if (this.role === "host") {
+        if (this.admitBroadcast(this.localId!)) this.network.multicastDatagram(packet, (machine) => machine !== machineName(this.localId!));
+        return 0;
+      }
+      const transport = this.peers.get(1);
+      if (!transport) return ENETUNREACH;
+      if (packet.data.length > Math.min(transport.maxPayload, this.members.get(this.localId!)?.maxPayload ?? 0)) return EMSGSIZE;
+      return transport.sendDatagram(packet);
+    }
     if (this.network.isBroadcast(datagram.dstAddr)) return this.sendBroadcast({ ...datagram, srcAddr: this.localAddress!.slice() });
     return this.local.sendDatagram(datagram);
   }
@@ -585,6 +603,9 @@ export class RemoteVirtualNetwork implements NetworkIO {
     this.tcpBindings.set(key,{owner:this.localId!,id,addr:Array.from(addr),port});
     if (this.role === "host") this.publishDirectory();
     return 0;
+  }
+  ownsTcpListener(addr: Uint8Array): boolean {
+    return addr.every(part => part === 0) || RemoteVirtualNetwork.routes(addr);
   }
   closeTcpListener(id: string): void {
     this.tcp?.unlisten(id); this.local?.closeTcpListener(id); this.tcpBindings.delete(endpointKey(this.localId!,id));

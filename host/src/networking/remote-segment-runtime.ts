@@ -7,6 +7,7 @@ import type {
 } from "../types";
 import { NET_READINESS } from "../generated/abi";
 import { RemoteVirtualNetwork, type RemoteSegmentSnapshot } from "./remote-segment";
+import { isIpv4Multicast } from "./virtual-network";
 import { RemoteSegmentPortTransport, type RemoteSegmentInit, type RemoteSegmentPeer } from "./remote-segment-port";
 
 const ENOENT = 2;
@@ -111,7 +112,7 @@ export class SessionNetwork implements NetworkIO {
   }
 
   udpSourceAddress(destination: Uint8Array): Uint8Array | number {
-    if (this.segment && (RemoteVirtualNetwork.routes(destination) || limitedBroadcast(destination))) {
+    if (this.segment && (RemoteVirtualNetwork.routes(destination) || limitedBroadcast(destination) || isIpv4Multicast(destination))) {
       return this.segment.udpSourceAddress(destination);
     }
     return this.fallback?.udpSourceAddress?.(destination) ?? ENETUNREACH;
@@ -226,7 +227,7 @@ export class SessionNetwork implements NetworkIO {
   }
 
   sendDatagram(datagram: UdpDatagram): number {
-    if (this.segment && (RemoteVirtualNetwork.routes(datagram.dstAddr) || limitedBroadcast(datagram.dstAddr))) {
+    if (this.segment && (RemoteVirtualNetwork.routes(datagram.dstAddr) || limitedBroadcast(datagram.dstAddr) || isIpv4Multicast(datagram.dstAddr))) {
       return this.segment.sendDatagram(datagram);
     }
     return this.fallback?.sendDatagram?.(datagram) ?? ENETUNREACH;
@@ -250,6 +251,11 @@ export class SessionNetwork implements NetworkIO {
     }
     this.tcp.set(id, { addr: addr.slice(), port, target, inSegment });
     return 0;
+  }
+
+  ownsTcpListener(addr: Uint8Array): boolean {
+    return !!this.segment && (wildcard(addr) || RemoteVirtualNetwork.routes(addr))
+      || this.fallback?.ownsTcpListener?.(addr) === true;
   }
 
   closeTcpListener(id: string): void {

@@ -216,7 +216,7 @@ pipe pair.
 ### Networking
 - POSIX AF_INET TCP and UDP inside the kernel, including local loopback and virtual IPv4 machine-to-machine networking
 - Partial AF_INET6 streams and datagrams for `::`/`::1`; loopback streams have a cross-process path, while datagrams remain process-local, and neither provides external or virtual-network IPv6
-- In-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast are process-local; machine-wide datagram routing is still pending
+- IPv4 loopback unicast and multicast route between processes; IPv6 loopback and AF_UNIX datagrams remain process-local
 - `LocalVirtualNetwork` attaches multiple browser Kandelo machines to virtual IPv4 addresses in one browser session
 - Browser networking backends preserve valid decimal one-, two-, three-, and four-component IPv4 forms, reject malformed/overflowing numeric forms, enforce ASCII host-label syntax and DNS length limits, and synthesize IPv4 addresses only for acceptable hostnames; they do not provide AF_INET6 DNS/transport
 - The network lab at `/pages/network/` is intended to run GNU Netcat (`nc`)
@@ -2778,6 +2778,11 @@ Browser sandboxing prevents Kandelo from listening on real network ports or open
 Outbound internet traffic leaves through the fetch and TLS bridges, which the guest sees as a NAT link: `eth0` is `10.0.2.15/24`, internet streams report that address from `getsockname`, and DNS names resolve to made-up addresses in `198.18.0.0/15`. The link carries TCP only, so a UDP datagram for anywhere beyond the machine fails with `EHOSTUNREACH` (see [architecture](architecture.md)).
 
 ### Purpose-checked browser peer connections
+
+Network sessions carry IPv4 multicast as well as unicast and broadcast, so
+[termchat](termchat.md) can discover other running instances and exchange
+messages/files through ordinary guest sockets. Membership and filtering stay
+in the kernel. This does not expose raw physical LAN sockets to browser code.
 
 The Kandelo app's dock has a network button for **network sessions** between
 independent computers that are already running. Creating a session makes this
