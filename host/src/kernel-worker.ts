@@ -12163,14 +12163,14 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Execute one synchronous MAP_SHARED backend operation under a real entry
+   * Execute one synchronous backend operation under a real entry
    * lease, or only while the gate is completely idle for host-only teardown.
    *
    * WHY: PlatformIO implementations can synchronously call back into public
    * worker roots. The exact scope keeps void ingress queued and result-bearing
    * ingress rejected until the caller validates its staged result and commits.
    */
-  #invokeSharedMmapHostOperation<T>(
+  #invokeSerializedHostOperation<T>(
     entry: KernelWorkerEntryContext | undefined,
     operation: () => T,
   ): T {
@@ -12178,7 +12178,7 @@ export class CentralizedKernelWorker {
       return entry.invokeSerializedHostOperation(operation);
     }
     return this.#kernelEntryGate.runSerializedHostOperation(
-      "MAP_SHARED host operation",
+      "serialized host operation",
       operation,
     );
   }
@@ -25507,8 +25507,23 @@ export class CentralizedKernelWorker {
           // WHY: validate and cap in bigint before converting to Number.
           // Otherwise a large signed timespec can round to a different wait,
           // while an invalid nanosecond field can silently carry into seconds.
-          const requestedMs =
-            sec * 1000n + (nsec + 999_999n) / 1_000_000n;
+          let remainingNs = sec * 1_000_000_000n + nsec;
+          if (baseOp === FUTEX_WAIT_BITSET) {
+            // WAIT_BITSET takes an absolute deadline, unlike WAIT's
+            // relative duration. Use the same provider as clock_gettime:
+            // worker-local performance.now() has a different epoch on Node.
+            const clockId = (op & FUTEX_CLOCK_REALTIME) !== 0 ? 0 : 1;
+            // PlatformIO can call back into the worker. Keep that callback
+            // serialized without lending it Wasm authority, and consume its
+            // result fields before returning to the scoped syscall handler.
+            const nowNs = this.#invokeSerializedHostOperation(entry, () => {
+              const now = this.io.clockGettime(clockId);
+              return BigInt(now.sec) * 1_000_000_000n + BigInt(now.nsec);
+            });
+            remainingNs -= nowNs;
+            if (remainingNs < 0n) remainingNs = 0n;
+          }
+          const requestedMs = (remainingNs + 999_999n) / 1_000_000n;
           const cappedMs =
             requestedMs > 2_147_483_647n
               ? 2_147_483_647n
@@ -25532,6 +25547,7 @@ export class CentralizedKernelWorker {
         }
       }
     } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
       this.#rejectScratchTransfer(channel, error, entry);
       return;
     }
@@ -27212,7 +27228,7 @@ export class CentralizedKernelWorker {
     entry?: KernelWorkerEntryContext,
   ): SharedMmapHostResult<string> {
     try {
-      const key = this.#invokeSharedMmapHostOperation(
+      const key = this.#invokeSerializedHostOperation(
         entry,
         () => this.io.fileHandleIdentity?.(
           handle,
@@ -27472,7 +27488,7 @@ export class CentralizedKernelWorker {
     const expectedHandle = backing.handle;
     const expectedKey = backing.key;
     try {
-      const snapshot = this.#invokeSharedMmapHostOperation(entry, () => {
+      const snapshot = this.#invokeSerializedHostOperation(entry, () => {
         const stat = this.io.fstat(expectedHandle);
         const dev = BigInt(stat.dev);
         const ino = BigInt(stat.ino);
@@ -27586,7 +27602,7 @@ export class CentralizedKernelWorker {
       0,
       Math.min(FILE_PAGE_SIZE, expectedSize - pageOffset),
     );
-    const staged = this.#invokeSharedMmapHostOperation(entry, () => {
+    const staged = this.#invokeSerializedHostOperation(entry, () => {
       const bytes = new Uint8Array(FILE_PAGE_SIZE);
       let total = 0;
       while (total < readable) {
@@ -27869,7 +27885,7 @@ export class CentralizedKernelWorker {
     const expectedKey = backing.key;
     const ownedSource = new Uint8Array(source);
     try {
-      const success = this.#invokeSharedMmapHostOperation(entry, () => {
+      const success = this.#invokeSerializedHostOperation(entry, () => {
         let written = 0;
         while (written < ownedSource.length) {
           const remaining = ownedSource.length - written;
@@ -28087,7 +28103,7 @@ export class CentralizedKernelWorker {
   ): SharedMmapBacking | null {
     if (this.sharedMmapBackings.size === 0) return null;
     try {
-      const snapshot = this.#invokeSharedMmapHostOperation(entry, () => {
+      const snapshot = this.#invokeSerializedHostOperation(entry, () => {
         const stat = this.io.stat(path);
         const dev = BigInt(stat.dev);
         const ino = BigInt(stat.ino);

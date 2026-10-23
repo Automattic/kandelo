@@ -8,6 +8,8 @@ use std::backtrace::{Backtrace, BacktraceStatus};
 use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("panic") {
@@ -36,6 +38,26 @@ fn main() {
 
     let spawn = Command::new("/no/such/program").status().unwrap_err();
     check(spawn.kind() == ErrorKind::NotFound, "spawning a missing program is NotFound");
+
+    // Rust's timed parking uses an absolute futex deadline. Treating that
+    // deadline as a relative duration stalls here until the runner watchdog.
+    let timeout = Duration::from_millis(20);
+    let deadline = Instant::now() + timeout;
+    while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
+        std::thread::park_timeout(remaining);
+    }
+    check(Instant::now() >= deadline, "thread::park_timeout reaches its deadline");
+
+    let mutex = Mutex::new(false);
+    let condvar = Condvar::new();
+    let started = Instant::now();
+    let (_guard, result) = condvar
+        .wait_timeout_while(mutex.lock().unwrap(), timeout, |ready| !*ready)
+        .unwrap();
+    check(
+        result.timed_out() && started.elapsed() >= timeout,
+        "Condvar::wait_timeout_while expires without a notification",
+    );
 
     // Kandelo has no unwinder to walk the stack with.
     check(

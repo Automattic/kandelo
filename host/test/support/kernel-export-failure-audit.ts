@@ -225,7 +225,7 @@ function kernelExportCallableAliases(root: ts.Node): Set<string> {
 }
 
 const SYNCHRONOUS_CALLBACK_CALLS = new Set([
-  "#invokeSharedMmapHostOperation",
+  "#invokeSerializedHostOperation",
   "#runOrDeferChannelKernelEntry",
   "#runOrDeferKernelEntry",
   "#runOrDeferPendingSpawnCompletionKernelEntry",
