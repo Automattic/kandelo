@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { fileURLToPath } from "node:url";
+import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./support/browser-memory-boundary";
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
@@ -141,4 +142,100 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
       rowLength: first ? 7 : 0, skipRows: first ? 2 : 0,
       skipPixels: first ? 1 : 0, error: 0 });
   }
+});
+
+test("forwarded synchronous queries isolate owners with one mailbox per channel", async ({ page }) => {
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const result = await page.evaluate(async (sourceRoot) => {
+    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
+    const { setupMainForward } = await import(base + "main-forward.ts");
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 8;
+    document.body.replaceChildren(canvas);
+    const source = `
+      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
+      import * as O from ${JSON.stringify(base + "ops.ts")};
+      onmessage = () => {
+        try {
+          const channels = [73,74].map(pid => createMainForwardChannel({ postMessage: message => postMessage(message) }, pid));
+          const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+          const bytes = new Uint8Array(memory.buffer);
+          const view = new DataView(memory.buffer);
+          const results = [];
+          for (let round = 0; round < 3; round++) {
+            channels.forEach((channel,index) => {
+              channel.onCreateContext();
+              view.setUint16(0, O.OP_CLEAR_COLOR, true); view.setUint16(2, 16, true);
+              [index, 1-index, 0, 1].forEach((v,j) => view.setFloat32(4+4*j,v,true));
+              channel.onSubmit(bytes.subarray(0,20));
+            });
+            for (const channel of channels) {
+              // No color command here: the selected owner's prior state must
+              // be restored for both drawing and synchronous queries.
+              view.setUint16(0, O.OP_CLEAR, true); view.setUint16(2, 4, true);
+              view.setUint32(4, 0x4000, true);
+              channel.onSubmit(bytes.subarray(0,8));
+              view.setUint32(0, 0x0c22, true);
+              const state = channel.onQuery(O.QOP_GET_FLOATV, bytes.subarray(0,4), 16);
+              [0,0,1,1,0x1908,0x1401].forEach((v,j) => view.setUint32(j*4,v,true));
+              const pixels = channel.onQuery(O.QOP_READ_PIXELS, bytes.subarray(0,24), 4);
+              const error = channel.onQuery(O.QOP_GET_ERROR, bytes.subarray(0,0), 4);
+              results.push({ stateRc: state.rc, state: [...new Float32Array(state.bytes.buffer)],
+                pixelsRc: pixels.rc, pixels: [...pixels.bytes],
+                errorRc: error.rc, error: [...error.bytes] });
+            }
+            channels.forEach(channel => channel.onDestroyContext());
+          }
+          postMessage({ type: "contract_done", results });
+        } catch (error) { postMessage({ type: "contract_failed", error: String(error) }); }
+      };
+    `;
+    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    const worker = new Worker(url, { type: "module" });
+    const dispose = [73,74].map(pid => setupMainForward(worker, canvas, pid));
+    // Structured clone produces distinct SAB wrappers over the same storage.
+    // Use an unused payload byte to observe backing reuse across messages.
+    let mailboxCount = 0;
+    const mailboxSizes: number[] = [];
+    let independent = true;
+    try {
+      const results = await new Promise<unknown[]>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("forwarded query did not complete")), 45_000);
+        worker.addEventListener("error", event => { clearTimeout(timeout); reject(new Error(event.message)); });
+        worker.addEventListener("message", ({ data }) => {
+          if (data.type === "gl_forward_query") {
+            const bytes = new Uint8Array(data.mailbox);
+            if (bytes[bytes.length - 1] !== 0x5a) {
+              mailboxCount++;
+              mailboxSizes.push(bytes.length);
+              bytes[bytes.length - 1] = 0x5a;
+            }
+            independent &&= data.input.buffer instanceof ArrayBuffer;
+          } else if (data.type === "gl_forward_submit") {
+            independent &&= data.bytes.buffer instanceof ArrayBuffer;
+          } else if (data.type === "contract_done") {
+            clearTimeout(timeout); resolve(data.results);
+          } else if (data.type === "contract_failed") {
+            clearTimeout(timeout); reject(new Error(data.error));
+          }
+        });
+        worker.postMessage({ start: true });
+      });
+      return { results, independent, mailboxes: mailboxCount, mailboxSizes };
+    } finally {
+      worker.terminate(); dispose.forEach(close => close()); URL.revokeObjectURL(url);
+    }
+  }, root);
+  expect(result.independent).toBe(true);
+  expect(result.mailboxes).toBe(2);
+  expect(result.mailboxSizes[0]).toBeLessThan(66_000);
+  expect(result.results).toHaveLength(6);
+  result.results.forEach((value, index) => {
+    expect(value).toEqual({ stateRc: 16, state: [index % 2, 1 - index % 2, 0, 1],
+      pixelsRc: 4, pixels: index % 2 ? [255,0,0,255] : [0,255,0,255],
+      errorRc: 4, error: [0,0,0,0] });
+  });
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
 });

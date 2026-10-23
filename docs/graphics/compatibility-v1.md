@@ -83,7 +83,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | K04 | Legacy modeset/flip/vblank/master handoff | Main display owner and cleanup; cage changes automatic master and CLOSEFB | KMS, host scanout | Pending flip drop/exit/crash/master replacement, no stale event/scanout | partial |
 | K05 | GPU scanout, CPU fallback and context loss | Main has GPU producer target; cage adds scanout blit | host GPU registry/present target/KMS pump | Render imports to scanout; orientation/pixels three engines | open |
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
-| H02 | Synchronous query ordering and main forwarding parity | Main forward channel has no query callback; old branch adds exact bounded forwarding | worker protocols, query, main-forward | Node contract tests and rendered browser forwarded/direct comparison | open |
+| H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Main authoritative final BO destruction; preserve its recent memory and exec fixes | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
 | A01 | ABI and generated declarations match combined implementation | Both branches independently used 51; old branch 44 is stale | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
@@ -108,7 +108,7 @@ boundary and not a reduction of an existing advertised graphics API.
 
 ## Implementation evidence
 
-No candidate validation recorded yet. Baseline provisioning started with
+Baseline provisioning started with
 `scripts/agent-job start -- ./run.sh setup`; job
 `run.sh-setup-1023-104545-b7c9`. Runtime edits must be followed by a current-tree
 rebuild; this initial build is only baseline/provisioning evidence.
@@ -226,3 +226,34 @@ closure `66d2fdd5462558a721c2445316484a4e6f5cd88ae1d554be53effcb3221e63c7`
 (before its manifest was corrected to the existing wasm32 graphics scope).
 Guest execution is still required; a linked artifact is not a CTS pass.
 The full setup graph now classifies the new package as test support.
+
+### Forwarded synchronous queries
+
+Adapted Brandon Payton's `2d4258ad3ffd77a3e9dd223d78e5e6005355454e`
+query transport, retaining main's operation table, destination authority and
+presentation model. The worker adapter copies commands and query input out
+of guest storage. One fixed 65,556-byte mailbox per channel supplies the
+existing 64 KiB kernel query limit without a guest memory reference or a
+new allocation per query. Timeout permanently retires the mailbox so a late
+completion cannot satisfy another request. Replies are bounded before any
+kernel destination write. Legacy channels without query support return
+ENOSYS. Shared forwarded contexts restore their owner before drawing and
+querying, and invalidate the muxer on retirement.
+
+Two kernel import regressions fail before this repair, one for each pointer
+width. The source selection now passes 203 tests in 13 files with no skips;
+the browser protocol/probe selection passes all 8 tests. Real blocking
+worker-to-main queries and rendering pass in Chromium, Firefox and WebKit:
+two owners alternate green/red frames, retain their own clear color, and
+recreate contexts three times while reusing each channel's mailbox. The
+persistent-realm memory probe is enabled and reports no forbidden payloads.
+Together with the existing rendered state/upload test, this is 6 browser
+passes. These are host contract tests, not guest CTS or compositor evidence.
+
+Logs: `.context/graphics-forward-baseline.log`,
+`.context/graphics-forward-source-final.log`,
+`.context/graphics-forward-boundary-fixed.log`,
+`.context/graphics-forward-browser-final.log`. The initial browser mailbox
+assertion compared SAB wrapper identity across structured clone; its failure
+is preserved in `.context/graphics-forward-browser.log`. The corrected
+assertion observes shared backing, since clones have distinct wrappers.

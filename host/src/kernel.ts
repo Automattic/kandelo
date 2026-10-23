@@ -2745,7 +2745,7 @@ export class WasmPosixKernel {
           outPtr: KernelPointer, outLen: KernelPointer,
         ): number => {
           const b = this.gl.get(pid);
-          if (!b || !b.gl) return -1;
+          if (!b || (!b.gl && !b.forward)) return -1;
           let inputLength: number;
           let outputLength: number;
           let outputDestination: RustLentKernelDestination | null = null;
@@ -2778,20 +2778,35 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
-          const outBuf = new IntrinsicUint8Array(outputLength);
-          // A query may arrive with an empty guest command buffer. Restore
-          // its owner just as submission does before reading native state.
-          this.glMuxerFor(b.gl).switchTo(b);
-          const written = runGlQuery(b, op, inBuf, outBuf);
+          let outBuf: Uint8Array;
+          let written: number;
+          try {
+            if (b.forward) {
+              if (!b.forward.onQuery) return -38; // ENOSYS: legacy channel
+              const result = b.forward.onQuery(op, inBuf, outputLength);
+              written = result.rc;
+              outBuf = result.bytes;
+            } else {
+              outBuf = new IntrinsicUint8Array(outputLength);
+              // Empty command buffers still need to select their owner.
+              this.glMuxerFor(b.gl!).switchTo(b);
+              written = runGlQuery(b, op, inBuf, outBuf);
+            }
+          } catch {
+            return -5; // EIO: renderer/transport failed without a reply
+          }
           if (!Number.isSafeInteger(written)) return -5;
           if (written < 0) return written;
           if (written > outputLength) return -5;
           if (written > 0) {
             if (outputDestination === null) return -5;
-            this.#writeKernelBytes(
-              outputDestination,
-              subarrayUint8Array(outBuf, 0, written),
-            );
+            try {
+              if (written > typedArrayByteLength(outBuf)) return -5;
+              this.#writeKernelBytes(
+                outputDestination,
+                subarrayUint8Array(outBuf, 0, written),
+              );
+            } catch { return -5; }
           }
           return written;
         },

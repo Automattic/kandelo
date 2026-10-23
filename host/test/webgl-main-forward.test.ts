@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import {
   setupMainForward,
+  createMainForwardChannel,
   type ForwardWorkerLike,
   type GlForwardMessage,
 } from "../src/webgl/main-forward.js";
+import {
+  completeGlForwardQuery, createGlForwardQueryMailbox, prepareGlForwardQuery,
+  waitForGlForwardQuery, glForwardQueryCapacity,
+} from "../src/webgl/main-forward-query.js";
 import * as O from "../src/webgl/ops.js";
 
 class FakeWorker implements ForwardWorkerLike {
@@ -25,6 +30,7 @@ class RecordingGl {
   log: Array<[string, unknown[]]> = [];
   clear(m: number) { this.log.push(["clear", [m]]); }
   getExtension(_name: string): unknown { return null; }
+  getError() { return 0x500; }
 }
 
 function fakeCanvas(stub: RecordingGl): { canvas: HTMLCanvasElement; getContextCalls: unknown[][] } {
@@ -32,7 +38,12 @@ function fakeCanvas(stub: RecordingGl): { canvas: HTMLCanvasElement; getContextC
   const canvas = {
     getContext(...args: unknown[]) {
       calls.push(args);
-      return stub;
+      return new Proxy(stub, {
+        get(target, name) {
+          if (name === "createVertexArray") return () => ({});
+          return Reflect.get(target, name) ?? (() => {});
+        },
+      });
     },
   } as unknown as HTMLCanvasElement;
   return { canvas, getContextCalls: calls };
@@ -160,5 +171,69 @@ describe("GlContextRegistry forward channel", () => {
     expect(reg.get(7)).toBeUndefined();
     reg.bind({ pid: 7, cmdbufAddr: 0, cmdbufLen: 4 });
     expect(reg.get(7)!.forward).toBeNull();
+  });
+});
+
+describe("main-thread synchronous query transport", () => {
+  it("orders submits before queries, reuses bounded storage, and copies guest bytes", () => {
+    const worker = new FakeWorker();
+    const gl = new RecordingGl();
+    const dispose = setupMainForward(worker, fakeCanvas(gl).canvas, 7);
+    const messages: GlForwardMessage[] = [];
+    const channel = createMainForwardChannel({ postMessage(message) {
+      messages.push(message);
+      worker.fire(message);
+    } }, 7);
+    channel.onCreateContext();
+    const guest = new Uint8Array(new SharedArrayBuffer(32));
+    guest.set(clearCmdbuf());
+    channel.onSubmit(guest.subarray(0,8));
+    for (let i = 0; i < 10; i++) {
+      const result = channel.onQuery!(O.QOP_GET_ERROR, guest.subarray(0,0), 4);
+      expect(result.rc).toBe(4);
+      expect([...result.bytes]).toEqual([0,5,0,0]);
+      expect(result.bytes.buffer).toBeInstanceOf(ArrayBuffer);
+    }
+    expect(gl.log).toEqual([["clear",[0x4000]]]);
+    const queries = messages.filter(m => m.type === "gl_forward_query");
+    expect(new Set(queries.map(m => m.mailbox)).size).toBe(1);
+    expect(queries[0].mailbox.byteLength).toBeLessThan(66_000);
+    expect(queries.every(m => m.input.buffer instanceof ArrayBuffer)).toBe(true);
+    const submitted = messages.find(m => m.type === "gl_forward_submit")!;
+    guest.fill(0);
+    expect([...submitted.bytes]).toEqual([...clearCmdbuf()]);
+    channel.onDestroyContext();
+    expect(channel.onQuery!(O.QOP_GET_ERROR, new Uint8Array(), 4).rc).toBe(-1);
+    dispose();
+  });
+
+  it("contains invalid results and leaves no authority to reuse a timed-out mailbox", () => {
+    const mailbox = createGlForwardQueryMailbox();
+    expect(() => prepareGlForwardQuery(mailbox, 65537)).toThrow();
+    prepareGlForwardQuery(mailbox, 4);
+    expect(glForwardQueryCapacity(mailbox)).toBe(4);
+    expect(() => completeGlForwardQuery(mailbox, 5, new Uint8Array(5))).toThrow();
+    expect(() => completeGlForwardQuery(mailbox, 4, new Uint8Array(3))).toThrow();
+    const wait = vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
+    try { expect(waitForGlForwardQuery(mailbox).rc).toBe(-5); }
+    finally { wait.mockRestore(); }
+    completeGlForwardQuery(mailbox, 4, new Uint8Array([1,2,3,4]));
+    expect(() => prepareGlForwardQuery(mailbox, 4)).toThrow(/retired/);
+    expect(waitForGlForwardQuery(mailbox).rc).toBe(-5);
+  });
+
+  it("contains a throwing renderer and validates lengths before posting", () => {
+    const worker = new FakeWorker();
+    const gl = new RecordingGl();
+    gl.getError = () => { throw new Error("context failed"); };
+    const dispose = setupMainForward(worker, fakeCanvas(gl).canvas, 7);
+    const post = vi.fn((message: GlForwardMessage) => worker.fire(message));
+    const channel = createMainForwardChannel({ postMessage: post }, 7);
+    expect(channel.onQuery!(O.QOP_GET_ERROR, new Uint8Array(65537), 4).rc).toBe(-22);
+    expect(channel.onQuery!(O.QOP_GET_ERROR, new Uint8Array(), -1).rc).toBe(-22);
+    expect(post).not.toHaveBeenCalled();
+    channel.onCreateContext();
+    expect(channel.onQuery!(O.QOP_GET_ERROR, new Uint8Array(), 4).rc).toBe(-5);
+    dispose();
   });
 });

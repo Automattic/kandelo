@@ -41,6 +41,7 @@ export type GlForwardChannel = {
   onCreateContext(): void;
   onDestroyContext(): void;
   onSubmit(bytes: Uint8Array): void;
+  onQuery?(op: number, input: Uint8Array, outLen: number): { rc: number; bytes: Uint8Array };
 };
 
 export type GlBinding = GlBindingInput & {

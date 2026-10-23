@@ -3767,6 +3767,12 @@ The multiplexer restores masks, stencil operations, clear values, dither,
 constant vertex attributes, independent 2D/cube texture bindings and pixel
 storage state when switching guest contexts. Synchronous native-state queries
 select the caller through that same multiplexer after destination preflight.
+The main-thread fallback supports synchronous queries through one reusable
+65,556-byte device mailbox per channel, matching the kernel's 64 KiB query
+limit. Input and command bytes are copied out of guest memory. A timed-out
+mailbox is retired permanently; a late reply cannot satisfy a later query.
+Forwarded owners sharing a native context also use the multiplexer. The
+persistent browser realm receives no guest memory or guest-backed view.
 Foreign BO uploads save the physical context's alignment and unpack skips,
 neutralize them for the upload, and restore them even on failure. A failed
 new upload does not publish a texture name. Node
