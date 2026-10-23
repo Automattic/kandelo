@@ -2199,6 +2199,8 @@ failed command leaves the terminal visible without a display owner.
 Progress subscribes through `dispatchShellCommand`'s awaited `beforeWrite`
 hook, after the previous command's queue and prompt readiness. The old
 program's returning prompt must not be treated as the replacement exiting.
+Prompt readiness checks the end of the complete terminal history, so an
+earlier prompt cannot make a currently busy terminal appear ready.
 
 A bitmap interface can declare `presentation.displayScale` (0.5–4 CSS
 pixels per guest pixel). The browser advertises a virtual display sized

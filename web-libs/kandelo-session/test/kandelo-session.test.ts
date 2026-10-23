@@ -1021,6 +1021,45 @@ describe("LiveKernelHost: machine PCM lifecycle", () => {
 });
 
 describe("LiveKernelHost: shell command queue", () => {
+  it("waits for a current prompt after replaying a busy terminal's history", async () => {
+    vi.useFakeTimers();
+    try {
+      const encoder = new TextEncoder();
+      let onOutput!: (data: Uint8Array) => void;
+      const write = vi.fn();
+      const host = new LiveKernelHost({
+        kernel: {
+          spawnFromVfs: async () => ({ pid: 100, exit: new Promise<number>(() => {}) }),
+          onPtyOutput(_pid: number, callback: typeof onOutput) {
+            onOutput = callback;
+            callback(encoder.encode("kandelo$ "));
+          },
+          ptyResize() {},
+          ptyWrite: write,
+        } as any,
+      });
+      host.setDefaultShell({
+        programPath: "/bin/bash", argv: ["bash", "-i"], env: ["PS1=kandelo$ "],
+      });
+      await host.attachPty("/dev/pts/0", { cols: 80, rows: 24 });
+      onOutput(encoder.encode("old-display\r\nProgram running\r\n"));
+
+      const beforeWrite = vi.fn();
+      const command = host.dispatchShellCommand("replacement", { beforeWrite });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(beforeWrite).not.toHaveBeenCalled();
+      expect(write).not.toHaveBeenCalled();
+
+      onOutput(encoder.encode("kandelo$ "));
+      await command;
+      expect(beforeWrite).toHaveBeenCalledOnce();
+      expect(write).toHaveBeenCalledOnce();
+      onOutput(encoder.encode("replacement complete\r\nkandelo$ "));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("attaches replacement output after the old prompt and awaits it before writing", async () => {
     const encoder = new TextEncoder();
     let onOutput!: (data: Uint8Array) => void;

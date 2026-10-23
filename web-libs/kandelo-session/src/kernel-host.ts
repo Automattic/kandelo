@@ -1211,7 +1211,10 @@ function waitForPtyReadiness(
     off = pty.onData((bytes) => {
       if (!includeHistory && replayingHistory) return;
       buffer += decoder.decode(bytes, { stream: true });
-      if (ptyBufferEndsWithPrompt(buffer, prompt)) finish();
+      // Only the end of the complete replay describes the current terminal.
+      // An older chunk can end in a prompt followed by a running program.
+      // Finishing after registration also lets finish remove this listener.
+      if (!replayingHistory && ptyBufferEndsWithPrompt(buffer, prompt)) finish();
     });
     replayingHistory = false;
     if (includeHistory && ptyBufferEndsWithPrompt(buffer, prompt)) finish();
