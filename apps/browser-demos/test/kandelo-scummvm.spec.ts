@@ -128,10 +128,18 @@ async function expectTerminalAfterQuit(page: Page) {
 
 /** The new owner must restore Demo itself before its controls are inspected. */
 async function expectReplacementDisplay(page: Page, previousOwner: string | null) {
-  await expect.poll(async () => {
-    const owner = await page.locator(".kmodeset-surface").getAttribute("data-kms-owner-pid");
-    return Number(owner) > 0 && owner !== previousOwner;
-  }, { timeout: 300_000 }).toBe(true);
+  try {
+    await expect.poll(async () => {
+      const owner = await page.locator(".kmodeset-surface").getAttribute("data-kms-owner-pid");
+      return Number(owner) > 0 && owner !== previousOwner;
+    }, { timeout: 300_000 }).toBe(true);
+  } catch (error) {
+    const terminal = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows");
+    const output = await terminal.isVisible() ? await terminal.innerText() : "Terminal is not visible";
+    await test.info().attach("replacement-terminal", { body: output, contentType: "text/plain" });
+    console.error(`Replacement did not acquire the display:\n${output}`);
+    throw error;
+  }
   await expect(page.getByLabel("Computer views").getByRole("button", { name: "Demo", exact: true }))
     .toHaveAttribute("aria-current", "true");
   await expect(page.getByTestId("kms-dock-action-progress")).toHaveCount(0, { timeout: 60_000 });
