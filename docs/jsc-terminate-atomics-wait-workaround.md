@@ -143,8 +143,7 @@ All carry the registry tag:
   the wake/drain phases in `handleDestroy`, and the per-pid wake/drain preamble
   in `handleTerminateProcess`.
 - `host/src/node-kernel-worker-entry.ts` — `DESTROY_KILL_DRAIN_*` constants and
-  the wake/drain preamble in `handleDestroy` (and the parity note in
-  `handleTerminate` explaining why the per-pid wake is browser-only).
+  the wake/drain preamble in `handleDestroy`.
 
 Note the musl glue change means every program binary must be **relinked** to pick
 up the new `kernel_exit`-on-SIGKILL behavior; CI rebuilds them from source.

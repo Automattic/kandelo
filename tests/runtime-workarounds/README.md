@@ -301,7 +301,9 @@ it is still `source = "suite"`.
 3. For each *Needs reduction* entry, try once more to reduce it, or to show
    that the fault is Kandelo's.
 4. For each *Possibly retirable* entry, confirm on a released runtime and
-   follow its removal criteria.
+   flag it to the maintainer as a possible retirement, citing its removal
+   criteria. Removing a workaround is a separate change the maintainer
+   approves; the weekly pass does not remove code.
 5. Hand the maintainer the list.
 
 **Agents never file, comment on, or vote on upstream trackers unless the

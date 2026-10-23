@@ -15696,10 +15696,12 @@ export class CentralizedKernelWorker {
    * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
    * `terminate_process` (host force-kill; how a terminal session's process is
    * torn down on every machine switch) used to hard-terminate the worker while
-   * it was still parked in `Atomics.wait`. On the WebKit builds of that time
-   * (Playwright webkit-2336, 2026-09) `Worker.terminate()` did not reap that
-   * worker, so its OS thread + committed working set leaked — one per switch,
-   * until Safari/iOS OOMed. Bun reproduces the same defect today.
+   * it was still parked in `Atomics.wait`. On Playwright webkit-2336
+   * (2026-09) the app then leaked one `WebCore: Worker` thread per switch,
+   * sampled in `operationMemoryAtomicWait32`, until this per-process wake was
+   * added. The standalone reduction was flat on that same build, so whether
+   * that leak was this engine defect or had another cause is unresolved (see
+   * the entry). Bun 1.3.3 reproduces the reduction today.
    * `killAllBlockedForTeardown` fixes the same class at whole-machine destroy,
    * but is unusable for a single `kill(pid)` because it wakes (and thus exits)
    * *every* live process. This variant is scoped so sibling processes keep

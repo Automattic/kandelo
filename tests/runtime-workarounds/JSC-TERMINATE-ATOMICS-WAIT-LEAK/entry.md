@@ -62,8 +62,10 @@ and its interaction with exec retirement are described in
 [`docs/jsc-terminate-atomics-wait-workaround.md`](../../../docs/jsc-terminate-atomics-wait-workaround.md).
 Every site carries the tag (`git grep -n "RUNTIME-WORKAROUND: JSC-TERMINATE"`).
 
-Cost: destroy and `terminate_process` wait up to
-`DESTROY_KILL_DRAIN_TIMEOUT_MS` (1.5 s) for workers to exit; the glue has a
+Cost: whole-machine destroy (on both hosts) and the browser host's
+`terminate_process` wait up to `DESTROY_KILL_DRAIN_TIMEOUT_MS` (1.5 s) for
+workers to exit (the Node host's `terminate_process` does not wait; it
+terminates directly, as above); the glue has a
 special case for `SIGKILL`; teardown has more states to get right. It runs
 on every engine (on V8 it is a small no-op cost) because that is cheaper and
 less fragile than detecting the engine. A guest stuck in a loop that never
@@ -92,8 +94,8 @@ had the defect is not evidence of a fix).
 |---|---|---|
 | Bun | 1.3.3 | reproduced: js [1,1], wasm [1,1]; `terminate()` settled 0/2 before the notify, 2/2 within 1 s after it |
 | Node.js (V8, control) | v24.15.0 | not reproduced: js [0,0], wasm [0,0]; `terminate()` settled 2/2 before the notify |
-| Playwright WebKit webkit-2311 (Playwright 1.61.0) | 26.5 | reproduced: js [1,1,1], wasm [1,1,1]; still 1 after 10 s |
-| Playwright WebKit webkit-2359 | 26.6 | not reproduced: js [0,0,0], wasm [0,0,0] |
+| Playwright WebKit webkit-2311 (Playwright 1.61.0) | 26.5 | reproduced: js [1,1,1], wasm [1,1,1] (an earlier draft of the page that ran three rounds); still 1 after 10 s |
+| Playwright WebKit webkit-2359 | 26.6 | not reproduced: js [0,0], wasm [0,0] (suite run, page default of 2 rounds) |
 | Playwright Chromium | 153.0.8010.12 | not reproduced with the 5 s wait |
 | Playwright Firefox | 155.0 | not reproduced |
 
@@ -102,11 +104,14 @@ the repository's Playwright 1.63.0 cannot drive that build; that record is
 `source = "manual"`. Chromium still counted the terminated worker 1 s after
 `terminate()` and no longer after 2 s, which is why the probe waits 5 s.
 
-The waiter count tracks the real leak. In Bun, 10 workers that each
+The waiter count tracks the real leak. A scratch thread-and-RSS script
+run once on 2026-10-22 while this entry was written (not committed, and
+not something `repro/` produces) found that in Bun, 10 workers that each
 committed 64 MiB and were terminated while blocked raised the process from
 6 to 18 threads and its RSS by 691 MiB; the same workers terminated while
 idle raised it from 6 to 9 threads and 78 MiB. Under Node.js the thread
-count stayed at 7.
+count stayed at 7. Before quoting those numbers upstream, rerun such a
+measurement and attach it.
 
 History from the maintainer's notes:
 
@@ -157,8 +162,8 @@ reproduces. Related WebKit bugs, neither of which covers this case:
 > and no `'exit'` event fires. Five seconds later `Atomics.notify()` on the
 > word it waited on still wakes one waiter; only then does the promise
 > settle and `'exit'` fire. Until that wake the worker's OS thread and
-> committed memory stay in the process: 10 such workers, each holding
-> 64 MiB and never woken, added 12 threads and 691 MiB RSS. A worker terminated while idle is reclaimed.
+> committed memory stay in the process. A worker terminated while idle is
+> reclaimed.
 > Node.js 24 terminates the same blocked worker in about 5 ms, as its
 > `worker.terminate()` documentation describes.
 >
