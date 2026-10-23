@@ -31,6 +31,23 @@ Run it under the normal suite environment as well as in isolation. A legacy
 mirror fixture and a source-only fixture intentionally admit different
 files; inherited settings must not change which contract a test exercises.
 
+SourceOnly admits only its selected package projection. Standalone local
+fixtures such as `fbtest.wasm` and `epoll-pwait-sigmask.wasm` can therefore
+be present on disk yet unavailable through `tryResolveBinary` under that
+policy. Run the broad host inventory with its normal resolver environment,
+and run SourceOnly consumer checks separately. If a targeted SourceOnly run
+skips a local fixture, rerun it under the normal policy; the skip is not
+evidence for the fixture's runtime behavior.
+
+Also check the canonical image when switching back to the ordinary Node
+runner. `resolveRootfsArtifact()` tries `rootfs.vfs.zst` before the program
+package request, so an older `host/wasm/rootfs.vfs.zst` can take precedence
+over a fresh SourceOnly projection. Refresh it with
+`scripts/dev-shell.sh bash scripts/build-rootfs.sh` before the broad host
+run. For a lazy artifact size mismatch, check the selected image and
+executable identities and repair stale inputs. Do not relax size checks
+or substitute unrelated executable bytes.
+
 Keep authored-source audits separate from generated reports and private
 worktrees. Exclude those evidence directories explicitly while retaining
 production source. Report authorized deferred tests and unsupported cases

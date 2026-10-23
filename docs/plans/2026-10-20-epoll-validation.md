@@ -6,6 +6,10 @@ The [behavior matrix](../epoll.md) separates implemented contracts from
 validation evidence. This is not a complete Linux compatibility or merge
 validation claim.
 
+The subsequent [merge-validation record](2026-10-23-epoll-merge-validation.md)
+tracks the final main integration and its reruns. The sections below retain
+the earlier investigation and validation history at their recorded commits.
+
 The [current-main integration](#integration-with-current-main) supersedes
 the historical partial-build results below.
 

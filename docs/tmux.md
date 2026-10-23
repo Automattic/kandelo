@@ -134,3 +134,11 @@ and shells alive for normal machine teardown. The host portion passed
 The complete log is `.context/tmux-memory-validation.log`. An earlier run
 was invalidated by a concurrent Playwright run deleting a Firefox trace;
 the final run used one Playwright runner and passed unchanged assertions.
+
+After integrating main at `f602474ed4eb`, the focused Node and three-engine
+browser checks passed again. A fresh normal `./run.sh browser` server also
+passed all 21 public-entry tmux/theme cases. The memory gate passed all
+nine browser cases and 72 application launches again. The final results
+and exact-main failure comparisons are recorded in
+[merge validation](plans/2026-10-23-epoll-merge-validation.md); the earlier
+results above remain evidence for their original tree.
