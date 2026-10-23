@@ -1283,9 +1283,13 @@ describe("Rust-owned host import ranges", () => {
     const { kernel, memory } = fullKernelHarness();
     kernel.gl.bind({ pid: 7, cmdbufAddr: 4096, cmdbufLen: 4096 });
     const getError = vi.fn(() => 0x1234);
-    kernel.gl.get(7)!.gl = {
-      getError,
-    } as unknown as WebGL2RenderingContext;
+    kernel.gl.get(7)!.gl = new Proxy({ getError }, {
+      get(target, name) {
+        if (name === "getError") return target.getError;
+        if (name === "createVertexArray") return () => ({});
+        return () => {};
+      },
+    }) as unknown as WebGL2RenderingContext;
     const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
@@ -1369,4 +1373,33 @@ describe("Rust-owned host import ranges", () => {
       ).some((byte) => byte !== 0),
     ).toBe(true);
   });
+});
+
+it("GL queries select the caller's state even without a command submission", () => {
+  const { kernel, memory } = fullKernelHarness();
+  let clearColor = [0,0,0,0];
+  const gl = new Proxy({}, {
+    get(_target, key) {
+      if (key === "clearColor") return (...value: number[]) => { clearColor = value; };
+      if (key === "getParameter") return () => clearColor;
+      if (key === "createVertexArray") return () => ({});
+      return () => {};
+    },
+  }) as WebGL2RenderingContext;
+  for (const [pid, value] of [[7,[0.125,0.25,0.375,1]], [8,[0.5,0.625,0.75,1]]] as const) {
+    kernel.gl.bind({ pid, cmdbufAddr: 4096, cmdbufLen: 4096 });
+    const binding = kernel.gl.get(pid)!;
+    binding.gl = gl;
+    binding.shadow.clearColor = [...value];
+  }
+  const imports = kernel.testAuthority.buildImportObject(memory) as {
+    env: Record<string, (...args: any[]) => any>;
+  };
+  const bytes = new DataView(memory.buffer);
+  bytes.setUint32(4096, 0x0c22, true); // GL_COLOR_CLEAR_VALUE
+  for (const pid of [7,8,7]) {
+    expect(imports.env.host_gl_query(pid, 4, 4096, 4, 8192, 16)).toBe(16);
+    expect([...new Float32Array(memory.buffer,8192,4)])
+      .toEqual(pid === 7 ? [0.125,0.25,0.375,1] : [0.5,0.625,0.75,1]);
+  }
 });

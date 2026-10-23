@@ -618,6 +618,7 @@ function dispatch(
       gl.pixelStorei(pname, param);
       if (pname === GL_UNPACK_ALIGNMENT) b.shadow.unpackAlignment = param;
       else if (pname === GL_PACK_ALIGNMENT) b.shadow.packAlignment = param;
+      else if (b.shadow.pixelStore.has(pname) && param >= 0) b.shadow.pixelStore.set(pname, param);
       return;
     }
 
@@ -691,6 +692,7 @@ function dispatch(
         const obj = b.textures.get(name);
         if (obj) gl.deleteTexture(obj);
         b.shadow.textureUnits = b.shadow.textureUnits.map(tex => tex === obj ? null : tex);
+        b.shadow.cubeTextureUnits = b.shadow.cubeTextureUnits.map(tex => tex === obj ? null : tex);
         b.textures.delete(name);
       }
       return;
@@ -702,7 +704,8 @@ function dispatch(
       gl.bindTexture(target, tex);
       const unit = b.shadow.activeTexture;
       if (unit >= 0 && unit < b.shadow.textureUnits.length) {
-        b.shadow.textureUnits[unit] = tex;
+        if (target === 0x0de1) b.shadow.textureUnits[unit] = tex;
+        else if (target === 0x8513) b.shadow.cubeTextureUnits[unit] = tex;
       }
       return;
     }

@@ -3763,8 +3763,13 @@ GPU-backed Wayland window buffers also own 24-bit depth and 8-bit stencil
 attachments. Allocation checks framebuffer completeness and restores the
 shared context's texture, renderbuffer, and separate read/draw framebuffer
 bindings. Destroying the buffer releases all three GL objects.
-The multiplexer restores masks, stencil operations, clear values, constant
-vertex attributes and texture bindings when switching guest contexts. Node
+The multiplexer restores masks, stencil operations, clear values, dither,
+constant vertex attributes, independent 2D/cube texture bindings and pixel
+storage state when switching guest contexts. Synchronous native-state queries
+select the caller through that same multiplexer after destination preflight.
+Foreign BO uploads save the physical context's alignment and unpack skips,
+neutralize them for the upload, and restore them even on failure. A failed
+new upload does not publish a texture name. Node
 hosts without WebGL2 cannot render these sessions; no software simulation
 stands in for the native LÖVE renderer.
 

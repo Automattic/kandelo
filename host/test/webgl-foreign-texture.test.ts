@@ -20,6 +20,9 @@ function makeFakeGl() {
     activeTexture: 0x84c2, // "unit 2 was active"
     binding2d: { name: "prev-tex" },
     unpackRowLength: 0,
+    unpackAlignment: 4,
+    unpackSkipRows: 0,
+    unpackSkipPixels: 0,
   };
   const calls = {
     texImage2D: 0,
@@ -28,6 +31,7 @@ function makeFakeGl() {
     bindTexture: [] as unknown[],
     activeTexture: [] as number[],
     deletedTextures: [] as unknown[],
+    uploadState: [] as [number, number, number, number][],
   };
   let texN = 0;
   const gl = {
@@ -49,12 +53,23 @@ function makeFakeGl() {
         ? state.activeTexture
         : p === GL_UNPACK_ROW_LENGTH
           ? state.unpackRowLength
-          : state.binding2d,
+          : p === 0x0cf5 ? state.unpackAlignment
+            : p === 0x0cf3 ? state.unpackSkipRows
+              : p === 0x0cf4 ? state.unpackSkipPixels : state.binding2d,
     activeTexture: (u: number) => { calls.activeTexture.push(u); },
-    pixelStorei: (p: number, v: number) => { calls.pixelStorei.push([p, v]); },
+    pixelStorei: (p: number, v: number) => {
+      calls.pixelStorei.push([p, v]);
+      if (p === 0x0cf2) state.unpackRowLength = v;
+      if (p === 0x0cf5) state.unpackAlignment = v;
+      if (p === 0x0cf3) state.unpackSkipRows = v;
+      if (p === 0x0cf4) state.unpackSkipPixels = v;
+    },
     bindTexture: (_target: number, tex: unknown) => { calls.bindTexture.push(tex); },
     texParameteri: () => {},
-    texImage2D: () => { calls.texImage2D++; },
+    texImage2D: () => { calls.texImage2D++;
+      calls.uploadState.push([state.unpackRowLength, state.unpackAlignment,
+        state.unpackSkipRows, state.unpackSkipPixels]);
+    },
     texSubImage2D: () => { calls.texSubImage2D++; },
   };
   return { gl: gl as unknown as WebGL2RenderingContext, calls, state };
@@ -161,4 +176,30 @@ describe("bindForeignTexture — BIND_FOREIGN_TEXTURE upload path", () => {
     expect(b.foreignTextures.has(55)).toBe(false);
     expect(b.textures.has(id)).toBe(false);
   });
+});
+
+it("foreign uploads neutralize skips and restore the physical context's alignment", () => {
+  const { gl, calls, state } = makeFakeGl();
+  const { b } = makeBinding(gl);
+  state.unpackAlignment = 8; state.unpackRowLength = 5;
+  state.unpackSkipRows = 2; state.unpackSkipPixels = 3;
+  b.shadow.unpackAlignment = 1; // A different guest last owned the context.
+  expect(bindForeignTexture(b, 1, new Uint8Array(64), { w: 4, h: 2, stride: 32 })).toBeGreaterThan(0);
+  expect(calls.uploadState).toEqual([[8,4,0,0]]);
+  expect(state).toMatchObject({ unpackAlignment: 8, unpackRowLength: 5,
+    unpackSkipRows: 2, unpackSkipPixels: 3 });
+});
+
+it("foreign upload failure restores state and rolls back a new texture", () => {
+  const { gl, calls, state } = makeFakeGl();
+  const { b } = makeBinding(gl);
+  state.unpackRowLength = 5;
+  gl.texImage2D = () => { throw new Error("context upload failure"); };
+  expect(bindForeignTexture(b, 1, new Uint8Array(64), { w: 4, h: 2, stride: 32 })).toBe(-5);
+  expect(state.unpackRowLength).toBe(5);
+  expect(calls.bindTexture.at(-1)).toBe(state.binding2d);
+  expect(calls.activeTexture.at(-1)).toBe(state.activeTexture);
+  expect(calls.deletedTextures).toHaveLength(1);
+  expect(b.foreignTextures.size).toBe(0);
+  expect(b.textures.size).toBe(0);
 });

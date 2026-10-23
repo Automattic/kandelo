@@ -380,3 +380,54 @@ describe("cmdbuf decoder — shadow writes", () => {
     expect(b.shadow.fbo).toBe(b.fbos.get(13)!);
   });
 });
+
+it("keeps cube and 2D texture bindings independent on the same unit", () => {
+  const b = setupBinding();
+  const commands = new Tlv(b.cmdbufView!.buffer as ArrayBuffer);
+  let record = commands.op(O.OP_GEN_TEXTURES, 12);
+  commands.view.setUint32(record.p, 2, true);
+  commands.view.setUint32(record.p + 4, 11, true);
+  commands.view.setUint32(record.p + 8, 12, true);
+  record = commands.op(O.OP_BIND_TEXTURE, 8);
+  commands.view.setUint32(record.p, 0x0de1, true);
+  commands.view.setUint32(record.p + 4, 11, true);
+  record = commands.op(O.OP_BIND_TEXTURE, 8);
+  commands.view.setUint32(record.p, 0x8513, true);
+  commands.view.setUint32(record.p + 4, 12, true);
+  expect(decodeAndDispatch(b, 0, commands.p)).toBe(0);
+  expect(b.shadow.textureUnits[0]).toBe(b.textures.get(11));
+  const gl = b.gl!;
+  const bind = vi.spyOn(gl, "bindTexture");
+  new GlMuxer(gl).switchTo(b);
+  expect(bind).toHaveBeenCalledWith(0x0de1, b.textures.get(11));
+  expect(bind).toHaveBeenCalledWith(0x8513, b.textures.get(12));
+});
+
+it("restores dither and pixel-store state across a shared context switch", () => {
+  const a = setupBinding(), b = setupBinding();
+  b.gl = a.gl;
+  const commands = new Tlv(a.cmdbufView!.buffer as ArrayBuffer);
+  let record = commands.op(O.OP_DISABLE, 4);
+  commands.view.setUint32(record.p, 0x0bd0, true);
+  for (const [key, value] of [[0x0cf2, 7], [0x0cf3, 2], [0x0cf4, 1], [0x0d02, 9]]) {
+    record = commands.op(O.OP_PIXEL_STOREI, 8);
+    commands.view.setUint32(record.p, key, true);
+    commands.view.setInt32(record.p + 4, value, true);
+  }
+  expect(decodeAndDispatch(a, 0, commands.p)).toBe(0);
+  const gl = a.gl!;
+  const pixelStore = vi.spyOn(gl, "pixelStorei");
+  const enable = vi.spyOn(gl, "enable"), disable = vi.spyOn(gl, "disable");
+  const muxer = new GlMuxer(gl);
+  muxer.switchTo(a);
+  expect(disable).toHaveBeenCalledWith(0x0bd0);
+  expect(pixelStore).toHaveBeenCalledWith(0x0cf2, 7);
+  expect(pixelStore).toHaveBeenCalledWith(0x0cf3, 2);
+  expect(pixelStore).toHaveBeenCalledWith(0x0cf4, 1);
+  expect(pixelStore).toHaveBeenCalledWith(0x0d02, 9);
+  pixelStore.mockClear();
+  muxer.switchTo(b);
+  expect(enable).toHaveBeenCalledWith(0x0bd0);
+  for (const key of [0x0cf2, 0x0cf3, 0x0cf4, 0x0d02])
+    expect(pixelStore).toHaveBeenCalledWith(key, 0);
+});

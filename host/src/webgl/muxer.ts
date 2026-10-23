@@ -1,5 +1,4 @@
-// Texture-unit replay assumes TEXTURE_2D (no cube/3D targets in the
-// current op set).
+// Replay each GLES2 texture target independently on the shared context.
 import {
   GL_BLEND,
   GL_BACK,
@@ -48,6 +47,7 @@ export class GlMuxer {
     gl.bindRenderbuffer(0x8d41, s.renderbuffer);
     gl.colorMask(...s.colorMask);
 
+    if (s.ditherEnabled) gl.enable(0x0bd0); else gl.disable(0x0bd0);
     if (s.depthTestEnabled) gl.enable(GL_DEPTH_TEST); else gl.disable(GL_DEPTH_TEST);
     gl.depthMask(s.depthMask);
     gl.depthFunc(s.depthFunc);
@@ -89,11 +89,13 @@ export class GlMuxer {
     for (let i = 0; i < s.textureUnits.length; i++) {
       gl.activeTexture(GL_TEXTURE0 + i);
       gl.bindTexture(GL_TEXTURE_2D, s.textureUnits[i]);
+      gl.bindTexture(0x8513, s.cubeTextureUnits[i]);
     }
     gl.activeTexture(GL_TEXTURE0 + s.activeTexture);
 
     gl.pixelStorei(GL_UNPACK_ALIGNMENT, s.unpackAlignment);
     gl.pixelStorei(GL_PACK_ALIGNMENT, s.packAlignment);
+    for (const [pname, value] of s.pixelStore) gl.pixelStorei(pname, value);
 
     this.current = target;
   }

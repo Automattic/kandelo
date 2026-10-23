@@ -181,7 +181,9 @@ describe("GlMuxer.switchTo", () => {
 
     const activeCalls = gl.callsOf("activeTexture").map((c) => (c as number[])[0]);
     expect(activeCalls).toEqual([...Array.from({length: 32}, (_, i) => GL_TEXTURE0 + i), GL_TEXTURE0 + 5]);
-    expect(gl.callsOf("bindTexture")).toEqual(t.shadow.textureUnits.map(tex => [GL_TEXTURE_2D, tex]));
+    expect(gl.callsOf("bindTexture")).toEqual(t.shadow.textureUnits.flatMap((tex, unit) => [
+      [GL_TEXTURE_2D, tex], [0x8513, t.shadow.cubeTextureUnits[unit]],
+    ]));
   });
 
   it("pixelStorei replays unpack and pack alignment", () => {
@@ -193,6 +195,7 @@ describe("GlMuxer.switchTo", () => {
     expect(gl.callsOf("pixelStorei")).toEqual([
       [GL_UNPACK_ALIGNMENT, 1],
       [GL_PACK_ALIGNMENT, 8],
+      ...t.shadow.pixelStore.entries(),
     ]);
   });
 

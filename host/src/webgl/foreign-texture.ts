@@ -29,60 +29,66 @@ export function bindForeignTexture(
   dims: { w: number; h: number; stride: number },
 ): number {
   const gl = b.gl;
-  if (!gl) return -5; // EIO — no WebGL backing (headless host)
-  if (dims.w <= 0 || dims.h <= 0 || dims.stride < dims.w * 4) return -22;
+  if (!gl) return -5;
+  if (![dims.w, dims.h, dims.stride].every(Number.isSafeInteger)
+    || dims.w <= 0 || dims.h <= 0 || dims.stride < dims.w * 4
+    || dims.stride % 4 !== 0) return -22;
+  const need = (dims.h - 1) * dims.stride + dims.w * 4;
+  if (!Number.isSafeInteger(need) || need > boBytes.byteLength) return -22;
 
-  let entry = b.foreignTextures.get(bo_id);
-  const realloc = !entry || entry.w !== dims.w || entry.h !== dims.h;
-  if (!entry) {
-    const tex = gl.createTexture();
-    if (!tex) return -5;
-    entry = { tex, texId: b.nextForeignTexId++, w: dims.w, h: dims.h, scratch: null };
-    b.foreignTextures.set(bo_id, entry);
-    b.textures.set(entry.texId, entry.tex);
-  }
-  entry.w = dims.w;
-  entry.h = dims.h;
-
-  // Stage into a non-shared buffer — WebGL rejects SAB-backed views.
-  // Upload rows at the bo stride via UNPACK_ROW_LENGTH instead of
-  // repacking. WebGL2 needs ((h-1)*rowLength + w) * 4 bytes, which
-  // stride*h always covers.
-  const need = Math.min(dims.stride * dims.h, boBytes.byteLength);
-  if (!entry.scratch || entry.scratch.byteLength !== need) {
-    entry.scratch = new Uint8Array(need);
-  }
-  entry.scratch.set(boBytes.subarray(0, need));
-
+  // This operation can run while another logical context owns the physical
+  // WebGL context. Restore its actual state, not the importing guest's shadow.
   const prevActive = gl.getParameter(gl.ACTIVE_TEXTURE) as number;
   gl.activeTexture(gl.TEXTURE0);
   const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
-  // Row length isn't shadow-tracked (the muxer forwards OP_PIXEL_STOREI
-  // raw), so query the live value to restore instead of assuming 0.
   const prevRowLen = gl.getParameter(GL_UNPACK_ROW_LENGTH) as number;
-  gl.pixelStorei(GL_UNPACK_ROW_LENGTH, dims.stride >> 2);
-  gl.pixelStorei(GL_UNPACK_ALIGNMENT, 4);
-  gl.bindTexture(GL_TEXTURE_2D, entry.tex);
-  if (realloc) {
-    // Window-sized surfaces are drawn ~1:1 by the compositor; plain
-    // bilinear, no mip chain.
-    gl.texParameteri(GL_TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(GL_TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(GL_TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(GL_TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(
-      GL_TEXTURE_2D, 0, gl.RGBA, dims.w, dims.h, 0,
-      gl.RGBA, gl.UNSIGNED_BYTE, entry.scratch,
-    );
-  } else {
-    gl.texSubImage2D(
-      GL_TEXTURE_2D, 0, 0, 0, dims.w, dims.h,
-      gl.RGBA, gl.UNSIGNED_BYTE, entry.scratch,
-    );
+  const prevAlignment = gl.getParameter(GL_UNPACK_ALIGNMENT) as number;
+  const prevSkipRows = gl.getParameter(0x0cf3) as number;
+  const prevSkipPixels = gl.getParameter(0x0cf4) as number;
+  let entry = b.foreignTextures.get(bo_id);
+  const isNew = !entry;
+  const realloc = !entry || entry.w !== dims.w || entry.h !== dims.h;
+  try {
+    if (!entry) {
+      const tex = gl.createTexture();
+      if (!tex) return -5;
+      entry = { tex, texId: b.nextForeignTexId++, w: dims.w, h: dims.h, scratch: null };
+    }
+    // Non-shared storage is required by WebGL's typed-array upload contract.
+    if (!entry.scratch || entry.scratch.byteLength !== need) entry.scratch = new Uint8Array(need);
+    entry.scratch.set(boBytes.subarray(0, need));
+    gl.pixelStorei(GL_UNPACK_ROW_LENGTH, dims.stride / 4);
+    gl.pixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    gl.pixelStorei(0x0cf3, 0);
+    gl.pixelStorei(0x0cf4, 0);
+    gl.bindTexture(GL_TEXTURE_2D, entry.tex);
+    if (realloc) {
+      gl.texParameteri(GL_TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(GL_TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(GL_TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(GL_TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(GL_TEXTURE_2D, 0, gl.RGBA, dims.w, dims.h, 0,
+        gl.RGBA, gl.UNSIGNED_BYTE, entry.scratch);
+    } else {
+      gl.texSubImage2D(GL_TEXTURE_2D, 0, 0, 0, dims.w, dims.h,
+        gl.RGBA, gl.UNSIGNED_BYTE, entry.scratch);
+    }
+    entry.w = dims.w;
+    entry.h = dims.h;
+    if (isNew) {
+      b.foreignTextures.set(bo_id, entry);
+      b.textures.set(entry.texId, entry.tex);
+    }
+    return entry.texId;
+  } catch {
+    if (isNew && entry) gl.deleteTexture(entry.tex);
+    return -5;
+  } finally {
+    gl.bindTexture(GL_TEXTURE_2D, prevTex);
+    gl.pixelStorei(0x0cf3, prevSkipRows);
+    gl.pixelStorei(0x0cf4, prevSkipPixels);
+    gl.pixelStorei(GL_UNPACK_ROW_LENGTH, prevRowLen);
+    gl.pixelStorei(GL_UNPACK_ALIGNMENT, prevAlignment);
+    gl.activeTexture(prevActive);
   }
-  gl.bindTexture(GL_TEXTURE_2D, prevTex);
-  gl.pixelStorei(GL_UNPACK_ROW_LENGTH, prevRowLen);
-  gl.pixelStorei(GL_UNPACK_ALIGNMENT, b.shadow.unpackAlignment);
-  gl.activeTexture(prevActive);
-  return entry.texId;
 }

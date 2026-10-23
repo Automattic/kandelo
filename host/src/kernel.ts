@@ -980,6 +980,16 @@ export class WasmPosixKernel {
   private gl_submit_queue = new SubmitQueue((pid) => this.kms.isMasterPid(pid));
   private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
 
+  private glMuxerFor(gl: WebGL2RenderingContext): GlMuxer {
+    let muxer = this.gl_muxers.get(gl);
+    if (!muxer) {
+      muxer = new GlMuxer(gl);
+      this.gl_muxers.set(gl, muxer);
+    }
+    return muxer;
+  }
+
+
   /**
    * Merge additional callbacks into the existing set.
    * Existing callbacks not specified in the argument are preserved.
@@ -2679,12 +2689,7 @@ export class WasmPosixKernel {
             this.gl_submit_queue,
             (bb) => {
               if (!bb.gl) return null;
-              let mux = this.gl_muxers.get(bb.gl);
-              if (!mux) {
-                mux = new GlMuxer(bb.gl);
-                this.gl_muxers.set(bb.gl, mux);
-              }
-              return mux;
+              return this.glMuxerFor(bb.gl);
             },
             (bb, off, len) => decodeAndDispatch(bb, off, len),
           );
@@ -2774,6 +2779,9 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
           const outBuf = new IntrinsicUint8Array(outputLength);
+          // A query may arrive with an empty guest command buffer. Restore
+          // its owner just as submission does before reading native state.
+          this.glMuxerFor(b.gl).switchTo(b);
           const written = runGlQuery(b, op, inBuf, outBuf);
           if (!Number.isSafeInteger(written)) return -5;
           if (written < 0) return written;
