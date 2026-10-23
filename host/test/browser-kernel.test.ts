@@ -164,10 +164,11 @@ function browserAudioGlobals() {
 
 describe("BrowserKernel", () => {
   beforeEach(() => {
-    // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] browser-pcm-driver.ts holds one
-    // page-wide AudioContext in module scope and deliberately never closes it,
-    // so without this reset a later test's driver reuses an earlier test's
-    // mock context and its own suspend/close spies are never called.
+    // [RUNTIME-WORKAROUND: WEBKIT-AUDIOWORKLET-CLOSE-LEAK]
+    // browser-pcm-driver.ts holds one page-wide AudioContext in module scope
+    // and deliberately never closes it, so without this reset a later test's
+    // driver reuses an earlier test's mock context and its own suspend/close
+    // spies are never called.
     vi.resetModules();
     MockWorker.instances = [];
     MockWorker.detachTransfers = false;
@@ -1756,9 +1757,10 @@ describe("BrowserKernel", () => {
     finishPcmSettlement();
     await destroyPromise;
 
-    // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] The AudioContext is page-wide (PR
-    // #1410): closing one per machine leaves a WebCore AudioWorklet rendering
-    // thread parked forever on WebKit. Teardown suspends the pipeline and
+    // [RUNTIME-WORKAROUND: WEBKIT-AUDIOWORKLET-CLOSE-LEAK]
+    // The AudioContext is page-wide (PR #1410): closing one per machine
+    // leaves a WebCore AudioWorklet rendering thread parked forever on WebKit
+    // (a suspected WebKit defect). Teardown suspends the pipeline and
     // unhooks this machine's worklet node, then leaves the context open and
     // suspended for the next machine to reuse.
     expect(teardownOrder).toEqual([
