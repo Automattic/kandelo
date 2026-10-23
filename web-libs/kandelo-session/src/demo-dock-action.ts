@@ -45,18 +45,19 @@ export async function runDemoDockAction(
   await onPhase("stopping");
   if (stop) await stop();
   else await host.interruptShellForeground({ timeoutMs: stopTimeoutMs });
-  await onPhase("starting");
   // Like the machine's own command, the restart is usually a long-lived
   // foreground program: resolve on the PTY write, not on a later prompt.
-  await host.dispatchShellCommand(action.restart);
+  await host.dispatchShellCommand(action.restart, {
+    beforeWrite: () => onPhase("starting"),
+  });
   await onPhase("done");
 }
 
 /**
  * What the action's program says it is doing, read from the machine's
- * terminal output. The display is dark between Ctrl+C and the replacement's
- * first frame (for a download that is most of a minute), so the UI shows the
- * program's own words rather than a spinner that knows nothing.
+ * terminal output. Preparation can take a while before the next program
+ * draws. An ownerless display returns to the terminal, where the script's
+ * own output remains visible; a selected stage can show these status lines.
  *
  * The convention is the one Unix tools already use: a program prefixes its
  * status lines with its own name (`scummvm-play: Verifying…`). Only
