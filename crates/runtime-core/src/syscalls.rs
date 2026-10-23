@@ -49027,6 +49027,7 @@ impl HostIO for RelSymlinkMock {
         let _g_master = crate::dri::master::lock_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.cursor_supported = true;
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
         for (capability, expected) in [
             (DRM_CAP_CRTC_IN_VBLANK_EVENT, 1),
@@ -49173,13 +49174,14 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
-    fn kms_dpms_and_cursor_need_master_and_hide_is_the_only_cursor_state() {
+    fn kms_dpms_and_cursor_require_master_and_validate_handles() {
         use crate::dri::kms;
         use wasm_posix_shared::dri::*;
         let _g_master = crate::dri::master::lock_for_test();
         kms::reset_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.cursor_supported = true;
         let dpms_off = WpkDrmModeConnectorSetProperty {
             value: DRM_MODE_DPMS_OFF,
             prop_id: kms::PROP_DPMS,
@@ -49206,7 +49208,7 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR, cursor(0)).map(|_| ()), Ok(()));
         assert_eq!(
             kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR, cursor(7)).map(|_| ()),
-            Err(Errno::ENXIO)
+            Err(Errno::ENOENT)
         );
         kms::reset_for_test();
     }
@@ -49219,6 +49221,7 @@ impl HostIO for RelSymlinkMock {
         kms::reset_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        host.cursor_supported = true;
         let fd = kms_master_card0(&mut proc, &mut host);
         let plain = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
         let dpms = |value| WpkDrmModeObjSetProperty {
@@ -49252,7 +49255,7 @@ impl HostIO for RelSymlinkMock {
         );
         assert_eq!(
             cursor2(&mut proc, &mut host, WpkDrmModeCursor { flags: DRM_MODE_CURSOR_MOVE, ..hide }),
-            Err(Errno::ENXIO)
+            Ok(())
         );
 
         assert_eq!(
@@ -50426,6 +50429,8 @@ impl HostIO for RelSymlinkMock {
                     chunk.copy_from_slice(&word.to_le_bytes());
                 }
             };
+            // card0 auto-acquires master; explicitly drop it for this denial.
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
             fill(&mut request, [1, 1, 0, 0, 64, 64, 1, 0, 0]);
             assert_eq!(
                 sys_ioctl(
