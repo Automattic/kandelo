@@ -1135,6 +1135,12 @@ const auditAllowances: AuditAllowance[] = [
     why: "This isolated browser diagnostic creates only its disposable Atomics termination test memory.",
   },
   {
+    key: "tests/runtime-workarounds/JSC-TERMINATE-ATOMICS-WAIT-LEAK/repro/repro.mjs::blockedWorker::wasm-memory-authority::new WebAssembly.Memory({ initial: 256, maximum: 16384, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This standalone runtime-workaround reproduction contains no Kandelo code; it creates only the disposable memory its blocked test worker waits on.",
+  },
+  {
     key: "apps/browser-demos/public/wasm-memory-reclaim-worker.js::makeCommittedSharedMemory::wasm-memory-authority::new WebAssembly.Memory({ initial: 1, maximum: MAX_PAGES, shared: true, })",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
