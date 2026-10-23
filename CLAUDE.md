@@ -143,6 +143,14 @@ Process state is authoritative. `fork`, `exec`, `posix_spawn`, `clone`, `exit`,
 `waitpid`, fd tables, OFDs, locks, sockets, PTYs, memory layout, and
 zombie/reaping state must remain coherent across transitions.
 
+A workaround for a defect in an outside runtime or toolchain (a browser
+engine, Node.js, Bun, LLVM, wasm-ld, wasm-opt, Rust) needs a registry entry
+in `tests/runtime-workarounds/` and a `[RUNTIME-WORKAROUND: <ID>]` tag at
+every code site. Blaming a runtime needs a standalone reproduction that
+contains no Kandelo code and judges its own result; until one exists the
+defect is "suspected", and docs, comments and PRs must say so. See
+`tests/runtime-workarounds/README.md`.
+
 See `docs/agent-guidance/debugging-and-posix.md` before changing syscall,
 process, VFS, memory, device, or root-cause debugging behavior.
 
