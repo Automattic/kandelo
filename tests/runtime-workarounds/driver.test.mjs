@@ -9,7 +9,7 @@ import { aggregate } from './driver.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const driver = join(here, 'driver.mjs');
 
-function drive(fixture, { kind, entry, target, timeoutSeconds = 60 }) {
+function drive(fixture, { kind, entry, target, timeoutSeconds = 60, env }) {
   const started = Date.now();
   const result = spawnSync(
     process.execPath,
@@ -24,15 +24,29 @@ function drive(fixture, { kind, entry, target, timeoutSeconds = 60 }) {
       '--timeout-seconds', String(timeoutSeconds),
       '--crash-is-reproduced', '0',
     ],
-    { encoding: 'utf8' },
+    { encoding: 'utf8', env: env ?? process.env },
   );
   const lines = result.stdout.trim().split('\n');
+  let verdict = null;
+  try {
+    verdict = JSON.parse(lines[lines.length - 1]);
+  } catch {
+    // A harness failure prints no verdict line.
+  }
   return {
     status: result.status,
+    stdout: result.stdout,
     stderr: result.stderr,
     seconds: (Date.now() - started) / 1000,
-    verdict: JSON.parse(lines[lines.length - 1]),
+    verdict,
   };
+}
+
+/** Exit 3, a message on stderr, and no verdict line on stdout. */
+function assertHarnessFailure(r, pattern) {
+  assert.equal(r.status, 3, `status ${r.status}; stderr: ${r.stderr}`);
+  assert.equal(r.verdict, null, `printed a verdict: ${r.stdout}`);
+  assert.match(r.stderr, pattern);
 }
 
 const page = (fixture, extra = {}) =>
@@ -89,6 +103,31 @@ test('a script that exits without a REPRO-VERDICT line is inconclusive', () => {
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.verdict.verdict, 'inconclusive');
   assert.match(r.verdict.details, /without a REPRO-VERDICT line/);
+});
+
+test('a browser target Playwright does not have is a harness failure', () => {
+  const r = page('reports-reproduced', { target: 'netscape' });
+  assertHarnessFailure(r, /driver: harness failure: .*netscape/);
+});
+
+test('a browser that cannot be launched is a harness failure, not inconclusive', () => {
+  // A browsers directory that does not exist: Playwright finds no executable.
+  const r = page('reports-reproduced', {
+    timeoutSeconds: 10,
+    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: join(here, '_fixtures', 'does-not-exist') },
+  });
+  assertHarnessFailure(r, /driver: harness failure: could not launch chromium/);
+});
+
+test('a script runtime that is not installed is a harness failure', () => {
+  // `bun` resolves through PATH; an empty PATH cannot find it.
+  const r = drive('node-script', {
+    kind: 'script',
+    entry: 'repro.mjs',
+    target: 'bun',
+    env: { ...process.env, PATH: join(here, '_fixtures', 'does-not-exist') },
+  });
+  assertHarnessFailure(r, /driver: harness failure: could not run bun/);
 });
 
 test('aggregate', () => {

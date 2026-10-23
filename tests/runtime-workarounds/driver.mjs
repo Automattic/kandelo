@@ -1,17 +1,25 @@
 // Runs one registry reproduction against one target and prints a verdict.
 //
 // This file is the only place that knows how to launch a browser page or a
-// script; `xtask runtime-workarounds run` passes the `[repro]` fields as flags
+// script; `xtask runtime-workarounds run` passes the `[[repro]]` fields as flags
 // so no TOML parser is needed here.
 //
 //   node driver.mjs --dir <repro-dir> --kind browser-page|script --entry <file>
 //        --target <t> --attempts N --min-reproduced N --timeout-seconds N
 //        --crash-is-reproduced 0|1
 //
-// The last stdout line is always one JSON object:
-//   {"verdict":"reproduced|not-reproduced|inconclusive","version":"...",
-//    "os":"macos|linux|windows","details":"..."}
-// and the exit status is 0 whenever a verdict was produced.
+// Exit status and output:
+//   0  a verdict was produced. The last stdout line is one JSON object:
+//        {"verdict":"reproduced|not-reproduced|inconclusive","version":"...",
+//         "os":"macos|linux|windows","details":"..."}
+//      `inconclusive` is the repro's own answer (no verdict in time, an
+//      unusable verdict, a script that exited without one).
+//   1  the driver itself failed unexpectedly; no verdict line.
+//   2  bad arguments; no verdict line.
+//   3  harness failure: Playwright could not be imported, or the target
+//      browser or script runtime could not be launched. stderr starts with
+//      `driver: harness failure:` and no verdict line is printed, because a
+//      harness that never ran the repro says nothing about the runtime.
 //
 // Repro protocols (the repro itself is Kandelo-free and judges itself):
 //   browser-page  the page sets window.__reproVerdict = { verdict, details }
@@ -33,6 +41,9 @@ const OS_NAMES = { darwin: 'macos', linux: 'linux', win32: 'windows' };
 const POLL_MS = 200;
 const EVALUATE_TIMEOUT_MS = 1000;
 const CLOSE_TIMEOUT_MS = 10_000;
+
+/** The repro could not be run at all; `main` exits 3 without a verdict. */
+export class HarnessError extends Error {}
 
 /**
  * Combine per-attempt results into one verdict. `reproduced` iff at least
@@ -138,7 +149,14 @@ async function serve(dir) {
 }
 
 async function loadPlaywright() {
-  return import(pathToFileURL(PLAYWRIGHT).href);
+  try {
+    return await import(pathToFileURL(PLAYWRIGHT).href);
+  } catch (error) {
+    throw new HarnessError(
+      `could not import Playwright from ${PLAYWRIGHT} (run npm install in apps/browser-demos): ` +
+        String(error.message).split('\n')[0],
+    );
+  }
 }
 
 // TEMPORARY WORKAROUND: remove once the pinned Playwright bundles Firefox
@@ -177,11 +195,7 @@ async function browserAttempt(engine, name, home, url, timeoutMs) {
   try {
     browser = await launch(engine, home, timeoutMs);
   } catch (error) {
-    return {
-      result: 'inconclusive',
-      details: `could not launch ${name}: ${String(error.message).split('\n')[0]}`,
-      version: null,
-    };
+    throw new HarnessError(`could not launch ${name}: ${String(error.message).split('\n')[0]}`);
   }
   const version = browser.version();
   let crashed = false;
@@ -228,7 +242,10 @@ async function browserAttempt(engine, name, home, url, timeoutMs) {
 
 async function runBrowserPage(opts) {
   if (!ENGINES.includes(opts.target)) {
-    throw new Error(`browser-page repro cannot run on target ${JSON.stringify(opts.target)}`);
+    throw new HarnessError(
+      `browser-page repro cannot run on target ${JSON.stringify(opts.target)} ` +
+        `(Playwright engines: ${ENGINES.join(', ')})`,
+    );
   }
   const playwright = await loadPlaywright();
   const engine = playwright[opts.target];
@@ -332,9 +349,9 @@ async function runScript(opts) {
       timeoutMs: opts.timeoutSeconds * 1000,
     });
     if (out.error) {
-      results.push('inconclusive');
-      details.push(`could not run ${command}: ${out.error.message}`);
-      continue;
+      // The runtime itself could not be started (not installed, not
+      // executable): nothing about the defect was observed.
+      throw new HarnessError(`could not run ${command}: ${out.error.message}`);
     }
     const raw = lastVerdictLine(out.stdout);
     if (raw) {
@@ -396,6 +413,10 @@ async function main() {
     // verdict has been flushed.
     process.stdout.write(line, () => process.exit(0));
   } catch (error) {
+    if (error instanceof HarnessError) {
+      console.error(`driver: harness failure: ${error.message}`);
+      process.exit(3);
+    }
     console.error(`driver: ${error.stack ?? error.message}`);
     process.exit(1);
   }

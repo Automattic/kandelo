@@ -221,6 +221,17 @@ With several attempts, the result is `reproduced` when at least
 `min_reproduced` attempts reproduced, `not-reproduced` when every attempt
 said so, and `inconclusive` otherwise.
 
+The driver exits 0 whenever it printed a verdict, including
+`inconclusive`, which is the reproduction's own answer. When the harness
+itself fails, so the reproduction never ran, it exits 3, prints a
+`driver: harness failure: ...` message on stderr and **no** verdict line:
+Playwright could not be imported (run `npm install` in
+`apps/browser-demos`), the browser would not launch, or the script runtime
+(for example `bun`) could not be started. Exit 2 is a bad argument and 1 an
+unexpected driver error. A broken harness is not evidence about a runtime,
+so `run` treats any non-zero exit, or output without a verdict line, as a
+failure of the run.
+
 ### Versions
 
 `version` is what the runtime reports about itself: `browser.version()` for
@@ -264,7 +275,10 @@ narrow the run; `list` takes `--json`.
   "no longer reproduces on bun 1.4.0 (macos); update entry.toml". Fix that
   by recording the new observation and, if it holds, changing the status;
   not by changing the reproduction. `inconclusive` is reported, not
-  failed. The results are saved to `target/runtime-workarounds/last-run.json`
+  failed. A harness failure (the driver exits non-zero or prints no
+  verdict line) also fails the run, with a message naming the entry, the
+  target and the end of the driver's stderr; the other jobs still run, and
+  nothing is recorded for the failed one. The results are saved to `target/runtime-workarounds/last-run.json`
   for `list`. The suite form is
   `bash scripts/ci-run-test-suite.sh runtime-workarounds`.
 - **`runtime-workarounds list [--json]`** prints the weekly report:

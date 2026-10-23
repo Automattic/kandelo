@@ -170,9 +170,7 @@ fn driver_path(repo: &Path) -> PathBuf {
     registry(repo).join("driver.mjs")
 }
 
-/// Run the driver for one job. The driver exits 0 whenever it produced a
-/// verdict; any other result is reported on stderr and recorded as
-/// inconclusive, because a broken driver says nothing about the runtime.
+/// Run the driver for one job and interpret what it printed.
 fn drive(repo: &Path, job: &Job) -> Result<LastRunRecord, String> {
     let repro = job.repro;
     let kind = match repro.kind {
@@ -195,47 +193,69 @@ fn drive(repo: &Path, job: &Job) -> Result<LastRunRecord, String> {
         .current_dir(repo)
         .output()
         .map_err(|e| format!("could not start node: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed = stdout
+    interpret(
+        &job.entry.id,
+        job.target,
+        &DriverExit {
+            success: output.status.success(),
+            status: output.status.to_string(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        },
+    )
+}
+
+/// What the driver process left behind.
+struct DriverExit {
+    success: bool,
+    /// How the process ended, for messages (`exit status: 3`).
+    status: String,
+    stdout: String,
+    stderr: String,
+}
+
+/// How many trailing stderr lines a harness-failure message quotes.
+const STDERR_TAIL_LINES: usize = 10;
+
+/// The driver exits 0 whenever it produced a verdict. Any other exit (3 is
+/// its harness failure: Playwright missing, a browser or runtime that would
+/// not launch), or output without a parseable verdict line, is an error:
+/// the repro never ran, so there is no evidence to record, and a suite that
+/// quietly called it inconclusive would hide a broken harness. A verdict of
+/// `inconclusive` is the repro's own answer and is recorded like any other.
+fn interpret(id: &str, target: &str, exit: &DriverExit) -> Result<LastRunRecord, String> {
+    let parsed = exit
+        .stdout
         .lines()
         .last()
         .and_then(|line| serde_json::from_str::<DriverVerdict>(line).ok());
-    match (output.status.success(), parsed) {
+    match (exit.success, parsed) {
         (true, Some(v)) => Ok(LastRunRecord {
-            id: job.entry.id.clone(),
-            target: job.target.to_string(),
+            id: id.to_string(),
+            target: target.to_string(),
             os: v.os,
             version: v.version,
             verdict: v.verdict,
             details: v.details,
         }),
-        (_, _) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!(
-                "runtime-workarounds: driver failed for {} on {} ({}):\n{}",
-                job.entry.id,
-                job.target,
-                output.status,
-                stderr.trim_end()
-            );
-            Ok(LastRunRecord {
-                id: job.entry.id.clone(),
-                target: job.target.to_string(),
-                os: host_os().to_string(),
-                version: "unknown".to_string(),
-                verdict: Verdict::Inconclusive,
-                details: format!("driver failed ({})", output.status),
-            })
+        (success, parsed) => {
+            let why = if success && parsed.is_none() {
+                "no verdict line on stdout".to_string()
+            } else {
+                exit.status.clone()
+            };
+            let lines: Vec<&str> = exit.stderr.trim_end().lines().collect();
+            let tail = lines[lines.len().saturating_sub(STDERR_TAIL_LINES)..].join("\n");
+            Err(format!(
+                "driver failed for {id} on {target} ({why}); the repro did not run, so \
+                 nothing was recorded{}",
+                if tail.is_empty() {
+                    String::new()
+                } else {
+                    format!(":\n{tail}")
+                }
+            ))
         }
-    }
-}
-
-/// The OS name the driver uses for this host.
-fn host_os() -> &'static str {
-    match std::env::consts::OS {
-        "macos" => "macos",
-        "windows" => "windows",
-        other => other,
     }
 }
 
@@ -276,6 +296,8 @@ struct Tally {
     unrecorded: usize,
     inconclusive: usize,
     skipped: usize,
+    /// Jobs whose driver failed before the repro could give a verdict.
+    failed: usize,
 }
 
 impl Tally {
@@ -283,8 +305,13 @@ impl Tally {
         let run = self.matched + self.changed + self.unrecorded + self.inconclusive;
         format!(
             "runtime-workarounds: {run} run: {} match, {} changed, {} unrecorded, \
-             {} inconclusive; {} skipped",
-            self.matched, self.changed, self.unrecorded, self.inconclusive, self.skipped
+             {} inconclusive; {} skipped; {} harness failure(s)",
+            self.matched,
+            self.changed,
+            self.unrecorded,
+            self.inconclusive,
+            self.skipped,
+            self.failed
         )
     }
 }
@@ -367,8 +394,19 @@ pub fn run(repo: &Path, args: &[String]) -> Result<(), String> {
         skipped: plan.skipped.len(),
         ..Tally::default()
     };
+    let mut failures = Vec::new();
     for job in &plan.jobs {
-        let record = drive(repo, job)?;
+        // Keep going so one broken launch does not hide the other results;
+        // the run still fails below.
+        let record = match drive(repo, job) {
+            Ok(record) => record,
+            Err(message) => {
+                eprintln!("runtime-workarounds: {message}");
+                tally.failed += 1;
+                failures.push(format!("{} on {}", job.entry.id, job.target));
+                continue;
+            }
+        };
         let outcome = compare(job.entry, &record);
         match outcome {
             Outcome::Match => tally.matched += 1,
@@ -406,13 +444,25 @@ pub fn run(repo: &Path, args: &[String]) -> Result<(), String> {
     std::fs::write(&path, text + "\n").map_err(|e| format!("write {}: {e}", path.display()))?;
 
     println!("{}", tally.line());
+    let mut errors = Vec::new();
+    if !failures.is_empty() {
+        errors.push(format!(
+            "the reproduction harness failed for {} (see the messages above); a harness \
+             failure is not evidence about the runtime",
+            failures.join(", ")
+        ));
+    }
     if tally.changed > 0 {
-        return Err(format!(
+        errors.push(format!(
             "{} runtime workaround(s) no longer match the registry; update their entry.toml",
             tally.changed
         ));
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("\n"))
+    }
 }
 
 #[cfg(test)]
@@ -450,6 +500,47 @@ summary = "s"
             verdict,
             details: String::new(),
         }
+    }
+
+    fn exit(success: bool, status: &str, stdout: &str, stderr: &str) -> DriverExit {
+        DriverExit {
+            success,
+            status: status.to_string(),
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+        }
+    }
+
+    #[test]
+    fn harness_failure_is_an_error_naming_entry_target_and_stderr() {
+        let failed = exit(
+            false,
+            "exit status: 3",
+            "",
+            "noise\ndriver: harness failure: could not launch webkit: no executable\n",
+        );
+        let err = interpret("WK-1", "webkit", &failed).unwrap_err();
+        assert!(err.contains("WK-1"), "{err}");
+        assert!(err.contains("webkit"), "{err}");
+        assert!(err.contains("exit status: 3"), "{err}");
+        assert!(err.contains("could not launch webkit: no executable"), "{err}");
+    }
+
+    #[test]
+    fn unparseable_driver_output_is_an_error() {
+        let garbled = exit(true, "exit status: 0", "not json\n", "");
+        let err = interpret("WK-1", "bun", &garbled).unwrap_err();
+        assert!(err.contains("WK-1") && err.contains("bun"), "{err}");
+        assert!(err.contains("no verdict line"), "{err}");
+    }
+
+    #[test]
+    fn repro_inconclusive_is_a_record_not_an_error() {
+        let line = r#"{"verdict":"inconclusive","version":"1.3.3","os":"macos","details":"no verdict within 2s"}"#;
+        let record = interpret("WK-1", "bun", &exit(true, "exit status: 0", line, "")).unwrap();
+        assert_eq!(record.verdict, Verdict::Inconclusive);
+        assert_eq!(record.version, "1.3.3");
+        assert_eq!(record.details, "no verdict within 2s");
     }
 
     #[test]
@@ -576,11 +667,12 @@ summary = "s"
             unrecorded: 2,
             inconclusive: 4,
             skipped: 5,
+            failed: 6,
         };
         assert_eq!(
             tally.line(),
             "runtime-workarounds: 10 run: 3 match, 1 changed, 2 unrecorded, 4 inconclusive; \
-             5 skipped"
+             5 skipped; 6 harness failure(s)"
         );
     }
 
