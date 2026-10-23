@@ -295,6 +295,10 @@ name = "libevent"
 class = "platform"
 
 [[packages]]
+name = "graphics-cts-egl"
+class = "test-support"
+
+[[packages]]
 name = "libevent-tests"
 class = "test-support"
 

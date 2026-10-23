@@ -482,3 +482,4 @@ web-libs/kandelo-session/test/vfs-asset-group.test.ts	source-only
 host/test/webgl-capabilities.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
+host/test/egl-image-ownership.test.ts	prepared-product

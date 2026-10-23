@@ -700,7 +700,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # copies only as runtime test fixtures.
             build_program "$src" "$TEST_FIXTURE_DIR/wasm32"
             ;;
-        modeset.c|dri-modeset.c|dumb_roundtrip.c|egl_dmabuf_smoke.c|gbm_surface_smoke.c)
+        modeset.c|dri-modeset.c|dumb_roundtrip.c|egl_dmabuf_smoke.c|egl_image_ownership.c|gbm_surface_smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
             ;;

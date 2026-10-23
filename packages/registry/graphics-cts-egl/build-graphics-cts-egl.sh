@@ -15,7 +15,7 @@ if [ "$arch" = wasm64 ]; then base_sysroot="$repo_root/sysroot64"; fi
 export WASM_POSIX_SYSROOT="$(kandelo_package_prepare_private_sysroot graphics-cts-egl "$base_sysroot" libcxx)"
 "${arch}posix-c++" -std=c++17 -O2 \
     "$source_root/tests/graphics/cts/egl-adapter.cpp" \
-    -lgbm -lEGL -lGLESv2 -o "$KANDELO_PACKAGE_WORK_DIR/graphics-cts-egl.wasm"
+    -lgbm -lEGL -lGLESv2 -lc++ -lc++abi -o "$KANDELO_PACKAGE_WORK_DIR/graphics-cts-egl.wasm"
 export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
 export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 source "$repo_root/scripts/install-local-binary.sh"
