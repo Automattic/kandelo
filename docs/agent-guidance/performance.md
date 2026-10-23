@@ -36,6 +36,13 @@ npx tsx benchmarks/compare.ts benchmarks/results/before.json benchmarks/results/
 If a benchmark suite skips because its binary is missing, the claim is not
 proven. Build or fetch the prerequisite before drawing conclusions.
 
+Node benchmarks measure the compiled host bundle. A stale `host/dist` bundle
+stops the run with the rebuild command (`scripts/dev-shell.sh ./run.sh build
+host`) instead of silently measuring the slower `tsx` fallback; each result
+records the path that ran in `hostWorker`. Measure the `tsx` path only on
+purpose, with `--kernel-worker=tsx`, and never compare it against a bundled
+result. See [profiling](../profiling.md#kernel-worker-path).
+
 ## Comparing the finished change with its destination
 
 For a claim about performance after merge, compare the latest runtime with

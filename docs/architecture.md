@@ -225,6 +225,16 @@ process workers; if bundling is unavailable, it falls back to the `tsx`
 loader. Browser worker entries are bundled by the browser build and do not use
 this Node-only source fallback.
 
+`NodeKernelHost` chooses the kernel worker entry the same way: it runs
+`host/dist/node-kernel-worker-entry.js` only while the build-input fingerprint
+embedded in that bundle matches the current `host/` sources, and otherwise
+compiles `node-kernel-worker-entry.ts` with `tsx`. The fallback keeps source
+edits effective without a rebuild, but it is slower. Setting
+`KANDELO_NODE_KERNEL_WORKER_PATH=bundled` makes a stale or missing bundle an
+error that names the rebuild command, and `KANDELO_NODE_KERNEL_WORKER_PATH=tsx`
+forces the TypeScript path; unset (or `auto`) keeps the fallback. The
+benchmark runners set this policy; see [profiling](profiling.md#kernel-worker-path).
+
 Kernel module instantiation snapshots the caller's exact intrinsic
 `ArrayBuffer`, typed-array, or `DataView` byte window before inspecting it.
 Pointer-width detection and `WebAssembly.compile` consume that same detached
