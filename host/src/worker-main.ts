@@ -545,7 +545,8 @@ function buildKernelImports(
       onKernelExit?.(status);
       // Execute unreachable inside Wasm: a RuntimeError thrown by JavaScript
       // is catchable by guest noexcept handlers, which can issue writev on
-      // this now-retired channel and leave the Worker blocked forever on JSC.
+      // this now-retired channel and leave the Worker blocked forever where
+      // terminate() cannot reclaim a blocked Worker (Bun today; older WebKit).
       // This disposable Worker trap also enforces `_Noreturn` for callers
       // without a trailing unreachable; the reusable kernel never traps.
       return trapProcessWorker();

@@ -15563,14 +15563,15 @@ export class CentralizedKernelWorker {
    * WORKAROUND, remove when the engine bug is fixed; see
    * docs/jsc-terminate-atomics-wait-workaround.md.
    *
-   * On JSC (Safari, and Bun via `bun`'s JavaScriptCore), `Worker.terminate()`
-   * cannot kill (or free the memory of) a worker parked in `Atomics.wait` on
-   * its syscall channel — which is where every idle/blocked process worker sits
-   * (accept, read, poll, select, sleep, futex, the channel round-trip).
-   * Terminating them directly leaks their threads + committed working set, so
-   * each image switch accumulates a whole machine and the tab OOMs. V8 (Chrome,
-   * Node) interrupts the wait on terminate and reclaims, so this is a no-op cost
-   * there and is invoked unconditionally by both host entries for parity.
+   * Where the defect is present (Bun today; older WebKit and Safari builds, see
+   * the registry entry), `Worker.terminate()` cannot kill (or free the memory
+   * of) a worker parked in `Atomics.wait` on its syscall channel — which is
+   * where every idle/blocked process worker sits (accept, read, poll, select,
+   * sleep, futex, the channel round-trip). Terminating them directly leaks
+   * their threads + committed working set, so each image switch accumulates a
+   * whole machine and the tab OOMs. V8 (Chrome, Node) interrupts the wait on
+   * terminate and reclaims, so this is a no-op cost there and is invoked
+   * unconditionally by both host entries for parity.
    *
    * For every worker currently parked at CH_PENDING we complete its syscall
    * with EINTR AND queue a SIGKILL into the channel signal slot. The glue's
@@ -15694,18 +15695,19 @@ export class CentralizedKernelWorker {
    * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
    * `terminate_process` (host force-kill; how a terminal session's process is
    * torn down on every machine switch) used to hard-terminate the worker while
-   * it was still parked in `Atomics.wait`. On JavaScriptCore (Safari, Bun)
-   * `Worker.terminate()` cannot reap an `Atomics.wait`-parked worker, so its OS
-   * thread + committed working set leaked — one per switch, until Safari/iOS
-   * OOMed. `killAllBlockedForTeardown` fixes the same class at whole-machine
-   * destroy, but is unusable for a single `kill(pid)` because it wakes (and
-   * thus exits) *every* live process. This variant is scoped so sibling
-   * processes keep running (e.g. tearing down one of several servers).
-   * Delivering SIGKILL through the ordinary signal path is not sufficient: it
-   * only wakes *registered* blockers (signal-waits, futex, wait4, pipe
-   * readers), never a channel merely parked at `CH_PENDING` on a blocked
-   * `read`/`accept`. The wake must be driven off `CH_STATUS`, exactly as the
-   * global method does. See docs/jsc-terminate-atomics-wait-workaround.md.
+   * it was still parked in `Atomics.wait`. On the WebKit builds of that time
+   * (Playwright webkit-2336, 2026-09) `Worker.terminate()` did not reap that
+   * worker, so its OS thread + committed working set leaked — one per switch,
+   * until Safari/iOS OOMed. Bun reproduces the same defect today.
+   * `killAllBlockedForTeardown` fixes the same class at whole-machine destroy,
+   * but is unusable for a single `kill(pid)` because it wakes (and thus exits)
+   * *every* live process. This variant is scoped so sibling processes keep
+   * running (e.g. tearing down one of several servers). Delivering SIGKILL
+   * through the ordinary signal path is not sufficient: it only wakes
+   * *registered* blockers (signal-waits, futex, wait4, pipe readers), never a
+   * channel merely parked at `CH_PENDING` on a blocked `read`/`accept`. The
+   * wake must be driven off `CH_STATUS`, exactly as the global method does. See
+   * docs/jsc-terminate-atomics-wait-workaround.md.
    */
   killBlockedProcessForTeardown(pid: number): Promise<Set<number>> {
     if (this.#kernelFatalError !== null) {

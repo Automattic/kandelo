@@ -9,18 +9,22 @@ webkit-2359. Released Safari has not been checked. Not filed.
 On Bun 1.3.3, `worker.terminate()` (`node:worker_threads`) does not stop a
 worker that is blocked in an infinite atomic wait, either JavaScript
 `Atomics.wait()` or WebAssembly `memory.atomic.wait32`. The worker stays
-registered as a waiter on the word it waited on, the promise `terminate()`
-returns never settles, no `'exit'` event fires, and the worker's OS thread
-and everything it holds (its `WebAssembly.Memory`, its JavaScript heap)
-are not released. Repeating create, block, terminate leaks one thread and
-the worker's committed memory each time. A worker terminated while idle is
-reclaimed.
+registered as a waiter on the word it waited on. While it stays blocked,
+the promise `terminate()` returns does not settle, no `'exit'` event
+fires, and the worker's OS thread and everything it holds (its
+`WebAssembly.Memory`, its JavaScript heap) are not released. Only when
+something wakes the waiter (an `Atomics.notify()` on that word) does the
+termination complete: the promise settles and `'exit'` fires within a
+second. A worker that nothing wakes therefore leaks, and repeating create,
+block, terminate leaks one thread and the worker's committed memory each
+time. A worker terminated while idle is reclaimed.
 
 Bun implements the Node.js `worker_threads` API, whose documentation says
 `worker.terminate()` stops all JavaScript execution in the worker thread as
 soon as possible and returns a promise fulfilled when the `'exit'` event is
-emitted. Node.js 24 does that for the same script in about 5 ms; on Bun
-the promise has not settled 5 s later.
+emitted. Node.js 24 does that for the same blocked worker in about 5 ms;
+on Bun the promise is still pending 5 s later and settles only after the
+notify.
 
 Earlier WebKit builds showed the same in a browser: on Playwright WebKit
 webkit-2311 a dedicated worker (`new Worker` in a page) blocked in either
@@ -50,8 +54,10 @@ its own exit path, so it returns to an idle JavaScript event loop that
 `EINTR` and queues `SIGKILL` in the channel; the syscall glue treats that
 as "exit now" and calls the `kernel_exit` import directly; the worker posts
 its exit and is then terminated. Whole-machine destroy wakes every process
-(`killAllBlockedForTeardown`); `terminate_process` wakes one
-(`killBlockedProcessForTeardown`). The mechanism, the participating code
+(`killAllBlockedForTeardown`); on the browser host `terminate_process`
+wakes one (`killBlockedProcessForTeardown`). The Node host's
+`terminate_process` handler terminates directly, so under Bun a blocked
+process killed that way still leaks its worker: a known gap. The mechanism, the participating code
 and its interaction with exec retirement are described in
 [`docs/jsc-terminate-atomics-wait-workaround.md`](../../../docs/jsc-terminate-atomics-wait-workaround.md).
 Every site carries the tag (`git grep -n "RUNTIME-WORKAROUND: JSC-TERMINATE"`).
@@ -84,8 +90,8 @@ had the defect is not evidence of a fix).
 
 | runtime | version | result |
 |---|---|---|
-| Bun | 1.3.3 | reproduced: js [1,1], wasm [1,1]; no `terminate()` promise settled before the notify |
-| Node.js (V8, control) | v24.15.0 | not reproduced: js [0,0], wasm [0,0]; every `terminate()` settled |
+| Bun | 1.3.3 | reproduced: js [1,1], wasm [1,1]; `terminate()` settled 0/2 before the notify, 2/2 within 1 s after it |
+| Node.js (V8, control) | v24.15.0 | not reproduced: js [0,0], wasm [0,0]; `terminate()` settled 2/2 before the notify |
 | Playwright WebKit webkit-2311 (Playwright 1.61.0) | 26.5 | reproduced: js [1,1,1], wasm [1,1,1]; still 1 after 10 s |
 | Playwright WebKit webkit-2359 | 26.6 | not reproduced: js [0,0,0], wasm [0,0,0] |
 | Playwright Chromium | 153.0.8010.12 | not reproduced with the 5 s wait |
@@ -139,29 +145,33 @@ reproduces. Related WebKit bugs, neither of which covers this case:
 | [278866](https://bugs.webkit.org/show_bug.cgi?id=278866) | [JSC] Fix `Atomics.wait` by handling termination cases | RESOLVED FIXED, Aug 2024 (`282974@main`) | Made JSC wake infinite-timeout waiters on VM termination. Touched `AtomicsObject.cpp`, `VMTraps.cpp`, `WaiterListManager.{h,cpp}`; JS `Atomics.wait` only. webkit-2311 still reproduced after it. |
 | [250569](https://bugs.webkit.org/show_bug.cgi?id=250569) | Terminated worker memory leak | RESOLVED CONFIGURATION CHANGED (disputed) | Child workers not collected after the parent terminates. The reporter said it still reproduced in Safari 18.0.1; the WebKit engineer asked for a fresh bug with a concrete reproduction. |
 
-> **Title:** `worker.terminate()` (`node:worker_threads`) never completes
-> for a worker blocked in `Atomics.wait` or `memory.atomic.wait32`; the
-> worker's thread and memory leak
+> **Title:** `worker.terminate()` (`node:worker_threads`) does not complete
+> while the worker is blocked in `Atomics.wait` or `memory.atomic.wait32`;
+> the worker's thread and memory leak until something wakes it
 >
 > **Environment:** Bun 1.3.3, macOS 27.
 >
 > **Summary:** When a worker is blocked in an infinite `Atomics.wait()` or
 > WebAssembly `memory.atomic.wait32`, `worker.terminate()` does not stop
-> it: the returned promise does not settle and no `'exit'` event fires.
-> Five seconds later `Atomics.notify()` on the word it waited on still
-> wakes one waiter, and the worker's OS thread and committed memory are
-> still in the process: 10 such workers, each holding 64 MiB, added 12
-> threads and 691 MiB RSS. A worker terminated while idle is reclaimed.
+> it: while the worker stays blocked, the returned promise does not settle
+> and no `'exit'` event fires. Five seconds later `Atomics.notify()` on the
+> word it waited on still wakes one waiter; only then does the promise
+> settle and `'exit'` fire. Until that wake the worker's OS thread and
+> committed memory stay in the process: 10 such workers, each holding
+> 64 MiB and never woken, added 12 threads and 691 MiB RSS. A worker terminated while idle is reclaimed.
 > Node.js 24 terminates the same blocked worker in about 5 ms, as its
 > `worker.terminate()` documentation describes.
 >
 > **Steps:** run `bun repro.mjs` in the attached `repro/` directory. It
 > prints a `REPRO-VERDICT` line with the waiter counts per round and how
-> many `terminate()` promises settled. Compare `node repro.mjs`.
+> many `terminate()` promises settled before and after the notify. Compare
+> `node repro.mjs`.
 >
 > **Expected:** after `terminate()`, the worker's wait ends, its thread
-> exits, and its memory is released; `notify` counts 0.
-> **Actual:** `notify` counts 1 for every terminated worker; threads and
+> exits, its memory is released and the promise settles; `notify` counts
+> 0.
+> **Actual:** `notify` counts 1 for every terminated worker and the
+> promise settles only after that notify; without a wake, threads and
 > memory grow with each create, block, terminate cycle.
 >
 > **Impact:** a WebAssembly multi-process runtime that runs each process in

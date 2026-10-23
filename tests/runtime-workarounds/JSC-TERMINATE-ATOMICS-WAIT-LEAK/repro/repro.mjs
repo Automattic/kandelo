@@ -11,14 +11,17 @@
 // memory.atomic.wait32 are tested. A blocked worker that is not terminated
 // must be counted (sanity check), or the verdict is inconclusive.
 //
-// The details also say how many terminate() promises settled. Node.js
-// documents that terminate() stops all JavaScript in the worker "as soon as
-// possible" and returns a promise fulfilled when the 'exit' event fires.
+// The details also say how many terminate() promises had settled before
+// the notify (while the worker was still blocked) and how many settled
+// within a second after it. Node.js documents that terminate() stops all
+// JavaScript in the worker "as soon as possible" and returns a promise
+// fulfilled when the 'exit' event fires.
 import { Worker } from 'node:worker_threads';
 
 const ROUNDS = 2;
 const BLOCK_SETTLE_MS = 300;
 const TERMINATE_SETTLE_MS = 5000;
+const AFTER_NOTIFY_MS = 1000;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // (module (import "env" "memory" (memory 1 16384 shared))
@@ -68,23 +71,30 @@ async function main() {
       return { verdict: 'inconclusive', details: `${how}: notify counted ${liveCount} waiters for a live blocked worker (expected 1)` };
     }
     const counts = [];
-    let settled = 0;
+    let before = 0;
+    let after = 0;
     for (let round = 0; round < ROUNDS; round++) {
       const { worker, word } = await blockedWorker(how);
-      // Do not await: a terminate() that never completes is the defect.
+      // Do not await: a terminate() that does not complete while the
+      // worker stays blocked is the defect.
       let done = false;
       worker.terminate().then(() => { done = true; }, () => { done = true; });
       await sleep(TERMINATE_SETTLE_MS);
-      if (done) settled++;
+      if (done) before++;
       counts.push(Atomics.notify(word, 0));
+      await sleep(AFTER_NOTIFY_MS);
+      if (done) after++;
     }
     results[how] = counts;
-    terminations[how] = settled;
+    terminations[how] = { before, after };
     console.log(`${how}: waiters still parked after terminate(): ${counts.join(', ')}`);
   }
   const still = Object.entries(results).filter(([, counts]) => counts.some((c) => c > 0));
   const summary = Object.entries(results)
-    .map(([how, counts]) => `${how} [${counts.join(',')}], ${terminations[how]}/${counts.length} terminate() settled before notify`)
+    .map(([how, counts]) => {
+      const { before, after } = terminations[how];
+      return `${how} [${counts.join(',')}], terminate() settled ${before}/${counts.length} before notify, ${after}/${counts.length} within ${AFTER_NOTIFY_MS / 1000} s after`;
+    })
     .join('; ');
   return still.length
     ? { verdict: 'reproduced', details: `terminated workers still waiting (${still.map(([how]) => how).join(', ')}): ${summary}` }

@@ -258,9 +258,10 @@ const EXEC_WORKER_RETIREMENT_WAIT_MS = 5000;
 const FRAMEBUFFER_RELEASE_ACK_WAIT_MS = 2000;
 // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
 // On destroy we wake every Atomics.wait-blocked worker so it cooperatively
-// exits (on JSC — Safari and Bun — Worker.terminate() can't free a blocked
-// worker). These bound the wait for those workers to run their exit path and
-// drain. See docs/jsc-terminate-atomics-wait-workaround.md.
+// exits, because on runtimes with this defect (Bun today; WebKit builds up to
+// at least webkit-2311 and the Safari of July 2026) Worker.terminate() can't
+// free a blocked worker. These bound the wait for those workers to run their
+// exit path and drain. See docs/jsc-terminate-atomics-wait-workaround.md.
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
@@ -3850,29 +3851,31 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   // Wake the target to a cooperative exit before any hard `Worker.terminate()`
   // below. WHY: a live process worker is never idle in its JS event loop — it
   // is parked in an in-wasm `Atomics.wait` on its syscall channel (a blocked
-  // read/accept/wait, or musl's post-exit_group `_Exit` loop). On
-  // JavaScriptCore (Safari, and Bun), `Worker.terminate()` cannot reap a worker
-  // parked in `Atomics.wait`: its OS thread and committed working set survive
-  // the call. `terminate_process` is how a terminal session's process is torn
-  // down, so every machine switch that went straight to
-  // `terminateTrackedWorker` leaked one `WebCore: Worker` thread (measured +1
-  // per switch, non-decaying) until Safari/iOS threw "Out of memory".
-  // Delivering SIGKILL through the normal kernel signal path completes each
-  // parked channel with EINTR and queues SIGKILL so the guest glue runs
-  // `kernel_exit`; worker-main then returns to its JS event loop and posts
-  // `{exit}`, whose `finishProcessExit` terminates the now-idle worker — a
-  // state JSC *can* reclaim. This mirrors `performDestroy`'s Phase-1 wake, but
-  // scoped to a single pid so sibling processes (e.g. php-test tearing down
-  // several servers) keep running. Delivering SIGKILL through the ordinary
-  // signal path is not enough: it wakes only *registered* blockers (signal
-  // waits, futex, wait4, pipe readers), never a channel merely parked at
-  // CH_PENDING on a blocked read/accept, which is where an idle shell sits. See
+  // read/accept/wait, or musl's post-exit_group `_Exit` loop). Where the defect
+  // is present (Bun today; older WebKit and Safari builds, see the registry
+  // entry), `Worker.terminate()` cannot reap a worker parked in `Atomics.wait`:
+  // its OS thread and committed working set survive the call.
+  // `terminate_process` is how a terminal session's process is torn down, so
+  // every machine switch that went straight to `terminateTrackedWorker` leaked
+  // one `WebCore: Worker` thread (measured +1 per switch, non-decaying) until
+  // Safari/iOS threw "Out of memory". Delivering SIGKILL through the normal
+  // kernel signal path completes each parked channel with EINTR and queues
+  // SIGKILL so the guest glue runs `kernel_exit`; worker-main then returns to
+  // its JS event loop and posts `{exit}`, whose `finishProcessExit` terminates
+  // the now-idle worker — a state every runtime *can* reclaim. This mirrors
+  // `performDestroy`'s Phase-1 wake, but scoped to a single pid so sibling
+  // processes (e.g. php-test tearing down several servers) keep running.
+  // Delivering SIGKILL through the ordinary signal path is not enough: it wakes
+  // only *registered* blockers (signal waits, futex, wait4, pipe readers),
+  // never a channel merely parked at CH_PENDING on a blocked read/accept, which
+  // is where an idle shell sits. See
   // docs/jsc-terminate-atomics-wait-workaround.md.
   //
   // A bounded drain, not an unbounded wait: a guest wedged in a non-syscalling
   // wasm loop never reaches a checkpoint to observe the wake, so after the
   // deadline we fall through to the force-terminate path below. That path still
-  // leaks the one worker on JSC — the truthful cost of an unresponsive guest,
+  // leaks the one worker where the defect is present — the truthful cost of an
+  // unresponsive guest,
   // not the common case this fix addresses.
   if (info?.worker && processes.get(pid) === info) {
     try {
@@ -4083,15 +4086,16 @@ async function performDestroy() {
   // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively exits.
   // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
   // WORKAROUND, remove when the engine bug is fixed; see
-  // docs/jsc-terminate-atomics-wait-workaround.md.
-  // On JSC (Safari, and Bun), `Worker.terminate()` cannot kill (or free the
-  // memory of) a worker parked in `Atomics.wait` on its syscall channel — the
-  // state every idle/blocked process worker sits in — so terminating them
-  // directly leaks their threads + committed working set and each image switch
-  // OOMs Safari. killAllBlockedForTeardown completes each blocked syscall with
-  // EINTR + a queued SIGKILL; the guest glue then runs kernel_exit, the worker
-  // returns to its JS event loop (via {exit}), and it becomes reclaimable. A
-  // no-op cost on V8 (Chrome), so it runs unconditionally.
+  // docs/jsc-terminate-atomics-wait-workaround.md. Where the defect is present
+  // (Bun today; older WebKit and Safari builds, see the registry entry),
+  // `Worker.terminate()` cannot kill (or free the memory of) a worker parked in
+  // `Atomics.wait` on its syscall channel — the state every idle/blocked
+  // process worker sits in — so terminating them directly leaks their threads +
+  // committed working set; in July 2026 each image switch OOMed Safari.
+  // killAllBlockedForTeardown completes each blocked syscall with EINTR + a
+  // queued SIGKILL; the guest glue then runs kernel_exit, the worker returns to
+  // its JS event loop (via {exit}), and it becomes reclaimable. A no-op cost on
+  // V8 (Chrome), so it runs unconditionally.
   const destroyProgress = createDestroyProgressReporter((event) =>
     post({ type: "destroy_progress", event }),
   );

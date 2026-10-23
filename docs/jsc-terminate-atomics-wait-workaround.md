@@ -29,7 +29,7 @@ Where it has been observed (details in the entry):
 
 | Runtime | `terminate()` on a blocked worker |
 |---|---|
-| Bun 1.3.3 (`node:worker_threads`) | leaks thread + memory; `terminate()` never settles |
+| Bun 1.3.3 (`node:worker_threads`) | leaks thread + memory while the worker stays blocked; `terminate()` settles only after something wakes the waiter |
 | Playwright WebKit webkit-2311 | the terminated worker stays a registered waiter; leaked thread + memory measured |
 | Playwright WebKit webkit-2359 | reclaimed |
 | Released Safari | not rechecked since July 2026 |
@@ -46,7 +46,7 @@ runtime.
 
 Instead of terminating a blocked worker directly, on teardown we drive it to run
 its own exit path so it returns to an idle JS event loop, which `terminate()`
-*can* reclaim on JSC:
+*can* reclaim on every runtime, including the affected ones:
 
 1. **`host/src/kernel-worker.ts` → `killAllBlockedForTeardown()`** — for every
    process channel currently parked at `CH_STATUS == CH_PENDING` (main threads
@@ -78,7 +78,8 @@ machine switch uses it to tear down the previous terminal session's process
 before booting the next image. An idle shell is parked in an in-wasm
 `Atomics.wait` on its syscall channel (a blocked PTY `read`), so
 `handleTerminateProcess` calling `terminateTrackedWorker` directly leaked one
-`WebCore: Worker` thread (+ its committed working set) per switch on JSC —
+`WebCore: Worker` thread (+ its committed working set) per switch on the
+WebKit builds of that time (measured on Playwright webkit-2336, 2026-09) —
 non-decaying — until Safari/iOS threw "Out of memory". `destroy()`'s
 `performDestroy` never covered it: by the time it runs, `terminate_process` has
 already removed the process (`processes.size == 0`), so its Phase-1
@@ -91,16 +92,19 @@ keep running. `handleTerminateProcess` calls it and drains (bounded) for the
 cooperative `{exit}`; if the process exits, `finishProcessExit` terminates the
 now-idle worker and the force path is skipped. A guest wedged in a
 non-syscalling wasm loop never observes the wake and falls through to the
-force-terminate (still leaks that one worker on JSC — the truthful cost of an
-unresponsive guest). Delivering SIGKILL through the ordinary signal path
+force-terminate (that one worker still leaks wherever the defect is present —
+the truthful cost of an unresponsive guest). Delivering SIGKILL through the ordinary signal path
 (`signalProcess`) is **not** sufficient: it wakes only *registered* blockers
 (signal-waits, futex, `wait4`, pipe readers), never a channel merely parked at
 `CH_PENDING` on a blocked `read`/`accept` — the wake must scan `CH_STATUS`.
 
-The Node host's `handleTerminate` does **not** need this: on V8
-`Worker.terminate()` reaps an `Atomics.wait`-parked worker, so a direct
-terminate frees the thread. The wake is browser-only by the same platform
-boundary as the rest of this workaround.
+The Node host's `handleTerminate` does **not** do this per-process wake: it
+terminates the process's workers directly. On Node.js (V8) that reclaims an
+`Atomics.wait`-parked worker. Under Bun, which reproduces the defect, a
+process killed through `terminate_process` on the Node host still leaks its
+blocked worker; that is a known gap in the Node host, not covered by this
+workaround today. (The Node host's whole-machine destroy and its normal
+process-exit teardown do wake blocked workers first.)
 
 ## Exec retirement
 
@@ -116,7 +120,8 @@ guest exception machinery. The Wasm helper supplies a real uncatchable trap
 for both normal exit and exec retirement.
 In particular, libc++'s `noexcept` handler attempts to print `libc++abi:` with
 `writev` on a channel the host has stopped servicing. This leaves the old
-Worker in `Atomics.wait`, where JSC termination cannot reclaim it. Committed
+Worker in `Atomics.wait`, where termination cannot reclaim it on an affected
+runtime. Committed
 normal exit must also bypass guest deallocators, whose syscalls would otherwise
 park on a channel already closed by Rust. Pthread exit still releases host-side
 replication locks needed by the surviving process. Both main
@@ -143,7 +148,8 @@ All carry the registry tag:
 
 Note the musl glue change means every program binary must be **relinked** to pick
 up the new `kernel_exit`-on-SIGKILL behavior; CI rebuilds them from source.
-Old-glue binaries degrade gracefully (they still leak on JSC, but do not crash).
+Old-glue binaries degrade gracefully (they still leak where the defect is
+present, but do not crash).
 
 ## Already-exited processes
 
@@ -157,7 +163,8 @@ JS imports use the same terminal path even if they throw EINTR before returning
 to Wasm. Rust's recorded status and parent notification remain authoritative.
 
 A genuinely unresponsive guest that never reaches a syscall can still require
-forced termination. This remains an engine boundary on JSC.
+forced termination. Where the defect is present this remains an engine
+boundary.
 
 ## Pending asynchronous futex waits
 
