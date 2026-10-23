@@ -760,10 +760,14 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
      *
      * We must reach the exit path that ends in a wasm trap so the worker
      * returns to its JS event loop and the host can actually reclaim it. This
-     * matters because on JSC (Safari, and Bun) Worker.terminate() cannot free a
+     * matters because on some JSC builds Worker.terminate() does not free a
      * worker parked in Atomics.wait on the syscall channel — the state every
-     * blocked process worker sits in. (V8 — Chrome, Node — reclaims such workers
-     * on terminate, so this path is simply never exercised there.)
+     * blocked process worker sits in. Measured scope: reproduces on Bun 1.3.3;
+     * Playwright WebKit build 2311 reproduced and build 2359 does not; released
+     * Safari is unchecked (see
+     * tests/runtime-workarounds/JSC-TERMINATE-ATOMICS-WAIT-LEAK). V8 (Chrome,
+     * Node) reclaimed such workers on terminate in the same probe, so this path
+     * is not needed there.
      *
      * Crucially we do NOT call musl _exit() here: on this port _exit() issues
      * SYS_exit_group over the channel (which returns normally) and then spins
@@ -772,9 +776,10 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
      * the kernel_exit import directly. worker-main services the SYS_EXIT, then
      * the _Noreturn import is followed by an `unreachable` trap that worker-main
      * catches as a clean exit, unwinding the wasm and idling the worker so the
-     * host terminate() can reclaim its thread + memory. Without this, each image
-     * switch leaks a machine's worth of un-killable worker threads and Safari
-     * OOMs. */
+     * host terminate() can reclaim its thread + memory. Without this, on an
+     * affected runtime each image switch leaks a machine's worth of
+     * un-killable worker threads; that is how Safari ran out of memory in
+     * July 2026 (PR #863). */
     if (signum == SIGKILL) {
         extern _Noreturn void kernel_exit(int32_t status)
             __attribute__((import_module("kernel"), import_name("kernel_exit")));
