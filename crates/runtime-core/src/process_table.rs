@@ -137,20 +137,75 @@ pub struct RemoveProcessResult {
     pub adopted_zombies: Vec<u32>,
 }
 
-/// Kernel-owned consequences of one published process exit for the rest of
-/// the process table. See `ProcessTable::publish_process_exit`.
-pub struct ProcessExitPublication {
-    /// Process records synthetic init reaped, including the exiting process
-    /// itself when init was its parent. The caller must finish each removal
+/// Effects of applying queued process exits to the rest of the process
+/// table. See `ProcessTable::apply_pending_exits`.
+pub struct ExitApplication {
+    /// Adopted zombies that synthetic init reaped because the host had
+    /// already published their exits. The caller must finish each removal
     /// exactly as it finishes a `reap_process` result.
     pub reaped: Vec<(u32, RemoveProcessResult)>,
-    /// The exiting process was a child of init and has been reaped, so no
-    /// parent remains to notify.
-    pub reaped_by_init: bool,
     /// Members of newly orphaned process groups that received SIGHUP and
-    /// SIGCONT. When nonempty, the caller must apply the same host follow-up
-    /// as a group `kill()`.
+    /// SIGCONT. When nonempty, the host must apply the same follow-up as a
+    /// group `kill()` before it next relies on those processes' state.
     pub signaled: Vec<u32>,
+}
+
+/// Result of the host acknowledging one exit. See
+/// `ProcessTable::publish_process_exit`.
+pub struct ProcessExitPublication {
+    /// Present when synthetic init was the exiting process's parent and has
+    /// now reaped it, so no parent remains to notify. The caller must finish
+    /// the removal exactly as it finishes a `reap_process` result.
+    pub reaped_by_init: Option<RemoveProcessResult>,
+}
+
+/// Processes that reached the Exited state and whose consequences for the
+/// rest of the table have not been applied yet.
+///
+/// WHY: a process exits wherever a syscall or a default signal action ends
+/// it, and those paths hold only that one `Process`. They queue the PID
+/// here; the kernel applies the queue through the whole table before the
+/// kernel call returns (`ProcessTable::apply_pending_exits`).
+struct PendingExits(core::cell::UnsafeCell<Vec<u32>>);
+
+unsafe impl Sync for PendingExits {}
+
+#[cfg(not(test))]
+static PENDING_EXITS: PendingExits = PendingExits(core::cell::UnsafeCell::new(Vec::new()));
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_PENDING_EXITS: core::cell::RefCell<Vec<u32>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queue one Exited transition. Called only by `Process`'s exit records.
+pub(crate) fn queue_process_exit(pid: u32) {
+    #[cfg(test)]
+    TEST_PENDING_EXITS.with(|exits| exits.borrow_mut().push(pid));
+    #[cfg(not(test))]
+    unsafe {
+        (*PENDING_EXITS.0.get()).push(pid);
+    }
+}
+
+/// Whether any Exited transition still awaits `apply_pending_exits`.
+pub fn has_pending_exits() -> bool {
+    #[cfg(test)]
+    return TEST_PENDING_EXITS.with(|exits| !exits.borrow().is_empty());
+    #[cfg(not(test))]
+    unsafe {
+        !(*PENDING_EXITS.0.get()).is_empty()
+    }
+}
+
+fn take_pending_exits() -> Vec<u32> {
+    #[cfg(test)]
+    return TEST_PENDING_EXITS.with(|exits| core::mem::take(&mut *exits.borrow_mut()));
+    #[cfg(not(test))]
+    unsafe {
+        core::mem::take(&mut *PENDING_EXITS.0.get())
+    }
 }
 
 /// Children moved to synthetic init by one reparenting pass.
@@ -1921,50 +1976,55 @@ impl ProcessTable {
             .unwrap_or(false)
     }
 
-    /// Apply the consequences of `pid`'s exit to the rest of the process
-    /// table, once the host has observed the exit and begun publishing it.
+    /// Apply every queued exit to the rest of the process table.
     ///
     /// POSIX gives every child of a terminated process a new parent, the
     /// implementation-defined system process. Kandelo uses synthetic init
-    /// (PID 1). Init runs no wait loop, so the kernel reaps on its behalf:
-    /// an adopted zombie whose exit was already published is reaped here,
-    /// and an adopted child is reaped when its own exit is published. If
-    /// `pid` itself is init's child, it is reaped now and no parent remains
-    /// to notify.
+    /// (PID 1), so this happens at the Exited transition, not when the host
+    /// later notices the exit. Init runs no wait loop, so the kernel reaps
+    /// on its behalf. An adopted zombie whose exit the host has already
+    /// published is reaped here. Any other adopted child is reaped when its
+    /// own exit is published (`publish_process_exit`).
     ///
-    /// When the exit leaves a process group newly orphaned and that group
-    /// has a stopped member, every member receives SIGHUP and then SIGCONT.
-    /// This follows Linux's `exit_notify()` order: each reparented child's
-    /// group is checked first, then the exiting process's own group.
-    ///
-    /// Only the first publication has effects; later ones return an empty
-    /// result. A live process has no exit to publish, so it fails with
-    /// `EINVAL`; an absent or reaped one fails with `ESRCH`.
-    pub fn publish_process_exit(
+    /// When an exit leaves a process group newly orphaned and that group has
+    /// a stopped member, every member receives SIGHUP and then SIGCONT. This
+    /// follows Linux's `exit_notify()` order: each reparented child's group
+    /// is checked first, then the exiting process's own group. A member that
+    /// the default SIGHUP action terminates queues its own exit, which this
+    /// same call applies.
+    pub fn apply_pending_exits(
+        &mut self,
+        host: &mut dyn crate::process::HostIO,
+    ) -> ExitApplication {
+        let mut application = ExitApplication {
+            reaped: Vec::new(),
+            signaled: Vec::new(),
+        };
+        loop {
+            let exits = take_pending_exits();
+            if exits.is_empty() {
+                return application;
+            }
+            for pid in exits {
+                self.apply_exit(pid, host, &mut application);
+            }
+        }
+    }
+
+    fn apply_exit(
         &mut self,
         pid: u32,
         host: &mut dyn crate::process::HostIO,
-    ) -> Result<ProcessExitPublication, Errno> {
-        if pid == SYNTHETIC_INIT_PID {
-            return Err(Errno::EINVAL);
+        application: &mut ExitApplication,
+    ) {
+        // A record removed before its exit was applied already gave its
+        // children to init in `remove_process_inner`.
+        let Some(process) = self.processes.get(&pid) else {
+            return;
+        };
+        if pid == SYNTHETIC_INIT_PID || process.state != ProcessState::Exited {
+            return;
         }
-        let process = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
-        match process.state {
-            ProcessState::Exited => {}
-            ProcessState::Limbo => return Err(Errno::ESRCH),
-            ProcessState::Running | ProcessState::Stopped => return Err(Errno::EINVAL),
-        }
-        if process.exit_published {
-            // An exited process gains no children, and its first publication
-            // already applied every consequence. Checking groups again could
-            // hang up a member that stopped after the first publication.
-            return Ok(ProcessExitPublication {
-                reaped: Vec::new(),
-                reaped_by_init: false,
-                signaled: Vec::new(),
-            });
-        }
-        process.exit_published = true;
         let (pgid, sid, ppid) = (process.pgid, process.sid, process.ppid);
 
         let adoption = self.reparent_children_to_init(pid);
@@ -1991,31 +2051,47 @@ impl ProcessTable {
         {
             orphaned_groups.push(pgid);
         }
-        let mut signaled = Vec::new();
         for &group in &orphaned_groups {
-            signaled.extend(self.signal_orphaned_group(group, host));
+            application
+                .signaled
+                .extend(self.signal_orphaned_group(group, host));
         }
 
-        let mut reaped = Vec::new();
         for zombie in adoption.published_zombies {
             if let Some(result) = self.reap_process(zombie) {
-                reaped.push((zombie, result));
+                application.reaped.push((zombie, result));
             }
         }
-        let reaped_by_init = self.processes.get(&pid).is_some_and(|process| {
-            process.ppid == SYNTHETIC_INIT_PID && process.state == ProcessState::Exited
-        });
-        if reaped_by_init {
-            if let Some(result) = self.reap_process(pid) {
-                reaped.push((pid, result));
-            }
-        }
+    }
 
-        Ok(ProcessExitPublication {
-            reaped,
-            reaped_by_init,
-            signaled,
-        })
+    /// Record that the host has observed `pid`'s exit and begun retiring its
+    /// workers.
+    ///
+    /// Until then the host still needs the zombie record to discover the
+    /// death, so synthetic init reaps a child only after this point. If init
+    /// is already `pid`'s parent, it reaps `pid` now. Only the first
+    /// publication has effects. A live process has no exit to publish, so
+    /// it fails with `EINVAL`; an absent or reaped one fails with `ESRCH`.
+    pub fn publish_process_exit(&mut self, pid: u32) -> Result<ProcessExitPublication, Errno> {
+        if pid == SYNTHETIC_INIT_PID {
+            return Err(Errno::EINVAL);
+        }
+        let process = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
+        match process.state {
+            ProcessState::Exited => {}
+            ProcessState::Limbo => return Err(Errno::ESRCH),
+            ProcessState::Running | ProcessState::Stopped => return Err(Errno::EINVAL),
+        }
+        if process.exit_published {
+            return Ok(ProcessExitPublication { reaped_by_init: None });
+        }
+        process.exit_published = true;
+        let reaped_by_init = if process.ppid == SYNTHETIC_INIT_PID {
+            self.reap_process(pid)
+        } else {
+            None
+        };
+        Ok(ProcessExitPublication { reaped_by_init })
     }
 
     /// Give every child of `parent_pid` to synthetic init.
@@ -4804,29 +4880,36 @@ mod orphan_tests {
         pid
     }
 
-    fn exit_and_publish(table: &mut ProcessTable, pid: u32) -> ProcessExitPublication {
+    /// Exit `pid` and let the kernel apply every queued exit, as it does
+    /// before any kernel call returns. No host acknowledgement happens here.
+    fn exit(table: &mut ProcessTable, pid: u32) -> ExitApplication {
         assert!(table.get_mut(pid).unwrap().record_normal_exit(0));
-        table.publish_process_exit(pid, &mut NoopHost).unwrap()
+        table.apply_pending_exits(&mut NoopHost)
     }
 
-    fn reaped_pids(publication: &ProcessExitPublication) -> Vec<u32> {
-        publication.reaped.iter().map(|(pid, _)| *pid).collect()
+    /// The host acknowledges an exit it has observed.
+    fn publish(table: &mut ProcessTable, pid: u32) -> ProcessExitPublication {
+        table.publish_process_exit(pid).unwrap()
+    }
+
+    fn reaped(results: &[(u32, RemoveProcessResult)]) -> Vec<u32> {
+        results.iter().map(|(pid, _)| *pid).collect()
     }
 
     #[test]
-    fn exit_publication_reparents_live_children_to_init() {
+    fn exit_reparents_children_before_the_host_publishes_it() {
         let mut table = ProcessTable::new();
         let parent = process(&mut table, 0, 0, 0);
         let first = process(&mut table, parent, parent, 0);
         let second = process(&mut table, parent, parent, 0);
 
-        let publication = exit_and_publish(&mut table, parent);
+        let application = exit(&mut table, parent);
 
         assert_eq!(table.get(first).unwrap().ppid, SYNTHETIC_INIT_PID);
         assert_eq!(table.get(second).unwrap().ppid, SYNTHETIC_INIT_PID);
-        assert!(reaped_pids(&publication).is_empty());
-        assert!(!publication.reaped_by_init);
-        assert!(publication.signaled.is_empty());
+        assert!(reaped(&application.reaped).is_empty());
+        assert!(application.signaled.is_empty());
+        assert!(!table.get(parent).unwrap().exit_published);
         // The host-parent sentinel still owns the exited parent's status.
         assert_eq!(table.get(parent).unwrap().state, ProcessState::Exited);
         // The dead parent no longer has a waitable child set.
@@ -4837,16 +4920,36 @@ mod orphan_tests {
     }
 
     #[test]
+    fn pending_exits_are_applied_once() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let child = process(&mut table, parent, parent, 0);
+        assert!(table.get_mut(parent).unwrap().record_normal_exit(0));
+        assert_eq!(table.get(child).unwrap().ppid, parent, "queued, not yet applied");
+
+        table.apply_pending_exits(&mut NoopHost);
+        let again = table.apply_pending_exits(&mut NoopHost);
+
+        assert_eq!(table.get(child).unwrap().ppid, SYNTHETIC_INIT_PID);
+        assert!(again.reaped.is_empty() && again.signaled.is_empty());
+    }
+
+    #[test]
     fn init_reaps_an_adopted_child_when_its_exit_is_published() {
         let mut table = ProcessTable::new();
         let parent = process(&mut table, 0, 0, 0);
         let child = process(&mut table, parent, parent, 0);
-        exit_and_publish(&mut table, parent);
+        exit(&mut table, parent);
+        exit(&mut table, child);
+        assert_eq!(
+            table.get(child).unwrap().state,
+            ProcessState::Exited,
+            "the host still needs the zombie until it has seen the exit",
+        );
 
-        let publication = exit_and_publish(&mut table, child);
+        let publication = publish(&mut table, child);
 
-        assert!(publication.reaped_by_init);
-        assert_eq!(reaped_pids(&publication), vec![child]);
+        assert!(publication.reaped_by_init.is_some());
         assert!(table.get(child).is_none(), "init consumed the zombie");
         assert_eq!(table.parent_pid(child), None);
     }
@@ -4856,16 +4959,14 @@ mod orphan_tests {
         let mut table = ProcessTable::new();
         let parent = process(&mut table, 0, 0, 0);
         let child = process(&mut table, parent, parent, 0);
-
         // The child's exit is published to its still-live parent first.
-        let child_publication = exit_and_publish(&mut table, child);
-        assert!(!child_publication.reaped_by_init);
-        assert_eq!(table.get(child).unwrap().state, ProcessState::Exited);
+        exit(&mut table, child);
+        assert!(publish(&mut table, child).reaped_by_init.is_none());
         assert_eq!(table.get(child).unwrap().ppid, parent);
 
-        let publication = exit_and_publish(&mut table, parent);
+        let application = exit(&mut table, parent);
 
-        assert_eq!(reaped_pids(&publication), vec![child]);
+        assert_eq!(reaped(&application.reaped), vec![child]);
         assert!(table.get(child).is_none());
     }
 
@@ -4878,15 +4979,13 @@ mod orphan_tests {
         // retired either worker. The host still needs the child's zombie
         // record to observe that death.
         assert!(table.get_mut(child).unwrap().record_normal_exit(4));
+        let application = exit(&mut table, parent);
 
-        let publication = exit_and_publish(&mut table, parent);
-
-        assert!(reaped_pids(&publication).is_empty());
+        assert!(reaped(&application.reaped).is_empty());
         assert_eq!(table.get(child).unwrap().ppid, SYNTHETIC_INIT_PID);
         assert_eq!(table.get(child).unwrap().state, ProcessState::Exited);
 
-        let child_publication = table.publish_process_exit(child, &mut NoopHost).unwrap();
-        assert!(child_publication.reaped_by_init);
+        assert!(publish(&mut table, child).reaped_by_init.is_some());
         assert!(table.get(child).is_none());
     }
 
@@ -4894,27 +4993,24 @@ mod orphan_tests {
     fn exit_publication_is_idempotent_and_requires_an_exited_process() {
         let mut table = ProcessTable::new();
         let parent = process(&mut table, 0, 0, 0);
-        let child = process(&mut table, parent, parent, 0);
+        let child = process(&mut table, 0, 0, 0);
+        table.get_mut(child).unwrap().ppid = SYNTHETIC_INIT_PID;
 
         assert_eq!(
-            table.publish_process_exit(parent, &mut NoopHost).err(),
+            table.publish_process_exit(parent).err(),
             Some(Errno::EINVAL),
             "a live process has no exit to publish",
         );
-        assert_eq!(table.get(child).unwrap().ppid, parent);
         assert_eq!(
-            table.publish_process_exit(SYNTHETIC_INIT_PID, &mut NoopHost).err(),
+            table.publish_process_exit(SYNTHETIC_INIT_PID).err(),
             Some(Errno::EINVAL),
         );
-        assert_eq!(
-            table.publish_process_exit(9999, &mut NoopHost).err(),
-            Some(Errno::ESRCH),
-        );
+        assert_eq!(table.publish_process_exit(9999).err(), Some(Errno::ESRCH));
 
-        exit_and_publish(&mut table, parent);
-        let again = table.publish_process_exit(parent, &mut NoopHost).unwrap();
-        assert!(reaped_pids(&again).is_empty());
-        assert_eq!(table.get(child).unwrap().ppid, SYNTHETIC_INIT_PID);
+        exit(&mut table, parent);
+        assert!(publish(&mut table, parent).reaped_by_init.is_none());
+        assert!(publish(&mut table, parent).reaped_by_init.is_none());
+        assert_eq!(table.get(parent).unwrap().state, ProcessState::Exited);
     }
 
     #[test]
@@ -4935,7 +5031,7 @@ mod orphan_tests {
             )
             .unwrap();
 
-        exit_and_publish(&mut table, parent);
+        exit(&mut table, parent);
 
         assert_eq!(table.get(child).unwrap().ppid, parent);
         assert_eq!(
@@ -4962,7 +5058,8 @@ mod orphan_tests {
         let parent = process(&mut table, 0, 0, 0);
         let published = process(&mut table, parent, parent, 0);
         let unpublished = process(&mut table, parent, parent, 0);
-        exit_and_publish(&mut table, published);
+        exit(&mut table, published);
+        publish(&mut table, published);
         assert!(table.get_mut(unpublished).unwrap().record_normal_exit(0));
 
         let result = table.remove_process(parent).unwrap();
@@ -4978,42 +5075,17 @@ mod orphan_tests {
         let leader = process(&mut table, parent, 0, 0);
         table.get_mut(leader).unwrap().pgid = leader;
         let member = process(&mut table, leader, leader, 0);
-        exit_and_publish(&mut table, parent);
+        exit(&mut table, parent);
+        exit(&mut table, leader);
 
-        let publication = exit_and_publish(&mut table, leader);
+        assert!(publish(&mut table, leader).reaped_by_init.is_some());
 
-        assert!(publication.reaped_by_init);
         // The group still has a member, so the leader's identity survives
         // as a resource-free Limbo record. It is not a process, and the host
         // must not find a parent to notify for it.
         assert_eq!(table.get(leader).unwrap().state, ProcessState::Limbo);
         assert_eq!(table.parent_pid(leader), None);
         assert_eq!(table.get(member).unwrap().ppid, SYNTHETIC_INIT_PID);
-    }
-
-    #[test]
-    fn republishing_an_exit_does_not_signal_its_orphaned_group_again() {
-        let mut table = ProcessTable::new();
-        // The leader is its group's only link to the shell's session, so its
-        // own exit orphans the group.
-        let (_shell, leader, member) = job_control_session(&mut table);
-        table
-            .get_mut(member)
-            .unwrap()
-            .signals
-            .set_handler(SIGHUP, SignalHandler::Handler(42))
-            .unwrap();
-        assert!(table.get_mut(member).unwrap().record_stop(SIGTSTP));
-        let first = exit_and_publish(&mut table, leader);
-        assert_eq!(first.signaled, vec![member]);
-
-        table.get_mut(member).unwrap().signals.clear_pending(SIGHUP);
-        assert!(table.get_mut(member).unwrap().record_stop(SIGTSTP));
-        let again = table.publish_process_exit(leader, &mut NoopHost).unwrap();
-
-        assert!(again.signaled.is_empty());
-        assert_eq!(table.get(member).unwrap().state, ProcessState::Stopped);
-        assert!(!table.get(member).unwrap().signals.is_pending(SIGHUP));
     }
 
     /// Session 5 with a parent in group 10 whose child leads group 20.
@@ -5039,9 +5111,9 @@ mod orphan_tests {
         }
         assert!(table.get_mut(leader).unwrap().record_stop(SIGTSTP));
 
-        let publication = exit_and_publish(&mut table, shell);
+        let application = exit(&mut table, shell);
 
-        assert_eq!(publication.signaled, vec![leader, member]);
+        assert_eq!(application.signaled, vec![leader, member]);
         for pid in [leader, member] {
             let proc = table.get(pid).unwrap();
             assert!(proc.signals.is_pending(SIGHUP), "pid {pid} got SIGHUP");
@@ -5052,19 +5124,25 @@ mod orphan_tests {
     }
 
     #[test]
-    fn default_sighup_terminates_a_newly_orphaned_stopped_group() {
+    fn default_sighup_deaths_are_applied_in_the_same_pass() {
         let mut table = ProcessTable::new();
         let (shell, leader, member) = job_control_session(&mut table);
+        // A child of the member, in its own group, survives the hang-up and
+        // must be adopted when the member dies of it.
+        let outsider = process(&mut table, member, 0, 5);
+        table.get_mut(outsider).unwrap().pgid = outsider;
         assert!(table.get_mut(leader).unwrap().record_stop(SIGTSTP));
 
-        let publication = exit_and_publish(&mut table, shell);
+        let application = exit(&mut table, shell);
 
-        assert_eq!(publication.signaled, vec![leader, member]);
+        assert_eq!(application.signaled, vec![leader, member]);
         for pid in [leader, member] {
             let proc = table.get(pid).unwrap();
             assert_eq!(proc.state, ProcessState::Exited);
             assert_eq!(proc.exit_signal, SIGHUP);
         }
+        assert_eq!(table.get(outsider).unwrap().ppid, SYNTHETIC_INIT_PID);
+        assert_eq!(table.get(outsider).unwrap().state, ProcessState::Running);
     }
 
     #[test]
@@ -5072,9 +5150,9 @@ mod orphan_tests {
         let mut table = ProcessTable::new();
         let (shell, leader, member) = job_control_session(&mut table);
 
-        let publication = exit_and_publish(&mut table, shell);
+        let application = exit(&mut table, shell);
 
-        assert!(publication.signaled.is_empty());
+        assert!(application.signaled.is_empty());
         for pid in [leader, member] {
             let proc = table.get(pid).unwrap();
             assert_eq!(proc.state, ProcessState::Running);
@@ -5093,9 +5171,9 @@ mod orphan_tests {
         let linked = process(&mut table, other_parent, leader, 5);
         assert!(table.get_mut(linked).unwrap().record_stop(SIGTSTP));
 
-        let publication = exit_and_publish(&mut table, shell);
+        let application = exit(&mut table, shell);
 
-        assert!(publication.signaled.is_empty());
+        assert!(application.signaled.is_empty());
         assert_eq!(table.get(linked).unwrap().state, ProcessState::Stopped);
         assert!(!table.get(leader).unwrap().signals.is_pending(SIGHUP));
     }
@@ -5107,9 +5185,9 @@ mod orphan_tests {
         table.get_mut(shell).unwrap().sid = 6;
         assert!(table.get_mut(leader).unwrap().record_stop(SIGTSTP));
 
-        let publication = exit_and_publish(&mut table, shell);
+        let application = exit(&mut table, shell);
 
-        assert!(publication.signaled.is_empty());
+        assert!(application.signaled.is_empty());
         assert_eq!(table.get(leader).unwrap().state, ProcessState::Stopped);
     }
 
@@ -5127,9 +5205,9 @@ mod orphan_tests {
             .unwrap();
 
         // The leader was the group's only connection to its session's shell.
-        let publication = exit_and_publish(&mut table, leader);
+        let application = exit(&mut table, leader);
 
-        assert_eq!(publication.signaled, vec![member]);
+        assert_eq!(application.signaled, vec![member]);
         let member = table.get(member).unwrap();
         assert_eq!(member.state, ProcessState::Running);
         assert!(member.signals.is_pending(SIGHUP));

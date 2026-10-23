@@ -1797,43 +1797,57 @@ usual double fork would leave its grandchild with a parent that no longer
 exists. Nothing could ever wait for that grandchild, so once it exited it
 would stay a zombie for the life of the machine.
 
-Every host exit path (normal `exit`, signal death, Worker crash, exec-handoff
-death, and a spawn child that exits before its spawn result is published)
-publishes the exit through one host function. That function first calls the
-kernel export `kernel_publish_process_exit(pid)`. Rust records that the
-exit was published and then, in one table transaction:
+Reparenting is kernel behavior that happens at the Exited transition, not
+when the host notices the exit. A process becomes Exited wherever a syscall
+or a default signal action ends it, and those code paths hold only that one
+`Process`. Recording the exit therefore also queues its PID. The kernel
+applies the queue through the whole process table at the boundary of the
+outermost kernel scope (the `GklGuard`), both on entry and before the kernel
+call returns, once no reference into a single process is still in use. For
+each queued exit, in one table transaction, Rust:
 
-1. Gives every child of `pid` to init (`ppid = 1`). A `posix_spawn` child
-   whose result is still unpublished stays with its exact parent, because
-   the host's spawn rollback must still find it there.
-2. Reaps, for init, each adopted zombie whose own exit was already
-   published. An adopted zombie whose exit has not been published yet is
-   left in place. The host still needs that record to discover the death
-   and retire the Worker, and init reaps it once its exit is published.
-3. Reaps `pid` itself when init is its parent. The host's parent lookup
-   then finds no process, so no SIGCHLD is sent and no wait is woken. The
-   former parent of an adopted child is never signalled.
-4. Sends SIGHUP and then SIGCONT to every member of a process group that
-   the exit left orphaned while one of its members is stopped. An
-   orphaned group is one in which no member's parent is in a different
-   group of the same session. Init and the `ppid=0` host-parent sentinel
-   never count as such a parent. As in Linux's `exit_notify()`, the groups
-   of the reparented children are checked first, then the exiting
-   process's own group. When signals were sent, the export returns how
-   many processes received them, and the host applies the same follow-up
-   as a guest group `kill()`. It resumes the continued members, retries
-   their blocked syscalls, and retires any member that the default SIGHUP
-   action terminated.
+1. Gives every child to init (`ppid = 1`). A `posix_spawn` child whose
+   result is still unpublished stays with its exact parent, because the
+   host's spawn rollback must still find it there.
+2. Sends SIGHUP and then SIGCONT to every member of a process group that
+   the exit left orphaned while one of its members is stopped. An orphaned
+   group is one in which no member's parent is in a different group of the
+   same session. Init and the `ppid=0` host-parent sentinel never count as
+   such a parent. As in Linux's `exit_notify()`, the groups of the
+   reparented children are checked first, then the exiting process's own
+   group. A member that the default SIGHUP action terminates queues its own
+   exit, which the same pass applies.
+3. Reaps, for init, each adopted zombie whose exit the host has already
+   published (see below).
+
+An exit that an unguarded export produces is applied when the next guarded
+scope begins. Every guest observation of a parent (`getppid()`, `wait()`,
+`/proc`) is a guarded syscall, so no guest can see the dead parent.
+
+Only reaping waits for the host. The host discovers a death by finding the
+zombie record, then retires the process's Workers, so init must not reap a
+zombie before the host has seen it. Every host exit path (normal `exit`,
+signal death, Worker crash, exec-handoff death, and a spawn child that exits
+before its spawn result is published) goes through one host function, and
+that function first calls `kernel_publish_process_exit(pid)`. The call
+acknowledges the exit. If init is already `pid`'s parent, init reaps `pid`
+now; the host's parent lookup then finds no process, so no SIGCHLD is sent
+and no wait is woken. The former parent of an adopted child is never
+signalled. The call also returns how many processes applied exits have hung
+up since the previous acknowledgement. When that is positive, the host
+applies the same follow-up as a guest group `kill()`: it resumes the
+continued members, retries their blocked syscalls, and retires any member
+that the default SIGHUP action terminated.
 
 Reaping on init's behalf uses the same Rust removal and host-cleanup path as a
 `waitpid()` reap, including the resource-free `Limbo` record kept for a
 group leader that still has group members. That `Limbo` record is not a
 process, so `kernel_get_parent_pid` reports `ESRCH` for it, as
-`kernel_get_process_state` does. Only the first publication of an exit has
-effects; a repeat, such as the second arrival for a spawn child that exited
-before its spawn result was published, changes nothing. Removing a process
-record for any other reason (for example forced teardown) also reparents
-that process's remaining children to init.
+`kernel_get_process_state` does. Only the first acknowledgement of an exit
+has effects; a repeat, such as the second arrival for a spawn child that
+exited before its spawn result was published, changes nothing. Removing a
+process record for any other reason (for example forced teardown) also
+reparents that process's remaining children to init.
 
 Host launches follow the same rule. A process launched directly by the host
 has the `ppid=0` sentinel as its parent, but its own children are ordinary
@@ -1841,9 +1855,9 @@ orphans when it exits. They are reparented to init rather than to the host,
 and the host's `ppid=0` reap still covers only the launched process itself.
 
 `kernel_publish_process_exit` is declared
-`optional_until(..., 50, 51)`. A host running an older ABI-50 kernel that
-lacks the export keeps the previous behavior, with no reparenting, rather
-than failing to boot.
+`optional_until(..., 51, 52)`. An ABI-51 kernel built before this change
+lacks both the export and the reparenting; a new host loads it and keeps
+the previous behavior rather than failing to boot.
 
 Linux's `PR_SET_CHILD_SUBREAPER` is not implemented. Orphans always go to
 init, never to the nearest subreaper ancestor, and `prctl()` fails that

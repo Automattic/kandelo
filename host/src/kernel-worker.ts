@@ -24926,10 +24926,10 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Hand one observed exit to Rust's exit publication. Returns how many
-   * processes the kernel sent SIGHUP and SIGCONT. A kernel built before this
-   * optional export existed does not reparent orphans; publication is then
-   * a no-op.
+   * Acknowledge one observed exit to Rust. Returns how many processes
+   * applied exits have sent SIGHUP and SIGCONT since the last
+   * acknowledgement. A kernel built before this optional export existed
+   * does not reparent orphans; publication is then a no-op.
    */
   #publishKernelProcessExit(
     pid: number,
@@ -24966,17 +24966,18 @@ export class CentralizedKernelWorker {
     pid: number,
     entry: KernelWorkerEntryContext,
   ): void {
-    // Rust applies the exit to the rest of the process table first: the
-    // children move to synthetic init, init reaps any zombies among them,
-    // and init reaps this process if it was init's child (the parent lookup
-    // below then finds no process). Every exit path publishes through here;
-    // Rust publication is idempotent, so a spawn child that exited before
-    // its spawn result was published may safely arrive twice.
+    // Rust reparented this process's children to synthetic init when it
+    // became Exited. Publishing acknowledges that the host has seen the
+    // exit, which is when init may reap: its adopted children were waiting
+    // for this, and so is this process if init is its parent (the parent
+    // lookup below then finds no process). Every exit path publishes through
+    // here; Rust publication is idempotent, so a spawn child that exited
+    // before its spawn result was published may safely arrive twice.
     if (this.#publishKernelProcessExit(pid, entry) > 0) {
-      // The kernel sent SIGHUP and SIGCONT to a newly orphaned stopped
-      // group. Apply the same follow-up as a guest group kill(): resume
-      // continued members, retry their blocked syscalls, and retire any
-      // member the default SIGHUP action terminated.
+      // An applied exit made the kernel send SIGHUP and SIGCONT to a newly
+      // orphaned stopped group. Apply the same follow-up as a guest group
+      // kill(): resume continued members, retry their blocked syscalls, and
+      // retire any member the default SIGHUP action terminated.
       this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
       this.scheduleWakeBlockedRetries(entry);
       this.reapKilledProcessesAfterSyscall(entry);

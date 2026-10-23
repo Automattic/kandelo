@@ -1652,6 +1652,7 @@ impl Process {
             wasm_posix_shared::wait::CLD_EXITED,
             status,
         );
+        crate::process_table::queue_process_exit(self.pid);
         true
     }
 
@@ -1670,6 +1671,7 @@ impl Process {
             wasm_posix_shared::wait::CLD_KILLED,
             signum as i32,
         );
+        crate::process_table::queue_process_exit(self.pid);
         true
     }
 

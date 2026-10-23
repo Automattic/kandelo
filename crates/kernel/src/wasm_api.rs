@@ -1482,12 +1482,60 @@ use crate::process_table::GLOBAL_PROCESS_TABLE as PROCESS_TABLE;
 // 3a. Compatibility guard
 // ---------------------------------------------------------------------------
 
-/// Legacy direct exports still use a guard-shaped value so older wrapper code
-/// can keep the same control flow. Kernel execution is serialized by the host,
-/// so acquiring or dropping the guard does not take a secondary lock.
-fn gkl_acquire() {}
+/// Kernel execution is serialized by the host, so acquiring or dropping the
+/// guard takes no lock. The guard instead marks the outermost kernel scope:
+/// process exits queued inside it are applied to the rest of the process
+/// table when that scope is entered and again before it returns.
+///
+/// WHY: a process becomes Exited wherever a syscall or a default signal
+/// action ends it, and those paths hold only that one `Process`. Reparenting
+/// its children and hanging up newly orphaned groups need the whole table, so
+/// they run here, once no `&mut Process` from the scope is still in use. An
+/// exit queued by an export that holds no guard is applied when the next
+/// guarded scope begins, before any guest can observe the parent change.
+struct KernelCounter(core::cell::UnsafeCell<u32>);
 
-fn gkl_release() {}
+unsafe impl Sync for KernelCounter {}
+
+static GKL_DEPTH: KernelCounter = KernelCounter(core::cell::UnsafeCell::new(0));
+
+/// Count of processes sent SIGHUP/SIGCONT by applied exits that the host has
+/// not yet been told about. `kernel_publish_process_exit` reports and clears
+/// it so the host can apply its group-`kill()` follow-up.
+static ORPHANED_GROUP_SIGNALS: KernelCounter = KernelCounter(core::cell::UnsafeCell::new(0));
+
+fn gkl_acquire() {
+    let depth = unsafe { &mut *GKL_DEPTH.0.get() };
+    *depth += 1;
+    if *depth == 1 {
+        apply_pending_process_exits();
+    }
+}
+
+fn gkl_release() {
+    if unsafe { *GKL_DEPTH.0.get() } == 1 {
+        apply_pending_process_exits();
+    }
+    let depth = unsafe { &mut *GKL_DEPTH.0.get() };
+    *depth -= 1;
+}
+
+/// Apply queued Exited transitions to the process table. Runs only inside the
+/// outermost guard, so nested guards in the cleanup it performs cannot
+/// re-enter it.
+fn apply_pending_process_exits() {
+    if !crate::process_table::has_pending_exits() {
+        return;
+    }
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    let application = table.apply_pending_exits(&mut host);
+    for (pid, result) in application.reaped {
+        finish_removed_process(pid, result);
+    }
+    let signaled = unsafe { &mut *ORPHANED_GROUP_SIGNALS.0.get() };
+    *signaled = signaled.saturating_add(application.signaled.len() as u32);
+}
 
 /// RAII guard retained for direct-export compatibility.
 struct GklGuard;
@@ -3052,32 +3100,33 @@ fn reap_process_and_cleanup(pid: u32) -> i32 {
     }
 }
 
-/// Apply the kernel-owned consequences of a published process exit.
+/// Acknowledge that the host has observed `pid`'s exit and begun retiring
+/// its workers.
 ///
-/// The host calls this exactly where it publishes an exit: after it has
-/// observed `pid` in the Exited state and before it notifies a parent. Rust
-/// gives `pid`'s children to synthetic init, lets init reap the adopted
-/// zombies whose exits were already published, signals newly orphaned
-/// stopped process groups with SIGHUP then SIGCONT, and lets init reap `pid`
-/// itself when init is its parent. In that last case `kernel_get_parent_pid`
-/// then reports `ESRCH`, so no parent is notified.
+/// The kernel already reparented `pid`'s children and hung up any newly
+/// orphaned stopped group when `pid` became Exited. What waits for the host
+/// is reaping: until this call the host still needs the zombie record to
+/// discover the death. If synthetic init is `pid`'s parent, init reaps `pid`
+/// now, and `kernel_get_parent_pid` then reports `ESRCH`, so no parent is
+/// notified.
 ///
-/// Returns the number of processes that received SIGHUP and SIGCONT; when
-/// it is positive the host applies the same follow-up as a group `kill()`.
-/// Returns `-EINVAL` when `pid` has not exited and `-ESRCH` when it is absent.
+/// Returns how many processes applied exits have sent SIGHUP and SIGCONT
+/// since the previous call; when positive, the host applies the same
+/// follow-up as a group `kill()`. Returns `-EINVAL` when `pid` has not exited
+/// and `-ESRCH` when it is absent.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_publish_process_exit(pid: u32) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let mut host = WasmHostIO;
-    let publication = match table.publish_process_exit(pid, &mut host) {
+    let publication = match table.publish_process_exit(pid) {
         Ok(publication) => publication,
         Err(error) => return -(error as i32),
     };
-    for (reaped_pid, result) in publication.reaped {
-        finish_removed_process(reaped_pid, result);
+    if let Some(result) = publication.reaped_by_init {
+        finish_removed_process(pid, result);
     }
-    publication.signaled.len() as i32
+    let signaled = unsafe { core::mem::take(&mut *ORPHANED_GROUP_SIGNALS.0.get()) };
+    signaled.min(i32::MAX as u32) as i32
 }
 
 /// Remove a process from the process table.
@@ -3402,6 +3451,7 @@ pub extern "C" fn kernel_take_process_timer_cleanup(
 /// The process remains as an Exited zombie until a parent wait consumes it.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.process_and_advisory_locks(pid) {
         Some((proc, advisory_locks)) => {
@@ -3985,6 +4035,9 @@ pub extern "C" fn kernel_dequeue_signal(
     {
         return -(error as i32);
     }
+    // A default action applied here can end the process; the guard applies
+    // that exit to the rest of the table before returning.
+    let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let (proc, advisory_locks) = match table.task_and_advisory_locks(pid, tid) {
         Some(pair) => pair,
