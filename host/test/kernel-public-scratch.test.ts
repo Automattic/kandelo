@@ -1282,7 +1282,8 @@ describe("Rust-owned host import ranges", () => {
   it("preflights GL output before executing a query", () => {
     const { kernel, memory } = fullKernelHarness();
     kernel.gl.bind({ pid: 7, cmdbufAddr: 4096, cmdbufLen: 4096 });
-    const getError = vi.fn(() => 0x1234);
+    const getError = vi.fn().mockReturnValueOnce(0)
+      .mockReturnValueOnce(0x1234).mockReturnValue(0);
     kernel.gl.get(7)!.gl = new Proxy({ getError }, {
       get(target, name) {
         if (name === "getError") return target.getError;
@@ -1312,7 +1313,7 @@ describe("Rust-owned host import ranges", () => {
       memory.buffer.byteLength - 4,
       4,
     )).toBe(4);
-    expect(getError).toHaveBeenCalledTimes(1);
+    expect(getError).toHaveBeenCalledTimes(3);
     expect(
       new DataView(memory.buffer).getUint32(
         memory.buffer.byteLength - 4,

@@ -33,11 +33,12 @@ function createMessage(pid: number): GlForwardMessage {
 }
 
 class RecordingGl {
+  error = 0;
   log: Array<[string, unknown[]]> = [];
   clear(m: number) { this.log.push(["clear", [m]]); }
   getExtension(_name: string): unknown { return null; }
   isContextLost() { return false; }
-  getError() { return 0x500; }
+  getError() { const error = this.error; this.error = 0; return error; }
 }
 
 function fakeCanvas(stub: RecordingGl): { canvas: HTMLCanvasElement; getContextCalls: unknown[][] } {
@@ -324,6 +325,7 @@ describe("main-thread synchronous query transport", () => {
     guest.set(clearCmdbuf());
     channel.onSubmit(guest.subarray(0,8));
     for (let i = 0; i < 10; i++) {
+      gl.error = 0x500;
       const result = channel.onQuery!(O.QOP_GET_ERROR, guest.subarray(0,0), 4);
       expect(result.rc).toBe(4);
       expect([...result.bytes]).toEqual([0,5,0,0]);

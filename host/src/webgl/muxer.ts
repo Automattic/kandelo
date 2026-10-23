@@ -1,5 +1,6 @@
 // Replay each GLES2 texture target independently on the shared context.
 import { knownTextureUnitLimit } from "./limits.js";
+import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import {
   GL_BLEND,
   GL_BACK,
@@ -18,13 +19,16 @@ import {
 } from "./shadow.js";
 
 export class GlMuxer {
-  private current: { shadow: GlShadowState } | null = null;
+  private current: ({ shadow: GlShadowState } & GlErrorState) | null = null;
+  private errorOwner: GlErrorState | null = null;
   private textureUnitCount = 32;
 
   constructor(private gl: WebGL2RenderingContext) {}
 
-  switchTo(target: { shadow: GlShadowState }): void {
+  switchTo(target: { shadow: GlShadowState } & GlErrorState): void {
     if (this.current === target) return;
+    captureNativeGlErrors(this.gl, this.errorOwner);
+    this.errorOwner = null;
     const s = target.shadow;
     const gl = this.gl;
 
@@ -108,9 +112,18 @@ export class GlMuxer {
     for (const [pname, value] of s.pixelStore) gl.pixelStorei(pname, value);
 
     this.current = target;
+    // Retain only the error flags across invalidation, not a guest binding.
+    this.errorOwner = { errors: target.errors };
   }
 
   invalidateCurrent(): void {
+    try {
+      captureNativeGlErrors(this.gl, this.errorOwner);
+      this.errorOwner = null;
+    } catch {
+      // Cleanup must still retire native objects. Keep the outgoing error
+      // flags so a later switch must drain them before executing a new owner.
+    }
     // Commands can grow the selected owner's shadow between switches.
     // Invalidation loses its identity, but must retain the clearing range.
     this.textureUnitCount = Math.max(this.textureUnitCount,

@@ -3858,6 +3858,12 @@ window target on the same native renderer; forwarded GPU and mixed canvas
 targets still need the full surface model. The public EGL facade remains
 single-context. Share groups, separate surface objects, complete surfaceless
 framebuffer errors and the full lifecycle model remain incomplete.
+Native GL errors are drained into the outgoing session's error flags before
+renderer switching or invalidation. Error queries merge native and retained flags before
+consumption, so another session cannot consume them or repeat a duplicate.
+A failed drain preserves the outgoing flags for a later retry and does not
+prevent cleanup. Queue dispatch reports renderer exceptions as EIO and
+releases the consumed frame. Complete GL negative-API coverage remains open.
 Shader/program attachment records retain deleted shaders and current
 programs until their last logical reference releases. Native program deletion
 is deferred while the program is current in its owner, allowing muxer replay

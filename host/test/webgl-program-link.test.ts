@@ -96,7 +96,7 @@ describe("program link attempts and installed executables", () => {
     expect(native.current).toBe(original);
     expect(b.uniformLocations.has(1)).toBe(true);
     const muxer = new GlMuxer(gl);
-    muxer.switchTo({ shadow: { ...b.shadow, currentProgram: null } });
+    muxer.switchTo({ shadow: { ...b.shadow, currentProgram: null }, errors: [] });
     muxer.switchTo(b);
     expect(native.current).toBe(original);
     expect(query(O.QOP_GET_ERROR)).toBe(0);

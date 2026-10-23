@@ -16,6 +16,8 @@ import {
 } from "../src/webgl/shadow.js";
 
 class RecordingGl {
+  pendingErrors: number[] = [];
+  getError() { return this.pendingErrors.shift() ?? 0; }
   colorMask(...a: boolean[]) { this.log.push(["colorMask", a]); }
   depthMask(...a: boolean[]) { this.log.push(["depthMask", a]); }
   stencilFuncSeparate(...a: number[]) { this.log.push(["stencilFuncSeparate", a]); }
@@ -57,7 +59,7 @@ class RecordingGl {
 }
 
 function newTarget() {
-  return { shadow: defaultShadow() };
+  return { shadow: defaultShadow(), errors: [] as number[] };
 }
 
 function mk(): { gl: RecordingGl; mux: GlMuxer } {
@@ -67,6 +69,57 @@ function mk(): { gl: RecordingGl; mux: GlMuxer } {
 }
 
 describe("GlMuxer.switchTo", () => {
+  it("keeps native errors with the outgoing owner across a switch", () => {
+    const { gl, mux } = mk();
+    const a = newTarget(), b = newTarget();
+    mux.switchTo(a);
+    gl.pendingErrors.push(0x500, 0x501);
+    mux.switchTo(b);
+    expect(b.errors).toEqual([]);
+    expect(gl.getError()).toBe(0);
+    expect(a.errors).toEqual([0x500, 0x501]);
+  });
+
+  it("captures errors before invalidation loses the owner's identity", () => {
+    const { gl, mux } = mk();
+    const a = newTarget(), b = newTarget();
+    mux.switchTo(a);
+    a.errors.push(0x500);
+    gl.pendingErrors.push(0x500, 0x502);
+    mux.invalidateCurrent();
+    mux.switchTo(b);
+    expect(a.errors).toEqual([0x500, 0x502]);
+    expect(b.errors).toEqual([]);
+    expect(gl.getError()).toBe(0);
+  });
+
+  it("retains error ownership after a failed drain without blocking cleanup", () => {
+    const { gl, mux } = mk();
+    const a = newTarget(), b = newTarget();
+    mux.switchTo(a);
+    const readError = gl.getError.bind(gl);
+    gl.getError = () => { throw new Error("renderer failed"); };
+    expect(() => mux.invalidateCurrent()).not.toThrow();
+    expect(() => mux.switchTo(b)).toThrow("renderer failed");
+    gl.pendingErrors.push(0x502);
+    gl.getError = readError;
+    mux.switchTo(b);
+    expect(a.errors).toEqual([0x502]);
+    expect(b.errors).toEqual([]);
+  });
+
+  it("discards errors from unowned host operations and bounds failed drains", () => {
+    const { gl, mux } = mk();
+    const a = newTarget(), b = newTarget();
+    gl.pendingErrors.push(0x500);
+    mux.switchTo(a);
+    expect(a.errors).toEqual([]);
+    gl.getError = () => 0x502;
+    expect(() => mux.switchTo(b)).toThrow("did not clear");
+    expect(a.errors).toEqual([0x502]);
+    expect(b.errors).toEqual([]);
+  });
+
   it("gives each binding its own default vertex array", () => {
     // Two programs sharing one WebGL context must not share vertex
     // attribute state: GL gives every context its own vertex array 0.

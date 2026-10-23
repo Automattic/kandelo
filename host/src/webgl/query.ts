@@ -20,6 +20,7 @@ import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
 import { checkedGlCall, currentProgramName } from "./program-objects.js";
+import { captureNativeGlErrors } from "./errors.js";
 
 const GL_VENDOR = 0x1F00;
 const GL_RENDERER = 0x1F01;
@@ -110,7 +111,8 @@ export function runGlQuery(
   switch (op) {
     case O.QOP_GET_ERROR:
       if (out.byteLength < 4) return -22;
-      outDv.setUint32(0, b.errors.shift() ?? gl.getError(), true);
+      captureNativeGlErrors(gl, b);
+      outDv.setUint32(0, b.errors.shift() ?? 0, true);
       return 4;
 
     // in: u32 name, optional u32 opVersion for extensions;

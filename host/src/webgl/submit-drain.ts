@@ -33,10 +33,17 @@ export function drainSubmitQueue(
     const entry = queue.pickNext();
     if (!entry) return 0;
     const frame = entry.frames.shift()!;
-    const mux = muxerFor(entry.binding);
-    if (mux) mux.switchTo(entry.binding);
-    const rc = dispatch(entry.binding, frame.off, frame.len);
-    queue.releaseIfEmpty(entry);
+    let rc: number | void;
+    try {
+      const mux = muxerFor(entry.binding);
+      if (mux) mux.switchTo(entry.binding);
+      rc = dispatch(entry.binding, frame.off, frame.len);
+    } catch {
+      // Renderer failure is an I/O result, not an exception into kernel Wasm.
+      return -5;
+    } finally {
+      queue.releaseIfEmpty(entry);
+    }
     if (typeof rc === "number" && rc < 0) return rc;
   }
 }

@@ -64,7 +64,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
 | G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | FBO redirection exists; imported renderbuffer siblings absent on main | encoder, registry, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
-| G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | open |
+| G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
 | E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles and deferred destruction implemented for one context/surface per backend session. Creation/bind failure preserves prior state. Multiple public EGL contexts, sharing, display generations and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
@@ -696,3 +696,35 @@ full Rust/package, guest CTS/compositor, browser-memory and POSIX validation
 remain deferred and required. Multiple public contexts/share groups,
 context-owned encoder state, display generations and complete surfaceless
 framebuffer behavior remain implementation work.
+
+### Native error ownership across renderer switches
+
+The native renderer keeps error flags independently of the guest shadow.
+Before this repair, switching owners without first consuming an error let
+the next session's glGetError take it. Two muxer regressions fail against
+`c519d52dc1` (14 pass, 2 fail), and an actual invalid native texture command
+reproduces the wrong-owner result in Chromium, Firefox and WebKit (3 fail):
+`.context/graphics-error-owner-baseline.log` and
+`.context/graphics-error-owner-baseline-browser.log`.
+
+The shared Node/browser muxer now drains native flags into the outgoing
+session before switches and invalidation. It discards flags from unowned
+host operations. Queries merge native and retained flags before returning
+one, preserving duplicate-flag semantics. Failed drains retain only the
+outgoing error array for a retry, let cleanup proceed and prevent switching
+to a new owner until draining succeeds. Queue dispatch contains renderer
+exceptions as EIO, retires the consumed frame and permits a later retry.
+
+On the ABI 55 source tree, 288 host cases in 16 files and both Node/browser
+declarations pass: `.context/graphics-error-owner-final-host.log`. The real
+browser suite passes 21 cases across the same three engine versions, with
+no skips: `.context/graphics-error-owner-final-browser.log`. Each new browser
+case checks both a direct owner switch and invalidation through forwarded
+make-current, and includes the memory-boundary probe. Early source runs
+exposed non-clearing/incomplete device doubles and a cleanup exception;
+those runs are retained in `.context/graphics-error-owner-host.log`.
+
+This is a GL contract bug fix without a wire-layout change; ABI remains 55.
+No guest artifacts were rebuilt. Full negative-API/CTS, guest compositor,
+browser-memory and POSIX validation remain required after normal current
+artifact provisioning. Performance was not measured.

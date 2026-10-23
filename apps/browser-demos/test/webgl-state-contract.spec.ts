@@ -4,6 +4,67 @@ import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./sup
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
+test("forwarded native errors stay with their owner across switches and invalidation", async ({ page }) => {
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const results = await page.evaluate(async sourceRoot => {
+    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
+    const { setupMainForward } = await import(base + "main-forward.ts");
+    const canvas = document.createElement("canvas");
+    document.body.replaceChildren(canvas);
+    const source = `
+      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
+      import * as O from ${JSON.stringify(base + "ops.ts")};
+      onmessage = () => {
+        try {
+          const channels = [101,102].map(session => createMainForwardChannel(
+            { postMessage: message => postMessage(message) }, 71, session));
+          const drawable = { drawSurfaceId: 1, readSurfaceId: 1, width: 1, height: 1 };
+          for (const channel of channels) {
+            if (channel.onCreateContext() !== 0 || channel.onMakeCurrent(drawable) !== 0)
+              throw new Error("failed to bind renderer");
+          }
+          const invalid = new Uint8Array(16), v = new DataView(invalid.buffer);
+          v.setUint16(0, O.OP_TEX_PARAMETERI, true); v.setUint16(2, 12, true);
+          v.setUint32(4, 0xdead, true); // invalid native texture target
+          v.setUint32(8, 0x2801, true); v.setUint32(12, 0x2600, true);
+          const error = channel => {
+            const reply = channel.onQuery(O.QOP_GET_ERROR, new Uint8Array(), 4);
+            if (reply.rc !== 4) throw new Error("error query failed: " + reply.rc);
+            return new DataView(reply.bytes.buffer).getUint32(0, true);
+          };
+          const results = [];
+          for (const invalidate of [false,true]) {
+            channels[0].onSubmit(invalid);
+            if (invalidate && channels[1].onMakeCurrent(drawable) !== 0)
+              throw new Error("replacement bind failed");
+            results.push([error(channels[1]), error(channels[0]), error(channels[0])]);
+          }
+          channels.forEach(channel => channel.onDestroyContext());
+          postMessage({ type: "errors_done", results });
+        } catch (error) { postMessage({ type: "errors_failed", error: String(error) }); }
+      };
+    `;
+    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    const worker = new Worker(url, { type: "module" });
+    const dispose = setupMainForward(worker, canvas, 71);
+    try {
+      return await new Promise<number[][]>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("error isolation timed out")), 45_000);
+        worker.addEventListener("error", event => { clearTimeout(timeout); reject(new Error(event.message)); });
+        worker.addEventListener("message", ({ data }) => {
+          if (data.type === "errors_done") { clearTimeout(timeout); resolve(data.results); }
+          if (data.type === "errors_failed") { clearTimeout(timeout); reject(new Error(data.error)); }
+        });
+        worker.postMessage({ type: "start" });
+      });
+    } finally { dispose(); worker.terminate(); URL.revokeObjectURL(url); }
+  }, root);
+  expect(results).toEqual([[0,0x500,0],[0,0x500,0]]);
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
+
 test("GLES texture targets and pixel-store state survive alternating contexts", async ({ page }) => {
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT
     ?? fileURLToPath(new URL("../../../", import.meta.url));

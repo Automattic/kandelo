@@ -670,6 +670,20 @@ describe("query handler", () => {
     expect(o[0]).toBe(0); // RecordingGl.getError() returns 0
   });
 
+  it("merges native and retained error flags before consuming a duplicate", () => {
+    const { b, gl } = setup();
+    b.errors.push(0x500);
+    let pending = 0x500;
+    gl.getError = () => { const result = pending; pending = 0; return result; };
+    const reply = out(4);
+    const next = () => {
+      expect(runGlQuery(b, O.QOP_GET_ERROR, input([]), reply)).toBe(4);
+      return new DataView(reply.buffer).getUint32(0, true);
+    };
+    expect(next()).toBe(0x500);
+    expect(next()).toBe(0);
+  });
+
   it.each([
     [0x0b21, [1.75], [2]], // LINE_WIDTH: round, do not truncate
     [0x2a00, [-1.75], [-2]], // POLYGON_OFFSET_UNITS

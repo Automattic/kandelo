@@ -1,10 +1,8 @@
 // Deferred shader/program ownership adapted from Brandon Payton's
 // generic-kms-gles-runtime, retaining main's native-object shadow layout.
 import type { GlBinding } from "./registry.js";
-
-export function recordGlError(b: GlBinding, error: number): void {
-  if (error !== 0 && !b.errors.includes(error)) b.errors.push(error);
-}
+import { recordGlError } from "./errors.js";
+export { recordGlError } from "./errors.js";
 
 /** Keep previously pending errors observable, then commit bookkeeping only
  * if this native call is accepted. Driver rejection must leave state intact. */

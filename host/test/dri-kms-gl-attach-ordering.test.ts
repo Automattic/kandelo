@@ -52,6 +52,7 @@ function fakeCanvas(width = 300, height = 150): {
   // test here; they only have to succeed.
   const glCtx = {
     isContextLost: () => false,
+    getError: () => 0,
     getExtension: () => null,
     getParameter: () => null,
     createTexture: () => ({}),
