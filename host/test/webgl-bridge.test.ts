@@ -185,6 +185,19 @@ class Tlv {
 }
 
 describe("cmdbuf decoder — TLV walker", () => {
+  it("rejects a malformed trailing command before changing any GL state", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const before = [...b.shadow.clearColor];
+    const command = t.op(O.OP_CLEAR_COLOR, 16);
+    for (let i = 0; i < 4; i++) t.view.setFloat32(command.p + i * 4, 1, true);
+    t.op(O.OP_CLEAR, 3); // valid header, invalid payload length
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]);
+    expect(b.shadow.clearColor).toEqual(before);
+  });
+
   it("walks ClearColor + Clear + Viewport in order", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);

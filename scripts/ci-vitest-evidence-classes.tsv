@@ -475,3 +475,6 @@ web-libs/kandelo-session/test/deployment-scope.test.ts	source-only
 web-libs/kandelo-session/test/kandelo-session.test.ts	source-only
 web-libs/kandelo-session/test/lazy-download.test.ts	source-only
 web-libs/kandelo-session/test/vfs-asset-group.test.ts	source-only
+host/test/webgl-capabilities.test.ts	source-only
+host/test/webgl-op-contract.test.ts	source-only
+host/test/webgl-present-target.test.ts	source-only

@@ -3619,6 +3619,12 @@ while version 2 advertises bridged capabilities. Optional float rendering and
 filtering extensions appear only when the host enables them. Uniform
 reflection, vector/matrix uploads, indexed draws, texture updates and
 depth/stencil operations use the same command/query path as other programs.
+A submitted command batch is structurally validated in full before dispatch;
+an invalid trailing TLV record cannot execute earlier records in that batch.
+This does not roll back valid commands that report ordinary GL errors.
+The source-only host gate is `cd host && npx vitest run --config
+vitest.graphics.config.ts`; rendered and guest integration checks are separate.
+See [the graphics compatibility inventory](graphics/compatibility-v1.md).
 Texture uploads copy shared and
 possibly unaligned guest bytes into the typed views WebGL requires. GLES2's
 unsized float, red/green and depth formats map to equivalent sized WebGL2

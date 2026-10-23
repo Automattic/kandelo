@@ -75,6 +75,10 @@ export function decodeAndDispatch(
   length: number,
 ): number {
   if (!b.cmdbufView || !b.gl) return GL_SUBMIT_OK;
+  // Validate the entire batch before the first observable mutation. A bad
+  // trailing record must not leave a partially executed, rejected batch.
+  const validation = validateCommandBuffer(b.cmdbufView, offset, length);
+  if (validation !== GL_SUBMIT_OK) return validation;
   return walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
     try {
       dispatch(b.gl!, b, payload, 0, op);

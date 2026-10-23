@@ -104,3 +104,15 @@ No candidate validation recorded yet. Baseline provisioning started with
 `scripts/agent-job start -- ./run.sh setup`; job
 `run.sh-setup-1023-104545-b7c9`. Runtime edits must be followed by a current-tree
 rebuild; this initial build is only baseline/provisioning evidence.
+
+### Command batch validation
+
+The focused malformed-trailer regression fails against unchanged main's
+bridge: `clearColor(1,1,1,1)` executes before the invalid final record returns
+`EINVAL`. Its original log is
+`.context/baseline-gl-command-atomicity-source.log`. Full-batch validation
+adapted from Brandon Payton's `4fec7d0dd3` now rejects framing/payload errors
+before dispatch. This is structural validation, not transactional rollback
+of valid GL commands which later encounter GL errors. The source-only WebGL
+selection passed 120 tests in 12 files on 2026-10-23, with no skips.
+Rendered, guest, conformance and complete lifecycle validation remain open.
