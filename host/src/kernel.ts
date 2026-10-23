@@ -2230,6 +2230,10 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
         },
+        host_net_readiness_generation: (handle: number, direction: number): bigint => {
+          try { return this.io.network?.readinessGeneration?.(handle, direction) ?? -1n; }
+          catch { return -1n; }
+        },
         host_net_readiness: (handle: number): number => {
           return this.#hostNetReadiness(handle);
         },

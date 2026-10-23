@@ -65,6 +65,7 @@ host/test/dri-smoke.test.ts	prepared-product
 host/test/dylink-fork-archive.test.ts	source-only
 host/test/dylink.test.ts	source-only
 host/test/environment-lifecycle.test.ts	prepared-product
+host/test/epoll-semantics.test.ts	prepared-product
 host/test/exec-brk-base.test.ts	prepared-product
 host/test/exec-retirement-marker.test.ts	source-only
 host/test/exec-state-tracking.test.ts	source-only
@@ -172,6 +173,7 @@ host/test/kernel-worker-entry-root-contract.test.ts	source-only
 host/test/kernel.test.ts	prepared-product
 host/test/lazy-url.test.ts	source-only
 host/test/libevdev-smoke.test.ts	prepared-product
+host/test/libevent.test.ts	prepared-product
 host/test/libffi-full-unit.test.ts	prepared-product
 host/test/libffi-shim-unit.test.ts	source-only
 host/test/libinput-smoke.test.ts	prepared-product
@@ -196,6 +198,7 @@ host/test/multi-worker.test.ts	prepared-product
 host/test/native-open-create-race.test.ts	source-only
 host/test/nethack-shared-playground.test.ts	prepared-product
 host/test/network-hostname.test.ts	source-only
+host/test/network-readiness-generation.test.ts	source-only
 host/test/node-demo-workspace.test.ts	prepared-product
 host/test/node-host-mounts.test.ts	prepared-product
 host/test/node-host-vfs-only-metadata.test.ts	source-only
@@ -429,6 +432,7 @@ packages/registry/spidermonkey/test/spidermonkey-node-compat.test.ts	prepared-pr
 packages/registry/spidermonkey/test/spidermonkey-node-parity.test.ts	prepared-product
 packages/registry/spidermonkey/test/spidermonkey-tls-source.test.ts	source-only
 packages/registry/spidermonkey/test/spidermonkey.test.ts	prepared-product
+packages/registry/tmux/test/tmux.test.ts	prepared-product
 packages/registry/unzip/test/unzip.test.ts	prepared-product
 packages/registry/wordpress/test/php-sanity.test.ts	prepared-product
 packages/registry/wordpress/test/service-vfs-demo.test.ts	prepared-product

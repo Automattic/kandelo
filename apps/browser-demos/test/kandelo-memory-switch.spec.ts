@@ -37,7 +37,31 @@ async function expectGameFrame(page: Page): Promise<void> {
   }), { timeout: 180_000 }).toBeGreaterThan(8);
 }
 
-test("@slow framebuffer games, Freeciv, LÖVE and WordPress survive repeated constrained-budget switches", async ({ page }) => {
+async function leaveDetachedTmuxSession(page: Page, cycle: number): Promise<void> {
+  const screen = () => page.locator(".xterm-rows:visible").textContent();
+  const input = page.locator(".xterm-helper-textarea:visible");
+  const command = async (text: string) => {
+    await input.focus();
+    await page.keyboard.type(text);
+    await page.keyboard.press("Enter");
+  };
+  await expect.poll(screen, { timeout: 120_000 }).toMatch(/kandelo\$/);
+  await command("tmux new-session -s memory");
+  await expect.poll(screen, { timeout: 30_000 }).toContain("[memory]");
+  await command(`printf 'TMUX_%s\\n' 'MEMORY_LEFT_${cycle}'`);
+  await expect.poll(screen, { timeout: 20_000 }).toContain(`TMUX_MEMORY_LEFT_${cycle}`);
+  await page.keyboard.press("Control+b");
+  await page.keyboard.type("%");
+  await command(`printf 'TMUX_%s\\n' 'MEMORY_RIGHT_${cycle}'`);
+  await expect.poll(screen, { timeout: 20_000 }).toContain(`TMUX_MEMORY_RIGHT_${cycle}`);
+  await page.keyboard.press("Control+b");
+  await page.keyboard.type("d");
+  await expect.poll(screen, { timeout: 10_000 }).toContain("[detached (from session memory)]");
+  // Leave the real server and both pane shells alive. Switching machines
+  // must release them through normal host teardown in this same page realm.
+}
+
+test("@slow framebuffer games, Freeciv, LÖVE, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
   test.setTimeout(900_000);
   const required = process.env.KANDELO_MEMORY_SWITCH_REQUIRED === "1";
   // This follows the same external-data boundary as the Quake demo spec.
@@ -89,6 +113,8 @@ test("@slow framebuffer games, Freeciv, LÖVE and WordPress survive repeated con
       Number(text.match(/(\d+)\s*flips\s*·/i)?.[1] ?? -1));
     const initialFlips = await loveFlips();
     await expect.poll(loveFlips, { timeout: 60_000 }).toBeGreaterThan(initialFlips + 5);
+    await launch(page, "Bare shell", "shell");
+    await leaveDetachedTmuxSession(page, cycle);
     await launch(page, "WordPress MariaDB", "wordpress-mariadb");
     await expect(previewFrame(page, "WordPress MariaDB").locator("body"))
       .toContainText(/Hello world/i, { timeout: 240_000 });

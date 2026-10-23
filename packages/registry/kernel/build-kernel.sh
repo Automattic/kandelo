@@ -43,6 +43,8 @@ wasm_require_exports "$OUT" \
     kernel_create_process \
     kernel_create_process_with_stdio \
     kernel_dequeue_signal \
+    kernel_epoll_wait_finish \
+    kernel_epoll_wait_token \
     kernel_exec_commit \
     kernel_exec_target_cancel \
     kernel_exec_target_prepare \
@@ -72,6 +74,8 @@ wasm_require_exports "$OUT" \
     kernel_ipc_shmdt_for_process \
     kernel_ipc_shmdt_for_task \
     kernel_is_fd_nonblock \
+    kernel_kms_cursor_configure \
+    kernel_kms_cursor_read \
     kernel_mark_process_signaled \
     kernel_pcm_claim_transport \
     kernel_pcm_clock_update \

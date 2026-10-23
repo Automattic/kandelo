@@ -132,6 +132,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "tmux",
+      "version": "3.8",
+      "role": "lazy-file"
+    },
+    {
       "name": "sqlite-cli",
       "version": "3.49.1",
       "role": "lazy-file"

@@ -655,6 +655,12 @@ impl ProcessTable {
                     if let Some(pty) = crate::pty::get_pty(pty_idx) {
                         if pty.master_refs > 0 {
                             pty.master_refs -= 1;
+                            if pty.master_refs == 0 {
+                                crate::epoll::notify(
+                                    crate::epoll::Source::Pty(pty.index, false),
+                                    0x10,
+                                );
+                            }
                         }
                         if !pty.is_alive() {
                             crate::pty::free_pty(pty_idx);
@@ -666,6 +672,12 @@ impl ProcessTable {
                     if let Some(pty) = crate::pty::get_pty(pty_idx) {
                         if pty.slave_refs > 0 {
                             pty.slave_refs -= 1;
+                            if pty.slave_refs == 0 {
+                                crate::epoll::notify(
+                                    crate::epoll::Source::Pty(pty.index, true),
+                                    0x10,
+                                );
+                            }
                         }
                         if !pty.is_alive() {
                             crate::pty::free_pty(pty_idx);
@@ -1077,6 +1089,27 @@ impl ProcessTable {
         processes
             .get_mut(&pid)
             .map(|process| (process, advisory_locks))
+    }
+
+    /// Split the live records before borrowing the caller. epoll registrations
+    /// belong to OFDs and can outlive every descriptor in the waiting process.
+    pub fn current_process_peers_and_locks(
+        &mut self,
+    ) -> Option<(&mut Process, Vec<&mut Process>, &mut AdvisoryLockManager)> {
+        let pid = self.current_pid;
+        if !self.has_current_tid_binding(pid) {
+            return None;
+        }
+        let mut caller = None;
+        let mut peers = Vec::new();
+        for (id, proc) in &mut self.processes {
+            if *id == pid {
+                caller = Some(proc);
+            } else {
+                peers.push(proc);
+            }
+        }
+        Some((caller?, peers, &mut self.advisory_locks))
     }
 
     /// Borrow an addressed process and the lock manager as disjoint fields.

@@ -275,6 +275,7 @@ export interface TcpConnectionPeer {
    * here and nothing else.
    */
   readiness?(): number;
+  readinessGeneration?(direction: number): bigint;
   /** Disable one or both directions without resetting the connection. */
   shutdown(how: number): void;
   /** Orderly close: flush/FIN the write half and orphan the receive half. */
@@ -329,6 +330,8 @@ export interface NetworkIO {
    * wake-every-round with `EAGAIN` from `recv`/`send`.
    */
   readiness?(handle: number): number;
+  /** Monotonic notification counter: 0 receive, 1 send. -1 means unavailable. */
+  readinessGeneration?(handle: number, direction: number): bigint;
   /** Actual local endpoint of a connected stream, when the host exposes it. */
   localEndpoint?(handle: number): NetworkAddress;
   /** Disable stream directions while preserving the connection handle. */

@@ -99,6 +99,22 @@ pub fn alloc_accept_wake_idx() -> u32 {
 
 /// Push a wakeup event into the global buffer.
 pub fn push(idx: u32, wake_type: u8) {
+    use wasm_posix_shared::epoll::*;
+    let (source, events) = match wake_type {
+        WAKE_READABLE => (
+            crate::epoll::Source::Pipe(idx, wake_type),
+            EPOLLIN | EPOLLRDNORM | EPOLLRDHUP,
+        ),
+        WAKE_WRITABLE => (
+            crate::epoll::Source::Pipe(idx, wake_type),
+            EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND,
+        ),
+        WAKE_ACCEPT => (crate::epoll::Source::Accept(idx), EPOLLIN | EPOLLRDNORM),
+        _ => (crate::epoll::Source::Accept(0), 0),
+    };
+    if events != 0 {
+        crate::epoll::notify(source, events);
+    }
     #[cfg(test)]
     {
         TEST_WAKEUP_EVENTS.with(|events| {

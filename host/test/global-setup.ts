@@ -117,6 +117,7 @@ const RESOLVED_PROGRAM_FIXTURES = [
 
 /** C programs that tests depend on. */
 const TEST_PROGRAMS = [
+  "epoll_semantics_test.c",
   "clock_getcpuclockid_test.c",
   "syscall_cp_offset_test.c",
   "select_signal_test.c",
@@ -176,6 +177,7 @@ const WASM64_TEST_PROGRAMS = [...new Set([
 ])];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
+  "epoll_semantics_test.c",
   "sysv_shm_departed_peer_test.c",
   "pty_readiness_test.c",
   "shm_mapping_coherence_test.c",

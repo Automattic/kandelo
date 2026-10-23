@@ -206,7 +206,9 @@ pub mod process_layout;
 ///     a host-backed shutdown keeps its
 ///     connection handle until close, and accepted connections report the
 ///     routed local address. docs/abi-versioning.md ("ABI 50") lists each.
-pub const ABI_VERSION: u32 = 50;
+/// 51: epoll notification delivery, edge/one-shot rearming, registration
+///     lifetime, nesting validation, fairness, and stream half-close readiness.
+pub const ABI_VERSION: u32 = 51;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -1408,6 +1410,11 @@ pub mod poll {
     pub const POLLERR: i16 = 0x0008;
     pub const POLLHUP: i16 = 0x0010;
     pub const POLLNVAL: i16 = 0x0020;
+    pub const POLLRDNORM: i16 = 0x0040;
+    pub const POLLRDBAND: i16 = 0x0080;
+    pub const POLLWRNORM: i16 = 0x0100;
+    pub const POLLWRBAND: i16 = 0x0200;
+    pub const POLLRDHUP: i16 = 0x2000;
 }
 
 /// Host-observable readiness facts for a host-delegated network connection.
@@ -1474,6 +1481,17 @@ pub mod net_readiness {
 
 /// Epoll event constants.
 pub mod epoll {
+    pub const EPOLLPRI: u32 = 0x0002;
+    pub const EPOLLRDNORM: u32 = 0x0040;
+    pub const EPOLLRDBAND: u32 = 0x0080;
+    pub const EPOLLWRNORM: u32 = 0x0100;
+    pub const EPOLLWRBAND: u32 = 0x0200;
+    pub const EPOLLRDHUP: u32 = 0x2000;
+    pub const EPOLLEXCLUSIVE: u32 = 1 << 28;
+    pub const EPOLLWAKEUP: u32 = 1 << 29;
+    pub const EPOLLONESHOT: u32 = 1 << 30;
+    pub const EPOLLET: u32 = 1 << 31;
+    pub const MAX_EVENTS: i32 = i32::MAX / 16;
     pub const EPOLLIN: u32 = 0x0001;
     pub const EPOLLOUT: u32 = 0x0004;
     pub const EPOLLERR: u32 = 0x0008;
@@ -3539,6 +3557,8 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_create_process"),
         HostAdapterKernelExport::required("kernel_create_process_with_stdio"),
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
+        HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
+        HostAdapterKernelExport::required("kernel_epoll_wait_token"),
         HostAdapterKernelExport::required("kernel_exec_commit"),
         HostAdapterKernelExport::required("kernel_exec_target_cancel"),
         HostAdapterKernelExport::required("kernel_exec_target_prepare"),

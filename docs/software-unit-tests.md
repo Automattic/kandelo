@@ -29,6 +29,16 @@ Status date: 2026-06-16.
 
 Logs from the 2026-05-28 full runs are under `test-runs/software-unit-tests/`.
 
+## 2026-10-22 Libevent epoll integration
+
+Libevent 2.1.12 has a reusable library package and an unchanged upstream
+regression runner. The selected three edge-triggering and nine peer-close
+tests pass with zero skips on Node, Chromium, Firefox, and WebKit for both
+wasm32/wasm64 and both libevent epoll modes: 192 upstream case executions.
+The recorded main ABI-50 comparison fails 10 of 12 cases in every
+configuration. The complete upstream suite was not run. See
+[the libevent port](libevent.md) for scope, reproduction, and provenance.
+
 ## 2026-06-16 PHP PHPT Node Source-PR Full Run
 
 php-src discovery finds **19,017** `.phpt` files from PHP **8.3.15**. The

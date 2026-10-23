@@ -256,6 +256,9 @@ pipe pair.
 
 ### Terminal
 - PTY support with full line discipline
+- The wasm32 browser shell includes [tmux 3.8](tmux.md) as a lazy program.
+  It uses the ordinary guest PTYs, process model, Unix sockets, libevent,
+  and package-owned terminfo database; panes are rendered within xterm.
 - Interactive stdin via `appendStdinData` for incremental input
 - xterm.js integration. The live Shell pane
   (`apps/browser-demos/pages/kandelo/panes/Shell.tsx`) builds its own

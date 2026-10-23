@@ -212,6 +212,12 @@ package isolation boundary.
 tool picks the pointer width from the module's primary memory — a memory64
 memory yields `i64`, anything else yields `i32`.
 
+The `wpk_fork_resume_thread` entry keeps its host function-table index
+parameter as `i32` on both targets. Its lexical indirect call widens that
+unsigned index when the original function table uses 64-bit indices.
+Memory pointer width and table index width are independent; all four
+combinations produce valid instrumented modules.
+
 `wpk_fork_unwind_begin` self-initializes `*(buf + 0)` with
 `buf + frames_start_offset` before touching user state. In the linked format,
 that initial address is the 16-byte abort selector inside the fixed prefix.

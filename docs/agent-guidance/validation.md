@@ -111,11 +111,12 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → Freeciv → LÖVE → WordPress cycles in each of Chromium,
-  Firefox, and WebKit, in one page per engine with the constrained memory
-  profile. Games must render and reach running audio through trusted
-  activation. WordPress must serve Hello world. Reloads, runtime errors,
-  forced teardown, unreviewed shared worker messages, and main-thread
+- Four Doom → Quake → Freeciv → LÖVE → tmux → WordPress cycles in each of
+  Chromium, Firefox, and WebKit, in one page per engine with the constrained
+  memory profile. Games must render and reach running audio through trusted
+  activation. Tmux must run two pane shells and leave a detached server
+  alive for machine teardown. WordPress must serve Hello world. Reloads,
+  runtime errors, forced teardown, unreviewed shared worker messages, and main-thread
   shared Wasm allocations fail the test.
 
 This gate owns its browser server; set `KANDELO_PLAYWRIGHT_PORT` if the

@@ -55,6 +55,7 @@ pub fn drain_pending_flips_for_process(
     tv_usec: u32,
 ) {
     for (_idx, ofd) in proc.ofd_table.iter_mut() {
+        let id = ofd.ofd_id;
         let Some(kms) = ofd.kms_mut() else { continue };
         if kms.pending_flips.is_empty() {
             continue;
@@ -66,6 +67,7 @@ pub fn drain_pending_flips_for_process(
         for flip in &flips {
             write_flip_complete_event(&mut kms.event_ring, flip, seq, tv_sec, tv_usec);
         }
+        crate::epoll::notify(crate::epoll::Source::Description(id), 0x41);
     }
 }
 

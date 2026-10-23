@@ -224,6 +224,7 @@ unsafe extern "C" {
     fn host_net_send(handle: i32, buf_ptr: *const u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_recv(handle: i32, buf_ptr: *mut u8, buf_len: u32, flags: u32) -> i32;
     fn host_net_readiness(handle: i32) -> i32;
+    fn host_net_readiness_generation(handle: i32, direction: u32) -> i64;
     fn host_net_local_endpoint(handle: i32) -> i64;
     fn host_net_shutdown(handle: i32, how: u32) -> i32;
     fn host_net_close(handle: i32) -> i32;
@@ -906,6 +907,11 @@ impl HostIO for WasmHostIO {
         }
     }
 
+    fn host_net_readiness_generation(&mut self, handle: i32, direction: u32) -> Option<u64> {
+        let value = unsafe { host_net_readiness_generation(handle, direction) };
+        (value >= 0).then_some(value as u64)
+    }
+
     fn host_net_readiness(&mut self, handle: i32) -> Result<u32, Errno> {
         let result = unsafe { host_net_readiness(handle) };
         if result < 0 {
@@ -1507,6 +1513,21 @@ unsafe fn get_process_and_advisory_locks() -> (
         #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
         None => panic!("no current process in table"),
     }
+}
+
+/// Borrow disjoint task records for polling an OFD retained by a sibling.
+unsafe fn get_process_peers_and_locks() -> (
+    GklGuard,
+    &'static mut Process,
+    alloc::vec::Vec<&'static mut Process>,
+    &'static mut crate::lock::AdvisoryLockManager,
+) {
+    let guard = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let (proc, peers, locks) = table
+        .current_process_peers_and_locks()
+        .expect("no current process");
+    (guard, proc, peers, locks)
 }
 
 /// Get the current TID and its disjoint process/lock references from one
@@ -3461,6 +3482,31 @@ pub extern "C" fn kernel_swap_poll_sigmask(pid: u32, tid: u32, mask: u64) -> i32
         }
         None => -(Errno::ESRCH as i32),
     }
+}
+
+/// Query the exact generation retained by this task's parked epoll call.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_wait_token(pid: u32, tid: u32) -> u64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    table
+        .get(pid)
+        .and_then(|proc| proc.epoll_waits.iter().find(|(owner, _)| *owner == tid))
+        .map(|(_, lease)| lease.token)
+        .unwrap_or(0)
+}
+
+/// Retire only this execution's wait. An old worker's asynchronous retirement
+/// after exec must never cancel the replacement image's wait on the same TID.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_wait_finish(pid: u32, tid: u32, token: u64) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get_mut(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    crate::epoll::finish_wait_token(proc, tid, token);
+    0
 }
 
 /// Restore the mask kernel_swap_poll_sigmask saved, unless a signal became
@@ -6353,7 +6399,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
 
         // epoll
         239 => kernel_epoll_create1(a1 as u32), // SYS_EPOLL_CREATE1: (flags)
-        378 => kernel_epoll_create1(0),         // SYS_EPOLL_CREATE: (size) — flags=0
+        378 => {
+            if a1 <= 0 {
+                -(Errno::EINVAL as i32)
+            } else {
+                kernel_epoll_create1(0)
+            }
+        } // SYS_EPOLL_CREATE: (size) — flags=0
         240 => {
             let event_ptr = channel_const_ptr!(3, u8);
             kernel_epoll_ctl(a1, a2, a3, event_ptr)
@@ -8906,7 +8958,7 @@ pub fn kernel_epoll_ctl(epfd: i32, op: i32, fd: i32, event_ptr: *const u8) -> i3
     }
 
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let (events, data) = if !event_ptr.is_null() {
+    let (events, data) = if syscalls::epoll_ctl_reads_event(op) {
         // The shared record is compiler-checked against both Kandelo musl
         // targets: 16-byte stride, with data at offset 8.
         let event = unsafe {
@@ -8935,7 +8987,11 @@ pub fn kernel_epoll_pwait(
     timeout: i32,
     sigmask_ptr: *const u8,
 ) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some((proc, mut peers, advisory_locks)) = table.current_process_peers_and_locks() else {
+        return -(Errno::ESRCH as i32);
+    };
     let mut host = WasmHostIO;
 
     // Read signal mask if provided
@@ -8945,7 +9001,8 @@ pub fn kernel_epoll_pwait(
         None
     };
 
-    let result = match syscalls::sys_epoll_pwait(proc, &mut host, epfd, maxevents, timeout, sigmask)
+    let result = match syscalls::sys_epoll_pwait_with_peers(proc, &mut host, epfd, maxevents, timeout, sigmask, &mut peers,
+    )
     {
         Ok((count, events)) => {
             for (i, (ev, data)) in events.iter().enumerate() {
@@ -12447,12 +12504,12 @@ pub extern "C" fn kernel_poll(fds_ptr: *mut u8, fds_capacity: u32, nfds: u32, ti
     if (fds_ptr as usize) % core::mem::align_of::<wasm_posix_shared::WasmPollFd>() != 0 {
         return -(Errno::EFAULT as i32);
     }
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let (_gkl, proc, mut peers, advisory_locks) = unsafe { get_process_peers_and_locks() };
     let fds = unsafe {
         slice::from_raw_parts_mut(fds_ptr as *mut wasm_posix_shared::WasmPollFd, nfds as usize)
     };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_poll(proc, &mut host, fds, timeout) {
+    let result = match syscalls::sys_poll_with_peers(proc, &mut host, fds, timeout, &mut peers) {
         Ok(n) => n,
         Err(e) => -(e as i32),
     };
@@ -13359,7 +13416,7 @@ pub extern "C" fn kernel_select(
     exceptfds_capacity: u32,
     timeout_ms: i32,
 ) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let (_gkl, proc, mut peers, advisory_locks) = unsafe { get_process_peers_and_locks() };
 
     let fd_set_bytes = wasm_posix_shared::select::FD_SET_BYTES;
     let pointer_range = |ptr: *mut u8, capacity: u32| -> Result<Option<(usize, usize)>, Errno> {
@@ -13421,8 +13478,8 @@ pub extern "C" fn kernel_select(
     };
 
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_select(
-        proc, &mut host, nfds, readfds, writefds, exceptfds, timeout_ms,
+    let result = match syscalls::sys_select_with_peers(
+        proc, &mut host, nfds, readfds, writefds, exceptfds, timeout_ms, &mut peers,
     ) {
         Ok(n) => n,
         Err(e) => -(e as i32),
@@ -14476,7 +14533,7 @@ pub fn kernel_ppoll(
     mask_lo: u32,
     mask_hi: u32,
 ) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let (_gkl, proc, mut peers, advisory_locks) = unsafe { get_process_peers_and_locks() };
     let fds = unsafe {
         slice::from_raw_parts_mut(fds_ptr as *mut wasm_posix_shared::WasmPollFd, nfds as usize)
     };
@@ -14486,7 +14543,7 @@ pub fn kernel_ppoll(
         None
     };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_ppoll(proc, &mut host, fds, timeout_ms, mask) {
+    let result = match syscalls::sys_ppoll_with_peers(proc, &mut host, fds, timeout_ms, mask, &mut peers) {
         Ok(n) => n,
         Err(e) => -(e as i32),
     };
@@ -14506,7 +14563,7 @@ pub fn kernel_pselect6(
     mask_lo: u32,
     mask_hi: u32,
 ) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let (_gkl, proc, mut peers, advisory_locks) = unsafe { get_process_peers_and_locks() };
 
     let readfds = if readfds_ptr.is_null() {
         None
@@ -14537,8 +14594,8 @@ pub fn kernel_pselect6(
     };
 
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_pselect6(
-        proc, &mut host, nfds, readfds, writefds, exceptfds, timeout_ms, mask,
+    let result = match syscalls::sys_pselect6_with_peers(
+        proc, &mut host, nfds, readfds, writefds, exceptfds, timeout_ms, mask, &mut peers,
     ) {
         Ok(n) => n,
         Err(e) => -(e as i32),
@@ -15054,7 +15111,7 @@ pub extern "C" fn kernel_epoll_wake_indices(
         let Some(proc) = table.get(pid) else {
             return -(Errno::ESRCH as i32);
         };
-        match syscalls::epoll_resolved_interests(proc, epfd) {
+        match syscalls::epoll_wait_resolved_interests(proc, epfd) {
             Ok(interests) => interests,
             Err(e) => return -(e as i32),
         }

@@ -637,6 +637,9 @@ pub struct PeerCred {
 /// See the `impl Clone for SocketInfo` block below for which fields are
 /// reset.
 pub struct SocketInfo {
+    /// Installed when a readiness subscription names this socket or its peer.
+    /// It identifies notifications, never retains a descriptor or backing.
+    pub poll_identity: core::cell::Cell<Option<crate::lock::OfdId>>,
     pub domain: SocketDomain,
     pub sock_type: SocketType,
     pub protocol: u32,
@@ -728,6 +731,7 @@ pub struct SocketInfo {
 impl SocketInfo {
     pub fn new(domain: SocketDomain, sock_type: SocketType, protocol: u32) -> Self {
         SocketInfo {
+            poll_identity: core::cell::Cell::new(None),
             domain,
             sock_type,
             protocol,
@@ -812,6 +816,7 @@ impl SocketInfo {
 impl Clone for SocketInfo {
     fn clone(&self) -> Self {
         SocketInfo {
+            poll_identity: core::cell::Cell::new(self.poll_identity.get()),
             domain: self.domain,
             sock_type: self.sock_type,
             protocol: self.protocol,

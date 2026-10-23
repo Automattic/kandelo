@@ -1175,7 +1175,25 @@ generic wake event without implementing advisory-lock storage.
 
 **Finite-timeout waits keep one kernel-owned deadline across retries.** Each retry re-enters the handler (`handleBlockingRetry`, `handleSelect`, `handlePselect6`, `handleEpollPwait`) from scratch, so a handler that recomputed `deadline = now + timeout` on every wake would never time out on a busy system — broad wakes arrive every ~10 ms and each one used to push the deadline out again. The deadline is kernel state on `CLOCK_MONOTONIC` (`crates/runtime-core/src/wait_queue.rs`): the first time a call is known to block, the host opens a wait with `kernel_wait_deadline_open(pid, tid, kind, timeout_ms)` and keeps only the returned handle on the channel (`ChannelInfo.waitHandle`); every re-entry asks `kernel_wait_deadline_remaining_ns`, and `clearReadinessWait` closes the handle when the call completes or is abandoned. A handle is an execution generation and is never reused, so a timer armed before an `exec` cannot complete a request issued after it. Because the clock is monotonic, a wall-clock step (an NTP correction, a DST change, a user setting the date) no longer moves pending timeouts. A call that finds its descriptor ready, fails, or is non-blocking never opens a deadline. The host still owns the park itself — the timer and the wake routing — and refuses to boot a kernel that lacks the deadline exports rather than falling back to wall-clock arithmetic.
 
-**epoll interest lists live in the kernel, on the epoll open file description.** An epoll instance is a kernel-global backing keyed by the open file description `epoll_create1` returned, beside eventfd, timerfd and signalfd, so `dup`, `fork` and a non-CLOEXEC `exec` all reach the same instance and either process's `epoll_ctl` is visible to the other. Each interest is keyed on (registered descriptor number, open file description), as Linux keys it on `(struct file *, fd)`. The host keeps no copy of any interest list: `epoll_ctl` travels as an ordinary opaque record, and a parked `epoll_pwait` asks `kernel_epoll_wake_indices(pid, epfd, kind, ...)` for the pipe and accept wake tokens its interests resolve to, so targeted readiness wakeups still reach it.
+**epoll interests and delivery state belong to open file descriptions.**
+Instances live in the kernel-global backing table. Interests use Linux's
+`(registered fd, OFD identity)` key and carry notification candidates and
+one-shot disablement. Backing mutations publish candidates independently of
+the host wake buffer; delivery rechecks actual readiness, consumes edges and
+one-shot state, and rotates bounded batches. Nested epoll peeks do not consume
+child events; ctl rejects cycles and excessive nesting. A final target OFD
+release removes its interests. A caller that closed its target alias can
+still observe that description while a sibling process holds it.
+
+A parked wait owns the exact epoll description and a unique kernel token,
+so fd reuse and late retirement after exec cannot redirect or cancel another
+wait. The shared Node/browser host retains only this token, the signal scope
+and the deadline; it keeps no interest-list mirror. Targeted pipe/accept
+wake tokens are latency hints, with bounded yielding retries for other
+sources and concurrent registration. Host network notification counters,
+signal queue generations, and the independent PCM consumer clock retain
+activity that happens between attempts. See the [epoll matrix](epoll.md) for
+interfaces, event bits, ownership details and explicit compatibility limits.
 
 ## Multi-Process Model
 
@@ -2530,14 +2548,21 @@ backend determined — a Node socket error's `code`, or an explicit POSIX
 `errno` — via `negErrno`, with `EIO` for a failure nothing classified.
 The transport does not choose an errno on a backend's behalf.
 
-Known divergence, not yet closed: the kernel's own pipe-backed socket
-path (AF_UNIX and loopback AF_INET) still raises `POLLHUP` when a peer
-closes its write end and never reports end-of-file as `POLLIN`, so
-`POLLHUP` doubles as the reader's EOF wakeup and can accompany
-`POLLOUT`. Linux treats that state as `RCV_SHUTDOWN` —
-`EPOLLIN | EPOLLRDHUP` with `EPOLLOUT` intact — and reserves `EPOLLHUP`
-for both directions down. Correcting it changes wakeups for every
-AF_UNIX and loopback socket and needs conformance-suite validation.
+Pipe-backed AF_UNIX and loopback streams use the same half-close contract:
+receive EOF is readable and is EPOLLRDHUP when requested. A peer FIN alone
+preserves the local write half. EPOLLHUP denotes a full shutdown/hangup,
+and EPOLLERR denotes a transport error rather than orderly shutdown.
+Forked stream copies consult shared connection-half shutdown state.
+
+Epoll applies Linux-specific socket masks to the common object readiness
+facts. It reports requested writable events for immediate shutdown failures,
+allows OUT alongside HUP, and reports HUP for an unconnected stream. Unix
+sockets and datagrams expose WRBAND; TCP streams do not. Local datagram read
+shutdown is IN/RDNORM/RDHUP, and datagram write shutdown alone is not HUP.
+Queue-capacity subscriptions are keyed to the receiver's open description;
+dequeue, receive shutdown and final receiver closure notify blocked epoll
+writers, including write-band-only interests. These rules are distinct from
+the POSIX poll policy described above.
 
 AF_INET and AF_INET6 receive queues are currently bounded at 128 datagrams per
 socket. Once that fixed internal queue is full, a newly arriving UDP datagram
