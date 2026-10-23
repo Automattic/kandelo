@@ -19,6 +19,7 @@
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
+import { checkedGlCall } from "./program-objects.js";
 
 const GL_VENDOR = 0x1F00;
 const GL_RENDERER = 0x1F01;
@@ -140,7 +141,8 @@ export function runGlQuery(
       if (pname === GL_SCISSOR_BOX) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.scissor.rect, false, pname);
       }
-      const value = queryParameter(b, pname);
+      let value: unknown;
+      if (!checkedGlCall(b, () => { value = queryParameter(b, pname); })) return -22;
       return writeNumericValues(outDv, out.byteLength, value, false, pname);
     }
 
@@ -154,7 +156,8 @@ export function runGlQuery(
       if (pname === GL_SCISSOR_BOX) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.scissor.rect, true, pname);
       }
-      const value = queryParameter(b, pname);
+      let value: unknown;
+      if (!checkedGlCall(b, () => { value = queryParameter(b, pname); })) return -22;
       return writeNumericValues(outDv, out.byteLength, value, true, pname);
     }
 
@@ -367,6 +370,14 @@ function nameForObject<T>(objects: Map<number, T>, object: T | null): number {
  * includes host-owned default-FBO redirects absent from the guest map. */
 function queryParameter(b: GlBinding, pname: number): unknown {
   if (pname === GL_CURRENT_PROGRAM) return nameForObject(b.programs, b.currentProgram);
+  // WebGL exposes source compilation and its compressed-format vector, but
+  // does not expose GLES's binary-compiler and vector-count query enums.
+  if (pname === 0x8df8) return []; // SHADER_BINARY_FORMATS: no binary loader
+  if (pname === 0x8df9) return 0; // NUM_SHADER_BINARY_FORMATS
+  if (pname === 0x8dfa) return true; // SHADER_COMPILER
+  if (pname === 0x86a2) { // NUM_COMPRESSED_TEXTURE_FORMATS
+    return (b.gl!.getParameter(0x86a3) as Uint32Array).length;
+  }
   const value = b.gl!.getParameter(pname);
   switch (pname) {
     case 0x8894: // ARRAY_BUFFER_BINDING
@@ -408,9 +419,29 @@ function writeNumericValues(
   if (count > Math.floor(outLen / 4)) return -22;
   for (let i = 0; i < count; i++) {
     if (asFloat) outDv.setFloat32(i * 4, values[i], true);
-    else outDv.setInt32(i * 4, values[i] | 0, true);
+    else outDv.setInt32(i * 4, integerQueryValue(values[i], pname), true);
   }
   return count * 4;
+}
+
+// GLES2 section 6.1.2: floating state rounds to nearest, while normalized
+// color/depth state uses the signed INT conversion in table 4.4. Integer
+// names, enums and masks retain their 32-bit representation. In particular,
+// an all-ones stencil mask must not be mistaken for a large floating value.
+const normalizedQueryState = new Set([0x0c22, 0x8005, 0x0b70, 0x0b73]);
+const floatingQueryState = new Set([
+  0x0b21, 0x846d, 0x846e, 0x8038, 0x2a00, 0x80aa,
+]);
+
+function integerQueryValue(value: number, pname: number): number {
+  if (normalizedQueryState.has(pname)) {
+    return Math.trunc((Math.min(1, Math.max(-1, value)) * 0xffffffff - 1) / 2);
+  }
+  // pname zero denotes a uniform result, rather than ordinary Get state.
+  if (pname === 0 || floatingQueryState.has(pname)) {
+    return Math.min(0x7fffffff, Math.max(-0x80000000, Math.round(value)));
+  }
+  return value | 0;
 }
 
 function normalizeNumericValues(value: unknown, pname: number): number[] {

@@ -59,7 +59,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Monotonic guest names and per-process WebGL maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Cube/2D targets, dither and pixel-store state replay separately; state argument validation and native texture/viewport limits implemented; broader rollback, hints and multi-context/thread ownership still need work | shadow, muxer, decoder | Alternating contexts/processes; real rendered cube/2D and mask tests | open |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Chunked encoder and transient client staging; bound index buffer plus client attributes rejected | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
-| G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current programs and attached shaders now retain mappings until final release; failed use/attach calls preserve ownership. Core reflection functions, relink semantics and the C shader/program name namespace still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners | partial |
+| G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current programs and attached shaders retain mappings until final release; failed use/attach calls preserve ownership; shader/program names share a namespace. Core reflection and relink semantics still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
@@ -316,14 +316,48 @@ Firefox and WebKit. Logs: `.context/graphics-program-lifetime-baseline.log`,
 `.context/graphics-program-lifetime-browser-baseline.log`,
 `.context/graphics-program-lifetime-browser-fixed.log`.
 
-This remains bounded ownership evidence. The C encoder still allocates shader
-and program names from separate counters, several core reflection APIs are
+This remains bounded ownership evidence. Several core reflection APIs are
 missing, and complete relink behavior needs implementation. In particular,
 WebGL invalidates the current executable after an unsuccessful relink whereas
 GLES retains the installed executable. That difference requires a retained
 executable model and tests; it is not evidence that implementing the GLES
 behavior is impossible. See the [WebGL program-object clarification](https://registry.khronos.org/webgl/specs/latest/1.0/#5.14.9)
 and GLES2 §2.10.
+
+The C encoder now allocates shader and program names from one shared monotonic
+namespace, rejects an invalid shader type with zero and INVALID_ENUM, and
+rejects namespace exhaustion before wrapping through name zero. This does not
+complete native allocation-failure propagation through asynchronous creation.
+
+### Numeric conversion and complete query vectors
+
+Integer state queries round ordinary floating state to nearest and use the
+GLES2 §6.1.2/table 4.4 conversion for normalized color/depth state. Masks and
+integer object names retain their 32-bit representation. Boolean queries
+test floating values against zero before any integer conversion. Invalid
+native numeric queries retain the GL error and leave output bytes untouched;
+the C query wrappers also preserve their caller's output after ioctl failure.
+
+Compressed-format vectors use their actual reported count. Boolean conversion
+allocates enough storage for vectors longer than four elements. Client-side
+unpack-subimage state is observable in integer, float and boolean forms.
+GLES compiler/format-count enums absent from WebGL are derived from the actual
+source compiler, absent binary loader and native compressed-format vector.
+
+The expanded native harness resolves recorded query allocations without
+dereferencing truncated host pointers, then exercises the real library's
+query/copy/conversion path. On `b85a4c8e0861`, six prior cases pass and four
+new cases fail: shared names, fractional booleans, longer vectors and
+unchanged output after query failure. The candidate passes all ten under
+UBSan. Six host numeric regressions fail before repair; the final source gate
+passes 237 tests without skips and declaration generation passes. One
+intermediate failure exposed a fake context whose getError returned undefined;
+it now models NO_ERROR, with the existing state-selection assertion preserved.
+Logs: `.context/graphics-query-expanded-baseline.log`,
+`.context/graphics-namespace-boolean-fixed.log`,
+`.context/graphics-numeric-conversion-baseline.log`,
+`.context/graphics-state-query-final.log`. Guest and browser execution of these
+newest changes remains pending; complete query API coverage is still open.
 
 ### State rejection and native limits
 

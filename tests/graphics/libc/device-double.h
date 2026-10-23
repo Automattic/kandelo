@@ -7,16 +7,21 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <stdlib.h>
 int graphics_open(const char *, int, ...);
 int graphics_close(int);
 int graphics_fstat(int, struct stat *);
 void *graphics_mmap(void *, size_t, int, int, int, off_t);
 int graphics_munmap(void *, size_t);
 int graphics_ioctl(int, unsigned long, ...);
+void *graphics_malloc(size_t);
+void graphics_free(void *);
 #define open graphics_open
 #define close graphics_close
 #define fstat graphics_fstat
 #define mmap graphics_mmap
 #define munmap graphics_munmap
 #define ioctl graphics_ioctl
+#define malloc graphics_malloc
+#define free graphics_free
 #endif

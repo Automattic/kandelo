@@ -142,8 +142,18 @@ void glDisable(GLenum cap) { EMIT_BEGIN(OP_DISABLE, 4) w_u32(&_c, (uint32_t)cap)
 /* ----- buffers ------------------------------------------------------ */
 
 static uint32_t g_next_buffer  = 1;
-static uint32_t g_next_shader  = 1;
-static uint32_t g_next_program = 1;
+/* Shader and program objects share one namespace (GLES2 section 2.10).
+ * A name of the wrong object type must be distinguishable from a name
+ * which has never denoted either type. Never wrap through reserved zero. */
+static uint32_t g_next_shader_program = 1;
+
+static GLuint next_shader_program_name(void) {
+    if (g_next_shader_program == 0) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+        return 0;
+    }
+    return g_next_shader_program++;
+}
 
 void glGenBuffers(GLsizei n, GLuint *out) {
     if (n <= 0 || !out) return;
@@ -224,9 +234,14 @@ void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage
 /* ----- shaders / programs ------------------------------------------ */
 
 GLuint glCreateShader(GLenum type) {
-    uint32_t name = g_next_shader++;
+    if (type != GL_VERTEX_SHADER && type != GL_FRAGMENT_SHADER) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        return 0;
+    }
     uint8_t *_c = reserve(4u + 8u);
-    if (_c == NULL) return name;
+    if (_c == NULL) return 0;
+    uint32_t name = next_shader_program_name();
+    if (name == 0) return 0;
     w_u16(&_c, (uint16_t)OP_CREATE_SHADER);
     w_u16(&_c, 8);
     w_u32(&_c, (uint32_t)type);
@@ -269,9 +284,10 @@ void glDeleteShader(GLuint shader) {
 }
 
 GLuint glCreateProgram(void) {
-    uint32_t name = g_next_program++;
     uint8_t *_c = reserve(4u + 4u);
-    if (_c == NULL) return name;
+    if (_c == NULL) return 0;
+    uint32_t name = next_shader_program_name();
+    if (name == 0) return 0;
     w_u16(&_c, (uint16_t)OP_CREATE_PROGRAM);
     w_u16(&_c, 4);
     w_u32(&_c, name);
@@ -1315,10 +1331,7 @@ const GLubyte *glGetString(GLenum name) {
     }
 }
 
-/* Single-word pnames only (GL_MAX_TEXTURE_SIZE and friends). The
- * QOP_GET_INTEGERV reply carries one i32; multi-word pnames
- * (GL_MAX_VIEWPORT_DIMS, …) need a wider query op when a consumer
- * appears. */
+/* Scalar and vector pnames use the same query with their complete width. */
 void glGetIntegerv(GLenum pname, GLint *data) {
     if (!data) return;
     if (pname == GL_UNPACK_ROW_LENGTH_EXT) { *data = g_unpack_row_length; return; }
@@ -1326,7 +1339,7 @@ void glGetIntegerv(GLenum pname, GLint *data) {
     if (pname == GL_UNPACK_SKIP_PIXELS_EXT) { *data = g_unpack_skip_pixels; return; }
     uint32_t p = (uint32_t)pname;
     uint32_t count = query_value_count(pname);
-    memset(data, 0, count * sizeof(GLint));
+    if (count == 0) return;
     (void)_wpk_gl_query_into(QOP_GET_INTEGERV, &p, 4, data, count * sizeof(GLint));
 }
 
@@ -1513,6 +1526,13 @@ static uint32_t query_value_count(GLenum pname) {
     case GL_MAX_VIEWPORT_DIMS:
     case GL_DEPTH_RANGE:
         return 2;
+    case GL_COMPRESSED_TEXTURE_FORMATS:
+    case GL_SHADER_BINARY_FORMATS: {
+        GLint count = 0;
+        glGetIntegerv(pname == GL_COMPRESSED_TEXTURE_FORMATS
+            ? GL_NUM_COMPRESSED_TEXTURE_FORMATS : GL_NUM_SHADER_BINARY_FORMATS, &count);
+        return count > 0 ? (uint32_t)count : 0;
+    }
     default:
         return 1;
     }
@@ -1520,18 +1540,35 @@ static uint32_t query_value_count(GLenum pname) {
 
 void glGetFloatv(GLenum pname, GLfloat *data) {
     if (!data) return;
+    if (pname == GL_UNPACK_ROW_LENGTH_EXT) { *data = (GLfloat)g_unpack_row_length; return; }
+    if (pname == GL_UNPACK_SKIP_ROWS_EXT) { *data = (GLfloat)g_unpack_skip_rows; return; }
+    if (pname == GL_UNPACK_SKIP_PIXELS_EXT) { *data = (GLfloat)g_unpack_skip_pixels; return; }
     uint32_t p = (uint32_t)pname;
     uint32_t count = query_value_count(pname);
-    memset(data, 0, count * sizeof(GLfloat));
+    if (count == 0) return;
     (void)_wpk_gl_query_into(QOP_GET_FLOATV, &p, 4, data, count * sizeof(GLfloat));
 }
 
 void glGetBooleanv(GLenum pname, GLboolean *data) {
     if (!data) return;
-    GLint iv[4] = {0, 0, 0, 0};
+    if (pname == GL_UNPACK_ROW_LENGTH_EXT) { *data = g_unpack_row_length != 0; return; }
+    if (pname == GL_UNPACK_SKIP_ROWS_EXT) { *data = g_unpack_skip_rows != 0; return; }
+    if (pname == GL_UNPACK_SKIP_PIXELS_EXT) { *data = g_unpack_skip_pixels != 0; return; }
     uint32_t count = query_value_count(pname);
-    glGetIntegerv(pname, iv);
-    for (uint32_t i = 0; i < count; i++) data[i] = iv[i] ? GL_TRUE : GL_FALSE;
+    if (count == 0) return;
+    GLfloat small[4];
+    GLfloat *values = count <= 4 ? small : malloc((size_t)count * sizeof *values);
+    if (!values) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+        return;
+    }
+    /* Boolean conversion tests the original value against zero. Integer
+     * conversion would first truncate fractional state such as clear color.
+     * Every exposed integer/enum remains nonzero when converted to float. */
+    uint32_t p = pname;
+    if (_wpk_gl_query_into(QOP_GET_FLOATV, &p, 4, values, count * sizeof *values) == 0)
+        for (uint32_t i = 0; i < count; i++) data[i] = values[i] != 0.0f ? GL_TRUE : GL_FALSE;
+    if (values != small) free(values);
 }
 
 static uint32_t uniform_value_count(GLenum type) {

@@ -661,6 +661,33 @@ describe("query handler", () => {
     expect(o[0]).toBe(0); // RecordingGl.getError() returns 0
   });
 
+  it.each([
+    [0x0b21, [1.75], [2]], // LINE_WIDTH: round, do not truncate
+    [0x2a00, [-1.75], [-2]], // POLYGON_OFFSET_UNITS
+    [0x0c22, [0, 0.25, 0.5, 1], [0, 536870911, 1073741823, 2147483647]],
+    [0x0b70, [0, 1], [0, 2147483647]], // DEPTH_RANGE
+  ])("integer query converts state %i using GLES rules", (pname, values, expected) => {
+    const { b, gl } = setup();
+    gl.getParameter = () => new Float32Array(values as number[]) as any;
+    const input = new Uint8Array(4), out = new Uint8Array((expected as number[]).length * 4);
+    new DataView(input.buffer).setUint32(0, pname as number, true);
+    expect(runGlQuery(b, O.QOP_GET_INTEGERV, input, out)).toBe(out.length);
+    expect([...new Int32Array(out.buffer)]).toEqual(expected);
+  });
+
+  it.each([O.QOP_GET_INTEGERV, O.QOP_GET_FLOATV])("invalid numeric query %i preserves output and the GL error", (op) => {
+    const { b, gl } = setup();
+    let error = 0;
+    gl.getParameter = () => { error = 0x500; return null as any; };
+    gl.getError = () => { const result = error; error = 0; return result; };
+    const input = new Uint8Array(4), out = new Uint8Array(16).fill(0xa5);
+    new DataView(input.buffer).setUint32(0, 0xffffffff, true);
+    expect(runGlQuery(b, op, input, out)).toBeLessThan(0);
+    expect([...out]).toEqual(new Array(16).fill(0xa5));
+    expect(runGlQuery(b, O.QOP_GET_ERROR, new Uint8Array(), out)).toBe(4);
+    expect(new DataView(out.buffer).getUint32(0, true)).toBe(0x500);
+  });
+
   it("QOP_GET_INTEGERV reads a u32 pname and writes an i32", () => {
     const { b } = setup();
     const o = out(4);
@@ -668,6 +695,23 @@ describe("query handler", () => {
     new DataView(pname.buffer).setUint32(0, 0x0D33 /* MAX_TEXTURE_SIZE */, true);
     expect(runGlQuery(b, O.QOP_GET_INTEGERV, pname, o)).toBe(4);
     expect(new DataView(o.buffer).getInt32(0, true)).toBe(42);
+  });
+
+  it("derives GLES compiler and format-count queries without unsupported WebGL enums", () => {
+    const { b, gl } = setup();
+    const names: number[] = [];
+    gl.getParameter = (name: number) => {
+      names.push(name);
+      expect(name).toBe(0x86a3); // WebGL COMPRESSED_TEXTURE_FORMATS
+      return new Uint32Array([0x83f0, 0x83f1]) as any;
+    };
+    for (const [pname, expected] of [[0x8df9, 0], [0x8dfa, 1], [0x86a2, 2]]) {
+      const request = new Uint8Array(4), reply = new Uint8Array(4);
+      new DataView(request.buffer).setUint32(0, pname, true);
+      expect(runGlQuery(b, O.QOP_GET_INTEGERV, request, reply)).toBe(4);
+      expect(new DataView(reply.buffer).getInt32(0, true)).toBe(expected);
+    }
+    expect(names).toEqual([0x86a3]);
   });
 
   it("QOP_GET_UNIFORM_LOC allocates monotonic indices", () => {

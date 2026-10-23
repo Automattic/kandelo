@@ -17,6 +17,18 @@
 #include <sys/stat.h>
 #include "gl_abi.h"
 
+/* Native pointers exceed the guest's u32 query fields. Resolve the query's
+ * recorded allocation explicitly instead of dereferencing a truncated host
+ * pointer. The library still allocates, queries and copies the actual reply. */
+#undef malloc
+#undef free
+static void *latest_allocation;
+void *graphics_malloc(size_t size) { return latest_allocation = malloc(size); }
+void graphics_free(void *ptr) {
+    if (latest_allocation == ptr) latest_allocation = NULL;
+    free(ptr);
+}
+
 /* Optional window backends are absent in this device-only harness. */
 uint32_t _wpk_wlegl_bo_handle(void *window) { (void)window; return 0; }
 void _wpk_wlegl_present(void *window) { (void)window; }
@@ -29,6 +41,9 @@ static uint32_t bound_texture, redefined_texture;
 static unsigned char command_storage[2][WPK_GL_CMDBUF_LEN];
 static unsigned char *commands;
 static unsigned mappings;
+static uint32_t shader_names[2], program_names[2];
+static unsigned shaders_created, programs_created;
+static int numeric_queries;
 int graphics_open(const char *path, int flags, ...) {
     (void)flags;
     assert(!strcmp(path, WPK_GL_DEVICE));
@@ -84,12 +99,32 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
             if (op == OP_BIND_TEXTURE) bound_texture = words[1];
             if (op == OP_TEX_IMAGE_2D) redefined_texture = bound_texture;
+            if (op == OP_CREATE_SHADER && shaders_created < 2)
+                shader_names[shaders_created++] = words[1];
+            if (op == OP_CREATE_PROGRAM && programs_created < 2)
+                program_names[programs_created++] = words[0];
             at += 4 + len;
         }
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
-        /* This harness never needs renderer results. */
-        (void)q;
+        if (numeric_queries == 3) { errno = EINVAL; return -1; }
+        if (numeric_queries) {
+            assert(latest_allocation);
+            assert(q->out_buf_ptr == (uint32_t)(uintptr_t)latest_allocation);
+            if (numeric_queries == 2 && q->out_buf_len == 4) {
+                assert(q->op == QOP_GET_INTEGERV);
+                const GLint count = 6;
+                memcpy(latest_allocation, &count, 4);
+                return 0;
+            }
+            assert(q->out_buf_len == (numeric_queries == 2 ? 24 : 16));
+            const GLfloat floats[6] = { 0.0f, 0.25f, -0.5f, 1.0f, 0.0f, 2.0f };
+            const GLint integers[6] = { 0, 0, 0, 1, 0, 2 };
+            assert(q->op == QOP_GET_FLOATV || q->op == QOP_GET_INTEGERV);
+            memcpy(latest_allocation,
+                q->op == QOP_GET_FLOATV ? (const void *)floats : (const void *)integers,
+                q->out_buf_len);
+        }
     }
     return 0;
 }
@@ -115,6 +150,67 @@ int main(int argc, char **argv) {
     EGLContext ctx = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
     assert(ctx != EGL_NO_CONTEXT);
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "namespace")) {
+        GLuint names[] = { glCreateShader(GL_VERTEX_SHADER), glCreateProgram(),
+            glCreateShader(GL_FRAGMENT_SHADER), glCreateProgram() };
+        for (unsigned i = 0; i < 4; i++) {
+            assert(names[i] != 0);
+            for (unsigned j = 0; j < i; j++) assert(names[i] != names[j]);
+        }
+        glFlush();
+        assert(shaders_created == 2 && programs_created == 2);
+        assert(shader_names[0] == names[0] && shader_names[1] == names[2]);
+        assert(program_names[0] == names[1] && program_names[1] == names[3]);
+        assert(glCreateShader(GL_TEXTURE_2D) == 0);
+        assert(glGetError() == GL_INVALID_ENUM);
+        assert(eglDestroyContext(dpy, ctx));
+        assert(eglTerminate(dpy));
+        puts("PASS namespace");
+        return 0;
+    }
+    if (!strcmp(argv[1], "boolean")) {
+        numeric_queries = 1;
+        GLboolean result[4] = { 7, 7, 7, 7 };
+        glGetBooleanv(GL_COLOR_CLEAR_VALUE, result);
+        assert(result[0] == GL_FALSE && result[1] == GL_TRUE);
+        assert(result[2] == GL_TRUE && result[3] == GL_TRUE);
+        assert(eglDestroyContext(dpy, ctx));
+        assert(eglTerminate(dpy));
+        puts("PASS boolean");
+        return 0;
+    }
+    if (!strcmp(argv[1], "query-vector")) {
+        numeric_queries = 2;
+        GLboolean result[8];
+        memset(result, 7, sizeof result);
+        glGetBooleanv(GL_COMPRESSED_TEXTURE_FORMATS, result);
+        const GLboolean expected[8] = { 0, 1, 1, 1, 0, 1, 7, 7 };
+        assert(!memcmp(result, expected, sizeof result));
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 7);
+        GLfloat row_length = 0;
+        glGetFloatv(GL_UNPACK_ROW_LENGTH_EXT, &row_length);
+        assert(row_length == 7.0f);
+        glGetBooleanv(GL_UNPACK_ROW_LENGTH_EXT, result);
+        assert(result[0] == GL_TRUE);
+        assert(eglDestroyContext(dpy, ctx));
+        assert(eglTerminate(dpy));
+        puts("PASS query-vector");
+        return 0;
+    }
+    if (!strcmp(argv[1], "query-error")) {
+        numeric_queries = 3;
+        GLint integer = 17;
+        GLfloat floating = 6.25f;
+        GLboolean boolean = 7;
+        glGetIntegerv(0xffffffffu, &integer);
+        glGetFloatv(0xffffffffu, &floating);
+        glGetBooleanv(0xffffffffu, &boolean);
+        assert(integer == 17 && floating == 6.25f && boolean == 7);
+        assert(eglDestroyContext(dpy, ctx));
+        assert(eglTerminate(dpy));
+        puts("PASS query-error");
+        return 0;
+    }
     EGLImageKHR first = image(dpy), second = image(dpy);
     assert(imports == 2);
     GLuint tex, rb;

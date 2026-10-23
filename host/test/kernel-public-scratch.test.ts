@@ -1382,6 +1382,7 @@ it("GL queries select the caller's state even without a command submission", () 
     get(_target, key) {
       if (key === "clearColor") return (...value: number[]) => { clearColor = value; };
       if (key === "getParameter") return () => clearColor;
+      if (key === "getError") return () => 0;
       if (key === "createVertexArray") return () => ({});
       return () => {};
     },
