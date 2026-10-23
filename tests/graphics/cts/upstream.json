@@ -1,0 +1,15 @@
+{
+  "format": "kandelo-cts-subset-v1",
+  "repository": "https://github.com/KhronosGroup/VK-GL-CTS",
+  "revision": "a119e62de3bb38dae67f05abee8acd011e0c729c",
+  "file": "modules/egl/teglSurfacelessContextTests.cpp",
+  "file_sha256": "bfb5eddc42640d7b2e37eaeaee989aa136183293109a323820cdb727e68a56ee",
+  "method": "SurfacelessContextCase::executeForConfig",
+  "method_sha256": "cb9f5754c656c82451381bc7e3efc6c2be02a4d3ed5f24f46907142c9cfa1245",
+  "enabled": [
+    "dEQP-EGL.functional.surfaceless_context: advertised GLES2 configs"
+  ],
+  "adaptations": [
+    "Standalone GBM display/config enumeration and result/log adapter in egl-adapter.cpp; upstream test method unchanged."
+  ]
+}

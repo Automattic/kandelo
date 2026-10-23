@@ -13,9 +13,42 @@ Kandelo adapter must supply a GBM display, native window and executable
 entry point through the ordinary SDK; it must not change assertions or
 replace guest EGL/GLES calls with direct host WebGL calls.
 
-Enabled upstream tests: **none yet**. No upstream CTS pass is claimed.
+Enabled upstream assertions: the surfaceless method described below.
+No guest CTS execution result is claimed until its runner has completed.
 Do not label translated or inspired regressions as unmodified CTS tests.
 Track enabled cases and exact source hashes here as they are integrated.
 
 See [the versioned compatibility inventory](../../docs/graphics/compatibility-v1.md)
 for required coverage and separate expansions.
+
+The first port is `cts/surfaceless-case.inc`: the unchanged
+`SurfacelessContextCase::executeForConfig` method, with its original license
+notice. `cts/upstream.json` records the complete upstream file hash and exact
+method hash. The standalone adapter supplies GBM display/config enumeration,
+EGL dispatch, logs and results; it does not replace guest EGL calls. It runs
+this method for every enumerated configuration. This is an adapted CTS
+subset, not an execution of the complete dEQP framework or its filter groups.
+
+Verify the assertions with:
+
+```
+python3 tests/graphics/verify-cts-source.py /path/to/pinned/VK-GL-CTS
+```
+
+Build the guest through the normal package resolver:
+
+```
+scripts/dev-shell.sh cargo xtask build-deps resolve graphics-cts-egl --arch wasm32
+```
+
+The native libc device-double suite checks image ownership and command
+encoding under UndefinedBehaviorSanitizer. AddressSanitizer is optional via
+`KANDELO_GRAPHICS_SANITIZERS=address,undefined`; its LLVM 21 runtime
+deadlocked before main on macOS 27 during this investigation. It executes the
+actual EGL/GLES library sources with recorded device calls; it provides no
+pixel-rendering evidence. To compare a source revision:
+
+```
+scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
+scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
+```
