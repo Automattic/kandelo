@@ -9,7 +9,7 @@
 use super::entry::{
     load_entries, Entry, Observation, Repro, ReproKind, Status, Verdict, TARGETS,
 };
-use super::report::{last_run_path, LastRun, LastRunRecord};
+use super::report::{declares, last_run_path, LastRun, LastRunRecord};
 use super::registry;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -202,6 +202,7 @@ fn drive(repo: &Path, job: &Job) -> Result<LastRunRecord, String> {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         },
+        &utc_now(),
     )
 }
 
@@ -223,7 +224,12 @@ const STDERR_TAIL_LINES: usize = 10;
 /// the repro never ran, so there is no evidence to record, and a suite that
 /// quietly called it inconclusive would hide a broken harness. A verdict of
 /// `inconclusive` is the repro's own answer and is recorded like any other.
-fn interpret(id: &str, target: &str, exit: &DriverExit) -> Result<LastRunRecord, String> {
+fn interpret(
+    id: &str,
+    target: &str,
+    exit: &DriverExit,
+    recorded: &str,
+) -> Result<LastRunRecord, String> {
     let parsed = exit
         .stdout
         .lines()
@@ -237,6 +243,7 @@ fn interpret(id: &str, target: &str, exit: &DriverExit) -> Result<LastRunRecord,
             version: v.version,
             verdict: v.verdict,
             details: v.details,
+            recorded: Some(recorded.to_string()),
         }),
         (success, parsed) => {
             let why = if success && parsed.is_none() {
@@ -317,13 +324,22 @@ impl Tally {
 }
 
 /// This run's records laid over the previous file: a record for the same
-/// (id, target, os) replaces the old one and the rest are kept.
-fn merge(previous: Option<LastRun>, records: Vec<LastRunRecord>, finished: String) -> LastRun {
+/// (id, target, os) replaces the old one, an old record whose (id, target)
+/// `declared` no longer accepts (the entry or its self-judging repro for
+/// that target is gone) is dropped, and the rest are kept with their own
+/// `recorded` times. `finished` is the time of this run.
+fn merge(
+    previous: Option<LastRun>,
+    records: Vec<LastRunRecord>,
+    finished: String,
+    declared: &dyn Fn(&str, &str) -> bool,
+) -> LastRun {
     let mut kept = previous.map_or_else(Vec::new, |p| p.records);
     kept.retain(|old| {
-        !records
-            .iter()
-            .any(|new| (&new.id, &new.target, &new.os) == (&old.id, &old.target, &old.os))
+        declared(&old.id, &old.target)
+            && !records
+                .iter()
+                .any(|new| (&new.id, &new.target, &new.os) == (&old.id, &old.target, &old.os))
     });
     kept.extend(records);
     LastRun {
@@ -436,7 +452,9 @@ pub fn run(repo: &Path, args: &[String]) -> Result<(), String> {
     let previous = std::fs::read_to_string(&path)
         .ok()
         .and_then(|text| serde_json::from_str::<LastRun>(&text).ok());
-    let last = merge(previous, records, utc_now());
+    let last = merge(previous, records, utc_now(), &|id, target| {
+        declares(&entries, id, target)
+    });
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
@@ -499,6 +517,7 @@ summary = "s"
             version: version.to_string(),
             verdict,
             details: String::new(),
+            recorded: None,
         }
     }
 
@@ -519,7 +538,7 @@ summary = "s"
             "",
             "noise\ndriver: harness failure: could not launch webkit: no executable\n",
         );
-        let err = interpret("WK-1", "webkit", &failed).unwrap_err();
+        let err = interpret("WK-1", "webkit", &failed, "t").unwrap_err();
         assert!(err.contains("WK-1"), "{err}");
         assert!(err.contains("webkit"), "{err}");
         assert!(err.contains("exit status: 3"), "{err}");
@@ -529,7 +548,7 @@ summary = "s"
     #[test]
     fn unparseable_driver_output_is_an_error() {
         let garbled = exit(true, "exit status: 0", "not json\n", "");
-        let err = interpret("WK-1", "bun", &garbled).unwrap_err();
+        let err = interpret("WK-1", "bun", &garbled, "t").unwrap_err();
         assert!(err.contains("WK-1") && err.contains("bun"), "{err}");
         assert!(err.contains("no verdict line"), "{err}");
     }
@@ -537,8 +556,16 @@ summary = "s"
     #[test]
     fn repro_inconclusive_is_a_record_not_an_error() {
         let line = r#"{"verdict":"inconclusive","version":"1.3.3","os":"macos","details":"no verdict within 2s"}"#;
-        let record = interpret("WK-1", "bun", &exit(true, "exit status: 0", line, "")).unwrap();
+        let record = interpret(
+            "WK-1",
+            "bun",
+            &exit(true, "exit status: 0", line, ""),
+            "2026-10-22T11:00:00Z",
+        )
+        .unwrap();
         assert_eq!(record.verdict, Verdict::Inconclusive);
+        // Each record carries the time its own job finished.
+        assert_eq!(record.recorded.as_deref(), Some("2026-10-22T11:00:00Z"));
         assert_eq!(record.version, "1.3.3");
         assert_eq!(record.details, "no verdict within 2s");
     }
@@ -624,6 +651,7 @@ summary = "s"
             version: "v".to_string(),
             verdict,
             details: String::new(),
+            recorded: None,
         };
         let previous = LastRun {
             finished: "2026-10-01T00:00:00Z".to_string(),
@@ -640,6 +668,7 @@ summary = "s"
                 rec("A", "webkit", "linux", Verdict::Reproduced),
             ],
             "2026-10-22T00:00:00Z".to_string(),
+            &|_: &str, _: &str| true,
         );
         assert_eq!(merged.finished, "2026-10-22T00:00:00Z");
         let shown: Vec<_> = merged
@@ -656,7 +685,39 @@ summary = "s"
                 ("A", "webkit", "linux", Verdict::Reproduced),
             ]
         );
-        assert_eq!(merge(None, Vec::new(), "t".to_string()).records, []);
+        assert_eq!(
+            merge(None, Vec::new(), "t".to_string(), &|_: &str, _: &str| true).records,
+            []
+        );
+    }
+
+    #[test]
+    fn merge_drops_records_no_self_judging_repro_declares() {
+        let rec = |id: &str, target: &str| LastRunRecord {
+            id: id.to_string(),
+            target: target.to_string(),
+            os: "macos".to_string(),
+            version: "v".to_string(),
+            verdict: Verdict::Reproduced,
+            details: String::new(),
+            recorded: Some("2026-10-01T00:00:00Z".to_string()),
+        };
+        let previous = LastRun {
+            finished: "2026-10-01T00:00:00Z".to_string(),
+            records: vec![rec("A", "webkit"), rec("A", "chromium"), rec("GONE", "bun")],
+        };
+        // Only A on webkit is still declared.
+        let declared = |id: &str, target: &str| id == "A" && target == "webkit";
+        let merged = merge(Some(previous), vec![], "2026-10-22T00:00:00Z".to_string(), &declared);
+        let kept: Vec<_> = merged
+            .records
+            .iter()
+            .map(|r| (r.id.as_str(), r.target.as_str()))
+            .collect();
+        assert_eq!(kept, [("A", "webkit")]);
+        // The kept record keeps its own time; `finished` is the new run's.
+        assert_eq!(merged.records[0].recorded.as_deref(), Some("2026-10-01T00:00:00Z"));
+        assert_eq!(merged.finished, "2026-10-22T00:00:00Z");
     }
 
     #[test]

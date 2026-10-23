@@ -297,8 +297,14 @@ narrow the run; `list` takes `--json`.
   failed. A harness failure (the driver exits non-zero or prints no
   verdict line) also fails the run, with a message naming the entry, the
   target and the end of the driver's stderr; the other jobs still run, and
-  nothing is recorded for the failed one. The results are saved to `target/runtime-workarounds/last-run.json`
-  for `list`. The suite form is
+  nothing is recorded for the failed one. The results are saved to
+  `target/runtime-workarounds/last-run.json` for `list`. A narrowed run
+  replaces only the records it produced, so each record keeps its own
+  `recorded` time (`finished` is the time of the latest run), and `list`
+  shows that time on every `last run:` line. A record for an (entry,
+  target) pair that no self-judging repro of the entry declares any more
+  (the entry, the repro or the target was removed) is dropped when `run`
+  writes the file and ignored by `list`. The suite form is
   `bash scripts/ci-run-test-suite.sh runtime-workarounds`.
 - **`runtime-workarounds list [--json]`** prints the weekly report:
   1. *Ready to file*: confirmed, not yet reported, with the draft report

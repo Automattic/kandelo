@@ -14,6 +14,12 @@ pub struct LastRunRecord {
     pub version: String,
     pub verdict: Verdict,
     pub details: String,
+    /// When this record's job finished (`YYYY-MM-DDTHH:MM:SSZ`). Records
+    /// from narrowed runs are merged, so the file's `finished` time is only
+    /// the newest run's; each record keeps its own. Absent in files written
+    /// before records carried it.
+    #[serde(default)]
+    pub recorded: Option<String>,
 }
 
 /// What the last `run` found. `run` writes it; `list` only reads it.
@@ -27,6 +33,21 @@ pub fn last_run_path(repo: &Path) -> PathBuf {
     repo.join("target")
         .join("runtime-workarounds")
         .join("last-run.json")
+}
+
+/// Whether `entries` still has a self-judging repro of `id` that declares
+/// `target`, so a last-run record for that pair is still meaningful.
+pub fn declares(entries: &[(String, Entry)], id: &str, target: &str) -> bool {
+    entries
+        .iter()
+        .any(|(_, e)| e.id == id && repro_declares(e, target))
+}
+
+fn repro_declares(entry: &Entry, target: &str) -> bool {
+    entry
+        .repro
+        .iter()
+        .any(|r| r.self_judging && r.targets.iter().any(|t| t == target))
 }
 
 /// Where entries are shown relative to the repository root.
@@ -160,9 +181,12 @@ fn item(dir: &str, entry: &Entry, last: Option<&LastRun>) -> Item {
         entry_md: format!("{base}/entry.md"),
         last_run: last
             .map(|l| {
+                // A record for a target the entry no longer runs (its repro
+                // was dropped, retargeted or made an evidence page) is
+                // stale and must not decide the entry's group.
                 l.records
                     .iter()
-                    .filter(|r| r.id == entry.id)
+                    .filter(|r| r.id == entry.id && repro_declares(entry, &r.target))
                     .cloned()
                     .collect()
             })
@@ -331,11 +355,12 @@ fn render_report(report: &Report) -> String {
             }
             for r in &item.last_run {
                 out.push_str(&format!(
-                    "      last run: {} {} on {}: {}\n",
+                    "      last run: {} {} on {}: {} ({})\n",
                     r.target,
                     r.version,
                     r.os,
                     verdict_word(r.verdict),
+                    r.recorded.as_deref().unwrap_or("time not recorded"),
                 ));
             }
             for u in &item.upstream {
@@ -440,7 +465,13 @@ summary = "summary of {id}"
 [[repro]]
 kind = "script"
 entry = "repro.mjs"
-targets = ["node"]
+targets = ["node", "bun"]
+self_judging = true
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["firefox", "webkit"]
 self_judging = true
 
 [[observed]]
@@ -497,6 +528,7 @@ filed_by = "brandon"
                 version: "130".to_string(),
                 verdict,
                 details: String::new(),
+                recorded: Some("2026-10-22T09:59:00Z".to_string()),
             }],
         }
     }
@@ -601,6 +633,7 @@ filed_by = "brandon"
             version: version.to_string(),
             verdict,
             details: String::new(),
+            recorded: Some("2026-10-22T09:59:00Z".to_string()),
         }
     }
 
@@ -774,7 +807,9 @@ filed_by = "brandon"
     }
 
     const GOOD: &str = "id = \"J-GOOD\"\nkind = \"bug\"\nstatus = \"suspected\"\n\
-                        runtimes = [\"node\"]\nsummary = \"s\"\n";
+                        runtimes = [\"node\"]\nsummary = \"s\"\n\
+                        [[repro]]\nkind = \"browser-page\"\nentry = \"r.html\"\n\
+                        targets = [\"firefox\"]\nself_judging = true\n";
 
     #[test]
     fn list_survives_broken_entries_and_reports_them_first() {
@@ -813,6 +848,58 @@ filed_by = "brandon"
         // The file round-trips with the kebab-case verdict `run` will write.
         let raw = serde_json::to_string(&last_run("J-GOOD", Verdict::NotReproduced)).unwrap();
         assert!(raw.contains("\"not-reproduced\""), "{raw}");
+    }
+
+    #[test]
+    fn last_run_lines_show_each_records_own_time() {
+        let entries = [entry("C-CONFIRMED", "bug", "confirmed", REPRO)];
+        let mut older = record("C-CONFIRMED", "bun", "1.3.3", Verdict::Reproduced);
+        older.recorded = Some("2026-10-15T08:00:00Z".to_string());
+        let mut legacy = record("C-CONFIRMED", "webkit", "26.6", Verdict::Reproduced);
+        legacy.recorded = None;
+        let last = LastRun {
+            finished: "2026-10-22T10:00:00Z".to_string(),
+            records: vec![older, legacy],
+        };
+        let out = render(&entries, Some(&last));
+        let ready = section(&out, "Ready to file");
+        assert!(
+            ready.contains("last run: bun 1.3.3 on macos: reproduced (2026-10-15T08:00:00Z)"),
+            "{out}"
+        );
+        assert!(
+            ready.contains("last run: webkit 26.6 on macos: reproduced (time not recorded)"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn records_for_targets_no_repro_declares_are_ignored() {
+        // `chromium` was dropped from the repro, and `node`'s only repro is
+        // an evidence page; neither old record may speak for the entry.
+        let repro = REPRO.replace(
+            "self_judging = true\n\n[[repro]]",
+            "self_judging = true\n\n[[repro]]\nkind = \"browser-page\"\n\
+             entry = \"sample.html\"\ntargets = [\"chromium\"]\nself_judging = false\n\n[[repro]]",
+        );
+        let entries = [entry("C-CONFIRMED", "bug", "confirmed", &repro)];
+        let last = LastRun {
+            finished: "2026-10-22T10:00:00Z".to_string(),
+            records: vec![
+                record("C-CONFIRMED", "chromium", "140", Verdict::NotReproduced),
+                record("C-CONFIRMED", "rustc", "1.90", Verdict::NotReproduced),
+                record("GONE-ENTRY", "webkit", "26.6", Verdict::NotReproduced),
+            ],
+        };
+        let out = render(&entries, Some(&last));
+        assert!(!out.contains("chromium 140"), "{out}");
+        assert!(!out.contains("rustc"), "{out}");
+        // Ignoring them leaves the entry where its status puts it.
+        assert!(section(&out, "Ready to file").contains("C-CONFIRMED"), "{out}");
+        assert!(section(&out, "Possibly retirable").contains("(none)"), "{out}");
+        assert!(declares(&entries, "C-CONFIRMED", "webkit"));
+        assert!(!declares(&entries, "C-CONFIRMED", "chromium"));
+        assert!(!declares(&entries, "GONE-ENTRY", "webkit"));
     }
 
     #[test]
