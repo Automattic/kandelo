@@ -18,6 +18,7 @@ import {
 
 export class GlMuxer {
   private current: { shadow: GlShadowState } | null = null;
+  private textureUnitCount = 32;
 
   constructor(private gl: WebGL2RenderingContext) {}
 
@@ -86,10 +87,17 @@ export class GlMuxer {
       gl.vertexAttrib4f(index, value[0], value[1], value[2], value[3]);
     }
 
-    for (let i = 0; i < s.textureUnits.length; i++) {
+    // Clear units used by the outgoing owner even if the incoming owner
+    // has never selected them. Native WebGL2 implementations may expose
+    // more units than the 32 initially allocated in the guest shadow.
+    const units = this.textureUnitCount = Math.max(this.textureUnitCount,
+      s.textureUnits.length, s.cubeTextureUnits.length,
+      this.current?.shadow.textureUnits.length ?? 0,
+      this.current?.shadow.cubeTextureUnits.length ?? 0);
+    for (let i = 0; i < units; i++) {
       gl.activeTexture(GL_TEXTURE0 + i);
-      gl.bindTexture(GL_TEXTURE_2D, s.textureUnits[i]);
-      gl.bindTexture(0x8513, s.cubeTextureUnits[i]);
+      gl.bindTexture(GL_TEXTURE_2D, s.textureUnits[i] ?? null);
+      gl.bindTexture(0x8513, s.cubeTextureUnits[i] ?? null);
     }
     gl.activeTexture(GL_TEXTURE0 + s.activeTexture);
 
@@ -101,6 +109,11 @@ export class GlMuxer {
   }
 
   invalidateCurrent(): void {
+    // Commands can grow the selected owner's shadow between switches.
+    // Invalidation loses its identity, but must retain the clearing range.
+    this.textureUnitCount = Math.max(this.textureUnitCount,
+      this.current?.shadow.textureUnits.length ?? 0,
+      this.current?.shadow.cubeTextureUnits.length ?? 0);
     this.current = null;
   }
 }

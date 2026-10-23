@@ -57,7 +57,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Monotonic guest names and per-process WebGL maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
-| G02 | Context-local full state; ES2 state tables | Cube/2D targets, dither and pixel-store state now replay separately; invalid-state rollback, hints and multi-context/thread ownership still need work | shadow, muxer, decoder | Alternating contexts/processes; real rendered cube/2D and mask tests | open |
+| G02 | Context-local full state; ES2 state tables | Cube/2D targets, dither and pixel-store state replay separately; state argument validation and native texture/viewport limits implemented; broader rollback, hints and multi-context/thread ownership still need work | shadow, muxer, decoder | Alternating contexts/processes; real rendered cube/2D and mask tests | open |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Chunked encoder and transient client staging; bound index buffer plus client attributes rejected | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current programs and attached shaders now retain mappings until final release; failed use/attach calls preserve ownership. Core reflection functions, relink semantics and the C shader/program name namespace still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
@@ -324,3 +324,45 @@ GLES retains the installed executable. That difference requires a retained
 executable model and tests; it is not evidence that implementing the GLES
 behavior is impossible. See the [WebGL program-object clarification](https://registry.khronos.org/webgl/specs/latest/1.0/#5.14.9)
 and GLES2 §2.10.
+
+### State rejection and native limits
+
+State argument checks reject invalid enums, dimensions, masks, blend factors
+and pixel-store values before changing the owner's replay state. Rejection
+latches a GL error and does not discard subsequent valid commands in the
+batch. Existing EXT_blend_minmax modes remain accepted. Clear and blend colors
+are clamped before recording. Driver-rejected blend calls retain prior state.
+
+Viewport sizes use cached native maximum dimensions. Texture selection uses
+the native combined-unit limit and grows both target arrays for valid units
+above the initial 32 slots. Switching or invalidating the current owner
+retains the full range of units that must be cleared for the next owner.
+These are shared host paths, used by both Node adapters and browser renderers.
+
+The initial 10 argument regressions and three limit/replay regressions fail
+before their respective repairs. Additional coverage includes invalid blend
+factors, clamped colors and replay after explicit invalidation. The resulting
+source gate passes 237 tests in 13 files without skips, including the numeric
+query repairs below. Host declaration generation also passes. Real browser
+execution of these newest changes is pending. Logs:
+`.context/graphics-invalid-state-baseline.log`,
+`.context/graphics-native-limits-baseline.log`,
+`.context/graphics-state-query-final.log`.
+
+### Integration checkpoint after the build pause
+
+The user requested cancellation of this workspace's builds while another ABI
+52 build ran, then authorized continuing implementation without waiting for
+that build. Both private build process groups were terminated and their
+completed cache entries retained. No full-build success or final SourceOnly
+projection publication is claimed. Commands and progress are recorded in
+`.context/graphics-build-pause.json`.
+
+Origin/main was fetched at `1ddfafc871638785a26675a28899e9af69c0274a`.
+That commit independently introduces ABI 52 for a required heap-safepoint
+import. This branch's graphics ABI 52 is not interchangeable with main's ABI
+52. Main has not yet been integrated; the combined implementation needs a
+fresh ABI allocation, regenerated outputs, normal artifact rebuilds and
+combined-tree validation. The earlier measurements retain their original
+baseline and artifact identities. Expensive rebuild and integration checks
+remain deferred at the user's request while implementation continues.

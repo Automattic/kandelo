@@ -20,6 +20,8 @@
  */
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, finalizeProgram, finalizeShader, recordGlError, useProgramIfAccepted } from "./program-objects.js";
+import { stateArgumentError } from "./state-validation.js";
+import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
 import {
   GL_BACK,
@@ -60,6 +62,10 @@ function updateStencilFaces(
 ): void {
   if (face === GL_FRONT || face === GL_FRONT_AND_BACK) update(shadow.stencil.front);
   if (face === GL_BACK || face === GL_FRONT_AND_BACK) update(shadow.stencil.back);
+}
+
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
 }
 
 let glBridgeFailureLogs = 0;
@@ -421,6 +427,11 @@ function dispatch(
   p: number,
   op: number,
 ): void {
+  const error = stateArgumentError(op, v);
+  if (error !== 0) {
+    recordGlError(b, error);
+    return;
+  }
   switch (op) {
     // ----- state ----------------------------------------------------------
     case O.OP_CLEAR:
@@ -428,18 +439,21 @@ function dispatch(
       return;
     case O.OP_CLEAR_COLOR:
       b.shadow.clearColor = [
-        v.getFloat32(p, true), v.getFloat32(p + 4, true),
-        v.getFloat32(p + 8, true), v.getFloat32(p + 12, true),
+        clampUnit(v.getFloat32(p, true)), clampUnit(v.getFloat32(p + 4, true)),
+        clampUnit(v.getFloat32(p + 8, true)), clampUnit(v.getFloat32(p + 12, true)),
       ];
       gl.clearColor(...b.shadow.clearColor);
       return;
-    case O.OP_VIEWPORT:
+    case O.OP_VIEWPORT: {
+      const maximum = maxViewport(gl);
       b.shadow.viewport = [
         v.getInt32(p, true), v.getInt32(p + 4, true),
-        v.getInt32(p + 8, true), v.getInt32(p + 12, true),
+        Math.min(v.getInt32(p + 8, true), maximum?.[0] ?? Infinity),
+        Math.min(v.getInt32(p + 12, true), maximum?.[1] ?? Infinity),
       ];
       gl.viewport(...b.shadow.viewport);
       return;
+    }
     case O.OP_SCISSOR: {
       const x = v.getInt32(p, true);
       const y = v.getInt32(p + 4, true);
@@ -463,14 +477,14 @@ function dispatch(
     }
     case O.OP_BLEND_FUNC: {
       const s = v.getUint32(p, true), d = v.getUint32(p + 4, true);
-      gl.blendFunc(s, d);
+      if (!checkedGlCall(b, () => gl.blendFunc(s, d))) return;
       b.shadow.blendFunc = { srcRGB: s, dstRGB: d, srcA: s, dstA: d };
       return;
     }
     case O.OP_BLEND_FUNC_SEPARATE: {
       const srcRGB = v.getUint32(p, true), dstRGB = v.getUint32(p + 4, true);
       const srcA = v.getUint32(p + 8, true), dstA = v.getUint32(p + 12, true);
-      gl.blendFuncSeparate(srcRGB, dstRGB, srcA, dstA);
+      if (!checkedGlCall(b, () => gl.blendFuncSeparate(srcRGB, dstRGB, srcA, dstA))) return;
       b.shadow.blendFunc = { srcRGB, dstRGB, srcA, dstA };
       return;
     }
@@ -489,10 +503,10 @@ function dispatch(
     }
     case O.OP_BLEND_COLOR:
       b.shadow.blendColor = [
-        v.getFloat32(p, true),
-        v.getFloat32(p + 4, true),
-        v.getFloat32(p + 8, true),
-        v.getFloat32(p + 12, true),
+        clampUnit(v.getFloat32(p, true)),
+        clampUnit(v.getFloat32(p + 4, true)),
+        clampUnit(v.getFloat32(p + 8, true)),
+        clampUnit(v.getFloat32(p + 12, true)),
       ];
       gl.blendColor(...b.shadow.blendColor);
       return;
@@ -767,8 +781,15 @@ function dispatch(
       return;
     case O.OP_ACTIVE_TEXTURE: {
       const unit = v.getUint32(p, true);
+      const index = unit - GL_TEXTURE0;
+      if (index < 0 || index >= combinedTextureUnits(gl)) {
+        recordGlError(b, 0x500); // INVALID_ENUM
+        return;
+      }
       gl.activeTexture(unit);
-      b.shadow.activeTexture = unit - GL_TEXTURE0;
+      b.shadow.activeTexture = index;
+      while (b.shadow.textureUnits.length <= index) b.shadow.textureUnits.push(null);
+      while (b.shadow.cubeTextureUnits.length <= index) b.shadow.cubeTextureUnits.push(null);
       return;
     }
     case O.OP_GENERATE_MIPMAP:
