@@ -23,8 +23,10 @@
 //   sample <WebContent pid> 1 | grep -c 'WebCore: AudioWorklet'
 // gives CYCLES threads instead of 0.
 //
-// By default (ping=0) the page keeps no reference to a node or context
-// after close(), so nothing on the page can keep a worklet alive.
+// By default (ping=0) the page closes the node's MessagePort (after removing
+// its listener) before close(), and keeps no reference to the node or the
+// context afterwards. Neither a page reference nor an entangled port with a
+// listener can then keep a worklet alive.
 //
 // With ping=1 the page instead keeps the closed nodes and, well after
 // close(), messages each closed node's port. An answer shows the worklet's
@@ -57,6 +59,12 @@ async function cycle(i) {
   // Prove the port works while the context runs; otherwise silence after
   // close() would mean nothing.
   const live = await ping(node, `live-${i}`);
+  if (!PING) {
+    // An entangled port with a listener keeps its channel alive (HTML,
+    // "Ports and garbage collection"); close it so nothing is left over.
+    node.port.onmessage = null;
+    node.port.close();
+  }
   node.disconnect();
   await context.close();
   log(`cycle ${i + 1}: answered while running: ${live}; context ${context.state}`);
@@ -80,11 +88,10 @@ async function main() {
     return { verdict: 'inconclusive', details: `a worklet did not answer while running, or a context did not close: ${JSON.stringify(closed.map(({ live, state }) => ({ live, state })))}` };
   }
   if (!PING) {
-    for (const c of closed) c.node = null;
     log('done; count WebCore: AudioWorklet threads in the page process now');
     return {
       verdict: 'inconclusive',
-      details: `${CYCLES} contexts closed and released; count WebCore: AudioWorklet threads in a stack sample to judge`,
+      details: `${CYCLES} contexts closed, their ports closed and released; count WebCore: AudioWorklet threads in a stack sample to judge`,
     };
   }
   await sleep(SETTLE_MS);

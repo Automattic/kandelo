@@ -48,20 +48,25 @@ close) did **not** reproduce it then.
 
 2026-10-22 (Playwright WebKit webkit-2359, `26.6`, macOS 27): the reduced
 page `repro/repro.html` **does** leave the threads. By default the page
-keeps no reference to any node or context after `close()`, so nothing on
-the page can keep a worklet alive. `WebCore: AudioWorklet` threads counted
-with `sample <WebContent pid> 1` about 25 s after the page printed "done":
+removes the listener from each node's `MessagePort` and closes the port
+before `close()`, and keeps no reference to the node or the context
+afterwards. A page reference cannot keep a worklet alive then, and neither
+can an entangled port with a listener (which the HTML standard's "Ports and
+garbage collection" rules would keep alive). `WebCore: AudioWorklet`
+threads counted with `sample <WebContent pid> 1` about 25 s after the page
+printed "done":
 
 | committed page | worklet threads left |
 |---|---|
 | `repro.html?cycles=0` | 0 |
 | `repro.html?cycles=3` | 3 |
 | `repro.html?cycles=8` | 8 |
-| `repro.html?cycles=3&ping=1` (keeps the closed nodes, pings them) | 3 |
+| `repro.html?cycles=3&ping=1` (keeps the closed nodes and their port listeners, pings them) | 3 |
 
-An earlier, uncommitted draft of the page (also without references) gave
-1 for 1 cycle, 4 for 4 cycles (three runs, sampled at about 1 s and 30 s)
-and 8 for 8 cycles. 200 cycles in one page produced no failure the page
+Two earlier versions gave the same counts: a draft that dropped its
+references but left the port listeners in place (1 for 1 cycle, 4 for 4
+cycles in three runs, 8 for 8; uncommitted), and the first committed page,
+which did the same (0, 3 and 8 for 0, 3 and 8 cycles). 200 cycles in one page produced no failure the page
 could see (every context closed; no error).
 
 ### Self-judging attempt (negative)
@@ -108,7 +113,8 @@ Audio:
 > `Cross-Origin-Embedder-Policy: require-corp`), open
 > `repro.html?cycles=8`, wait for "done" plus 25 s, then run
 > `sample <WebContent pid> 1 | grep -c 'WebCore: AudioWorklet'`. The page
-> keeps no reference to any node or context after `close()`.
+> closes each node's `MessagePort` and keeps no reference to any node or
+> context after `close()`.
 >
 > **Expected:** 0 (or 1 for a page-wide pool); every closed context's
 > rendering thread is released.
