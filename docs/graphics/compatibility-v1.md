@@ -9,12 +9,13 @@ validation cover it; a passing demo does not close an API family.
 
 ## Unpublished ABI policy
 
-The user requested one ABI number for the remainder of this effort on
-2026-10-24. Keep the combined source on **ABI 59** across implementation
-increments and regenerate ABI outputs when their inputs change. Rebuild
-normal artifacts from the final coherent source before relying on them.
-Earlier version numbers below describe development history; they do not
-require further per-increment bumps or imply released artifact sets.
+Use one ABI above current main for the combined effort, as requested by
+the user on 2026-10-24. Main `5cd771bff8` uses ABI 53, so the combined
+source uses **ABI 54**. Keep this number across implementation increments
+and regenerate outputs when their inputs change. Rebuild normal artifacts
+from the final coherent source before relying on them. Earlier ABI 52-59
+references below record unpublished development history, not released
+artifact sets or compatibility promises between those source revisions.
 
 ## Reproducible starting points
 
@@ -96,7 +97,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Current main `77b31c6962` ABI 53 xattr/exchange contracts and graphics development through ABI 58 are combined under fresh ABI 59. Regenerated snapshot, C/TS declarations and standalone resolver pass focused inspection; operation table stays 16. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Current main `5cd771bff8` ABI 53 and graphics development contracts are consolidated under ABI 54. Regenerated snapshot, C/TS declarations and standalone resolver pass focused inspection; operation table stays 16. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -4449,3 +4450,41 @@ sync implementation or hard platform boundary is claimed here.
 Normal SDK/kernel/program/package/image rebuilds, guest CTS, compositor
 consumers, full browser-memory and POSIX gates remain deferred/unrun for
 this increment. The complete compatibility goal remains active.
+
+
+### Consolidated ABI 54 above current main
+
+Main `5cd771bff889bb0d5c4b672a54c0edcffa691066` uses ABI 53. Its orphan
+reparent/reaping and Vitest evidence-registry commits are integrated with
+the graphics work. The user requested one ABI above main instead of the
+higher provisional number, so the combined source now uses ABI 54.
+Earlier ABI 52-59 checkpoints remain historical evidence and do not imply
+that their artifact sets are interchangeable with this source.
+
+The complete snapshot and generated C/TypeScript interfaces are regenerated
+from the combined source and a fresh kernel export-inspection build. The
+standalone resolver is regenerated and tested. Main's process-exit export
+promotion at ABI 54 remains active; reducing the graphics number must not
+disable a newer main contract. No graphics API, sharing/lifecycle behavior,
+operation-table version or contributor history was removed to renumber it.
+The cage, sway, wlroots, libwayland and graphics-cts-egl package ABI floors
+are corrected from provisional 55 to consolidated 54.
+
+| Check | Exact evidence |
+|---|---|
+| Full ABI regeneration | `graphics-abi54-update.log` |
+| Snapshot, version and generated-output consistency | Passed; `graphics-abi54-check.log` |
+| Standalone resolver regeneration/test | Passed; `graphics-abi54-resolver.log` |
+| Complete merged Vitest evidence inventory | All 595 files agree with the registry; `graphics-main54-evidence-registry-final.log` |
+| Current-main orphan/lifecycle Rust selection | All 19 selected tests pass; `graphics-main54-orphan.log` |
+| Combined GLIO Rust selection | All 50 selected tests pass; `graphics-main54-glio.log` |
+
+The initial merged test registry contained two rows for files already
+removed on the graphics branch. Those rows are removed; package-dependent
+protocol scanner tests retain their prepared-product class. The kernel-only
+ABI inspection does not establish normal graphics product compatibility.
+The subsequent full xtask suite also refreshed the wasm32 musl core through
+an existing normal resolver integration test. That narrow prerequisite is
+distinct from the deferred graphics SDK archives, programs, packages and
+images. No complete SDK/product rebuild or broad conformance result is
+claimed. The full graphics goal remains active.

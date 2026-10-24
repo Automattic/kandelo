@@ -154,6 +154,18 @@ capability disabled. No cursor host import is required. See
 [the cursor transport contract](architecture.md) for the record layout and
 ownership rules.
 
+Exit acknowledgement uses it too. `kernel_publish_process_exit` is
+optional in ABI 53 and required from ABI 54. Orphan adoption itself
+happens inside the kernel; the export only lets init reap once the host
+has seen an exit. A new host that loads an ABI-53 kernel built without
+the export keeps that kernel's old behavior, with no adoption.
+Reparenting changes what `getppid()` and `wait()` observe for orphans,
+but no existing program depends on the old observations: they were the
+unreapable-zombie gap, not a contract. The syscall numbers, marshalling,
+and status encodings are unchanged, so existing binaries remain valid
+and no `ABI_VERSION` bump is needed. See [orphan
+adoption](architecture.md#orphan-adoption).
+
 Host compatibility and local artifact admission are separate checks. The
 local build stamps kernels and programs with a digest of the complete ABI
 snapshot; runtime admission rejects differently stamped programs even when
@@ -1766,8 +1778,8 @@ Semantic changes:
 
 The graphics ABI 53-58 entries below record unreleased development
 checkpoints on the compatibility branch. They do not replace main's
-ABI 53 above. ABI 59 combines both contracts; normal artifacts must be
-rebuilt from that combined source and snapshot.
+ABI 53 above. The consolidated ABI 54 combines both contracts; normal
+artifacts must be rebuilt from that combined source and snapshot.
 
 ### Development ABI 53 graphics ownership and renderer acknowledgement
 
@@ -1831,7 +1843,7 @@ allocations appeared to create a context successfully. The host rolls back
 partial device ownership and permits a subsequent attempt. EGL reports
 `EGL_NO_CONTEXT` with `EGL_BAD_ALLOC` when this allocation fails.
 
-### ABI 54 independent graphics sessions
+### Development ABI 54 independent graphics sessions
 
 Every initialized GL open file description receives a nonzero kernel-owned
 session identity. The `host_gl_bind`, `host_gl_unbind`,
@@ -1865,7 +1877,7 @@ the normal ABI 54 rebuild. There is still one backend context and surface
 per session, and the EGL facade still exposes one context; multiple EGL
 contexts, context-specific encoders and shared objects remain open work.
 
-### ABI 55 thread-current authority and window retargeting
+### Development ABI 55 thread-current authority and window retargeting
 
 `GLIO_MAKE_CURRENT` now takes an input-only 12-byte `GlMakeCurrent`:
 `context_id`, `draw_surface_id`, `read_surface_id` (three `u32` words).
@@ -1896,7 +1908,7 @@ match ABI 55. All kernels, hosts, SDK archives, programs, packages and images
 require the normal rebuild; prior artifacts must not be restamped. Focused
 source checks do not constitute that deferred combined-artifact validation.
 
-### ABI 56 display-generation authority
+### Development ABI 56 display-generation authority
 
 `GLIO_INIT` changes from an input-only four-byte operation version to a
 16-byte input/output `GlInitInfo`: `op_version`, `role`, signed
@@ -1925,7 +1937,7 @@ Prior ABI-bound artifacts require the normal rebuild. Full SDK, program,
 package and image provisioning and combined integration validation remain
 deferred; focused source checks do not establish artifact compatibility.
 
-### ABI 57 acknowledged surface creation
+### Development ABI 57 acknowledged surface creation
 
 `GLIO_CREATE_SURFACE` changes from 32-byte input attributes to a 36-byte
 input/output `GlSurfaceCreateInfo`: the existing attributes followed by
@@ -1965,7 +1977,7 @@ The host resolves those identities on the same renderer. No host import,
 message layout or serialized fork field changes in that additive step.
 
 
-### ABI 58 shared context construction
+### Development ABI 58 shared context construction
 
 `GlContextAttrs` remains 16 bytes, with client version at offset 0,
 `share_context_id` at 4, reserved u32 at 8 and returned context ID at 12.
@@ -2041,16 +2053,14 @@ and zero/future rejection. This does not establish shader-name translation
 beyond WebGL's limits or full uniform conformance.
 
 
-### ABI 59 combined main and graphics interfaces
+### Development ABI 59 combined main and graphics interfaces
 
-For this unpublished graphics effort, the user requested on 2026-10-24
-that subsequent implementation increments keep ABI 59. Regenerate the
-outputs as their source contracts change, then build and validate one
-coherent artifact set. Prior graphics version numbers are historical
-development checkpoints, not a request to keep bumping each increment.
-This sequencing applies to this effort, not unrelated released ABIs.
+This section records the earlier unpublished ABI 59 integration checkpoint.
+The consolidated ABI 54 below supersedes its numeric label; its graphics
+contracts remain part of the combined source.
 
-ABI 59 combines main's ABI 53 xattr marshalling, scalar contracts and
+At that checkpoint, ABI 59 combined main's ABI 53 xattr marshalling,
+scalar contracts and
 exchange imports/exports with the graphics session, thread-current,
 display-generation, independent-surface and shared-context contracts
 developed through ABI 58. Operation table 16 remains independently
@@ -2062,6 +2072,22 @@ restamped or reused across the changed ABI.
 Kernel-only export inspection is sufficient to regenerate the snapshot,
 not to establish runtime or compositor compatibility. The compatibility
 ledger records exact integration evidence and unrun normal build gates.
+
+
+### ABI 54 consolidated main and graphics interfaces
+
+Current main `5cd771bff8` uses ABI 53. The user requested one version above
+main for this unpublished effort, so the combined implementation now uses
+ABI 54. It includes main's current process/orphan lifecycle behavior and
+all graphics interfaces developed under the earlier provisional numbers
+52-59. Those numbers remain historical evidence only. No old artifact is
+made compatible by renumbering or restamping it.
+
+Keep ABI 54 across implementation increments. Regenerate the full snapshot,
+C/TypeScript declarations and standalone resolver from the combined source.
+Normal SDK/kernel/program/package/image artifacts must be rebuilt together
+before the complete consumer/conformance phase. The independent GL
+operation table remains version 16.
 
 
 ## The snapshot

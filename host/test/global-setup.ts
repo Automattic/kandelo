@@ -133,6 +133,7 @@ const TEST_PROGRAMS = [
   "fstatat_empty_path_test.c",
   "pthread_channel_reuse_test.c",
   "wait_lifecycle_test.c",
+  "orphan_reparent_test.c",
   "pathconf_test.c",
   "getdents_boundary_test.c",
   "terminal_attributes_api_test.c",
@@ -189,6 +190,7 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "pthread_channel_reuse_test.c",
   "unix_listener_exec_test.c",
   "wait_lifecycle_test.c",
+  "orphan_reparent_test.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
 ]);

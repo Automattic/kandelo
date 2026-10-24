@@ -89,12 +89,23 @@ For CI-shaped local runs, prefer:
 bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-workspace|cargo-xtask|runtime-workarounds|vitest|browser|libc|posix|sortix> [group]
 ```
 
-When adding a Vitest file, update `scripts/ci-vitest-evidence-classes.tsv`.
-The runner checks that every enabled file appears exactly once before it
-starts the suite. Mark tests that need built package programs or images as
-`prepared-product`; use `source-only` only when source and the current ABI
-test fixtures are sufficient. This keeps a passing source check from being
-mistaken for validation of an older package binary.
+When adding, deleting, or renaming a Vitest file, update
+`scripts/ci-vitest-evidence-classes.tsv` in the same change: add a row, delete
+the row, or move the row to the new path and keep its class. Rows stay in byte
+order (`LC_ALL=C sort`). Mark tests that need built package programs or images
+as `prepared-product`; use `source-only` only when source and the current ABI
+test fixtures are sufficient. A `source-only` test must not import
+`host/src/binary-resolver.ts` or a `prepared-product` test, even indirectly.
+This keeps a passing source check from being mistaken for validation of an
+older package binary.
+
+`bash scripts/check-vitest-evidence-classes.sh` checks the registry in both
+directions: every row names an existing test file, and every file a
+CI-shaped Vitest run collects has exactly one row. Each failure names the file
+and says whether to delete, move, or add a row. Every `ci-run-test-suite.sh
+vitest` group runs this check before any test, and
+`tests/package-system/vitest-evidence-classes.test.ts` runs it inside a plain
+`npx vitest run`.
 
 The optional group reproduces CI's deterministic suite partitions. Vitest
 accepts `1/2`, `2/2`, or `resource-isolated`; libc accepts

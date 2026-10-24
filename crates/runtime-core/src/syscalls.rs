@@ -19024,6 +19024,11 @@ pub fn sys_ioctl(
 /// prctl — process control operations.
 /// PR_SET_NAME stores thread name, PR_GET_NAME returns it.
 /// All other operations are no-ops returning success.
+/// Linux child-subreaper `prctl` options. Not implemented: both fail with
+/// `EINVAL`, as on Linux before 3.4.
+pub const PR_SET_CHILD_SUBREAPER: u32 = 36;
+pub const PR_GET_CHILD_SUBREAPER: u32 = 37;
+
 pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) -> Result<(), Errno> {
     use wasm_posix_shared::{kernel_scratch_wire, prctl};
 
@@ -19048,6 +19053,9 @@ pub fn sys_prctl(proc: &mut Process, option: u32, _arg2: u32, buf: &mut [u8]) ->
                 .copy_from_slice(&proc.thread_name);
             Ok(())
         }
+        // Orphans are always adopted by synthetic init. Reporting success
+        // would let a supervisor believe it adopts descendants it never sees.
+        PR_SET_CHILD_SUBREAPER | PR_GET_CHILD_SUBREAPER => Err(Errno::EINVAL),
         _ => Ok(()), // no-op for unrecognized operations
     }
 }
@@ -36972,6 +36980,23 @@ mod tests {
         sys_prctl(&mut proc, prctl::PR_GET_NAME, 0, &mut out).unwrap();
         assert_eq!(&out[..5], b"hello");
         assert_eq!(out[5], 0);
+    }
+
+    #[test]
+    fn test_prctl_child_subreaper_is_unsupported() {
+        // Orphans are always adopted by synthetic init. Claiming subreaper
+        // status would let a supervisor believe it adopts descendants that
+        // in fact go to init.
+        let mut proc = Process::new(1);
+        let mut buf = [0u8; 0];
+        assert_eq!(
+            sys_prctl(&mut proc, PR_SET_CHILD_SUBREAPER, 1, &mut buf),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            sys_prctl(&mut proc, PR_GET_CHILD_SUBREAPER, 0, &mut buf),
+            Err(Errno::EINVAL)
+        );
     }
 
     #[test]

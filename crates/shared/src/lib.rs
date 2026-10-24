@@ -215,39 +215,12 @@ pub mod process_layout;
 ///     ("ABI 52").
 /// 53: the extended-attribute syscalls marshal their arguments and carry
 ///     channel scalar contracts. docs/abi-versioning.md ("ABI 53") lists each.
-/// Graphics development checkpoints 53-58 below preceded integration
-/// with main ABI 53; they are combined with it under ABI 59.
-/// Development 53: wlroots-compatible DRM master and framebuffers.
-///     The first open of
-///     `/dev/dri/card0` while no file is master becomes the master, as
-///     Linux's `drm_master_open` does. RMFB of the scanout framebuffer
-///     disables the CRTC; the new DRM_IOCTL_MODE_CLOSEFB keeps it on screen
-///     until another framebuffer replaces it. fstat of a PRIME fd reports an
-///     untyped inode of the buffer size. Framebuffers are device-wide and
-///     shared across fork, GET_CAP of an unknown capability fails with
-///     EINVAL, and new KMS ioctls get contracts. AF_NETLINK uevent sockets
-///     (with the new ESOCKTNOSUPPORT) and a read-only /sys appear.
-///     The host_gl_create_context import returns a status; a failed native
-///     allocation is not published as a live guest context.
-///     docs/abi-versioning.md ("ABI 53") lists each.
-/// 54: GL command-buffer sessions and their cleanup carry kernel-owned
-///     identities through host imports. Context creation returns a fresh
-///     identity in GlContextAttrs, which is now an InOut ioctl argument.
-///     Cross-process cleanup retains the renderer's actual owner.
-/// 55: make-current explicitly names its context/draw/read bindings and
-///     the kernel enforces current ownership by its validated caller TID.
-///     The host acknowledges a bind before ownership changes.
-///     UpdateSurface atomically replaces a native window's GPU target.
-/// 56: GL initialization separates display-generation authority from object
-///     sessions through a 16-byte InOut GlInitInfo handshake. Revocation
-///     prevents new objects/bindings while current resources remain usable.
-/// 57: surface creation returns a fresh identity and acknowledged dimensions
-///     through an InOut argument. The host creation import returns status.
-/// 58: context creation names an optional live same-generation share context.
-///     The renderer acknowledges group membership before publication.
-/// 59: integrate main ABI 53 xattr/exchange contracts with the graphics
-///     session, thread-current, surface and shared-context interfaces.
-pub const ABI_VERSION: u32 = 59;
+/// 54: combine main ABI 53 with the graphics compatibility interfaces:
+///     kernel-owned GL sessions, thread-current bindings, display generations,
+///     acknowledged independent surfaces and shared context construction.
+///     Earlier graphics-only ABI numbers 52-59 were unpublished development
+///     checkpoints. The combined effort uses one ABI above current main.
+pub const ABI_VERSION: u32 = 54;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -3693,6 +3666,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_process_metadata_commit"),
         HostAdapterKernelExport::required("kernel_process_metadata_stage"),
         HostAdapterKernelExport::required("kernel_process_secure_exec"),
+        HostAdapterKernelExport::optional_until("kernel_publish_process_exit", 53, 54),
         HostAdapterKernelExport::required("kernel_publish_spawn_child"),
         HostAdapterKernelExport::required("kernel_reap_exited_child"),
         HostAdapterKernelExport::required("kernel_remove_process"),

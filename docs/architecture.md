@@ -1228,8 +1228,10 @@ allocated rather than accepting a second PID source.
 PID 1 is outside that sequence. The kernel creates it as a synthetic root-owned
 init reservation with no user Wasm worker, so PID-addressed existence and
 permission checks have a real kernel target. The first user process is therefore
-PID 100, not PID 1. This synthetic record is not a user-space init program or
-an active wait-loop reaper.
+PID 100, not PID 1. This synthetic record is not a user-space init program and
+runs no wait loop. It is, however, the parent that orphaned processes are
+reparented to, and the kernel reaps those children on its behalf (see
+"Orphan adoption" below).
 
 Callers never choose an ID or advance a watermark. The host helper
 `CentralizedKernelWorker.createProcess(...)` asks the Rust kernel to create a
@@ -1781,13 +1783,94 @@ process during host teardown. A process with a guest parent does not satisfy the
 status through `wait()`/`waitpid()`.
 
 Children of the virtual init (pid 1) are the one other case: init ignores
-SIGCHLD, so the shared exit path reaps them as they exit, as a Linux init
-does. Today the kernel-started Kandelo exchange agent is the only such child.
+SIGCHLD, so the kernel reaps them as they exit, as a Linux init does. They
+are the kernel-started Kandelo exchange agent and every orphan adopted as
+described next.
 
-This cleanup also does not implement orphan adoption. Kandelo does not yet
-reparent a guest descendant when its parent exits, so such a descendant can
-still become an unreapable zombie after it exits. That existing process-
-lifecycle gap is separate from reaping direct host-owned launches.
+### Orphan adoption
+
+POSIX requires that when a process terminates, each of its children,
+including children that are already zombies, gets an
+implementation-defined system process as its new parent. Kandelo uses
+synthetic init, PID 1. Without this, a program that daemonizes with the
+usual double fork would leave its grandchild with a parent that no longer
+exists. Nothing could ever wait for that grandchild, so once it exited it
+would stay a zombie for the life of the machine.
+
+Reparenting is kernel behavior that happens at the Exited transition, not
+when the host notices the exit. A process becomes Exited wherever a syscall
+or a default signal action ends it, and those code paths hold only that one
+`Process`. Recording the exit therefore also queues its PID. The kernel
+applies the queue through the whole process table at the boundary of the
+outermost kernel scope (the `GklGuard`), both on entry and before the kernel
+call returns, once no reference into a single process is still in use. For
+each queued exit, in one table transaction, Rust:
+
+1. Gives every child to init (`ppid = 1`). A `posix_spawn` child whose
+   result is still unpublished stays with its exact parent, because the
+   host's spawn rollback must still find it there.
+2. Sends SIGHUP and then SIGCONT to every member of a process group that
+   the exit left orphaned while one of its members is stopped. An orphaned
+   group is one in which no member's parent is in a different group of the
+   same session. Init and the `ppid=0` host-parent sentinel never count as
+   such a parent. As in Linux's `exit_notify()`, the groups of the
+   reparented children are checked first, then the exiting process's own
+   group. A member that the default SIGHUP action terminates queues its own
+   exit, which the same pass applies.
+3. Reaps, for init, each adopted zombie whose exit the host has already
+   published (see below).
+
+An exit that an unguarded export produces is applied when the next guarded
+scope begins. Every guest observation of a parent (`getppid()`, `wait()`,
+`/proc`) is a guarded syscall, so no guest can see the dead parent.
+
+Only reaping waits for the host. The host discovers a death by finding the
+zombie record, then retires the process's Workers, so init must not reap a
+zombie before the host has seen it. Every host exit path (normal `exit`,
+signal death, Worker crash, exec-handoff death, and a spawn child that exits
+before its spawn result is published) goes through one host function, and
+that function first calls `kernel_publish_process_exit(pid)`. The call
+acknowledges the exit. If init is already `pid`'s parent, init reaps `pid`
+now; the host's parent lookup then finds no process, so no SIGCHLD is sent
+and no wait is woken. The former parent of an adopted child is never
+signalled. The call also returns how many processes applied exits have hung
+up since the previous acknowledgement. When that is positive, the host
+applies the same follow-up as a guest group `kill()`: it resumes the
+continued members, retries their blocked syscalls, and retires any member
+that the default SIGHUP action terminated.
+
+Reaping on init's behalf uses the same Rust removal and host-cleanup path as a
+`waitpid()` reap, including the resource-free `Limbo` record kept for a
+group leader that still has group members. That `Limbo` record is not a
+process, so `kernel_get_parent_pid` reports `ESRCH` for it, as
+`kernel_get_process_state` does. Only the first acknowledgement of an exit
+has effects; a repeat, such as the second arrival for a spawn child that
+exited before its spawn result was published, changes nothing. Removing a
+process record for any other reason (for example forced teardown) also
+reparents that process's remaining children to init.
+
+Host launches follow the same rule. A process launched directly by the host
+has the `ppid=0` sentinel as its parent, but its own children are ordinary
+orphans when it exits. They are reparented to init rather than to the host,
+and the host's `ppid=0` reap still covers only the launched process itself.
+
+`kernel_publish_process_exit` is declared
+`optional_until(..., 53, 54)`. An ABI-53 kernel built before this change
+lacks both the export and the reparenting; a new host loads it and keeps
+the previous behavior rather than failing to boot.
+
+Linux's `PR_SET_CHILD_SUBREAPER` is not implemented. Orphans always go to
+init, never to the nearest subreaper ancestor, and `prctl()` fails that
+option and `PR_GET_CHILD_SUBREAPER` with `EINVAL`, as Linux did before 3.4.
+A supervisor therefore learns that it will not adopt its descendants,
+rather than believing it will. The dinit supervisor calls
+`PR_SET_CHILD_SUBREAPER` only when built for `__linux__`, which Kandelo
+never defines, so its build does not depend on the missing feature.
+
+POSIX has two more orphaned-group rules that Kandelo does not apply yet. A
+member of an orphaned group is not stopped by a default-action SIGTSTP,
+SIGTTIN, or SIGTTOU, and its background terminal reads and writes fail
+with `EIO`. `docs/posix-status.md` lists this gap under `exit()`.
 
 ### Owned command families (jobs)
 
@@ -3879,7 +3962,7 @@ The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY rou
 
 **Browser kernel worker** (`host/src/browser-kernel-worker-entry.ts`): Dedicated web worker that hosts `CentralizedKernelWorker`, following the standard architecture requirement. Process workers are sub-workers created by the kernel worker. Syscall notification remains event-driven through `Atomics.waitAsync`, not channel polling. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue; this keeps syscall handling and worker messages progressing together under multi-process bridge load. Node.js retains its native/default batching unchanged.
 
-**dinit service supervisor** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first user process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. It receives the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit reaps its directly supervised children, leaves reparented-orphan reaping unsupported because synthetic PID 1 has no wait loop, disables restarts by default, and enforces inter-service `depends-on` ordering.
+**dinit service supervisor** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first user process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. It receives the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit reaps its directly supervised children. A service that daemonizes by double fork leaves its grandchild to synthetic init, which the kernel reaps (see "Orphan adoption"); dinit is not a subreaper here because it requests `PR_SET_CHILD_SUBREAPER` only under `__linux__`. dinit disables restarts by default and enforces inter-service `depends-on` ordering.
 
 **Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
 
@@ -3917,8 +4000,9 @@ TLV commands, the kernel validates the submitted range, and the host decodes
 the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
-The combined graphics branch uses ABI 59, joining main's ABI 53 xattr and
-exchange contracts with the graphics interfaces developed through ABI 58.
+The combined graphics branch uses ABI 54, one version above current main's
+ABI 53. It joins main's xattr, exchange and current process lifecycle
+contracts with the graphics interfaces from earlier development versions.
 Operation table 16 remains independently versioned. Generated source metadata
 is coherent; normal SDK/program/package/image and compositor validation still
 requires rebuilding the combined artifacts.

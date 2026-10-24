@@ -30,7 +30,7 @@ kind = "library"
 
 name = "libwayland"
 version = "1.24.0"
-kernel_abi = 55
+kernel_abi = 54
 depends_on = ["libffi@0.1.0", "wayland-protocols@1.47", "libdrm@2.4.134"]
 
 [[host_tools]]
