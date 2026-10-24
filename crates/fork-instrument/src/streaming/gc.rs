@@ -7,11 +7,13 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use wasm_encoder::{Encode, FieldType, StorageType, ValType, reencode::Reencode};
 
+mod codec;
 mod constructors;
 mod descriptor;
 mod layouts;
 mod provenance;
 mod types;
+pub use codec::*;
 pub use provenance::*;
 
 #[derive(Clone, Copy, Debug)]

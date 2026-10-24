@@ -1,7 +1,7 @@
 use super::*;
 use wasm_encoder::FuncType;
 
-pub(super) struct Signatures {
+pub(in crate::streaming::gc) struct Signatures {
     indices: BTreeMap<(Vec<ValType>, Vec<ValType>), u32>,
     base: u32,
 }
@@ -53,6 +53,54 @@ impl Signatures {
             .push(FuncType::new(key.0.iter().copied(), key.1.iter().copied()));
         self.indices.insert(key, index);
         Ok(index)
+    }
+    /// Reuse scalar host bindings reserved by another provider catalog.
+    pub fn import(
+        &mut self,
+        inputs: &mut RuntimeInputs,
+        module: &str,
+        name: &str,
+        params: Vec<ValType>,
+        results: Vec<ValType>,
+        budget: usize,
+    ) -> Result<u32> {
+        let ty = self.intern(inputs, params, results)?;
+        if let Some((ordinal, existing)) = inputs
+            .imports
+            .iter()
+            .enumerate()
+            .find(|(_, import)| import.module == module && import.name == name)
+        {
+            let compatible = match existing.ty {
+                wasm_encoder::EntityType::Function(previous) => {
+                    previous == ty || {
+                        let signature = |index: u32| {
+                            index
+                                .checked_sub(self.base)
+                                .and_then(|index| inputs.types.get(index as usize))
+                        };
+                        signature(previous).is_some_and(|previous| Some(previous) == signature(ty))
+                    }
+                }
+                _ => false,
+            };
+            ensure!(
+                compatible,
+                "GC host import {module}.{name} has an incompatible type"
+            );
+            return Ok(u32::try_from(ordinal)?);
+        }
+        ensure!(
+            inputs.imports.len() < budget / 512,
+            "GC imports exceed metadata budget"
+        );
+        let ordinal = u32::try_from(inputs.imports.len())?;
+        inputs.imports.push(crate::streaming::PlannedImport {
+            module: module.into(),
+            name: name.into(),
+            ty: wasm_encoder::EntityType::Function(ty),
+        });
+        Ok(ordinal)
     }
 }
 pub(super) fn parameter_count(layout: &NativeGcLayout) -> Result<usize> {

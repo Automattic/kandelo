@@ -230,6 +230,15 @@ impl FrozenImports {
     pub fn memory_definition_base(&self) -> u32 {
         self.total.memories
     }
+    pub(super) fn mapped_memory_index(&self, index: u32) -> Result<u32, Error<ImportIndexError>> {
+        self.shift(
+            index,
+            self.imported.memories,
+            self.source.memories,
+            self.total.memories,
+            "memory",
+        )
+    }
     pub fn global_definition_base(&self) -> u32 {
         self.total.globals
     }
@@ -319,13 +328,7 @@ impl Reencode for FrozenImports {
         )
     }
     fn memory_index(&mut self, i: u32) -> Result<u32, Error<Self::Error>> {
-        self.shift(
-            i,
-            self.imported.memories,
-            self.source.memories,
-            self.total.memories,
-            "memory",
-        )
+        self.mapped_memory_index(i)
     }
     fn global_index(&mut self, i: u32) -> Result<u32, Error<Self::Error>> {
         self.shift(

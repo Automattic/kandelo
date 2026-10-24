@@ -233,8 +233,9 @@ identity, brokered values, ingress, cache cleanup, invalid IDs and disjoint
 transaction scratch. Budget tests reject metadata, work and output exhaustion;
 256 repeated tag signatures keep the same physical local count. These
 providers now compose with activation frame vectors in the linked catch
-fixtures below. Local garbage-collection providers and full module bootstrap
-remain unfinished. Provider metadata alone certifies no artifact.
+fixtures below. The GC providers described next also compose with these exact
+exception recipes. Full module bootstrap remains unfinished. Provider metadata
+alone certifies no artifact.
 
 `NativeGcPlan` discovers aggregate layouts and constructor provenance before
 runtime helpers are declared. It records aligned scalar fields, reference
@@ -268,8 +269,30 @@ execution against unchanged Walrus on both memory widths. Operand effects run
 once in source order, and the transit slot is cleared after publication.
 Catalogs reject source/type-mapping mismatches and enforce metadata, work,
 signature and output limits. GC and exception catalogs share the immutable
-activation import. This is a constructor-tracking component; GC graph encoding,
-allocation, filling and reconstruction remain unfinished.
+activation import.
+
+`GcCodecPlan` freezes nine core GC helper declarations plus private typed seed
+functions. `NativeGcCodec` emits probing, graph encoding, cached decoding,
+externref bridges, allocation and filling one body at a time. Encoding publishes
+identity before recursive edges and gives each recursive activation a separate
+exchange-memory reservation. Allocation installs mutable shells before filling
+their edges; immutable and non-defaultable constructors consume their recorded
+inputs. Replayed values register constructor provenance for a subsequent fork.
+Private function and exception seeds inhabit mutable non-null fields until
+filling replaces them. Concrete function seeds retain the original nominal
+function type. Added seeds and tags stay outside original source catalogs.
+
+Native and unchanged Walrus output execute the same standalone Node assertions
+on both memory widths. They cover self-cycles, mutual GC/exception cycles,
+constructor seeds that differ from final fields, function/externref identities,
+signed i31 values, packed/scalar/vector bits, every array constructor variant,
+empty typed arrays and child-to-grandchild reconstruction. Successful helpers
+release every exchange range, and unknown allocation/fill routes trap. Planning
+and emission enforce metadata, work and output limits. The complex helpers
+retain nine scalar/pointer locals with either one or 256 distinct GC layouts;
+they narrow references at use rather than allocating a local for every type.
+This validates provider components, not a complete native fork artifact,
+production bootstrap, browser behavior or end-to-end memory improvement.
 
 `FrameBuilder` now plans one function's activation storage. It keeps parameters
 and first-used original locals in lexical order, assigns synthetic value keys,
@@ -476,8 +499,8 @@ and eliminated callers neither save nor consume journal frames.
 These remain component fixtures rather than the normal production
 instrumentation path. Source exception ownership normalization remains an
 explicit unsupported boundary of the activation wrapper. Complete module state,
-transport/state-hook composition, local GC and
-exception recipe providers, artifact certification and production backend
+transport/state-hook composition, complete provider integration,
+artifact certification and production backend
 integration remain work; these fixtures do not establish full fork support or
 memory gains.
 

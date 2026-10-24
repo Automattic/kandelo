@@ -8,7 +8,7 @@ use crate::{
 };
 use wasm_encoder::{EntityType, TableType};
 
-pub(super) struct ProvenanceImports {
+pub(in crate::streaming::gc) struct ProvenanceImports {
     activation: ImmutableGlobalImport,
     transit: u32,
     begin: u32,
@@ -16,7 +16,7 @@ pub(super) struct ProvenanceImports {
     end: u32,
 }
 #[derive(Clone, Copy)]
-pub(super) struct ProvenanceHost {
+pub(in crate::streaming::gc) struct ProvenanceHost {
     pub activation: u32,
     pub transit: u32,
     pub begin: u32,
@@ -79,13 +79,14 @@ impl ProvenanceImports {
             (abi::IMPORT_PROVENANCE_REF, vec![i, i, i], vec![]),
             (abi::IMPORT_PROVENANCE_END, vec![i], vec![]),
         ] {
-            let ty = signatures.intern(inputs, params, results)?;
-            indices.push(u32::try_from(inputs.imports.len())?);
-            inputs.imports.push(PlannedImport {
-                module: abi::HOST_IMPORT_MODULE.into(),
-                name: name.into(),
-                ty: EntityType::Function(ty),
-            });
+            indices.push(signatures.import(
+                inputs,
+                abi::HOST_IMPORT_MODULE,
+                name,
+                params,
+                results,
+                budget,
+            )?);
         }
         Ok(Self {
             activation,

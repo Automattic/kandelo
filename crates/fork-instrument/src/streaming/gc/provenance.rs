@@ -8,8 +8,8 @@ use wasm_encoder::{Function, Instruction, RefType};
 use wasmparser::Operator;
 
 mod emit;
-mod imports;
-mod signatures;
+pub(super) mod imports;
+pub(super) mod signatures;
 use imports::{ProvenanceHost, ProvenanceImports};
 
 #[derive(Clone, Copy, Debug)]
