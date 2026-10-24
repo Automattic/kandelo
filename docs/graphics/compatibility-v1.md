@@ -87,7 +87,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session/thread-current/display-authority changes are combined under ABI 58 with shared-context construction and acknowledged surface creation; compatible graphics operation table 12 adds checked image transactions. Generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session/thread-current/display-authority changes are combined under ABI 58 with shared-context construction and acknowledged surface creation; compatible graphics operation table 13 adds checked image transactions and framebuffer selection. Generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -3020,3 +3020,53 @@ bind is acknowledged. Failed framebuffer creation/binding can therefore
 leave C container selection stale; that binding transaction is the next
 required correction. Confirmed per-object image holds must not be enabled
 for public sharing on the strength of attachment/deletion ACKs alone.
+
+
+## Acknowledged framebuffer container selection (2026-10-24)
+
+The preceding C framebuffer-bind gap is now corrected for checked definite
+acceptance/rejection. `glBindFramebuffer` publishes its current container
+mirror only after `QOP_BIND_FRAMEBUFFER` (`0x2a`, target/name, exact 8-byte
+input and 12-byte checked ACK) accepts. Operation table 13 is mirrored in
+Rust/C/TS; existing layouts, ABI 58 and its structural snapshot stay valid.
+Lost acknowledgements and context loss still require general reconciliation.
+
+Queued and checked host binds now share realization and rollback. Candidate
+namespace capacity and rollback actions precede the bind. Failed creation,
+metadata allocation or native selection preserves the prior logical/native
+bindings and cleans the unpublished candidate. Selecting framebuffer zero
+checks separate EGL draw/read defaults one at a time; second-selector failure
+restores both old bindings in reverse order before returning rejection.
+
+A new actual C regression fails unchanged `058adba94a` after a rejected
+framebuffer bind: subsequent accepted detachment consults the wrong C
+container, keeping old image backing after its last real attachment ends.
+The device double rejects the equivalent old queued bind as well. The
+current case preserves C selection, releases backing at accepted detach,
+accepts a later bind and ends with zero tracked allocations. Five new host
+cases cover exact spans/selectors, native creation/bind failure, namespace
+allocation, split-default rollback and queued/query parity. An older surface
+regression now checks both actual native bindings after rollback and retry,
+instead of relying on the order of its last native call.
+
+The GPU browser driver additionally rejects native FBO creation and injects
+a real invalid-enum bind, checks preserved blue pixels and accepts retry.
+Actual C record traces carry the checked binds through native and forwarded
+routes, including separate draw/read default pixels. These remain source
+host tests with synthetic kernel dispatch/identity plumbing, not rebuilt
+guest marshalling or public C sharing.
+
+Focused evidence: `.context/graphics-fbo-bind-final-host-v2.log` records 462
+host cases in 22 files plus Node/browser declarations;
+`.context/graphics-fbo-bind-final-native.log` records 114 native C UBSan
+cases, private wasm32 paired link, 150 authority guards and 142/142 core
+symbols/resolvers. `.context/graphics-fbo-bind-final-rust-abi.log` records
+47 GLIO, four GL layout and 13 ioctl-contract cases with ABI 58 / table 13
+consistency. `.context/graphics-fbo-bind-final-browser.log` records 168
+rendered source executions across Chromium, Firefox and WebKit with no
+skips; `.context/graphics-fbo-bind-final-memory-boundary.log` records 12
+source protocol/memory-boundary negatives. The baseline failure is in
+`.context/graphics-fbo-bind-baseline-native-v2.log`. Full shared C image
+holds, revision-ordered publication and concurrent namespace ordering remain
+open, alongside the existing full compatibility inventory and deferred
+normal artifact/integration gates.

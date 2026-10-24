@@ -108,7 +108,7 @@ export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` accepts versions 1 through this value. */
-export const OP_VERSION = 12;
+export const OP_VERSION = 13;
 
 // Additive GLES entry points used by native renderers; existing tags stay stable.
 export const OP_BLEND_EQUATION = 0x000F;
@@ -192,3 +192,6 @@ export const QOP_IMAGE_ATTACHMENT = 0x0028;
 
 // V12: allocation-only opcode plus unchanged texture/RBO storage payload.
 export const QOP_IMAGE_STORAGE = 0x0029;
+
+// V13: framebuffer bind acknowledgement before C container selection changes.
+export const QOP_BIND_FRAMEBUFFER = 0x002A;

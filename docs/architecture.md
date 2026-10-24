@@ -4181,6 +4181,12 @@ attempted active attachments and bindings. FBO deletion preserves separate
 read/draw defaults. This does not complete shared C image holds, concurrent
 namespace ordering or multi-failure/context-loss recovery.
 
+Operation-table v13 adds an exact checked framebuffer-bind query. C updates
+its attachment-container selection only after native acceptance. Host queued
+and checked binds share candidate realization, namespace staging and rollback,
+including independent EGL read/draw defaults. Indeterminate completion still
+needs general native/client reconciliation before full sharing is supported.
+
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package
 into `sysroot/lib/libdrm.a`, and builds `libgbm.a`, `libEGL.a`, and

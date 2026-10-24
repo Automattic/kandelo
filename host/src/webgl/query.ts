@@ -18,7 +18,7 @@
  */
 import { validImageStorageRequest, executeImageStorageRequest } from "./bridge.js";
 import { canonicalTexture, canonicalRenderbuffer, imageSourceToken, importImageStorage, boundImageState } from "./image-storage.js";
-import { collectRetiredImages, deleteImageObject, attachImageObject } from "./image-references.js";
+import { collectRetiredImages, deleteImageObject, attachImageObject, bindFramebufferObject } from "./image-references.js";
 import { bindImageObject } from "./image-bindings.js";
 import { runUniformLookup, uniformLocation } from "./uniform-queries.js";
 import { checkedQueryReply, runStateQuery } from "./state-query.js";
@@ -120,6 +120,15 @@ export function runGlQuery(
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
 
+  if (op === O.QOP_BIND_FRAMEBUFFER) {
+    if (input.byteLength !== 8 || out.byteLength !== 12) return -22;
+    return checkedQueryReply(b, out, 4, payload => {
+      if (!bindFramebufferObject(b, inDv.getUint32(0, true), inDv.getUint32(4, true))) return -5;
+      collectRetiredImages(b);
+      new DataView(payload.buffer).setUint32(0, 1, true);
+      return 4;
+    });
+  }
   if (op === O.QOP_IMAGE_STORAGE) {
     if (out.byteLength !== 12 || !validImageStorageRequest(input)) return -22;
     return checkedQueryReply(b, out, 4, payload => {

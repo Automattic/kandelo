@@ -277,6 +277,22 @@ self.onmessage = ({ data }) => {
     require(error(12) === 0x501, "owned RBO allocation rejection");
     storageReject.push(pixels(86, 12));
     send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12);
+    const framebufferBindReject: number[][] = [];
+    const createFramebuffer = gl.createFramebuffer;
+    gl.createFramebuffer = () => null;
+    try {
+      mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 87], 1);
+    }
+    finally {
+      gl.createFramebuffer = createFramebuffer;
+    }
+    require(error(12) === 0x505, "framebuffer allocation rejection");
+    framebufferBindReject.push(pixels(86, 12));
+    inject("bindFramebuffer", (original, args) => original(0xdead, args[1]), () => mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 87], 1));
+    framebufferBindReject.push(pixels(86, 12));
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 87]);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 17, 0]);
+    const framebufferBindRetry = pixels(87, 12);
     const errors = [error(12)];
     api.host_gl_destroy_context(7, 21);
     const afterSourceRetirement = pixels(81, 12);
@@ -286,7 +302,7 @@ self.onmessage = ({ data }) => {
     api.host_gl_unbind(7, 12);
     kernel.gl.destroyGpuBo(41);
     const clean = made.length === deleted.length && made.every(value => deleted.includes(value)) && live.every(check => !check());
-    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, errors, clean, error: gl.getError() });
+    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, errors, clean, error: gl.getError() });
   }
   catch (error) {
     postMessage({ type: "image_storage_failed", error: String(error) });

@@ -32,8 +32,7 @@ import { checkedGlCall, currentProgramName, finalizeProgram, finalizeShader, lin
 import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
-import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget, GL_FRAMEBUFFER } from "./framebuffer.js";
-import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, deleteFramebufferName, attachImageObject } from "./image-references.js";
+import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, deleteFramebufferName, attachImageObject, bindFramebufferObject } from "./image-references.js";
 import { activeVertexArray, clearNativeAttributeBuffers, collectRetiredBuffers, defaultVertexArray, deleteBufferNames, vertexAttribute } from "./buffer-references.js";
 import {
   GL_BACK,
@@ -1229,41 +1228,9 @@ function dispatch(
       for (let i = 0; i < n; i++) deleteFramebufferName(b,v.getUint32(p+4+i*4,true));
       return;
     }
-    case O.OP_BIND_FRAMEBUFFER: {
-      const target = v.getUint32(p, true);
-      const name = v.getUint32(p + 4, true);
-      if (!validFramebufferTarget(target)) { recordGlError(b, 0x500); return; }
-      let fbo = name === 0 ? defaultFramebuffer(b, target === GL_READ_FRAMEBUFFER) : b.fbos.get(name) ?? null;
-      const allocate = name !== 0 && fbo === null;
-      if (allocate) {
-        if (!checkedGlCall(b, () => { fbo = gl.createFramebuffer(); }) || !fbo) {
-          recordGlError(b, 0x505); return;
-        }
-      }
-      // Only name zero selects the host's window or incomplete surfaceless
-      // target; guest FBO objects always retain their independent identity.
-      const readFbo = name === 0 && target === GL_FRAMEBUFFER ? defaultFramebuffer(b, true) : fbo;
-      const splitDefault = target === GL_FRAMEBUFFER && readFbo !== fbo;
-      if (!checkedGlCall(b, () => {
-        if (splitDefault) {
-          // GLES binds logical framebuffer zero once, but EGL can supply
-          // different default storage for drawing and reading.
-          gl.bindFramebuffer(0x8ca9, fbo);
-          gl.bindFramebuffer(GL_READ_FRAMEBUFFER, readFbo);
-        } else gl.bindFramebuffer(target, fbo);
-      })) {
-        if (splitDefault) checkedGlCall(b, () => {
-          gl.bindFramebuffer(0x8ca9, b.shadow.fbo);
-          gl.bindFramebuffer(GL_READ_FRAMEBUFFER, b.shadow.readFbo);
-        });
-        if (allocate && fbo) gl.deleteFramebuffer(fbo);
-        return;
-      }
-      if (allocate && fbo) b.fbos.set(name, fbo);
-      if (target !== GL_READ_FRAMEBUFFER) b.shadow.fbo = fbo;
-      if (target !== 0x8ca9) b.shadow.readFbo = readFbo;
+    case O.OP_BIND_FRAMEBUFFER:
+      bindFramebufferObject(b,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
-    }
     // Payload: u32 target, u32 attachment, u32 textarget, u32 textureName,
     //          i32 level
     case O.OP_FRAMEBUFFER_TEXTURE_2D:

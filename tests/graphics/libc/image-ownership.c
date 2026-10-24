@@ -514,7 +514,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
 #endif
             if ((op == OP_DELETE_TEXTURES || op == OP_DELETE_RENDERBUFFERS ||
                  op == OP_DELETE_FRAMEBUFFERS || op == OP_FRAMEBUFFER_TEXTURE_2D ||
-                 op == OP_FRAMEBUFFER_RENDERBUFFER) &&
+                 op == OP_FRAMEBUFFER_RENDERBUFFER || op == OP_BIND_FRAMEBUFFER) &&
                 image_mutation_failure == 2) {
                 image_mutation_failure = 0;
                 query_gl_error = GL_OUT_OF_MEMORY;
@@ -680,10 +680,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         egl_trace(8, fd, NULL, 0);
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
-        if (q->op == 0x27 || q->op == 0x28 || q->op == 0x29) {
+        if (q->op == 0x27 || q->op == 0x28 || q->op == 0x29 || q->op == 0x2a) {
             assert(q->out_buf_len == 12);
             assert(q->op == 0x29 ? q->in_buf_len == 20 || q->in_buf_len == 40
-                                 : q->in_buf_len == (q->op == 0x27 ? 8u : 24u));
+                                 : q->in_buf_len == (q->op == 0x28 ? 24u : 8u));
             const uint32_t *input = allocation_for(q->in_buf_ptr, q->in_buf_len);
             uint32_t *reply = allocation_for(q->out_buf_ptr, 12);
             unsigned failure = image_mutation_failure;
@@ -2233,6 +2233,35 @@ int main(int argc, char **argv) {
         assert(closes == 1);
         assert(eglTerminate(dpy) && allocation_count() == 0);
         printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-framebuffer-bind-reject")) {
+        GLuint name = 17, framebuffers[2];
+        EGLImageKHR img = image(dpy);
+        glGenFramebuffers(2, framebuffers);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[0]);
+        glBindTexture(GL_TEXTURE_2D, name);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, name, 0);
+        assert(eglDestroyImageKHR(dpy, img) && closes == 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[1]);
+        glDeleteTextures(1, &name);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[0]);
+        glFlush();
+        image_mutation_failure = 2;
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[1]);
+        glFlush();
+        assert(glGetError() == GL_OUT_OF_MEMORY && closes == 0);
+        // Accepted detachment must retire the old bound container's image,
+        // not the numeric container whose native selection was rejected.
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+        assert(glGetError() == GL_NO_ERROR && closes == 1);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[1]);
+        assert(glGetError() == GL_NO_ERROR);
+        glDeleteFramebuffers(2, framebuffers);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-framebuffer-bind-reject");
         return 0;
     }
     if (!strcmp(argv[1], "image-owned-storage-reject")) {

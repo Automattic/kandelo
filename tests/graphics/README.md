@@ -303,3 +303,14 @@ C replay carries checked allocation/attachment/deletion through both renderer
 routes. These are focused source checks, with synthetic kernel plumbing;
 public C sharing, guest marshalling and complete context-loss recovery remain
 separate requirements.
+
+
+The framebuffer-bind regression rejects native selection, then detaches the
+old retained image. C must select the same container as the renderer and
+release the final image hold on accepted detachment. Its queued-path rejection
+also runs against the preceding source revision. Host cases cover exact
+binding spans, candidate creation/metadata failure, native bind rejection,
+separate read/draw default rollback and queued/query parity. The source GPU
+driver checks preserved pixels after failed native creation/binding and a
+successful retry; public C record replay carries accepted binds through both
+renderer routes. Indeterminate/context-loss reconciliation remains open.

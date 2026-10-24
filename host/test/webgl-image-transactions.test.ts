@@ -61,6 +61,7 @@ class ImageTransactionsGl {
     else
       points.delete(point);
   }
+  createFramebuffer() { return this.before("create-framebuffer") ? {} : null; }
   deleteFramebuffer(value: object) {
     if (this.before("delete-framebuffer"))
       this.deleted.push(value);
@@ -283,10 +284,14 @@ for (const kind of [1, 2]) {
     const sizes = new Map<object, number>();
     sizes.set(old, 7);
     Object.assign(gl, {
-      texImage2D: (_target: number, _level: number, _format: number, width: number) => { if (gl.before("storage"))
-        sizes.set(gl.textures.get(gl.active)!, width); },
-      renderbufferStorage: (_target: number, _format: number, width: number) => { if (gl.before("storage"))
-        sizes.set(gl.renderbuffer!, width); },
+      texImage2D: (_target: number, _level: number, _format: number, width: number) => {
+        if (gl.before("storage"))
+          sizes.set(gl.textures.get(gl.active)!, width);
+      },
+      renderbufferStorage: (_target: number, _format: number, width: number) => {
+        if (gl.before("storage"))
+          sizes.set(gl.renderbuffer!, width);
+      },
     });
     const op = kind === 1 ? O.OP_TEX_IMAGE_2D : O.OP_RENDERBUFFER_STORAGE;
     const words = kind === 1 ? [TEX, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0] : [RBO, 0x8056, 1, 1];
@@ -303,3 +308,81 @@ for (const kind of [1, 2]) {
     expect(sizes.get(old)).toBe(1);
   });
 }
+it("checks exact framebuffer bind spans and selectors before native allocation", () => {
+  const { b, gl, query } = setup();
+  for (const [inputSize, replySize] of [[4, 12], [12, 12], [8, 8], [8, 16]]) {
+    const out = new Uint8Array(replySize).fill(0xa5);
+    expect(runGlQuery(b, O.QOP_BIND_FRAMEBUFFER, new Uint8Array(inputSize), out)).toBe(-22);
+    expect([...out]).toEqual(Array(replySize).fill(0xa5));
+  }
+  expect(query(O.QOP_BIND_FRAMEBUFFER, [0xdead, 72])).toEqual([1, 0]);
+  expect(gl.calls).toEqual([]);
+  expect(b.errors).toEqual([0x500]);
+});
+it("preserves framebuffer selection on native creation/bind failure and accepts a clean retry", () => {
+  const { b, gl, framebuffer, query } = setup();
+  for (const failure of ["create-framebuffer", "framebuffer"]) {
+    gl.reject = failure;
+    expect(query(O.QOP_BIND_FRAMEBUFFER, [FBO, 72])).toEqual([1, 0]);
+    expect(b.fbos.has(72)).toBe(false);
+    expect(b.shadow.fbo).toBe(framebuffer);
+    expect(b.shadow.readFbo).toBe(framebuffer);
+    expect(gl.draw).toBe(framebuffer);
+    expect(gl.read).toBe(framebuffer);
+  }
+  expect(gl.deleted).toHaveLength(1);
+  expect(query(O.QOP_BIND_FRAMEBUFFER, [FBO, 72])).toEqual([0, 1]);
+  expect(b.fbos.get(72)).toBe(gl.draw);
+  expect(b.shadow.fbo).toBe(gl.draw);
+  expect(gl.read).toBe(gl.draw);
+});
+it("cleans a framebuffer candidate when namespace metadata allocation fails", () => {
+  const { b, gl, framebuffer, query } = setup(), set = b.fbos.set;
+  b.fbos.set = () => { throw new RangeError("namespace allocation failed"); };
+  try {
+    expect(query(O.QOP_BIND_FRAMEBUFFER, [FBO, 72])).toEqual([1, 0]);
+  }
+  finally {
+    b.fbos.set = set;
+  }
+  expect(gl.calls).toEqual(["create-framebuffer", "delete-framebuffer"]);
+  expect(gl.deleted).toHaveLength(1);
+  expect(b.fbos.has(72)).toBe(false);
+  expect(b.shadow.fbo).toBe(framebuffer);
+  expect(gl.draw).toBe(framebuffer);
+});
+it("rolls back the first framebuffer default when selecting the second default fails", () => {
+  const { b, gl, framebuffer, query } = setup(), draw = {}, read = {};
+  b.drawSurface = { renderTargetFbo: draw } as any;
+  b.readSurface = { renderTargetFbo: read } as any;
+  const bind = gl.bindFramebuffer.bind(gl);
+  let inject = true;
+  gl.bindFramebuffer = (target, value) => { if (inject && target === READ) {
+    inject = false;
+    gl.reject = "framebuffer";
+  } bind(target, value); };
+  expect(query(O.QOP_BIND_FRAMEBUFFER, [FBO, 0])).toEqual([1, 0]);
+  expect(b.shadow.fbo).toBe(framebuffer);
+  expect(b.shadow.readFbo).toBe(framebuffer);
+  expect(gl.draw).toBe(framebuffer);
+  expect(gl.read).toBe(framebuffer);
+  expect(query(O.QOP_BIND_FRAMEBUFFER, [FBO, 0])).toEqual([0, 1]);
+  expect(b.shadow.fbo).toBe(draw);
+  expect(b.shadow.readFbo).toBe(read);
+  expect(gl.draw).toBe(draw);
+  expect(gl.read).toBe(read);
+});
+it("shares framebuffer bind realization and rollback between queued and checked routes", () => {
+  const { b, gl, framebuffer, query, queued } = setup();
+  gl.reject = "framebuffer";
+  queued(O.OP_BIND_FRAMEBUFFER, [FBO, 72]);
+  expect(b.fbos.has(72)).toBe(false);
+  expect(gl.draw).toBe(framebuffer);
+  expect(b.shadow.fbo).toBe(framebuffer);
+  queued(O.OP_BIND_FRAMEBUFFER, [FBO, 72]);
+  const accepted = b.fbos.get(72)!;
+  expect(accepted).toBe(gl.draw);
+  expect(query(O.QOP_BIND_FRAMEBUFFER, [READ, 71])).toEqual([0, 1]);
+  expect(b.shadow.fbo).toBe(accepted);
+  expect(b.shadow.readFbo).toBe(framebuffer);
+});

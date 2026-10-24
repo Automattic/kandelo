@@ -2080,11 +2080,11 @@ void glDeleteFramebuffers(GLsizei n, const GLuint *names) {
 
 void glBindFramebuffer(GLenum target, GLuint fb) {
     if (!_wpk_gl_current_encoder()) return;
-    if (target == GL_FRAMEBUFFER) g_bound_framebuffer = fb;
-    EMIT_BEGIN(OP_BIND_FRAMEBUFFER, 8)
-    w_u32(&_c, (uint32_t)target);
-    w_u32(&_c, fb);
-    EMIT_END()
+    uint32_t words[2] = {target, fb};
+    if (image_mutation_query(QOP_BIND_FRAMEBUFFER, words, 2) != 1)
+        return;
+    if (target == GL_FRAMEBUFFER)
+        g_bound_framebuffer = fb;
 }
 
 void glFramebufferTexture2D(GLenum target, GLenum attachment,

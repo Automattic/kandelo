@@ -67,6 +67,68 @@ export function attachImageObject(b: GlBinding, kind: number, target: number, po
   b.framebufferAttachments = containers;
   return true;
 }
+/** Realize a framebuffer only after staging namespace capacity. Logical zero
+ * can select distinct EGL draw/read storage and must roll back both selectors. */
+export function bindFramebufferObject(b: GlBinding, target: number, name: number): boolean {
+  if (!validFramebufferTarget(target)) {
+    recordGlError(b, 0x500);
+    return false;
+  }
+  const gl = b.gl;
+  if (!gl)
+    return false;
+  let object = name ? b.fbos.get(name) ?? null : defaultFramebuffer(b, target === 0x8ca8);
+  const allocate = name !== 0 && object === null;
+  let read = name === 0 && target === 0x8d40 ? defaultFramebuffer(b, true) : object;
+  let changes: NativeChange[];
+  try {
+    changes = [];
+    if (target === 0x8d40 && name === 0 && read !== object) {
+      changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, object)), restore: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, b.shadow.fbo)) });
+      changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, read)), restore: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, b.shadow.readFbo)) });
+    }
+    else {
+      changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(target, object)), restore: () => {
+          const drawRestored = target === 0x8ca8 || checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, b.shadow.fbo));
+          const readRestored = target === 0x8ca9 || checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, b.shadow.readFbo));
+          return drawRestored && readRestored;
+        } });
+    }
+  }
+  catch {
+    recordGlError(b, 0x505);
+    return false;
+  }
+  if (allocate) {
+    if (!checkedGlCall(b, () => { object = gl.createFramebuffer(); }) || !object) {
+      if (object)
+        checkedGlCall(b, () => gl.deleteFramebuffer(object));
+      recordGlError(b, 0x505);
+      return false;
+    }
+    read = object;
+    try {
+      b.fbos.set(name, object);
+    }
+    catch {
+      checkedGlCall(b, () => gl.deleteFramebuffer(object));
+      recordGlError(b, 0x505);
+      return false;
+    }
+  }
+  if (!applyImageChanges(b, changes)) {
+    if (allocate) {
+      b.fbos.delete(name);
+      checkedGlCall(b, () => gl.deleteFramebuffer(object));
+    }
+    return false;
+  }
+  if (target !== 0x8ca8)
+    b.shadow.fbo = object;
+  if (target !== 0x8ca9)
+    b.shadow.readFbo = read;
+  return true;
+}
 type NativeChange = {
   apply: () => boolean;
   restore: () => boolean;

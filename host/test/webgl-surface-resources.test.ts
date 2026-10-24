@@ -147,16 +147,20 @@ it("restores separate EGL draw/read defaults when framebuffer zero is rebound", 
   expect(gl.bindFramebuffer).toHaveBeenCalledWith(0x8ca9,a.presentTarget!.fbo);
   expect(gl.bindFramebuffer).toHaveBeenLastCalledWith(0x8ca8,b.presentTarget!.fbo);
   send(99);
-  let error = 0;
+  let error = 0, rejectRead = true;
+  let nativeDraw: WebGLFramebuffer | null = user, nativeRead: WebGLFramebuffer | null = user;
   gl.getError = () => { const value = error; error = 0; return value; };
   gl.bindFramebuffer.mockImplementation((target: number, fbo: WebGLFramebuffer | null) => {
-    if (target === 0x8ca8 && fbo === b.presentTarget!.fbo) error = 0x502;
+    if (rejectRead && target === 0x8ca8 && fbo === b.presentTarget!.fbo) { error = 0x502; return; }
+    if (target !== 0x8ca8) nativeDraw = fbo;
+    if (target !== 0x8ca9) nativeRead = fbo;
   });
   send(0);
   expect(c.errors).toContain(0x502);
   expect(c.shadow.fbo).toBe(user); expect(c.shadow.readFbo).toBe(user);
-  expect(gl.bindFramebuffer).toHaveBeenLastCalledWith(0x8ca8,user);
-  gl.bindFramebuffer.mockReset(); send(0);
+  expect(nativeDraw).toBe(user); expect(nativeRead).toBe(user);
+  rejectRead = false; gl.bindFramebuffer.mockClear(); send(0);
   expect(c.shadow.fbo).toBe(a.presentTarget!.fbo); expect(c.shadow.readFbo).toBe(b.presentTarget!.fbo);
+  expect(nativeDraw).toBe(a.presentTarget!.fbo); expect(nativeRead).toBe(b.presentTarget!.fbo);
   reg.unbind(1);
 });
