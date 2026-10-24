@@ -69,7 +69,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. Creation/bind failure preserves prior state. Multiple public EGL contexts, sharing, display generations and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. Creation/bind failure preserves prior state. Multiple public EGL contexts, sharing, overlapping display generations and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Pbuffer always fails; several core symbols absent; GBM sizing exists | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/alias/FBO references now retain GEM storage; CPU coherence and complete object semantics remain open | EGL, GLES alias model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | open |
@@ -1536,3 +1536,67 @@ families still need implementation and validation. Snapshot verification
 compiled the focused kernel component; normal full SDK/archive/program/
 package/image provisioning, guest CTS, cage/sway, full browser-memory and
 POSIX validation remain deferred. Performance was not measured.
+
+### Revocable display roots and object sessions (ABI 56)
+
+Display initialization now creates a kernel-owned generation root and
+joins a separate object open description to it. The 16-byte input/output
+`GlInitInfo` carries operation version, role, display fd and generation.
+Only a live same-process display root with the matching generation can
+authorize a join. Root descriptors may be duplicated; authority ends on
+explicit termination or final close. Reusing an fd for a fresh root does
+not authorize old children or stale joins.
+
+Roots cannot map command memory or create contexts/surfaces and never
+allocate a host renderer. Context/surface creation and positive binding
+require live root authority. Already-current children retain submit and
+query access after revocation, then release and destroy normally. Root
+cleanup sends no renderer unbind; object cleanup retains its exact
+session identity. The same kernel authority applies to Node and browser
+hosts.
+
+The actual EGL library opens both descriptions with close-on-exec,
+publishes initialization only after joining and mapping succeed, and
+closes both on rollback. Termination revokes the root before its existing
+deferred object retirement. The public facade still allows one context
+and surface and still refuses reinitialization while an old current
+generation is retained. Public sharing, independent draw/read surfaces
+and overlapping display generations remain ordinary E02/E03 gaps.
+
+New kernel regressions cover roles, owner/generation mismatch, unchanged
+failed initialization output, root mapping/object rejection, revocation
+while current, submit/query retention, fd reuse and final duplicate close.
+The new native initialization rollback case fails against exact HEAD
+`2fcfc70c1f` while its other 59 cases pass:
+`.context/graphics-display-authority-baseline-native.log`.
+
+Focused source validation (2026-10-23):
+
+| Check | Result | Evidence |
+|---|---|---|
+| Native actual EGL/GLES with device double and UBSan | 60 passed | `.context/graphics-display-authority-native.log` |
+| Kernel graphics and shared GL contracts | 20 GLIO and 5 shared cases passed | `.context/graphics-display-authority-verified-rust.log` |
+| Kernel graphics lifecycle, DRI and ioctl contracts | 4 GL lifecycle, 50 DRI and 12 shared ioctl cases passed; filters overlap other focused checks | `.context/graphics-display-authority-lifecycle-rust.log` |
+| Host graphics source gate and Node/browser declarations | 359 cases in 18 files; declarations passed | `.context/graphics-display-authority-host.log` |
+| Real Chromium/Firefox/WebKit source WebGL | 87 passed, no skips | `.context/graphics-display-authority-browser.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed | `.context/graphics-display-authority-memory-boundary.log` |
+| Private wasm32 EGL/GLES objects and paired relocatable link | Passed | `.context/graphics-display-authority-wasm.log` |
+| Public authority and core resolver inventory | All 150 public definitions guarded; 142/142 core symbols defined/resolved | `.context/graphics-display-authority-audit.log` |
+| ABI 56 generation and source consistency | Passed; initialization InOut16 and struct offsets recorded | `.context/graphics-display-authority-abi56-update.log`, `.context/graphics-display-authority-abi56-check.log` |
+| Standalone resolver regeneration and checks | Passed | `.context/graphics-display-authority-resolver56.log` |
+
+Graphics operation version remains 5. Global ABI 56 is incompatible with
+prior initialization and requires normal artifact rebuilding. No SDK
+archive, program, package or image was restamped or rebuilt here. Browser
+source rendering and native device doubles do not execute this new
+handshake through guest Wasm/kernel marshalling. Guest CTS, cage/sway,
+full browser-memory and required POSIX/conformance gates remain deferred
+until the combined implementation and normal artifacts are ready.
+
+Next implementation is the public C generation/context/share-group model,
+kernel-owned independent surface identities and cross-session draw/read
+routing, and host surface-owned targets with acknowledged publication.
+Device/context-loss propagation after indeterminate replies, fixed C
+attribute/texture-unit mirrors, EGLImage sibling sampler/storage identity,
+remaining EGL 1.5 APIs and the other inventory rows remain open. This
+authority foundation does not close an API family.

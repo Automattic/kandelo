@@ -233,7 +233,10 @@ pub mod process_layout;
 ///     the kernel enforces current ownership by its validated caller TID.
 ///     The host acknowledges a bind before ownership changes.
 ///     UpdateSurface atomically replaces a native window's GPU target.
-pub const ABI_VERSION: u32 = 55;
+/// 56: GL initialization separates display-generation authority from object
+///     sessions through a 16-byte InOut GlInitInfo handshake. Revocation
+///     prevents new objects/bindings while current resources remain usable.
+pub const ABI_VERSION: u32 = 56;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -5179,9 +5182,7 @@ pub mod gl {
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
-    // GLIO_INIT takes a pointer to a `u32` carrying the client's required
-    // op-table version. Additions preserve all earlier tags and payloads,
-    // so older clients remain valid. Zero and newer versions fail ENOSYS.
+    // GLIO_INIT creates a display generation or joins a live display OFD.
     pub const GLIO_INIT: u32 = 0x40;
     pub const GLIO_TERMINATE: u32 = 0x41;
     pub const GLIO_CREATE_CONTEXT: u32 = 0x42;
@@ -5193,6 +5194,9 @@ pub mod gl {
     pub const GLIO_PRESENT: u32 = 0x48;
     pub const GLIO_QUERY: u32 = 0x49;
     pub const GLIO_UPDATE_SURFACE: u32 = 0x4A;
+
+    pub const SESSION_DISPLAY: u32 = 1;
+    pub const SESSION_OBJECTS: u32 = 2;
 
     // --- surface kind tags -------------------------------------------------
 
@@ -5387,6 +5391,17 @@ pub mod gl {
     pub const QOP_SHADER_SOURCE_UPLOAD: u32 = 0x001E;
 
     // --- marshalled ioctl argument structs ---------------------------------
+
+    /// ABI 56 initialization. A display uses fd=-1/id=0 and receives its
+    /// generation. An object session names a live display fd/generation.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlInitInfo {
+        pub op_version: u32,
+        pub role: u32,
+        pub display_fd: i32,
+        pub display_id: u32,
+    }
 
     /// Argument to `GLIO_SUBMIT`. Total: 8 bytes.
     #[repr(C)]
@@ -6942,6 +6957,7 @@ mod gl_tests {
 
     #[test]
     fn struct_sizes_match_abi() {
+        assert_eq!(size_of::<GlInitInfo>(), 16);
         assert_eq!(size_of::<GlSubmitInfo>(), 8);
         assert_eq!(size_of::<GlContextAttrs>(), 16);
         assert_eq!(size_of::<GlSurfaceAttrs>(), 32);

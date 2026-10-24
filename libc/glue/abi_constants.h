@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 /* Mirrors wasm_posix_shared::ABI_VERSION. */
-#define WASM_POSIX_ABI_VERSION 55u
+#define WASM_POSIX_ABI_VERSION 56u
 
 /* Non-forking spawn syscall number. */
 #define WASM_POSIX_SYS_SPAWN 500u
@@ -83,8 +83,8 @@ wasm_posix_ioctl_arg_size(uint32_t request, uint32_t pointer_width)
 {
 switch (request) {
              case 0x00000040u:
-return pointer_width == 4u ? 4u :
-pointer_width == 8u ? 4u :
+return pointer_width == 4u ? 16u :
+pointer_width == 8u ? 16u :
 WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
              case 0x00000041u:
 return pointer_width == 4u ? 0u :

@@ -1,5 +1,5 @@
 {
-  "abi_version": 55,
+  "abi_version": 56,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1164,7 +1164,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 55,
+      "abi_version": 56,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -2219,9 +2219,9 @@
     },
     "64": {
       "argKind": "pointer",
-      "direction": "in",
-      "wasm32Size": 4,
-      "wasm64Size": 4
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
     },
     "65": {
       "argKind": "none",
@@ -3889,6 +3889,31 @@
         },
         {
           "name": "context_id",
+          "offset": 12,
+          "span": 4
+        }
+      ],
+      "size": 16
+    },
+    "GlInitInfo": {
+      "fields": [
+        {
+          "name": "op_version",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "role",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "display_fd",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "display_id",
           "offset": 12,
           "span": 4
         }

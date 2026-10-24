@@ -5449,7 +5449,7 @@ fn marshalled_structs() -> Value {
         WpkDrmVersion, WpkDrmWaitVblankReply, WpkDrmWaitVblankRequest,
     };
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
-    use shared::gl::{GlContextAttrs, GlMakeCurrent, GlQueryInfo, GlSubmitInfo, GlSurfaceAttrs};
+    use shared::gl::{GlContextAttrs, GlInitInfo, GlMakeCurrent, GlQueryInfo, GlSubmitInfo, GlSurfaceAttrs};
     use shared::oss::{AudioBufInfo, CountInfo};
     use shared::pcm::PcmSharedControl;
     use shared::{
@@ -5693,6 +5693,10 @@ fn marshalled_structs() -> Value {
             reserved,
             _pad_to_80,
         }),
+    );
+    structs.insert(
+        "GlInitInfo".into(),
+        struct_layout!(GlInitInfo { op_version, role, display_fd, display_id }),
     );
     structs.insert(
         "GlSubmitInfo".into(),

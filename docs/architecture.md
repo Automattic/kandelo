@@ -3846,6 +3846,14 @@ context on late delivery. EGL exposes backend allocation failure as
 `EGL_NO_CONTEXT` and `EGL_BAD_ALLOC`. A Node host without a rendering
 backend follows the same failure path as a browser without a usable context.
 Each GL open description has a distinct kernel-issued session identity.
+Initialization distinguishes display roots from object sessions. A root
+returns a fresh generation identity; an object session must join a live
+same-process root using its descriptor and generation. Duplicated root
+descriptors retain authority until the last alias closes. Revocation or
+final close prevents new contexts, surfaces and positive binds, while
+already-current children retain submit/query/release/destruction paths.
+Descriptor reuse cannot revive an old generation. Roots have no command
+mapping or renderer and therefore send no renderer unbind on cleanup.
 Command buffers, native object maps, shadow state, queries, forwarding and
 retirement are selected by process plus session. Process-only registry
 lookups refuse ambiguity. Closing or unmapping one session leaves sibling

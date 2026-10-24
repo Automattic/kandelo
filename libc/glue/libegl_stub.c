@@ -2,12 +2,13 @@
  * libEGL stub for wasm-posix-kernel.
  *
  * Drives session setup against /dev/dri/renderD128: GLIO_INIT (with
- * OP_VERSION handshake), GLIO_CREATE_CONTEXT, GLIO_CREATE_SURFACE,
- * GLIO_MAKE_CURRENT. Mmap of the cmdbuf is what makes the libGLESv2
+ * OP_VERSION and display-generation handshake), GLIO_CREATE_CONTEXT,
+ * GLIO_CREATE_SURFACE, GLIO_MAKE_CURRENT. Mmap of the cmdbuf makes the libGLESv2
  * encoder work — flushing without a base/cursor is a no-op.
  *
- * The display/session is shared; errors, API selection and current bindings
- * belong to threads. The backend still admits one context and surface;
+ * A display root authorizes a separate object session; errors, API selection
+ * and current bindings belong to threads. This facade still admits one
+ * context and surface;
  * multi-context/share-group routing is tracked in the compatibility ledger.
  * libGLESv2 uses the accessor functions in gl_abi.h at link time.
  */
@@ -38,6 +39,8 @@ void glEGLImageTargetRenderbufferStorageOES(GLenum target, void *image);
 static void retire_imported_images(void);
 
 static int      g_fd            = -1;
+static int      g_display_fd    = -1;
+static uint32_t g_display_generation;
 static uint8_t *g_cmdbuf_base   = NULL;
 /* EGL error and bound client API are thread state, independently of the
  * display and its shared context/surface objects (EGL 1.5 sections 3.7/3.12). */
@@ -204,22 +207,28 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
      * session expansion is tracked with multi-context support in E02. */
     if (g_terminate_pending) { g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE; }
 
-    int fd = open(WPK_GL_DEVICE, O_RDWR);
-    if (fd < 0) {
+    int display_fd = open(WPK_GL_DEVICE, O_RDWR | O_CLOEXEC);
+    if (display_fd < 0) {
         fprintf(stderr, "eglInitialize: open(%s) failed: errno=%d\n",
                 WPK_GL_DEVICE, errno);
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_FALSE;
     }
 
-    uint32_t op_version = WPK_GL_OP_VERSION;
-    if (ioctl(fd, GLIO_INIT, &op_version) != 0) {
+    struct gl_init_info root = {WPK_GL_OP_VERSION,WPK_GL_SESSION_DISPLAY,-1,0};
+    if (ioctl(display_fd, GLIO_INIT, &root) != 0) {
         fprintf(stderr,
                 "eglInitialize: GLIO_INIT(op_version=%u) failed: errno=%d\n",
                 (unsigned)WPK_GL_OP_VERSION, errno);
-        close(fd);
+        close(display_fd);
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_FALSE;
+    }
+    int fd = open(WPK_GL_DEVICE, O_RDWR | O_CLOEXEC);
+    struct gl_init_info object = {WPK_GL_OP_VERSION,WPK_GL_SESSION_OBJECTS,display_fd,root.display_id};
+    if (fd < 0 || ioctl(fd,GLIO_INIT,&object) != 0) {
+        if (fd >= 0) close(fd);
+        close(display_fd); g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE;
     }
 
     // Map the cmdbuf here, not in eglMakeCurrent, so the host's
@@ -235,12 +244,15 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
                 "eglInitialize: cmdbuf mmap(len=%u) failed: errno=%d\n",
                 (unsigned)WPK_GL_CMDBUF_LEN, errno);
         close(fd);
+        close(display_fd);
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_FALSE;
     }
     g_cmdbuf_base = (uint8_t *)p;
 
     g_fd = fd;
+    g_display_fd = display_fd;
+    g_display_generation = root.display_id;
     g_initialized = 1;
     if (major) *major = 1;
     if (minor) *minor = 5;
@@ -709,6 +721,8 @@ static void retire_pending_resources_locked(void) {
         }
         close(g_fd);
         g_fd = -1;
+        if (g_display_fd >= 0) close(g_display_fd);
+        g_display_fd = -1; g_display_generation = 0;
         g_terminate_pending = 0;
     }
 }
@@ -718,6 +732,10 @@ EGLBoolean eglTerminate(EGLDisplay dpy) {
     EGLBoolean result = EGL_FALSE;
     if (dpy != EGL_DPY_HANDLE) g_last_error = EGL_BAD_DISPLAY;
     else {
+        if (g_initialized && g_display_fd >= 0 && ioctl(g_display_fd,GLIO_TERMINATE,NULL) != 0) {
+            g_last_error = EGL_BAD_ACCESS;
+            pthread_mutex_unlock(&g_context_mutex); return EGL_FALSE;
+        }
         g_initialized = 0;
         if (g_fd >= 0) {
             g_terminate_pending = 1;

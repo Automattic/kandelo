@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The fifty-nine current cases cover image siblings and retained framebuffer storage,
+The sixty current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -76,7 +76,11 @@ single ownership of backend GL errors, and bound byte/short index buffers
 combined with client attributes (including failed-query cleanup/retry),
 chunked shader/attribute/list queries with zero-sized outputs, failure
 after a successful first chunk, core parameter queries and retained
-EGLImage renderbuffer query identities.
+EGLImage renderbuffer query identities, and rollback of both display-root
+and object descriptors after a failed display-generation join. That case
+checks unchanged output arguments, clean retry and root revocation. The
+device double checks the actual initialization structs; guest kernel ioctl
+marshalling still requires the normal rebuilt-artifact tests.
 Native query
 tests resolve the library's recorded heap allocation explicitly because the
 guest wire format uses u32 pointers. They do not execute guest marshalling or
@@ -87,7 +91,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation still runs all 59 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation still runs all 60 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.

@@ -203,6 +203,10 @@ pub struct GlCurrentState {
 pub struct GlState {
     pub session_id: u32,
     pub owner_pid: i32,
+    /// Display root or object session; display_id is the root's globally
+    /// fresh session identity, independent of fd/OFD slot reuse.
+    pub role: u32,
+    pub display_id: u32,
     pub initialized: bool,
     pub context_id: Option<u32>,
     pub surface_id: Option<u32>,

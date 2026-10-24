@@ -300,7 +300,7 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
 /// `SIOCGIF*` constants for the buffer it nests.
 pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // Kandelo GLES requests use small private request numbers.
-    pointer!(crate::gl::GLIO_INIT, In, 4),
+    pointer!(crate::gl::GLIO_INIT, InOut, 16),
     no_arg!(crate::gl::GLIO_TERMINATE),
     pointer!(crate::gl::GLIO_CREATE_CONTEXT, InOut, 16),
     no_arg!(crate::gl::GLIO_DESTROY_CONTEXT),

@@ -71,6 +71,9 @@ int _wpk_gbm_surface_dimensions(const void *window, uint32_t *w, uint32_t *h) {
 }
 
 static unsigned closes, imports;
+static unsigned display_opens, display_closes, object_closes;
+static uint32_t display_generation = 91;
+static int display_live, fail_display_join;
 static uint32_t bound_texture, redefined_texture;
 static unsigned char command_storage[2][WPK_GL_CMDBUF_LEN];
 static unsigned char *commands;
@@ -114,9 +117,19 @@ static unsigned captured_chunks;
 int graphics_open(const char *path, int flags, ...) {
     (void)flags;
     assert(!strcmp(path, WPK_GL_DEVICE));
+#ifdef WPK_GL_SESSION_DISPLAY
+    return display_opens++ % 2 == 0 ? 20 : 10;
+#else
     return 10;
+#endif
 }
-int graphics_close(int fd) { assert(fd == 10); return 0; }
+int graphics_close(int fd) {
+#ifdef WPK_GL_SESSION_DISPLAY
+    if (fd == 20) { display_closes++; display_live = 0; return 0; }
+    object_closes++;
+#endif
+    assert(fd == 10); return 0;
+}
 int graphics_fstat(int fd, struct stat *st) {
     assert(fd == 100);
     memset(st, 0, sizeof *st);
@@ -139,9 +152,24 @@ int graphics_munmap(void *a, size_t len) {
     return 0;
 }
 int graphics_ioctl(int fd, unsigned long request, ...) {
-    assert(fd == 10);
     va_list args; va_start(args, request);
     void *arg = va_arg(args, void *); va_end(args);
+#ifdef WPK_GL_SESSION_DISPLAY
+    if (request == GLIO_INIT) {
+        struct gl_init_info *info = arg;
+        assert(info->op_version == WPK_GL_OP_VERSION);
+        if (fd == 20) {
+            assert(info->role == WPK_GL_SESSION_DISPLAY && info->display_fd == -1 && !info->display_id);
+            display_live = 1; info->display_id = ++display_generation;
+        } else {
+            assert(fd == 10 && info->role == WPK_GL_SESSION_OBJECTS && info->display_fd == 20 && info->display_id == display_generation && display_live);
+            if (fail_display_join) { errno = ENOMEM; return -1; }
+        }
+        return 0;
+    }
+    if (fd == 20) { assert(request == GLIO_TERMINATE && display_live); display_live = 0; return 0; }
+#endif
+    assert(fd == 10);
     if (request == 0xc00c642eu) {
         uint32_t *words = arg;
         assert(words[2] == 100);
@@ -418,6 +446,15 @@ int main(int argc, char **argv) {
         EGLint value = 17;
         assert(!eglGetConfigAttrib(dpy, (EGLConfig)1, EGL_RED_SIZE, &value));
         assert(eglGetError() == EGL_NOT_INITIALIZED && value == 17);
+    }
+    if (!strcmp(argv[1], "display-join-rollback")) {
+        fail_display_join = 1; EGLint major = 17, minor = 18;
+        assert(!eglInitialize(dpy,&major,&minor)); assert(eglGetError() == EGL_NOT_INITIALIZED);
+        assert(major == 17 && minor == 18 && display_closes == 1 && object_closes == 1);
+        fail_display_join = 0; assert(eglInitialize(dpy,&major,&minor));
+        assert(major == 1 && minor == 5 && display_live);
+        assert(eglTerminate(dpy) && !display_live && display_closes == 2 && object_closes == 2);
+        puts("PASS display-join-rollback"); return 0;
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };

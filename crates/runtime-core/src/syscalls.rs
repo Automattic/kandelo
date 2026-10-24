@@ -866,6 +866,20 @@ fn require_gl_current(proc: &Process, ofd_idx: usize) -> Result<(), Errno> {
     }
 }
 
+/// A root may be closed/revoked while a current child retains its resources.
+/// Only creation and new bindings require live display authority; submit,
+/// query and release continue to use the child's current ownership.
+fn require_gl_display_live(proc: &Process, ofd_idx: usize) -> Result<(), Errno> {
+    use wasm_posix_shared::gl;
+    let object = dri_state(proc, ofd_idx)?.gl.as_ref().ok_or(Errno::EINVAL)?;
+    if !object.initialized || object.role != gl::SESSION_OBJECTS { return Err(Errno::EINVAL); }
+    let live = proc.ofd_table.iter().any(|(_, ofd)| ofd.dri().and_then(|dri| dri.gl.as_ref()).is_some_and(|root| {
+        root.owner_pid == proc.pid as i32 && root.initialized && root.role == gl::SESSION_DISPLAY
+            && root.display_id == object.display_id
+    }));
+    if live { Ok(()) } else { Err(Errno::EINVAL) }
+}
+
 fn release_gl_current_for_tid(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -942,7 +956,7 @@ fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
         let Some(dri) = ofd.dri_mut() else { continue };
         if dri.gl.as_ref().is_some_and(|gl| gl.owner_pid == pid) {
             let gl = dri.gl.take().unwrap();
-            host.gl_unbind(pid, gl.session_id);
+            if gl.role == wasm_posix_shared::gl::SESSION_OBJECTS { host.gl_unbind(pid, gl.session_id); }
         }
     }
 }
@@ -1638,23 +1652,30 @@ fn handle_dri_ioctl(
         // sys_mmap renderD128 block when offset==0; everything below is
         // pure state-machine + host bridge forwarding.
         gl::GLIO_INIT => {
-            if buf.len() < 4 {
-                return Err(Errno::EINVAL);
+            if buf.len() < core::mem::size_of::<gl::GlInitInfo>() { return Err(Errno::EINVAL); }
+            let mut info: gl::GlInitInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if info.op_version == 0 || info.op_version > gl::OP_VERSION { return Err(Errno::ENOSYS); }
+            if dri_state(proc, ofd_idx)?.gl.is_some() { return Err(Errno::EBUSY); }
+            match info.role {
+                gl::SESSION_DISPLAY => {
+                    if info.display_fd != -1 || info.display_id != 0 { return Err(Errno::EINVAL); }
+                }
+                gl::SESSION_OBJECTS => {
+                    let root_ofd = proc.fd_table.get(info.display_fd)?.ofd_ref.0;
+                    let root = dri_state(proc, root_ofd)?.gl.as_ref().ok_or(Errno::EINVAL)?;
+                    if root.owner_pid != pid { return Err(Errno::EACCES); }
+                    if !root.initialized || root.role != gl::SESSION_DISPLAY || info.display_id == 0
+                        || root.display_id != info.display_id { return Err(Errno::EINVAL); }
+                }
+                _ => return Err(Errno::EINVAL),
             }
-            let client_version = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-            if client_version == 0 || client_version > gl::OP_VERSION {
-                return Err(Errno::ENOSYS);
-            }
-            let dri = dri_state_mut(proc, ofd_idx)?;
-            if dri.gl.is_some() {
-                return Err(Errno::EBUSY);
-            }
-            dri.gl = Some(crate::ofd::GlState {
-                session_id: crate::ofd::allocate_gl_id()?,
-                owner_pid: pid,
-                initialized: true,
-                ..Default::default()
+            let session_id = crate::ofd::allocate_gl_id()?;
+            if info.role == gl::SESSION_DISPLAY { info.display_id = session_id; }
+            dri_state_mut(proc, ofd_idx)?.gl = Some(crate::ofd::GlState {
+                session_id, owner_pid: pid, initialized: true,
+                role: info.role, display_id: info.display_id, ..Default::default()
             });
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, info); }
             Ok(())
         }
         gl::GLIO_TERMINATE => {
@@ -1663,10 +1684,11 @@ fn handle_dri_ioctl(
                 return Err(Errno::EBUSY);
             }
             let gl = dri.gl.take().ok_or(Errno::EINVAL)?;
-            host.gl_unbind(pid, gl.session_id);
+            if gl.role == gl::SESSION_OBJECTS { host.gl_unbind(pid, gl.session_id); }
             Ok(())
         }
         gl::GLIO_CREATE_CONTEXT => {
+            require_gl_display_live(proc, ofd_idx)?;
             if buf.len() < core::mem::size_of::<gl::GlContextAttrs>() {
                 return Err(Errno::EINVAL);
             }
@@ -1725,6 +1747,7 @@ fn handle_dri_ioctl(
             Ok(())
         }
         gl::GLIO_CREATE_SURFACE => {
+            require_gl_display_live(proc, ofd_idx)?;
             let attrs_size = core::mem::size_of::<gl::GlSurfaceAttrs>();
             if buf.len() < attrs_size {
                 return Err(Errno::EINVAL);
@@ -1829,6 +1852,7 @@ fn handle_dri_ioctl(
                 release_gl_current_for_tid(proc, host, tid, None);
                 return Ok(());
             }
+            require_gl_display_live(proc, ofd_idx)?;
             let session_id;
             {
                 let gls = dri_state(proc, ofd_idx)?.gl.as_ref().ok_or(Errno::EINVAL)?;
@@ -2857,7 +2881,9 @@ pub fn collect_dri_release_effects(
         }
         crate::ofd::DriOfdState::RenderNode(dri) => {
             if let Some(gl) = dri.gl {
-                effects.push(DriReleaseEffect::UnbindGl { owner_pid: gl.owner_pid, session_id: gl.session_id });
+                if gl.role == wasm_posix_shared::gl::SESSION_OBJECTS {
+                    effects.push(DriReleaseEffect::UnbindGl { owner_pid: gl.owner_pid, session_id: gl.session_id });
+                }
             }
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(&mut effects, bo_id);
@@ -2878,7 +2904,9 @@ pub fn collect_dri_release_effects(
                 effects.push(DriReleaseEffect::DropMaster);
             }
             if let Some(gl) = dri.gl {
-                effects.push(DriReleaseEffect::UnbindGl { owner_pid: gl.owner_pid, session_id: gl.session_id });
+                if gl.role == wasm_posix_shared::gl::SESSION_OBJECTS {
+                    effects.push(DriReleaseEffect::UnbindGl { owner_pid: gl.owner_pid, session_id: gl.session_id });
+                }
             }
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(&mut effects, bo_id);
@@ -12070,7 +12098,7 @@ pub fn sys_mmap(
                 && ofd
                     .dri()
                     .and_then(|d| d.gl.as_ref())
-                    .map(|g| g.owner_pid == proc.pid as i32 && g.initialized && g.cmdbuf.is_none())
+                    .map(|g| g.owner_pid == proc.pid as i32 && g.initialized && g.role == wasm_posix_shared::gl::SESSION_OBJECTS && g.cmdbuf.is_none())
                     .unwrap_or(false);
             if needs_cmdbuf {
                 if len != wasm_posix_shared::gl::CMDBUF_LEN {
@@ -23256,6 +23284,7 @@ mod tests {
         gl_unbind_calls: Vec<i32>,
         gl_unbind_sessions: Vec<u32>,
         gl_submit_sessions: Vec<u32>,
+        gl_query_sessions: Vec<u32>,
         gl_create_context_sessions: Vec<u32>,
         gl_bind_sessions: Vec<u32>,
         proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
@@ -23417,6 +23446,7 @@ mod tests {
                 gl_unbind_calls: Vec::new(),
                 gl_unbind_sessions: Vec::new(),
                 gl_submit_sessions: Vec::new(),
+                gl_query_sessions: Vec::new(),
                 gl_create_context_sessions: Vec::new(),
                 gl_bind_sessions: Vec::new(),
                 proc_write_calls: Vec::new(),
@@ -24298,6 +24328,9 @@ mod tests {
         fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize, session_id: u32) -> i32 {
             self.gl_submit_sessions.push(session_id);
             self.gl_submit_rc
+        }
+        fn gl_query(&mut self, _pid: i32, _op: u32, _input: &[u8], out: &mut [u8], session_id: u32) -> i32 {
+            self.gl_query_sessions.push(session_id); out.fill(0); out.len() as i32
         }
         fn gl_update_surface(&mut self, _pid: i32, surface: u32, attrs: &[u8], session: u32) -> i32 {
             self.gl_update_surface_calls.push((surface, attrs.to_vec(), session));
@@ -51984,6 +52017,125 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(proc.dri_bindings[0].addr, addr);
     }
 
+    fn glio_init_bytes(info: wasm_posix_shared::gl::GlInitInfo) -> [u8; 16] {
+        let mut bytes = [0; 16];
+        unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info); }
+        bytes
+    }
+    fn glio_display_test(proc: &mut Process, host: &mut MockHostIO, version: u32) -> Result<(i32,u32),Errno> {
+        use wasm_posix_shared::gl;
+        let fd = sys_open(proc,host,b"/dev/dri/renderD128",O_RDWR,0)?;
+        let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:version,role:gl::SESSION_DISPLAY,display_fd:-1,display_id:0});
+        if let Err(error) = sys_ioctl(proc,host,fd,gl::GLIO_INIT,&mut bytes) { sys_close(proc,host,fd).unwrap(); return Err(error); }
+        Ok((fd,u32::from_le_bytes(bytes[12..16].try_into().unwrap())))
+    }
+    fn glio_init_objects_test(proc: &mut Process, host: &mut MockHostIO, fd: i32, version: u32) -> Result<(),Errno> {
+        use wasm_posix_shared::gl;
+        let (root,id) = glio_display_test(proc,host,version)?;
+        let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:version,role:gl::SESSION_OBJECTS,display_fd:root,display_id:id});
+        let result = sys_ioctl(proc,host,fd,gl::GLIO_INIT,&mut bytes);
+        if result.is_err() { sys_close(proc,host,root).unwrap(); }
+        result
+    }
+
+    fn glio_map_test(proc: &mut Process, host: &mut MockHostIO, fd: i32) {
+        use wasm_posix_shared::mmap::{PROT_READ,PROT_WRITE,MAP_SHARED};
+        sys_mmap(proc,host,0,wasm_posix_shared::gl::CMDBUF_LEN,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0).unwrap();
+    }
+
+    #[test]
+    fn glio_display_roles_validate_generation_and_owner_without_publishing_failed_joins() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let (root,id) = glio_display_test(&mut proc,&mut host,gl::OP_VERSION).unwrap();
+        let child = sys_open(&mut proc,&mut host,b"/dev/dri/renderD128",O_RDWR,0).unwrap();
+        for (role, display_fd, display_id, error) in [
+            (0,root,id,Errno::EINVAL), (gl::SESSION_OBJECTS,-1,id,Errno::EBADF),
+            (gl::SESSION_OBJECTS,root,id+1000,Errno::EINVAL),
+            (gl::SESSION_DISPLAY,root,0,Errno::EINVAL),
+        ] {
+            let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role,display_fd,display_id}); let before = bytes;
+            assert_eq!(sys_ioctl(&mut proc,&mut host,child,gl::GLIO_INIT,&mut bytes),Err(error)); assert_eq!(bytes,before);
+            assert!(dri_state(&proc,proc.fd_table.get(child).unwrap().ofd_ref.0).unwrap().gl.is_none());
+        }
+        let root_ofd = proc.fd_table.get(root).unwrap().ofd_ref.0;
+        dri_state_mut(&mut proc,root_ofd).unwrap().gl.as_mut().unwrap().owner_pid = 7;
+        let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:root,display_id:id});
+        assert_eq!(sys_ioctl(&mut proc,&mut host,child,gl::GLIO_INIT,&mut bytes),Err(Errno::EACCES));
+        assert!(host.gl_bind_sessions.is_empty()); assert!(host.gl_create_context_sessions.is_empty());
+    }
+
+    #[test]
+    fn glio_display_root_cannot_map_or_create_renderer_objects() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{PROT_READ,PROT_WRITE,MAP_SHARED};
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let (root,_) = glio_display_test(&mut proc,&mut host,gl::OP_VERSION).unwrap();
+        assert_eq!(sys_mmap(&mut proc,&mut host,0,gl::CMDBUF_LEN,PROT_READ|PROT_WRITE,MAP_SHARED,root,0),Err(Errno::EINVAL));
+        assert_eq!(sys_ioctl(&mut proc,&mut host,root,gl::GLIO_CREATE_CONTEXT,&mut [0;16]),Err(Errno::EINVAL));
+        assert_eq!(sys_ioctl(&mut proc,&mut host,root,gl::GLIO_CREATE_SURFACE,&mut [0;32]),Err(Errno::EINVAL));
+        sys_close(&mut proc,&mut host,root).unwrap();
+        assert!(host.gl_bind_sessions.is_empty()); assert!(host.gl_unbind_sessions.is_empty());
+    }
+
+    #[test]
+    fn glio_revoked_generation_preserves_current_resources_but_rejects_new_bindings_and_objects() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let (root,id) = glio_display_test(&mut proc,&mut host,gl::OP_VERSION).unwrap();
+        let mut children = [0;2];
+        for fd in &mut children {
+            *fd = sys_open(&mut proc,&mut host,b"/dev/dri/renderD128",O_RDWR,0).unwrap();
+            let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:root,display_id:id});
+            sys_ioctl(&mut proc,&mut host,*fd,gl::GLIO_INIT,&mut bytes).unwrap();
+        }
+        glio_map_test(&mut proc,&mut host,children[0]);
+        let ctx = glio_test_bind(&mut proc,&mut host,children[0]);
+        sys_ioctl(&mut proc,&mut host,root,gl::GLIO_TERMINATE,&mut []).unwrap();
+        assert!(host.gl_unbind_sessions.is_empty());
+        assert_eq!(sys_ioctl(&mut proc,&mut host,children[1],gl::GLIO_CREATE_CONTEXT,&mut [0;16]),Err(Errno::EINVAL));
+        assert_eq!(sys_ioctl(&mut proc,&mut host,children[1],gl::GLIO_CREATE_SURFACE,&mut [0;32]),Err(Errno::EINVAL));
+        let mut bind = [0;12]; bind[..4].copy_from_slice(&ctx.to_le_bytes());
+        assert_eq!(sys_ioctl(&mut proc,&mut host,children[0],gl::GLIO_MAKE_CURRENT,&mut bind),Err(Errno::EINVAL));
+        let mut submit = [0;8]; submit[4..8].copy_from_slice(&8u32.to_le_bytes());
+        sys_ioctl(&mut proc,&mut host,children[0],gl::GLIO_SUBMIT,&mut submit).unwrap();
+        let mut query = [0;24]; query[..4].copy_from_slice(&gl::QOP_FINISH.to_le_bytes());
+        sys_ioctl(&mut proc,&mut host,children[0],gl::GLIO_QUERY,&mut query).unwrap();
+        assert_eq!(host.gl_query_sessions,host.gl_submit_sessions);
+        sys_ioctl(&mut proc,&mut host,children[0],gl::GLIO_MAKE_CURRENT,&mut [0;12]).unwrap();
+        sys_ioctl(&mut proc,&mut host,children[0],gl::GLIO_DESTROY_CONTEXT,&mut []).unwrap();
+        sys_close(&mut proc,&mut host,root).unwrap();
+        let (reused,new_id) = glio_display_test(&mut proc,&mut host,gl::OP_VERSION).unwrap();
+        assert_eq!(reused,root); assert_ne!(id,new_id);
+        let fresh = sys_open(&mut proc,&mut host,b"/dev/dri/renderD128",O_RDWR,0).unwrap();
+        let mut stale = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:reused,display_id:id});
+        assert_eq!(sys_ioctl(&mut proc,&mut host,fresh,gl::GLIO_INIT,&mut stale),Err(Errno::EINVAL));
+        assert_eq!(sys_ioctl(&mut proc,&mut host,children[1],gl::GLIO_CREATE_CONTEXT,&mut [0;16]),Err(Errno::EINVAL));
+        let mut valid = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:reused,display_id:new_id});
+        sys_ioctl(&mut proc,&mut host,fresh,gl::GLIO_INIT,&mut valid).unwrap();
+        glio_map_test(&mut proc,&mut host,fresh);
+        assert_ne!(glio_test_bind(&mut proc,&mut host,fresh),ctx);
+    }
+
+    #[test]
+    fn glio_display_authority_follows_the_open_description_until_last_duplicate_closes() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let (root,id) = glio_display_test(&mut proc,&mut host,gl::OP_VERSION).unwrap();
+        let duplicate = sys_dup(&mut proc,root).unwrap(); sys_close(&mut proc,&mut host,root).unwrap();
+        let child = sys_open(&mut proc,&mut host,b"/dev/dri/renderD128",O_RDWR,0).unwrap();
+        assert_eq!(child,root);
+        let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:duplicate,display_id:id});
+        sys_ioctl(&mut proc,&mut host,child,gl::GLIO_INIT,&mut bytes).unwrap();
+        glio_map_test(&mut proc,&mut host,child);
+        glio_test_bind(&mut proc,&mut host,child);
+        sys_close(&mut proc,&mut host,duplicate).unwrap(); assert!(host.gl_unbind_sessions.is_empty());
+        let mut submit = [0;8]; submit[4..8].copy_from_slice(&8u32.to_le_bytes());
+        sys_ioctl(&mut proc,&mut host,child,gl::GLIO_SUBMIT,&mut submit).unwrap();
+        sys_ioctl(&mut proc,&mut host,child,gl::GLIO_MAKE_CURRENT,&mut [0;12]).unwrap();
+        sys_close(&mut proc,&mut host,child).unwrap(); assert_eq!(host.gl_unbind_sessions.len(),1);
+    }
+
     #[test]
     fn glio_init_rejects_version_skew() {
         use wasm_posix_shared::gl;
@@ -51994,8 +52146,8 @@ impl HostIO for RelSymlinkMock {
         // newer kernel must be caught at first contact, not later as a
         // silent decode error.
         for bad_version in [0u32, gl::OP_VERSION + 1] {
-            let mut buf = bad_version.to_le_bytes();
-            let err = sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err();
+            let buf = bad_version.to_le_bytes();
+            let err = glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(buf[..4].try_into().unwrap())).unwrap_err();
             assert_eq!(err, Errno::ENOSYS);
             let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
             assert!(
@@ -52018,8 +52170,8 @@ impl HostIO for RelSymlinkMock {
             let mut proc = Process::new(1);
             let mut host = MockHostIO::new();
             let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
-            let mut buf = version.to_le_bytes();
-            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap();
+            let buf = version.to_le_bytes();
+            glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(buf[..4].try_into().unwrap())).unwrap();
             let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
             assert!(
                 proc.ofd_table
@@ -52044,7 +52196,7 @@ impl HostIO for RelSymlinkMock {
         let ver = gl::OP_VERSION;
         let mut buf = [0u8; 4];
         buf.copy_from_slice(&ver.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(buf[..4].try_into().unwrap())).unwrap();
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         let gls = proc
             .ofd_table
@@ -52060,7 +52212,7 @@ impl HostIO for RelSymlinkMock {
         assert!(gls.context_id.is_none());
         // Second GLIO_INIT on the same fd must be rejected with EBUSY.
         assert_eq!(
-            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err(),
+            glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(buf[..4].try_into().unwrap())).unwrap_err(),
             Errno::EBUSY,
         );
     }
@@ -52098,13 +52250,7 @@ impl HostIO for RelSymlinkMock {
         let mut ofds = Vec::new();
         for _ in 0..2 {
             let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
-            sys_ioctl(
-                &mut proc,
-                &mut host,
-                fd,
-                gl::GLIO_INIT,
-                &mut gl::OP_VERSION.to_le_bytes(),
-            )
+            glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION)
             .unwrap();
             contexts.push(glio_test_bind(&mut proc, &mut host, fd));
             ofds.push(proc.fd_table.get(fd).unwrap().ofd_ref.0);
@@ -52191,13 +52337,7 @@ impl HostIO for RelSymlinkMock {
         let mut host = MockHostIO::new();
         let (other, _, _) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 32);
         let (fd, offset, _) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 32);
-        sys_ioctl(
-            &mut proc,
-            &mut host,
-            fd,
-            gl::GLIO_INIT,
-            &mut gl::OP_VERSION.to_le_bytes(),
-        )
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION)
         .unwrap();
         let context = glio_test_bind(&mut proc, &mut host, fd);
         let mut surface = [0u8; 32];
@@ -52281,13 +52421,7 @@ impl HostIO for RelSymlinkMock {
         proc.blocked_retries.bind_task(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
-        sys_ioctl(
-            &mut proc,
-            &mut host,
-            fd,
-            gl::GLIO_INIT,
-            &mut gl::OP_VERSION.to_le_bytes(),
-        )
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION)
         .unwrap();
         let context = glio_test_bind(&mut proc, &mut host, fd);
         let mut surface = [0u8; 32]; // default window surface
@@ -52348,13 +52482,7 @@ impl HostIO for RelSymlinkMock {
         proc.add_thread(crate::process::ThreadInfo::new(2, 0, 0, 0));
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
-        sys_ioctl(
-            &mut proc,
-            &mut host,
-            fd,
-            gl::GLIO_INIT,
-            &mut gl::OP_VERSION.to_le_bytes(),
-        )
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION)
         .unwrap();
         sys_mmap(
             &mut proc,
@@ -52446,7 +52574,7 @@ impl HostIO for RelSymlinkMock {
         let mut proc = Process::new(2);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut gl::OP_VERSION.to_le_bytes()).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
         let address = sys_mmap(&mut proc, &mut host, 0, gl::CMDBUF_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
         let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         // Model the same open-description state arriving from process 1.
@@ -52455,7 +52583,7 @@ impl HostIO for RelSymlinkMock {
         gls.owner_pid = 1;
         let session_id = gls.session_id;
         for (request, size) in [
-            (gl::GLIO_INIT, 4), (gl::GLIO_CREATE_CONTEXT, 16),
+            (gl::GLIO_INIT, 16), (gl::GLIO_CREATE_CONTEXT, 16),
             (gl::GLIO_SUBMIT, 8), (gl::GLIO_QUERY, 24), (gl::GLIO_TERMINATE, 0),
         ] {
             let mut bytes = alloc::vec![0x5a; size];
@@ -52482,7 +52610,7 @@ impl HostIO for RelSymlinkMock {
         let mut fds = Vec::new();
         for _ in 0..2 {
             let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
-            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut gl::OP_VERSION.to_le_bytes()).unwrap();
+            glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
             sys_mmap(&mut proc, &mut host, 0, gl::CMDBUF_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
             let mut attrs = [0u8; 16];
             attrs[..4].copy_from_slice(&2u32.to_le_bytes());
@@ -52525,8 +52653,8 @@ impl HostIO for RelSymlinkMock {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
-        let mut version = gl::OP_VERSION.to_le_bytes();
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut version).unwrap();
+        let version = gl::OP_VERSION.to_le_bytes();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(version[..4].try_into().unwrap())).unwrap();
         let mut attrs = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         attrs[..4].copy_from_slice(&2u32.to_le_bytes());
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
@@ -52567,7 +52695,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
 
         let attrs = gl::GlContextAttrs {
             client_version: 2,
@@ -52673,7 +52801,7 @@ impl HostIO for RelSymlinkMock {
         // Bring up the GL session + context on the same fd.
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         let attrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 2], context_id: 0 };
         let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
@@ -52757,7 +52885,7 @@ impl HostIO for RelSymlinkMock {
         // Bring up the GL session + context on `fd`.
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         let cattrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 2], context_id: 0 };
         let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, cattrs) };
@@ -52808,7 +52936,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
 
         // Map the cmdbuf at offset==0 so submit has a binding to
         // validate against.
@@ -52867,7 +52995,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         sys_mmap(
             &mut proc,
             &mut host,
@@ -52915,7 +53043,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
 
         // Wrong length is rejected.
         let err = sys_mmap(
@@ -52985,7 +53113,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         let addr = sys_mmap(
             &mut proc,
             &mut host,
@@ -53023,7 +53151,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         sys_mmap(
             &mut proc,
             &mut host,
@@ -53068,7 +53196,7 @@ impl HostIO for RelSymlinkMock {
         let gl_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, gl_fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, gl_fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         sys_mmap(
             &mut proc,
             &mut host,
@@ -53128,7 +53256,7 @@ impl HostIO for RelSymlinkMock {
         let gl_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, gl_fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, gl_fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         sys_mmap(
             &mut proc,
             &mut host,
@@ -53160,7 +53288,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
 
         let info = gl::GlQueryInfo {
             op: gl::QOP_GET_STRING,
