@@ -27,6 +27,11 @@ fn fresh_instances_reconstruct_gc_graphs_and_recapture_constructor_provenance() 
             include_str!("fixtures/exception_recipe_host.cjs"),
         )
         .unwrap();
+        std::fs::write(
+            directory.path().join("gc_recipe_host.mjs"),
+            include_str!("fixtures/gc_recipe_host.mjs"),
+        )
+        .unwrap();
         let result = std::process::Command::new("node")
             .arg(script)
             .args(if wide { vec!["wide"] } else { vec![] })

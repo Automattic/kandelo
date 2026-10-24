@@ -213,6 +213,16 @@ impl FrozenImports {
     pub(super) fn source_identity(&self) -> [u8; 32] {
         self.fingerprint
     }
+    pub(super) fn memory_import(&self, ordinal: u32) -> Result<(u32, wasm_encoder::MemoryType)> {
+        let import = self
+            .imports
+            .get(ordinal as usize)
+            .context("process memory import was not frozen")?;
+        let EntityType::Memory(memory) = import.ty else {
+            anyhow::bail!("reserved process import is not a memory")
+        };
+        Ok((self.indices[ordinal as usize], memory))
+    }
     pub fn is_empty(&self) -> bool {
         self.imports.is_empty()
     }

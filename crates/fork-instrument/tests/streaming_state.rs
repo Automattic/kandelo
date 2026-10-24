@@ -44,6 +44,96 @@ fn hooks(tables: impl IntoIterator<Item = u32>) -> StateHooks {
     }
 }
 
+#[test]
+fn lowered_indirect_transports_keep_their_target_and_table_guard() {
+    use wasm_encoder::{Function, Instruction};
+    struct Lowered(FrozenStateRewrites);
+    impl Reencode for Lowered {
+        type Error = Infallible;
+    }
+    impl FunctionTransform for Lowered {
+        fn declarations(&self) -> Option<&FrozenDeclarations> {
+            Some(self.0.declarations())
+        }
+        fn function_ir_limits(&self) -> Option<IrLimits> {
+            Some(Default::default())
+        }
+        fn transform_ir(
+            &mut self,
+            body: &FunctionIr<'_>,
+            limit: usize,
+        ) -> anyhow::Result<Function> {
+            let mut output = RoundtripReencoder.new_function_with_parsed_locals(&body.source)?;
+            for source in &body.instructions {
+                let operation = match source.operation {
+                    wasmparser::Operator::CallIndirect { .. } => Instruction::Call(4),
+                    wasmparser::Operator::ReturnCallIndirect { .. } => Instruction::ReturnCall(4),
+                    _ => RoundtripReencoder.instruction(source.operation.clone())?,
+                };
+                self.0.emit_source(source, operation, &mut output, limit)?;
+            }
+            Ok(output)
+        }
+        fn emit_helper(&mut self, ordinal: u32, limit: usize) -> anyhow::Result<Function> {
+            self.0.emit_helper(ordinal, limit)
+        }
+    }
+    let input = wat::parse_str(format!(
+        r#"(module {HOOKS}
+      (import "h" "transport" (func (param i32) (result i32)))
+      (type $answer (func (result i32)))
+      (table (export "table") 1 funcref) (elem (i32.const 0) func $answer)
+      (func $answer (result i32) i32.const 9)
+      (func (export "call") (result i32)
+        i32.const 0 call_indirect (type $answer) i32.const 1 i32.add)
+      (func (export "tail") (result i32) i32.const 0 return_call_indirect (type $answer)))"#
+    ))
+    .unwrap();
+    let scan = scan(&input).unwrap();
+    let state = StateRewrites::discover(&scan, BTreeSet::from([0]), None, 16)
+        .unwrap()
+        .freeze(
+            &scan,
+            &mut RoundtripReencoder,
+            scan.types.as_ref().core_type_count_in_module(),
+            scan.functions.len() as u32,
+            hooks([]),
+            1 << 20,
+        )
+        .unwrap();
+    let mut output = Vec::new();
+    emit_remapped(&scan, &mut Lowered(state), &mut output, Default::default()).unwrap();
+    wasmparser::Validator::new_with_features(features())
+        .validate_all(&output)
+        .unwrap();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), output).unwrap();
+    let result = std::process::Command::new("node")
+        .args([
+            "-e",
+            r#"
+      const fs = require('fs'), assert = require('assert/strict');
+      const events = []; let e;
+      const module = new WebAssembly.Module(fs.readFileSync(process.argv[1]));
+      e = new WebAssembly.Instance(module, { h: {
+        begin() { throw new Error('unexpected mutation'); }, mark() {}, grow() {},
+        guard() { events.push('guard'); },
+        transport(index) { events.push(['transport', index]); return e.table.get(index)(); },
+      } }).exports;
+      assert.equal(e.call(), 10); assert.equal(e.tail(), 9);
+      assert.deepEqual(events, ['guard', ['transport', 0], 'guard', ['transport', 0]]);
+    "#,
+        ])
+        .arg(file.path())
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
 fn transform(
     input: &[u8],
     synchronized: BTreeSet<u32>,

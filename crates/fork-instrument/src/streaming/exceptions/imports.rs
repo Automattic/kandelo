@@ -3,6 +3,7 @@ use super::*;
 use crate::streaming::imports::{ImmutableGlobalImport, immutable_i32_import};
 
 pub struct NativeExceptionImports {
+    memory: Option<crate::streaming::memory::ProcessMemory>,
     activation: ImmutableGlobalImport,
     functions: [u32; 11],
 }
@@ -31,13 +32,8 @@ impl NativeExceptionImports {
                 .is_some_and(|count| count <= budget / 256),
             "exception imports exceed metadata budget"
         );
-        let pointer = if scan.types.as_ref().memory_count() != 0
-            && scan.types.as_ref().memory_at(0).memory64
-        {
-            ValType::I64
-        } else {
-            ValType::I32
-        };
+        let memory = inputs.process_memory_binding(scan)?;
+        let pointer = memory.map_or(ValType::I32, |memory| memory.pointer);
         let activation = immutable_i32_import(
             scan,
             &mut inputs.imports,
@@ -82,6 +78,7 @@ impl NativeExceptionImports {
             });
         }
         Ok(Self {
+            memory,
             activation,
             functions,
         })
@@ -106,5 +103,11 @@ impl NativeExceptionImports {
             reserve: index(self.functions[9])?,
             release: index(self.functions[10])?,
         })
+    }
+    pub(super) fn process_memory(&self, imports: &FrozenImports) -> Result<(u32, ValType)> {
+        let memory = self
+            .memory
+            .context("exception codec needs process memory")?;
+        Ok((memory.resolve(imports)?, memory.pointer))
     }
 }

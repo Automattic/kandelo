@@ -97,19 +97,10 @@ impl NativeExceptionCodec {
     {
         let source = scan.types.as_ref();
         ensure!(
-            source.memory_count() != 0,
-            "exception codec needs process memory"
-        );
-        ensure!(
             source.tag_count() as usize <= limits.metadata_bytes / 512,
             "exception tags exceed metadata budget"
         );
-        let pointer = if source.memory_at(0).memory64 {
-            ValType::I64
-        } else {
-            ValType::I32
-        };
-        let memory = map.memory_index(0)?;
+        let (memory, pointer) = imports.process_memory(frozen_imports)?;
         let kinds = FrozenReferenceKinds::new(scan, map, limits.metadata_bytes)?;
         let mut types = types::TypeCatalog::new(first_type, limits.metadata_bytes);
         let mut function_types = Vec::new();

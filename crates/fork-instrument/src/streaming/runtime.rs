@@ -51,6 +51,9 @@ pub struct NativeCodecOverrides {
 pub struct RuntimeInputs {
     pub types: Vec<FuncType>,
     pub imports: Vec<PlannedImport>,
+    /// A process-memory import reserved by module-state planning when the
+    /// original module has no memory. This is an import ordinal, not an index.
+    pub staging_memory: Option<u32>,
     pub codecs: NativeCodecOverrides,
     /// Provider functions reserved after the source functions, relative to
     /// `imports.helper_function_base()`. Runtime controls occupy ordinals 0..7;
@@ -164,11 +167,8 @@ fn add_import(
 impl NativeRuntime {
     pub fn plan(scan: &Scan<'_>, mut inputs: RuntimeInputs, budget: usize) -> Result<Self> {
         let types = scan.types.as_ref();
-        let pointer = if types.memory_count() != 0 && types.memory_at(0).memory64 {
-            ValType::I64
-        } else {
-            ValType::I32
-        };
+        let process_memory = inputs.process_memory_binding(scan)?;
+        let pointer = process_memory.map_or(ValType::I32, |memory| memory.pointer);
         let width = if pointer == ValType::I64 { 8 } else { 4 };
         ensure!(
             types.global_count() as usize <= budget / 128,
@@ -468,11 +468,9 @@ impl NativeRuntime {
         let fixed_prefix = frames_start
             .checked_add(ABORT_SELECTOR_SIZE)
             .context("runtime prefix overflow")?;
-        let memory = if types.memory_count() == 0 {
-            None
-        } else {
-            Some(map.memory_index(0)?)
-        };
+        let memory = process_memory
+            .map(|memory| memory.resolve(map))
+            .transpose()?;
         Ok(Self {
             imports,
             functions,
@@ -503,6 +501,25 @@ impl NativeRuntime {
     }
     pub fn pointer_type(&self) -> ValType {
         self.pointer
+    }
+    pub fn process_memory(&self) -> Option<u32> {
+        self.memory
+    }
+    pub fn frame_environment(
+        &mut self,
+        scan: &Scan<'_>,
+        budget: usize,
+    ) -> Result<super::FrameEnvironment> {
+        self.imports.validate_source(scan)?;
+        let mut environment = super::FrameEnvironment::discover(scan, self, budget)?;
+        if scan.types.as_ref().memory_count() == 0 {
+            environment.pointer = self.pointer;
+            environment.memory = self.memory;
+            // No source memory establishes what a named stack pointer owns.
+            // Keep spills in Wasm locals instead of borrowing an address space.
+            environment.stack_pointer = None;
+        }
+        Ok(environment)
     }
     pub fn frames_start_offset(&self) -> u32 {
         self.frames_start

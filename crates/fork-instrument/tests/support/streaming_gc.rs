@@ -5,6 +5,8 @@ use wasm_encoder::{
     Function,
     reencode::{Error, Reencode, RoundtripReencoder},
 };
+#[path = "streaming_roots.rs"]
+mod roots;
 
 struct Provider {
     runtime: NativeRuntime,
@@ -14,6 +16,7 @@ struct Provider {
     exception: NativeExceptionCodec,
     first_gc: u32,
     first_exception: u32,
+    roots: Option<roots::Components>,
     declarations: FrozenDeclarations,
     module: FrozenModuleDeclarations,
 }
@@ -33,6 +36,9 @@ impl Reencode for Provider {
     remap!(tag_index);
 }
 impl FunctionTransform for Provider {
+    fn defer_module_initializers(&self) -> bool {
+        self.roots.is_some()
+    }
     fn imports(&self) -> Option<&FrozenImports> {
         Some(self.runtime.imports_plan())
     }
@@ -46,6 +52,25 @@ impl FunctionTransform for Provider {
         Some(Default::default())
     }
     fn transform_ir(&mut self, source: &FunctionIr<'_>, limit: usize) -> anyhow::Result<Function> {
+        if let Some(roots) = &self.roots {
+            let mut output = self
+                .runtime
+                .new_function_with_parsed_locals(&source.source)?;
+            for instruction in &source.instructions {
+                let operation = if let Some(helper) = self
+                    .constructors
+                    .replacement(&self.plan, &instruction.operation)?
+                {
+                    wasm_encoder::Instruction::Call(helper)
+                } else {
+                    self.runtime.instruction(instruction.operation.clone())?
+                };
+                roots
+                    .roots
+                    .emit_source(&instruction.operation, operation, &mut output, limit)?;
+            }
+            return Ok(output);
+        }
         self.constructors
             .emit_function(&self.plan, source, &mut self.runtime, limit)
     }
@@ -56,11 +81,29 @@ impl FunctionTransform for Provider {
             n if n < self.first_exception => {
                 self.gc.emit_helper(n - self.first_gc, &self.plan, limit)
             }
-            n => self.exception.emit_helper(n - self.first_exception, limit),
+            n if n < self.first_exception + self.exception.declarations().function_count() => {
+                self.exception.emit_helper(n - self.first_exception, limit)
+            }
+            n => self.roots.as_ref().expect("root catalog").emit_helper(
+                n - self.first_exception - self.exception.declarations().function_count(),
+                limit,
+            ),
         }
     }
 }
+#[allow(dead_code)] // Root-state targets use emit_roots instead.
 pub fn emit(input: &[u8]) -> Vec<u8> {
+    emit_mode(input, false, false)
+}
+#[allow(dead_code)] // The plain provider target does not use root-state mode.
+pub fn emit_roots(input: &[u8]) -> Vec<u8> {
+    emit_mode(input, true, false)
+}
+#[allow(dead_code)]
+pub fn emit_staged_roots(input: &[u8], wide: bool) -> Vec<u8> {
+    emit_mode(input, true, wide)
+}
+fn emit_mode(input: &[u8], with_roots: bool, staging_wide: bool) -> Vec<u8> {
     let scan = scan(input).unwrap();
     let source_types = SourceTypes::new(&scan);
     let plan = NativeGcPlan::discover(
@@ -71,6 +114,23 @@ pub fn emit(input: &[u8]) -> Vec<u8> {
     )
     .unwrap();
     let mut inputs = RuntimeInputs::default();
+    if staging_wide {
+        assert_eq!(scan.types.as_ref().memory_count(), 0);
+        inputs.imports.push(PlannedImport {
+            module: "env".into(),
+            name: "memory".into(),
+            ty: wasm_encoder::EntityType::Memory(wasm_encoder::MemoryType {
+                minimum: 0,
+                maximum: Some(65536),
+                memory64: true,
+                shared: true,
+                page_size_log2: None,
+            }),
+        });
+        inputs.staging_memory = Some(0);
+    }
+    let root_imports =
+        with_roots.then(|| RootStateImports::append(&scan, &mut inputs, 1 << 20).unwrap());
     let constructors =
         GcConstructorPlan::reserve(&scan, &plan, &mut inputs, 7, Default::default()).unwrap();
     let exception_imports = NativeExceptionImports::append(&scan, &mut inputs, 1 << 20).unwrap();
@@ -127,23 +187,41 @@ pub fn emit(input: &[u8]) -> Vec<u8> {
             gc.indices().decode_externref,
         )
         .unwrap();
-    let declarations = FrozenDeclarations::concatenate(
-        &[
-            runtime.function_declarations(),
-            constructors.declarations(),
-            gc.declarations(),
-            exception.declarations(),
-        ],
-        1 << 20,
-    )
-    .unwrap();
-    let descriptors = [
+    let roots = root_imports.as_ref().map(|host| {
+        roots::Components::plan(
+            &scan,
+            &mut runtime,
+            host,
+            &mut module,
+            first_type + exception.declarations().type_count(),
+            imports.helper_function_base()
+                + first_exception
+                + exception.declarations().function_count(),
+        )
+    });
+    let mut parts = vec![
+        runtime.function_declarations(),
+        constructors.declarations(),
+        gc.declarations(),
+        exception.declarations(),
+    ];
+    if let Some(roots) = &roots {
+        parts.push(&roots.declarations);
+    }
+    let declarations = FrozenDeclarations::concatenate(&parts, 1 << 20).unwrap();
+    let mut descriptors = vec![
         (module_gc_codec::FORMAT_SECTION, plan.descriptor().unwrap()),
         (
             module_exception_codec::FORMAT_SECTION,
             exception.descriptor().unwrap(),
         ),
     ];
+    if let Some(roots) = &roots {
+        descriptors.push((
+            wasm_posix_shared::abi::WPK_FORK_IMPORTED_GLOBALS_SECTION,
+            roots.roots.imported_globals_descriptor().to_vec(),
+        ));
+    }
     let mut transform = Provider {
         runtime,
         plan,
@@ -152,6 +230,7 @@ pub fn emit(input: &[u8]) -> Vec<u8> {
         exception,
         first_gc,
         first_exception,
+        roots,
         declarations,
         module: module.freeze(),
     };

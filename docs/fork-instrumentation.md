@@ -81,8 +81,10 @@ Helper function/type declarations can be frozen before emission; their bodies
 are generated and spooled one at a time. The source table barrier and segment
 drop rewrites also have a native implementation: they consume frozen hook
 indices and visit all functions, without filtering by fork activation.
-Table snapshot ownership, runtime hook generation, bootstrap and generated
-call-transport handling are not integrated into that implementation yet.
+The source hook also composes with already-lowered indirect transports: it
+preserves the selected direct/tail route and reconciles its physical table
+before invocation. A separate guard lookup supports generated call sites.
+Sparse table snapshot ownership and runtime hook generation remain unfinished.
 Validator-canonical concrete heap identities are resolved to source type
 indices before output remapping; they are never encoded as binary indices.
 
@@ -198,7 +200,10 @@ four private globals, along with frame, resume-table, private-tag and reference
 codec imports. It lays out the source module's mutable scalar snapshot prefix
 in declaration order, skips reference globals and the child-owned
 `env.__channel_base` binding, and emits one control body at a time. Pointer
-width follows the original primary memory and all source memory/global uses
+width follows the original primary memory. A memoryless module can instead
+reserve an explicit process-memory import before providers are planned; runtime
+controls, GC and exception exchanges then share that frozen binding and pointer
+width. Changed bindings reject before emission. All source memory/global uses
 are remapped after added imports. End controls call the optional codec cleanup,
 release the buffer alias, then publish NORMAL. Typed local codec providers may
 be supplied as already planned final-index overrides or reserved helper
@@ -312,8 +317,34 @@ memory64/table64, overlapping initializer order, empty segments, extended
 constant offsets, shifted local indices and copied-memory preservation. Parent
 and thread assertions compare unchanged Walrus; native segment lifetime checks
 also compare the original module. Metadata/work/output failures reject
-explicitly. This is initialization ownership only; global/table snapshots,
-drop-state restore and the complete production pipeline remain unfinished.
+explicitly.
+
+`NativeRootState` composes original global roots with these bootstrap phases.
+Its catalog exports every original global with its original one-based owner
+ordinal, excluding all generated controls and provider storage. Save records
+cover mutable locals and imported globals, except the child-owned
+`env.__channel_base`. Immutable local globals are not snapshot roots. Imported
+global descriptors retain the existing format, including repeated module/name
+imports with distinct original owners. Restore changes mutable globals only.
+Scalar/vector bits retain the existing record layout; reference records carry
+recipe IDs decoded and narrowed inside Wasm by the real typed providers.
+
+Source drops update compact logical bitmaps after their instructions succeed.
+Restore applies global roots and the bootstrap table baseline, while finish
+reinstates saved segment drops after graph reconstruction. Exact-byte bitmap
+loads avoid reading allocator padding at the end of memory. Each root helper
+uses one reusable payload-pointer local, independently of the number of roots.
+Metadata, work, output and optional source-hook maps have explicit limits.
+
+Node fixtures compare fresh-instance replay and imported-global descriptor
+bytes with unchanged Walrus on both memory widths. They cover scalar/vector
+bits, function/externref identities, typed and abstract aliases, self-cycles,
+mutual GC/exception cycles and arrays reconstructed from parent-dropped data
+and element segments. Separate memoryless fixtures execute runtime controls
+and scalar/reference replay using planned 32-bit and 64-bit process memories.
+These are composable root helpers, not the complete module-state save/restore
+exports: sparse table snapshots, complete provider/activation composition and
+the production pipeline remain unfinished.
 
 `FrameBuilder` now plans one function's activation storage. It keeps parameters
 and first-used original locals in lexical order, assigns synthetic value keys,
@@ -533,8 +564,8 @@ does not run an optimizer.
 
 Production `instrument`, `analyze`, `sink_report` and normal CLI output still
 use the existing, unmodified Walrus implementation. The native sink planner
-is not yet connected to production; complete runtime/helper planning,
-continuation rewriting and module-state snapshot generation remain. No complete
+is not yet connected to production; complete component composition, sparse
+table snapshots and production artifact generation remain. No complete
 bounded fork transform or measured Codex memory improvement is claimed.
 See the [dependency map and migration plan](plans/2026-10-22-streaming-fork-instrumentation.md).
 The [front-end memory measurements](measurements/2026-10-23-streaming-instrumenter-front-end.md)

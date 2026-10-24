@@ -59,6 +59,7 @@ impl NativeGcIndices {
 }
 
 pub struct GcCodecPlan {
+    memory: crate::streaming::memory::ProcessMemory,
     declarations: FrozenDeclarations,
     imports: GcImports,
     seeds: Seeds,
@@ -89,10 +90,9 @@ impl GcCodecPlan {
         limits: GcCodecLimits,
     ) -> Result<Self> {
         plan.validate_source(scan)?;
-        ensure!(
-            scan.types.as_ref().memory_count() != 0,
-            "GC codec needs process memory"
-        );
+        let memory = inputs
+            .process_memory_binding(scan)?
+            .context("GC codec needs process memory")?;
         let mut budget = Budget {
             metadata: limits.metadata_bytes,
             work: limits.work,
@@ -123,6 +123,7 @@ impl GcCodecPlan {
             .context("GC helper ordinal overflow")?;
         FrozenDeclarations::validate_parts(&inputs.types, &functions, limits.metadata_bytes)?;
         Ok(Self {
+            memory,
             declarations: FrozenDeclarations::new(vec![], functions, limits.metadata_bytes)?,
             imports,
             seeds,
@@ -189,12 +190,8 @@ impl GcCodecPlan {
         ] {
             module.export(name, wasm_encoder::ExportKind::Func, function)?;
         }
-        let pointer = if scan.types.as_ref().memory_at(0).memory64 {
-            ValType::I64
-        } else {
-            ValType::I32
-        };
-        let memory = imports.mapped_memory_index(0)?;
+        let pointer = self.memory.pointer;
+        let memory = self.memory.resolve(imports)?;
         Ok(NativeGcCodec {
             declarations: self.declarations,
             host: self.imports.freeze(imports)?,

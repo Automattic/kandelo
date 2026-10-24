@@ -48,6 +48,7 @@ pub struct ModuleBootstrapPlan<'a> {
     limits: BootstrapLimits,
 }
 pub struct FrozenModuleBootstrap {
+    source: [u8; 32],
     elements: Vec<Initializer>,
     data: Vec<Initializer>,
     element_dropped: Vec<bool>,
@@ -230,6 +231,7 @@ impl<'a> ModuleBootstrapPlan<'a> {
             module.export(name, ExportKind::Func, index)?;
         }
         Ok(FrozenModuleBootstrap {
+            source: self.source,
             elements,
             data,
             element_dropped: self.element_dropped,
@@ -252,6 +254,13 @@ impl<'a> ModuleBootstrapPlan<'a> {
     }
 }
 impl FrozenModuleBootstrap {
+    pub(super) fn validate_source(&self, scan: &Scan<'_>) -> Result<()> {
+        ensure!(
+            self.source == <[u8; 32]>::from(Sha256::digest(scan.input())),
+            "frozen bootstrap belongs to another source module"
+        );
+        Ok(())
+    }
     pub fn declarations(&self) -> &FrozenDeclarations {
         &self.declarations
     }

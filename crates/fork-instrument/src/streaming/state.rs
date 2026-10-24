@@ -2,7 +2,7 @@
 //! tracking. Catalog ownership, snapshots and bootstrap planning remain a
 //! separate module-wide pass; this module consumes their frozen hook indices.
 
-use super::{FrozenDeclarations, FunctionIr, Scan, SourceTypes};
+use super::{FrozenDeclarations, FunctionIr, Scan, SourceInstruction, SourceTypes};
 use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{FuncType, Function, Instruction, reencode::Reencode};
@@ -340,38 +340,73 @@ impl FrozenStateRewrites {
     {
         let mut output = map.new_function_with_parsed_locals(&source.source)?;
         for instruction in &source.instructions {
-            let op = &instruction.operation;
-            if let Some(key) = Key::from_op(op, &self.synchronized, self.resume_table) {
-                let function = *self
-                    .calls
-                    .get(&key)
-                    .context("state operation was not discovered before freezing")?;
-                if matches!(key, Key::TailIndirect { .. }) {
-                    output.instruction(&Instruction::ReturnCall(function));
-                } else {
-                    output.instruction(&Instruction::Call(function));
-                }
-            } else {
-                output.instruction(&map.instruction(op.clone())?);
-                let bit = match *op {
-                    Operator::DataDrop { data_index } => self.hooks.data.get(&data_index),
-                    Operator::ElemDrop { elem_index } => self.hooks.elements.get(&elem_index),
-                    _ => None,
-                };
-                if let Some(bit) = bit {
-                    output
-                        .instruction(&Instruction::GlobalGet(bit.global))
-                        .instruction(&Instruction::I32Const(bit.mask as i32))
-                        .instruction(&Instruction::I32Or)
-                        .instruction(&Instruction::GlobalSet(bit.global));
-                }
-            }
-            ensure!(
-                output.byte_len() <= limit,
-                "state rewrite exceeds function output budget"
-            );
+            let operation = map.instruction(instruction.operation.clone())?;
+            self.emit_source(instruction, operation, &mut output, limit)?;
         }
         Ok(output)
+    }
+
+    /// Generated indirect transports must reconcile the same physical table
+    /// before invocation. This leaves their arguments on the operand stack.
+    pub fn consumer_guard(&self, source: &Operator<'_>) -> Option<u32> {
+        matches!(
+            Key::from_op(source, &self.synchronized, self.resume_table),
+            Some(Key::Get(_) | Key::Size(_) | Key::Indirect { .. } | Key::TailIndirect { .. })
+        )
+        .then_some(self.hooks.reconcile)
+    }
+
+    /// Compose with constructor and continuation hooks. Branch depths and
+    /// locals in `operation` already name their final physical destinations.
+    pub fn emit_source(
+        &self,
+        source: &SourceInstruction<'_>,
+        operation: Instruction<'_>,
+        output: &mut Function,
+        limit: usize,
+    ) -> Result<()> {
+        let op = &source.operation;
+        if matches!(
+            op,
+            Operator::CallIndirect { .. } | Operator::ReturnCallIndirect { .. }
+        ) && matches!(operation, Instruction::Call(_) | Instruction::ReturnCall(_))
+        {
+            // The continuation/tail plan already selected its transport.
+            // Retain that route rather than replacing it with a raw call.
+            if let Some(guard) = self.consumer_guard(op) {
+                output.instruction(&Instruction::Call(guard));
+            }
+            output.instruction(&operation);
+        } else if let Some(key) = Key::from_op(op, &self.synchronized, self.resume_table) {
+            let function = *self
+                .calls
+                .get(&key)
+                .context("state operation was not discovered before freezing")?;
+            if matches!(key, Key::TailIndirect { .. }) {
+                output.instruction(&Instruction::ReturnCall(function));
+            } else {
+                output.instruction(&Instruction::Call(function));
+            }
+        } else {
+            output.instruction(&operation);
+            let bit = match *op {
+                Operator::DataDrop { data_index } => self.hooks.data.get(&data_index),
+                Operator::ElemDrop { elem_index } => self.hooks.elements.get(&elem_index),
+                _ => None,
+            };
+            if let Some(bit) = bit {
+                output
+                    .instruction(&Instruction::GlobalGet(bit.global))
+                    .instruction(&Instruction::I32Const(bit.mask as i32))
+                    .instruction(&Instruction::I32Or)
+                    .instruction(&Instruction::GlobalSet(bit.global));
+            }
+        }
+        ensure!(
+            output.byte_len() <= limit,
+            "state rewrite exceeds function output budget"
+        );
+        Ok(())
     }
 
     pub fn emit_helper(&self, ordinal: u32, limit: usize) -> Result<Function> {

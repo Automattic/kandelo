@@ -87,6 +87,11 @@ fn fresh_node_instance_reconstructs_gc_cycle_and_identity() {
             include_str!("fixtures/exception_recipe_host.cjs"),
         )
         .expect("write exception host");
+        fs::write(
+            directory.join("gc_recipe_host.mjs"),
+            include_str!("fixtures/gc_recipe_host.mjs"),
+        )
+        .expect("write GC host");
 
         let output = Command::new("node")
             .arg(directory.join("test.mjs"))

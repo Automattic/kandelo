@@ -34,11 +34,10 @@ impl GcImports {
         budget: usize,
     ) -> Result<Self> {
         let provenance = ProvenanceImports::reserve(scan, inputs, signatures, budget)?;
-        let pointer = if scan.types.as_ref().memory_at(0).memory64 {
-            ValType::I64
-        } else {
-            ValType::I32
-        };
+        let pointer = inputs
+            .process_memory_binding(scan)?
+            .context("GC codec needs process memory")?
+            .pointer;
         let i = ValType::I32;
         let mut functions = [0; 11];
         for (ordinal, (name, params, results)) in [
