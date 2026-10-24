@@ -43,7 +43,10 @@
         "output_bytes": 1621704,
         "output_sha256": "a8f8e48254570a283409a86698756850276d9c31d41d366c08f9ce82ff81208a",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 1.0363541250117123,
+        "wall_time_min_s": 1.0312814582139254,
+        "wall_time_max_s": 1.0752892920281738
       },
       "stream": {
         "physical_median_bytes": 5882384,
@@ -54,7 +57,10 @@
         "output_bytes": 1641740,
         "output_sha256": "fb866912708ee653ea568357706fa20326947e040e6ca2531605645dec034214",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.8140412911307067,
+        "wall_time_min_s": 0.812271875096485,
+        "wall_time_max_s": 0.8307451659347862
       }
     },
     {
@@ -68,7 +74,10 @@
         "output_bytes": 6937,
         "output_sha256": "3b11cd946750e5c76b75c939b4c883da1e0ab38e19ffb09fff517f15eedfd931",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.015469250036403537,
+        "wall_time_min_s": 0.014937874861061573,
+        "wall_time_max_s": 0.017707832856103778
       },
       "stream": {
         "physical_median_bytes": 3523016,
@@ -79,7 +88,10 @@
         "output_bytes": 5729,
         "output_sha256": "afdab8d59505e44c8413ebaf419ed17648543757769e8018313ae1a85fd4c1f3",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.022318542003631592,
+        "wall_time_min_s": 0.020150375086814165,
+        "wall_time_max_s": 0.02330549992620945
       }
     },
     {
@@ -93,7 +105,10 @@
         "output_bytes": 6778,
         "output_sha256": "4ed1ee253528a418d25acdf131bff7a5a6dcce0b1860a13f0182496bac15e1e0",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.015401541953906417,
+        "wall_time_min_s": 0.014694291865453124,
+        "wall_time_max_s": 0.01566737494431436
       },
       "stream": {
         "physical_median_bytes": 3703240,
@@ -104,7 +119,10 @@
         "output_bytes": 5478,
         "output_sha256": "c5366d6d14c38576e89bfcd62dd8ddca10e91790fba00c64fae6fb7ee5b42929",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.02009370899759233,
+        "wall_time_min_s": 0.019061625003814697,
+        "wall_time_max_s": 0.020561042008921504
       }
     },
     {
@@ -118,7 +136,10 @@
         "output_bytes": 8421930,
         "output_sha256": "fb21f6e8981a9be9c81dcd1b54374b9c8084a6f1c9051c4d0b53b553a8ab193a",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "4be15ddc3ae8344c3d3854dce7c8ed959ee5480f5c2ffd4efbbbd65c70fa9044"
+        "data_sha256": "4be15ddc3ae8344c3d3854dce7c8ed959ee5480f5c2ffd4efbbbd65c70fa9044",
+        "wall_time_median_s": 0.13593424996361136,
+        "wall_time_min_s": 0.1352300839498639,
+        "wall_time_max_s": 0.1367789579089731
       },
       "stream": {
         "physical_median_bytes": 4096504,
@@ -129,7 +150,10 @@
         "output_bytes": 8431211,
         "output_sha256": "0789b73021178309c50c182726c84c77af0b7f91b12437e22503321bf596f9a0",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "4be15ddc3ae8344c3d3854dce7c8ed959ee5480f5c2ffd4efbbbd65c70fa9044"
+        "data_sha256": "4be15ddc3ae8344c3d3854dce7c8ed959ee5480f5c2ffd4efbbbd65c70fa9044",
+        "wall_time_median_s": 1.196576583199203,
+        "wall_time_min_s": 1.1891642920672894,
+        "wall_time_max_s": 1.1995514158625156
       }
     },
     {
@@ -143,7 +167,10 @@
         "output_bytes": 33222,
         "output_sha256": "26590fdb47b08404ff851274eb65545000835c5fcde4a950f2599575466b751e",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.054462458938360214,
+        "wall_time_min_s": 0.051155374851077795,
+        "wall_time_max_s": 0.05625362507998943
       },
       "stream": {
         "physical_median_bytes": 17908216,
@@ -154,7 +181,10 @@
         "output_bytes": 42508,
         "output_sha256": "3aa99d7ccac59648f70efa3bbd8600930537df4112bb0a67a3a91d4eae313945",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.45220104116015136,
+        "wall_time_min_s": 0.4323963748756796,
+        "wall_time_max_s": 0.4527126669418067
       }
     },
     {
@@ -168,7 +198,10 @@
         "output_bytes": 588832,
         "output_sha256": "9174fad834562485c7b49b501f56752aa7126209d10b9e51e262e39074effe7b",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.1594794171396643,
+        "wall_time_min_s": 0.15728425001725554,
+        "wall_time_max_s": 0.16884079203009605
       },
       "stream": {
         "physical_median_bytes": 14254608,
@@ -179,7 +212,10 @@
         "output_bytes": 1011369,
         "output_sha256": "e28093cd4de68be163b35ef8ed02e02f3c5e824109e27a0cefdb64e4a0317f2b",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.7983482910785824,
+        "wall_time_min_s": 0.7630989581812173,
+        "wall_time_max_s": 0.8043311249930412
       }
     },
     {
@@ -193,7 +229,10 @@
         "output_bytes": 198157,
         "output_sha256": "10bfc6e4a9358d3da259da49e617578c0bba591a5fd0e9983ce975744a4bb509",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.15763216698542237,
+        "wall_time_min_s": 0.15639041690155864,
+        "wall_time_max_s": 0.1592080828268081
       },
       "stream": {
         "physical_median_bytes": 36094456,
@@ -204,8 +243,12 @@
         "output_bytes": 196839,
         "output_sha256": "d5ce67c9e0d4d2b1248755f53008afe227bff14dda06c1091ddb3e68b6768648",
         "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
-        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "data_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "wall_time_median_s": 0.11402699979953468,
+        "wall_time_min_s": 0.1111755829770118,
+        "wall_time_max_s": 0.11466166703030467
       }
     }
-  ]
+  ],
+  "wall_time_scope": "Complete transform wall time from external guarded runner; includes startup and completion detection; excludes separate Node validation and Binaryen. Pinned binary precedes subsequent fallback-index and target-cache changes."
 }

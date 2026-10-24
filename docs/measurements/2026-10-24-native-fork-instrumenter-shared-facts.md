@@ -47,6 +47,32 @@ Raw many-tiny output remains 588,832 bytes for Walrus and 1,011,369 for native.
 This comparison makes no output-size or execution-speed claim. Real process
 and browser validation are separate gates.
 
+## Transform wall time
+
+The same runs also recorded complete transform wall time. Median seconds
+(range of three fresh processes) are below. These include process startup,
+the guarded runner's completion detection and the transform scope described
+above. Separate Node validation and Binaryen are excluded. Small absolute
+differences should be read with those overheads in mind.
+
+| Example | Walrus seconds | Native seconds |
+|---|---:|---:|
+| 512 wide arithmetic functions | 1.036 (1.031–1.075) | 0.814 (0.812–0.831) |
+| 8,000 tiny functions | 0.159 (0.157–0.169) | 0.798 (0.763–0.804) |
+| One 128,003-operator body | 0.158 (0.156–0.159) | 0.114 (0.111–0.115) |
+| 50,000 compiler-fact flow edges | 0.054 (0.051–0.056) | 0.452 (0.432–0.453) |
+| 8 MiB active data | 0.136 (0.135–0.137) | 1.197 (1.189–1.200) |
+| Tiny caught child | 0.015 (0.015–0.018) | 0.022 (0.020–0.023) |
+| Tiny exiting child | 0.015 (0.015–0.016) | 0.020 (0.019–0.021) |
+
+Speed is mixed on this source snapshot: native finishes sooner on the wide
+and one-large-body examples, and later on the remaining examples. The
+measurements precede the subsequent fallback-index and target-list cache
+changes; they must not be attributed to the current draft head. No CPU
+profile was collected here to establish the cause of each difference.
+There is no completed original-Codex Walrus/native timing pair, and these
+controlled examples do not establish application execution performance.
+
 ## Reproduction and evidence
 
 ```
