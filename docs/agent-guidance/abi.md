@@ -20,6 +20,9 @@ Treat these as ABI surface:
   ordering, or meanings visible to user programs or host marshalling.
 - Kernel Wasm exports used by the host, including function signatures, tracked
   globals, required/optional host-adapter metadata, and export filter policy.
+- Kernel Wasm imports every host must supply (`env.host_*` functions and the
+  imported `env.memory`), with signatures and memory limits. Adding or
+  changing one is incompatible; removing one is compatible.
 - ABI custom sections and process-expected globals used to verify or launch
   user programs.
 - `wasm-fork-instrument`'s `wpk_fork_*` exports, save-buffer layout, frame
