@@ -45,6 +45,14 @@ fn native_sink_budgets_reject_before_publishing_partial_results() {
         ),
         (
             Limits {
+                // Admit the body, then exhaust work during interpretation.
+                work: body.instructions.len(),
+                ..Default::default()
+            },
+            "requested",
+        ),
+        (
+            Limits {
                 state_values: 1,
                 ..Default::default()
             },
@@ -77,6 +85,10 @@ fn native_sink_budgets_reject_before_publishing_partial_results() {
         )
         .unwrap_err();
         assert!(error.to_string().contains(message), "{error:#}");
+        if matches!(message, "work budget" | "requested") {
+            assert!(error.to_string().contains("function 1"), "{error:#}");
+            assert!(error.to_string().contains("limit"), "{error:#}");
+        }
     }
     let valid = evaluate(
         &scan,

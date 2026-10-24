@@ -101,6 +101,9 @@ fn refine(analysis: &mut Analysis<'_>, options: &Options, limits: AnalysisLimits
                 return Ok(());
             }
             Err(error) => {
+                crate::progress::Progress::new("facts").note(format_args!(
+                    "unavailable: {error:#}; trying builtin analysis"
+                ));
                 analysis.decision.facts_error = Some(format!("{error:#}"));
             }
         }
@@ -139,14 +142,19 @@ fn facts_plan(
             .memory64),
         "the facts analysis models wasm32 only"
     );
+    let progress = crate::progress::Progress::new("facts");
+    progress.note(format_args!("load"));
     let mut store = FactsStore::from_scan(&analysis.scan, limits.storage)?;
+    progress.note(format_args!("resolve calls"));
     let report = store.resolve_calls(
         &analysis.scan,
         FactsOptions {
             effective_types: options.effective_types,
         },
     )?;
+    progress.note(format_args!("program summaries"));
     let mut program = sink::Program::build(&analysis.scan, &mut store, limits.program)?;
+    progress.note(format_args!("sink plan"));
     let mut mode = options.side_modules;
     let dynamic_linking = program.dynamic_linking;
     program.dynamic_linking &= mode != SideModules::TracedEntries;

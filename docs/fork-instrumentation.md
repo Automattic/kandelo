@@ -119,7 +119,7 @@ the policy interpreter and child-continuation planner use this driver.
 Differential fixtures compare results and
 original call coordinates with the unchanged Walrus interpreter. Unsupported
 operators are explicit and cannot prove a boundary. Default limits are
-4,294,967,295 abstract state values, 104,857,600 work units, 16,384 nested control
+4,294,967,295 abstract state values, one trillion work units, 16,384 nested control
 regions, 4,096 frame slots and 1,048,576 call-target memberships per body.
 The state limit reserves a conservative bound for structured-control scratch
 and recorded states before evaluation; it is not a physical-memory ceiling.
@@ -132,6 +132,14 @@ control uses temporary native stack segments through `stacker` on the same
 analysis thread. Segments are acquired only when needed and released on return;
 they do not retain module instruction IR or alter the guest stack. A 2,000-level
 fixture runs with precise frame tracking on a 256 KiB calling thread stack.
+Work includes state copies and fixed-point revisits; its default is a generous
+runaway-analysis check. Aggregate passes allow sixteen trillion units, leaving
+room for nested specialization while a caller's allowance is reserved. Both
+allowances scale down on narrower hosts while preserving that headroom.
+Increasing them allocates no memory.
+Set `WPK_FORK_PROGRESS=1` for native phase timings and periodic analysis-function
+counters on stderr. Local work-limit errors include the original function and
+the requested, remaining and allowed work.
 Unused trailing local declarations are omitted from abstract states while
 referenced locals keep their original coordinates. Delegation and nested
 mixed modern/legacy handlers remain explicitly unsupported by this analysis

@@ -91,3 +91,49 @@ tracking on a 256 KiB calling thread stack and still rejects an explicit
 256-level analysis limit. Normal working-set reduction comes from the
 function-local architecture. These changes still require a successful full
 Codex transform before any capacity claim.
+
+## Third attempt: interpretation work ceiling
+
+With the larger state and control sanity ceilings and on-demand analysis
+stack, the transform stopped after 810.61 seconds with
+`sink interpretation exceeds work budget`. No artifact was published and
+neither external guard fired. The highest observed OS lifetime physical
+footprint was **342.97 MiB**. This remains a failed-transform observation,
+not a complete-transform memory result. Evidence is in
+`.context/native-codex-deep-control-20261024/`, with its source and executable
+in `.context/native-codex-deep-control-build/`. Executable SHA-256:
+
+```
+30078f210f38150b590a83c6999bc98154f425ff641339cf71b622cbc475f001
+```
+
+Work counts include abstract-state copies and fixed-point revisits, so they
+can be much larger than input operator counts. The previous defaults allowed
+104,857,600 units per evaluation and 10 billion across each analysis pass.
+The revised defaults allow one trillion units per evaluation and sixteen
+trillion per aggregate pass on this 64-bit host. Narrower hosts scale these
+allowances down while preserving their ratio.
+The aggregate allowance leaves room for nested specialization while a caller's
+allowance is reserved. Raising these counters allocates no memory. Explicit
+caller limits still reject exhausted work; interpretation,
+frame tracking and function-local IR lifetimes are unchanged.
+
+`WPK_FORK_PROGRESS=1` now enables elapsed-time diagnostics for native transform
+phases, facts loading/call resolution, sink planning, parameter analysis and
+normal summary solving. Function counters appear every 10,000 completed
+parameter bodies or summary evaluations. Local work failures identify the
+original function, requested work, remaining work and allowed limit. These
+diagnostics go to stderr and do not change emitted bytes. The next attempt
+retains the same 16 GiB physical guard and 30-minute deadline.
+
+Before that retry, all 654 instrumenter tests passed. Fourteen complete
+controlled transforms and fourteen separate Node validators also passed with
+the revised defaults and progress enabled. All output hashes match the
+historical controlled comparison within each backend. This is a regression
+check, not a new three-repeat memory comparison. Its evidence is in
+`.context/native-work-controlled-smoke/`; the exact executable and 198 source
+files are in `.context/native-codex-progress-build/`. Executable SHA-256:
+
+```
+e28dc9b2727199a74db1763d9f5a21e4a84fc1e57a9354cc2aee10453c140fa4
+```

@@ -36,6 +36,8 @@ pub fn instrument(input: &[u8], options: &Options, mut limits: Limits) -> Result
         std::env::var_os("WPK_FORK_SIZE_ATTRIBUTION").is_none(),
         "native size attribution is not implemented; select the explicit Walrus backend for that report"
     );
+    let progress = crate::progress::Progress::new("transform");
+    progress.note(format_args!("analysis, {} input bytes", input.len()));
     let analysis = analyze(input, options, limits.analysis)?;
     let mut raw = ArtifactSpool::new(limits.output_bytes)?;
     if !analysis.decision.participates {
@@ -53,7 +55,9 @@ pub fn instrument(input: &[u8], options: &Options, mut limits: Limits) -> Result
         .emission
         .max_spooled_section_bytes
         .min(limits.output_bytes);
+    progress.note(format_args!("freeze plan"));
     let (mut pipeline, decision) = analysis.freeze(limits.pipeline)?;
+    progress.note(format_args!("emission"));
     let emission = pipeline.emit(&mut raw)?;
     metadata::write(
         pipeline.runtime(),
@@ -64,6 +68,7 @@ pub fn instrument(input: &[u8], options: &Options, mut limits: Limits) -> Result
     )?;
     drop(pipeline);
     let raw = raw.freeze()?;
+    progress.note(format_args!("declare features"));
     let mut declared = ArtifactSpool::new(limits.output_bytes)?;
     crate::target_features::write_declared_features(
         raw.bytes(),
@@ -72,7 +77,12 @@ pub fn instrument(input: &[u8], options: &Options, mut limits: Limits) -> Result
     )?;
     drop(raw);
     let bytes = declared.freeze()?;
+    progress.note(format_args!(
+        "validate, {} output bytes",
+        bytes.bytes().len()
+    ));
     validate(bytes.bytes())?;
+    progress.note(format_args!("complete"));
     Ok(Artifact {
         bytes,
         decision,

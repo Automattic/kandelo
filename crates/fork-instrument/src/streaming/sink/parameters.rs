@@ -16,7 +16,7 @@ pub struct ParameterLimits {
 impl Default for ParameterLimits {
     fn default() -> Self {
         Self {
-            work: 10_000_000usize.saturating_mul(1_000),
+            work: super::DEFAULT_TOTAL_WORK_LIMIT,
         }
     }
 }
@@ -39,6 +39,8 @@ impl Program<'_, '_> {
         eval_limits: Limits,
         limits: ParameterLimits,
     ) -> Result<ParameterReport> {
+        let progress = crate::progress::Progress::new("parameters");
+        progress.note(format_args!("start, {} functions", self.functions.len()));
         self.parameters_ready.set(false);
         self.store
             .db
@@ -98,8 +100,18 @@ impl Program<'_, '_> {
             }
             transaction.commit()?;
             report.functions += 1;
+            if report.functions % 10_000 == 0 {
+                progress.note(format_args!(
+                    "{} functions complete, function {}, {} work units",
+                    report.functions, index, report.work_steps,
+                ));
+            }
         }
         self.parameters_ready.set(true);
+        progress.note(format_args!(
+            "complete, {} functions, {} work units",
+            report.functions, report.work_steps,
+        ));
         Ok(report)
     }
 

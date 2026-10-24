@@ -33,7 +33,10 @@ pub fn evaluate(
     );
     ensure!(
         body.instructions.len() <= limits.work,
-        "sink interpretation exceeds work budget"
+        "sink interpretation exceeds work budget for function {} ({} instructions, limit {})",
+        body.function,
+        body.instructions.len(),
+        limits.work,
     );
     let (params, results) = signature(scan, BlockType::FuncType(body.type_index));
     // WHY: unused trailing declarations are not abstract state. Retain source
@@ -202,10 +205,8 @@ pub fn evaluate(
         environment,
         options,
         limits,
-        work: limits
-            .work
-            .checked_sub(body.instructions.len())
-            .context("sink interpretation exceeds work budget")?,
+        // The instruction-count check above establishes this subtraction.
+        work: limits.work - body.instructions.len(),
         labels: BTreeMap::new(),
         legacy_entries: BTreeMap::new(),
         handlers: Vec::new(),
@@ -269,10 +270,13 @@ struct Walk<'a, 'b, E> {
 
 impl<E: Environment> Walk<'_, '_, E> {
     fn charge(&mut self, n: usize) -> Result<()> {
-        self.work = self
-            .work
-            .checked_sub(n)
-            .context("sink interpretation exceeds work budget")?;
+        self.work = self.work.checked_sub(n).with_context(|| {
+            format!(
+                "sink interpretation exceeds work budget for function {} \
+                 (requested {}, remaining {}, limit {})",
+                self.body.function, n, self.work, self.limits.work,
+            )
+        })?;
         Ok(())
     }
 

@@ -25,7 +25,7 @@ impl Default for SummaryLimits {
         Self {
             metadata_bytes: 128 * 1024 * 1024,
             evaluations_per_function: 50,
-            work: 10_000_000usize.saturating_mul(1_000),
+            work: super::DEFAULT_TOTAL_WORK_LIMIT,
         }
     }
 }
@@ -58,7 +58,9 @@ pub fn solve_summaries<'a>(
     limits: SummaryLimits,
     mut evaluate: impl FnMut(&FunctionIr<'a>, SummaryContext<'_>) -> Result<Evaluation>,
 ) -> Result<Summaries> {
+    let progress = crate::progress::Progress::new("summaries");
     let n = program.functions.len();
+    progress.note(format_args!("start, {n} functions"));
     // Includes the result vectors, queue/flags, a worst-case unsupported set,
     // and one caller group. Module headers/IR have their own separate limits.
     ensure!(
@@ -98,6 +100,15 @@ pub fn solve_summaries<'a>(
                 "sink summaries exceed evaluation budget"
             );
             output.evaluations += 1;
+            if output.evaluations % 10_000 == 0 {
+                progress.note(format_args!(
+                    "{} evaluations, function {}, {} queued, {} work units",
+                    output.evaluations,
+                    function,
+                    queue.len(),
+                    output.work_steps,
+                ));
+            }
             let remaining = limits
                 .work
                 .checked_sub(output.work_steps)
@@ -170,5 +181,9 @@ pub fn solve_summaries<'a>(
             }
         }
     }
+    progress.note(format_args!(
+        "complete, {} evaluations, {} work units",
+        output.evaluations, output.work_steps,
+    ));
     Ok(output)
 }

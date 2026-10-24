@@ -36,7 +36,7 @@ impl Default for SinkLimits {
             interpreter: InterpreterLimits::default(),
             summaries: SummaryLimits::default(),
             metadata_bytes: 128 * 1024 * 1024,
-            work: 10_000_000usize.saturating_mul(1_000),
+            work: super::DEFAULT_TOTAL_WORK_LIMIT,
             evaluations_per_function: 50,
         }
     }
@@ -90,11 +90,14 @@ pub fn plan_sinks(
         n <= limits.metadata_bytes / 192,
         "native sink plan exceeds resident metadata budget"
     );
+    let progress = crate::progress::Progress::new("sinks");
+    progress.note(format_args!("policy"));
     let plan = PolicyPlan::build(program, policy, limits.policy)?;
     if !plan.supports_tag_masks() {
         return Ok(None);
     }
     let mut engine = SinkInterpreter::new(&plan, limits.interpreter)?;
+    progress.note(format_args!("normal summaries"));
     let summaries = engine.normal_summaries(SummaryLimits {
         work: limits.summaries.work.min(limits.work),
         ..limits.summaries
@@ -124,13 +127,20 @@ pub fn plan_sinks(
         vfork: vec![false; n],
         longjmp: plan.longjmp_buffer_bits(),
     };
+    progress.note(format_args!("targets"));
     if !planner.targets()? {
         return Ok(None);
     }
+    progress.note(format_args!("closure"));
     planner.closure()?;
+    progress.note(format_args!("vforks"));
     planner.vforks()?;
+    progress.note(format_args!("catchers"));
     planner.catchers()?;
-    planner.children(today).map(Some)
+    progress.note(format_args!("children"));
+    let result = planner.children(today)?;
+    progress.note(format_args!("complete"));
+    Ok(Some(result))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
