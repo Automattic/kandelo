@@ -13,6 +13,27 @@ BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-
 # shellcheck source=/dev/null
 source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 
+# Built artifacts a prepared test workspace must contain, one path per line.
+# Tests derive their placeholder fixtures from this list
+# (`--list-required-artifacts`) instead of keeping a copy that can drift.
+required_artifacts() {
+    printf '%s\n' \
+        local-binaries/kernel.wasm \
+        host/wasm/rootfs.vfs.zst \
+        examples/gencat.wasm \
+        examples/pthread_channel_reuse_test.wasm \
+        examples/wait_lifecycle_test.wasm \
+        examples/orphan_reparent_test.wasm \
+        benchmarks/wasm/pipe-throughput.wasm \
+        benchmarks/wasm/file-throughput.wasm \
+        benchmarks/wasm/syscall-latency.wasm \
+        benchmarks/wasm/fork-bench.wasm \
+        benchmarks/wasm/clone-bench.wasm \
+        benchmarks/wasm/spawn-bench.wasm \
+        benchmarks/wasm/hello.wasm
+    browser_memory64_fixture_outputs
+}
+
 publication_blockers=""
 staging_shell_handoff=""
 out=""
@@ -25,6 +46,10 @@ while [ "$#" -gt 0 ]; do
             }
             publication_blockers="$2"
             shift 2
+            ;;
+        --list-required-artifacts)
+            required_artifacts
+            exit 0
             ;;
         --staging-shell-handoff)
             [ "$#" -ge 2 ] || {
@@ -50,6 +75,7 @@ while [ "$#" -gt 0 ]; do
 done
 if [ -z "$out" ]; then
     echo "usage: $0 [--publication-blockers <report.json>] [--staging-shell-handoff <dir>] <out.tar.zst>" >&2
+    echo "       $0 --list-required-artifacts" >&2
     exit 2
 fi
 
@@ -64,26 +90,11 @@ if [ ! -x "$xtask_path" ]; then
     exit 1
 fi
 
-required_items=(
-    local-binaries/kernel.wasm
-    host/wasm/rootfs.vfs.zst
-    examples/gencat.wasm
-    examples/pthread_channel_reuse_test.wasm
-    examples/wait_lifecycle_test.wasm
-    examples/orphan_reparent_test.wasm
-    benchmarks/wasm/pipe-throughput.wasm
-    benchmarks/wasm/file-throughput.wasm
-    benchmarks/wasm/syscall-latency.wasm
-    benchmarks/wasm/fork-bench.wasm
-    benchmarks/wasm/clone-bench.wasm
-    benchmarks/wasm/spawn-bench.wasm
-    benchmarks/wasm/hello.wasm
-)
-memory64_example_outputs="$(browser_memory64_fixture_outputs)"
-while IFS= read -r output; do
-    required_items+=("$output")
-done <<< "$memory64_example_outputs"
 
+required_items=()
+while IFS= read -r required; do
+    required_items+=("$required")
+done < <(required_artifacts)
 for required in "${required_items[@]}"; do
     if [ ! -f "$required" ]; then
         echo "pack-ci-test-workspace: missing required artifact: $required" >&2
