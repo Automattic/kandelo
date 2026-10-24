@@ -59,13 +59,13 @@ reproduction and correct observable failure; none is inferred from a stub.
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Monotonic guest names and per-process WebGL maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
-| G02 | Context-local full state; ES2 state tables | Client encoder state and strings belong to the current EGL record; host object groups separate shared names from local state and containers, with final group retirement and program-reference handling. Shared binding/container deletion references, rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/viewport rendering; native thread-transfer/isolation | partial |
+| G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted texture/RBO names retain binding/FBO references and program lifetime spans current owners. Buffer/VAO references, rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Chunked encoder and transient client staging; bound index buffer plus client attributes rejected | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core reflection and complete executable/attribute/uniform validation still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
-| G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user FBO identities remain distinct; read/draw bindings replay separately; bound deletion restores the current default. Full attachment/query/storage and CTS coverage remains open | encoder, registry, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
+| G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; attachment records retain deleted texture/RBO storage, including unbound containers and separate packed depth/stencil points. Full query/storage/CTS coverage remains open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
@@ -869,3 +869,47 @@ claim as a before/after compatibility result.
 No wire or ABI version changed. No installed artifacts were rebuilt; full
 guest CTS/compositor, browser-memory and POSIX validation remain required
 after normal provisioning. Performance was not measured.
+
+### Deleted texture and renderbuffer references
+
+[GLES2 Appendix C](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf)
+distinguishes a deleted name from the object still retained by another
+context binding or container. The host now tracks texture/renderbuffer
+retirement and FBO attachment identity separately from the name maps.
+Deletion clears only the caller's bindings and bound FBO attachments;
+unbound containers retain their storage. Reusing the name constructs a
+distinct native object. Queries on surviving bindings preserve the old
+name until rebinding releases it. Packed depth/stencil points retain
+independent references. Rejected native attachment updates preserve the
+prior record. BO-owned texture tags do not replace the kernel's canonical
+retirement authority or cause a second native deletion.
+
+Three source regressions fail on `8c69689ecd` (50 pass, 3 fail):
+`.context/graphics-image-delete-baseline.log`. The enhanced shared-texture
+browser case also fails on that revision in all three engines, as does the
+new shared-renderbuffer case:
+`.context/graphics-image-delete-baseline-browser.log` and
+`.context/graphics-rbo-delete-baseline-browser.log` (3 failures each).
+Those browser runs import the exact archived pre-change WebGL source tree
+under `.context/graphics-image-delete-before/`; no baseline assertion was
+weakened.
+
+On the repaired ABI 55 source tree, 306 host tests in 16 files and both
+Node/browser declarations pass:
+`.context/graphics-image-delete-verified-host.log`. Thirty real WebGL
+cases pass across Chromium, Firefox and WebKit without skips:
+`.context/graphics-image-delete-final-browser.log`. The texture case
+renders green through a surviving deleted binding while the reused name
+refers to new blue storage, then retires the old native object on rebinding.
+The renderbuffer case checks unbound FBO storage, another context's old
+binding, independent replacement storage and final group retirement. These
+are direct host-internal group tests, not guest or forwarded sharing.
+The browser protocol/memory-boundary checks also pass all ten cases:
+`.context/graphics-image-delete-memory-boundary.log`.
+
+Shared buffer/VAO references, logical image sibling/sampler identity and
+public EGL/group/display-generation routing remain ordinary open work.
+This does not complete the sharing baseline. No wire change or artifact
+rebuild occurred; ABI remains 55. Full guest CTS/compositor, browser-memory
+and POSIX validation remain required in the deferred provisioning phase.
+Performance was not measured.

@@ -35,6 +35,10 @@ export type GlSharedObjects = {
    *  reach, so host- and guest-assigned ids share `textures` without
    *  collision. */
   nextForeignTexId: number;
+  retiredTextures: Map<WebGLTexture, number>;
+  retiredRenderbuffers: Map<WebGLRenderbuffer, number>;
+  /** Ownership tag only: BO retirement remains the kernel's explicit fence. */
+  externallyOwnedTextures: WeakSet<WebGLTexture>;
 };
 
 export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding> };
@@ -46,6 +50,7 @@ export function createGlObjectGroup(): GlObjectGroup {
     programShaders: new Map(), programAttributeBindings: new Map(),
     uniformLocations: new Map(), uniformLocationPrograms: new Map(), nextUniformLoc: 0,
     foreignTextures: new Map(), nextForeignTexId: 0x4000_0000,
+    retiredTextures: new Map(), retiredRenderbuffers: new Map(), externallyOwnedTextures: new WeakSet(),
   };
 }
 

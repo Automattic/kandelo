@@ -3897,8 +3897,15 @@ contexts on the same native renderer; guest EGL sharing is not wired to it
 yet. Context state, errors, VAOs and FBO containers stay local. Group
 resources survive member retirement until the last owner ends; pending
 program deletion and retained link executables consider every member.
-Shared buffer/texture deletion still needs binding/container references,
-and kernel display-generation authority plus C group routing remain open.
+Deleted texture/renderbuffer names now retain their native objects while
+another context binding or FBO attachment still refers to them. Deletion
+unbinds only the caller and detaches only its bound FBO attachments;
+unbound FBOs retain storage. Reusing a name creates a distinct object, while
+surviving bindings still query their original name. Packed depth/stencil
+attachments retain each point independently. Native retirement follows the
+last reference; BO-owned textures retain their separate canonical owner.
+Shared buffer/VAO references, image sibling sampler identity and kernel
+display-generation authority plus C group routing remain open.
 Shader/program attachment records retain deleted shaders and current
 programs until their last logical reference releases. Native program deletion
 is deferred while the program is current in its owner, allowing muxer replay

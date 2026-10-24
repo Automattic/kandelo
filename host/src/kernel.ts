@@ -2914,6 +2914,7 @@ export class WasmPosixKernel {
           if (gpu) {
             if (b.gl !== gpu.gl) return -5;                     // EIO
             b.textures.set(gpu.texId, gpu.tex);
+            b.externallyOwnedTextures.add(gpu.tex);
             return gpu.texId;
           }
           const dims = this.bos.dims(boId);

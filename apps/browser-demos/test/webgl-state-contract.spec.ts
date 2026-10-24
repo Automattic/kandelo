@@ -4,9 +4,72 @@ import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./sup
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
+test("deleted shared renderbuffers retain bindings and unbound framebuffer storage", async ({ page }) => {
+  await page.goto("/trap-signal-test.html");
+  const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
+  const result = await page.evaluate(async sourceRoot => {
+    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const { GlContextRegistry } = await import(base+"registry.ts");
+    const { GlMuxer } = await import(base+"muxer.ts");
+    const { decodeAndDispatch } = await import(base+"bridge.ts");
+    const { runGlQuery } = await import(base+"query.ts");
+    const O = await import(base+"ops.ts");
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    document.body.replaceChildren(canvas);
+    const gl = canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true});
+    if(!gl) throw new Error("WebGL2 is required");
+    const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+    const [a,b] = [101,102].map(sessionId => {
+      reg.bind({pid:92,sessionId,cmdbufAddr:0,cmdbufLen:1024});
+      const owner = reg.get(92,sessionId)!;
+      owner.gl = gl; owner.contextId = sessionId; owner.cmdbufView = new Uint8Array(1024); return owner;
+    });
+    if(!reg.shareObjects(92,102,101)) throw new Error("group construction failed");
+    const send = (owner: typeof a, op: number, words: number[], floats = false) => {
+      mux.switchTo(owner); const view = new DataView(owner.cmdbufView!.buffer);
+      view.setUint16(0,op,true); view.setUint16(2,words.length*4,true);
+      words.forEach((word,i) => floats ? view.setFloat32(4+i*4,word,true) : view.setUint32(4+i*4,word,true));
+      if(decodeAndDispatch(owner,0,4+words.length*4)) throw new Error("command failed");
+    };
+    const query = (owner: typeof a, op: number, words: number[] = []) => {
+      mux.switchTo(owner); const input = new Uint8Array(words.length*4), out = new Uint8Array(4);
+      words.forEach((word,i) => new DataView(input.buffer).setUint32(i*4,word,true));
+      if(runGlQuery(owner,op,input,out) !== 4) throw new Error("query failed"); return out;
+    };
+    const number = (owner: typeof a, op: number, words: number[] = []) => new DataView(query(owner,op,words).buffer).getUint32(0,true);
+    const attach = (owner: typeof a, name: number) => send(owner,O.OP_FRAMEBUFFER_RENDERBUFFER,[gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.RENDERBUFFER,name]);
+    const pixels = (owner: typeof a) => [...query(owner,O.QOP_READ_PIXELS,[0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE])];
+    send(a,O.OP_GEN_RENDERBUFFERS,[1,71]); send(a,O.OP_BIND_RENDERBUFFER,[gl.RENDERBUFFER,71]);
+    send(a,O.OP_RENDERBUFFER_STORAGE,[gl.RENDERBUFFER,gl.RGBA4,1,1]); const old = a.rbos.get(71)!;
+    send(a,O.OP_BIND_FRAMEBUFFER,[gl.FRAMEBUFFER,31]); attach(a,71);
+    send(a,O.OP_CLEAR_COLOR,[0,1,0,1],true); send(a,O.OP_CLEAR,[gl.COLOR_BUFFER_BIT]);
+    send(b,O.OP_BIND_RENDERBUFFER,[gl.RENDERBUFFER,71]);
+    send(b,O.OP_BIND_FRAMEBUFFER,[gl.FRAMEBUFFER,32]); attach(b,71);
+    send(b,O.OP_BIND_FRAMEBUFFER,[gl.FRAMEBUFFER,0]);
+    send(a,O.OP_DELETE_RENDERBUFFERS,[1,71]);
+    const ownerStatus = number(a,O.QOP_CHECK_FB_STATUS,[gl.FRAMEBUFFER]);
+    const retained = gl.isRenderbuffer(old);
+    send(a,O.OP_BIND_RENDERBUFFER,[gl.RENDERBUFFER,71]);
+    send(a,O.OP_RENDERBUFFER_STORAGE,[gl.RENDERBUFFER,gl.RGBA4,1,1]); const replacement = a.rbos.get(71)!;
+    send(a,O.OP_BIND_FRAMEBUFFER,[gl.FRAMEBUFFER,33]); attach(a,71);
+    send(a,O.OP_CLEAR_COLOR,[0,0,1,1],true); send(a,O.OP_CLEAR,[gl.COLOR_BUFFER_BIT]);
+    send(b,O.OP_BIND_FRAMEBUFFER,[gl.FRAMEBUFFER,32]);
+    const oldPixels = pixels(b), oldName = number(b,O.QOP_GET_INTEGERV,[gl.RENDERBUFFER_BINDING]);
+    attach(b,0); const bindingStillRetains = gl.isRenderbuffer(old);
+    send(b,O.OP_BIND_RENDERBUFFER,[gl.RENDERBUFFER,0]); const oldRetired = !gl.isRenderbuffer(old);
+    const newPixels = pixels(a), errors = [number(a,O.QOP_GET_ERROR),number(b,O.QOP_GET_ERROR)];
+    mux.invalidateCurrent(); reg.destroyContext(92,101);
+    const groupRetainsNew = gl.isRenderbuffer(replacement);
+    mux.invalidateCurrent(); reg.destroyContext(92,102);
+    return {ownerStatus,retained,oldPixels,oldName,bindingStillRetains,oldRetired,newPixels,errors,groupRetainsNew,newRetired:!gl.isRenderbuffer(replacement)};
+  },root);
+  expect(result).toEqual({ownerStatus:0x8cd7,retained:true,oldPixels:[0,255,0,255],oldName:71,
+    bindingStillRetains:true,oldRetired:true,newPixels:[0,0,255,255],errors:[0,0],groupRetainsNew:true,newRetired:true});
+});
+
 test("internal object groups share textures and programs while context state and retirement stay separate", async ({ page }) => {
   await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
   const result = await page.evaluate(async sourceRoot => {
     const base = `/@fs/${sourceRoot}host/src/webgl/`;
     const { GlContextRegistry } = await import(base+"registry.ts");
@@ -76,6 +139,18 @@ test("internal object groups share textures and programs while context state and
     send(a,O.OP_VIEWPORT,[0,0,4,4]); send(b,O.OP_VIEWPORT,[0,0,2,2]);
     const pixels: number[][] = [];
     for(const owner of [a,b,a]) { send(owner,O.OP_DRAW_ARRAYS,[gl.POINTS,0,1]); pixels.push([...query(owner,O.QOP_READ_PIXELS,[1,1,1,1,gl.RGBA,gl.UNSIGNED_BYTE])]); }
+    const deletedTexture = a.textures.get(1)!;
+    send(a,O.OP_DELETE_TEXTURES,[1,1]);
+    const retainedDeletedBinding = gl.isTexture(deletedTexture);
+    const deletedBoundName = number(b,O.QOP_GET_INTEGERV,[gl.TEXTURE_BINDING_2D]);
+    send(a,O.OP_BIND_TEXTURE,[gl.TEXTURE_2D,1]);
+    send(a,O.OP_TEX_PARAMETERI,[gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST]);
+    send(a,O.OP_TEX_PARAMETERI,[gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST]);
+    send(a,O.OP_TEX_IMAGE_2D,[gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,4],new Uint8Array([0,0,255,255]));
+    for(const owner of [b,a]) { send(owner,O.OP_DRAW_ARRAYS,[gl.POINTS,0,1]); pixels.push([...query(owner,O.QOP_READ_PIXELS,[1,1,1,1,gl.RGBA,gl.UNSIGNED_BYTE])]); }
+    send(b,O.OP_BIND_TEXTURE,[gl.TEXTURE_2D,1]);
+    send(b,O.OP_DRAW_ARRAYS,[gl.POINTS,0,1]); pixels.push([...query(b,O.QOP_READ_PIXELS,[1,1,1,1,gl.RGBA,gl.UNSIGNED_BYTE])]);
+    const retiredDeletedTexture = !gl.isTexture(deletedTexture);
     const texture = a.textures.get(1)!, program = a.programs.get(13)!;
     send(a,O.OP_DELETE_PROGRAM,[13]); send(a,O.OP_USE_PROGRAM,[0]);
     mux.invalidateCurrent(); reg.destroyContext(91,101);
@@ -83,9 +158,12 @@ test("internal object groups share textures and programs while context state and
     send(b,O.OP_DRAW_ARRAYS,[gl.POINTS,0,1]); pixels.push([...query(b,O.QOP_READ_PIXELS,[1,1,1,1,gl.RGBA,gl.UNSIGNED_BYTE])]);
     const peerViewport = [...b.shadow.viewport], errors = number(b,O.QOP_GET_ERROR);
     send(b,O.OP_USE_PROGRAM,[0]); mux.invalidateCurrent(); reg.destroyContext(91,102);
-    return {initialPeerProgram,sharedUniform,pixels,peerViewport,survived,retired:!gl.isTexture(texture)&&!gl.isProgram(program),errors};
+    return {initialPeerProgram,sharedUniform,pixels,peerViewport,survived,retired:!gl.isTexture(texture)&&!gl.isProgram(program),errors,
+      retainedDeletedBinding,deletedBoundName,retiredDeletedTexture};
   },root);
-  expect(result).toEqual({initialPeerProgram:0,sharedUniform:1,pixels:Array(4).fill([0,255,0,255]),peerViewport:[0,0,2,2],survived:true,retired:true,errors:0});
+  expect(result).toEqual({initialPeerProgram:0,sharedUniform:1,
+    pixels:[...Array(4).fill([0,255,0,255]),...Array(3).fill([0,0,255,255])],peerViewport:[0,0,2,2],survived:true,retired:true,errors:0,
+    retainedDeletedBinding:true,deletedBoundName:1,retiredDeletedTexture:true});
 });
 
 test("surfaceless framebuffer zero rejects rendering while user framebuffers remain usable", async ({ page }) => {

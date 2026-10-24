@@ -391,12 +391,14 @@ function queryParameter(b: GlBinding, pname: number): unknown {
       return nameForObject(b.buffers, value as WebGLBuffer | null);
     case 0x8069: // TEXTURE_BINDING_2D
     case 0x8514: // TEXTURE_BINDING_CUBE_MAP
-      return nameForObject(b.textures, value as WebGLTexture | null);
+      return nameForObject(b.textures, value as WebGLTexture | null)
+        || b.retiredTextures.get(value as WebGLTexture) || 0;
     case 0x8ca6: // FRAMEBUFFER_BINDING
     case 0x8caa: // READ_FRAMEBUFFER_BINDING
       return nameForObject(b.fbos, value as WebGLFramebuffer | null);
     case 0x8ca7: // RENDERBUFFER_BINDING
-      return nameForObject(b.rbos, value as WebGLRenderbuffer | null);
+      return nameForObject(b.rbos, value as WebGLRenderbuffer | null)
+        || b.retiredRenderbuffers.get(value as WebGLRenderbuffer) || 0;
     default: return value;
   }
 }

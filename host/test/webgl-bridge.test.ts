@@ -248,6 +248,128 @@ describe("logical framebuffer bindings", () => {
   });
 });
 
+describe("shared image object deletion", () => {
+  function setup() {
+    const gl = new RecordingGl(), reg = new GlContextRegistry();
+    const bindings = [11,12].map(sessionId => {
+      reg.bind({pid:7,sessionId,cmdbufAddr:0,cmdbufLen:1024});
+      const b = reg.get(7,sessionId)!; b.gl = gl as unknown as WebGL2RenderingContext;
+      b.contextId = sessionId; b.cmdbufView = new Uint8Array(1024); return b;
+    });
+    expect(reg.shareObjects(7,12,11)).toBe(true);
+    const send = (b: typeof bindings[0], op: number, words: number[]) => {
+      const t = new Tlv(b.cmdbufView!.buffer), { p } = t.op(op,words.length*4);
+      words.forEach((word,index) => t.view.setUint32(p+index*4,word,true));
+      expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    };
+    return { gl,reg,a:bindings[0],b:bindings[1],send };
+  }
+
+  it("keeps another context's deleted texture binding and name through name reuse", () => {
+    const { gl,a,b,send } = setup();
+    send(a,O.OP_GEN_TEXTURES,[1,71]); const old = a.textures.get(71)!;
+    send(a,O.OP_BIND_TEXTURE,[0x0de1,71]); send(b,O.OP_BIND_TEXTURE,[0x0de1,71]);
+    send(a,O.OP_DELETE_TEXTURES,[1,71]);
+    expect(gl.log.filter(([name]) => name === "deleteTexture")).toEqual([]);
+    expect(a.textures.has(71)).toBe(false); expect(a.shadow.textureUnits[0]).toBeNull();
+    expect(b.shadow.textureUnits[0]).toBe(old);
+    const input = new Uint8Array(4), output = new Uint8Array(4);
+    new DataView(input.buffer).setUint32(0,0x8069,true);
+    gl.getParameter = () => old as any;
+    expect(runGlQuery(b,O.QOP_GET_INTEGERV,input,output)).toBe(4);
+    expect(new DataView(output.buffer).getUint32(0,true)).toBe(71);
+    send(a,O.OP_BIND_TEXTURE,[0x0de1,71]); const replacement = a.textures.get(71)!;
+    expect(replacement).toBeTruthy(); expect(replacement).not.toBe(old);
+    send(b,O.OP_BIND_TEXTURE,[0x0de1,0]);
+    expect(gl.log.filter(([name]) => name === "deleteTexture")).toEqual([["deleteTexture",[old]]]);
+    expect(a.textures.get(71)).toBe(replacement);
+  });
+
+  it("retains an unbound FBO's deleted texture until the container is destroyed", () => {
+    const { gl,a,send } = setup();
+    send(a,O.OP_GEN_TEXTURES,[1,71]); const texture = a.textures.get(71)!;
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);
+    send(a,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,71,0]);
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,0]); send(a,O.OP_DELETE_TEXTURES,[1,71]);
+    expect(gl.log.filter(([name]) => name === "deleteTexture")).toEqual([]);
+    send(a,O.OP_DELETE_FRAMEBUFFERS,[1,31]);
+    expect(gl.log.filter(([name]) => name === "deleteTexture")).toEqual([["deleteTexture",[texture]]]);
+  });
+
+  it("detaches a deleted renderbuffer only from the caller's bound FBO", () => {
+    const { gl,a,b,send } = setup();
+    send(a,O.OP_GEN_RENDERBUFFERS,[1,71]); const renderbuffer = a.rbos.get(71)!;
+    send(a,O.OP_BIND_RENDERBUFFER,[0x8d41,71]);
+    for(const [owner,framebuffer] of [[a,31],[b,32]] as const) {
+      send(owner,O.OP_BIND_FRAMEBUFFER,[0x8d40,framebuffer]);
+      send(owner,O.OP_FRAMEBUFFER_RENDERBUFFER,[0x8d40,0x8ce0,0x8d41,71]);
+    }
+    send(b,O.OP_BIND_FRAMEBUFFER,[0x8d40,0]);
+    send(a,O.OP_DELETE_RENDERBUFFERS,[1,71]);
+    expect(gl.log.filter(([name]) => name === "deleteRenderbuffer")).toEqual([]);
+    expect(a.shadow.renderbuffer).toBeNull(); expect(a.rbos.has(71)).toBe(false);
+    expect(gl.log.filter(([name,args]) => name === "framebufferRenderbuffer" && args[3] === null))
+      .toEqual([["framebufferRenderbuffer",[0x8ca9,0x8ce0,0x8d41,null]]]);
+    send(b,O.OP_BIND_FRAMEBUFFER,[0x8d40,32]);
+    send(b,O.OP_FRAMEBUFFER_RENDERBUFFER,[0x8d40,0x8ce0,0x8d41,0]);
+    expect(gl.log.filter(([name]) => name === "deleteRenderbuffer")).toEqual([["deleteRenderbuffer",[renderbuffer]]]);
+  });
+
+  it("retains packed depth/stencil storage until both attachment points are released", () => {
+    const { gl,a,send } = setup();
+    send(a,O.OP_GEN_RENDERBUFFERS,[1,71]); const renderbuffer = a.rbos.get(71)!;
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);
+    send(a,O.OP_FRAMEBUFFER_RENDERBUFFER,[0x8d40,0x821a,0x8d41,71]);
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,0]); send(a,O.OP_DELETE_RENDERBUFFERS,[1,71]);
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);
+    send(a,O.OP_FRAMEBUFFER_RENDERBUFFER,[0x8d40,0x8d00,0x8d41,0]);
+    expect(gl.log.filter(([name]) => name === "deleteRenderbuffer")).toEqual([]);
+    send(a,O.OP_FRAMEBUFFER_RENDERBUFFER,[0x8d40,0x8d20,0x8d41,0]);
+    expect(gl.log.filter(([name]) => name === "deleteRenderbuffer")).toEqual([["deleteRenderbuffer",[renderbuffer]]]);
+  });
+
+  it("keeps attachment ownership after a rejected native replacement", () => {
+    const { gl,a,send } = setup();
+    send(a,O.OP_GEN_TEXTURES,[1,71]); const texture = a.textures.get(71)!;
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);
+    send(a,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,71,0]);
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,0]); send(a,O.OP_DELETE_TEXTURES,[1,71]);
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);
+    let pending = 0;
+    gl.getError = () => { const result = pending; pending = 0; return result; };
+    const attach = gl.framebufferTexture2D;
+    gl.framebufferTexture2D = () => { pending = 0x502; };
+    send(a,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,0,0]);
+    expect(a.errors).toEqual([0x502]);
+    expect(gl.log.filter(([name]) => name === "deleteTexture")).toEqual([]);
+    gl.framebufferTexture2D = attach;
+    send(a,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,0,0]);
+    expect(gl.log.filter(([name]) => name === "deleteTexture")).toEqual([["deleteTexture",[texture]]]);
+  });
+
+  it("reclaims a deleted attachment when its last retaining context ends", () => {
+    const { gl,reg,a,b,send } = setup();
+    send(a,O.OP_GEN_TEXTURES,[1,71]); const texture = a.textures.get(71)!;
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);
+    send(a,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,71,0]);
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,0]); send(a,O.OP_DELETE_TEXTURES,[1,71]);
+    reg.destroyContext(7,11);
+    expect(gl.log.filter(([name]) => name === "deleteTexture")).toEqual([["deleteTexture",[texture]]]);
+    expect(b.textures.size).toBe(0);
+    reg.destroyContext(7,12);
+    expect(gl.log.filter(([name]) => name === "deleteTexture")).toHaveLength(1);
+  });
+
+  it("leaves BO-owned native texture retirement to its canonical owner", () => {
+    const { gl,a,send } = setup();
+    send(a,O.OP_GEN_TEXTURES,[1,71]); const texture = a.textures.get(71)!;
+    a.externallyOwnedTextures.add(texture);
+    send(a,O.OP_DELETE_TEXTURES,[1,71]);
+    expect(a.textures.has(71)).toBe(false); expect(a.retiredTextures.size).toBe(0);
+    expect(gl.log.filter(([name]) => name === "deleteTexture")).toEqual([]);
+  });
+});
+
 describe("cmdbuf decoder — TLV walker", () => {
   it("rejects a malformed trailing command before changing any GL state", () => {
     const gl = new RecordingGl();

@@ -24,6 +24,7 @@ import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
 import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget } from "./framebuffer.js";
+import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, setImageAttachment } from "./image-references.js";
 import {
   GL_BACK,
   GL_FRONT,
@@ -87,7 +88,7 @@ export function decodeAndDispatch(
   // trailing record must not leave a partially executed, rejected batch.
   const validation = validateCommandBuffer(b.cmdbufView, offset, length);
   if (validation !== GL_SUBMIT_OK) return validation;
-  return walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
+  const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
     try {
       dispatch(b.gl!, b, payload, 0, op);
       return GL_SUBMIT_OK;
@@ -96,6 +97,8 @@ export function decodeAndDispatch(
       return GL_SUBMIT_EIO;
     }
   });
+  collectRetiredImages(b);
+  return result;
 }
 
 export function validateCommandBuffer(
@@ -713,19 +716,25 @@ function dispatch(
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.textures.get(name);
-        if (obj) gl.deleteTexture(obj);
-        b.shadow.textureUnits = b.shadow.textureUnits.map(tex => tex === obj ? null : tex);
-        b.shadow.cubeTextureUnits = b.shadow.cubeTextureUnits.map(tex => tex === obj ? null : tex);
-        b.textures.delete(name);
+        deleteTextureName(b,name);
       }
       return;
     }
     case O.OP_BIND_TEXTURE: {
       const target = v.getUint32(p, true);
       const texName = v.getUint32(p + 4, true);
-      const tex = b.textures.get(texName) ?? null;
-      gl.bindTexture(target, tex);
+      if (target !== 0x0de1 && target !== 0x8513) { recordGlError(b,0x500); return; }
+      let tex = b.textures.get(texName) ?? null;
+      const allocate = texName !== 0 && tex === null;
+      if (allocate && (!checkedGlCall(b, () => { tex = gl.createTexture(); }) || !tex)) {
+        if (tex) gl.deleteTexture(tex);
+        recordGlError(b,0x505); return;
+      }
+      if (!checkedGlCall(b, () => { gl.bindTexture(target,tex); })) {
+        if (allocate && tex) gl.deleteTexture(tex);
+        return;
+      }
+      if (allocate && tex) b.textures.set(texName,tex);
       const unit = b.shadow.activeTexture;
       if (unit >= 0 && unit < b.shadow.textureUnits.length) {
         if (target === 0x0de1) b.shadow.textureUnits[unit] = tex;
@@ -1185,6 +1194,7 @@ function dispatch(
           }
         } else if (obj) continue;
         b.fbos.delete(name);
+        if (obj) b.framebufferAttachments.delete(obj);
       }
       return;
     }
@@ -1219,8 +1229,11 @@ function dispatch(
       const attachment = v.getUint32(p + 4, true);
       const textarget = v.getUint32(p + 8, true);
       const tex = b.textures.get(v.getUint32(p + 12, true)) ?? null;
+      if (!tex && v.getUint32(p+12,true) !== 0) { recordGlError(b,0x502); return; }
       const level = v.getInt32(p + 16, true);
-      gl.framebufferTexture2D(target, attachment, textarget, tex, level);
+      if (!checkedGlCall(b, () => gl.framebufferTexture2D(target,attachment,textarget,tex,level))) return;
+      setImageAttachment(b,boundFramebuffer(b,target)!,attachment,
+        tex ? {kind:"texture",object:tex,target:textarget,level} : null);
       return;
     }
     case O.OP_GEN_RENDERBUFFERS: {
@@ -1236,17 +1249,27 @@ function dispatch(
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.rbos.get(name);
-        if (obj) gl.deleteRenderbuffer(obj);
-        if (obj === b.shadow.renderbuffer) b.shadow.renderbuffer = null;
-        b.rbos.delete(name);
+        deleteRenderbufferName(b,name);
       }
       return;
     }
-    case O.OP_BIND_RENDERBUFFER:
-      b.shadow.renderbuffer = b.rbos.get(v.getUint32(p + 4, true)) ?? null;
-      gl.bindRenderbuffer(v.getUint32(p, true), b.shadow.renderbuffer);
+    case O.OP_BIND_RENDERBUFFER: {
+      const target = v.getUint32(p,true), name = v.getUint32(p+4,true);
+      if (target !== 0x8d41) { recordGlError(b,0x500); return; }
+      let renderbuffer = b.rbos.get(name) ?? null;
+      const allocate = name !== 0 && !renderbuffer;
+      if (allocate && (!checkedGlCall(b, () => { renderbuffer = gl.createRenderbuffer(); }) || !renderbuffer)) {
+        if (renderbuffer) gl.deleteRenderbuffer(renderbuffer);
+        recordGlError(b,0x505); return;
+      }
+      if (!checkedGlCall(b, () => gl.bindRenderbuffer(target,renderbuffer))) {
+        if (allocate && renderbuffer) gl.deleteRenderbuffer(renderbuffer);
+        return;
+      }
+      if (allocate && renderbuffer) b.rbos.set(name,renderbuffer);
+      b.shadow.renderbuffer = renderbuffer;
       return;
+    }
     // Payload: u32 target, u32 internalformat, i32 width, i32 height
     case O.OP_RENDERBUFFER_STORAGE:
       gl.renderbufferStorage(
@@ -1264,7 +1287,10 @@ function dispatch(
       const attachment = v.getUint32(p + 4, true);
       const rbtarget = v.getUint32(p + 8, true);
       const rbo = b.rbos.get(v.getUint32(p + 12, true)) ?? null;
-      gl.framebufferRenderbuffer(target, attachment, rbtarget, rbo);
+      if (!rbo && v.getUint32(p+12,true) !== 0) { recordGlError(b,0x502); return; }
+      if (!checkedGlCall(b, () => gl.framebufferRenderbuffer(target,attachment,rbtarget,rbo))) return;
+      setImageAttachment(b,boundFramebuffer(b,target)!,attachment,
+        rbo ? {kind:"renderbuffer",object:rbo} : null);
       return;
     }
     case O.OP_DRAW_BUFFER: {
