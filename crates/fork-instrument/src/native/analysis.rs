@@ -88,8 +88,12 @@ fn refine(analysis: &mut Analysis<'_>, options: &Options, limits: AnalysisLimits
         match facts_plan(analysis, seed, options, limits) {
             Ok((plan, report, mode)) => {
                 if analysis.decision.dynamic_linker {
-                    analysis.decision.dlopen_contract =
-                        Some(dlopen_contract(&analysis.scan, &plan, mode));
+                    analysis.decision.dlopen_contract = Some(dlopen_contract(
+                        &analysis.scan,
+                        &plan,
+                        mode,
+                        limits.program.metadata_bytes,
+                    )?);
                 }
                 apply(analysis, plan);
                 analysis.decision.source = PlanSource::Facts;
@@ -200,24 +204,36 @@ fn address_taken(scan: &Scan<'_>, plan: &sink::NativeSinkPlan) -> bool {
     scan.elements.iter().flat_map(|element| &element.items)
         .any(|value| matches!(value, ValueProof::Function(function) if plan.fork_returning.contains(function)))
 }
-fn dlopen_contract(scan: &Scan<'_>, plan: &sink::NativeSinkPlan, mode: SideModules) -> String {
+fn dlopen_contract(
+    scan: &Scan<'_>,
+    plan: &sink::NativeSinkPlan,
+    mode: SideModules,
+    budget: usize,
+) -> Result<String> {
     let mut text = format!(
         "v1\nmode\t{}\naddress-taken\t{}\n",
         mode.as_str(),
         u8::from(address_taken(scan, plan))
     );
-    let names: BTreeSet<_> = scan
-        .exports
-        .iter()
-        .filter_map(|(name, kind, index)| {
-            (*kind == wasmparser::ExternalKind::Func && plan.fork_returning.contains(index))
-                .then_some(name)
-        })
-        .collect();
+    let mut names = BTreeSet::new();
+    let mut used = text.len();
+    for name in scan.exports.iter().filter_map(|(name, kind, index)| {
+        (*kind == wasmparser::ExternalKind::Func && plan.fork_returning.contains(index))
+            .then_some(name)
+    }) {
+        if !names.contains(name) {
+            used = used
+                .checked_add(name.len())
+                .and_then(|bytes| bytes.checked_add(64))
+                .context("dlopen contract size overflow")?;
+            ensure!(used <= budget, "dlopen contract exceeds metadata budget");
+            names.insert(name);
+        }
+    }
     for name in names {
         text.push_str("fork-returning\t");
         text.push_str(name);
         text.push('\n');
     }
-    text
+    Ok(text)
 }

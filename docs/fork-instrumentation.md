@@ -717,13 +717,47 @@ to the host's invariant check, while genuine guest traps remain traps.
 The shared full-provider replay fixtures now use this policy and assembly.
 Their helper adds diagnostic exports without owning the activation schedule
 or source rewriting. `NativePipeline` deliberately emits no fork capability
-certificate. Feature declarations, bounded immutable input, atomic output,
-CLI/backend selection and complete host admission remain integration work.
-The command-line instrumenter still uses unchanged Walrus. Native entry tests
+certificate. The higher-level `native::instrument` now finishes the artifact:
+it emits the existing capability, linked-frame, module-state and unwind
+descriptors for the selected role, declares features through a bounded writer,
+then validates functions serially. It releases analysis and pipeline catalogs
+before output validation. Its result owns immutable file-backed bytes rather
+than a whole output `Vec`.
+
+The CLI accepts `--backend native` for this complete experimental path, including
+discovery and sink reports. `--backend walrus` remains the default while the
+platform migration gates run; there is no automatic switch to Walrus after a
+native error. The existing `instrument` library API remains the unchanged
+Walrus oracle. Native entry tests
 execute normal, fresh and failed-capture replay across both pointer and table
 widths. The unchanged Walrus thread wrapper fails validation on table64 and
 does not provide the native wrapper's table-generation guard; its other replay
 assertions run unchanged on table32.
+
+Both CLI backends now snapshot the opened input before analysis and publish
+only after transformation, optional Binaryen optimization and validation
+succeed. Permissions come from that same opened source. Failures leave the
+destination's bytes and mode intact, including in-place instrumentation. The
+final rename replaces the destination entry: an output symlink is replaced
+without changing its target. A nonparticipating module keeps original section
+headers and debug bytes verbatim, removing compiler facts only, and does not
+run the optimizer.
+
+On Unix, snapshots and intermediate artifacts use private unlinked files;
+their last writable handles close before read-only maps escape. Mutable user
+and optimizer files are never mapped. Other platforms use anonymous immutable
+maps. `--max-input-bytes` and `--max-output-bytes` default to 8 GiB each; section
+spools also stop during writes at their configured limit and the Wasm u32
+section-length ceiling. These byte caps cover instrumenter-owned storage and
+validated optimizer results; they do not bound Binaryen's own process memory.
+Optimizer paths remain private, and its result is copied into an immutable
+snapshot before validation and atomic publication.
+
+Focused evidence includes file-limit/failure tests, real post-optimization,
+12 main/dynamic/side and memory32/64 artifacts accepted by the production host
+contract checker before/after optimization, and capture/parent replay through
+the production continuation coordinator. Full process/browser/conformance
+gates and end-to-end memory measurements remain pending.
 
 A shared Node fixture now composes the real native GC and exact-tag exception
 providers, activation frame vectors, modern reference catches, globals,

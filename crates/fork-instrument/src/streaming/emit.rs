@@ -8,6 +8,8 @@ use super::{
     FrozenDeclarations, FrozenImports, FrozenModuleDeclarations, FunctionIr, IrLimits,
     ProgramPoint, Scan,
 };
+mod spool;
+use spool::Spool;
 
 /// Encoded output is retained for one body or one non-code section, never
 /// the entire code section/module. Large data payloads bypass the encoder.
@@ -15,6 +17,7 @@ use super::{
 pub struct EmitLimits {
     pub max_function_bytes: usize,
     pub max_metadata_section_bytes: usize,
+    pub max_spooled_section_bytes: u64,
 }
 
 impl Default for EmitLimits {
@@ -22,6 +25,7 @@ impl Default for EmitLimits {
         Self {
             max_function_bytes: 32 * 1024 * 1024,
             max_metadata_section_bytes: 64 * 1024 * 1024,
+            max_spooled_section_bytes: u64::from(u32::MAX),
         }
     }
 }
@@ -290,8 +294,8 @@ where
                 data_count_written = true;
             }
             if order > 12 && !code_written && helper_count != 0 {
-                let mut spool =
-                    tempfile::tempfile().context("spooling helper-only code section")?;
+                let mut spool = Spool::new(limits.max_spooled_section_bytes)
+                    .context("spooling helper-only code section")?;
                 write_u32(&mut spool, helper_count)?;
                 write_helpers(transform, helper_count, &mut spool, &mut report, limits)?;
                 report.spooled_code_bytes = spool.stream_position()?;
@@ -451,7 +455,8 @@ where
                 // WHY: a data section can be most of the module. Reencoding
                 // it through DataSection would copy the entire payload even
                 // though only its memory/offset expressions need rewriting.
-                let mut spool = tempfile::tempfile().context("spooling data section")?;
+                let mut spool = Spool::new(limits.max_spooled_section_bytes)
+                    .context("spooling data section")?;
                 write_u32(&mut spool, s.count())?;
                 for data in s {
                     let data = data?;
@@ -489,7 +494,8 @@ where
             Payload::CodeSectionStart { count, .. } => {
                 code_written = true;
                 remaining = count;
-                let mut spool = tempfile::tempfile().context("spooling code section")?;
+                let mut spool = Spool::new(limits.max_spooled_section_bytes)
+                    .context("spooling code section")?;
                 write_u32(
                     &mut spool,
                     count
@@ -584,7 +590,7 @@ where
 fn write_helpers<T: FunctionTransform>(
     transform: &mut T,
     count: u32,
-    spool: &mut std::fs::File,
+    spool: &mut Spool,
     report: &mut EmitReport,
     limits: EmitLimits,
 ) -> Result<()> {
@@ -619,7 +625,7 @@ fn write_encoded_section(
     Ok(())
 }
 
-fn write_spool(output: &mut impl Write, id: u8, spool: &mut std::fs::File) -> Result<()> {
+fn write_spool(output: &mut impl Write, id: u8, spool: &mut Spool) -> Result<()> {
     let len = spool.stream_position()?;
     let len = u32::try_from(len).context("Wasm section exceeds u32 length")?;
     output.write_all(&[id])?;

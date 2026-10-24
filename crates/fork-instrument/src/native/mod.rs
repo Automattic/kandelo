@@ -9,7 +9,10 @@ use std::collections::BTreeSet;
 
 mod admission;
 mod analysis;
+mod instrument;
+mod metadata;
 pub use analysis::analyze;
+pub use instrument::{Artifact, Limits, instrument, validate};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AnalysisLimits {

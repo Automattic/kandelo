@@ -627,6 +627,7 @@ fn total_code_can_exceed_the_per_function_buffer_budget() {
         EmitLimits {
             max_function_bytes: 8192,
             max_metadata_section_bytes: 1024,
+            ..Default::default()
         },
     )
     .unwrap();

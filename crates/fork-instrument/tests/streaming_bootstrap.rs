@@ -237,6 +237,7 @@ fn converting_active_data_does_not_apply_the_metadata_limit_to_payload_bytes() {
         EmitLimits {
             max_function_bytes: 1024,
             max_metadata_section_bytes: 4096,
+            ..Default::default()
         },
     );
     let mut segments = 0;

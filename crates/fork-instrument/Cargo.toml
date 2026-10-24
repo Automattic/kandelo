@@ -43,6 +43,9 @@ clap = { version = "4", features = ["derive"] }
 wasmparser = "0.247"
 wasm-encoder = { version = "0.247", features = ["wasmparser"] }
 tempfile = "3"
+# Read-only maps are created only from private, unlinked snapshots whose last
+# writable handle is then closed. Never map a mutable user/optimizer file.
+memmap2 = "0.9.10"
 # Private, disposable compiler-facts relations. Bundled SQLite keeps native
 # builds independent of host libraries; page caches/work/disk are bounded.
 rusqlite = { version = "0.37", features = ["bundled", "hooks", "limits"] }

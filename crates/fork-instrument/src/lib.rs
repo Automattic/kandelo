@@ -32,6 +32,7 @@ use wasm_posix_shared::abi::{
 };
 use wasmparser::{Parser, Payload};
 
+pub mod artifact_io;
 pub mod call_graph;
 pub mod contract_inventory;
 pub mod facts;
