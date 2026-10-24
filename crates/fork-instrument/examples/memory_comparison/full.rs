@@ -36,7 +36,7 @@ pub(super) fn measure(backend: &str, input: &Path, destination: &Path) -> Result
     };
     output.publish(destination, permissions)?;
     let digest = hex(&Sha256::digest(output.bytes()));
-    let contract = contract_fingerprint(output.bytes())?;
+    let (participates, contract) = contract_fingerprint(output.bytes())?;
     let data = data_fingerprint(input.bytes())?;
     ensure!(
         data == data_fingerprint(output.bytes())?,
@@ -45,7 +45,7 @@ pub(super) fn measure(backend: &str, input: &Path, destination: &Path) -> Result
     let heap = PEAK.load(Ordering::Relaxed);
     let physical = physical_peak()?;
     println!(
-        "{{\"backend\":\"{backend}\",\"phase\":\"instrument\",\"input_bytes\":{},\"output_bytes\":{},\"output_sha256\":\"{digest}\",\"contract_sha256\":\"{contract}\",\"data_sha256\":\"{data}\",\"rust_requested_peak_bytes\":{heap},\"physical_lifetime_peak_bytes\":{physical}}}",
+        "{{\"backend\":\"{backend}\",\"phase\":\"instrument\",\"participates\":{participates},\"input_bytes\":{},\"output_bytes\":{},\"output_sha256\":\"{digest}\",\"contract_sha256\":\"{contract}\",\"data_sha256\":\"{data}\",\"rust_requested_peak_bytes\":{heap},\"physical_lifetime_peak_bytes\":{physical}}}",
         input.bytes().len(),
         output.bytes().len(),
     );
@@ -68,7 +68,7 @@ fn data_fingerprint(bytes: &[u8]) -> Result<String> {
     Ok(hex(&digest.finalize()))
 }
 
-fn contract_fingerprint(bytes: &[u8]) -> Result<String> {
+fn contract_fingerprint(bytes: &[u8]) -> Result<(bool, String)> {
     let mut digest = Sha256::new();
     let mut sections = Vec::new();
     for payload in Parser::new(0).parse_all(bytes) {
@@ -84,17 +84,20 @@ fn contract_fingerprint(bytes: &[u8]) -> Result<String> {
         }
     }
     sections.sort_by_key(|(name, _)| *name);
+    // Real package inventories include programs outside every fork transaction.
+    // Keep their no-op path visible while still rejecting partial descriptors.
     ensure!(
-        sections.len() == 3,
-        "full comparison requires a participating fork artifact"
+        sections.is_empty() || sections.len() == 3,
+        "partial fork contract"
     );
+    let participates = !sections.is_empty();
     for (name, data) in sections {
         digest.update((name.len() as u64).to_le_bytes());
         digest.update(name.as_bytes());
         digest.update((data.len() as u64).to_le_bytes());
         digest.update(data);
     }
-    Ok(hex(&digest.finalize()))
+    Ok((participates, hex(&digest.finalize())))
 }
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()

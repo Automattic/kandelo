@@ -81,5 +81,7 @@ The [machine-readable summary](2026-10-24-native-fork-instrumenter-lexical-repla
 contains exact timings, physical footprints, hashes and platform metadata.
 The same production source passed 667 instrumenter tests, 23 focused Node
 checks, five native side-module checks and the 57-check three-engine browser
-matrix (including two explicit WebKit stack-boundary cases). Broader
-workspace/conformance gates remain pending on the draft PR.
+matrix (including two explicit WebKit stack-boundary cases). The broader
+Rust workspace passed 3,200 tests, xtask passed 726, and the ABI snapshot
+check passed. Selected conformance checks and the final-source Codex rerun
+remain pending on the draft PR.

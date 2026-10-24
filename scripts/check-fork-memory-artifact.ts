@@ -1,19 +1,31 @@
-/** Validate only controlled benchmark artifacts, outside measured processes. */
+/** Validate benchmark artifacts outside measured transform processes. */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describeWasmForkArtifactContractFailures } from "../host/src/constants";
+import {
+  describeWasmArtifactPolicyFailures,
+  describeWasmForkArtifactContractFailures,
+} from "../host/src/constants";
 import createGcStore from "../crates/fork-instrument/tests/fixtures/gc_recipe_host.mjs";
 import createTableJournal from "../crates/fork-instrument/tests/fixtures/table_record_host.cjs";
 
 const bytes = readFileSync(process.argv[2]);
 const module = new WebAssembly.Module(bytes);
+const contractOnly = process.argv[3] === "--contract-only";
 assert.deepEqual(
-  describeWasmForkArtifactContractFailures(Uint8Array.from(bytes).buffer),
+  contractOnly
+    ? describeWasmArtifactPolicyFailures(Uint8Array.from(bytes).buffer)
+    : describeWasmForkArtifactContractFailures(Uint8Array.from(bytes).buffer),
   [],
 );
+// Package programs need the full kernel and VFS to execute. This mode checks
+// compilation and the production artifact contract without invoking a guest.
+if (contractOnly) {
+  console.log(JSON.stringify({ valid: true, scope: "compile-and-contract" }));
+  process.exit(0);
+}
 const directory = mkdtempSync(join(tmpdir(), "fork-memory-artifact-"));
 try {
   const source = join(directory, "transit.wat");
