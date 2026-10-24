@@ -4488,3 +4488,48 @@ an existing normal resolver integration test. That narrow prerequisite is
 distinct from the deferred graphics SDK archives, programs, packages and
 images. No complete SDK/product rebuild or broad conformance result is
 claimed. The full graphics goal remains active.
+
+### Cache collection above a consolidated ABI
+
+`cache-gc --above-abi N` selects named library/program generations with
+ABI strictly greater than `N` in both compiled cache layouts. Unnamed
+legacy generations and ABI-independent sources never match this bound.
+It supplements SourceOnly age/size rules and combines with `--below-abi`
+as a union. Live checkout roots, the one-day recent-use floor, build
+locks, staged trash removal and default dry-run behavior remain intact.
+Automatic GC does not acquire an ABI bound.
+
+The public CLI accepts both `--above-abi 54` and `--above-abi=54`. It scans
+the ordinary cache alongside SourceOnly unless source isolation is
+explicit; `--binary-cache-root` can select it alongside an isolated root.
+Reports show higher-ABI generations retained by roots/recent use and
+their allocated bytes. No destructive shared-cache collection was run.
+
+All verification below ran through `scripts/dev-shell.sh` on the combined
+ABI 54 source, including main `5cd771bff8`, now merged as `f218d63987`.
+Job `graphics-cache-above-1024-173553-ef95` completed successfully in
+17m47s. ABI consistency/resolver evidence is recorded immediately above.
+
+| Check | Exact evidence |
+|---|---|
+| Complete xtask suite | All 792 unit and 8 CLI integration tests passed; `graphics-cache-above-xtask.log` |
+| New upper-bound coverage | Eight unit and two CLI integration cases cover strict thresholds, sidecars, roots, recent use, build locks, unknown/source entries, union/overlap, age independence, integer limits, invalid values, isolation and dry-run/apply behavior; same log |
+| Destructive test scope | Apply checks used temporary test caches; the public shared-cache command was a dry run only |
+| Full merged registry | All 595 files agree; `graphics-main54-evidence-registry-final.log` |
+| Focused Rust integration | Orphan selection 19/19 and GLIO selection 50/50 pass; `graphics-main54-orphan.log`, `graphics-main54-glio.log` |
+| Shared-cache preview | `xtask cache-gc --above-abi 54` inspected 3,137 SourceOnly and 792 ordinary generations; `graphics-cache-above-preview.log` |
+
+The real-cache preview found no named ABI 55+ generations, including no
+higher-ABI entries retained by roots/recent use. Its 15.9 GiB reported
+removal candidates are existing crash debris (14.2 GiB SourceOnly and
+1.7 GiB ordinary) plus 100 zero-allocated-byte orphan sidecars, rather
+than evidence of higher-ABI product builds. SourceOnly retained 1,573
+root-protected generations. The earlier provisional ABI numbers did not
+produce normal rebuilt graphics product sets during the deferred phase.
+These observations do not cover private evidence files or Cargo target
+outputs, which are outside this collector's scope.
+
+The resolver integration test refreshed the wasm32 musl core as described
+above. Complete normal graphics SDK/kernel/program/package/image
+validation, CTS, cage/sway, browser-memory and POSIX gates remain deferred;
+this cache tool does not establish graphics compatibility.

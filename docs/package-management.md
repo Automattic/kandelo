@@ -1937,16 +1937,18 @@ checkout resolves to, and without collection the cache only grows.
 
 `xtask cache-gc` (`./run.sh cache-gc`) collects what the cache itself can
 show is unused. It normally scans the SourceOnly compiled cache at
-`~/.cache/kandelo/source-only/source-only-v1/compiled`. With `--below-abi N`,
-it also scans the ordinary resolver cache (`~/.cache/kandelo/libs` and
-`programs`, or the root selected by `WASM_POSIX_BINARY_CACHE_ROOT` /
-`XDG_CACHE_HOME`). The report gives totals for each cache and a combined
-total; the ordinary cache was previously omitted entirely.
+`~/.cache/kandelo/source-only/source-only-v1/compiled`. With `--below-abi N`
+or `--above-abi N`, it also scans the ordinary resolver cache
+(`~/.cache/kandelo/libs` and `programs`, or the root selected by
+`WASM_POSIX_BINARY_CACHE_ROOT` / `XDG_CACHE_HOME`). The report gives totals
+for each cache and a combined total; the ordinary cache was previously
+omitted entirely.
 
 `--source-cache-root PATH` or `KANDELO_SOURCE_CACHE_ROOT` limits the command
 to that SourceOnly cache. To include an ordinary cache alongside an isolated
 SourceOnly cache, pass `--binary-cache-root PATH` explicitly. Both command
-line paths must be absolute; `--binary-cache-root` requires `--below-abi`.
+line paths must be absolute; `--binary-cache-root` requires `--below-abi`
+or `--above-abi`.
 The ordinary cache's generations have no reliable last-use tracking or
 checkout root registry, so only the explicit ABI rule can evict them:
 `--max-age-days` and `--max-size` do not evict its generations. SourceOnly
@@ -1956,6 +1958,7 @@ age/size collection and automatic collection retain their existing scope.
 | ----- | ------------ |
 | Generation directory (plus its receipt, provenance, and last-used sidecars) | No live checkout root names its cache key **and** it has not been used for `--max-age-days` (default 14). |
 | Generation, under `--below-abi N` | Built for a kernel ABI below `N`, no live checkout root names its key, and not used within the last day. Applies at any age. A generation named without an ABI predates the `abi<ABI>` name segment and counts as ABI 46 or older, so it is collected only when `N` is above 46. |
+| Generation, under `--above-abi N` | Built for a named kernel ABI strictly greater than `N`, no live checkout root names its key, and not used within the last day. Applies to both compiled cache layouts. Never infers a match for unnamed generations or ABI-independent sources. |
 | Generation, under `--max-size SIZE` | After the age pass, still over the budget: least recently used first, never a root-protected one, never one used within the last day. `SIZE` is bytes or `K`/`M`/`G`/`T` (binary multiples). |
 | `.work-<pid>-*`, `.build-stage-<pid>-*`, `.git-inputs-<pid>-*`, `.source-only-dispose-<pid>-*`, `.kandelo-receipt-tmp-<pid>` | The owning pid is not running and the entry is at least a day old. |
 | `.tmp-<label>-archive-<pid>-<counter>` incomplete archive download | The owning pid is not running and the entry is at least a day old. Collected in either scanned cache. |
@@ -1994,6 +1997,26 @@ rule. The report also shows the allocated size of below-floor generations
 kept by roots and by recent use, so retained old ABIs are distinguishable
 from entries the collector missed. An ABI floor supplements SourceOnly's
 age rule; it does not restrict age collection to old ABIs.
+
+An upper ABI bound supports retiring abandoned development versions after
+consolidating a branch onto one ABI. For example, after consolidating onto
+ABI 54:
+
+```bash
+./run.sh cache-gc --above-abi 54          # Dry run
+./run.sh cache-gc --above-abi 54 --apply  # Collect eligible ABI 55+ entries
+```
+
+Both ABI options use strict comparison: entries at the threshold do not
+match it. When both are supplied, they select the union below the lower
+threshold or above the upper threshold. They supplement the existing
+SourceOnly age/size rules; they do not restrict age collection to the
+selected ABIs. Unnamed legacy generations never match `--above-abi`,
+because their exact ABI is unknown. Live roots, the one-day recent-use
+floor and build locks still protect higher-ABI entries, and the report
+shows their retained bytes separately. Automatic GC does not set ABI
+bounds. Dry runs inspect both caches by default when an ABI bound is
+present; explicit SourceOnly isolation retains its existing scope.
 
 **Live roots.** When a local build publishes its projection, it records the
 cache keys that projection depends on (programs, the kernel, and the

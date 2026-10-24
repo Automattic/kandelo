@@ -16,11 +16,21 @@ fn generation(root: &Path, abi: u32, key: u32) -> PathBuf {
 }
 
 fn run(home: &Path, args: &[&str], source_override: Option<&Path>) -> String {
+    run_with_filter(home, &["--below-abi", "49"], args, source_override)
+}
+
+fn run_with_filter(
+    home: &Path,
+    filter: &[&str],
+    args: &[&str],
+    source_override: Option<&Path>,
+) -> String {
     let mut command = Command::new(env!("CARGO_BIN_EXE_xtask"));
     command
         .env_clear()
         .env("HOME", home)
-        .args(["cache-gc", "--below-abi", "49"])
+        .arg("cache-gc")
+        .args(filter)
         .args(args);
     if let Some(root) = source_override {
         command.env("KANDELO_SOURCE_CACHE_ROOT", root);
@@ -84,5 +94,69 @@ fn source_override_stays_isolated_unless_binary_cache_is_explicitly_selected() {
         Some(&isolated),
     );
     assert!(!old_source.exists() && !old_binary.exists());
+    assert!(applied.contains("total across caches removed:"));
+}
+
+#[test]
+fn above_abi_gc_is_dry_by_default_and_applies_to_both_cache_layouts() {
+    let home = tempfile::TempDir::new().unwrap();
+    let binary = home.path().join(".cache/kandelo");
+    let source_base = binary.join("source-only");
+    let source = source_base.join("source-only-v1/compiled");
+    let future_binary = generation(&binary, 59, 10);
+    let future_source = generation(&source, 55, 11);
+    let boundary_binary = generation(&binary, 54, 12);
+    let boundary_source = generation(&source, 54, 13);
+    let main_binary = generation(&binary, 53, 14);
+    let filter = ["--above-abi", "54", "--max-age-days", "36500"];
+    let dry = run_with_filter(home.path(), &filter, &[], None);
+    assert!(
+        dry.contains("above --above-abi 54") && dry.contains("total across caches would remove:")
+    );
+    for path in [
+        &future_binary,
+        &future_source,
+        &boundary_binary,
+        &boundary_source,
+        &main_binary,
+    ] {
+        assert!(path.is_dir());
+    }
+    assert!(!source_base.join(".kandelo-cache-gc.lock").exists());
+    assert!(!binary.join(".kandelo-cache-gc.lock").exists());
+    let applied = run_with_filter(home.path(), &filter, &["--apply"], None);
+    assert!(!future_binary.exists() && !future_source.exists());
+    assert!(boundary_binary.is_dir() && boundary_source.is_dir() && main_binary.is_dir());
+    assert!(applied.contains("total across caches removed:"));
+}
+
+#[test]
+fn above_abi_inline_and_explicit_binary_selection_respect_source_isolation() {
+    let home = tempfile::TempDir::new().unwrap();
+    let binary = home.path().join(".cache/kandelo");
+    let isolated = home.path().join("private-source");
+    let future_binary = generation(&binary, 59, 15);
+    let future_source = generation(&isolated.join("source-only-v1/compiled"), 59, 16);
+    let filter = ["--above-abi=54", "--max-age-days=36500"];
+    let cli = run_with_filter(
+        home.path(),
+        &filter,
+        &["--source-cache-root", isolated.to_str().unwrap()],
+        None,
+    );
+    let env = run_with_filter(home.path(), &filter, &[], Some(&isolated));
+    for output in [cli, env] {
+        assert!(output.contains(future_source.to_str().unwrap()));
+        assert!(!output.contains(future_binary.to_str().unwrap()));
+        assert!(!output.contains("total across caches"));
+    }
+    assert!(future_binary.is_dir() && future_source.is_dir());
+    let applied = run_with_filter(
+        home.path(),
+        &filter,
+        &["--apply", "--binary-cache-root", binary.to_str().unwrap()],
+        Some(&isolated),
+    );
+    assert!(!future_binary.exists() && !future_source.exists());
     assert!(applied.contains("total across caches removed:"));
 }
