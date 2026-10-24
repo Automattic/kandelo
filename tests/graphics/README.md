@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The 96 current cases cover image siblings and retained framebuffer storage,
+The 99 current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -240,3 +240,17 @@ pointers. An actual C stream also renders red, rejects a cube-to-2D bind,
 deletes the cube and uploads blue through the preserved binding. Browser
 replay checks both routes in all engines and final native cleanup. Shared
 image storage, sampler independence and full submit recovery remain open.
+
+
+The acknowledged image-binding cases inject native allocation rejection,
+transport failure and malformed reply status/value/completion. A failed
+first 2D bind can be retried as a cube, and image targeting still uses the
+prior C binding. Host checks cover texture/RBO creation, native and namespace
+allocation failures, failed candidate cleanup, queued/query parity, retained
+object collection, pending errors and request/reply span validation.
+Actual C trace replay now includes checked bind requests and verifies their
+replies. The new rendering trace injects native texture-creation failure,
+retries that name as a cube and uploads blue through the surviving red 2D
+texture. Both renderer routes and all three engines check pixels and final
+native cleanup. These do not prove storage replacement or indeterminate
+transport recovery.

@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 8u
+#define WPK_GL_OP_VERSION 9u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -183,6 +183,8 @@
 #define QOP_GET_UNIFORM_VALUES 0x001Fu
 #define QOP_GET_ACTIVE_UNIFORM_INFO 0x0020u
 #define QOP_LOOKUP_UNIFORM 0x0021u
+/* V9: kind (texture=1/RBO=2), target, name; checked accepted=1 reply. */
+#define QOP_BIND_IMAGE_OBJECT 0x0022
 
 /* V3+ query replies: u32 status (0 success, 1 recorded GL error),
  * payload, u32 completion magic. Index usage payload: u32 maximum index

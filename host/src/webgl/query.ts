@@ -16,6 +16,8 @@
  * delete and would collide). Indices are number-keyed for clean u32
  * round-tripping.
  */
+import { collectRetiredImages } from "./image-references.js";
+import { bindImageObject } from "./image-bindings.js";
 import { runUniformLookup, uniformLocation } from "./uniform-queries.js";
 import { checkedQueryReply, runStateQuery } from "./state-query.js";
 import { runObjectQuery } from "./object-query.js";
@@ -115,6 +117,16 @@ export function runGlQuery(
   if (op === O.QOP_SHADER_SOURCE_UPLOAD) return runShaderSourceUpload(b,input,out);
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+
+  if (op === O.QOP_BIND_IMAGE_OBJECT) {
+    if (input.byteLength !== 12 || out.byteLength !== 12) return -22;
+    return checkedQueryReply(b,out,4,payload => {
+      if (!bindImageObject(b,inDv.getUint32(0,true),inDv.getUint32(4,true),inDv.getUint32(8,true))) return -5;
+      collectRetiredImages(b);
+      new DataView(payload.buffer).setUint32(0,1,true);
+      return 4;
+    });
+  }
 
   const state = runStateQuery(b,op,input,out);
   if (state !== undefined) return state;

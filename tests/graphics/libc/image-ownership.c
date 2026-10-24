@@ -32,6 +32,7 @@ void glBindVertexArray(GLuint);
 #undef munmap
 static void *latest_allocation;
 static int fail_calloc, fail_malloc;
+static int malloc_before_failure = -1;
 static int calloc_before_failure = -1;
 static struct { void *pointer; size_t size; } allocations[1024];
 static pthread_mutex_t allocation_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -67,7 +68,10 @@ void *graphics_calloc(size_t count, size_t size) {
 }
 void *graphics_malloc(size_t size) {
     pthread_mutex_lock(&allocation_mutex);
-    void *pointer = fail_malloc ? NULL : record_allocation(malloc(size), size);
+    void *pointer =
+        fail_malloc || malloc_before_failure == 0 ? NULL : record_allocation(malloc(size), size);
+    if (malloc_before_failure > 0)
+        malloc_before_failure--;
     if (pointer)
         latest_allocation = pointer;
     pthread_mutex_unlock(&allocation_mutex);
@@ -195,6 +199,7 @@ static unsigned buffer_uploads;
 static unsigned draw_commands;
 static int indexed_queries;
 static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
+static unsigned bind_failure, bind_queries;
 static unsigned scalar_queries;
 static uint32_t core_total, core_offset, core_info[4];
 static unsigned core_calls, core_fail_at, validate_commands;
@@ -227,6 +232,40 @@ static void egl_trace(uint32_t kind, int fd, const void *bytes, uint32_t length)
     if (length)
         assert(fwrite(bytes, 1, length, file) == length);
     assert(!fclose(file));
+}
+
+/* Model definite native rejection on both legacy queued binds and checked
+ * binding queries so the regression can execute against unchanged sources. */
+static int native_image_bind(struct device_slot *slot, unsigned kind, GLenum target, GLuint name) {
+    if (bind_failure == 2) {
+        bind_failure = 0;
+        query_gl_error = GL_OUT_OF_MEMORY;
+        return 0;
+    }
+    if (kind == 2) {
+        slot->renderbuffer_binding = name;
+        return 1;
+    }
+    if (binding_model && name) {
+        unsigned index = 0;
+        while (index < 128 && slot->texture_targets[index].name &&
+               slot->texture_targets[index].name != name)
+            index++;
+        assert(index < 128);
+        if (slot->texture_targets[index].name && slot->texture_targets[index].target != target) {
+            query_gl_error = GL_INVALID_OPERATION;
+            return 0;
+        }
+        slot->texture_targets[index].name = name;
+        slot->texture_targets[index].target = target;
+    }
+    assert(slot->texture_active < 128);
+    if (target == GL_TEXTURE_2D) {
+        bound_texture = name;
+        slot->texture_2d[slot->texture_active] = name;
+    } else if (target == GL_TEXTURE_CUBE_MAP)
+        slot->texture_cube[slot->texture_active] = name;
+    return 1;
 }
 
 int graphics_open(const char *path, int flags, ...) {
@@ -459,34 +498,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 slot->array_binding = words[1];
             if (op == OP_ACTIVE_TEXTURE)
                 slot->texture_active = words[0] - GL_TEXTURE0;
-            if (op == OP_BIND_TEXTURE) {
-                int accepted = 1;
-                if (binding_model && words[1]) {
-                    unsigned index = 0;
-                    while (index < 128 && slot->texture_targets[index].name &&
-                           slot->texture_targets[index].name != words[1])
-                        index++;
-                    assert(index < 128);
-                    if (slot->texture_targets[index].name &&
-                        slot->texture_targets[index].target != words[0]) {
-                        query_gl_error = GL_INVALID_OPERATION;
-                        accepted = 0;
-                    } else {
-                        slot->texture_targets[index].name = words[1];
-                        slot->texture_targets[index].target = words[0];
-                    }
-                }
-                if (accepted) {
-                    assert(slot->texture_active < 128);
-                    if (words[0] == GL_TEXTURE_2D) {
-                        bound_texture = words[1];
-                        slot->texture_2d[slot->texture_active] = words[1];
-                    } else if (words[0] == GL_TEXTURE_CUBE_MAP)
-                        slot->texture_cube[slot->texture_active] = words[1];
-                }
-            }
+            if (op == OP_BIND_TEXTURE)
+                (void)native_image_bind(slot, 1, words[0], words[1]);
             if (op == OP_BIND_RENDERBUFFER)
-                slot->renderbuffer_binding = words[1];
+                (void)native_image_bind(slot, 2, words[0], words[1]);
             if (op == OP_DELETE_TEXTURES)
                 for (uint32_t i = 0; i < words[0]; i++) {
                     uint32_t name;
@@ -623,6 +638,27 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         egl_trace(8, fd, NULL, 0);
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
+        if (q->op == 0x22) {
+            assert(q->in_buf_len == 12 && q->out_buf_len == 12);
+            const uint32_t *input = allocation_for(q->in_buf_ptr, 12);
+            uint32_t *reply = allocation_for(q->out_buf_ptr, 12);
+            bind_queries++;
+            unsigned failure = bind_failure;
+            if (failure == 1) {
+                bind_failure = 0;
+                errno = EIO;
+                return -1;
+            }
+            int accepted = failure >= 3 ? 0 : native_image_bind(slot, input[0], input[1], input[2]);
+            if (failure >= 3)
+                bind_failure = 0;
+            reply[0] = accepted ? 0 : failure == 3 ? 0 : failure == 5 ? 2 : 1;
+            reply[1] = accepted ? 1 : 0;
+            reply[2] = failure == 4 ? 0 : 0x47514c33u;
+            uint32_t trace[4] = {input[0], input[1], input[2], reply[0]};
+            egl_trace(10, fd, trace, 16);
+            return 0;
+        }
         if (q->op == 0x1e) {
             assert(q->in_buf_len >= 16 && q->in_buf_len <= 65536 && q->out_buf_len == 12);
             const uint8_t *input = allocation_for(q->in_buf_ptr,q->in_buf_len);
@@ -1956,6 +1992,120 @@ int main(int argc, char **argv) {
         return 0;
     }
 #endif
+    if (!strcmp(argv[1], "image-bind-ack")) {
+        binding_model = 1;
+        glBindTexture(GL_TEXTURE_2D, 17);
+        glFlush();
+        bind_failure = 2;
+        glBindTexture(GL_TEXTURE_2D, 18);
+        assert(glGetError() == GL_OUT_OF_MEMORY);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, 18);
+        assert(glGetError() == GL_NO_ERROR);
+        EGLImageKHR img = image(dpy);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        GLint value = -1;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &value);
+        assert(value == 17); // Failed native bind never replaced the C reference.
+        glBindRenderbuffer(GL_RENDERBUFFER, 21);
+        bind_failure = 2;
+        glBindRenderbuffer(GL_RENDERBUFFER, 22);
+        assert(glGetError() == GL_OUT_OF_MEMORY);
+        glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+        glBindRenderbuffer(GL_RENDERBUFFER, 22);
+        value = -1;
+        // Native query test state distinguishes the imported old RBO from the
+        // successfully bound new name: only the old record has image storage.
+        query_scalar = 9;
+        glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &value);
+        assert(value == 9);
+        GLuint textures[2] = {17, 18}, rbos[2] = {21, 22};
+        glDeleteTextures(2, textures);
+        glDeleteRenderbuffers(2, rbos);
+        assert(eglDestroyImageKHR(dpy, img));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-bind-ack");
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-bind-errors")) {
+        binding_model = 1;
+        glBindTexture(GL_TEXTURE_2D, 17);
+        glBindRenderbuffer(GL_RENDERBUFFER, 21);
+        EGLImageKHR img = image(dpy);
+        for (unsigned kind = 1; kind <= 2; kind++) {
+            for (unsigned failure = 1; failure <= 5; failure++) {
+                glFlush();
+                bind_failure = failure;
+                if (kind == 1)
+                    glBindTexture(GL_TEXTURE_2D, 18);
+                else
+                    glBindRenderbuffer(GL_RENDERBUFFER, 22);
+                assert(glGetError() == (failure == 2 ? GL_OUT_OF_MEMORY : GL_INVALID_OPERATION));
+                if (kind == 1) {
+                    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+                    GLint value = 0;
+                    glGetIntegerv(GL_TEXTURE_BINDING_2D, &value);
+                    assert(value == 17);
+                } else
+                    glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+            }
+        }
+        unsigned queried = bind_queries;
+        fail_malloc = 1;
+        glBindTexture(GL_TEXTURE_2D, 18);
+        fail_malloc = 0;
+        assert(glGetError() == GL_OUT_OF_MEMORY && bind_queries == queried);
+        malloc_before_failure = 1; // Request succeeds, response allocation fails.
+        glBindTexture(GL_TEXTURE_2D, 18);
+        malloc_before_failure = -1;
+        assert(glGetError() == GL_OUT_OF_MEMORY && bind_queries == queried);
+        glClear(GL_COLOR_BUFFER_BIT);
+        fail_submit = 1;
+        glBindTexture(GL_TEXTURE_2D, 18);
+        fail_submit = 0;
+        assert(glGetError() == GL_INVALID_OPERATION && bind_queries == queried);
+        GLint logical = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &logical);
+        assert(logical == 17);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, 18);
+        assert(glGetError() == GL_NO_ERROR);
+        GLuint textures[2] = {17, 18}, rbos[2] = {21, 22};
+        glDeleteTextures(2, textures);
+        glDeleteRenderbuffers(2, rbos);
+        assert(eglDestroyImageKHR(dpy, img));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-bind-errors");
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-bind-render")) {
+        binding_model = 1;
+        GLuint old = 18, candidate = 17, fbo;
+        glBindTexture(GL_TEXTURE_2D, old);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, old, 0);
+        glClearColor(1, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        bind_failure = 2;
+        glBindTexture(GL_TEXTURE_2D, candidate);
+        assert(glGetError() == GL_OUT_OF_MEMORY);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, candidate);
+        assert(glGetError() == GL_NO_ERROR);
+        glDeleteTextures(1, &candidate);
+        const GLubyte blue[4] = {0, 0, 255, 255};
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &old);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-bind-render");
+        return 0;
+    }
     if (!strcmp(argv[1], "image-external-name")) {
         binding_model = 1;
         EGLImageKHR img = image(dpy);

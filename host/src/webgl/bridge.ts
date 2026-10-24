@@ -18,6 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray } from "./buffer-references.js";
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
@@ -733,25 +734,7 @@ function dispatch(
       return;
     }
     case O.OP_BIND_TEXTURE: {
-      const target = v.getUint32(p, true);
-      const texName = v.getUint32(p + 4, true);
-      if (target !== 0x0de1 && target !== 0x8513) { recordGlError(b,0x500); return; }
-      let tex = texName ? b.textures.get(texName) ?? null : b.shadow.defaultTextures.get(target) ?? null;
-      const allocate = texName !== 0 && tex === null;
-      if (allocate && (!checkedGlCall(b, () => { tex = gl.createTexture(); }) || !tex)) {
-        if (tex) gl.deleteTexture(tex);
-        recordGlError(b,0x505); return;
-      }
-      if (!checkedGlCall(b, () => { gl.bindTexture(target,tex); })) {
-        if (allocate && tex) gl.deleteTexture(tex);
-        return;
-      }
-      if (allocate && tex) b.textures.set(texName,tex);
-      const unit = b.shadow.activeTexture;
-      if (unit >= 0 && unit < b.shadow.textureUnits.length) {
-        if (target === 0x0de1) b.shadow.textureUnits[unit] = texName ? tex : null;
-        else if (target === 0x8513) b.shadow.cubeTextureUnits[unit] = texName ? tex : null;
-      }
+      bindImageObject(b,1,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
     }
     // Payload: u32 target, i32 level, i32 internalFormat, i32 width,
@@ -1304,20 +1287,7 @@ function dispatch(
       return;
     }
     case O.OP_BIND_RENDERBUFFER: {
-      const target = v.getUint32(p,true), name = v.getUint32(p+4,true);
-      if (target !== 0x8d41) { recordGlError(b,0x500); return; }
-      let renderbuffer = b.rbos.get(name) ?? null;
-      const allocate = name !== 0 && !renderbuffer;
-      if (allocate && (!checkedGlCall(b, () => { renderbuffer = gl.createRenderbuffer(); }) || !renderbuffer)) {
-        if (renderbuffer) gl.deleteRenderbuffer(renderbuffer);
-        recordGlError(b,0x505); return;
-      }
-      if (!checkedGlCall(b, () => gl.bindRenderbuffer(target,renderbuffer))) {
-        if (allocate && renderbuffer) gl.deleteRenderbuffer(renderbuffer);
-        return;
-      }
-      if (allocate && renderbuffer) b.rbos.set(name,renderbuffer);
-      b.shadow.renderbuffer = renderbuffer;
+      bindImageObject(b,2,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
     }
     // Payload: u32 target, u32 internalformat, i32 width, i32 height

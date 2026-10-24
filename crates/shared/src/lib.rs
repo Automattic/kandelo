@@ -5182,7 +5182,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 8;
+    pub const OP_VERSION: u32 = 9;
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
@@ -5407,6 +5407,10 @@ pub mod gl {
     /// V8: context-local name lookup: action/program/token/length-or-offset,
     /// optional bytes; checked reply payload is echoed token and i32 location.
     pub const QOP_LOOKUP_UNIFORM: u32 = 0x0021;
+    /// V9: acknowledged image-object binding. In: kind (texture=1/RBO=2),
+    /// target, name. Out: checked status, accepted=1 on success, magic.
+    /// Failure preserves native binding and publishes no new object name.
+    pub const QOP_BIND_IMAGE_OBJECT: u32 = 0x0022;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -7112,6 +7116,7 @@ mod gl_tests {
             QOP_GET_UNIFORM_VALUES,
             QOP_GET_ACTIVE_UNIFORM_INFO,
             QOP_LOOKUP_UNIFORM,
+            QOP_BIND_IMAGE_OBJECT,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

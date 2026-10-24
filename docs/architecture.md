@@ -3807,6 +3807,13 @@ liveness reconciles owner-revoked names before C bind/attachment validation.
 Hidden image carriers bypass public registration. The inline 32-unit
 capacity grows to the queried renderer limit,
 with failed growth preserving selection and final teardown releasing it.
+Public C texture/renderbuffer binds now wait for a checked renderer reply
+before replacing binding references or fixing a texture's dimensionality.
+The query and queued paths share native candidate creation and validation;
+namespace bookkeeping is reserved before native binding and a rejected
+candidate is removed. Accepted query binds also collect retired images.
+This establishes definite bind acceptance, while an indeterminate transport
+failure still needs lifecycle reconciliation or context-loss handling.
 Image/storage aliases remain a separate incomplete ownership layer.
 
 Client staging retains a separate buffer-record reference, restores its

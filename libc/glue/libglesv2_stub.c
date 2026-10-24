@@ -1435,6 +1435,40 @@ static int external_texture_live(struct wpk_gles_context *state, struct wpk_obje
     return 0;
 }
 
+/* Wait for native acceptance before changing C bindings or dimensionality.
+ * A definite GL rejection preserves both layers. Indeterminate transport
+ * failures still require the context-loss/reconciliation lifecycle path. */
+static int bind_image_object(uint32_t kind, GLenum target, GLuint name) {
+    uint32_t *input = malloc(12);
+    if (!input) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return 0;
+    }
+    input[0] = kind;
+    input[1] = target;
+    input[2] = name;
+    uint8_t reply[12];
+    int accepted = checked_query_reply(QOP_BIND_IMAGE_OBJECT, input, 12, reply, 4);
+    free(input);
+    if (accepted) {
+        uint32_t value;
+        memcpy(&value, reply + 4, 4);
+        if (value != 1) {
+            raise_client_error(GL_INVALID_OPERATION);
+            return 0;
+        }
+    }
+    return accepted;
+}
+static GLenum image_target_error(struct wpk_object_group *group, struct wpk_object_name *object,
+                                 GLenum target) {
+    pthread_mutex_lock(&group->mutex);
+    GLenum error =
+        object && object->target && object->target != target ? GL_INVALID_OPERATION : GL_NO_ERROR;
+    pthread_mutex_unlock(&group->mutex);
+    return error;
+}
+
 static void emit_bind_texture(GLenum target, GLuint host);
 static void rebind_image_texture_object(struct wpk_object_name *object, GLuint host) {
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
@@ -1534,17 +1568,17 @@ void glBindTexture(GLenum target, GLuint tex) {
             return;
         }
     }
-    uint8_t *cursor = reserve(12);
-    if (!cursor) {
-        object_release(state->objects, object);
-        return;
-    }
-    GLenum error = realize_image_object(state->objects, object, target);
+    GLenum error = image_target_error(state->objects, object, target);
     if (error) {
         object_release(state->objects, object);
         raise_client_error(error);
         return;
     }
+    if (!bind_image_object(1, target, host_texture_name(tex))) {
+        object_release(state->objects, object);
+        return;
+    }
+    (void)realize_image_object(state->objects, object, target);
     struct wpk_object_name **slot = target == GL_TEXTURE_2D
                                         ? &state->texture_units[g_active_unit].texture_object
                                         : &state->texture_units[g_active_unit].cube_object;
@@ -1554,11 +1588,6 @@ void glBindTexture(GLenum target, GLuint tex) {
         g_texture_units[g_active_unit].texture = tex;
     else
         g_texture_units[g_active_unit].cube = tex;
-    w_u16(&cursor, OP_BIND_TEXTURE);
-    w_u16(&cursor, 8);
-    w_u32(&cursor, target);
-    w_u32(&cursor, host_texture_name(tex));
-    g_cursor = cursor;
 }
 
 void glActiveTexture(GLenum unit) {
@@ -2905,25 +2934,14 @@ void glBindRenderbuffer(GLenum target, GLuint rb) {
         raise_client_error(GL_OUT_OF_MEMORY);
         return;
     }
-    uint8_t *cursor = reserve(12);
-    if (!cursor) {
+    if (!bind_image_object(2, target, rb)) {
         object_release(state->objects, object);
         return;
     }
-    GLenum error = realize_image_object(state->objects, object, target);
-    if (error) {
-        object_release(state->objects, object);
-        raise_client_error(error);
-        return;
-    }
+    (void)realize_image_object(state->objects, object, target);
     object_release(state->objects, state->renderbuffer_object);
     state->renderbuffer_object = object;
     g_bound_renderbuffer = rb;
-    w_u16(&cursor, OP_BIND_RENDERBUFFER);
-    w_u16(&cursor, 8);
-    w_u32(&cursor, target);
-    w_u32(&cursor, rb);
-    g_cursor = cursor;
 }
 
 void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height) {

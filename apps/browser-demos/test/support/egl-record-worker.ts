@@ -156,6 +156,32 @@ self.onmessage = ({data}) => {
           }
           if(clear)observed.push(pixels(fd));
         }
+      } else if(kind===10) {
+        const expected=words.getUint32(12,true), input=bytes.slice(0,12);
+        let restore:(()=>void)|null=null;
+        if(expected && data.bindFailure) {
+          const target=forwarded?null:gl as any;
+          if(target) {const create=target.createTexture;target.createTexture=()=>null;restore=()=>{target.createTexture=create;};}
+          else postMessage({type:"egl_record_fail_texture_create"});
+        }
+        try {
+          let reply:Uint8Array, rc:number;
+          if(forwarded) {const result=channel(fd).onQuery!(O.QOP_BIND_IMAGE_OBJECT,input,12);reply=result.bytes;rc=result.rc;}
+          else {
+            new Uint8Array(memory!.buffer,64,12).set(input);
+            rc=imports!.host_gl_query(7,O.QOP_BIND_IMAGE_OBJECT,64,12,128,12,fd);
+            reply=new Uint8Array(memory!.buffer,128,12).slice();
+          }
+          const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
+          if(rc!==12 || output.getUint32(0,true)!==expected || output.getUint32(4,true)!==(expected?0:1)
+              || output.getUint32(8,true)!==0x47514c33)throw new Error("C bind acceptance mismatch");
+          if(expected) {
+            let error:number;
+            if(forwarded) {const result=channel(fd).onQuery!(O.QOP_GET_ERROR,new Uint8Array(),4);if(result.rc!==4)throw new Error("error query failed");error=new DataView(result.bytes.buffer,result.bytes.byteOffset,4).getUint32(0,true);}
+            else {if(imports!.host_gl_query(7,O.QOP_GET_ERROR,64,0,128,4,fd)!==4)throw new Error("error query failed");error=new DataView(memory!.buffer).getUint32(128,true);}
+            if(error!==0x505)throw new Error(`missing injected allocation error: ${error}`);
+          }
+        } finally {restore?.();}
       } else if(kind===6) {
         const id=words.getUint32(0,true);retiredContexts.push(id);
         if(forwarded)channel(fd).onDestroyContext!();else imports!.host_gl_destroy_context(7,id);
