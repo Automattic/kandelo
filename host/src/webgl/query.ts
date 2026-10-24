@@ -1,3 +1,4 @@
+import { repairNativeState } from "./native-recovery.js";
 /**
  * Synchronous GL query handler invoked by `host_gl_query`.
  *
@@ -116,6 +117,7 @@ export function runGlQuery(
 ): number {
   if (!b.gl) return -1;
   const gl = b.gl;
+  if (!repairNativeState(gl)) return -5;
   if (op === O.QOP_LOOKUP_UNIFORM) return runUniformLookup(b,input,out);
   if (op === O.QOP_SHADER_SOURCE_UPLOAD) return runShaderSourceUpload(b,input,out);
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);

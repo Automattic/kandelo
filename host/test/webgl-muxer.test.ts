@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { GlMuxer } from "../src/webgl/muxer.js";
+import { GlContextRegistry } from "../src/webgl/registry.js";
+import { runGlQuery } from "../src/webgl/query.js";
+import * as O from "../src/webgl/ops.js";
 import {
   defaultShadow,
   GL_BLEND,
@@ -324,4 +327,32 @@ describe("GlMuxer.switchTo", () => {
     ]);
   });
 
+});
+
+for (const sameOwner of [true,false]) it(`repairs before a cached or different muxer owner can run (same owner: ${sameOwner})`, () => {
+  const {gl,mux} = mk(), reg = new GlContextRegistry();
+  reg.bind({pid:1,cmdbufAddr:0,cmdbufLen:0}); const b = reg.get(1)!;
+  b.gl = gl as unknown as WebGL2RenderingContext;
+  const framebuffer = {};
+  b.fbos.set(17,framebuffer); b.shadow.fbo = b.shadow.readFbo = framebuffer;
+  mux.switchTo(b);
+  let rejected = false, block = true;
+  const bind = gl.bindFramebuffer.bind(gl);
+  gl.bindFramebuffer = (target,value) => {
+    if (rejected && block && value === framebuffer) { gl.pendingErrors.push(0x502); return; }
+    bind(target,value);
+  };
+  Object.assign(gl,{deleteFramebuffer() { rejected = true; gl.pendingErrors.push(0x505); }});
+  const out = new Uint8Array(12);
+  expect(runGlQuery(b,O.QOP_IMAGE_OBJECT_DELETE,new Uint8Array(new Uint32Array([3,17]).buffer),out)).toBe(12);
+  expect([...new Uint32Array(out.buffer)]).toEqual([1,0,0x47514c33]);
+  const target = sameOwner ? b : newTarget(); const viewports = gl.callsOf("viewport").length;
+  expect(() => mux.switchTo(target)).toThrow("restoration remains pending");
+  expect(gl.callsOf("viewport").length).toBe(viewports);
+  if (!sameOwner) expect(target.errors).toEqual([]);
+  block = false; mux.switchTo(target);
+  expect(gl.callsOf("viewport").length).toBe(viewports+1);
+  expect(gl.callsOf("bindFramebuffer")).toContainEqual([0x8ca9,framebuffer]);
+  expect(gl.callsOf("bindFramebuffer")).toContainEqual([0x8ca8,framebuffer]);
+  expect(b.errors).toContain(0x505); expect(b.errors).toContain(0x502);
 });

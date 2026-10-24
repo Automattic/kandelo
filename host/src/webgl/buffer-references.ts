@@ -1,3 +1,4 @@
+import { applyNativeChanges, nativeOwner, nativeInverse, type NativeChange } from "./native-recovery.js";
 import { collectConvertedVertexData } from "./vertex-data.js";
 import { allocateNativeBuffer, canonicalBuffer, destroyBufferStorage } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
@@ -51,13 +52,14 @@ export function clearNativeAttributeBuffers(b: GlBinding, attributes: [number,Gl
 export function deleteBufferNames(b: GlBinding, names: number[]): boolean {
   if (!b.gl) return false;
   const gl = b.gl;
+  const owner = nativeOwner(b), oldArray = b.shadow.arrayBuffer;
   let temporary: WebGLBuffer | null = null;
   let temporaryReleased = false;
   let buffers: GlBinding["buffers"], retired: GlBinding["retiredBuffers"];
   let vao: GlVertexArray, nextAttributes: GlVertexArray["attributes"];
   let nextArray: WebGLBuffer | null, nextElement: WebGLBuffer | null;
   let attributes: [number, GlVertexAttribute][];
-  let changes: {apply: () => boolean; restore: () => boolean}[];
+  let changes: NativeChange[];
   try {
     const objects = new Map<WebGLBuffer, number>();
     for (const name of names) { const object = name ? b.buffers.get(name) : undefined; if (object) objects.set(object, name); }
@@ -72,8 +74,8 @@ export function deleteBufferNames(b: GlBinding, names: number[]): boolean {
     changes = [];
     if (attributes.length) {
       changes.push({apply: () => checkedGlCall(b, () => gl.bindBuffer(0x8892,temporary)),
-        restore: () => checkedGlCall(b, () => gl.bindBuffer(0x8892,b.shadow.arrayBuffer))});
-      changes.push({apply: () => checkedGlCall(b, () => gl.bufferData(0x8892,0,0x88e4)), restore: () => true});
+        restore: nativeInverse(owner, [["bindBuffer",0x8892,oldArray]])});
+      changes.push({apply: () => checkedGlCall(b, () => gl.bufferData(0x8892,0,0x88e4)), restore: nativeInverse(owner)});
       for (const [index,a] of attributes) {
         const cleared = {...a,buffer:null}; delete cleared.view; nextAttributes.set(index,cleared);
         const packed = a.type === 0x140c || a.stride > 255 || a.view !== undefined;
@@ -82,33 +84,24 @@ export function deleteBufferNames(b: GlBinding, names: number[]): boolean {
         const stride = packed ? 0 : a.stride, offset = packed ? 0 : a.offset;
         const native = a.view ?? b.bufferStores.get(a.buffer!)?.views.get(0x8892)?.native ?? a.buffer;
         changes.push({apply: () => checkedGlCall(b, () => gl.vertexAttribPointer(index,a.size,type,normalized,stride,offset)),
-          restore: () => checkedGlCall(b, () => gl.bindBuffer(0x8892,native)) &&
-            checkedGlCall(b, () => gl.vertexAttribPointer(index,a.size,type,normalized,stride,offset))});
+          restore: nativeInverse(owner, [["bindBuffer",0x8892,native],["vertexAttribPointer",index,a.size,type,normalized,stride,offset]])});
       }
     }
     if (attributes.length || nextArray !== b.shadow.arrayBuffer)
       changes.push({apply: () => checkedGlCall(b, () => gl.bindBuffer(0x8892,nextArray)),
-        restore: () => checkedGlCall(b, () => gl.bindBuffer(0x8892,b.shadow.arrayBuffer))});
+        restore: nativeInverse(owner, [["bindBuffer",0x8892,oldArray]])});
     if (nextElement !== vao.element) {
       const oldElement = vao.element && (b.bufferStores.get(vao.element)?.views.get(0x8893)?.native ?? vao.element);
       changes.push({apply: () => checkedGlCall(b, () => gl.bindBuffer(0x8893,null)),
-        restore: () => checkedGlCall(b, () => gl.bindBuffer(0x8893,oldElement))});
+        restore: nativeInverse(owner, [["bindBuffer",0x8893,oldElement]])});
     }
     if (attributes.length) changes.push({apply: () => {
       temporaryReleased = checkedGlCall(b, () => gl.deleteBuffer(temporary)); return temporaryReleased;
-    }, restore: () => true});
+    }, restore: nativeInverse(owner)});
   } catch { recordGlError(b,0x505); return false; }
   if (attributes.length && !(temporary = allocateNativeBuffer(b))) return false;
-  let attempted = 0;
   try {
-    for (const change of changes) {
-      attempted++;
-      if (change.apply()) continue;
-      // Restore even the failing step: a native wrapper can report an error
-      // after applying it. Each selector must succeed before its pointer call.
-      for (let i = attempted - 1; i >= 0; i--) changes[i].restore();
-      return false;
-    }
+    if (!applyNativeChanges(b, changes)) return false;
     b.buffers = buffers; b.retiredBuffers = retired;
     b.shadow.arrayBuffer = nextArray; vao.element = nextElement; vao.attributes = nextAttributes;
     return true;

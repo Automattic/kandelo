@@ -19,6 +19,7 @@
  * their output is sampled by a compositor, never composited by the browser.
  */
 import type { GlBinding } from "./registry.js";
+import { repairNativeState } from "./native-recovery.js";
 import { replaceSurfaceTarget, type GlSurfaceResources } from "./surface-resources.js";
 
 const GL_READ_FRAMEBUFFER = 0x8ca8;
@@ -45,6 +46,7 @@ export function resizeSurfaceTarget(b: GlBinding, w: number, h: number): boolean
       || w > 0x7fff_ffff || h > 0x7fff_ffff) return false;
   if (b.renderTargetFbo && !b.presentTarget) return false;
   if (b.surface.gl && b.surface.gl !== gl) return false;
+  if (!repairNativeState(gl)) return false;
   const existing = b.presentTarget;
   if (existing && existing.w === w && existing.h === h) return true;
   const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;

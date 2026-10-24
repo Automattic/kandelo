@@ -62,6 +62,7 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
 import { registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
+import { repairNativeState } from "./webgl/native-recovery";
 import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
 import {
   blitGpuScanout,
@@ -985,6 +986,7 @@ export class WasmPosixKernel {
   private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
 
   private prepareForeignRetirements(b: GlBinding): boolean {
+    if (b.gl && !repairNativeState(b.gl)) return false;
     if (!this.gl.hasForeignRetirements()) return true;
     for (const gl of this.gl.foreignRetirementContexts()) this.gl_muxers.get(gl)?.invalidateCurrent();
     this.gl.retryForeignRetirements();

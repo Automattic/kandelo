@@ -4221,8 +4221,22 @@ failure restores attempted steps in reverse, including original converted
 vertex views and the separate native index view. Metadata publishes after
 all native changes accept; final storage collection follows logical retirement.
 Inactive containers, other contexts and saved client-array identities keep
-retired storage. Multiple restoration failures and indeterminate completion
-still require general context recovery.
+retired storage. Failed native restoration now retains typed inverse calls for
+buffer deletion, image deletion and framebuffer selection/deletion. The repair
+record is reserved before mutation and belongs to the physical native context,
+so neither the same logical context nor another group can run over dirty state.
+Recovery replays all attempted inverses, including the rejected step. Selector
+failure suppresses dependent calls; independent restorations are still attempted.
+Only native handles, scalars, error flags and context-local shadow lifetime enter
+the journal. Callbacks and guest bindings are excluded. Queries preserve output
+when restoration remains blocked, command batches stop before dependent records,
+and muxer switching repairs before its cached-owner shortcut. Surface/current/
+GPU allocation and raw BO revocation also respect pending repairs. Owner teardown
+retires its selector/container inverses without reviving deleted containers or
+destroying shared peer objects. These inverses do not cover shared storage
+contents: image retarget/orphaning utilities, buffer view/staging and other
+rollback paths still need migration. Indeterminate transport, native context
+loss/recreation and general failed resource deletion remain open.
 
 Public `eglCreateContext` sharing validates a live source handle in the active
 display generation, joins its retained C object owner, and sends the source

@@ -6,7 +6,8 @@ export { recordGlError } from "./errors.js";
 
 /** Keep previously pending errors observable, then commit bookkeeping only
  * if this native call is accepted. Driver rejection must leave state intact. */
-export function checkedGlCall(b: GlBinding, call: () => void): boolean {
+export type CheckedGlOwner = Pick<GlBinding, "gl" | "errors">;
+export function checkedGlCall(b: CheckedGlOwner, call: () => void): boolean {
   const gl = b.gl;
   if (!gl) return false;
   try {

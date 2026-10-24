@@ -122,6 +122,16 @@ preflight, unchanged output while cleanup blocks the group, and accepted retry.
 These checks do not establish CPU canonical coherence, forwarded BO imports or
 general context-loss recovery.
 
+Eight source host cases cover repeated native rollback failure: texture/RBO
+container deletion, framebuffer selectors, normal/converted vertex attributes,
+same/different cached muxer owners, and retirement of context-local inverses
+while shared peer objects survive. Five query/output regressions fail against
+unchanged `e47d3766e0`. The browser GPU case injects a rejected texture deletion
+and repeated native reattachment errors, verifies that local/peer queries and a
+command batch fail while state is dirty, preserves output preflight/sentinels,
+then accepts restoration and reads the original red pixels. This covers the
+adopted inverse paths, not transport uncertainty or all storage rollback.
+
 The source host/browser surface cases also check retained presentation
 storage across context replacement, failed resize preserving pixels,
 independent native draw/read selectors and framebuffer-zero rebinding,

@@ -1,4 +1,5 @@
 import type { GlBinding } from "./registry.js";
+import { repairNativeState } from "./native-recovery.js";
 import { attachImage, textureNative } from "./image-storage.js";
 import { collectRetiredImages } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
@@ -15,6 +16,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
   }
   if (!b.gl) return false;
   const gl = b.gl;
+  if (!repairNativeState(gl)) return false;
   let retired: GlBinding["retiredTextures"];
   let changes: {apply: () => boolean; restore: () => boolean}[];
   let points: {owner: GlBinding; framebuffer: WebGLFramebuffer; point: number}[];

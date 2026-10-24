@@ -219,3 +219,24 @@ it("validates deletion spans and accepts absent or zero names without mutation",
   }
   expect(gl.alive.size).toBe(0); expect(gl.bindings.size).toBe(0); expect(b.errors).toEqual([]);
 });
+
+for (const converted of [false,true]) it(`retains failed attribute restoration and fences dependent work (converted: ${converted})`, () => {
+  const {b,gl,remove,preserved,old} = deletionSetup(converted);
+  const pointer = gl.vertexAttribPointer.bind(gl); let rejected = false, block = true;
+  gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
+    if (!rejected && args[0] === 1) { rejected = true; gl.errors.push(0x502); return; }
+    if (rejected && block) { gl.errors.push(0x502); return; }
+    pointer(...args);
+  };
+  expect(remove()).toEqual([1,0]);
+  expect(b.buffers.get(17)).toBe(old);
+  expect([...b.vertexArrays.get(0)!.attributes.values()].every(a => a.buffer === old)).toBe(true);
+  expect(gl.attributes.get(0)!.buffer).toBeNull();
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  block = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  preserved();
+  expect(remove()).toEqual([0,1]); expect(gl.alive.size).toBe(0);
+});

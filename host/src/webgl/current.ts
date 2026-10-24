@@ -1,4 +1,5 @@
 import type { GlBinding } from "./registry.js";
+import { repairNativeState } from "./native-recovery.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { defaultFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { selectSurfaceResources, type GlSurfaceResources } from "./surface-resources.js";
@@ -49,6 +50,7 @@ export function prepareCurrentDrawable(b: GlBinding, drawable: GlDrawableBinding
   if ((draw?.gl && draw.gl !== b.gl) || (read?.gl && read.gl !== b.gl)) return null;
   let framebuffer: WebGLFramebuffer | null = null;
   const gl = b.gl;
+  if (gl && !repairNativeState(gl)) return null;
   if (drawable.drawSurfaceId === 0 && gl && !b.undefinedDefaultFbo) {
     framebuffer = gl.createFramebuffer();
     try { captureNativeGlErrors(gl, null); }

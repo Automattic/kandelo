@@ -1,4 +1,5 @@
 import type { GlBinding } from "./registry.js";
+import { repairNativeState } from "./native-recovery.js";
 import { createSurfaceResources, exposeSurfaceResources, retireSurface } from "./surface-resources.js";
 import { resizeSurfaceTarget } from "./present-target.js";
 
@@ -28,6 +29,7 @@ export function prepareSurfaceCreation(b: GlBinding, v: GlSurfaceCreation,
   if (!validSurfaceCreation(v)) return { rc: -22 };
   if (b.surfaceId !== null) return { rc: -16 };
   if (v.targetBoId && !target) return { rc: -2 };
+  if ((b.gl && !repairNativeState(b.gl)) || (target && !repairNativeState(target.gl))) return {rc:-5};
   const candidate = createSurfaceResources(b.pid);
   candidate.surfaceId = v.surfaceId; candidate.fixedSize = true;
   let width = v.width, height = v.height;

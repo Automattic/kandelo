@@ -1,7 +1,8 @@
 import { blitPresentTarget } from "./present-target.js";
 import { prepareSurfaceCreation, validSurfaceCreation, type GlSurfaceCreation } from "./surface-create.js";
 import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
-import { decodeAndDispatch } from "./bridge.js";
+import { decodeAndDispatch, validateCommandBuffer } from "./bridge.js";
+import { recordGlError } from "./errors.js";
 import { runGlQuery } from "./query.js";
 import { GlMuxer } from "./muxer.js";
 import { prepareCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
@@ -281,9 +282,12 @@ export function setupMainForward(
       }
       case "gl_forward_submit": {
         if (!b.gl) return;
-        muxer(b.gl).switchTo(b);
-        b.cmdbufView = msg.bytes;
-        decodeAndDispatch(b, 0, msg.bytes.byteLength);
+        try {
+          if (validateCommandBuffer(msg.bytes,0,msg.bytes.byteLength) < 0) { recordGlError(b,0x502); return; }
+          muxer(b.gl).switchTo(b);
+          b.cmdbufView = msg.bytes;
+          if (decodeAndDispatch(b, 0, msg.bytes.byteLength) < 0) recordGlError(b,0x502);
+        } catch { recordGlError(b,0x502); }
         return;
       }
       case "gl_forward_query": {

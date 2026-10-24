@@ -19,6 +19,7 @@
  * ioctl-style device operation instead of hiding the failure in host code.
  */
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
+import { repairNativeState } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray } from "./buffer-references.js";
 import { capabilityEnabled } from "./state-query.js";
@@ -99,6 +100,7 @@ export function decodeAndDispatch(
   if (validation !== GL_SUBMIT_OK) return validation;
   const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
     try {
+      if (!repairNativeState(b.gl!)) return GL_SUBMIT_EIO;
       dispatch(b.gl!, b, payload, 0, op);
       return GL_SUBMIT_OK;
     } catch (err) {
@@ -106,6 +108,7 @@ export function decodeAndDispatch(
       return GL_SUBMIT_EIO;
     }
   });
+  if (!repairNativeState(b.gl)) return GL_SUBMIT_EIO;
   collectRetiredImages(b);
   collectRetiredBuffers(b);
   return result;

@@ -1,4 +1,5 @@
 import { revokeForeignBo } from "./foreign-retirement.js";
+import { repairNativeState, retireNativeRepair } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
 import type { GlUniformLookup } from "./uniform-queries.js";
@@ -244,6 +245,7 @@ export class GlContextRegistry {
     const b = this.get(pid, sessionId);
     if (!b) return;
     const gl = b.gl;
+    if (gl) retireNativeRepair(gl, b.shadow);
     b.uniformLookup = null;
     b.uniformLookupSerial = 0;
     b.shaderUpload = null;
@@ -481,6 +483,7 @@ export class GlContextRegistry {
     h: number,
   ): number | null {
     if (this.foreignRetirements.has(bo_id)) return null;
+    if (!repairNativeState(gl)) return null;
     const existing = this.gpuBos.get(bo_id);
     if (existing) return existing.texId;
     const tex = gl.createTexture();

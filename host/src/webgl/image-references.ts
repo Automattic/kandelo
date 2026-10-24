@@ -1,6 +1,7 @@
-import { attachImage, destroyTextureView, destroyRenderbufferView, textureNative, renderbufferNative } from "./image-storage.js";
+import { attachImage, destroyTextureView, destroyRenderbufferView, textureNative, renderbufferNative, imageAttachmentCall } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
+import { applyNativeChanges, nativeOwner, nativeInverse, type NativeChange } from "./native-recovery.js";
 import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget } from "./framebuffer.js";
 export type GlImageAttachment = {
   kind: "texture";
@@ -77,6 +78,7 @@ export function bindFramebufferObject(b: GlBinding, target: number, name: number
   const gl = b.gl;
   if (!gl)
     return false;
+  const owner = nativeOwner(b), oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
   let object = name ? b.fbos.get(name) ?? null : defaultFramebuffer(b, target === 0x8ca8);
   const allocate = name !== 0 && object === null;
   let read = name === 0 && target === 0x8d40 ? defaultFramebuffer(b, true) : object;
@@ -84,15 +86,13 @@ export function bindFramebufferObject(b: GlBinding, target: number, name: number
   try {
     changes = [];
     if (target === 0x8d40 && name === 0 && read !== object) {
-      changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, object)), restore: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, b.shadow.fbo)) });
-      changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, read)), restore: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, b.shadow.readFbo)) });
+      changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, object)), restore: nativeInverse(owner, [["bindFramebuffer",0x8ca9,oldDraw]]) });
+      changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, read)), restore: nativeInverse(owner, [["bindFramebuffer",0x8ca8,oldRead]]) });
     }
     else {
-      changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(target, object)), restore: () => {
-          const drawRestored = target === 0x8ca8 || checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, b.shadow.fbo));
-          const readRestored = target === 0x8ca9 || checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, b.shadow.readFbo));
-          return drawRestored && readRestored;
-        } });
+      changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(target, object)), restore: nativeInverse(owner,
+          target === 0x8ca8 ? [] : [["bindFramebuffer",0x8ca9,oldDraw]],
+          target === 0x8ca9 ? [] : [["bindFramebuffer",0x8ca8,oldRead]]) });
     }
   }
   catch {
@@ -116,7 +116,7 @@ export function bindFramebufferObject(b: GlBinding, target: number, name: number
       return false;
     }
   }
-  if (!applyImageChanges(b, changes)) {
+  if (!applyNativeChanges(b, changes)) {
     if (allocate) {
       b.fbos.delete(name);
       checkedGlCall(b, () => gl.deleteFramebuffer(object));
@@ -127,25 +127,6 @@ export function bindFramebufferObject(b: GlBinding, target: number, name: number
     b.shadow.fbo = object;
   if (target !== 0x8ca9)
     b.shadow.readFbo = read;
-  return true;
-}
-type NativeChange = {
-  apply: () => boolean;
-  restore: () => boolean;
-};
-/** Driver errors leave logical ownership intact. Reverse already attempted
- * native steps as well, including the failing step. Context loss or a second
- * error during restoration remains observable through the host error flags. */
-function applyImageChanges(b: GlBinding, changes: NativeChange[]): boolean {
-  let attempted = 0;
-  for (const change of changes) {
-    attempted++;
-    if (change.apply())
-      continue;
-    for (let i = attempted - 1; i >= 0; i--)
-      changes[i].restore();
-    return false;
-  }
   return true;
 }
 function boundAttachmentChanges(b: GlBinding, kind: GlImageAttachment["kind"], object: object): {
@@ -160,6 +141,7 @@ function boundAttachmentChanges(b: GlBinding, kind: GlImageAttachment["kind"], o
     point: number;
   }> = [];
   const visited = new Set<WebGLFramebuffer>();
+  const owner = nativeOwner(b);
   for (const [target, framebuffer] of [[0x8ca9, b.shadow.fbo], [0x8ca8, b.shadow.readFbo]] as const) {
     if (!framebuffer || visited.has(framebuffer))
       continue;
@@ -167,7 +149,9 @@ function boundAttachmentChanges(b: GlBinding, kind: GlImageAttachment["kind"], o
     for (const [point, image] of b.framebufferAttachments.get(framebuffer) ?? []) {
       if (image.kind !== kind || image.object !== object)
         continue;
-      changes.push({ apply: () => checkedGlCall(b, () => attachImage(b, target, point, null)), restore: () => checkedGlCall(b, () => attachImage(b, target, point, image)) });
+      const restore = imageAttachmentCall(b, target, point, image);
+      changes.push({ apply: () => checkedGlCall(b, () => attachImage(b, target, point, null)),
+        restore: nativeInverse(owner, [["bindFramebuffer",target,framebuffer],restore]) });
       points.push({ framebuffer, point });
     }
   }
@@ -193,7 +177,8 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
     return true;
   if (!b.gl)
     return false;
-  const gl = b.gl;
+  const gl = b.gl, owner = nativeOwner(b), active = b.shadow.activeTexture;
+  const oldNative = textureNative(b, texture);
   let changes: NativeChange[], points: Array<{
     framebuffer: WebGLFramebuffer;
     point: number;
@@ -209,13 +194,13 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
       for (let unit = 0; unit < bindings.length; unit++)
         if (bindings[unit] === texture) {
           const bind = (native: WebGLTexture | null) => {
-            if (!checkedGlCall(b, () => gl.activeTexture(0x84c0 + unit)))
+            if (!checkedGlCall(owner, () => gl.activeTexture(0x84c0 + unit)))
               return false;
-            const accepted = checkedGlCall(b, () => gl.bindTexture(target, native));
-            const restored = checkedGlCall(b, () => gl.activeTexture(0x84c0 + b.shadow.activeTexture));
+            const accepted = checkedGlCall(owner, () => gl.bindTexture(target, native));
+            const restored = checkedGlCall(owner, () => gl.activeTexture(0x84c0 + active));
             return accepted && restored;
           };
-          changes.push({ apply: () => bind(b.shadow.defaultTextures.get(target) ?? null), restore: () => bind(textureNative(b, texture)) });
+          changes.push({ apply: () => bind(b.shadow.defaultTextures.get(target) ?? null), restore: nativeInverse(owner, [["activeTexture",0x84c0+unit],["bindTexture",target,oldNative]], [["activeTexture",0x84c0+active]]) });
           units.push({ bindings, unit });
         }
     }
@@ -225,7 +210,7 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
     recordGlError(b, 0x505);
     return false;
   }
-  if (!applyImageChanges(b, changes)) {
+  if (!applyNativeChanges(b, changes)) {
     if (previous === undefined)
       b.retiredTextures.delete(texture);
     else
@@ -252,11 +237,12 @@ export function deleteRenderbufferName(b: GlBinding, name: number): boolean {
     point: number;
   }>;
   const previous = b.retiredRenderbuffers.get(object);
+  const gl = b.gl, owner = nativeOwner(b), oldNative = renderbufferNative(b, object);
   try {
     ({ changes, points } = boundAttachmentChanges(b, "renderbuffer", object));
     if (b.shadow.renderbuffer === object)
       changes.push({
-        apply: () => checkedGlCall(b, () => b.gl!.bindRenderbuffer(0x8d41, null)), restore: () => checkedGlCall(b, () => b.gl!.bindRenderbuffer(0x8d41, renderbufferNative(b, object)))
+        apply: () => checkedGlCall(b, () => b.gl!.bindRenderbuffer(0x8d41, null)), restore: nativeInverse(owner, [["bindRenderbuffer",0x8d41,oldNative]])
       });
     b.retiredRenderbuffers.set(object, name);
   }
@@ -264,7 +250,7 @@ export function deleteRenderbufferName(b: GlBinding, name: number): boolean {
     recordGlError(b, 0x505);
     return false;
   }
-  if (!applyImageChanges(b, changes)) {
+  if (!applyNativeChanges(b, changes)) {
     if (previous === undefined)
       b.retiredRenderbuffers.delete(object);
     else
@@ -285,18 +271,13 @@ export function deleteFramebufferName(b: GlBinding, name: number): boolean {
   if (!gl)
     return false;
   const changes: NativeChange[] = [];
-  const draw = defaultFramebuffer(b), read = defaultFramebuffer(b, true);
+  const draw = defaultFramebuffer(b), read = defaultFramebuffer(b, true), owner = nativeOwner(b);
   if (b.shadow.fbo === object)
-    changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, draw)), restore: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, object)) });
+    changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, draw)), restore: nativeInverse(owner, [["bindFramebuffer",0x8ca9,object]]) });
   if (b.shadow.readFbo === object)
-    changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, read)), restore: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, object)) });
-  if (!applyImageChanges(b, changes))
-    return false;
-  if (!checkedGlCall(b, () => gl.deleteFramebuffer(object))) {
-    for (let i = changes.length - 1; i >= 0; i--)
-      changes[i].restore();
-    return false;
-  }
+    changes.push({ apply: () => checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, read)), restore: nativeInverse(owner, [["bindFramebuffer",0x8ca8,object]]) });
+  changes.push({apply: () => checkedGlCall(b, () => gl.deleteFramebuffer(object)), restore: nativeInverse(owner)});
+  if (!applyNativeChanges(b, changes)) return false;
   if (b.shadow.fbo === object)
     b.shadow.fbo = draw;
   if (b.shadow.readFbo === object)

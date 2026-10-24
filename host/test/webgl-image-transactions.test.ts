@@ -386,3 +386,80 @@ it("shares framebuffer bind realization and rollback between queued and checked 
   expect(b.shadow.fbo).toBe(accepted);
   expect(b.shadow.readFbo).toBe(framebuffer);
 });
+
+for (const kind of [1, 2]) it(`fences later queries and batches until failed container rollback accepts (kind ${kind})`, () => {
+  const { b, gl, old, framebuffer, query } = setup(kind);
+  const before = gl.before.bind(gl), binding = kind === 1 ? "texture" : "renderbuffer";
+  const attachment = kind === 1 ? "attach-texture" : "attach-renderbuffer";
+  let rejected = false, blockRestore = true;
+  gl.before = name => {
+    if (!rejected && name === binding) { rejected = true; gl.errors.push(0x505); return false; }
+    if (rejected && blockRestore && name === attachment) { gl.errors.push(0x502); return false; }
+    return before(name);
+  };
+  expect(query(O.QOP_IMAGE_OBJECT_DELETE,[kind,17])).toEqual([1,0]);
+  expect(gl.attachments.get(framebuffer)!.has(COLOR)).toBe(false);
+  expect(b.framebufferAttachments.get(framebuffer)!.get(COLOR)!.object).toBe(old);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  const view = new DataView(b.cmdbufView!.buffer);
+  view.setUint16(0,O.OP_ACTIVE_TEXTURE,true); view.setUint16(2,4,true); view.setUint32(4,0x84c4,true);
+  expect(decodeAndDispatch(b,0,8)).toBe(-5);
+  expect(gl.active).toBe(0); expect(b.shadow.activeTexture).toBe(0);
+  expect((kind === 1 ? b.textures : b.rbos).get(17)).toBe(old);
+  const calls = gl.calls.length;
+  view.setUint16(2,3,true);
+  expect(decodeAndDispatch(b,0,7)).toBe(-22);
+  expect(gl.calls.length).toBe(calls);
+  blockRestore = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(gl.attachments.get(framebuffer)!.get(COLOR)).toBe(old);
+  expect(kind === 1 ? gl.textures.get(0) : gl.renderbuffer).toBe(old);
+  expect(query(O.QOP_IMAGE_OBJECT_DELETE,[kind,17])).toEqual([0,1]);
+});
+
+it("retains failed framebuffer deletion rollback and restores both native selectors before retry", () => {
+  const { b, gl, framebuffer, query } = setup();
+  const before = gl.before.bind(gl); let rejected = false, block = true;
+  gl.before = name => {
+    if (!rejected && name === "delete-framebuffer") { rejected = true; gl.errors.push(0x505); return false; }
+    if (rejected && block && name === "framebuffer") { gl.errors.push(0x502); return false; }
+    return before(name);
+  };
+  expect(query(O.QOP_IMAGE_OBJECT_DELETE,[3,71])).toEqual([1,0]);
+  expect(gl.draw).toBeNull(); expect(gl.read).toBeNull();
+  expect(b.shadow.fbo).toBe(framebuffer); expect(b.shadow.readFbo).toBe(framebuffer);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  block = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(gl.draw).toBe(framebuffer); expect(gl.read).toBe(framebuffer);
+  expect(b.fbos.get(71)).toBe(framebuffer);
+  expect(query(O.QOP_IMAGE_OBJECT_DELETE,[3,71])).toEqual([0,1]);
+});
+
+it("retires context-local repair targets without reviving dead containers or losing peer objects", () => {
+  const {registry,b,gl,old,framebuffer,query} = setup();
+  registry.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:0});
+  const peer = registry.get(1,2)!; peer.gl = b.gl;
+  b.contextId = 11; peer.contextId = 12;
+  expect(registry.shareObjects(1,2,0)).toBe(true);
+  const before = gl.before.bind(gl); let rejected = false, restores = 0;
+  gl.before = name => {
+    if (!rejected && name === "texture") { rejected = true; gl.errors.push(0x505); return false; }
+    if (rejected && name === "attach-texture") { restores++; gl.errors.push(0x502); return false; }
+    return before(name);
+  };
+  expect(query(O.QOP_IMAGE_OBJECT_DELETE,[1,17])).toEqual([1,0]);
+  const attempts = restores;
+  registry.destroyContext(1,0);
+  expect(gl.deleted).toContain(framebuffer);
+  expect(gl.deleted).not.toContain(old);
+  expect(peer.textures.get(17)).toBe(old);
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
+  expect(restores).toBe(attempts);
+  registry.destroyContext(1,2);
+  expect(gl.deleted).toContain(old);
+});

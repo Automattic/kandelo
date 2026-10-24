@@ -1,3 +1,4 @@
+import { invokeNativeCall, type NativeCall } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import type { GlImageAttachment } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
@@ -136,20 +137,27 @@ function allocateTextureView(b: GlBinding, old: WebGLTexture, source: GlImageSou
 }
 /** Resolve physical storage while retaining logical attachment query identity. */
 export function attachImage(b: GlBinding, target: number, point: number, image: GlImageAttachment | null, override?: GlTextureView | GlRenderbufferView): void {
-  const gl = b.gl!;
+  invokeNativeCall(b.gl!, imageAttachmentCall(b, target, point, image, override));
+}
+/** A deferred inverse retains native storage identity without retaining guest
+ * memory through a binding or consulting subsequently changed view metadata. */
+export function imageAttachmentCall(b: GlBinding, target: number, point: number, image: GlImageAttachment | null, override?: GlTextureView | GlRenderbufferView): NativeCall {
   if (!image) {
-    gl.framebufferRenderbuffer(target, point, RBO, null);
-    return;
+    return ["framebufferRenderbuffer", target, point, RBO, null];
   }
   const view = override ?? (image.kind === "texture" ? b.textureViews.get(image.object) : b.renderbufferViews.get(image.object));
   if (view?.source) {
-    gl.framebufferTexture2D(target, point, image.kind === "texture" ? image.target : TEX, view.source.texture, image.kind === "texture" ? image.level : 0);
-    return;
+    const native = view.source.texture, imageTarget = image.kind === "texture" ? image.target : TEX;
+    const level = image.kind === "texture" ? image.level : 0;
+    return ["framebufferTexture2D", target, point, imageTarget, native, level];
   }
-  if (image.kind === "texture")
-    gl.framebufferTexture2D(target, point, image.target, (view?.native as WebGLTexture | undefined) ?? image.object, image.level);
-  else
-    gl.framebufferRenderbuffer(target, point, RBO, (view?.native as WebGLRenderbuffer | undefined) ?? image.object);
+  if (image.kind === "texture") {
+    const native = (view?.native as WebGLTexture | undefined) ?? image.object;
+    const imageTarget = image.target, level = image.level;
+    return ["framebufferTexture2D", target, point, imageTarget, native, level];
+  }
+  const native = (view?.native as WebGLRenderbuffer | undefined) ?? image.object;
+  return ["framebufferRenderbuffer", target, point, RBO, native];
 }
 /** Retarget all containers before publishing storage. Other contexts' bindings
  * remain logical and resolve the current view on their next muxer selection. */
