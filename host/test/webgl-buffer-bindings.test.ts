@@ -27,11 +27,18 @@ class BufferGl {
   }
   vertexAttribPointer(index: number, size: number, type: number, normalized: boolean, stride: number, offset: number) {
     if (this.reject(`pointer:${index}`)) return;
+    // Model native WebGL validation independently of GLES adaptation.
+    if (index >= 16 || size < 1 || size > 4 || stride < 0 || stride > 255 || offset < 0) { this.errors.push(0x501); return; }
+    const widths = new Map([[0x1400,1],[0x1401,1],[0x1402,2],[0x1403,2],[0x1404,4],[0x1405,4],[0x1406,4],[0x140b,2]]);
+    const width = widths.get(type); if (!width) {this.errors.push(0x500);return;}
+    const buffer = this.bindings.get(ARRAY);
+    if (!buffer || !this.alive.has(buffer) || stride % width || offset % width) {this.errors.push(0x502);return;}
     this.attributes.set(index,{buffer:this.bindings.get(ARRAY) ?? null,size,type,normalized,stride,offset});
   }
-  getParameter(target: number) { return this.bindings.get(target) ?? null; }
+  getParameter(target: number) { return target === 0x8869 ? 16 : this.bindings.get(target) ?? null; }
   bindBuffer(target: number, object: object | null) {
     if (this.reject(`bind:${target}`)) return;
+    if (object && !this.alive.has(object)) {this.errors.push(0x502);return;}
     if (this.failBind) { this.failBind = false; this.errors.push(0x502); return; }
     if (object && (target === ARRAY || target === ELEMENT)) {
       const old = this.classes.get(object);
@@ -57,7 +64,7 @@ function setup() {
     const words = new Uint32Array(out.buffer); expect(words[2]).toBe(0x47514c33);
     return [...words.slice(0, 2)];
   };
-  return { b, gl, query };
+  return { b, gl, query, registry };
 }
 for (const target of [ARRAY, ELEMENT]) {
   it(`acknowledges buffer realization, rebinding and zero for target ${target}`, () => {
@@ -231,7 +238,9 @@ for (const converted of [false,true]) it(`retains failed attribute restoration a
   expect(remove()).toEqual([1,0]);
   expect(b.buffers.get(17)).toBe(old);
   expect([...b.vertexArrays.get(0)!.attributes.values()].every(a => a.buffer === old)).toBe(true);
-  expect(gl.attributes.get(0)!.buffer).toBeNull();
+  const pending = gl.attributes.get(0)!.buffer!;
+  expect(pending).not.toBe(b.vertexArrays.get(0)!.attributes.get(0)!.view ?? old);
+  expect(gl.alive.has(pending)).toBe(true);
   const out = new Uint8Array(4).fill(0xa5);
   expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
   expect([...out]).toEqual([165,165,165,165]);
@@ -301,4 +310,220 @@ it("retires an allocated buffer candidate if VAO bookkeeping throws before publi
   expect(gl.alive.size).toBe(0); expect(b.buffers.size).toBe(0); expect(b.bufferStores.size).toBe(0);
   expect(b.errors).toContain(0x505);
   expect(query(ELEMENT,17)).toEqual([0,1]); expect(gl.alive.size).toBe(1);
+});
+
+function pointerSetup() {
+  const fixture = setup();
+  const {b,gl,query} = fixture;
+  const submit = (records: [number,number[]][]) => {
+    const bytes: number[] = [];
+    for (const [op,words] of records) {
+      const record = new Uint8Array(4+words.length*4), v = new DataView(record.buffer);
+      v.setUint16(0,op,true); v.setUint16(2,words.length*4,true);
+      words.forEach((word,i) => v.setUint32(4+i*4,word,true)); bytes.push(...record);
+    }
+    b.cmdbufView = new Uint8Array(bytes); return decodeAndDispatch(b,0,bytes.length);
+  };
+  query(ARRAY,17); const object = b.buffers.get(17)!;
+  b.bufferStores.get(object)!.size = 16;
+  gl.contents.set(object,new Uint8Array(new Int32Array([65536,0,0,65536]).buffer));
+  return {...fixture,submit,object};
+}
+
+it("restores an interrupted capture before the next query without another END record", () => {
+  const {b,gl,submit,object} = pointerSetup();
+  Object.assign(gl,{clearColor(){throw new Error("submission interrupted");}});
+  expect(submit([[O.OP_BEGIN_CLIENT_ARRAY,[]],[O.OP_BIND_BUFFER,[ARRAY,18]],[O.OP_CLEAR_COLOR,[0,0,0,0x3f800000]],[O.OP_END_CLIENT_ARRAY,[]]])).toBe(-5);
+  expect(b.shadow.arrayBuffer).toBe(object); expect(gl.bindings.get(ARRAY)).toBe(object);
+  expect(b.savedClientArrayBuffer).toBeUndefined(); expect(b.clientArrayEndRequested).toBe(false);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
+});
+
+it("keeps a restore request when ticket reservation fails and retries it on admission", () => {
+  const {b,gl,submit,object} = pointerSetup();
+  expect(submit([[O.OP_BEGIN_CLIENT_ARRAY,[]],[O.OP_BIND_BUFFER,[ARRAY,18]]])).toBe(0);
+  const temporary = b.shadow.arrayBuffer;
+  const set = WeakMap.prototype.set; let rc = 0;
+  WeakMap.prototype.set = () => {throw new RangeError("ticket reservation failed");};
+  try { rc = submit([[O.OP_END_CLIENT_ARRAY,[]]]); } finally { WeakMap.prototype.set = set; }
+  expect(rc).toBe(-5); expect(b.shadow.arrayBuffer).toBe(temporary);
+  expect(b.savedClientArrayBuffer).toBe(object); expect(b.clientArrayEndRequested).toBe(true);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
+  expect(b.shadow.arrayBuffer).toBe(object); expect(gl.bindings.get(ARRAY)).toBe(object);
+  expect(b.savedClientArrayBuffer).toBeUndefined();
+});
+
+for (const converted of [false,true]) it(`restores a partially applied pointer and ARRAY selection before accepting later work (converted: ${converted})`, () => {
+  const {b,gl,submit,object} = pointerSetup();
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,8,0]]])).toBe(0);
+  const accepted = b.vertexArrays.get(0)!.attributes.get(0)!;
+  const native = {...gl.attributes.get(0)!}, count = gl.alive.size;
+  const pointer = gl.vertexAttribPointer.bind(gl); let rejected = false, block = true;
+  gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
+    if (!rejected && args[1] === 3) { pointer(...args); rejected = true; gl.errors.push(0x502); return; }
+    if (rejected && block && args[1] === 2) { gl.errors.push(0x502); return; }
+    pointer(...args);
+  };
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,3,converted?0x140c:0x1406,0,0,0]]])).toBe(-5);
+  expect(b.vertexArrays.get(0)!.attributes.get(0)).toBe(accepted);
+  expect(gl.attributes.get(0)!.size).toBe(3);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  block = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(gl.attributes.get(0)).toEqual(native); expect(gl.bindings.get(ARRAY)).toBe(object);
+  expect(gl.alive.size).toBe(count); expect(b.bufferStores.get(object)!.converted.size).toBe(0);
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,3,converted?0x140c:0x1406,0,0,0]]])).toBe(0);
+  expect(b.vertexArrays.get(0)!.attributes.get(0)!.size).toBe(3);
+});
+
+it("restores an initially unbound attribute with an owned private buffer and deferred cleanup", () => {
+  const {b,gl,submit} = pointerSetup();
+  const pointer = gl.vertexAttribPointer.bind(gl), destroy = gl.deleteBuffer.bind(gl);
+  let rejected = false, blockCleanup = true;
+  gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => { pointer(...args); if (!rejected) {rejected = true; gl.errors.push(0x502);} };
+  gl.deleteBuffer = object => { if (blockCleanup && object !== b.buffers.get(17)) {gl.errors.push(0x505);return;} destroy(object); };
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x140c,0,0,0]]])).toBe(-5);
+  expect(b.vertexArrays.get(0)!.attributes.has(0)).toBe(false);
+  expect(gl.attributes.get(0)).toMatchObject({size:4,type:0x1406,stride:0,offset:0});
+  expect(gl.attributes.get(0)!.buffer).not.toBeNull();
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  blockCleanup = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(gl.attributes.get(0)!.buffer).toBeNull(); expect(gl.alive.size).toBe(1);
+});
+
+it("reserves attribute and converted-view metadata before native pointer effects", () => {
+  for (const selected of ["attribute","converted","owner","view"] as const) {
+    const {b,gl,submit,object} = pointerSetup();
+    const count = gl.alive.size, pointer = gl.vertexAttribPointer.bind(gl); let changes = 0;
+    gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => { changes++; pointer(...args); };
+    const map = selected === "attribute" || selected === "view" ? b.vertexArrays.get(0)!.attributes : selected === "converted" ? b.bufferStores.get(object)!.converted : b.bufferViewOwners;
+    const OriginalMap = globalThis.Map, set = map.set, prototypeSet = Map.prototype.set;
+    if (selected === "attribute") globalThis.Map = class extends OriginalMap { constructor(entries?: any) {if(entries===map) throw new RangeError("attribute map failed");super(entries);} } as MapConstructor;
+    else if (selected === "view") Map.prototype.set = function(key: any,value: any) {
+      if (typeof key === "number" && value && typeof value === "object" && "size" in value && "type" in value && "buffer" in value)
+        Object.defineProperty(value,"view",{configurable:true,set(){throw new RangeError("view field reservation failed");}});
+      return prototypeSet.call(this,key,value);
+    };
+    else map.set = () => {throw new RangeError("converted metadata failed");};
+    try { expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x140c,0,0,0]]])).toBe(0); }
+    finally { globalThis.Map = OriginalMap; Map.prototype.set = prototypeSet; map.set = set; }
+    expect(changes).toBe(0); expect(gl.alive.size).toBe(count);
+    expect(b.vertexArrays.get(0)!.attributes.size).toBe(0); expect(b.bufferStores.get(object)!.converted.size).toBe(0);
+    expect(b.errors).toContain(0x505);
+  }
+});
+
+it("rejects invalid vertex formats and native-limit indices before allocation or inverse registration", () => {
+  for (const [words,error] of [ [[16,2,0x1406,0,0,0],0x501], [[0,5,0x1406,0,0,0],0x501],
+      [[0,2,0x1404,0,0,0],0x500], [[0,2,0x1406,0,0,2],0x502], [[0,2,0x1406,0,0xffffffff,0],0x501] ] as const) {
+    const {b,gl,submit} = pointerSetup(); const count = gl.alive.size;
+    expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[...words]]])).toBe(0);
+    expect(gl.attributes.size).toBe(0); expect(gl.alive.size).toBe(count); expect(b.errors).toEqual([error]);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
+  }
+});
+
+for (const type of [0x1401,0x1403]) it(`retains promoted-index restoration and cleanup without replaying the draw (type ${type})`, () => {
+  const {b,gl,query} = setup(); query(ELEMENT,17); const object = b.buffers.get(17)!;
+  const bytes = type === 0x1401 ? new Uint8Array([255,1,2]) : new Uint8Array(new Uint16Array([65535,1,2]).buffer);
+  b.bufferStores.get(object)!.size = bytes.length; gl.contents.set(object,bytes.slice());
+  let draws = 0, block = true, blockCleanup = true;
+  Object.assign(gl,{drawElements(){draws++;}});
+  const bind = gl.bindBuffer.bind(gl), destroy = gl.deleteBuffer.bind(gl);
+  gl.bindBuffer = (target,value) => { if (draws && block && target===ELEMENT && value===object) {gl.errors.push(0x502);return;}bind(target,value); };
+  gl.deleteBuffer = value => {if(blockCleanup && value!==object){gl.errors.push(0x505);return;}destroy(value);};
+  const data = new Uint8Array(20), view = new DataView(data.buffer);
+  view.setUint16(0,O.OP_DRAW_ELEMENTS,true);view.setUint16(2,16,true);
+  [0,3,type,0].forEach((word,i)=>view.setUint32(4+i*4,word,true)); b.cmdbufView=data;
+  expect(decodeAndDispatch(b,0,20)).toBe(-5); expect(draws).toBe(1);
+  expect(b.vertexArrays.get(0)!.element).toBe(object); expect(gl.bindings.get(ELEMENT)).not.toBe(object);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  block = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect(gl.bindings.get(ELEMENT)).toBe(object); expect(draws).toBe(1);
+  blockCleanup = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(draws).toBe(1); expect(gl.alive.size).toBe(1); expect(gl.contents.get(object)).toEqual(bytes);
+});
+
+it("recreates a converted cache view after pending cleanup completed on a query", () => {
+  const {b,gl,submit,object} = pointerSetup();
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x140c,0,0,0]]])).toBe(0);
+  const old = b.vertexArrays.get(0)!.attributes.get(0)!.view!, destroy = gl.deleteBuffer.bind(gl);
+  let block = true;
+  gl.deleteBuffer = value => {if(value===old && block){gl.errors.push(0x505);return;}destroy(value);};
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]])).toBe(0);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  block = false; expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(gl.alive.has(old)).toBe(false);
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x140c,0,0,0]]])).toBe(0);
+  const fresh = b.vertexArrays.get(0)!.attributes.get(0)!.view!;
+  expect(fresh).not.toBe(old); expect(gl.alive.has(fresh)).toBe(true);
+  let enabled = false, draws = 0;
+  Object.assign(gl,{enableVertexAttribArray(index: number){ if(index===0) enabled = true; },drawArrays(){draws++;}});
+  expect(submit([[O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]],[O.OP_DRAW_ARRAYS,[0,0,1]]])).toBe(0);
+  expect(enabled).toBe(true); expect(draws).toBe(1);
+  expect([...new Float32Array(gl.contents.get(fresh)!.buffer)]).toEqual([1,0,0,1]);
+  expect(b.bufferStores.get(object)!.converted.size).toBe(1);
+});
+
+it("shares converted cleanup with final buffer retirement and never repeats accepted deletion", () => {
+  const {b,gl,submit,object,registry} = pointerSetup();
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x140c,0,0,0]]])).toBe(0);
+  const converted = b.vertexArrays.get(0)!.attributes.get(0)!.view!, destroy = gl.deleteBuffer.bind(gl);
+  const deleted: object[] = []; let block = true;
+  gl.deleteBuffer = value => {if(value===converted && block){gl.errors.push(0x505);return;}deleted.push(value);destroy(value);};
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]])).toBe(0);
+  // The source namespace is still alive. Teardown, unlike an admitted GL
+  // command, must retain final cleanup while the converted child is pending.
+  registry.destroyContext(1);
+  expect(b.gl).toBeNull();
+  expect(deleted.filter(value=>value===object)).toHaveLength(1);
+  registry.bind({pid:2,cmdbufAddr:0,cmdbufLen:0});
+  const next = registry.get(2)!; next.gl = gl as unknown as WebGL2RenderingContext; next.contextId = 2;
+  block = false;
+  const out = new Uint8Array(4);
+  expect(runGlQuery(next,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect([...out]).toEqual([0,0,0,0]);
+  expect(deleted.filter(value=>value===object)).toHaveLength(1);
+  expect(deleted.filter(value=>value===converted)).toHaveLength(1);
+  expect(gl.alive.size).toBe(0); expect(b.bufferStores.has(object)).toBe(false);
+});
+
+it("completes a rejected zero-binding capture restore on the next query", () => {
+  const {b,gl,submit,query} = pointerSetup(); query(ARRAY,0);
+  expect(submit([[O.OP_BEGIN_CLIENT_ARRAY,[]],[O.OP_BIND_BUFFER,[ARRAY,18]]])).toBe(0);
+  const bind = gl.bindBuffer.bind(gl); let block = true;
+  gl.bindBuffer = (target,value) => { if(block && target===ARRAY && value===null){gl.errors.push(0x502);return;}bind(target,value); };
+  expect(submit([[O.OP_END_CLIENT_ARRAY,[]]])).toBe(-5);
+  expect(b.savedClientArrayBuffer).toBeNull(); expect(b.shadow.arrayBuffer).not.toBeNull();
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  block = false; expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(b.savedClientArrayBuffer).toBeUndefined(); expect(b.shadow.arrayBuffer).toBeNull();
+  expect(gl.bindings.get(ARRAY)).toBeNull(); expect(b.clientArrayRestore).toBeUndefined();
+});
+
+it("retires a pending capture without publishing it into another context", () => {
+  const {registry,b,gl,submit,object} = pointerSetup(); b.contextId = 1;
+  registry.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:0}); const peer = registry.get(1,2)!;
+  peer.gl = b.gl; peer.contextId = 2; expect(registry.shareObjects(1,2,0)).toBe(true);
+  expect(submit([[O.OP_BEGIN_CLIENT_ARRAY,[]],[O.OP_BIND_BUFFER,[ARRAY,18]]])).toBe(0);
+  const bind = gl.bindBuffer.bind(gl);
+  gl.bindBuffer = (target,value) => {if(target===ARRAY && value===object){gl.errors.push(0x502);return;}bind(target,value);};
+  expect(submit([[O.OP_END_CLIENT_ARRAY,[]]])).toBe(-5);
+  registry.destroyContext(1,0);
+  expect(b.savedClientArrayBuffer).toBeUndefined(); expect(b.clientArrayRestore).toBeUndefined();
+  expect(b.clientArrayEndRequested).toBe(false); expect(b.gl).toBeNull();
+  const out = new Uint8Array(4);
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect([...out]).toEqual([0,0,0,0]); expect(peer.shadow.arrayBuffer).toBeNull();
+  registry.destroyContext(1,2); expect(gl.alive.size).toBe(0);
 });

@@ -21,12 +21,12 @@
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
 import { repairNativeState } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
-import { beginClientArray, endClientArray } from "./buffer-references.js";
+import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { installShaderSource } from "./shader-source.js";
 import { drawGlesElements } from "./index-data.js";
-import { setConvertedVertexAttribute } from "./vertex-data.js";
+import { installVertexAttribute } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, currentProgramName, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
@@ -34,7 +34,7 @@ import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
 import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, deleteFramebufferName, attachImageObject, bindFramebufferObject } from "./image-references.js";
-import { activeVertexArray, clearNativeAttributeBuffers, collectRetiredBuffers, defaultVertexArray, deleteBufferNames, vertexAttribute } from "./buffer-references.js";
+import { activeVertexArray, collectRetiredBuffers, defaultVertexArray, deleteBufferNames, vertexAttribute } from "./buffer-references.js";
 import {
   GL_BACK,
   GL_FRONT,
@@ -100,7 +100,7 @@ export function decodeAndDispatch(
   if (validation !== GL_SUBMIT_OK) return validation;
   const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
     try {
-      if (!repairNativeState(b.gl!)) return GL_SUBMIT_EIO;
+      if (!repairNativeState(b.gl!) || !reconcileClientArrayRestore(b,b.gl!)) return GL_SUBMIT_EIO;
       dispatch(b.gl!, b, payload, 0, op);
       return GL_SUBMIT_OK;
     } catch (err) {
@@ -108,7 +108,11 @@ export function decodeAndDispatch(
       return GL_SUBMIT_EIO;
     }
   });
-  if (!repairNativeState(b.gl)) return GL_SUBMIT_EIO;
+  if (result < 0) requestClientArrayRestore(b);
+  if (!repairNativeState(b.gl) || !reconcileClientArrayRestore(b,b.gl)) {
+    requestClientArrayRestore(b);
+    return GL_SUBMIT_EIO;
+  }
   collectRetiredImages(b);
   collectRetiredBuffers(b);
   return result;
@@ -1137,13 +1141,12 @@ function dispatch(
       const off = v.getInt32(p + 20, true);
       const attribute = {buffer:b.shadow.arrayBuffer && canonicalBuffer(b,b.shadow.arrayBuffer),enabled:vertexAttribute(b,index).enabled,
         size,type,normalized,stride,offset:off};
-      if (!attribute.buffer) {
-        if (off !== 0) { recordGlError(b,0x502); return; }
-        if (!clearNativeAttributeBuffers(b,[[index,attribute]],null)) return;
-      } else if (type === 0x140c || stride > 255) {
-        if (!setConvertedVertexAttribute(b,index,attribute)) return;
-      } else if (!checkedGlCall(b, () => gl.vertexAttribPointer(index,size,type,normalized,stride,off))) return;
-      activeVertexArray(b).attributes.set(index,attribute);
+      const vao = activeVertexArray(b);
+      let attributes: typeof vao.attributes;
+      try { attributes = new Map(vao.attributes); attributes.set(index,attribute); }
+      catch { recordGlError(b,0x505); return; }
+      if (!installVertexAttribute(b,index,attribute)) return;
+      vao.attributes = attributes;
       return;
     }
     case O.OP_DRAW_ARRAYS:

@@ -4,6 +4,7 @@ import { recordGlError } from "./errors.js";
 /** Only native handles/scalars enter a persistent inverse, never guest data or
  * callbacks whose lexical environment could retain a whole binding. */
 export type NativeCall =
+  | ["clearVertexAttribute", NativeRetirement, number, number, number, boolean, number, number]
   | ["activeTexture", number]
   | ["bindTexture", number, WebGLTexture | null]
   | ["bindFramebuffer", number, WebGLFramebuffer | null]
@@ -14,14 +15,16 @@ export type NativeCall =
   | ["vertexAttribPointer", number, number, number, boolean, number, number];
 export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRenderbuffer", WebGLRenderbuffer | null]
   | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null];
-export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean};
+export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; dependencies: readonly NativeRetirement[]};
 const retirements = new WeakMap<WebGL2RenderingContext, Set<NativeRetirement>>();
 export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][] };
 export type NativeChange = { apply(): boolean; restore: NativeInverse };
+export type NativeCompletion = {submitted: boolean; complete: boolean};
 type Repair = {
   parent?: Repair;
   lifetime: object | null;
   finalizer?: NativeInverse;
+  completion?: NativeCompletion;
   restores: NativeInverse[];
   attempted: number;
   pending: boolean;
@@ -30,9 +33,24 @@ type Repair = {
 };
 const repairs = new WeakMap<WebGL2RenderingContext, Repair>();
 
-export function invokeNativeCall(gl: WebGL2RenderingContext, call: NativeCall): void {
+export function invokeNativeCall(gl: WebGL2RenderingContext, call: NativeCall): boolean {
+  if (call[0] === "clearVertexAttribute") {
+    const [,retirement,index,size,type,normalized,stride,offset] = call;
+    if (retirement.complete) { recordGlError(retirement.owner,0x502); return false; }
+    if (!retirement.calls[0][1]) {
+      if (!checkedGlCall(retirement.owner, () => {
+        retirement.calls[0][1] = gl.createBuffer();
+        if (retirement.calls[0][1]) retirement.pending = true;
+      })) return false;
+      if (!retirement.calls[0][1]) { recordGlError(retirement.owner,0x505); return false; }
+    }
+    return checkedGlCall(retirement.owner, () => gl.bindBuffer(0x8892,retirement.calls[0][1])) &&
+      checkedGlCall(retirement.owner, () => gl.bufferData(0x8892,0,0x88e4)) &&
+      checkedGlCall(retirement.owner, () => gl.vertexAttribPointer(index,size,type,normalized,stride,offset));
+  }
   const [method, ...args] = call;
   Reflect.apply(gl[method], gl, args);
+  return true;
 }
 
 /** A selector must accept before dependent calls run; independent groups
@@ -40,7 +58,9 @@ export function invokeNativeCall(gl: WebGL2RenderingContext, call: NativeCall): 
 function restoreInverse(inverse: NativeInverse): boolean {
   let accepted = true;
   for (const group of inverse.groups) for (const call of group) {
-    if (checkedGlCall(inverse.owner, () => invokeNativeCall(inverse.owner.gl!,call))) continue;
+    const acceptedCall = call[0] === "clearVertexAttribute" ? invokeNativeCall(inverse.owner.gl!,call)
+      : checkedGlCall(inverse.owner, () => { invokeNativeCall(inverse.owner.gl!,call); });
+    if (acceptedCall) continue;
     accepted = false; break;
   }
   return accepted;
@@ -48,10 +68,10 @@ function restoreInverse(inverse: NativeInverse): boolean {
 
 /** Reserve ownership before allocation/publication. Empty slots can be filled by
  * assignment inside native creation calls, without allocating after creation. */
-export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion[]): NativeRetirement | null {
+export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion[], dependencies: readonly NativeRetirement[] = []): NativeRetirement | null {
   if (!b.gl) return null;
   try {
-    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false};
+    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,dependencies};
     let owners = retirements.get(b.gl);
     if (!owners) { owners = new Set(); retirements.set(b.gl,owners); }
     owners.add(retirement);
@@ -73,7 +93,8 @@ function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
         retireNativeObject(gl,object); call[1] = null;
       } else accepted = false;
     }
-    if (retirement.calls.every(call => call[1] === null)) transferNativeRetirement(retirement);
+    if (retirement.calls.every(call => call[1] === null) && retirement.dependencies.every(dependency => dependency.complete)) transferNativeRetirement(retirement);
+    else accepted = false;
   }
   return accepted;
 }
@@ -101,6 +122,7 @@ export function repairNativeState(gl: WebGL2RenderingContext): boolean {
       for (let i = repair.attempted - 1; i >= 0; i--) restored = restoreInverse(repair.restores[i]) && restored;
       if (repair.finalizer) restored = restoreInverse(repair.finalizer) && restored;
       if (!restored) return false;
+      if (repair.completion) repair.completion.complete = true;
       if (repair.parent) repairs.set(gl,repair.parent); else repairs.delete(gl);
     } catch { recordGlError(repair.owner,0x502); return false; }
     finally { repair.replaying = false; }
@@ -111,16 +133,17 @@ export function repairNativeState(gl: WebGL2RenderingContext): boolean {
 
 /** Reserve the repair record before native mutation. A failed inverse remains
  * reachable and fences the entire physical context until it can be replayed. */
-export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, changes: NativeChange[], options: {shared?: boolean; finalizer?: NativeInverse} = {}): boolean {
+export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, changes: NativeChange[], options: {shared?: boolean; finalizer?: NativeInverse; completion?: NativeCompletion} = {}): boolean {
   const gl = b.gl;
   if (!gl) return false;
   const parent = repairs.get(gl);
   if (parent?.pending) return false;
   let repair: Repair;
   try {
-    repair = { parent, lifetime:options.shared ? null : b.shadow, finalizer:options.finalizer, restores:changes.map(change => change.restore),
+    repair = { parent, lifetime:options.shared ? null : b.shadow, finalizer:options.finalizer, completion:options.completion, restores:changes.map(change => change.restore),
       attempted:0, pending:false, replaying:false, owner:nativeOwner(b) };
     repairs.set(gl,repair);
+    if (repair.completion) repair.completion.submitted = true;
   } catch { recordGlError(b,0x505); return false; }
   for (const change of changes) {
     repair.attempted++;
@@ -138,6 +161,7 @@ export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, chang
     return false;
   }
   if (parent) repairs.set(gl,parent); else repairs.delete(gl);
+  if (repair.completion) repair.completion.complete = true;
   return true;
 }
 

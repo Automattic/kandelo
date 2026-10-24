@@ -4246,9 +4246,27 @@ calls. Image destruction retains its receipt until collection completes. Pending
 cleanup gates native work and delays canonical GPU BO retirement. Native cleanup
 keeps the retired error owner; a reused session receives a fresh error array.
 These native inverse and cleanup records retain no full guest binding or
-address space. Converted
-attribute setup, client-array restoration, other temporary buffers and raw upload
-utilities still need the complete recovery audit. Indeterminate transport,
+address space. Vertex pointer installation stages its attribute map, converted
+view maps and view field before native effects. Both normal and converted formats
+retain the prior native pointer and ARRAY selection through rejection. Restoring
+an initially unbound attribute allocates an owned private buffer only if inverse
+repair needs one, then retires it after restoration. Native GLES2 format/size/
+index/stride preflight uses the actual attribute limit.
+
+Private client-array END records retain a native completion ticket. Native repair
+sets the ticket; query, decoder and muxer admission publish the saved ARRAY
+identity and release the capture pin before using or replaying state. Reservation
+failure preserves the end request, and failed decoded batches request restoration
+for an active capture. Neither path requires another private END record. Local
+retirement cancels the ticket without publishing into a reused context. Tickets
+contain only native identity/scalar completion, with no guest-binding callback.
+
+Promoted-index and deletion temporaries use reserved ownership and retained
+selectors. Recovery never repeats the already accepted draw. Converted cache
+retirement and final buffer collection share cleanup dependencies, preventing
+duplicate accepted deletes. Reusing a layout after completed retirement creates
+a new native view rather than reviving the old handle. Raw-upload utility state,
+other resources and the full staging/error audit remain open. Indeterminate transport,
 context loss/recreation and general failed resource deletion remain open.
 
 Public `eglCreateContext` sharing validates a live source handle in the active

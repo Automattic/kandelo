@@ -404,3 +404,15 @@ fixture tracks image revisions per native share group. Sanitizer recovery
 is disabled so diagnostics fail the runner. Abrupt worker death, general
 indeterminate recovery, raw WPK namespace mutation and full guest/CTS
 sharing validation remain open.
+
+
+Client-array and vertex failure checks also cover completion without a repeated
+private END, ticket allocation failure, zero/cancelled captures, reconciliation
+before muxer replay, and normal/converted/default pointer rollback. Attribute
+metadata capacity precedes native effects. Promoted-index restoration retains
+its private buffer without redrawing; converted/final buffer cleanup share
+completion dependencies. The stateful double validates native WebGL rules
+separately from GLES adaptation. Real native faults verify unchanged output,
+complete pointer/selector restoration, old blue pixels and a subsequent green
+fixed-point attribute draw in each browser engine. No normal guest or full CTS
+claim follows from these source checks.

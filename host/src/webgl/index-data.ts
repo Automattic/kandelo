@@ -1,3 +1,4 @@
+import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import { activeVertexArray } from "./buffer-references.js";
 import { allocateNativeBuffer, BUFFER_TRANSFER_BYTES, prepareBufferDraw, withBufferTransfer } from "./buffer-storage.js";
@@ -25,31 +26,31 @@ export function drawGlesElements(b: GlBinding, mode: number, count: number, type
     input = new Uint8Array(Math.min(count,perChunk)*width);
     output = new Uint8Array(Math.min(count,perChunk)*promotedWidth);
   } catch { recordGlError(b,0x505); return; }
-  const temporary = allocateNativeBuffer(b);
-  if (!temporary) return;
+  const retirement = reserveNativeRetirement(b,[["deleteBuffer",null]]); if (!retirement) return;
+  const temporary = allocateNativeBuffer(b,retirement);
+  if (!temporary) { retireNativeRetirement(retirement); return; }
   try {
-    // Classify as index data before using copy targets; logical VAO state
-    // continues to own the original buffer throughout this private draw.
-    if (!checkedGlCall(b, () => gl.bindBuffer(ELEMENT,temporary))) return;
-    if (!withBufferTransfer(b,store.source,temporary,() => {
-      if (!checkedGlCall(b, () => gl.bufferData(COPY_WRITE,count*promotedWidth,0x88e0))) return false;
-      for (let first=0; first<count; first+=perChunk) {
-        const indices = Math.min(perChunk,count-first);
-        const source = input.subarray(0,indices*width), destination = output.subarray(0,indices*promotedWidth);
-        if (!checkedGlCall(b, () => gl.getBufferSubData(COPY_READ,offset+first*width,source))) return false;
-        const read = new DataView(source.buffer,source.byteOffset,source.byteLength);
-        const write = new DataView(destination.buffer,destination.byteOffset,destination.byteLength);
-        for (let i=0; i<indices; i++) {
-          if (type === BYTE) write.setUint16(i*2,read.getUint8(i),true);
-          else write.setUint32(i*4,read.getUint16(i*2,true),true);
+    applyNativeChanges(b,[{apply: () => {
+      // Classify as index data before using copy targets; logical VAO state
+      // continues to own the original buffer throughout this private draw.
+      if (!checkedGlCall(b, () => gl.bindBuffer(ELEMENT,temporary))) return false;
+      if (!withBufferTransfer(b,store.source,temporary,() => {
+        if (!checkedGlCall(b, () => gl.bufferData(COPY_WRITE,count*promotedWidth,0x88e0))) return false;
+        for (let first=0; first<count; first+=perChunk) {
+          const indices = Math.min(perChunk,count-first);
+          const source = input.subarray(0,indices*width), destination = output.subarray(0,indices*promotedWidth);
+          if (!checkedGlCall(b, () => gl.getBufferSubData(COPY_READ,offset+first*width,source))) return false;
+          const read = new DataView(source.buffer,source.byteOffset,source.byteLength);
+          const write = new DataView(destination.buffer,destination.byteOffset,destination.byteLength);
+          for (let i=0; i<indices; i++) {
+            if (type === BYTE) write.setUint16(i*2,read.getUint8(i),true);
+            else write.setUint32(i*4,read.getUint16(i*2,true),true);
+          }
+          if (!checkedGlCall(b, () => gl.bufferSubData(COPY_WRITE,first*promotedWidth,destination))) return false;
         }
-        if (!checkedGlCall(b, () => gl.bufferSubData(COPY_WRITE,first*promotedWidth,destination))) return false;
-      }
-      return true;
-    })) return;
-    checkedGlCall(b, () => gl.drawElements(mode,count,type === BYTE ? SHORT : INT,0));
-  } finally {
-    checkedGlCall(b, () => gl.bindBuffer(ELEMENT,previous));
-    checkedGlCall(b, () => gl.deleteBuffer(temporary));
-  }
+        return true;
+      })) return false;
+      return checkedGlCall(b, () => gl.drawElements(mode,count,type === BYTE ? SHORT : INT,0));
+    },restore:nativeInverse(b)}],{finalizer:nativeInverse(b,[["bindBuffer",ELEMENT,previous]])});
+  } finally { retireNativeRetirement(retirement); }
 }

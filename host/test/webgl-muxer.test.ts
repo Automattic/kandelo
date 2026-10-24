@@ -1,3 +1,4 @@
+import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { describe, expect, it } from "vitest";
 import { GlMuxer } from "../src/webgl/muxer.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
@@ -355,4 +356,24 @@ for (const sameOwner of [true,false]) it(`repairs before a cached or different m
   expect(gl.callsOf("bindFramebuffer")).toContainEqual([0x8ca9,framebuffer]);
   expect(gl.callsOf("bindFramebuffer")).toContainEqual([0x8ca8,framebuffer]);
   expect(b.errors).toContain(0x505); expect(b.errors).toContain(0x502);
+});
+
+for (const sameOwner of [true,false]) it(`publishes client-array completion before muxer replay (same owner: ${sameOwner})`, () => {
+  const {gl,mux} = mk(), reg = new GlContextRegistry(); reg.bind({pid:1,cmdbufAddr:0,cmdbufLen:4});
+  const b = reg.get(1)!, saved = {}, temporary = {};
+  b.gl = gl as unknown as WebGL2RenderingContext; b.shadow.arrayBuffer = temporary;
+  b.savedClientArrayBuffer = saved; b.cmdbufView = new Uint8Array(new Uint16Array([O.OP_END_CLIENT_ARRAY,0]).buffer);
+  mux.switchTo(b);
+  const bind = gl.bindBuffer.bind(gl); let block = true;
+  gl.bindBuffer = (...args) => {if(block && args[0]===0x8892 && args[1]===saved){gl.pendingErrors.push(0x502);return;}bind(...args);};
+  expect(decodeAndDispatch(b,0,4)).toBe(-5);
+  expect(b.shadow.arrayBuffer).toBe(temporary); expect(b.savedClientArrayBuffer).toBe(saved);
+  const target = sameOwner ? b : newTarget(), calls = gl.callsOf("viewport").length;
+  expect(()=>mux.switchTo(target)).toThrow("restoration remains pending");
+  expect(gl.callsOf("viewport").length).toBe(calls);
+  block = false; mux.switchTo(target);
+  if (!sameOwner) { expect(b.shadow.arrayBuffer).toBe(temporary); expect(target.errors).toEqual([]); mux.switchTo(b); }
+  expect(b.shadow.arrayBuffer).toBe(saved); expect(b.savedClientArrayBuffer).toBeUndefined();
+  expect(gl.callsOf("bindBuffer").at(-1)).toEqual([0x8892,saved]);
+  expect(b.clientArrayRestore).toBeUndefined(); expect(b.clientArrayEndRequested).toBe(false);
 });

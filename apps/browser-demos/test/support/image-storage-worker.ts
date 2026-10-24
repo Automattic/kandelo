@@ -370,6 +370,83 @@ self.onmessage = ({ data }) => {
     const bufferDeleteCleared = [gl.getParameter(gl.ARRAY_BUFFER_BINDING), gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING),
       gl.getVertexAttrib(0, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING), gl.getVertexAttrib(1, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING)].map(value => value === null ? 0 : 1);
     geometry([0, 0, 1, 1]); const bufferDeleteRetry = renderBuffer();
+    // A rejected private END completes on query admission, without a new
+    // END or a muxer replay of the staging ARRAY binding.
+    const submitWords = (op: number, words: number[]) => {
+      const v = new DataView(memory.buffer,4096,4+words.length*4);
+      v.setUint16(0,op,true); v.setUint16(2,words.length*4,true);
+      words.forEach((word,i)=>v.setUint32(4+i*4,word,true));
+      return api.host_gl_submit(7,0,4+words.length*4,12);
+    };
+    const captureArray = gl.getParameter(gl.ARRAY_BUFFER_BINDING);
+    send(O.OP_BEGIN_CLIENT_ARRAY,[],new Uint8Array(),12);
+    mutate(O.QOP_BIND_BUFFER,[0x8892,210]);
+    const captureBind = gl.bindBuffer.bind(gl);
+    gl.bindBuffer = (target,buffer) => { if(target===0x8892 && buffer===captureArray) captureBind(0xdead,buffer); else captureBind(target,buffer); };
+    let captureEnd: number, captureBlocked: number, captureOutput: number[];
+    try {
+      captureEnd = submitWords(O.OP_END_CLIENT_ARRAY,[]);
+      new Uint32Array(memory.buffer,64,1).set([0x8894]); new Uint8Array(memory.buffer,512,4).fill(0xa5);
+      captureBlocked = api.host_gl_query(7,O.QOP_GET_INTEGERV,64,4,512,4,12);
+      captureOutput = [...new Uint8Array(memory.buffer,512,4)];
+      require(captureEnd===-5 && captureBlocked===-5,"client capture restore fence");
+    } finally { gl.bindBuffer = captureBind; }
+    require(error(12)===0x500,"client restore error ownership");
+    const captureState = [new DataView(query(O.QOP_GET_INTEGERV,[0x8894],4,12).buffer).getUint32(0,true),kernel.gl.get(7,12)!.savedClientArrayBuffer===undefined?0:1];
+    const capturePixels = renderBuffer(); mutate(O.QOP_DELETE_BUFFER,[210]);
+    // Index promotion must never repeat an already accepted draw merely
+    // because restoring ELEMENT or deleting its private buffer failed.
+    const promotionElement = gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING);
+    const promotionBind = gl.bindBuffer.bind(gl), promotionDraw = gl.drawElements.bind(gl);
+    let promotionDraws = 0;
+    gl.drawElements = (...args) => { promotionDraws++; promotionDraw(...args); };
+    gl.bindBuffer = (target,buffer) => { if(promotionDraws && target===0x8893 && buffer===promotionElement) promotionBind(0xdead,buffer); else promotionBind(target,buffer); };
+    let promotionSubmit: number, promotionBlocked: number, promotionPixels: number[];
+    try {
+      promotionSubmit = submitWords(O.OP_DRAW_ELEMENTS,[0,1,0x1403,24]);
+      new Uint8Array(memory.buffer,512,4).fill(0xa5);
+      promotionBlocked = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,12);
+      require(promotionSubmit===-5 && promotionBlocked===-5 && promotionDraws===1,"promoted draw recovery fence");
+      gl.bindBuffer = promotionBind;
+      require(error(12)===0x500 && gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING)===promotionElement,"promotion selector restored");
+      promotionPixels = pixels(88,12);
+      require(promotionDraws===1,"draw was not replayed");
+    } finally { gl.bindBuffer = promotionBind; gl.drawElements = promotionDraw; }
+    // A valid converted pointer can be partially installed before a native
+    // rejection. Keep the accepted normal pointer until inverse repair.
+    const nativePointer = () => [gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING),
+      gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_SIZE),gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_TYPE),
+      gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_NORMALIZED),gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_STRIDE),
+      gl.getVertexAttribOffset(1,gl.VERTEX_ATTRIB_ARRAY_POINTER)];
+    const originalPointer = nativePointer(), pointerBuffer = originalPointer[0];
+    const pointerCall = gl.vertexAttribPointer.bind(gl); let pointerRejected = false;
+    const pointerPrecondition = {error:-1,selected:false,installed:false};
+    gl.vertexAttribPointer = (...args) => {
+      if(!pointerRejected && args[0]===1 && args[4]===0 && args[5]===0) {
+        pointerCall(...args);
+        pointerPrecondition.error = gl.getError();
+        pointerPrecondition.selected = gl.getParameter(gl.ARRAY_BUFFER_BINDING)!==pointerBuffer;
+        pointerPrecondition.installed = gl.getVertexAttrib(1,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING)!==pointerBuffer;
+        pointerRejected = true; gl.bindBuffer(0xdead,null);
+      } else if(pointerRejected && args[0]===1 && args[4]===24 && args[5]===8) gl.bindBuffer(0xdead,null);
+      else pointerCall(...args);
+    };
+    let pointerSubmit: number, pointerBlocked: number, pointerOutput: number[];
+    try {
+      pointerSubmit = submitWords(O.OP_VERTEX_ATTRIB_POINTER,[1,4,0x140c,0,0,0]);
+      require(pointerPrecondition.error===0 && pointerPrecondition.selected && pointerPrecondition.installed,"valid converted pointer before injected fault");
+      require(pointerRejected && nativePointer().some((value,i)=>value!==originalPointer[i]),"native pointer remains dirty");
+      new Uint8Array(memory.buffer,512,4).fill(0xa5);
+      pointerBlocked = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,12); pointerOutput = [...new Uint8Array(memory.buffer,512,4)];
+      require(pointerSubmit===-5 && pointerBlocked===-5,"pointer inverse fence");
+    } finally { gl.vertexAttribPointer = pointerCall; }
+    require(error(12)===0x500 && nativePointer().every((value,i)=>value===originalPointer[i]),"old pointer restored");
+    const pointerPixels = renderBuffer();
+    mutate(O.QOP_BIND_BUFFER,[0x8892,211]);
+    send(O.OP_BUFFER_DATA,[0x8892,16,0x88e4],new Uint8Array(),12);
+    send(O.OP_BUFFER_SUB_DATA,[0x8892,0,16],new Uint8Array(new Int32Array([0,65536,0,65536]).buffer),12);
+    send(O.OP_VERTEX_ATTRIB_POINTER,[1,4,0x140c,0,0,0],new Uint8Array(),12);
+    const convertedRetryPixels = renderBuffer();
     // A second native failure during rollback must fence even another
     // context until the old container and selection can be restored.
     send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12);
@@ -545,7 +622,7 @@ self.onmessage = ({ data }) => {
     api.host_gl_unbind(7, 12);
     kernel.gl.destroyGpuBo(41);
     const clean = made.length === deleted.length && made.every(value => deleted.includes(value)) && live.every(check => !check());
-    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, bufferBindReject, bufferBindRetry, bufferDeleteRollback, bufferDeleteCleared, bufferDeleteRetry, repairBlocked, repairBlockedOutput, repairPeerBlocked, repairBatchBlocked, repairRestored, storageBlocked, storageBlockedOutput, storageRestored, storageState, storageCommit, storageCleanupBlocked, storageOwned, rawNamespace, rawParams, rawGreen, rawOrphan, rawRefresh, rawInvalid, rawBlocked, rawBlockedOutput, rawRevoked, rawReplacement, rawMissing, errors, clean, error: gl.getError() });
+    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, bufferBindReject, bufferBindRetry, bufferDeleteRollback, bufferDeleteCleared, bufferDeleteRetry, captureEnd, captureBlocked, captureOutput, captureState, capturePixels, promotionSubmit, promotionBlocked, promotionDraws, promotionPixels, pointerSubmit, pointerBlocked, pointerOutput, pointerPixels, convertedRetryPixels, repairBlocked, repairBlockedOutput, repairPeerBlocked, repairBatchBlocked, repairRestored, storageBlocked, storageBlockedOutput, storageRestored, storageState, storageCommit, storageCleanupBlocked, storageOwned, rawNamespace, rawParams, rawGreen, rawOrphan, rawRefresh, rawInvalid, rawBlocked, rawBlockedOutput, rawRevoked, rawReplacement, rawMissing, errors, clean, error: gl.getError() });
   }
   catch (error) {
     postMessage({ type: "image_storage_failed", error: String(error) });

@@ -1,5 +1,6 @@
 // Replay each GLES2 texture target independently on the shared context.
 import { renderbufferNative } from "./image-storage.js";
+import { reconcileClientArrayRestore, type GlClientArrayFields } from "./client-array.js";
 import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
 import { knownTextureUnitLimit } from "./limits.js";
 import { nativeTextureBinding } from "./texture-bindings.js";
@@ -22,16 +23,20 @@ import {
 } from "./shadow.js";
 
 export class GlMuxer {
-  private current: ({ shadow: GlShadowState } & GlErrorState) | null = null;
+  private current: ({ shadow: GlShadowState } & GlErrorState & GlClientArrayFields) | null = null;
   private errorOwner: GlErrorState | null = null;
   private textureUnitCount = 32;
 
   constructor(private gl: WebGL2RenderingContext) {}
 
-  switchTo(target: { shadow: GlShadowState } & GlErrorState): void {
+  switchTo(target: { shadow: GlShadowState } & GlErrorState & GlClientArrayFields): void {
     if (hasNativeRepair(this.gl)) {
       this.invalidateCurrent();
       if (!repairNativeState(this.gl)) throw new Error("Native GL restoration remains pending");
+    }
+    if (target.clientArrayEndRequested) {
+      this.invalidateCurrent();
+      if (!reconcileClientArrayRestore(target,this.gl)) throw new Error("Client-array restoration remains pending");
     }
     if (this.current === target) return;
     captureNativeGlErrors(this.gl, this.errorOwner);

@@ -1,4 +1,5 @@
 import { revokeForeignBo } from "./foreign-retirement.js";
+import type { GlClientArrayFields } from "./client-array.js";
 import { hasNativeRepair, repairNativeState, retireNativeRepair, retireNativeObject } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
@@ -72,7 +73,7 @@ export type GlForwardChannel = {
   onQuery?(op: number, input: Uint8Array, outLen: number, sessionId?: number): { rc: number; bytes: Uint8Array };
 };
 
-export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & {
+export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlClientArrayFields & {
   surface: GlSurfaceResources;
   drawSurface: GlSurfaceResources | null;
   readSurface: GlSurfaceResources | null;
@@ -251,6 +252,8 @@ export class GlContextRegistry {
     b.shaderUpload = null;
     b.shaderUploadSerial = 0;
     b.savedClientArrayBuffer = undefined;
+    b.clientArrayRestore = undefined;
+    b.clientArrayEndRequested = false;
     const objects = b.objects;
     const installed = b.currentProgram;
     const installedName = b.currentProgramId;
@@ -355,7 +358,7 @@ export class GlContextRegistry {
         || target.contextId === null || source.contextId === null || target.hasBeenCurrent || target.savedClientArrayBuffer !== undefined
         || target.uniformLookup !== null || target.objects.members.size !== 1) return false;
     const names = target.objects;
-    if (names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
+    if (names.bufferRetirements.size || names.imageRetirements.size || names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
         || names.rbos.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformLocationNames.size || names.uniformLocations.size || names.foreignTextures.size
         || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;

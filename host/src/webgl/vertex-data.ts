@@ -1,6 +1,9 @@
+import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeCall } from "./native-recovery.js";
+import { vertexAttribute } from "./buffer-references.js";
+import { maxVertexAttributes } from "./limits.js";
 import type { GlBinding } from "./registry.js";
 import type { GlVertexAttribute } from "./buffer-references.js";
-import { allocateNativeBuffer, BUFFER_TRANSFER_BYTES, withBufferTransfer } from "./buffer-storage.js";
+import { allocateNativeBuffer, BUFFER_TRANSFER_BYTES, withBufferTransfer, retireBufferObjects } from "./buffer-storage.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 
 const FIXED = 0x140c, FLOAT = 0x1406, ARRAY = 0x8892;
@@ -15,36 +18,64 @@ function componentBytes(type: number): number {
 }
 function layoutKey(a: GlVertexAttribute): string { return `${a.type}:${a.size}:${a.stride}:${a.offset}`; }
 
-/** Keep GLES format/offset/stride in the logical VAO. Native pointers use a
- * stable packed buffer for fixed-point data or strides beyond WebGL's limit. */
-export function setConvertedVertexAttribute(b: GlBinding, index: number, a: GlVertexAttribute): boolean {
+/** Install every core format transactionally. Metadata capacity precedes native
+ * pointer changes, including independent packed views for converted layouts. */
+export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexAttribute): boolean {
   const gl = b.gl!, width = componentBytes(a.type);
   if (!width) { recordGlError(b,0x500); return false; }
   if (a.size < 1 || a.size > 4 || a.stride < 0) { recordGlError(b,0x501); return false; }
-  if (a.offset < 0 || a.offset % width || a.stride % width) { recordGlError(b,0x502); return false; }
+  let limit = 0;
+  if (!checkedGlCall(b, () => { limit = maxVertexAttributes(gl); })) return false;
+  if (!limit) { recordGlError(b,0x502); return false; }
+  if (index >= limit) { recordGlError(b,0x501); return false; }
+  if (a.offset < 0 || a.offset % width || a.stride % width || (!a.buffer && a.offset !== 0)) { recordGlError(b,0x502); return false; }
+  const array = b.shadow.arrayBuffer, old = vertexAttribute(b,index);
+  const packed = a.type === FIXED || a.stride > 255;
   const store = a.buffer && b.bufferStores.get(a.buffer);
-  if (!store) { recordGlError(b,0x502); return false; }
-  const key = layoutKey(a);
-  let view = store.converted.get(key);
-  const created = !view;
-  if (!view) {
-    const native = allocateNativeBuffer(b); if (!native) return false;
-    view = {native,valid:false};
+  if (a.buffer && !store) { recordGlError(b,0x502); return false; }
+  const key = packed ? layoutKey(a) : "";
+  const candidate = reserveNativeRetirement(b,[["deleteBuffer",null]]);
+  if (!candidate) return false;
+  const rollback = reserveNativeRetirement(b,[["deleteBuffer",null]]);
+  if (!rollback) { retireNativeRetirement(candidate); return false; }
+  let created = false, installed = false;
+  let view = packed && store ? store.converted.get(key) : undefined;
+  if (view && b.bufferRetirements.get(view.native)?.complete) {
+    store!.converted.delete(key); b.bufferViewOwners.delete(view.native); b.bufferRetirements.delete(view.native); view = undefined;
   }
-  let accepted = false, restored = false;
   try {
-    if (checkedGlCall(b, () => gl.bindBuffer(ARRAY,view!.native))) {
-      accepted = checkedGlCall(b, () => gl.vertexAttribPointer(index,a.size,
-        a.type === FIXED ? FLOAT : a.type,a.type === FIXED ? false : a.normalized,0,0));
+    let native = array;
+    if (!a.buffer || (packed && !view)) {
+      native = allocateNativeBuffer(b,candidate); if (!native) return false;
+      if (a.buffer) { view = {native,valid:false}; created = true; }
+    } else if (view) native = view.native;
+    if (created) {
+      store!.converted.set(key,view!); b.bufferViewOwners.set(view!.native,a.buffer!);
     }
-  } finally { restored = checkedGlCall(b, () => gl.bindBuffer(ARRAY,b.shadow.arrayBuffer)); }
-  if (!accepted || !restored) {
-    if (created) gl.deleteBuffer(view.native);
-    return false;
+    const oldPacked = old.type === FIXED || old.stride > 255 || old.view !== undefined;
+    const oldNative = old.view ?? (old.buffer && (b.bufferStores.get(old.buffer)?.views.get(ARRAY)?.native ?? old.buffer));
+    const type = old.type === FIXED ? FLOAT : old.type, normalized = old.type === FIXED ? false : old.normalized;
+    const stride = oldPacked ? 0 : old.stride, offset = oldPacked ? 0 : old.offset;
+    const inverse: NativeCall[] = oldNative ? [["bindBuffer",ARRAY,oldNative],["vertexAttribPointer",index,old.size,type,normalized,stride,offset]]
+      : [["clearVertexAttribute",rollback,index,old.size,type,normalized,stride,offset]];
+    // The caller owns an unpublished attribute candidate. Reserve its view
+    // field too: adding it after pointer installation could still allocate.
+    if (packed && view) a.view = view.native;
+    const accepted = applyNativeChanges(b,[{apply: () => {
+      if (!checkedGlCall(b, () => gl.bindBuffer(ARRAY,native))) return false;
+      if (!a.buffer && !checkedGlCall(b, () => gl.bufferData(ARRAY,0,0x88e4))) return false;
+      return checkedGlCall(b, () => gl.vertexAttribPointer(index,a.size,a.type === FIXED ? FLOAT : a.type,
+        a.type === FIXED ? false : a.normalized,packed ? 0 : a.stride,packed ? 0 : a.offset));
+    },restore:nativeInverse(b,inverse)}],{finalizer:nativeInverse(b,[["bindBuffer",ARRAY,array]])});
+    if (!accepted) return false;
+    if (a.buffer) transferNativeRetirement(candidate);
+    installed = true; return true;
+  } catch { recordGlError(b,0x505); return false; }
+  finally {
+    if (!installed && created && view) { store!.converted.delete(key); b.bufferViewOwners.delete(view.native); }
+    if (!installed || !a.buffer) retireNativeRetirement(candidate);
+    retireNativeRetirement(rollback);
   }
-  if (created) { store.converted.set(key,view); b.bufferViewOwners.set(view.native,a.buffer!); }
-  a.view = view.native;
-  return true;
 }
 
 export function prepareConvertedVertexData(b: GlBinding, a: GlVertexAttribute): boolean {
@@ -94,8 +125,8 @@ export function collectConvertedVertexData(b: GlBinding): void {
     for (const a of vao.attributes.values()) if (a.view) referenced.add(a.view);
   }
   for (const store of b.bufferStores.values()) for (const [key,view] of store.converted) {
-    if (!referenced.has(view.native) && checkedGlCall(b, () => b.gl!.deleteBuffer(view.native))) {
-      store.converted.delete(key); b.bufferViewOwners.delete(view.native);
+    if (!referenced.has(view.native) && retireBufferObjects(b,view.native,[view.native])) {
+      store.converted.delete(key); b.bufferViewOwners.delete(view.native); b.bufferRetirements.delete(view.native);
     }
   }
 }

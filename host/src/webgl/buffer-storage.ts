@@ -196,12 +196,32 @@ export function prepareBufferDraw(b: GlBinding, indexed: boolean): boolean {
   return true;
 }
 
-/** Both native views end with the single logical object's last reference. */
+/** Final collection can share pending deletion with a converted cache view.
+ * Retain per-object receipts and dependencies instead of deleting a handle twice. */
+export function retireBufferObjects(b: GlBinding, object: WebGLBuffer, natives: Iterable<WebGLBuffer>): boolean {
+  let retirement = b.bufferRetirements.get(object);
+  if (!retirement) {
+    const calls: ["deleteBuffer",WebGLBuffer|null][] = [], dependencies: NativeRetirement[] = [];
+    try {
+      for (const native of new Set(natives)) {
+        const existing = b.bufferRetirements.get(native);
+        if (existing) dependencies.push(existing); else calls.push(["deleteBuffer",native]);
+      }
+      retirement = reserveNativeRetirement(b,calls,dependencies) ?? undefined;
+      if (!retirement) return false;
+      try { b.bufferRetirements.set(object,retirement); }
+      catch { transferNativeRetirement(retirement); throw new RangeError("buffer cleanup ownership failed"); }
+    } catch { recordGlError(b,0x505); return false; }
+  }
+  return retireNativeRetirement(retirement);
+}
+
+/** Both native classes and converted stores end with the logical last reference. */
 export function destroyBufferStorage(b: GlBinding, object: WebGLBuffer): boolean {
   const store = b.bufferStores.get(object);
   const natives = new Set([object, ...[...(store?.views.values() ?? []), ...(store?.converted.values() ?? [])].map(view => view.native)]);
-  for (const native of natives) if (!checkedGlCall(b, () => b.gl!.deleteBuffer(native))) return false;
-  for (const native of natives) b.bufferViewOwners.delete(native);
+  if (!retireBufferObjects(b,object,natives)) return false;
+  for (const native of natives) { b.bufferViewOwners.delete(native); b.bufferRetirements.delete(native); }
   b.bufferStores.delete(object);
   return true;
 }

@@ -28,3 +28,11 @@ export function maxViewport(gl: WebGL2RenderingContext): readonly [number, numbe
   viewportLimits.set(gl, result);
   return result;
 }
+
+const vertexLimits = new WeakMap<WebGL2RenderingContext,number>();
+export function maxVertexAttributes(gl: WebGL2RenderingContext): number {
+  const cached = vertexLimits.get(gl); if (cached !== undefined) return cached;
+  const count: unknown = gl.getParameter(0x8869);
+  if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) return 0;
+  vertexLimits.set(gl,count); return count;
+}
