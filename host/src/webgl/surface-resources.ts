@@ -24,6 +24,8 @@ export type GlSurfaceResources = GlSurfaceFields & {
   gl: WebGL2RenderingContext | null;
   pid: number;
   ownerAlive: boolean;
+  /** Explicit surface storage keeps its acknowledged dimensions. */
+  fixedSize: boolean;
   users: Set<GlBinding>;
 };
 
@@ -31,7 +33,7 @@ export function createSurfaceResources(pid: number): GlSurfaceResources {
   return {
     surfaceId: null, surfaceSize: null, renderTargetFbo: null,
     presentTarget: null, pendingRenderTargetBoId: 0,
-    gl: null, pid, ownerAlive: true, users: new Set(),
+    gl: null, pid, ownerAlive: true, fixedSize: false, users: new Set(),
   };
 }
 

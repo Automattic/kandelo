@@ -490,9 +490,13 @@ pub trait HostIO {
     fn gl_destroy_context(&mut self, pid: i32, ctx_id: u32) {}
 
     /// Allocate a host-side surface (default canvas or pbuffer). `attrs`
-    /// is a marshalled `shared::gl::GlSurfaceAttrs`.
+    /// is a marshalled `shared::gl::GlSurfaceCreateInfo`. Return zero only after
+    /// accepting the candidate, with actual dimensions in attrs. Failure
+    /// publishes no surface; the caller's previous state remains intact.
     #[allow(unused_variables)]
-    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], session_id: u32) {}
+    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &mut [u8], session_id: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     /// Atomically replace a window surface's GPU target while preserving
     /// its identity and any current-context reference. Failure preserves it.

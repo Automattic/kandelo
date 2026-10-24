@@ -3792,17 +3792,35 @@ another context's client state. Release preserves the record for transfer
 to another thread; final destruction retires its image references and
 frees it without selecting it or emitting into another command stream.
 Allocation failure precedes backend creation and leaves no published
-context. The backend still exposes one public EGL context; share groups,
-independent context command mappings and the complete surface/display
-generation model remain open.
-User-visible context/surface handles are monotonic. Each backend session
-still admits one context and surface; the public EGL facade remains
-single-context. Sharing and overlapping display generations remain
-implementation gaps in the inventory.
+context. User-visible context/surface handles are monotonic. Each backend
+session still admits one context and surface; the public EGL facade is
+limited to one context per display generation. A retained current old
+generation can overlap a newly initialized generation. Sharing, multiple
+contexts within one generation and independent public surfaces remain open.
+
+ABI 57 surface creation uses a 36-byte input/output GlSurfaceCreateInfo:
+32 attribute bytes followed by a zero-on-input surface identity. The
+kernel returns a fresh identity and accepted dimensions only after the
+renderer acknowledges creation. A private copy translates the caller's
+GEM handle for the host; the successful guest reply preserves that handle.
+Failure leaves caller bytes, context/current state and previous backing
+unchanged, with ordered candidate cleanup. The C library stores the
+returned ID and uses it for make-current; it no longer assumes ID 1.
+
+The host stages private surface storage before publishing it. Explicit
+storage retains its accepted size independently of a shared canvas. The
+main-thread fallback receives only reviewed scalar metadata and reuses the
+existing bounded mailbox for an eight-byte dimension reply. A retired
+request frees its unpublished candidate. Identity-checked destruction
+cannot remove a later surface. Ordinary canvas swap blits private storage
+to the visible default target; forwarded swap selects, blits and flushes
+before acknowledging through that same mailbox. Source tests exercise
+accepted dimensions, retained pixels and stale cleanup across all three browser engines; full
+guest marshalling and public cross-session selection remain unvalidated.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
-accepts versions 1 and 2, and rejects zero or newer versions with `ENOSYS`.
+accepts versions 1 through 5, and rejects zero or newer versions with `ENOSYS`.
 Its version and extension strings describe that API. Extension queries carry
 an optional operation-table version: legacy requests retain their empty list,
 while version 2 advertises bridged capabilities. Optional float rendering and

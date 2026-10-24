@@ -1724,3 +1724,71 @@ test("surface draw/read selectors retain storage across owner retirement and ind
   expect(result).toEqual({framebufferZero:true,separateRead:[0,255,0,255],independent:true,retained:true,afterRetirement:[0,255,0,255],oldRetired:true,final:true,error:0});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
+
+test("forwarded surface creation acknowledges dimensions and preserves selected pixels through retirement", async ({page}) => {
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../",import.meta.url));
+  const result = await page.evaluate(async sourceRoot => {
+    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`,location.href).href;
+    const {setupMainForward} = await import(base+"main-forward.ts");
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 8;
+    document.body.replaceChildren(canvas);
+    const source = `
+      import {createMainForwardChannel} from ${JSON.stringify(base+"main-forward.ts")};
+      import * as O from ${JSON.stringify(base+"ops.ts")};
+      onmessage = () => { try {
+        const c = createMainForwardChannel({postMessage:m => postMessage(m)},77,321);
+        const surface = (id,width,height) => c.onCreateSurface({surfaceId:id,kind:1,width,height,configId:1,targetBoId:0});
+        const first = surface(71,3,2);
+        if (first.rc !== 0 || c.onCreateContext() !== 0) throw new Error("creation failed");
+        const bind = (id,width,height) => c.onMakeCurrent({drawSurfaceId:id,readSurfaceId:id,width,height});
+        const clear = (color) => {
+          const bytes = new Uint8Array(28), v = new DataView(bytes.buffer);
+          v.setUint16(0,O.OP_CLEAR_COLOR,true); v.setUint16(2,16,true);
+          color.forEach((n,i) => v.setFloat32(4+i*4,n,true));
+          v.setUint16(20,O.OP_CLEAR,true); v.setUint16(22,4,true); v.setUint32(24,0x4000,true);
+          c.onSubmit(bytes);
+        };
+        const pixels = () => {
+          const input = new Uint8Array(24), v = new DataView(input.buffer);
+          [0,0,1,1,0x1908,0x1401].forEach((n,i) => v.setUint32(i*4,n,true));
+          const reply = c.onQuery(O.QOP_READ_PIXELS,input,4);
+          if (reply.rc !== 4) throw new Error("pixel query failed: "+reply.rc);
+          return [...reply.bytes];
+        };
+        if (bind(71,3,2) !== 0) throw new Error("first bind failed");
+        clear([1,0,0,1]); const red = pixels();
+        c.onDestroySurface(71); const retained = pixels();
+        const second = surface(72,4,1);
+        if (second.rc !== 0 || bind(72,4,1) !== 0) throw new Error("replacement failed");
+        clear([0,1,0,1]); const green = pixels();
+        const rejected = surface(73,5,5).rc;
+        c.onDestroySurface(71); const afterStale = pixels();
+        if (c.onPresent() !== 0) throw new Error("present failed");
+        postMessage({type:"surface_result",first,second,red,retained,green,rejected,afterStale});
+      } catch(error) {postMessage({type:"surface_failed",error:String(error)});} };
+    `;
+    const url = URL.createObjectURL(new Blob([source],{type:"text/javascript"}));
+    const worker = new Worker(url,{type:"module"}), dispose = setupMainForward(worker,canvas,77);
+    try {
+      const result = await new Promise<any>((resolve,reject) => {
+        const timer = setTimeout(() => reject(new Error("surface acknowledgement timed out")),35000);
+        worker.addEventListener("message",({data}) => {
+          if (data.type === "surface_result") {clearTimeout(timer);resolve(data);}
+          if (data.type === "surface_failed") {clearTimeout(timer);reject(new Error(data.error));}
+        });
+        worker.postMessage({start:true});
+      });
+      const gl = canvas.getContext("webgl2")!;
+      const previous = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null);
+      const visible = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,visible);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER,previous);
+      return {...result,visible:[...visible]};
+    } finally {worker.terminate();dispose();URL.revokeObjectURL(url);}
+  },root);
+  expect(result).toEqual({type:"surface_result",first:{rc:0,width:3,height:2},second:{rc:0,width:4,height:1},
+    red:[255,0,0,255],retained:[255,0,0,255],green:[0,255,0,255],rejected:-16,afterStale:[0,255,0,255],visible:[0,255,0,255]});
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});

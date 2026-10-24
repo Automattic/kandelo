@@ -1929,56 +1929,82 @@ fn handle_dri_ioctl(
         }
         gl::GLIO_CREATE_SURFACE => {
             require_gl_display_live(proc, ofd_idx)?;
-            let attrs_size = core::mem::size_of::<gl::GlSurfaceAttrs>();
-            if buf.len() < attrs_size {
+            let size = core::mem::size_of::<gl::GlSurfaceCreateInfo>();
+            if buf.len() < size {
                 return Err(Errno::EINVAL);
             }
-            let attrs: gl::GlSurfaceAttrs =
+            let mut info: gl::GlSurfaceCreateInfo =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if attrs.kind != gl::WPK_SURFACE_DEFAULT && attrs.kind != gl::WPK_SURFACE_PBUFFER {
+            let attrs = info.attrs;
+            if info.surface_id != 0
+                || attrs.config_id != 1
+                || attrs.reserved[1..] != [0; 3]
+                || attrs.width > i32::MAX as u32
+                || attrs.height > i32::MAX as u32
+                || ![gl::WPK_SURFACE_DEFAULT, gl::WPK_SURFACE_PBUFFER].contains(&attrs.kind)
+                || (attrs.kind == gl::WPK_SURFACE_PBUFFER && attrs.reserved[0] != 0)
+            {
                 return Err(Errno::EINVAL);
             }
-            // GPU-tier producer targeting (PR10 §7.1): `reserved[0]` carries
-            // the target bo HANDLE (eglCreateWindowSurface's
-            // EGL_WPK_TARGET_BO attrib) — the bo whose FBO this window
-            // surface renders into. Translate it to the global bo_id here
-            // (the host can't resolve a per-fd handle), exactly as
-            // BIND_FOREIGN_TEXTURE does. 0 = no target (an ordinary canvas
-            // / scanout surface), the common case.
-            let target_bo_id: u32 = if attrs.reserved[0] != 0 {
-                let dri = dri_state(proc, ofd_idx)?;
-                *dri.handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?
+            let dri = dri_state(proc, ofd_idx)?;
+            let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+            if !gls.initialized {
+                return Err(Errno::EINVAL);
+            }
+            if gls.surface_id.is_some() {
+                return Err(Errno::EBUSY);
+            }
+            let session_id = gls.session_id;
+            let target = if attrs.reserved[0] == 0 {
+                None
             } else {
-                0
+                Some(*dri.handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?)
             };
-            let surface_id;
+            let surface_id = crate::ofd::allocate_gl_id()?;
             {
-                let dri = dri_state_mut(proc, ofd_idx)?;
-                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
-                if !gls.initialized {
-                    return Err(Errno::EINVAL);
-                }
-                if gls.surface_id.is_some() {
-                    return Err(Errno::EBUSY);
-                }
                 let mut resources = dri.gl_resources.borrow_mut();
                 if resources.surface_bo.is_some() || resources.pending_surface_bo.is_some() {
                     return Err(Errno::EBUSY);
                 }
-                if target_bo_id != 0 {
-                    retain_gl_surface_bo(target_bo_id)?;
-                    resources.surface_bo = Some(target_bo_id);
+                if let Some(bo) = target {
+                    retain_gl_surface_bo(bo)?;
+                    resources.pending_surface_bo = Some(bo);
                 }
-                surface_id = 1u32;
-                gls.surface_id = Some(surface_id);
             }
-            // Overwrite `reserved[0]` in place with the resolved global
-            // bo_id so the host — which reads these bytes by pointer —
-            // sees an id it can look up, not the per-fd handle. reserved[0]
-            // is at byte offset 16 in the 32-byte GlSurfaceAttrs.
-            buf[16..20].copy_from_slice(&target_bo_id.to_le_bytes());
-            let attrs_bytes = &buf[..attrs_size];
-            host.gl_create_surface(pid, surface_id, attrs_bytes, gl_session_id(proc, ofd_idx)?);
+            let mut native = buf[..size].to_vec();
+            native[16..20].copy_from_slice(&target.unwrap_or(0).to_le_bytes());
+            let mut rc = host.gl_create_surface(pid, surface_id, &mut native, session_id);
+            let width = u32::from_le_bytes(native[4..8].try_into().unwrap());
+            let height = u32::from_le_bytes(native[8..12].try_into().unwrap());
+            if rc == 0 && (width > i32::MAX as u32 || height > i32::MAX as u32) {
+                rc = -(Errno::EIO as i32);
+            }
+            if rc != 0 {
+                // Ordered candidate cleanup also covers a lost acknowledgement.
+                host.gl_destroy_surface(pid, surface_id, session_id);
+                let candidate = dri_state_mut(proc, ofd_idx)?
+                    .gl_resources
+                    .borrow_mut()
+                    .pending_surface_bo
+                    .take();
+                apply_dri_release_effects(pid, collect_gl_bo_releases([candidate, None]), host);
+                return Err(rc
+                    .checked_neg()
+                    .and_then(|n| Errno::from_u32(n as u32))
+                    .unwrap_or(Errno::EIO));
+            }
+            let dri = dri_state_mut(proc, ofd_idx)?;
+            {
+                let mut resources = dri.gl_resources.borrow_mut();
+                resources.surface_bo = resources.pending_surface_bo.take();
+            }
+            dri.gl.as_mut().ok_or(Errno::EINVAL)?.surface_id = Some(surface_id);
+            info.attrs.width = width;
+            info.attrs.height = height;
+            info.surface_id = surface_id;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, info);
+            }
             Ok(())
         }
         gl::GLIO_UPDATE_SURFACE => {
@@ -23604,6 +23630,8 @@ mod tests {
         /// `gl_create_surface` call — lets tests assert the kernel handed
         /// the host a resolved target bo_id in `attrs.reserved[0]`.
         gl_create_surface_calls: Vec<(i32, u32, Vec<u8>)>,
+        gl_create_surface_rc: i32,
+        gl_create_surface_dimensions: Option<(u32,u32)>,
     }
 
     impl MockHostIO {
@@ -23740,6 +23768,8 @@ mod tests {
                 gbm_bo_destroy_calls: Vec::new(),
                 gl_surface_release_events: Vec::new(),
                 gl_create_surface_calls: Vec::new(),
+                gl_create_surface_rc: 0,
+                gl_create_surface_dimensions: None,
             }
         }
 
@@ -24607,9 +24637,17 @@ mod tests {
         fn gl_destroy_surface(&mut self, _pid: i32, surface: u32, _session: u32) {
             self.gl_surface_release_events.push((3,surface));
         }
-        fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], _session_id: u32) {
-            self.gl_create_surface_calls
-                .push((pid, surface_id, attrs.to_vec()));
+        fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &mut [u8], _session_id: u32) -> i32 {
+            self.gl_create_surface_calls.push((pid, surface_id, attrs.to_vec()));
+            if self.gl_create_surface_rc == 0 {
+                for offset in [4,8] {
+                    if attrs[offset..offset+4] == [0;4] { attrs[offset..offset+4].copy_from_slice(&16u32.to_le_bytes()); }
+                }
+            }
+            if let Some((w,h)) = self.gl_create_surface_dimensions {
+                attrs[4..8].copy_from_slice(&w.to_le_bytes()); attrs[8..12].copy_from_slice(&h.to_le_bytes());
+            }
+            self.gl_create_surface_rc
         }
     
         mock_hostio_at_over_paths!();
@@ -52572,7 +52610,7 @@ impl HostIO for RelSymlinkMock {
         glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION)
         .unwrap();
         let context = glio_test_bind(&mut proc, &mut host, fd);
-        let mut surface = [0u8; 32];
+        let mut surface = [0u8; 36];
         surface[..4].copy_from_slice(&gl::WPK_SURFACE_DEFAULT.to_le_bytes());
         surface[12..16].copy_from_slice(&1u32.to_le_bytes());
         sys_ioctl(
@@ -52584,7 +52622,7 @@ impl HostIO for RelSymlinkMock {
         )
         .unwrap();
         let mut binding = [0u8; 12];
-        for (word, value) in binding.chunks_exact_mut(4).zip([context, 1, 1]) {
+        for (word, value) in binding.chunks_exact_mut(4).zip([context, surface_id_for_test(&proc, fd), surface_id_for_test(&proc, fd)]) {
             word.copy_from_slice(&value.to_le_bytes());
         }
         sys_ioctl(
@@ -52608,8 +52646,8 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(surface, original);
         let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         let gls = dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap();
-        assert_eq!(gls.current.unwrap().draw_surface_id, 1);
-        assert_eq!(host.gl_update_surface_calls[0].0, 1);
+        assert_eq!(gls.current.unwrap().draw_surface_id, gls.surface_id.unwrap());
+        assert_eq!(host.gl_update_surface_calls[0].0, gls.surface_id.unwrap());
         assert_eq!(host.gl_update_surface_calls[0].2, gls.session_id);
         assert_eq!(
             u32::from_le_bytes(
@@ -52656,8 +52694,9 @@ impl HostIO for RelSymlinkMock {
         glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION)
         .unwrap();
         let context = glio_test_bind(&mut proc, &mut host, fd);
-        let mut surface = [0u8; 32]; // default window surface
+        let mut surface = [0u8; 36]; // default window surface
         surface[..4].copy_from_slice(&gl::WPK_SURFACE_DEFAULT.to_le_bytes());
+        surface[12..16].copy_from_slice(&1u32.to_le_bytes());
         sys_ioctl(
             &mut proc,
             &mut host,
@@ -52667,7 +52706,7 @@ impl HostIO for RelSymlinkMock {
         )
         .unwrap();
         let mut binding = [0u8; 12];
-        for (word, value) in binding.chunks_exact_mut(4).zip([context, 1, 1]) {
+        for (word, value) in binding.chunks_exact_mut(4).zip([context, surface_id_for_test(&proc, fd), surface_id_for_test(&proc, fd)]) {
             word.copy_from_slice(&value.to_le_bytes());
         }
         sys_ioctl(
@@ -53085,6 +53124,11 @@ impl HostIO for RelSymlinkMock {
         );
     }
 
+    fn surface_id_for_test(proc: &Process, fd: i32) -> u32 {
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        dri_state(proc, ofd).unwrap().gl.as_ref().unwrap().surface_id.unwrap()
+    }
+
     fn glio_surface_bo_setup(proc: &mut Process, host: &mut MockHostIO, gpu: bool) -> (i32, u32) {
         use wasm_posix_shared::{dri::*, gl};
         let (fd, bo) = if gpu {
@@ -53101,7 +53145,7 @@ impl HostIO for RelSymlinkMock {
             (fd, (offset >> 12) as u32)
         };
         glio_init_objects_test(proc, host, fd, gl::OP_VERSION).unwrap();
-        let mut bytes = [0u8; 32];
+        let mut bytes = [0u8; 36];
         for (word, value) in
             bytes
                 .chunks_exact_mut(4)
@@ -53151,7 +53195,7 @@ impl HostIO for RelSymlinkMock {
             .unwrap();
             assert_eq!(glio_surface_bo_count(bo), None);
             assert_eq!(host.gbm_bo_destroy_calls, [(1, bo)]);
-            assert_eq!(host.gl_surface_release_events, [(3, 1), (2, bo)]);
+            assert_eq!(host.gl_surface_release_events, [(3, host.gl_create_surface_calls[0].1), (2, bo)]);
             sys_close(&mut proc, &mut host, fd).unwrap();
             assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
         }
@@ -53365,7 +53409,7 @@ impl HostIO for RelSymlinkMock {
         let (fd, bo) = glio_surface_bo_setup(&mut proc, &mut host, true);
         let context = glio_test_bind(&mut proc, &mut host, fd);
         let mut binding = [0u8; 12];
-        for (word, value) in binding.chunks_exact_mut(4).zip([context, 1, 1]) {
+        for (word, value) in binding.chunks_exact_mut(4).zip([context, surface_id_for_test(&proc, fd), surface_id_for_test(&proc, fd)]) {
             word.copy_from_slice(&value.to_le_bytes());
         }
         sys_ioctl(
@@ -53586,7 +53630,7 @@ impl HostIO for RelSymlinkMock {
         });
         let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         dri_state_mut(&mut proc, ofd).unwrap().handles.insert(1, bo);
-        let mut bytes = [0u8; 32];
+        let mut bytes = [0u8; 36];
         for (word, value) in
             bytes
                 .chunks_exact_mut(4)
@@ -53617,6 +53661,134 @@ impl HostIO for RelSymlinkMock {
             None
         );
         assert_eq!(glio_surface_bo_count(bo), Some(u32::MAX));
+    }
+
+    #[test]
+    fn glio_surface_creation_ack_rejects_without_publishing_or_losing_backing() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, bo) = glio_surface_bo_setup(&mut proc, &mut host, true);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []).unwrap();
+        let context = glio_test_bind(&mut proc, &mut host, fd);
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        for (rc, dimensions, expected) in [
+            (-(Errno::ENOMEM as i32), None, Errno::ENOMEM),
+            (-(Errno::ENODEV as i32), None, Errno::ENODEV),
+            (1, None, Errno::EIO),
+            (0, Some((u32::MAX, 1)), Errno::EIO),
+        ] {
+            let mut attrs = [0u8; 36];
+            for (word, value) in attrs
+                .chunks_exact_mut(4)
+                .zip([1u32, 0, 0, 1, 1, 0, 0, 0, 0])
+            {
+                word.copy_from_slice(&value.to_le_bytes());
+            }
+            let input = attrs;
+            host.gl_create_surface_rc = rc;
+            host.gl_create_surface_dimensions = dimensions;
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    gl::GLIO_CREATE_SURFACE,
+                    &mut attrs
+                ),
+                Err(expected)
+            );
+            assert_eq!(attrs, input);
+            assert_eq!(glio_surface_bo_count(bo), Some(1));
+            let dri = dri_state(&proc, ofd).unwrap();
+            assert!(dri.gl.as_ref().unwrap().surface_id.is_none());
+            assert_eq!(dri.gl.as_ref().unwrap().context_id, Some(context));
+            assert_eq!(dri.gl.as_ref().unwrap().current.unwrap().draw_surface_id, 0);
+            assert!(dri.gl_resources.borrow().surface_bo.is_none());
+            assert!(dri.gl_resources.borrow().pending_surface_bo.is_none());
+        }
+        host.gl_create_surface_rc = 0;
+        host.gl_create_surface_dimensions = Some((48, 27));
+        let mut attrs = [0u8; 36];
+        for (word, value) in attrs
+            .chunks_exact_mut(4)
+            .zip([1u32, 0, 0, 1, 1, 0, 0, 0, 0])
+        {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_CREATE_SURFACE,
+            &mut attrs,
+        )
+        .unwrap();
+        assert_eq!(u32::from_le_bytes(attrs[4..8].try_into().unwrap()), 48);
+        assert_eq!(u32::from_le_bytes(attrs[8..12].try_into().unwrap()), 27);
+        assert_eq!(u32::from_le_bytes(attrs[16..20].try_into().unwrap()), 1); // Caller handle stays local.
+        assert_eq!(
+            u32::from_le_bytes(attrs[32..36].try_into().unwrap()),
+            surface_id_for_test(&proc, fd)
+        );
+        assert_eq!(glio_surface_bo_count(bo), Some(2));
+        let reply = attrs;
+        let calls = host.gl_create_surface_calls.len();
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                gl::GLIO_CREATE_SURFACE,
+                &mut attrs
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(attrs, reply);
+        assert_eq!(host.gl_create_surface_calls.len(), calls);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+    }
+
+    #[test]
+    fn glio_surface_identities_are_fresh_across_sessions_and_recreation() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut ids = alloc::collections::BTreeSet::new();
+        for _ in 0..2 {
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+            for _ in 0..2 {
+                let mut attrs = [0u8; 36];
+                attrs[..4].copy_from_slice(&gl::WPK_SURFACE_DEFAULT.to_le_bytes());
+                attrs[12..16].copy_from_slice(&1u32.to_le_bytes());
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    gl::GLIO_CREATE_SURFACE,
+                    &mut attrs,
+                )
+                .unwrap();
+                let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+                let id = dri_state(&proc, ofd)
+                    .unwrap()
+                    .gl
+                    .as_ref()
+                    .unwrap()
+                    .surface_id
+                    .unwrap();
+                assert_ne!(id, 0);
+                assert!(ids.insert(id), "surface identity was reused");
+                sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []).unwrap();
+            }
+        }
     }
 
     #[test]
@@ -53658,7 +53830,7 @@ impl HostIO for RelSymlinkMock {
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, cattrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();
 
-        let sz = core::mem::size_of::<gl::GlSurfaceAttrs>();
+        let sz = core::mem::size_of::<gl::GlSurfaceCreateInfo>();
         let mut sbuf = vec![0u8; sz];
         let mut nullbuf = [0u8; 0];
         let read_reserved0 =
@@ -53669,6 +53841,7 @@ impl HostIO for RelSymlinkMock {
             kind: gl::WPK_SURFACE_DEFAULT, width: 64, height: 32, config_id: 1, reserved: [0; 4],
         };
         unsafe { core::ptr::write_unaligned(sbuf.as_mut_ptr() as *mut gl::GlSurfaceAttrs, s0) };
+        sbuf[32..36].fill(0);
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_SURFACE, &mut sbuf).unwrap();
         assert_eq!(read_reserved0(&host.gl_create_surface_calls[0].2), 0);
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut nullbuf).unwrap();
@@ -53678,8 +53851,11 @@ impl HostIO for RelSymlinkMock {
             kind: gl::WPK_SURFACE_DEFAULT, width: 64, height: 32, config_id: 1, reserved: [1, 0, 0, 0],
         };
         unsafe { core::ptr::write_unaligned(sbuf.as_mut_ptr() as *mut gl::GlSurfaceAttrs, s1) };
+        sbuf[32..36].fill(0);
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_SURFACE, &mut sbuf).unwrap();
         assert_eq!(read_reserved0(&host.gl_create_surface_calls[1].2), 2);
+        assert_eq!(read_reserved0(&sbuf), 1); // Successful reply preserves the caller's handle.
+        assert_ne!(u32::from_le_bytes(sbuf[32..36].try_into().unwrap()),0);
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut nullbuf).unwrap();
 
         // (3) Unknown target handle → ENOENT, and the host is NOT called.
@@ -53687,6 +53863,7 @@ impl HostIO for RelSymlinkMock {
             kind: gl::WPK_SURFACE_DEFAULT, width: 64, height: 32, config_id: 1, reserved: [999, 0, 0, 0],
         };
         unsafe { core::ptr::write_unaligned(sbuf.as_mut_ptr() as *mut gl::GlSurfaceAttrs, s2) };
+        sbuf[32..36].fill(0);
         assert_eq!(
             sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_SURFACE, &mut sbuf).unwrap_err(),
             Errno::ENOENT,

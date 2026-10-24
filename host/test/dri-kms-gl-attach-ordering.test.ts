@@ -120,18 +120,22 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
   expect(drawFramebuffer).toBe(oldTarget);
 
   // SDL can recreate the window surface while retaining its GL context.
-  imports.env.host_gl_destroy_surface(PID, 1);
+  binding.surfaceId = 71; // Existing kernel-issued surface identity.
+  imports.env.host_gl_destroy_surface(PID, 71);
   expect(deletedRenderbuffers).toContain(oldDepthStencil);
   if (newContext) imports.env.host_gl_destroy_context(PID, 1);
-  const attrs = new DataView(memory.buffer, 64, 20);
+  const attrs = new DataView(memory.buffer, 64, 36);
+  attrs.setUint32(0, 1, true); attrs.setUint32(12, 1, true);
   attrs.setUint32(4, 800, true);
   attrs.setUint32(8, 600, true);
-  imports.env.host_gl_create_surface(PID, 2, 64, 20);
+  expect(imports.env.host_gl_create_surface(PID, 2, 64, 36)).toBe(0);
   if (newContext) imports.env.host_gl_create_context(PID, 2, 0, 0);
   // SDL creates the resized EGL surface/context before its next SETCRTC.
   // The old scanout must not override that new drawable and clear the
   // completed first frame when the new FB is finally latched.
-  expect([canvas.width, canvas.height]).toEqual([800, 600]);
+  // Private storage accepts the size without resizing another context's canvas.
+  if (newContext) expect([canvas.width, canvas.height]).toEqual([800, 600]);
+  else expect([canvas.width, canvas.height]).toEqual([640, 480]);
   expect([binding.presentTarget!.w, binding.presentTarget!.h]).toEqual([800, 600]);
   expect(binding.presentTarget, "the next frame needs a target before any draws").not.toBeNull();
   expect(binding.presentTarget!.fbo).not.toBe(oldTarget);

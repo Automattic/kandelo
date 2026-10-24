@@ -121,7 +121,7 @@ static const struct kandelo_ioctl_contract kandelo_ioctl_contracts[] = {
     { 0x00000041u, 0u, 0u, 0u, 0u },
     { 0x00000042u, 2u, 3u, 16u, 16u },
     { 0x00000043u, 0u, 0u, 0u, 0u },
-    { 0x00000044u, 2u, 1u, 32u, 32u },
+    { 0x00000044u, 2u, 3u, 36u, 36u },
     { 0x00000045u, 0u, 0u, 0u, 0u },
     { 0x00000046u, 2u, 1u, 12u, 12u },
     { 0x00000047u, 2u, 1u, 8u, 8u },

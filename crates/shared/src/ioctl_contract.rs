@@ -304,7 +304,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     no_arg!(crate::gl::GLIO_TERMINATE),
     pointer!(crate::gl::GLIO_CREATE_CONTEXT, InOut, 16),
     no_arg!(crate::gl::GLIO_DESTROY_CONTEXT),
-    pointer!(crate::gl::GLIO_CREATE_SURFACE, In, 32),
+    pointer!(crate::gl::GLIO_CREATE_SURFACE, InOut, 36),
     no_arg!(crate::gl::GLIO_DESTROY_SURFACE),
     pointer!(crate::gl::GLIO_MAKE_CURRENT, In, 12),
     pointer!(crate::gl::GLIO_SUBMIT, In, 8),
@@ -507,6 +507,17 @@ mod tests {
         let wasm64 = request_contract(crate::dri::DRM_IOCTL_VERSION_WASM64).unwrap();
         assert_eq!(wasm64.size_for_pointer_width(4), None);
         assert_eq!(wasm64.size_for_pointer_width(8), Some(64));
+    }
+
+    #[test]
+    fn surface_creation_returns_identity_without_changing_update_wire() {
+        let create = request_contract(crate::gl::GLIO_CREATE_SURFACE).unwrap();
+        let update = request_contract(crate::gl::GLIO_UPDATE_SURFACE).unwrap();
+        assert_eq!(create.direction, IoctlDirection::InOut);
+        assert_eq!(create.size_for_pointer_width(4),Some(36));
+        assert_eq!(create.size_for_pointer_width(8),Some(36));
+        assert_eq!(update.direction, IoctlDirection::In);
+        assert_eq!(update.size_for_pointer_width(4),Some(32));
     }
 
     #[test]

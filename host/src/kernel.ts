@@ -1,3 +1,4 @@
+import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
  * import functions that bridge Wasm syscalls to the PlatformIO backend.
@@ -19,7 +20,7 @@
  * IMPORTANT: Wasm i64 values appear as BigInt in JavaScript.
  */
 
-import { releaseSurfaceResources } from "./webgl/surface-resources.js";
+import { createSurfaceResources, retireSurface, releaseSurfaceResources } from "./webgl/surface-resources.js";
 import type {
   AppendOutcome,
   HostFileOffset,
@@ -2552,63 +2553,51 @@ export class WasmPosixKernel {
         host_gl_create_surface: (
           pid: number, surfaceId: number,
           attrsPtr: KernelPointer, attrsLen: KernelPointer, sessionId?: number,
-        ): void => {
+        ): number => {
           const b = this.gl.get(pid, sessionId);
-          if (!b) return;
-          b.surfaceId = surfaceId;
-          // GlSurfaceAttrs: u32 kind, width, height, config_id,
-          //                 reserved[0]=target bo_id, reserved[1..4].
-          // Non-zero width/height is an explicit drawing-buffer size
-          // request (libEGL forwards EGL_WIDTH/EGL_HEIGHT window-surface
-          // attribs). A KMS compositor creates its surface before its
-          // first ADDFB, when the create-context fb-resize has nothing
-          // to size against — and the canvas may still carry the pump
-          // presenter's display-sized drawing buffer.
-          const attrsBytes = this.#checkedKernelIndex(
-            attrsLen,
-            "host_gl_create_surface attrs length",
-          );
-          if (attrsBytes >= 20) {
-            const attrs = this.#readKernelBytes(attrsPtr, 20);
-            const dv = new DataView(attrs.buffer, attrs.byteOffset, 20);
-            const w = dv.getUint32(4, true);
-            const h = dv.getUint32(8, true);
-            if (w > 0 && h > 0) b.surfaceSize = { width: w, height: h };
-            if (b.canvas && w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
-              b.canvas.width = w;
-              b.canvas.height = h;
+          if (!b) return -5;
+          try {
+            if (this.#checkedKernelIndex(attrsLen, "surface creation length") !== GL_SURFACE_WIRE_BYTES) return -22;
+            const destination = this.#rustLentKernelDestination(attrsPtr, GL_SURFACE_WIRE_BYTES, "surface creation reply");
+            const bytes = this.#readKernelBytes(attrsPtr, GL_SURFACE_WIRE_BYTES);
+            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            if ([20,24,28,32].some(offset => view.getUint32(offset,true) !== 0)) return -22;
+            const creation = {surfaceId, kind:view.getUint32(0,true), width:view.getUint32(4,true),
+              height:view.getUint32(8,true), configId:view.getUint32(12,true), targetBoId:view.getUint32(16,true)};
+            if (!validSurfaceCreation(creation)) return -22;
+            if (b.surfaceId !== null) return -16;
+            if (b.forward) {
+              if (!b.forward.onCreateSurface) return -38;
+              const result = b.forward.onCreateSurface(creation, b.sessionId);
+              if (result.rc !== 0) return Number.isInteger(result.rc) && result.rc < 0 ? result.rc : -5;
+              if (!Number.isInteger(result.width) || !Number.isInteger(result.height)
+                  || result.width < 0 || result.height < 0 || result.width > 0x7fff_ffff || result.height > 0x7fff_ffff) {
+                b.forward.onDestroySurface?.(surfaceId, b.sessionId); return -5;
+              }
+              const candidate = createSurfaceResources(pid);
+              candidate.surfaceId = surfaceId; candidate.fixedSize = true; candidate.surfaceSize = {width:result.width,height:result.height};
+              view.setUint32(4,result.width,true); view.setUint32(8,result.height,true);
+              try { this.#writeKernelBytes(destination, bytes); }
+              catch { b.forward.onDestroySurface?.(surfaceId,b.sessionId); return -5; }
+              const old = b.surface; b.surface = candidate; retireSurface(old);
+              return 0;
             }
-            // GPU-tier producer target: reserved[0] is the global bo_id
-            // (the kernel already translated the per-fd handle) whose FBO
-            // this window surface renders into. When it names a GPU bo on
-            // this session's shared context, redirect the client's default
-            // framebuffer to that FBO and size its viewport to the bo. A 0
-            // id (the common canvas/scanout case) leaves the target unset.
-            // Capture the target and apply the redirect. SDL2's
-            // Wayland+GLES backend creates the window surface (here,
-            // during SDL_CreateWindow) BEFORE the GL context (during
-            // SDL_GL_CreateContext), so `b.gl` may still be null at this
-            // point — `applyRenderTarget` is a no-op then and the pending
-            // id is re-checked when the context is created.
-            const targetBoId = dv.getUint32(16, true);
-            if (targetBoId !== 0) {
-              b.pendingRenderTargetBoId = targetBoId;
-              this.gl.applyRenderTarget(b);
+            let canvas = b.canvas;
+            if (!canvas && this.kms.isMasterPid(pid)) {
+              const crtc = this.kms.masterCrtcForPid(pid) ?? this.callbacks.getKmsCrtcIds?.()[0];
+              if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
             }
-          }
-          if (b.gl && b.claimedKmsCrtc != null) {
-            // Surface recreation can retain the GL context. Build the
-            // replacement drawable before the guest draws: creating it at
-            // SwapBuffers would leave the completed frame on the canvas,
-            // then blit an empty offscreen target on subsequent presents.
-            const previousDefault = b.renderTargetFbo;
-            const previousFramebuffer = b.shadow.fbo;
-            ensurePresentTarget(b);
-            if (previousFramebuffer !== null && previousFramebuffer !== previousDefault) {
-              b.shadow.fbo = previousFramebuffer;
-            }
-            this.gl_muxers.get(b.gl)?.invalidateCurrent();
-          }
+            const result = prepareSurfaceCreation(b, creation, this.gl.gpuBo(creation.targetBoId) ?? undefined, canvas);
+            const prepared = result.prepared;
+            if (!prepared) return result.rc;
+            try {
+              view.setUint32(4,prepared.width,true); view.setUint32(8,prepared.height,true);
+              this.#writeKernelBytes(destination, bytes);
+              prepared.commit();
+              if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+              return 0;
+            } finally { prepared.cancel(); }
+          } catch { return -5; }
         },
         host_gl_update_surface: (
           pid: number, surfaceId: number, attrsPtr: KernelPointer, attrsLen: KernelPointer, sessionId: number,
@@ -2644,9 +2633,11 @@ export class WasmPosixKernel {
             return 0;
           } catch { return -5; }
         },
-        host_gl_destroy_surface: (pid: number, _surfaceId: number, sessionId?: number): void => {
+        host_gl_destroy_surface: (pid: number, surfaceId: number, sessionId?: number): void => {
           const b = this.gl.get(pid, sessionId);
           if (!b) return;
+          b.forward?.onDestroySurface?.(surfaceId, b.sessionId);
+          if (b.surfaceId !== (surfaceId >>> 0)) return;
           if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
           this.gl.destroySurface(pid, b.sessionId);
         },
@@ -2767,6 +2758,16 @@ export class WasmPosixKernel {
           if (!b) return sessionId !== undefined || this.gl.list().some(b => b.pid === pid) ? -5 : 0;
           if (!b.gl && !b.forward) return -5;
           if (b?.gl?.isContextLost()) return -5; // EIO
+          if (b.forward) {
+            if (!b.forward.onPresent) return -38;
+            try {
+              const rc = b.forward.onPresent(b.sessionId);
+              return Number.isInteger(rc) && rc <= 0 ? rc : -5;
+            } catch { return -5; }
+          }
+          if (b.canvas && b.presentTarget && b.claimedKmsCrtc == null) {
+            try { blitPresentTarget(b); b.gl?.flush(); return 0; } catch { return -5; }
+          }
           // A GPU-tier producer renders into an offscreen bo FBO on the
           // shared context, so `eglSwapBuffers` must fence the queued GL
           // work: `flush()` guarantees the producer's draws are submitted

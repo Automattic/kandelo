@@ -310,7 +310,7 @@ unsafe extern "C" {
     fn host_gl_unbind(pid: i32, session_id: u32);
     fn host_gl_create_context(pid: i32, ctx_id: u32, attrs_ptr: *const u8, attrs_len: usize, session_id: u32) -> i32;
     fn host_gl_destroy_context(pid: i32, ctx_id: u32);
-    fn host_gl_create_surface(pid: i32, surface_id: u32, attrs_ptr: *const u8, attrs_len: usize, session_id: u32);
+    fn host_gl_create_surface(pid: i32, surface_id: u32, attrs_ptr: *mut u8, attrs_len: usize, session_id: u32) -> i32;
     fn host_gl_update_surface(pid: i32, surface_id: u32, attrs_ptr: *const u8, attrs_len: usize, session_id: u32) -> i32;
     fn host_gl_destroy_surface(pid: i32, surface_id: u32, session_id: u32);
     fn host_gl_make_current(pid: i32, ctx_id: u32, draw_surface_id: u32, read_surface_id: u32, session_id: u32) -> i32;
@@ -1137,8 +1137,8 @@ impl HostIO for WasmHostIO {
         unsafe { host_gl_destroy_context(pid, ctx_id) }
     }
 
-    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], session_id: u32) {
-        unsafe { host_gl_create_surface(pid, surface_id, attrs.as_ptr(), attrs.len(), session_id) }
+    fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &mut [u8], session_id: u32) -> i32 {
+        unsafe { host_gl_create_surface(pid, surface_id, attrs.as_mut_ptr(), attrs.len(), session_id) }
     }
 
     fn gl_update_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], session_id: u32) -> i32 {

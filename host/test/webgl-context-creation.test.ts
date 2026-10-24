@@ -265,3 +265,56 @@ describe("context creation acknowledgement", () => {
     expect(b.contextId).toBe(1);
   });
 });
+
+
+describe("surface creation acknowledgement", () => {
+  it("rejects malformed metadata without publishing identity or changing caller bytes", () => {
+    const {kernel, imports, memory} = harness();
+    kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+    const b = kernel.gl.get(7,11)!;
+    const attrs = new Uint32Array(memory.buffer,64,9);
+    attrs.set([99,4,3,1,0,0,0,0,0]);
+    const before = attrs.slice();
+    expect(imports.host_gl_create_surface(7,71,64,36,11)).toBe(-22);
+    expect(b.surfaceId).toBeNull(); expect(attrs).toEqual(before);
+  });
+});
+
+it("publishes accepted dimensions and private storage, preserving state on allocation failure", () => {
+  const {kernel,imports,memory} = harness();
+  let allocate = false;
+  const deleted: unknown[] = [], blits: unknown[][] = [];
+  let serial = 0;
+  const gl = new Proxy({
+    getExtension: () => null, isContextLost: () => false, getParameter: () => null, getError: () => 0,
+    createTexture: () => allocate ? {texture:++serial} : null,
+    createFramebuffer: () => allocate ? {framebuffer:++serial} : null,
+    createRenderbuffer: () => allocate ? {renderbuffer:++serial} : null,
+    blitFramebuffer: (...args:unknown[]) => blits.push(args),
+    FRAMEBUFFER_COMPLETE: 0x8cd5, checkFramebufferStatus: () => 0x8cd5,
+    deleteFramebuffer: (value:unknown) => deleted.push(value),
+  }, {get: (object,key) => Reflect.get(object,key) ?? (() => null)}) as unknown as WebGL2RenderingContext;
+  const canvas = {width:8,height:6,getContext:() => gl} as unknown as OffscreenCanvas;
+  kernel.gl.attachCanvas(7,canvas);
+  imports.host_gl_bind(7,128,0,11);
+  const b = kernel.gl.get(7,11)!, original = b.surface;
+  const attrs = new Uint32Array(memory.buffer,64,9);
+  attrs.set([1,0,0,1,0,0,0,0,0]); const before = attrs.slice();
+  expect(imports.host_gl_create_surface(7,71,64,36,11)).toBe(-12);
+  expect(b.surface).toBe(original); expect(b.surfaceId).toBeNull(); expect(attrs).toEqual(before);
+  allocate = true;
+  expect(imports.host_gl_create_surface(7,72,64,36,11)).toBe(0);
+  expect([...attrs]).toEqual([1,8,6,1,0,0,0,0,0]);
+  const accepted = b.surface, fbo = b.presentTarget!.fbo;
+  expect(b.surfaceId).toBe(72); expect(b.gl).toBeNull(); // Logical context not created yet.
+  expect(imports.host_gl_create_surface(7,73,64,36,11)).toBe(-16);
+  expect(b.surface).toBe(accepted); expect(deleted).toEqual([]);
+  imports.host_gl_destroy_surface(7,71,11); expect(b.surface).toBe(accepted);
+  expect(imports.host_gl_create_context(7,21,0,0,11)).toBe(0);
+  expect(imports.host_gl_make_current(7,21,72,72,11)).toBe(0);
+  expect(imports.host_gl_present(7,11)).toBe(0);
+  expect(blits).toHaveLength(1); expect(blits[0].slice(0,8)).toEqual([0,0,8,6,0,0,8,6]);
+  imports.host_gl_make_current(7,0,0,0,11);
+  imports.host_gl_destroy_surface(7,72,11);
+  expect(deleted).toEqual([fbo]); expect(b.surfaceId).toBeNull();
+});

@@ -55,7 +55,8 @@ struct egl_generation {
     int surface_current, context_delete_pending, surface_delete_pending;
     int terminate_pending;
     EGLContext context_handle;
-    uint32_t backend_context_id;
+    uint32_t backend_context_id, backend_surface_id;
+    uint32_t surface_width, surface_height;
     struct wpk_gles_context *encoder_state;
     EGLSurface surface_handle;
     EGLint client_version;
@@ -490,19 +491,20 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
     }
     if (g_next_surface_handle == 0) { g_last_error = EGL_BAD_ALLOC; return EGL_NO_SURFACE; }
 
-    struct gl_surface_attrs surf = {
+    struct gl_surface_create request = { .attrs = {
         .kind = WPK_SURFACE_DEFAULT,
         .width = 0, .height = 0, .config_id = 1,
         .reserved = {0,0,0,0},
-    };
+    }, .surface_id = 0 };
+    struct gl_surface_attrs *surf = &request.attrs;
     int is_gbm = win && _wpk_gbm_surface_dimensions
-        && _wpk_gbm_surface_dimensions((void *)win, &surf.width, &surf.height);
+        && _wpk_gbm_surface_dimensions((void *)win, &surf->width, &surf->height);
     /* Preserve explicit dimensions for existing canvas callers without a
      * native window. A real GBM window needs no application sizing hint. */
     if (attrib_list) {
         for (const EGLint *a = attrib_list; a[0] != EGL_NONE; a += 2) {
-            if (a[0] == EGL_WIDTH)  surf.width  = (uint32_t)a[1];
-            if (a[0] == EGL_HEIGHT) surf.height = (uint32_t)a[1];
+            if (a[0] == EGL_WIDTH)  surf->width  = (uint32_t)a[1];
+            if (a[0] == EGL_HEIGHT) surf->height = (uint32_t)a[1];
         }
     }
     /* GPU-tier producer targeting: reserved[0] carries the target bo
@@ -518,11 +520,18 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
     uint32_t target = generation->pending_surface_target_bo;
     if (!target && !is_gbm && win && _wpk_wlegl_bo_handle)
         target = _wpk_wlegl_bo_handle((void *)win);
-    surf.reserved[0] = target;
-    if (ioctl(generation->fd, GLIO_CREATE_SURFACE, &surf) != 0) {
+    surf->reserved[0] = target;
+    if (ioctl(generation->fd, GLIO_CREATE_SURFACE, &request) != 0) {
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_SURFACE;
     }
+    if (!request.surface_id || surf->width > INT32_MAX || surf->height > INT32_MAX) {
+        ioctl(generation->fd, GLIO_DESTROY_SURFACE, NULL);
+        g_last_error = EGL_BAD_ALLOC;
+        return EGL_NO_SURFACE;
+    }
+    generation->backend_surface_id = request.surface_id;
+    generation->surface_width = surf->width; generation->surface_height = surf->height;
     generation->surface_made = 1;
     generation->surface_handle = (EGLSurface)g_next_surface_handle++;
     generation->surface_delete_pending = 0;
@@ -616,7 +625,8 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
     if (!register_binding_thread()) { g_last_error = EGL_BAD_ALLOC; goto done; }
     if (g_current) _wpk_gl_flush();
     const struct gl_make_current binding = {
-        generation->backend_context_id, surfaceless ? 0 : 1, surfaceless ? 0 : 1,
+        generation->backend_context_id, surfaceless ? 0 : generation->backend_surface_id,
+        surfaceless ? 0 : generation->backend_surface_id,
     };
     if (ioctl(generation->fd, GLIO_MAKE_CURRENT, &binding) != 0) {
         g_last_error = current_binding_error();
@@ -752,6 +762,7 @@ static void retire_pending_resources_locked(struct egl_generation *generation) {
         ioctl(generation->fd, GLIO_DESTROY_SURFACE, NULL);
         generation->surface_made = generation->surface_delete_pending = 0;
         generation->surface_handle = EGL_NO_SURFACE;
+        generation->backend_surface_id = generation->surface_width = generation->surface_height = 0;
         generation->current_egl_window = NULL;
     }
     if (generation->context_delete_pending && !generation->context_owner) {
@@ -827,8 +838,8 @@ EGLint eglGetError(void) {
  * scripts/wasm-artifact-guards.sh refuses any artifact that references
  * one, so a new consumer fails its build here instead of trapping on a
  * throwing host import at run time. Implement the entry point when a
- * consumer needs it; eglQuerySurface in particular needs the granted
- * surface size, which GLIO_CREATE_SURFACE does not report back today. */
+ * consumer needs it. ABI 57 now records the granted surface size; the
+ * complete public query and surface lifecycle APIs remain to implement. */
 const char *eglQueryString(EGLDisplay dpy, EGLint name) {
     /* EGL_EXT_client_extensions: EGL_NO_DISPLAY answers the extensions
      * that exist before a display does. The GBM platform is the one this

@@ -1,3 +1,4 @@
+import type { GlSurfaceCreation } from "./surface-create.js";
 /**
  * Tracks live `/dev/dri/renderD128` GLES sessions reported by the kernel.
  *
@@ -57,8 +58,11 @@ export type GlForwardChannel = {
   /** Zero acknowledges a live renderer; negative errno leaves no context. */
   onCreateContext(sessionId?: number): number;
   onDestroyContext(sessionId?: number): void;
+  onCreateSurface?(surface: GlSurfaceCreation, sessionId?: number): {rc: number; width: number; height: number};
+  onDestroySurface?(surfaceId: number, sessionId?: number): void;
   onUnbind?(sessionId: number): void;
   onMakeCurrent?(drawable: GlDrawableBinding, sessionId?: number): number;
+  onPresent?(sessionId?: number): number;
   onSubmit(bytes: Uint8Array, sessionId?: number): void;
   onQuery?(op: number, input: Uint8Array, outLen: number, sessionId?: number): { rc: number; bytes: Uint8Array };
 };

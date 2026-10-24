@@ -32,7 +32,8 @@ const GL_DRAW_FRAMEBUFFER_BINDING = 0x8ca6;
  *  when the binding has a usable present target. */
 export function ensurePresentTarget(b: GlBinding): boolean {
   const canvas = b.canvas;
-  return canvas ? resizeSurfaceTarget(b, canvas.width, canvas.height) : false;
+  const size = b.surface.fixedSize ? b.surfaceSize : null;
+  return canvas ? resizeSurfaceTarget(b, size?.width ?? canvas.width, size?.height ?? canvas.height) : false;
 }
 
 /** Allocate one surface's storage on its renderer. Explicit dimensions also

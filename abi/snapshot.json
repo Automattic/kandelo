@@ -1,5 +1,5 @@
 {
-  "abi_version": 56,
+  "abi_version": 57,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1164,7 +1164,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 56,
+      "abi_version": 57,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -2243,9 +2243,9 @@
     },
     "68": {
       "argKind": "pointer",
-      "direction": "in",
-      "wasm32Size": 32,
-      "wasm64Size": 32
+      "direction": "inout",
+      "wasm32Size": 36,
+      "wasm64Size": 36
     },
     "69": {
       "argKind": "none",

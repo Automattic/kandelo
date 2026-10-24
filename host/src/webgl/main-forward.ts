@@ -1,3 +1,5 @@
+import { blitPresentTarget } from "./present-target.js";
+import { prepareSurfaceCreation, validSurfaceCreation, type GlSurfaceCreation } from "./surface-create.js";
 import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
 import { decodeAndDispatch } from "./bridge.js";
 import { runGlQuery } from "./query.js";
@@ -24,6 +26,9 @@ export interface ForwardWorkerLike {
 
 export type GlForwardMessage =
   | { type: "gl_forward_create_context"; pid: number; sessionId: number; mailbox: SharedArrayBuffer }
+  | { type: "gl_forward_create_surface"; pid: number; sessionId: number; surface: GlSurfaceCreation; mailbox: SharedArrayBuffer }
+  | { type: "gl_forward_present"; pid: number; sessionId: number; mailbox: SharedArrayBuffer }
+  | { type: "gl_forward_destroy_surface"; pid: number; sessionId: number; surfaceId: number }
   | { type: "gl_forward_make_current"; pid: number; sessionId: number; drawable: GlDrawableBinding; mailbox: SharedArrayBuffer }
   | { type: "gl_forward_destroy_context"; pid: number; sessionId: number }
   | { type: "gl_forward_submit"; pid: number; sessionId: number; bytes: Uint8Array }
@@ -59,6 +64,21 @@ export function createMainForwardChannel(
       }
       return rc;
     },
+    onCreateSurface(surface, sessionId = defaultSessionId) {
+      const copy = {surfaceId:surface.surfaceId,kind:surface.kind,width:surface.width,height:surface.height,
+        configId:surface.configId,targetBoId:surface.targetBoId};
+      if (!validSurfaceCreation(copy) || copy.targetBoId !== 0) return {rc:-22,width:0,height:0};
+      const result = request(8, mailbox => port.postMessage({type:"gl_forward_create_surface",pid,sessionId,surface:copy,mailbox}));
+      if (result.rc !== 8 || result.bytes.byteLength !== 8) {
+        try { port.postMessage({type:"gl_forward_destroy_surface",pid,sessionId,surfaceId:copy.surfaceId}); } catch { /* Failed channel stays failed. */ }
+        return {rc:result.rc < 0 ? result.rc : -5,width:0,height:0};
+      }
+      const reply = new DataView(result.bytes.buffer,result.bytes.byteOffset,8);
+      return {rc:0,width:reply.getUint32(0,true),height:reply.getUint32(4,true)};
+    },
+    onDestroySurface(surfaceId, sessionId = defaultSessionId) {
+      port.postMessage({type:"gl_forward_destroy_surface",pid,sessionId,surfaceId});
+    },
     onDestroyContext(sessionId = defaultSessionId) { port.postMessage({ type: "gl_forward_destroy_context", pid, sessionId }); },
     onMakeCurrent(drawable, sessionId = defaultSessionId) {
       // Copy only reviewed scalars. Spreading a structurally compatible
@@ -71,6 +91,9 @@ export function createMainForwardChannel(
       return request(0, mailbox => port.postMessage({
         type: "gl_forward_make_current", pid, sessionId, drawable: copy, mailbox,
       })).rc;
+    },
+    onPresent(sessionId = defaultSessionId) {
+      return request(0, mailbox => port.postMessage({type:"gl_forward_present",pid,sessionId,mailbox})).rc;
     },
     onUnbind(sessionId) { port.postMessage({ type: "gl_forward_unbind", pid, sessionId }); },
     onSubmit(bytes, sessionId = defaultSessionId) { port.postMessage({ type: "gl_forward_submit", pid, sessionId, bytes: bytes.slice() }); },
@@ -97,10 +120,11 @@ export function setupMainForward(
     if (!msg || typeof msg !== "object" || msg.pid !== pid) return;
     if (!Number.isInteger(msg.sessionId) || msg.sessionId < 0 || msg.sessionId > 0xffff_ffff) return;
     let b = reg.get(pid, msg.sessionId);
-    if (!b && msg.type === "gl_forward_create_context") {
+    if (!b && (msg.type === "gl_forward_create_context" || msg.type === "gl_forward_create_surface")) {
       try {
         if (!glForwardRequestPending(msg.mailbox)) return;
-        if (glForwardQueryCapacity(msg.mailbox) !== 0) throw new RangeError("invalid creation reply");
+        if (glForwardQueryCapacity(msg.mailbox) !== (msg.type === "gl_forward_create_surface" ? 8 : 0))
+          throw new RangeError("invalid creation reply");
         reg.bind({ pid, sessionId: msg.sessionId, cmdbufAddr: 0, cmdbufLen: 0 });
         b = reg.get(pid, msg.sessionId);
       } catch {
@@ -110,12 +134,48 @@ export function setupMainForward(
     }
     if (!b) {
       if (msg.type === "gl_forward_create_context" || msg.type === "gl_forward_query"
-          || msg.type === "gl_forward_make_current") {
+          || msg.type === "gl_forward_make_current" || msg.type === "gl_forward_create_surface" || msg.type === "gl_forward_present") {
         completeGlForwardQuery(msg.mailbox, -5, new Uint8Array());
       }
       return;
     }
     switch (msg.type) {
+      case "gl_forward_create_surface": {
+        try {
+          if (!glForwardRequestPending(msg.mailbox)) return;
+          if (glForwardQueryCapacity(msg.mailbox) !== 8 || !validSurfaceCreation(msg.surface) || msg.surface.targetBoId !== 0) {
+            completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
+          }
+          const result = prepareSurfaceCreation(b,msg.surface,undefined,canvas);
+          const prepared = result.prepared;
+          if (!prepared) { completeGlForwardQuery(msg.mailbox,result.rc,new Uint8Array()); return; }
+          try {
+            const bytes = new Uint8Array(8), reply = new DataView(bytes.buffer);
+            reply.setUint32(0,prepared.width,true); reply.setUint32(4,prepared.height,true);
+            if (completeGlForwardQuery(msg.mailbox,8,bytes)) prepared.commit();
+          } finally { prepared.cancel(); }
+        } catch { try { completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); } catch { /* No reply authority. */ } }
+        return;
+      }
+      case "gl_forward_destroy_surface": {
+        if (b.surfaceId === msg.surfaceId) {
+          if (b.gl) muxer(b.gl).invalidateCurrent();
+          reg.destroySurface(pid,msg.sessionId);
+        }
+        return;
+      }
+      case "gl_forward_present": {
+        try {
+          if (!glForwardRequestPending(msg.mailbox)) return;
+          if (glForwardQueryCapacity(msg.mailbox) !== 0) { completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return; }
+          if (!b.gl || b.gl.isContextLost()) { completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); return; }
+          muxer(b.gl).switchTo(b);
+          if (b.presentTarget) blitPresentTarget(b);
+          b.gl.flush();
+          completeGlForwardQuery(msg.mailbox,0,new Uint8Array());
+        } catch { try { completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); } catch { /* No reply authority. */ } }
+        return;
+      }
       case "gl_forward_make_current": {
         try {
           if (!glForwardRequestPending(msg.mailbox)) return;
@@ -157,7 +217,7 @@ export function setupMainForward(
             stencil: true,
             preserveDrawingBuffer: true,
           }) as WebGL2RenderingContext | null;
-          if (!gl || gl.isContextLost()) {
+          if (!gl || gl.isContextLost() || (b.surface.gl && b.surface.gl !== gl)) {
             completeGlForwardQuery(msg.mailbox, -19, new Uint8Array());
             return;
           }

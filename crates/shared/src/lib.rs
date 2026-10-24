@@ -236,7 +236,9 @@ pub mod process_layout;
 /// 56: GL initialization separates display-generation authority from object
 ///     sessions through a 16-byte InOut GlInitInfo handshake. Revocation
 ///     prevents new objects/bindings while current resources remain usable.
-pub const ABI_VERSION: u32 = 56;
+/// 57: surface creation returns a fresh identity and acknowledged dimensions
+///     through an InOut argument. The host creation import returns status.
+pub const ABI_VERSION: u32 = 57;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -5437,20 +5439,29 @@ pub mod gl {
         pub context_id: u32,
     }
 
-    /// Argument to `GLIO_CREATE_SURFACE`. Total: 32 bytes.
+    /// Surface attributes. Total: 32 bytes; also used by UPDATE_SURFACE.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct GlSurfaceAttrs {
-        /// Surface kind (only `WPK_SURFACE_DEFAULT` in v1).
+        /// Surface kind: default window or offscreen pbuffer.
         pub kind: u32,
-        /// Pbuffer width (default-canvas surfaces ignore this).
+        /// Requested width, replaced by accepted width on creation.
         pub width: u32,
-        /// Pbuffer height (default-canvas surfaces ignore this).
+        /// Requested height, replaced by accepted height on creation.
         pub height: u32,
         /// EGL config id (opaque; v1 reports a single config "1").
         pub config_id: u32,
-        /// Reserved.
+        /// First word is the caller's target GEM handle; remaining words zero.
         pub reserved: [u32; 4],
+    }
+
+    /// ABI 57 surface creation. Dimensions are returned in attrs; the
+    /// caller's target handle is preserved. Surface_id must be zero on input.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSurfaceCreateInfo {
+        pub attrs: GlSurfaceAttrs,
+        pub surface_id: u32,
     }
 
     /// Argument to `GLIO_QUERY`. Total: 24 bytes.
@@ -6961,6 +6972,7 @@ mod gl_tests {
         assert_eq!(size_of::<GlSubmitInfo>(), 8);
         assert_eq!(size_of::<GlContextAttrs>(), 16);
         assert_eq!(size_of::<GlSurfaceAttrs>(), 32);
+        assert_eq!(size_of::<GlSurfaceCreateInfo>(), 36);
         assert_eq!(size_of::<GlQueryInfo>(), 24);
     }
 

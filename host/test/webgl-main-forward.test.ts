@@ -374,3 +374,48 @@ describe("main-thread synchronous query transport", () => {
     dispose();
   });
 });
+
+it("copies surface creation scalars and reuses the bounded acknowledgement mailbox", () => {
+  const messages: GlForwardMessage[] = [];
+  const channel = createMainForwardChannel({postMessage(message) {
+    messages.push(message);
+    if (message.type === "gl_forward_create_surface") {
+      const bytes = new Uint8Array(8), view = new DataView(bytes.buffer);
+      view.setUint32(0,17,true); view.setUint32(4,13,true);
+      completeGlForwardQuery(message.mailbox,8,bytes);
+    } else if (message.type === "gl_forward_create_context" || message.type === "gl_forward_present") completeGlForwardQuery(message.mailbox,0,new Uint8Array());
+  }},7,11);
+  const surface = {surfaceId:71,kind:1,width:0,height:0,configId:1,targetBoId:0,unreviewed:new WebAssembly.Memory({initial:1})};
+  expect(channel.onCreateSurface!(surface)).toEqual({rc:0,width:17,height:13});
+  expect(channel.onCreateContext()).toBe(0);
+  const [creation,context] = messages;
+  expect(creation.type).toBe("gl_forward_create_surface");
+  if (creation.type !== "gl_forward_create_surface" || context.type !== "gl_forward_create_context") throw new Error("wrong route");
+  expect(Object.keys(creation.surface).sort()).toEqual(["surfaceId","kind","width","height","configId","targetBoId"].sort());
+  expect(creation.mailbox).toBe(context.mailbox);
+  expect(channel.onPresent!()).toBe(0);
+  const present = messages.at(-1)!;
+  if (present.type !== "gl_forward_present") throw new Error("missing present");
+  expect(present.mailbox).toBe(creation.mailbox);
+  expect(channel.onCreateSurface!({...surface,targetBoId:1})).toEqual({rc:-22,width:0,height:0});
+  channel.onDestroySurface!(71);
+  expect(messages.at(-1)).toEqual({type:"gl_forward_destroy_surface",pid:7,sessionId:11,surfaceId:71});
+});
+
+it("cancels forwarded surface allocation when completion loses its mailbox authority", () => {
+  const worker = new FakeWorker();
+  const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,8);
+  const disposed: unknown[] = [];
+  const gl = new Proxy({
+    isContextLost: () => false, getError: () => 0, getParameter: () => null,
+    createFramebuffer: () => ({fbo:true}), createTexture: () => ({texture:true}), createRenderbuffer: () => ({rbo:true}),
+    FRAMEBUFFER_COMPLETE:0x8cd5,
+    checkFramebufferStatus: () => { Atomics.store(new Int32Array(mailbox),0,3); return 0x8cd5; },
+    deleteFramebuffer: (fbo:unknown) => disposed.push(fbo),
+  },{get:(object,key) => Reflect.get(object,key) ?? (() => null)});
+  const dispose = setupMainForward(worker,{width:4,height:3,getContext:() => gl} as unknown as HTMLCanvasElement,7);
+  worker.fire({type:"gl_forward_create_surface",pid:7,sessionId:11,
+    surface:{surfaceId:71,kind:1,width:4,height:3,configId:1,targetBoId:0},mailbox});
+  expect(disposed).toEqual([{fbo:true}]);
+  dispose(); expect(disposed).toHaveLength(1);
+});

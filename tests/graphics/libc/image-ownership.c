@@ -78,7 +78,7 @@ static uint32_t bound_texture, redefined_texture;
 static unsigned char command_storage[8][WPK_GL_CMDBUF_LEN];
 struct device_slot {
     int root_open, object_open, root_live;
-    uint32_t generation, context;
+    uint32_t generation, context, surface;
     unsigned char *commands;
     int has_current;
     pthread_t current_thread;
@@ -93,6 +93,8 @@ static unsigned destroyed_contexts, destroyed_surfaces, submit_batches, clear_co
 static int fail_make_current, fail_create_context;
 static int make_current_errno = EACCES;
 static uint32_t next_backend_context = 31;
+static uint32_t next_backend_surface = 131;
+static int fail_surface_create;
 static uint32_t surface_target;
 static int fail_surface_update;
 static pthread_mutex_t overlap_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -299,7 +301,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             at += 4 + len;
         }
     } else if (request == GLIO_CREATE_SURFACE) {
-        surface_target = ((struct gl_surface_attrs *)arg)->reserved[0];
+        if (fail_surface_create) { errno = ENOMEM; return -1; }
+        struct gl_surface_create *request = arg;
+        assert(request->surface_id == 0);
+        surface_target = request->attrs.reserved[0];
+        request->surface_id = slot->surface = next_backend_surface++;
+        if (!request->attrs.width) request->attrs.width = 64;
+        if (!request->attrs.height) request->attrs.height = 32;
     } else if (request == GLIO_UPDATE_SURFACE) {
         if (fail_surface_update) { errno = ENOMEM; return -1; }
         surface_target = ((struct gl_surface_attrs *)arg)->reserved[0];
@@ -313,6 +321,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         } else {
             assert(binding->context_id == slot->context);
             assert(binding->draw_surface_id == binding->read_surface_id);
+            assert(!binding->draw_surface_id || binding->draw_surface_id == slot->surface);
             if (slot->has_current && !pthread_equal(slot->current_thread, pthread_self())) { errno = EACCES; return -1; }
             for (unsigned i=0; i<8; i++) {
                 struct device_slot *previous = &device_slots[i];
@@ -1114,6 +1123,24 @@ int main(int argc, char **argv) {
         assert(row_length == 11 && glGetError() == GL_NO_ERROR && clear_commands == 1);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-transfer"); return 0;
+    }
+    if (!strcmp(argv[1], "surface-create-ack")) {
+        fail_surface_create = 1;
+        assert(eglCreateWindowSurface(dpy,(EGLConfig)1,NULL,NULL) == EGL_NO_SURFACE);
+        assert(eglGetError() == EGL_BAD_ALLOC && eglGetCurrentContext() == ctx);
+        fail_surface_create = 0;
+        EGLSurface surface = eglCreateWindowSurface(dpy,(EGLConfig)1,NULL,NULL);
+        assert(surface != EGL_NO_SURFACE && eglMakeCurrent(dpy,surface,surface,ctx));
+        uint32_t first = device_slots[0].current_surface;
+        assert(first >= 131);
+        assert(eglDestroySurface(dpy,surface));
+        assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+        surface = eglCreateWindowSurface(dpy,(EGLConfig)1,NULL,NULL);
+        assert(surface != EGL_NO_SURFACE && eglMakeCurrent(dpy,surface,surface,ctx));
+        assert(device_slots[0].current_surface > first);
+        assert(eglDestroySurface(dpy,surface) && eglDestroyContext(dpy,ctx));
+        assert(eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS surface-create-ack"); return 0;
     }
     if (!strcmp(argv[1], "surface-retarget")) {
         native_window_bo = 77;
