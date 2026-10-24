@@ -664,7 +664,6 @@ if [ -n "$BEAM_BIN" ]; then
     echo "==> Erlang/OTP built successfully!"
     ls -lh "$BEAM_BIN"
     cp "$BEAM_BIN" "$ARTIFACT_DIR/erlang.wasm"
-    wasm-strip "$ARTIFACT_DIR/erlang.wasm"
     echo "==> BEAM emulator: $ARTIFACT_DIR/erlang.wasm"
 else
     echo "==> Looking for BEAM in build tree..."
@@ -684,7 +683,6 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary erlang "$ARTIFACT_DIR/erlang.wasm"
 
 CURRENT_ABI=$(wasm_current_abi_version "$REPO_ROOT")
 prepare_runtime_wasm() {
@@ -692,17 +690,23 @@ prepare_runtime_wasm() {
     local instrumented
     local artifact_abi
 
-    wasm-strip "$artifact"
     if wasm_imports_kernel_fork "$artifact" && ! wasm_has_complete_fork_instrumentation "$artifact"; then
         if wasm_has_any_fork_instrumentation "$artifact"; then
             wasm_require_fork_instrumentation_if_needed "$artifact"
             return 1
         fi
         instrumented=$(mktemp "$WORK_DIR/erlang-fork-instrument.XXXXXX.wasm")
-        "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$artifact" -o "$instrumented"
+        # The Os trial grew after retaining runtime metadata. Request Oz only
+        # after facts are consumed to keep the emulator below its old size.
+        "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
+            "$artifact" -o "$instrumented" --post-optimize Oz
         chmod 0755 "$instrumented"
         mv "$instrumented" "$artifact"
     fi
+    # Strip debug data and names only: wasm-strip would also remove the
+    # continuation capability and dlopen-contract custom sections.
+    llvm-strip --strip-debug "$artifact"
+    llvm-objcopy --remove-section=name "$artifact"
     wasm_require_no_legacy_asyncify "$artifact"
     wasm_require_fork_instrumentation_if_needed "$artifact"
     artifact_abi=$(wasm_extract_abi_version "$artifact" || true)
@@ -711,6 +715,9 @@ prepare_runtime_wasm() {
         return 1
     fi
 }
+
+prepare_runtime_wasm "$ARTIFACT_DIR/erlang.wasm"
+install_local_binary erlang "$ARTIFACT_DIR/erlang.wasm"
 
 # Fail before packaging if a compiler diagnostic or debug section retained a
 # caller checkout, work root, sysroot, or common CI scratch prefix.

@@ -110,13 +110,6 @@ if [ ! -f "$CURL_PREFIX/lib/libcurl.a" ] || [ ! -f "$CURL_PREFIX/include/curl/cu
 fi
 echo "==> libcurl at $CURL_PREFIX"
 
-# Check for wasm-opt (required for -O2 optimization after build).
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-if [ -z "$WASM_OPT" ]; then
-    echo "ERROR: wasm-opt not found. Install binaryen." >&2
-    exit 1
-fi
-
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 # --- Download Git source ---
@@ -241,27 +234,25 @@ echo "==> Pre-instrument size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/nu
 # git's fork-path instrumentation to a few dozen functions; a wasm-opt pass
 # first would inline call sites across functions, and the instrumenter would
 # then ignore the facts (their code hash no longer matches). The instrumenter
-# runs wasm-opt -O2 over the whole module afterwards.
+# runs its post-instrumentation optimizer over the whole module afterwards.
 echo "==> Applying fork instrumentation to git.wasm..."
-"$FORK_INSTRUMENT" "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm.instr"
+"$FORK_INSTRUMENT" --require-facts "$BIN_DIR/git.wasm" -o "$BIN_DIR/git.wasm.instr"
 mv "$BIN_DIR/git.wasm.instr" "$BIN_DIR/git.wasm"
 
 SIZE_AFTER=$(wc -c < "$BIN_DIR/git.wasm" | tr -d ' ')
 echo "==> Post-instrument size: $(echo "$SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${SIZE_AFTER} bytes")"
 
-# git-remote-http keeps wasm-opt first: curl's SIGALRM longjmp keeps most
-# of it on the fork path even with facts, so the inlined, smaller call graph
-# instruments smaller (docs/plans/2026-10-02-fork-sinks.md, "jmp_buf identity
-# and curl").
+# Preserve facts for the HTTP transport too. Optimization ordering belongs
+# to the SDK and instrumenter, including curl's longjmp-heavy paths.
+# Request Oz after instrumentation to keep the transport below its old size.
 # Apply the same pipeline to git-remote-http — libcurl may call fork()
 # internally (e.g., for DNS resolution when pthreads are unavailable).
 # git-remote-http is always built post-Phase-7 (HTTP/HTTPS transport
 # is required, not optional).
 if [ -f "$BIN_DIR/git-remote-http.wasm" ]; then
-    echo "==> Optimizing + instrumenting git-remote-http.wasm..."
+    echo "==> Instrumenting git-remote-http.wasm..."
     RH_SIZE_BEFORE=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
-    "$WASM_OPT" -g -O2 "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm"
-    "$FORK_INSTRUMENT" "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm.instr"
+    "$FORK_INSTRUMENT" --require-facts "$BIN_DIR/git-remote-http.wasm" -o "$BIN_DIR/git-remote-http.wasm.instr" --post-optimize Oz
     mv "$BIN_DIR/git-remote-http.wasm.instr" "$BIN_DIR/git-remote-http.wasm"
     RH_SIZE_AFTER=$(wc -c < "$BIN_DIR/git-remote-http.wasm" | tr -d ' ')
     echo "==> git-remote-http: $(echo "$RH_SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_BEFORE}") -> $(echo "$RH_SIZE_AFTER" | numfmt --to=iec 2>/dev/null || echo "${RH_SIZE_AFTER}")"

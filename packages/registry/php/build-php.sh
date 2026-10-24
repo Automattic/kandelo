@@ -1396,10 +1396,10 @@ cp sapi/fpm/php-fpm "$BIN_DIR/php-fpm.wasm"
 
 # CLI and FPM both retain libc paths that can reach kernel_fork
 # (system/popen/fork wrappers for CLI, worker forks for FPM), so both
-# must be fork-instrumented. wasm-opt runs first so instrumentation covers
-# the smaller, inlined call graph; wasm-fork-instrument then runs its own
-# wasm-opt pass over the code it adds. It auto-discovers fork paths via
-# call-graph analysis; no onlylist file is required.
+# must be fork-instrumented. Measured legacy exception: the compared
+# facts-preserving variants failed the size/host-clock constraints. Retain
+# this conservative pipeline; see docs/fork-instrumentation.md. The tool
+# discovers fork paths without an onlylist file.
 WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
 if [ -z "$WASM_OPT" ]; then
     echo "ERROR: wasm-opt is required for deterministic PHP package outputs" >&2

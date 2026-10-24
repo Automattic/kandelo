@@ -498,7 +498,7 @@ install_local_binary() {
                 echo "  applying wasm-fork-instrument to $(basename "$src")"
                 local instrumented
                 instrumented="$(mktemp "${TMPDIR:-/tmp}/wpk-fork-instrument.XXXXXX.wasm")"
-                if ! "$repo_root/scripts/run-wasm-fork-instrument.sh" "$src" -o "$instrumented"; then
+                if ! "$repo_root/scripts/run-wasm-fork-instrument.sh" --require-facts "$src" -o "$instrumented"; then
                     rm -f "$instrumented"
                     return 1
                 fi

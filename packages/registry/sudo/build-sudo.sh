@@ -82,7 +82,7 @@ while IFS=: read -r relative output; do
         echo "ERROR: sudo expected output is unavailable: $relative" >&2
         exit 1
     fi
-    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+    "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
         "$linked" -o "$instrumented"
 done <<'OUTPUTS'
 src/sudo:sudo.wasm
