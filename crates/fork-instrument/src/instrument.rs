@@ -11698,3 +11698,9 @@ mod trampoline_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod native_activation_tests;
+
+#[cfg(test)]
+mod native_frame_tests;

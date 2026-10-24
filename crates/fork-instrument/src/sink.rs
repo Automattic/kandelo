@@ -27,6 +27,9 @@
 //! support keeps today's full closure.
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
+#[cfg(test)]
+mod native_tests;
+
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use walrus::ir::*;
 use walrus::*;
@@ -67,7 +70,13 @@ struct St {
 
 impl St {
     fn dead(h: usize) -> St {
-        St { live: false, loc: vec![], stk: vec![V::Top; h], mem: vec![], sp: None }
+        St {
+            live: false,
+            loc: vec![],
+            stk: vec![V::Top; h],
+            mem: vec![],
+            sp: None,
+        }
     }
 }
 
@@ -92,17 +101,18 @@ fn join_into(a: &mut Option<St>, b: &St) -> bool {
         Some(x) => {
             let mut ch = false;
             let before = x.mem.len();
-            x.mem.retain_mut(|e| match b.mem.iter().find(|f| f.0 == e.0 && f.1 == e.1) {
-                Some(f) => {
-                    let j = joinv(e.2, f.2);
-                    if j != e.2 {
-                        e.2 = j;
-                        ch = true;
+            x.mem
+                .retain_mut(|e| match b.mem.iter().find(|f| f.0 == e.0 && f.1 == e.1) {
+                    Some(f) => {
+                        let j = joinv(e.2, f.2);
+                        if j != e.2 {
+                            e.2 = j;
+                            ch = true;
+                        }
+                        true
                     }
-                    true
-                }
-                None => false,
-            });
+                    None => false,
+                });
             ch |= x.mem.len() != before;
             if x.sp != b.sp && x.sp.is_some() {
                 x.sp = None;
@@ -230,7 +240,8 @@ fn all_seqs(lf: &LocalFunction) -> Vec<(InstrSeqId, &InstrSeq)> {
                 Instr::Try(t) => {
                     for c in &t.catches {
                         match c {
-                            LegacyCatch::Catch { handler, .. } | LegacyCatch::CatchAll { handler } => stack.push(*handler),
+                            LegacyCatch::Catch { handler, .. }
+                            | LegacyCatch::CatchAll { handler } => stack.push(*handler),
                             LegacyCatch::Delegate { .. } => {}
                         }
                     }
@@ -257,7 +268,11 @@ impl<'a> Prog<'a> {
     fn lj_catch_mask(&self, f: u32, generic: Tags) -> Tags {
         match self.lj_js.get(&f) {
             Some(bufs) if !bufs.iter().any(|b| b == "*") => {
-                generic | bufs.iter().filter_map(|b| self.lj_bufbit.get(b)).fold(0, |a, &x| a | (1u64 << x))
+                generic
+                    | bufs
+                        .iter()
+                        .filter_map(|b| self.lj_bufbit.get(b))
+                        .fold(0, |a, &x| a | (1u64 << x))
             }
             _ => generic | self.lj_all_bufs(),
         }
@@ -269,14 +284,24 @@ impl<'a> Prog<'a> {
     /// function with neither JL nor JS facts is of unknown origin.
     fn lj_throw_bits(&self, f: u32, generic: Tags) -> Tags {
         let src = match self.lj_jl.get(&f) {
-            Some(bufs) if !bufs.iter().any(|b| b == "*" || !self.lj_bufbit.contains_key(b)) => {
-                bufs.iter().filter_map(|b| self.lj_bufbit.get(b)).fold(0, |a, &x| a | (1u64 << x))
+            Some(bufs)
+                if !bufs
+                    .iter()
+                    .any(|b| b == "*" || !self.lj_bufbit.contains_key(b)) =>
+            {
+                bufs.iter()
+                    .filter_map(|b| self.lj_bufbit.get(b))
+                    .fold(0, |a, &x| a | (1u64 << x))
             }
             Some(_) => generic,
             None if self.lj_js.contains_key(&f) => 0,
             None => return generic,
         };
-        src | if self.lj_js.contains_key(&f) { self.lj_rethrow } else { 0 }
+        src | if self.lj_js.contains_key(&f) {
+            self.lj_rethrow
+        } else {
+            0
+        }
     }
     fn is_longjmp_name(n: &str) -> bool {
         matches!(n, "longjmp" | "_longjmp" | "siglongjmp" | "__wasm_longjmp")
@@ -289,18 +314,31 @@ impl<'a> Prog<'a> {
         if (self.lj_jl.is_empty() && self.lj_js.is_empty())
             || thr & g == 0
             || targets.is_empty()
-            || !targets.iter().all(|&t| t != u32::MAX && self.names.get(t as usize).is_some_and(|n| Prog::is_longjmp_name(n)))
+            || !targets.iter().all(|&t| {
+                t != u32::MAX
+                    && self
+                        .names
+                        .get(t as usize)
+                        .is_some_and(|n| Prog::is_longjmp_name(n))
+            })
         {
             return thr;
         }
         (thr & !g) | self.lj_throw_bits(f, g)
     }
     fn lj_generic(&self) -> Tags {
-        self.lj_tag.and_then(|t| self.tag_bit.get(&t)).map_or(0, |&b| 1u64 << b)
+        self.lj_tag
+            .and_then(|t| self.tag_bit.get(&t))
+            .map_or(0, |&b| 1u64 << b)
     }
 
     fn new(m: &'a Module) -> Prog<'a> {
-        let n = m.funcs.iter().map(|f| f.id().index() + 1).max().unwrap_or(0);
+        let n = m
+            .funcs
+            .iter()
+            .map(|f| f.id().index() + 1)
+            .max()
+            .unwrap_or(0);
         let mut keys: HashMap<String, u32> = HashMap::new();
         let mut key = |m: &Module, t: TypeId| -> u32 {
             let ty = m.types.get(t);
@@ -371,11 +409,16 @@ impl<'a> Prog<'a> {
         let mut ref_funcs: HashSet<u32> = HashSet::new();
         let mut table_init: HashSet<usize> = HashSet::new();
         for f in p.m.funcs.iter() {
-            let FunctionKind::Local(lf) = &f.kind else { continue };
+            let FunctionKind::Local(lf) = &f.kind else {
+                continue;
+            };
             for (_, seq) in all_seqs(lf) {
                 for (ins, _) in &seq.instrs {
                     match ins {
-                        Instr::TableSet(_) | Instr::TableFill(_) | Instr::TableGrow(_) | Instr::TableCopy(_) => mutated = true,
+                        Instr::TableSet(_)
+                        | Instr::TableFill(_)
+                        | Instr::TableGrow(_)
+                        | Instr::TableCopy(_) => mutated = true,
                         Instr::TableInit(t) => {
                             mutated = true;
                             table_init.insert(table_ix(&p.m, t.table));
@@ -384,9 +427,19 @@ impl<'a> Prog<'a> {
                             ref_funcs.insert(r.func.index() as u32);
                         }
                         Instr::Call(c) => p.callers[c.func.index()].push(f.id().index() as u32),
-                        Instr::ReturnCall(c) => p.callers[c.func.index()].push(f.id().index() as u32),
-                        Instr::CallIndirect(c) => p.icallers.entry(p.tkey[&c.ty]).or_default().push(f.id().index() as u32),
-                        Instr::ReturnCallIndirect(c) => p.icallers.entry(p.tkey[&c.ty]).or_default().push(f.id().index() as u32),
+                        Instr::ReturnCall(c) => {
+                            p.callers[c.func.index()].push(f.id().index() as u32)
+                        }
+                        Instr::CallIndirect(c) => p
+                            .icallers
+                            .entry(p.tkey[&c.ty])
+                            .or_default()
+                            .push(f.id().index() as u32),
+                        Instr::ReturnCallIndirect(c) => p
+                            .icallers
+                            .entry(p.tkey[&c.ty])
+                            .or_default()
+                            .push(f.id().index() as u32),
                         _ => {}
                     }
                 }
@@ -404,16 +457,29 @@ impl<'a> Prog<'a> {
         let mut slots: HashMap<i64, u32> = HashMap::new();
         let mut slots_ok = true;
         let mut add = |p: &mut Prog, t: usize, f: u32| {
-            p.members.entry((t, p.skey[f as usize])).or_default().push(f);
+            p.members
+                .entry((t, p.skey[f as usize]))
+                .or_default()
+                .push(f);
             p.escapes[f as usize] = true;
         };
-        let elems: Vec<_> = p.m.elements.iter().map(|e| (e.kind.clone(), e.items.clone())).collect();
+        let elems: Vec<_> =
+            p.m.elements
+                .iter()
+                .map(|e| (e.kind.clone(), e.items.clone()))
+                .collect();
         for (kind, items) in elems {
             let funcs: Vec<u32> = match &items {
                 ElementItems::Functions(v) => v.iter().map(|x| x.index() as u32).collect(),
                 ElementItems::Expressions(_, v) => v
                     .iter()
-                    .filter_map(|e| if let ConstExpr::RefFunc(f) = e { Some(f.index() as u32) } else { None })
+                    .filter_map(|e| {
+                        if let ConstExpr::RefFunc(f) = e {
+                            Some(f.index() as u32)
+                        } else {
+                            None
+                        }
+                    })
                     .collect(),
             };
             match kind {
@@ -481,35 +547,72 @@ impl<'a> Prog<'a> {
         }
         p.small = (0..n)
             .map(|i| match &p.m.funcs.get(p.fids[i]).kind {
-                FunctionKind::Local(lf) => all_seqs(lf).iter().map(|(_, s)| s.instrs.len()).sum::<usize>() <= 600,
+                FunctionKind::Local(lf) => {
+                    all_seqs(lf)
+                        .iter()
+                        .map(|(_, s)| s.instrs.len())
+                        .sum::<usize>()
+                        <= 600
+                }
                 _ => false,
             })
             .collect();
         const NORETURN: &[&str] = &[
-            "abort", "exit", "_Exit", "_exit", "quick_exit", "pthread_exit", "__pthread_exit",
-            "longjmp", "siglongjmp", "_longjmp", "__wasm_longjmp", "std::terminate()",
-            "__clang_call_terminate", "__cxa_throw", "__cxa_rethrow", "__assert_fail",
+            "abort",
+            "exit",
+            "_Exit",
+            "_exit",
+            "quick_exit",
+            "pthread_exit",
+            "__pthread_exit",
+            "longjmp",
+            "siglongjmp",
+            "_longjmp",
+            "__wasm_longjmp",
+            "std::terminate()",
+            "__clang_call_terminate",
+            "__cxa_throw",
+            "__cxa_rethrow",
+            "__assert_fail",
         ];
         p.noreturn = (0..n)
             .map(|i| {
                 let nm = p.names[i].as_str();
-                !p.import[i] && NORETURN.iter().any(|x| nm == *x || (nm.starts_with(x) && nm[x.len()..].starts_with('(')))
+                !p.import[i]
+                    && NORETURN
+                        .iter()
+                        .any(|x| nm == *x || (nm.starts_with(x) && nm[x.len()..].starts_with('(')))
             })
             .collect();
         const NOTHROW: &[&str] = &[
-            "exit", "_Exit", "_exit", "quick_exit", "pthread_exit", "__pthread_exit",
-            "std::terminate()", "__clang_call_terminate",
+            "exit",
+            "_Exit",
+            "_exit",
+            "quick_exit",
+            "pthread_exit",
+            "__pthread_exit",
+            "std::terminate()",
+            "__clang_call_terminate",
         ];
         p.nothrow = (0..n)
             .map(|i| {
                 let nm = p.names[i].as_str();
-                !p.import[i] && NOTHROW.iter().any(|x| nm == *x || (nm.starts_with(x) && nm[x.len()..].starts_with('(')))
+                !p.import[i]
+                    && NOTHROW
+                        .iter()
+                        .any(|x| nm == *x || (nm.starts_with(x) && nm[x.len()..].starts_with('(')))
             })
             .collect();
-        p.sp_global = p.m.globals.iter().find(|g| g.name.as_deref() == Some("__stack_pointer")).map(|g| g.id());
+        p.sp_global =
+            p.m.globals
+                .iter()
+                .find(|g| g.name.as_deref() == Some("__stack_pointer"))
+                .map(|g| g.id());
         let mut gwritten: HashSet<GlobalId> = HashSet::new();
         for f in p.m.funcs.iter() {
-            let FunctionKind::Local(lf) = &f.kind else { continue };
+            let FunctionKind::Local(lf) = &f.kind else {
+                continue;
+            };
             for (_, seq) in all_seqs(lf) {
                 for (ins, _) in &seq.instrs {
                     if let Instr::GlobalSet(g) = ins {
@@ -554,7 +657,9 @@ impl<'a> Prog<'a> {
     }
 
     fn by_name(&self, n: &str) -> Vec<u32> {
-        (0..self.n as u32).filter(|&i| self.names[i as usize] == n).collect()
+        (0..self.n as u32)
+            .filter(|&i| self.names[i as usize] == n)
+            .collect()
     }
 }
 
@@ -613,7 +718,12 @@ fn fninfo(m: &Module, lf: &LocalFunction) -> FnInfo {
             }
         }
     }
-    FnInfo { params: lf.args.len(), lidx, written, exn }
+    FnInfo {
+        params: lf.args.len(),
+        lidx,
+        written,
+        exn,
+    }
 }
 
 /// Where to inject child-side control into a body: a call instruction
@@ -703,7 +813,13 @@ impl<'a, 'b> Walk<'a, 'b> {
         if !st.live {
             return;
         }
-        let s = St { live: true, loc: st.loc.clone(), stk: vals, mem: st.mem.clone(), sp: st.sp };
+        let s = St {
+            live: true,
+            loc: st.loc.clone(),
+            stk: vals,
+            mem: st.mem.clone(),
+            sp: st.sp,
+        };
         let e = self.labels.entry(label).or_insert(None);
         join_into(e, &s);
     }
@@ -726,7 +842,8 @@ impl<'a, 'b> Walk<'a, 'b> {
             let cs = self.handlers[h];
             for c in cs {
                 match c {
-                    TryTableCatch::Catch { tag, label } | TryTableCatch::CatchRef { tag, label } => {
+                    TryTableCatch::Catch { tag, label }
+                    | TryTableCatch::CatchRef { tag, label } => {
                         let mut bit = 1u64 << self.cx.p.tag_bit[tag];
                         if Some(*tag) == self.cx.p.lj_tag {
                             bit = tags & self.cx.p.lj_catch_mask(self.f, bit);
@@ -769,7 +886,13 @@ impl<'a, 'b> Walk<'a, 'b> {
                 };
                 if hit {
                     let (pa, _) = seq_arity(&self.cx.p.m, self.lf.block(h).ty);
-                    let s = St { live: true, loc: st.loc.clone(), stk: vec![V::Top; pa], mem: st.mem.clone(), sp: st.sp };
+                    let s = St {
+                        live: true,
+                        loc: st.loc.clone(),
+                        stk: vec![V::Top; pa],
+                        mem: st.mem.clone(),
+                        sp: st.sp,
+                    };
                     let e = self.legacy_entry.entry(h).or_insert(None);
                     join_into(e, &s);
                     if tag.is_none() {
@@ -791,7 +914,10 @@ impl<'a, 'b> Walk<'a, 'b> {
     fn effect(&mut self, targets: &[u32], external: bool) -> Summ {
         let mut s = Summ::default();
         if external {
-            return Summ { ret: true, thr: TAGS_ALL };
+            return Summ {
+                ret: true,
+                thr: TAGS_ALL,
+            };
         }
         for &t in targets {
             if t == u32::MAX {
@@ -821,7 +947,12 @@ impl<'a, 'b> Walk<'a, 'b> {
                     let v: Vec<u32> = p
                         .members
                         .get(&(table, key))
-                        .map(|m| m.iter().copied().filter(|f| p.sig_list.contains(f)).collect())
+                        .map(|m| {
+                            m.iter()
+                                .copied()
+                                .filter(|f| p.sig_list.contains(f))
+                                .collect()
+                        })
                         .unwrap_or_default();
                     return (v, false);
                 }
@@ -837,7 +968,10 @@ impl<'a, 'b> Walk<'a, 'b> {
         }
         if let (V::P(q), true) = (idx, p.use_param) {
             if let Some(v) = param_targets(self.cx, self.f, q, 0) {
-                let v: Vec<u32> = v.into_iter().filter(|&f| p.skey[f as usize] == key).collect();
+                let v: Vec<u32> = v
+                    .into_iter()
+                    .filter(|&f| p.skey[f as usize] == key)
+                    .collect();
                 return (v, false);
             }
         }
@@ -848,7 +982,16 @@ impl<'a, 'b> Walk<'a, 'b> {
         (v, p.dyn_link)
     }
 
-    fn call(&mut self, st: &mut St, mut targets: Vec<u32>, external: bool, nparams: usize, nres: usize, tail: bool, why: String) {
+    fn call(
+        &mut self,
+        st: &mut St,
+        mut targets: Vec<u32>,
+        external: bool,
+        nparams: usize,
+        nres: usize,
+        tail: bool,
+        why: String,
+    ) {
         // pthread_cleanup_pop runs the handler of the caller's own lexical
         // pthread_cleanup_push (POSIX pairs them in one scope).
         if targets.len() == 1 && self.cx.p.cleanup_pop.contains(&targets[0]) {
@@ -858,7 +1001,10 @@ impl<'a, 'b> Walk<'a, 'b> {
                 targets.push(u32::MAX);
             }
         }
-        if !self.cx.p.main_fns.is_empty() && targets.len() > 1 && !self.cx.p.start_fns.contains(&self.f) {
+        if !self.cx.p.main_fns.is_empty()
+            && targets.len() > 1
+            && !self.cx.p.start_fns.contains(&self.f)
+        {
             targets.retain(|t| !self.cx.p.main_fns.contains(t));
         }
         let args = self.pop(st, nparams);
@@ -883,20 +1029,61 @@ impl<'a, 'b> Walk<'a, 'b> {
         }
         // Constant arguments to one small local callee: evaluate it for
         // exactly these arguments (memoized, depth-limited).
-        if st.live && !tail && self.cx.allow_spec && self.cx.depth < 3 && targets.len() == 1 && targets[0] != u32::MAX {
+        if st.live
+            && !tail
+            && self.cx.allow_spec
+            && self.cx.depth < 3
+            && targets.len() == 1
+            && targets[0] != u32::MAX
+        {
             let t = targets[0];
-            if !self.cx.p.import[t as usize] && args.iter().any(|a| matches!(a, V::C(_))) && self.cx.p.small[t as usize] {
-                let key: Vec<V> = args.iter().map(|a| if matches!(a, V::C(_)) { *a } else { V::Top }).collect();
+            if !self.cx.p.import[t as usize]
+                && args.iter().any(|a| matches!(a, V::C(_)))
+                && self.cx.p.small[t as usize]
+            {
+                let key: Vec<V> = args
+                    .iter()
+                    .map(|a| if matches!(a, V::C(_)) { *a } else { V::Top })
+                    .collect();
                 let r = match self.cx.spec.get(&(t, key.clone())) {
                     Some(r) => *r,
                     None => {
-                        let FunctionKind::Local(lf) = &self.cx.p.m.funcs.get(self.cx.p.fid(t)).kind else { unreachable!() };
+                        let FunctionKind::Local(lf) = &self.cx.p.m.funcs.get(self.cx.p.fid(t)).kind
+                        else {
+                            unreachable!()
+                        };
                         let info = fninfo(&self.cx.p.m, lf);
-                        let entry: Vec<V> = key.iter().enumerate().map(|(i, a)| if *a == V::Top { V::P(i as u32) } else { *a }).collect();
+                        let entry: Vec<V> = key
+                            .iter()
+                            .enumerate()
+                            .map(|(i, a)| if *a == V::Top { V::P(i as u32) } else { *a })
+                            .collect();
                         self.cx.depth += 1;
-                        let r = interpret3(self.cx, t, &info, Mode::Normal, &HashMap::new(), None, false, Some(&entry));
+                        let r = interpret3(
+                            self.cx,
+                            t,
+                            &info,
+                            Mode::Normal,
+                            &HashMap::new(),
+                            None,
+                            false,
+                            Some(&entry),
+                        );
                         self.cx.depth -= 1;
-                        let x = if r.unsupported { (Some(V::Top), TAGS_ALL) } else { (r.ret.map(|v| if matches!(v, V::P(_) | V::Sp(_)) { V::Top } else { v }), r.thr) };
+                        let x = if r.unsupported {
+                            (Some(V::Top), TAGS_ALL)
+                        } else {
+                            (
+                                r.ret.map(|v| {
+                                    if matches!(v, V::P(_) | V::Sp(_)) {
+                                        V::Top
+                                    } else {
+                                        v
+                                    }
+                                }),
+                                r.thr,
+                            )
+                        };
                         self.cx.spec.insert((t, key), x);
                         x
                     }
@@ -910,14 +1097,19 @@ impl<'a, 'b> Walk<'a, 'b> {
                     st.live = false;
                 }
                 for k in 0..nres {
-                    st.stk.push(if k + 1 == nres { r.0.unwrap_or(V::Top) } else { V::Top });
+                    st.stk.push(if k + 1 == nres {
+                        r.0.unwrap_or(V::Top)
+                    } else {
+                        V::Top
+                    });
                 }
                 return;
             }
         }
         if let Some(rc) = self.rec_callee {
             if st.live && targets.len() == 1 && targets[0] == rc && rc != u32::MAX {
-                self.rec_vals.push(args.get(self.rec_param as usize).copied().unwrap_or(V::Top));
+                self.rec_vals
+                    .push(args.get(self.rec_param as usize).copied().unwrap_or(V::Top));
             }
         }
         let mut s = if self.mode == Mode::Normal && self.cx.summ.is_empty() {
@@ -933,7 +1125,11 @@ impl<'a, 'b> Walk<'a, 'b> {
             let why2 = if targets.len() > 1 {
                 let th: Vec<&str> = targets
                     .iter()
-                    .filter(|&&t| t != u32::MAX && !self.cx.p.import[t as usize] && self.cx.summ.get(t as usize).map_or(false, |x| x.thr != 0))
+                    .filter(|&&t| {
+                        t != u32::MAX
+                            && !self.cx.p.import[t as usize]
+                            && self.cx.summ.get(t as usize).map_or(false, |x| x.thr != 0)
+                    })
                     .take(4)
                     .map(|&t| self.cx.p.names[t as usize].as_str())
                     .collect();
@@ -974,7 +1170,10 @@ impl<'a, 'b> Walk<'a, 'b> {
                 }
             }
             if let Some(inj) = self.inject.get(&(seq, ix)).copied() {
-                if matches!(ins, Instr::ReturnCall(_) | Instr::ReturnCallIndirect(_) | Instr::ReturnCallRef(_)) {
+                if matches!(
+                    ins,
+                    Instr::ReturnCall(_) | Instr::ReturnCallIndirect(_) | Instr::ReturnCallRef(_)
+                ) {
                     // A tail call leaves no caller state: the callee's
                     // child-side result is this function's own result, and its
                     // exceptions leave this function directly (a tail call is
@@ -992,7 +1191,11 @@ impl<'a, 'b> Walk<'a, 'b> {
                 // effect; add the child-side resumption. The child's frame
                 // holds exactly the parent's locals at this call, which the
                 // normal-mode state here over-approximates.
-                let base = self.inj_states.get(&(seq, ix)).and_then(|x| x.clone()).filter(|x| x.live);
+                let base = self
+                    .inj_states
+                    .get(&(seq, ix))
+                    .and_then(|x| x.clone())
+                    .filter(|x| x.live);
                 if let Some(base) = base {
                     if inj.thr != 0 {
                         self.throw(&base, inj.thr, "fork-path callee in the child");
@@ -1049,7 +1252,11 @@ impl<'a, 'b> Walk<'a, 'b> {
         (0..n)
             .map(|i| {
                 if self.info.written.get(i).copied().unwrap_or(false) {
-                    if self.info.exn[i] { V::Exn(seen) } else { V::Top }
+                    if self.info.exn[i] {
+                        V::Exn(seen)
+                    } else {
+                        V::Top
+                    }
                 } else if self.info.exn[i] && i >= self.info.params {
                     V::Exn(0)
                 } else if i < self.info.params {
@@ -1064,7 +1271,15 @@ impl<'a, 'b> Walk<'a, 'b> {
     fn entry_locals(&self) -> Vec<V> {
         let n = self.info.lidx.len();
         (0..n)
-            .map(|i| if i < self.info.params { V::P(i as u32) } else if self.info.exn[i] { V::Exn(0) } else { V::C(0) })
+            .map(|i| {
+                if i < self.info.params {
+                    V::P(i as u32)
+                } else if self.info.exn[i] {
+                    V::Exn(0)
+                } else {
+                    V::C(0)
+                }
+            })
             .collect()
     }
 
@@ -1150,7 +1365,13 @@ impl<'a, 'b> Walk<'a, 'b> {
             Instr::Block(b) => {
                 let (pa, _) = seq_arity(m, self.lf.block(b.seq).ty);
                 let args = popn!(pa);
-                let inner = St { live: st.live, loc: std::mem::take(&mut st.loc), stk: args, mem: std::mem::take(&mut st.mem), sp: st.sp };
+                let inner = St {
+                    live: st.live,
+                    loc: std::mem::take(&mut st.loc),
+                    stk: args,
+                    mem: std::mem::take(&mut st.mem),
+                    sp: st.sp,
+                };
                 let out = self.region(b.seq, inner, false);
                 st.live = out.live;
                 st.loc = out.loc;
@@ -1161,7 +1382,13 @@ impl<'a, 'b> Walk<'a, 'b> {
             Instr::Loop(b) => {
                 let (pa, _) = seq_arity(m, self.lf.block(b.seq).ty);
                 let args = popn!(pa);
-                let inner = St { live: st.live, loc: std::mem::take(&mut st.loc), stk: args, mem: std::mem::take(&mut st.mem), sp: st.sp };
+                let inner = St {
+                    live: st.live,
+                    loc: std::mem::take(&mut st.loc),
+                    stk: args,
+                    mem: std::mem::take(&mut st.mem),
+                    sp: st.sp,
+                };
                 let out = self.region(b.seq, inner, true);
                 st.live = out.live;
                 st.loc = out.loc;
@@ -1172,7 +1399,13 @@ impl<'a, 'b> Walk<'a, 'b> {
             Instr::TryTable(t) => {
                 let (pa, _) = seq_arity(m, self.lf.block(t.seq).ty);
                 let args = popn!(pa);
-                let inner = St { live: st.live, loc: std::mem::take(&mut st.loc), stk: args, mem: std::mem::take(&mut st.mem), sp: st.sp };
+                let inner = St {
+                    live: st.live,
+                    loc: std::mem::take(&mut st.loc),
+                    stk: args,
+                    mem: std::mem::take(&mut st.mem),
+                    sp: st.sp,
+                };
                 self.handlers.push(&t.catches);
                 let out = self.region(t.seq, inner, false);
                 self.handlers.pop();
@@ -1185,7 +1418,13 @@ impl<'a, 'b> Walk<'a, 'b> {
             Instr::Try(t) => {
                 let (pa, ra) = seq_arity(m, self.lf.block(t.seq).ty);
                 let args = popn!(pa);
-                let inner = St { live: st.live, loc: std::mem::take(&mut st.loc), stk: args, mem: std::mem::take(&mut st.mem), sp: st.sp };
+                let inner = St {
+                    live: st.live,
+                    loc: std::mem::take(&mut st.loc),
+                    stk: args,
+                    mem: std::mem::take(&mut st.mem),
+                    sp: st.sp,
+                };
                 let entries: Vec<(Option<TagId>, InstrSeqId)> = t
                     .catches
                     .iter()
@@ -1227,8 +1466,20 @@ impl<'a, 'b> Walk<'a, 'b> {
                 };
                 let loc = std::mem::take(&mut st.loc);
                 let mem = std::mem::take(&mut st.mem);
-                let a = St { live: t_live, loc: if t_live { loc.clone() } else { vec![] }, stk: args.clone(), mem: mem.clone(), sp: st.sp };
-                let b = St { live: e_live, loc: if e_live { loc } else { vec![] }, stk: args, mem, sp: st.sp };
+                let a = St {
+                    live: t_live,
+                    loc: if t_live { loc.clone() } else { vec![] },
+                    stk: args.clone(),
+                    mem: mem.clone(),
+                    sp: st.sp,
+                };
+                let b = St {
+                    live: e_live,
+                    loc: if e_live { loc } else { vec![] },
+                    stk: args,
+                    mem,
+                    sp: st.sp,
+                };
                 let oa = self.region(ie.consequent, a, false);
                 let ob = self.region(ie.alternative, b, false);
                 let mut o = Some(oa);
@@ -1259,7 +1510,9 @@ impl<'a, 'b> Walk<'a, 'b> {
             Instr::BrTable(b) => {
                 let c = popn!(1)[0];
                 match c {
-                    V::C(k) if k >= 0 && (k as usize) < b.blocks.len() => self.branch(b.blocks[k as usize], &st),
+                    V::C(k) if k >= 0 && (k as usize) < b.blocks.len() => {
+                        self.branch(b.blocks[k as usize], &st)
+                    }
                     V::C(_) => self.branch(b.default, &st),
                     _ => {
                         let mut seen = HashSet::new();
@@ -1277,7 +1530,11 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let rs: Vec<V> = st.stk[n.saturating_sub(self.nres)..].to_vec();
                 self.esc(&rs);
                 if st.live {
-                    let v = if self.nres == 1 { st.stk.last().copied().unwrap_or(V::Top) } else { V::Top };
+                    let v = if self.nres == 1 {
+                        st.stk.last().copied().unwrap_or(V::Top)
+                    } else {
+                        V::Top
+                    };
                     self.ret = Some(self.ret.map_or(v, |r| joinv(r, v)));
                     if !self.returned && self.why.len() < 6 {
                         self.why.push("reaches return".into());
@@ -1315,13 +1572,29 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let (pa, ra) = m.types.params_results(m.funcs.get(c.func).ty());
                 let (pa, ra) = (pa.len(), ra.len());
                 let why = p.names[c.func.index()].clone();
-                self.call(&mut st, vec![c.func.index() as u32], false, pa, ra, false, why);
+                self.call(
+                    &mut st,
+                    vec![c.func.index() as u32],
+                    false,
+                    pa,
+                    ra,
+                    false,
+                    why,
+                );
             }
             Instr::ReturnCall(c) => {
                 let (pa, ra) = m.types.params_results(m.funcs.get(c.func).ty());
                 let (pa, ra) = (pa.len(), ra.len());
                 let why = p.names[c.func.index()].clone();
-                self.call(&mut st, vec![c.func.index() as u32], false, pa, ra, true, why);
+                self.call(
+                    &mut st,
+                    vec![c.func.index() as u32],
+                    false,
+                    pa,
+                    ra,
+                    true,
+                    why,
+                );
             }
             Instr::CallIndirect(c) => {
                 let idx = popn!(1)[0];
@@ -1330,7 +1603,12 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let key = p.tkey[&c.ty];
                 let signal = p.signal_fns.contains(&self.f);
                 let (t, ext) = self.icall_targets(key, table_ix(m, c.table), idx, signal);
-                let why = format!("call_indirect {:?}{} ({} targets)", m.types.get(c.ty).params(), if signal { " [signal]" } else { "" }, t.len());
+                let why = format!(
+                    "call_indirect {:?}{} ({} targets)",
+                    m.types.get(c.ty).params(),
+                    if signal { " [signal]" } else { "" },
+                    t.len()
+                );
                 self.call(&mut st, t, ext, pa, ra, false, why);
             }
             Instr::ReturnCallIndirect(c) => {
@@ -1346,7 +1624,9 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let (pa, ra) = m.types.params_results(c.ty);
                 let (pa, ra) = (pa.len(), ra.len());
                 let key = p.tkey[&c.ty];
-                let t: Vec<u32> = (0..p.n as u32).filter(|&f| p.escapes[f as usize] && p.skey[f as usize] == key).collect();
+                let t: Vec<u32> = (0..p.n as u32)
+                    .filter(|&f| p.escapes[f as usize] && p.skey[f as usize] == key)
+                    .collect();
                 self.call(&mut st, t, p.dyn_link, pa, ra, false, "call_ref".into());
             }
             Instr::ReturnCallRef(c) => {
@@ -1354,8 +1634,18 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let (pa, ra) = m.types.params_results(c.ty);
                 let (pa, ra) = (pa.len(), ra.len());
                 let key = p.tkey[&c.ty];
-                let t: Vec<u32> = (0..p.n as u32).filter(|&f| p.escapes[f as usize] && p.skey[f as usize] == key).collect();
-                self.call(&mut st, t, p.dyn_link, pa, ra, true, "return_call_ref".into());
+                let t: Vec<u32> = (0..p.n as u32)
+                    .filter(|&f| p.escapes[f as usize] && p.skey[f as usize] == key)
+                    .collect();
+                self.call(
+                    &mut st,
+                    t,
+                    p.dyn_link,
+                    pa,
+                    ra,
+                    true,
+                    "return_call_ref".into(),
+                );
             }
             Instr::LocalGet(l) => {
                 let i = self.info.lidx[&l.local];
@@ -1408,7 +1698,8 @@ impl<'a, 'b> Walk<'a, 'b> {
             Instr::Binop(b) => {
                 let a = popn!(2);
                 let v = match (b.op, a[0], a[1]) {
-                    (BinaryOp::I32Add | BinaryOp::I64Add, V::Sp(k), V::C(c)) | (BinaryOp::I32Add | BinaryOp::I64Add, V::C(c), V::Sp(k)) => V::Sp(k + c),
+                    (BinaryOp::I32Add | BinaryOp::I64Add, V::Sp(k), V::C(c))
+                    | (BinaryOp::I32Add | BinaryOp::I64Add, V::C(c), V::Sp(k)) => V::Sp(k + c),
                     (BinaryOp::I32Sub | BinaryOp::I64Sub, V::Sp(k), V::C(c)) => V::Sp(k - c),
                     _ => {
                         self.esc(&a);
@@ -1438,7 +1729,9 @@ impl<'a, 'b> Walk<'a, 'b> {
             Instr::Drop(_) => {
                 popn!(1);
             }
-            Instr::MemorySize(_) | Instr::TableSize(_) | Instr::RefNull(_) | Instr::RefFunc(_) => push!(V::Top),
+            Instr::MemorySize(_) | Instr::TableSize(_) | Instr::RefNull(_) | Instr::RefFunc(_) => {
+                push!(V::Top)
+            }
             Instr::Load(l) => {
                 let a = popn!(1)[0];
                 let w = match l.kind {
@@ -1449,17 +1742,28 @@ impl<'a, 'b> Walk<'a, 'b> {
                 let v = match a {
                     V::Sp(k) if self.frame_ok && w > 0 => {
                         let key = k + l.arg.offset as i64;
-                        st.mem.iter().find(|e| e.0 == key && e.1 == w).map_or(V::Top, |e| e.2)
+                        st.mem
+                            .iter()
+                            .find(|e| e.0 == key && e.1 == w)
+                            .map_or(V::Top, |e| e.2)
                     }
                     _ => V::Top,
                 };
                 push!(v);
             }
-            Instr::MemoryGrow(_) | Instr::TableGet(_) | Instr::RefIsNull(_) | Instr::RefAsNonNull(_) => {
+            Instr::MemoryGrow(_)
+            | Instr::TableGet(_)
+            | Instr::RefIsNull(_)
+            | Instr::RefAsNonNull(_) => {
                 popn!(1);
                 push!(V::Top);
             }
-            Instr::MemoryInit(_) | Instr::MemoryCopy(_) | Instr::MemoryFill(_) | Instr::TableFill(_) | Instr::TableInit(_) | Instr::TableCopy(_) => {
+            Instr::MemoryInit(_)
+            | Instr::MemoryCopy(_)
+            | Instr::MemoryFill(_)
+            | Instr::TableFill(_)
+            | Instr::TableInit(_)
+            | Instr::TableCopy(_) => {
                 let a = popn!(3);
                 self.esc(&a);
             }
@@ -1472,7 +1776,10 @@ impl<'a, 'b> Walk<'a, 'b> {
                         let key = k + sto.arg.offset as i64;
                         let w = sto.kind.width() as i64;
                         st.mem.retain(|e| e.0 + e.1 as i64 <= key || key + w <= e.0);
-                        let full = matches!(sto.kind, StoreKind::I32 { atomic: false } | StoreKind::I64 { atomic: false });
+                        let full = matches!(
+                            sto.kind,
+                            StoreKind::I32 { atomic: false } | StoreKind::I64 { atomic: false }
+                        );
                         if full && !matches!(a[1], V::Sp(_)) {
                             st.mem.push((key, w as u32, a[1]));
                             st.mem.sort_by_key(|e| (e.0, e.1));
@@ -1483,7 +1790,12 @@ impl<'a, 'b> Walk<'a, 'b> {
             Instr::TableSet(_) => {
                 popn!(2);
             }
-            Instr::AtomicRmw(_) | Instr::AtomicNotify(_) | Instr::TableGrow(_) | Instr::I8x16Swizzle(_) | Instr::I8x16Shuffle(_) | Instr::RefEq(_) => {
+            Instr::AtomicRmw(_)
+            | Instr::AtomicNotify(_)
+            | Instr::TableGrow(_)
+            | Instr::I8x16Swizzle(_)
+            | Instr::I8x16Shuffle(_)
+            | Instr::RefEq(_) => {
                 let a = popn!(2);
                 self.esc(&a);
                 push!(V::Top);
@@ -1496,11 +1808,13 @@ impl<'a, 'b> Walk<'a, 'b> {
             Instr::LoadSimd(l) => {
                 use LoadSimdKind::*;
                 match l.kind {
-                    V128Load8Lane(_) | V128Load16Lane(_) | V128Load32Lane(_) | V128Load64Lane(_) => {
+                    V128Load8Lane(_) | V128Load16Lane(_) | V128Load32Lane(_)
+                    | V128Load64Lane(_) => {
                         popn!(2);
                         push!(V::Top);
                     }
-                    V128Store8Lane(_) | V128Store16Lane(_) | V128Store32Lane(_) | V128Store64Lane(_) => {
+                    V128Store8Lane(_) | V128Store16Lane(_) | V128Store32Lane(_)
+                    | V128Store64Lane(_) => {
                         popn!(2);
                     }
                     _ => {
@@ -1609,11 +1923,26 @@ fn entry_seq_placeholder(lf: &LocalFunction) -> InstrSeqId {
     lf.entry_block()
 }
 
-fn interpret(cx: &mut Ctx, f: u32, info: &FnInfo, mode: Mode, inject: &HashMap<(InstrSeqId, usize), Inject>, rec: Option<(u32, u32)>) -> Res {
+fn interpret(
+    cx: &mut Ctx,
+    f: u32,
+    info: &FnInfo,
+    mode: Mode,
+    inject: &HashMap<(InstrSeqId, usize), Inject>,
+    rec: Option<(u32, u32)>,
+) -> Res {
     interpret2(cx, f, info, mode, inject, rec, false)
 }
 
-fn interpret2(cx: &mut Ctx, f: u32, info: &FnInfo, mode: Mode, inject: &HashMap<(InstrSeqId, usize), Inject>, rec: Option<(u32, u32)>, rec_sites: bool) -> Res {
+fn interpret2(
+    cx: &mut Ctx,
+    f: u32,
+    info: &FnInfo,
+    mode: Mode,
+    inject: &HashMap<(InstrSeqId, usize), Inject>,
+    rec: Option<(u32, u32)>,
+    rec_sites: bool,
+) -> Res {
     interpret3(cx, f, info, mode, inject, rec, rec_sites, None)
 }
 
@@ -1634,15 +1963,30 @@ fn interpret3(
         let frame_ok = cx.p.sp_global.is_some() && !cx.frame_esc.contains(&f);
         let mut inj_states = HashMap::new();
         if mode == Mode::Child {
-            let keys: HashMap<(InstrSeqId, usize), Option<St>> = inject.keys().map(|k| (*k, None)).collect();
-            let (_, states, esc) = walk_body(cx, f, info, Mode::Normal, &HashMap::new(), None, false, Some(keys), HashMap::new(), frame_ok, None);
+            let keys: HashMap<(InstrSeqId, usize), Option<St>> =
+                inject.keys().map(|k| (*k, None)).collect();
+            let (_, states, esc) = walk_body(
+                cx,
+                f,
+                info,
+                Mode::Normal,
+                &HashMap::new(),
+                None,
+                false,
+                Some(keys),
+                HashMap::new(),
+                frame_ok,
+                None,
+            );
             if esc && frame_ok {
                 cx.frame_esc.insert(f);
                 continue;
             }
             inj_states = states.unwrap_or_default();
         }
-        let (r, _, esc) = walk_body(cx, f, info, mode, inject, rec, rec_sites, None, inj_states, frame_ok, entry_args);
+        let (r, _, esc) = walk_body(
+            cx, f, info, mode, inject, rec, rec_sites, None, inj_states, frame_ok, entry_args,
+        );
         if esc && frame_ok {
             cx.frame_esc.insert(f);
             continue;
@@ -1666,7 +2010,9 @@ fn walk_body(
     entry_args: Option<&[V]>,
 ) -> (Res, Option<HashMap<(InstrSeqId, usize), Option<St>>>, bool) {
     let p = cx.p;
-    let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(f)).kind else { unreachable!() };
+    let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(f)).kind else {
+        unreachable!()
+    };
     let nres = p.m.types.results(lf.ty()).len();
     let lf: &LocalFunction = lf;
     let mut w = Walk {
@@ -1691,7 +2037,11 @@ fn walk_body(
         unsupported: false,
         nres,
         cur: (lf.entry_block(), 0),
-        rec_sites: if rec_sites { Some(HashMap::new()) } else { None },
+        rec_sites: if rec_sites {
+            Some(HashMap::new())
+        } else {
+            None
+        },
         rec_states,
         inj_states,
         frame_ok,
@@ -1708,9 +2058,21 @@ fn walk_body(
                     }
                 }
             }
-            St { live: true, loc, stk: vec![], mem: vec![], sp: Some(0) }
+            St {
+                live: true,
+                loc,
+                stk: vec![],
+                mem: vec![],
+                sp: Some(0),
+            }
         }
-        Mode::Child => St { live: false, loc: vec![], stk: vec![], mem: vec![], sp: None },
+        Mode::Child => St {
+            live: false,
+            loc: vec![],
+            stk: vec![],
+            mem: vec![],
+            sp: None,
+        },
     };
     // The function body is a block whose label is the function return.
     w.arity.insert(entry, nres);
@@ -1723,7 +2085,11 @@ fn walk_body(
     }
     let o = o.unwrap();
     if o.live {
-        let v = if nres == 1 { o.stk.last().copied().unwrap_or(V::Top) } else { V::Top };
+        let v = if nres == 1 {
+            o.stk.last().copied().unwrap_or(V::Top)
+        } else {
+            V::Top
+        };
         if matches!(v, V::Sp(_)) {
             w.frame_escaped = true;
         }
@@ -1734,7 +2100,18 @@ fn walk_body(
     }
     let esc = w.frame_escaped;
     let states = w.rec_states.take();
-    (Res { ret: w.ret, thr: w.thr, why: w.why, unsupported: w.unsupported, rec_vals: w.rec_vals, sites: w.rec_sites.unwrap_or_default() }, states, esc)
+    (
+        Res {
+            ret: w.ret,
+            thr: w.thr,
+            why: w.why,
+            unsupported: w.unsupported,
+            rec_vals: w.rec_vals,
+            sites: w.rec_sites.unwrap_or_default(),
+        },
+        states,
+        esc,
+    )
 }
 
 /// Targets of `call_indirect` through parameter `q` of `f`, when `f` is only
@@ -1760,8 +2137,24 @@ fn param_targets(cx: &mut Ctx, f: u32, q: u32, depth: u32) -> Option<Vec<u32>> {
         let mut scratch = HashMap::new();
         let mut fe = HashSet::new();
         let mut sm = HashMap::new();
-        let mut cx2 = Ctx { p, summ: &empty, ptarg: cx.ptarg, exn_seen: &mut scratch, frame_esc: &mut fe, allow_spec: false, spec: &mut sm, depth: 0 };
-        let r = interpret(&mut cx2, g, &info, Mode::Normal, &HashMap::new(), Some((f, q)));
+        let mut cx2 = Ctx {
+            p,
+            summ: &empty,
+            ptarg: cx.ptarg,
+            exn_seen: &mut scratch,
+            frame_esc: &mut fe,
+            allow_spec: false,
+            spec: &mut sm,
+            depth: 0,
+        };
+        let r = interpret(
+            &mut cx2,
+            g,
+            &info,
+            Mode::Normal,
+            &HashMap::new(),
+            Some((f, q)),
+        );
         if r.unsupported {
             ok = false;
             break;
@@ -1800,7 +2193,6 @@ fn param_targets(cx: &mut Ctx, f: u32, q: u32, depth: u32) -> Option<Vec<u32>> {
     r
 }
 
-
 // ------------------------------------------------------------------ plan
 
 /// How signal-handler dispatch inside libc's syscall path is modelled.
@@ -1821,7 +2213,9 @@ pub struct SinkPolicy {
 
 impl Default for SinkPolicy {
     fn default() -> Self {
-        SinkPolicy { signal: SignalPolicy::Strict }
+        SinkPolicy {
+            signal: SignalPolicy::Strict,
+        }
     }
 }
 
@@ -1854,18 +2248,48 @@ fn apply_registries(p: &mut Prog) {
     // pthread_cleanup_push.c. atexit.c is the exception: __cxa_atexit is
     // inlined into atexit (handled below).
     let hubs: &[(&str, &str, &[(&str, u32)])] = &[
-        ("__fork_handler", "[]->[]", &[("pthread_atfork", 0), ("pthread_atfork", 1), ("pthread_atfork", 2)]),
+        (
+            "__fork_handler",
+            "[]->[]",
+            &[
+                ("pthread_atfork", 0),
+                ("pthread_atfork", 1),
+                ("pthread_atfork", 2),
+            ],
+        ),
         ("__funcs_on_exit", "[I32]->[]", &[("__cxa_atexit", 0)]),
         ("__pthread_once_full", "[]->[]", &[("__pthread_once", 1)]),
-        ("__pthread_tsd_run_dtors", "[I32]->[]", &[("__pthread_key_create", 1)]),
-        ("_pthread_cleanup_pop", "[I32]->[]", &[("_pthread_cleanup_push", 1)]),
-        ("__pthread_exit", "[I32]->[]", &[("__pthread_key_create", 1), ("_pthread_cleanup_push", 1)]),
+        (
+            "__pthread_tsd_run_dtors",
+            "[I32]->[]",
+            &[("__pthread_key_create", 1)],
+        ),
+        (
+            "_pthread_cleanup_pop",
+            "[I32]->[]",
+            &[("_pthread_cleanup_push", 1)],
+        ),
+        (
+            "__pthread_exit",
+            "[I32]->[]",
+            &[("__pthread_key_create", 1), ("_pthread_cleanup_push", 1)],
+        ),
     ];
-    let absent_empty = ["pthread_atfork", "__pthread_once", "__pthread_key_create", "_pthread_cleanup_push"];
+    let absent_empty = [
+        "pthread_atfork",
+        "__pthread_once",
+        "__pthread_key_create",
+        "_pthread_cleanup_push",
+    ];
     let empty_s: [Summ; 0] = [];
     let mut scratch = HashMap::new();
     let mut cache: HashMap<(u32, u32), Option<Vec<u32>>> = HashMap::new();
-    let reg = |p: &Prog, api: &str, k: u32, cache: &mut HashMap<(u32, u32), Option<Vec<u32>>>, scratch: &mut HashMap<u32, Tags>| -> Option<Vec<u32>> {
+    let reg = |p: &Prog,
+               api: &str,
+               k: u32,
+               cache: &mut HashMap<(u32, u32), Option<Vec<u32>>>,
+               scratch: &mut HashMap<u32, Tags>|
+     -> Option<Vec<u32>> {
         let mut out = vec![];
         let mut fs = p.by_name(api);
         if let Some(alias) = api.strip_prefix("__") {
@@ -1874,7 +2298,11 @@ fn apply_registries(p: &mut Prog) {
             }
         }
         if fs.is_empty() {
-            return if absent_empty.contains(&api) { Some(vec![]) } else { None };
+            return if absent_empty.contains(&api) {
+                Some(vec![])
+            } else {
+                None
+            };
         }
         for f in fs {
             if p.import[f as usize] {
@@ -1882,14 +2310,25 @@ fn apply_registries(p: &mut Prog) {
             }
             let mut fe = HashSet::new();
             let mut sm = HashMap::new();
-            let mut cx = Ctx { p, summ: &empty_s, ptarg: cache, exn_seen: scratch, frame_esc: &mut fe, allow_spec: false, spec: &mut sm, depth: 0 };
+            let mut cx = Ctx {
+                p,
+                summ: &empty_s,
+                ptarg: cache,
+                exn_seen: scratch,
+                frame_esc: &mut fe,
+                allow_spec: false,
+                spec: &mut sm,
+                depth: 0,
+            };
             out.extend(param_targets(&mut cx, f, k, 0)?);
         }
         Some(out)
     };
     let mut overrides: Vec<((u32, u32), Vec<u32>)> = vec![];
     for (hub, sig, apis) in hubs {
-        let Some(key) = keys_lookup(p.m, &p.tkey, sig) else { continue };
+        let Some(key) = keys_lookup(p.m, &p.tkey, sig) else {
+            continue;
+        };
         let mut t: Option<Vec<u32>> = Some(vec![]);
         for (api, k) in apis.iter() {
             match (t.as_mut(), reg(p, api, *k, &mut cache, &mut scratch)) {
@@ -1900,7 +2339,10 @@ fn apply_registries(p: &mut Prog) {
         if let Some(mut v) = t {
             v.sort();
             v.dedup();
-            let v: Vec<u32> = v.into_iter().filter(|&g| p.skey[g as usize] == key).collect();
+            let v: Vec<u32> = v
+                .into_iter()
+                .filter(|&g| p.skey[g as usize] == key)
+                .collect();
             for h in p.by_name(hub) {
                 overrides.push(((h, key), v.clone()));
             }
@@ -1910,13 +2352,18 @@ fn apply_registries(p: &mut Prog) {
     // callbacks __funcs_on_exit can see are the function constants atexit
     // itself stores, i.e. musl's `call`.
     if p.by_name("__cxa_atexit").is_empty() {
-        if let (Some(key), [a]) = (keys_lookup(p.m, &p.tkey, "[I32]->[]"), p.by_name("atexit").as_slice()) {
+        if let (Some(key), [a]) = (
+            keys_lookup(p.m, &p.tkey, "[I32]->[]"),
+            p.by_name("atexit").as_slice(),
+        ) {
             if let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(*a)).kind {
                 let mut v: Vec<u32> = vec![];
                 for (_, seq) in all_seqs(lf) {
                     for (ins, _) in &seq.instrs {
                         let c = match ins {
-                            Instr::Const(Const { value: Value::I32(x) }) => Some(*x as i64),
+                            Instr::Const(Const {
+                                value: Value::I32(x),
+                            }) => Some(*x as i64),
                             Instr::GlobalGet(g) => p.gconst.get(&g.global).copied(),
                             _ => None,
                         };
@@ -1938,7 +2385,10 @@ fn apply_registries(p: &mut Prog) {
     // atexit(f) registers musl's static `call` with f as its argument.
     if let Some(key) = keys_lookup(p.m, &p.tkey, "[]->[]") {
         let mut callers = reg(p, "__cxa_atexit", 0, &mut cache, &mut scratch).unwrap_or_default();
-        if let Some(((_, _), v)) = overrides.iter().find(|((h, _), _)| p.names[*h as usize] == "__funcs_on_exit") {
+        if let Some(((_, _), v)) = overrides
+            .iter()
+            .find(|((h, _), _)| p.names[*h as usize] == "__funcs_on_exit")
+        {
             callers.extend(v.iter().copied());
         }
         if let Some(mut v) = reg(p, "atexit", 0, &mut cache, &mut scratch) {
@@ -1985,7 +2435,11 @@ fn apply_call_facts(p: &mut Prog, facts: &CallFacts) {
     }
     for (f, sname, targets) in &facts.itargets {
         for &k in keys_of.get(sname).map(|v| v.as_slice()).unwrap_or(&[]) {
-            let t: Vec<u32> = targets.iter().copied().filter(|&g| (g as usize) < p.n && p.skey[g as usize] == k).collect();
+            let t: Vec<u32> = targets
+                .iter()
+                .copied()
+                .filter(|&g| (g as usize) < p.n && p.skey[g as usize] == k)
+                .collect();
             p.itargets.insert((*f, k), t);
         }
     }
@@ -2013,7 +2467,11 @@ fn apply_call_facts(p: &mut Prog, facts: &CallFacts) {
             next_bit += 1;
         }
         for fi in p.by_name(v[1]) {
-            let m = if v[0] == "JS" { &mut p.lj_js } else { &mut p.lj_jl };
+            let m = if v[0] == "JS" {
+                &mut p.lj_js
+            } else {
+                &mut p.lj_jl
+            };
             m.entry(fi).or_default().push(v[2].to_string());
         }
     }
@@ -2022,7 +2480,9 @@ fn apply_call_facts(p: &mut Prog, facts: &CallFacts) {
     // function (its call is the rethrow), or an entry point that can be
     // reached other than by a direct call.
     let generic = p.lj_generic();
-    let entries: Vec<u32> = (0..p.n as u32).filter(|&g| Prog::is_longjmp_name(&p.names[g as usize])).collect();
+    let entries: Vec<u32> = (0..p.n as u32)
+        .filter(|&g| Prog::is_longjmp_name(&p.names[g as usize]))
+        .collect();
     let mut unknown = false;
     for &e in &entries {
         if p.escapes[e as usize] {
@@ -2032,7 +2492,10 @@ fn apply_call_facts(p: &mut Prog, facts: &CallFacts) {
             if entries.contains(&c) {
                 continue; // longjmp -> __wasm_longjmp wrappers
             }
-            let known = p.lj_jl.get(&c).is_some_and(|b| !b.iter().any(|x| x == "*" || !p.lj_bufbit.contains_key(x)));
+            let known = p
+                .lj_jl
+                .get(&c)
+                .is_some_and(|b| !b.iter().any(|x| x == "*" || !p.lj_bufbit.contains_key(x)));
             if !known && (p.lj_jl.contains_key(&c) || !p.lj_js.contains_key(&c)) {
                 unknown = true;
             }
@@ -2056,14 +2519,34 @@ fn apply_call_facts(p: &mut Prog, facts: &CallFacts) {
 fn apply_cancel_rule(p: &mut Prog) {
     let named = |p: &Prog, w: &str| -> Vec<u32> {
         let pre = format!("{w}(");
-        (0..p.n as u32).filter(|&f| p.names[f as usize] == w || p.names[f as usize].starts_with(&pre)).collect()
+        (0..p.n as u32)
+            .filter(|&f| p.names[f as usize] == w || p.names[f as usize].starts_with(&pre))
+            .collect()
     };
-    let writers = ["pthread_cancel", "__pthread_cancel", "timer_create", "__timer_create"];
-    if writers.iter().any(|w| named(p, w).iter().any(|&f| !p.import[f as usize])) {
+    let writers = [
+        "pthread_cancel",
+        "__pthread_cancel",
+        "timer_create",
+        "__timer_create",
+    ];
+    if writers
+        .iter()
+        .any(|w| named(p, w).iter().any(|&f| !p.import[f as usize]))
+    {
         return;
     }
-    let checks = ["__syscall_cp_check", "__syscall_cp_cancel_preflight", "__testcancel", "__cancel", "__pthread_testcancel", "pthread_testcancel"];
-    let exits: Vec<u32> = ["pthread_exit", "__pthread_exit"].iter().flat_map(|n| named(p, n)).collect();
+    let checks = [
+        "__syscall_cp_check",
+        "__syscall_cp_cancel_preflight",
+        "__testcancel",
+        "__cancel",
+        "__pthread_testcancel",
+        "pthread_testcancel",
+    ];
+    let exits: Vec<u32> = ["pthread_exit", "__pthread_exit"]
+        .iter()
+        .flat_map(|n| named(p, n))
+        .collect();
     for c in checks {
         for f in named(p, c) {
             for &e in &exits {
@@ -2099,7 +2582,12 @@ pub struct CallFacts {
 /// computed; the plan only ever removes from it. Returns `None` when the
 /// module is outside the analysis' supported scope (dynamic linking), so the
 /// caller keeps today's closure.
-pub fn plan(module: &Module, seed: FunctionId, today: &crate::call_graph::ReachingAnalysis, policy: SinkPolicy) -> Option<SinkPlan> {
+pub fn plan(
+    module: &Module,
+    seed: FunctionId,
+    today: &crate::call_graph::ReachingAnalysis,
+    policy: SinkPolicy,
+) -> Option<SinkPlan> {
     plan_with_facts(module, seed, today, policy, None)
 }
 
@@ -2192,11 +2680,26 @@ pub fn plan_with_facts(
             }
             let info = infos[f as usize].as_ref().unwrap();
             let snapshot = summ.clone();
-            let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: false, spec: &mut spec_memo, depth: 0 };
+            let mut cx = Ctx {
+                p: &p,
+                summ: &snapshot,
+                ptarg: &mut ptarg,
+                exn_seen: &mut exn_seen,
+                frame_esc: &mut frame_esc,
+                allow_spec: false,
+                spec: &mut spec_memo,
+                depth: 0,
+            };
             let r = interpret(&mut cx, f, info, Mode::Normal, &empty, None);
-            let mut s = Summ { ret: r.ret.is_some(), thr: r.thr };
+            let mut s = Summ {
+                ret: r.ret.is_some(),
+                thr: r.thr,
+            };
             if r.unsupported {
-                s = Summ { ret: true, thr: TAGS_ALL };
+                s = Summ {
+                    ret: true,
+                    thr: TAGS_ALL,
+                };
             }
             if p.noreturn[f as usize] {
                 s.ret = false;
@@ -2205,7 +2708,10 @@ pub fn plan_with_facts(
                 s.thr = 0;
             }
             let old = summ[f as usize];
-            let new = Summ { ret: old.ret | s.ret, thr: old.thr | s.thr };
+            let new = Summ {
+                ret: old.ret | s.ret,
+                thr: old.thr | s.thr,
+            };
             if new != old {
                 summ[f as usize] = new;
                 for &c in &p.callers[f as usize] {
@@ -2237,8 +2743,25 @@ pub fn plan_with_facts(
             if p.import[f as usize] {
                 continue;
             }
-            let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: true, spec: &mut spec_memo, depth: 0 };
-            let r = interpret2(&mut cx, f, infos[f as usize].as_ref().unwrap(), Mode::Normal, &empty, None, true);
+            let mut cx = Ctx {
+                p: &p,
+                summ: &snapshot,
+                ptarg: &mut ptarg,
+                exn_seen: &mut exn_seen,
+                frame_esc: &mut frame_esc,
+                allow_spec: true,
+                spec: &mut spec_memo,
+                depth: 0,
+            };
+            let r = interpret2(
+                &mut cx,
+                f,
+                infos[f as usize].as_ref().unwrap(),
+                Mode::Normal,
+                &empty,
+                None,
+                true,
+            );
             if r.unsupported {
                 return None;
             }
@@ -2307,14 +2830,32 @@ pub fn plan_with_facts(
     // sink resume entry traps if one returns.
     let mut vfork_fns: HashSet<u32> = HashSet::new();
     for &g in &p.callers[seed_i as usize] {
-        let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(g)).kind else { continue };
+        let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(g)).kind else {
+            continue;
+        };
         let info = fninfo(p.m, lf);
         let empty_s: [Summ; 0] = [];
         let mut fe = HashSet::new();
         let mut sm = HashMap::new();
         let mut sc = HashMap::new();
-        let mut cx = Ctx { p: &p, summ: &empty_s, ptarg: &mut ptarg, exn_seen: &mut sc, frame_esc: &mut fe, allow_spec: false, spec: &mut sm, depth: 0 };
-        let r = interpret(&mut cx, g, &info, Mode::Normal, &HashMap::new(), Some((seed_i, 0)));
+        let mut cx = Ctx {
+            p: &p,
+            summ: &empty_s,
+            ptarg: &mut ptarg,
+            exn_seen: &mut sc,
+            frame_esc: &mut fe,
+            allow_spec: false,
+            spec: &mut sm,
+            depth: 0,
+        };
+        let r = interpret(
+            &mut cx,
+            g,
+            &info,
+            Mode::Normal,
+            &HashMap::new(),
+            Some((seed_i, 0)),
+        );
         if !r.unsupported && !r.rec_vals.is_empty() && r.rec_vals.iter().all(|v| *v == V::C(1)) {
             vfork_fns.insert(g);
         }
@@ -2348,7 +2889,9 @@ pub fn plan_with_facts(
             n.contains("terminate") || n == "abort" || n.starts_with("abort(")
         };
         for f in 0..n as u32 {
-            let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(f)).kind else { continue };
+            let FunctionKind::Local(lf) = &p.m.funcs.get(p.fid(f)).kind else {
+                continue;
+            };
             let seqs = all_seqs(lf);
             let mut parent: HashMap<InstrSeqId, (InstrSeqId, usize)> = HashMap::new();
             for (sid, seq) in &seqs {
@@ -2392,11 +2935,18 @@ pub fn plan_with_facts(
                                         }
                                         (b, *label, v)
                                     }
-                                    TryTableCatch::CatchAll { label } => (TAGS_ALL & !PROBE & !longjmp_bits, *label, vec![]),
-                                    TryTableCatch::CatchAllRef { label } => (TAGS_ALL & !PROBE & !longjmp_bits, *label, vec![V::Exn(PROBE)]),
+                                    TryTableCatch::CatchAll { label } => {
+                                        (TAGS_ALL & !PROBE & !longjmp_bits, *label, vec![])
+                                    }
+                                    TryTableCatch::CatchAllRef { label } => (
+                                        TAGS_ALL & !PROBE & !longjmp_bits,
+                                        *label,
+                                        vec![V::Exn(PROBE)],
+                                    ),
                                 };
                                 let landing = parent.get(&label).copied().filter(|(ps, pi)| {
-                                    matches!(lf.block(*ps).instrs[*pi].0, Instr::Block(_)) && vals.len() <= 4
+                                    matches!(lf.block(*ps).instrs[*pi].0, Instr::Block(_))
+                                        && vals.len() <= 4
                                 });
                                 let Some((ps, pi)) = landing else {
                                     t |= bits;
@@ -2405,7 +2955,19 @@ pub fn plan_with_facts(
                                 let next_call = lf.block(ps).instrs[pi + 1..]
                                     .iter()
                                     .map(|(i, _)| i)
-                                    .take_while(|i| matches!(i, Instr::LocalGet(_) | Instr::LocalSet(_) | Instr::LocalTee(_) | Instr::GlobalGet(_) | Instr::GlobalSet(_) | Instr::Const(_) | Instr::Drop(_) | Instr::Call(_)))
+                                    .take_while(|i| {
+                                        matches!(
+                                            i,
+                                            Instr::LocalGet(_)
+                                                | Instr::LocalSet(_)
+                                                | Instr::LocalTee(_)
+                                                | Instr::GlobalGet(_)
+                                                | Instr::GlobalSet(_)
+                                                | Instr::Const(_)
+                                                | Instr::Drop(_)
+                                                | Instr::Call(_)
+                                        )
+                                    })
                                     .find_map(|i| match i {
                                         Instr::Call(c) => Some(c.func.index() as u32),
                                         _ => None,
@@ -2416,10 +2978,34 @@ pub fn plan_with_facts(
                                 let mut arr = [V::Top; 4];
                                 arr[..vals.len()].copy_from_slice(&vals);
                                 let mut inj = HashMap::new();
-                                inj.insert((ps, pi), Inject { ret: None, thr: 0, top: Some((vals.len() as u8, arr)) });
-                                let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: true, spec: &mut spec_memo, depth: 0 };
-                                let r = interpret(&mut cx, f, infos[f as usize].as_ref().unwrap(), Mode::Child, &inj, None);
-                                let handler = r.unsupported || r.ret.is_some() || r.thr & PROBE == 0;
+                                inj.insert(
+                                    (ps, pi),
+                                    Inject {
+                                        ret: None,
+                                        thr: 0,
+                                        top: Some((vals.len() as u8, arr)),
+                                    },
+                                );
+                                let mut cx = Ctx {
+                                    p: &p,
+                                    summ: &snapshot,
+                                    ptarg: &mut ptarg,
+                                    exn_seen: &mut exn_seen,
+                                    frame_esc: &mut frame_esc,
+                                    allow_spec: true,
+                                    spec: &mut spec_memo,
+                                    depth: 0,
+                                };
+                                let r = interpret(
+                                    &mut cx,
+                                    f,
+                                    infos[f as usize].as_ref().unwrap(),
+                                    Mode::Child,
+                                    &inj,
+                                    None,
+                                );
+                                let handler =
+                                    r.unsupported || r.ret.is_some() || r.thr & PROBE == 0;
                                 if handler {
                                     t |= bits;
                                 }
@@ -2471,7 +3057,10 @@ pub fn plan_with_facts(
         v.dedup();
     }
     let catcher_above = |g: u32, thr: Tags| -> bool {
-        rdeps.get(&g).is_some_and(|v| v.iter().any(|h| below_catcher.get(h).is_some_and(|t| t & thr != 0)))
+        rdeps.get(&g).is_some_and(|v| {
+            v.iter()
+                .any(|h| below_catcher.get(h).is_some_and(|t| t & thr != 0))
+        })
     };
 
     // 5. Child continuation fixpoint.
@@ -2481,13 +3070,25 @@ pub fn plan_with_facts(
         thr: Tags,
     }
     let dead = Child { ret: None, thr: 0 };
-    let mut child: HashMap<u32, Child> = HashMap::from([(seed_i, Child { ret: Some(V::C(0)), thr: 0 })]);
+    let mut child: HashMap<u32, Child> = HashMap::from([(
+        seed_i,
+        Child {
+            ret: Some(V::C(0)),
+            thr: 0,
+        },
+    )]);
     // Functions whose fork path can pass through a side module: never
     // boundaries (see `plan_with_facts`).
     let mut via_side: HashSet<u32> = HashSet::new();
     if p.dyn_link {
         // A side module's own fork: its child returns anything and may throw.
-        child.insert(ext_i, Child { ret: Some(V::Top), thr: TAGS_ALL });
+        child.insert(
+            ext_i,
+            Child {
+                ret: Some(V::Top),
+                thr: TAGS_ALL,
+            },
+        );
         let mut q: VecDeque<u32> = VecDeque::from([ext_i]);
         while let Some(g) = q.pop_front() {
             for &f in rdeps.get(&g).map(|v| v.as_slice()).unwrap_or(&[]) {
@@ -2500,7 +3101,9 @@ pub fn plan_with_facts(
     // A closed function's escapes stop at the sink's loud run-time check;
     // that is behaviour-preserving only when no catcher can be above it.
     let closed_for_callers = |child: &HashMap<u32, Child>, g: u32| -> bool {
-        child.get(&g).is_none_or(|c| c.ret.is_none() && (c.thr == 0 || !catcher_above(g, c.thr)))
+        child
+            .get(&g)
+            .is_none_or(|c| c.ret.is_none() && (c.thr == 0 || !catcher_above(g, c.thr)))
     };
     let mut work: VecDeque<u32> = VecDeque::new();
     let mut queued: HashSet<u32> = HashSet::new();
@@ -2522,7 +3125,11 @@ pub fn plan_with_facts(
         let mut inject = HashMap::new();
         let mut needed = false;
         for (sid, ix, t) in &sites[&f] {
-            let mut j = Inject { ret: None, thr: 0, top: None };
+            let mut j = Inject {
+                ret: None,
+                thr: 0,
+                top: None,
+            };
             for g in t {
                 if vfork_fns.contains(g) {
                     // Boundary by the vfork contract; still needs this frame.
@@ -2553,12 +3160,38 @@ pub fn plan_with_facts(
             dead
         } else {
             let info = infos[f as usize].as_ref().unwrap();
-            let mut cx = Ctx { p: &p, summ: &snapshot, ptarg: &mut ptarg, exn_seen: &mut exn_seen, frame_esc: &mut frame_esc, allow_spec: true, spec: &mut spec_memo, depth: 0 };
+            let mut cx = Ctx {
+                p: &p,
+                summ: &snapshot,
+                ptarg: &mut ptarg,
+                exn_seen: &mut exn_seen,
+                frame_esc: &mut frame_esc,
+                allow_spec: true,
+                spec: &mut spec_memo,
+                depth: 0,
+            };
             let r = interpret(&mut cx, f, info, Mode::Child, &inject, None);
-            if r.unsupported { Child { ret: Some(V::Top), thr: TAGS_ALL } } else { Child { ret: r.ret, thr: r.thr } }
+            if r.unsupported {
+                Child {
+                    ret: Some(V::Top),
+                    thr: TAGS_ALL,
+                }
+            } else {
+                Child {
+                    ret: r.ret,
+                    thr: r.thr,
+                }
+            }
         };
         // Not a boundary: the unwind continues into the callers.
-        let c = if via_side.contains(&f) { Child { ret: Some(V::Top), ..c } } else { c };
+        let c = if via_side.contains(&f) {
+            Child {
+                ret: Some(V::Top),
+                ..c
+            }
+        } else {
+            c
+        };
         let old = child.get(&f).copied();
         let base = old.unwrap_or(dead);
         let new = Child {
@@ -2581,7 +3214,11 @@ pub fn plan_with_facts(
     // 6. Reduced sets, intersected with today's (sound) closure.
     let mut keep: HashSet<u32> = child.keys().copied().filter(|&f| f != ext_i).collect();
     keep.insert(seed_i);
-    let any_handler_on_path = (0..n as u32).any(|g| p.escapes[g as usize] && p.sig_handler_keys.contains(&p.skey[g as usize]) && child.contains_key(&g));
+    let any_handler_on_path = (0..n as u32).any(|g| {
+        p.escapes[g as usize]
+            && p.sig_handler_keys.contains(&p.skey[g as usize])
+            && child.contains_key(&g)
+    });
     if any_handler_on_path {
         keep.extend(gate_fns.iter().copied());
     }

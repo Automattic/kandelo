@@ -8,7 +8,7 @@ const HEADER_BYTES: usize = 24;
 // Bound allocation before trusting an input's declared expansion. Decode and
 // parse one unit at a time, so a large link does not retain all expanded text.
 const MAX_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub(super) const MAX_TOTAL_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 pub(super) fn visit_chunks(
     mut section: &[u8],

@@ -20,18 +20,18 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::fs;
-use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use fork_instrument::{
-    Options, analyze, sink_report,
+    Options, analyze,
     contract_inventory::{
         artifact_identity, fork_capability_section_hex, fork_contract_inventory,
         linked_frame_descriptor_section_hex, reserved_env_imports,
     },
-    instrument,
+    instrument, sink_report,
 };
 
 #[derive(Debug, Parser)]
@@ -109,6 +109,16 @@ struct Cli {
     #[arg(long)]
     discover_only: bool,
 
+    /// Diagnose the bounded original-binary scanner without constructing a
+    /// Walrus module or producing an instrumented artifact. Reports compact
+    /// summary counts and definition binding, not a complete sink/fork plan.
+    #[arg(long, conflicts_with_all = [
+        "output", "discover_only", "sink_report", "contract_inventory",
+        "artifact_identity", "fork_capability_hex", "linked_frame_descriptor_hex",
+        "reserved_env_imports",
+    ])]
+    streaming_scan: bool,
+
     /// Print the fork-artifact structural inventory as one TSV row.
     /// This mode performs no instrumentation and emits no output file.
     #[arg(
@@ -185,6 +195,38 @@ fn main() -> Result<()> {
 
     let input =
         fs::read(&cli.input).with_context(|| format!("reading input: {}", cli.input.display()))?;
+
+    if cli.streaming_scan {
+        let scan = fork_instrument::streaming::scan(&input)
+            .with_context(|| format!("scanning original module: {}", cli.input.display()))?;
+        println!("input-bytes\t{}", input.len());
+        println!("functions\t{}", scan.functions.len());
+        println!("operators\t{}", scan.operators);
+        println!(
+            "max-body-bytes\t{}",
+            scan.functions
+                .iter()
+                .filter_map(|f| f.body.as_ref())
+                .map(|b| b.range.len())
+                .max()
+                .unwrap_or(0)
+        );
+        if !cli.no_facts
+            && scan
+                .custom_data(fork_instrument::facts::SECTION)
+                .next()
+                .is_some()
+        {
+            match scan.bind_fact_definitions() {
+                Ok(bindings) => println!(
+                    "facts-definitions-bound\t{}",
+                    bindings.iter().filter(|(_, b)| !b.is_empty()).count()
+                ),
+                Err(error) => println!("facts-definitions-error\t{error:#}"),
+            }
+        }
+        return Ok(());
+    }
 
     if cli.contract_inventory {
         let inventory = fork_contract_inventory(&input)
@@ -278,7 +320,8 @@ fn main() -> Result<()> {
     // A module outside any fork transaction comes back as the input without
     // its compiler facts; it was not transformed, so it is not optimized.
     let untransformed = output == input
-        || fork_instrument::facts::strip_section(&input)?.is_some_and(|stripped| stripped == output);
+        || fork_instrument::facts::strip_section(&input)?
+            .is_some_and(|stripped| stripped == output);
     if cli.post_optimize != "none" && !untransformed {
         post_optimize(output_path, &cli.post_optimize, cli.keep_names)?;
     }

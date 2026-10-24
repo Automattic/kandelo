@@ -53,6 +53,360 @@ ABI version: `46` (see
   scripts can therefore instrument installed executables in place without
   making them non-executable.
 
+## Streaming migration (experimental)
+
+`fork_instrument::streaming` provides an original-binary scanner, a compact
+conservative call-closure resolver, definition-only compiler-fact binding,
+Kandelo-owned typed function IR, and a writer-based remapping emitter.
+The scanner validates one function at a time and preserves original operator
+byte offsets. It retains shared validator header resources so a body provider
+can load any original function directly by its byte range for fixed-point
+analysis, without decoding preceding bodies or retaining an instruction cache.
+The native IR borrows wasmparser operators, resolves symbolic
+control regions/exception arms and captures validator-typed call stacks,
+operand heights and operator arities.
+Reference liveness and definitely-null analysis run on one original function
+before synthetic dispatch locals exist, with explicit state/work/output
+budgets. The emitter visits
+every body, including bodies outside a fork closure, and spools code and
+data sections to private temporary files. Its default limits are 32 MiB per
+source/emitted function and 64 MiB per buffered metadata section; these are
+emitter buffer limits, not a process-memory guarantee. Compiler-fact text is
+read as bounded lines across concatenated plain/compressed custom sections;
+compressed objects are not materialized in full. Defaults are 1 MiB per line,
+512 MiB decoded per object and 16 GiB decoded total. Definition-only binding
+does not validate call-site type facts.
+
+Helper function/type declarations can be frozen before emission; their bodies
+are generated and spooled one at a time. The source table barrier and segment
+drop rewrites also have a native implementation: they consume frozen hook
+indices and visit all functions, without filtering by fork activation.
+Table snapshot ownership, runtime hook generation, bootstrap and generated
+call-transport handling are not integrated into that implementation yet.
+Validator-canonical concrete heap identities are resolved to source type
+indices before output remapping; they are never encoded as binary indices.
+
+`facts::call_facts_from_scan` now uses `facts::storage::FactsStore`: interned
+names, binding, call-site, conversion, slot-flow and resolved-target relations
+live in a private temporary SQLite database. It preserves the oracle's
+signature-agreement fallback, ambiguous-definition unions, callback registry,
+cleanup and longjmp-facts policies. Planning is bound to the exact original
+module before lowering. The store exposes one target group at a time for the
+native sink planner. The compatibility `CallFacts` projection has
+a separate resident metadata budget and fails instead of collecting an
+unbounded target matrix.
+
+Default storage budgets are a 32 MiB page-cache target for each main/temp
+schema, 1 MiB name cache,
+128 MiB resident metadata/projection budget, 8 GiB maximum main database size
+and 100 billion estimated work steps. Query temporaries use files; their disk
+space is additional to the main database limit. SQLite's page cache is a
+[suggested limit](https://www.sqlite.org/pragma.html#pragma_cache_size), not a
+hard process-memory ceiling. Row/work/disk failures are explicit, the private
+store is discarded on failed construction, and no unbounded Walrus fallback
+is introduced. Physical-footprint guards remain a separate validation layer.
+
+`streaming::sink` now includes a function-local abstract interpreter and
+disk-backed module metadata. The interpreter models normal/child control,
+recorded post-call states, injected child results, modern/legacy handlers,
+integer values and shadow-stack slots. Its environment supplies call effects
+and target refinements. A normal return/throw workqueue loads and discards one
+body per evaluation and borrows the summary array instead of cloning it;
+the policy interpreter and child-continuation planner use this driver.
+Differential fixtures compare results and
+original call coordinates with the unchanged Walrus interpreter. Unsupported
+operators are explicit and cannot prove a boundary. Default limits are
+8,388,608 abstract state values, 104,857,600 work units, 256 nested control
+regions, 4,096 frame slots and 1,048,576 call-target memberships per body.
+The state limit reserves a conservative bound for structured-control scratch
+and recorded states before evaluation; it is not a physical-memory ceiling.
+Unused trailing local declarations are omitted from abstract states while
+referenced locals keep their original coordinates. Delegation and nested
+mixed modern/legacy handlers remain explicitly unsupported by this analysis
+until semantic normalization is integrated; they cannot prove a sink.
+
+Sink metadata keeps compact function/global headers resident and caller,
+table-member and constant-slot relations on disk, using the same private
+storage budgets as compiler facts. `FactsStore::empty` creates planning storage
+without claiming a compiler-facts solution. Reference-call dependencies are
+included when finding callers to revisit, including declared function-subtype
+chains. References in table/global initializers remain visible to dispatch.
+Unknown reference imports and element expressions retain an external-call
+possibility; the sink planner seeds that external vertex even when no dlopen
+import is present. Element expressions containing null slots disable
+constant-slot refinement rather than shifting later functions into those
+slots. These are experimental analysis APIs; none certifies a
+complete fork-instrumented module.
+
+Parameter-target proofs record direct-call arguments to disk in a separate
+serial pass, then resolve forwarding chains/cycles with recursive disk sets.
+They do not recursively load caller IR. Unknown values, escaping functions
+and unsupported callers retain signature fallback; proved missing table slots
+produce an empty target set. Calls may throw during the recording pass so
+handler registrations are included. Escaping shadow-stack frames are repeated
+without slot tracking. No literal-slot proof is attempted when table slots are
+mutable or unknown.
+
+`PolicyPlan` adds checked libc callback registries, cancellation cuts, signal
+dispatch policy, per-caller cleanup sets and sparse setjmp/longjmp buffer
+masks. Cleanup retains the original caller identity. Unknown atexit slots
+retain signature fallback; unknown side calls retain generic exception
+possibilities. Signal gate mode records required runtime guards; this library
+analysis does not emit those guards itself. `SinkInterpreter` connects these
+policies to the normal-summary driver and local evaluator. Small-callee
+specialization is limited to depth three, uses a bounded FIFO cache (4 MiB by
+default) cleared per root evaluation, and never specializes an unresolved
+side-module call.
+
+`plan_sinks` resolves original call-site targets into indexed disk relations,
+computes the reverse fork closure, probes exception-handler landings, and
+solves child return/throw and boundary fixed points. Only compact per-function
+summaries/masks and the current body's target/injection sets stay resident.
+Vfork mode is checked independently of literal-table parameter refinement.
+Paths through unresolved external dispatch remain open, and results intersect
+the conservative activation/control closure. Signal gate requirements are
+returned explicitly for later runtime generation. Resource exhaustion returns
+an error without a partial plan; unsupported analysis scope returns `None`,
+requiring the conservative closure. Raw legacy loader/longjmp imports, missing
+dynamic-link facts, oversized tag masks and unsupported body operations cannot
+produce a sink proof. Normalization, complete runtime/continuation generation
+and production backend integration remain unfinished. Production continues to
+use the unchanged Walrus implementation.
+
+`FrozenImports` freezes appended runtime imports and their source-index shifts
+for functions, tables, memories, globals and tags. Existing imported entities
+retain their indices; definitions shift past the new imports. Reencoding
+applies those shifts to instructions, names, start, exports, initializers and
+segments. Import descriptors already use final output type/heap indices.
+The writer inserts an absent import section in canonical order and can combine
+it with frozen helper types/declarations/bodies. Plans are fingerprinted to
+the original input and checked before output begins. This append-only primitive
+does not yet replace legacy imports with local adapters or generate the full
+runtime's complete state and metadata.
+
+`ModuleDeclarationBuilder` reserves final indices for appended local tables,
+memories, tags, globals and element segments, plus new exports. It rejects
+duplicate exports and bounds declaration metadata. Frozen catalogs bind both
+the original input and the import layout; a mismatched layout fails before
+output begins. The writer appends existing sections or inserts absent ones
+in canonical order. Passes may extend a catalog during planning and combine
+helper type/function catalogs, then freeze them before serial emission. Large
+data payloads remain on the writer/spool path.
+
+`NativeRuntime` now generates the seven linked-runtime control exports and
+four private globals, along with frame, resume-table, private-tag and reference
+codec imports. It lays out the source module's mutable scalar snapshot prefix
+in declaration order, skips reference globals and the child-owned
+`env.__channel_base` binding, and emits one control body at a time. Pointer
+width follows the original primary memory and all source memory/global uses
+are remapped after added imports. End controls call the optional codec cleanup,
+release the buffer alias, then publish NORMAL. Typed local codec providers may
+be supplied as already planned final-index overrides. These controls have
+native/Walrus layout and import-signature comparisons and wasm32/wasm64 Node
+execution tests for capture, rewind and abort. A composed native fixture also
+executes table/drop tracking outside the fork closure.
+
+This runtime component does not yet implement continuation rewriting,
+reference reconstruction, complete module-state capture/bootstrap or artifact
+certification. Emitting its controls alone produces no fork capability marker
+and is not a complete fork-instrumented program. No browser, ABI integration
+or end-to-end memory claim follows from these component tests.
+
+`FrameBuilder` now plans one function's activation storage. It keeps parameters
+and first-used original locals in lexical order, assigns synthetic value keys,
+packs scalar fields after the unchanged 16-byte header, and overlays mutually
+exclusive scalar catch payloads. Reference recipes use only header word 12;
+values needed by every landing form a stable vector prefix. Non-null temporary
+references have nullable local storage and explicit checked reads. Original
+unused declarations consume no physical locals in the planned body.
+
+Scalar spills of at least 256 bytes use shadow-stack scratch when the primary
+memory and a mutable pointer-width `__stack_pointer` are available. User scalar
+fields remain first, and the spill tail stays contiguous for bulk frame I/O.
+Scratch values have no physical Wasm locals; one base and one temporary per
+scalar type serve their loads/stores. Reserve/release/reseed and bulk save/
+restore primitives support both pointer widths. The native activation wrapper
+installs cleanup for normal, escaping-exception and tail exits; owned source
+catch landings still require exception normalization. Discover the frame
+environment and source type catalog once per module, then discard each local
+frame plan.
+
+`NativeCatchPlan` now discovers modern catch selectors and payload types, pools
+typed operand scratch across arms, and assigns one shared retained exception
+slot when complete recipes are required. Its scalar payloads use the existing
+overlaid frame range. `FrameLayout::emit_catch_scalars` saves or restores only
+the selected arm, skips selector zero and traps on unknown selectors before
+accessing payload memory. Its emitted selection has constant nesting. These
+planning and frame-I/O pieces do not yet enable source exceptions in the native
+activation wrapper; catch interception, replay emission and legacy
+normalization remain unfinished.
+
+`FrameCodecCatalog` interns scalar save/restore recipes before output starts.
+It emits each helper serially and shares restores across save-commit policies.
+Restore returns at most one value, including an optional catch selector, to
+preserve recursion stack budgets. The generated scalar helper bodies match
+the unchanged Walrus helper bodies byte-for-byte across scalar, selector,
+commit and pointer-width fixtures. Node fixtures additionally exercise header
+preservation, commit ordering, the replay cursor and virtual-spill copying.
+Reference helper generation is separate from these scalar codecs. The
+continuation components below compose call/region replay dispatch.
+
+Frame planning defaults to 64 MiB of conservatively accounted local metadata,
+1,000,000 logical locals and 1,000,000 reference memberships. These limits are
+independent of source IR and module helper-catalog limits and are not a physical
+process-memory ceiling. IR stack-value limits now include region input stacks;
+calls record their current control-frame floor so inner landings do not spill
+values owned by their parents. Lexical retention is shared with fact matching
+and remains distinct from semantic reachability.
+
+`plan_continuations` now partitions one original function into call and child
+region landings. `if` arms and legacy handler bodies have distinct sequence
+identities; each fork-bearing sequence stores only its contiguous call range.
+An iterative walk propagates these ranges without keeping descendant-call
+lists or recursing on source nesting. Normal chunks and replayable argument
+suffixes are original instruction spans, not copied instruction vectors.
+Call carryovers start at the validator's current control-frame floor; child
+region landings own the parent carryovers, block inputs and `if` condition.
+Entry parameters use temporary storage set on every region entry.
+
+Argument and region-input plans replay only constants, local reads and the
+oracle's whitelist of non-trapping integer operations. A backwards typed walk
+finds the closed suffix without repeatedly simulating overlapping suffixes.
+Other values get frame-backed spills, with all call arguments allocated before
+all call carryovers. Reference plans combine normal/exception-successor
+liveness, direct null restoration, synthetic operands, ancestor region inputs
+and every reference parameter needed by the zero-argument resume thunk.
+Replayed ancestor reference reads remain activation-owned even if the local
+is dead at the original inner call. Defaults add 64 MiB of conservatively
+accounted metadata, 1,000,000 value records and 104,857,600 work units per
+function, independent of frame, IR and reference-analysis limits.
+
+Differential fixtures compare argument suffixes, nested call carryover types
+and region ranges with unchanged Walrus. Node fixtures exercise generated
+capture/reload operations with compacted user locals, reference identity and
+both local/scratch scalar storage on wasm32 and wasm64. These fixtures do not
+perform a fork. Ordinary unreachable calls are excluded from the landing plan;
+this API does not emit or certify a complete fork artifact.
+
+`emit_continuation_dispatch` now emits the planned normal/replay control flow.
+An iterative task stack handles source nesting and a 32-way recursive bucket
+topology without native recursion. Buckets drain a boundary call's results
+through the next normal chunk before closing their empty block. The last
+child emits outside all bucket labels so source region results retain their
+original types. Replay gates reject invalid call ordinals, skip preceding
+normal chunks, enter the selected nested region and force the saved `if` arm.
+Typed entry-parameter bridges preserve multi-value block and arm inputs.
+
+Original symbolic branch targets are translated through the inserted labels,
+including branch tables, reference branches, typed casts, modern catch targets,
+legacy rethrows and delegates. Source local reads/writes use compacted physical
+or virtual scratch storage; typed reference calls narrow the stored generic
+callee before invocation. Detached source regions remain omitted and retained
+tail-call suffixes remain distinct from semantic reachability. A caller can
+bind the original function label and source returns to a typed common exit
+block, allowing scratch cleanup after normal exits. The dispatcher delegates
+frame restore/capture, escaping exceptions, tail transfers and catch reseeding
+to the function-wide wrapper.
+
+The emitter declares no helpers. Hooks supply frozen call routing and module
+state/exit rewriting, and must balance any additional control frames they emit.
+Default limits are 32 MiB output, 64 MiB conservatively accounted emitter
+metadata and 104,857,600 work units per function; branch-table buffers are
+checked separately before allocation. Node fixtures capture through a private
+exception, discard activation locals, restore a test scalar frame and replay
+against the source function's result and call trace. They cover wasm32/wasm64,
+changed arm conditions, multi-value inputs, loops, branch tables, typed catches,
+scratch spill round trips and common exit cleanup. A 4,097-call fixture crosses
+all bucket levels with emitted nesting below 128, and a 1,024-region fixture
+executes without recursive source emission. Reference call/branch fixtures
+and legacy rethrow/delegate fixtures exercise normal execution, not reference
+or owned-exception frame replay. These dispatcher fixtures use a private test
+frame store. Native linked-frame composition is described below; source
+exception normalization and full module-state integration remain unfinished.
+
+`NativeActivationPlan` and `emit_native_activation` now compose the dispatcher
+with linked-frame scalar capture/restore, a function-wide private-tag catch,
+live allocation-failure restart and a typed common exit. An outer exception
+reference boundary releases scratch before propagating escaping exceptions.
+Scalar frame I/O can use the shared codecs or inline loads/stores; scratch
+payloads use bulk frame copies before commit and after restore. Planning
+extensions reserve wrapper temporaries before the local layout freezes.
+
+`ActivationSupportCatalog` freezes frame-selection, unwind-transport and
+resume-thunk recipes. Frame selection preserves the call index and selects
+module-owned abort scratch when reservation returns zero. Transport helpers
+convert an ordinary unwind return to the private tag and consult the process
+resume table during replay. Direct activation calls can remain lexical.
+Scalar resume arguments follow the existing zero-argument/peek policy;
+reference arguments decode the frame's universal vector prefix before entering
+the source signature, including checked narrowing for non-nullable types.
+Frame-selection and scalar/reference resume helper bodies have byte-for-byte
+comparisons against unchanged Walrus on both pointer widths. Planning and
+per-helper emission are separate; no helper retains source instruction bodies
+or a module-wide activation IR. The frozen catalog retains a bounded transport
+index so the emission pass can resolve existing helpers without declaring new
+ones or retaining all function-local route plans.
+
+`TailTransferPlan` consumes selected original tail points from the control
+closure. Local direct tails keep their lexical target; imported, indirect and
+reference tails become `return_call` to the matching frozen unwind transport.
+The plan can be rebuilt against the read-only frozen catalog during emission.
+Transparent tail-only bodies preserve their original locals and need no
+activation frame. In a rewritten activation, the capture wrapper releases
+virtual-spill scratch before every emitted tail transfer while preserving its
+argument stack and tail return. Default planning limits are 64 MiB of
+conservatively accounted metadata and 104,857,600 work units per function;
+function emission has its separate output limit.
+
+`FrozenReferenceKinds` maps final heap types to frozen reference codec classes
+once per module. `NativeReferenceIo` plans per-function reference save/restore
+guards, sharing adjacent landings that have identical slot/null sets. Saves
+finish the transient vector builder and write its durable ordinal before frame
+commit. Restores decode only the selected landing's live references and restore
+known-null locals directly. These operations use the supplied frozen codec
+providers; they do not generate the GC or exception reconstruction providers.
+
+Focused Node fixtures compose these native pieces with the runtime import ABI
+and a validating test journal. On both pointer widths, with shared and inline
+scalar codecs, they check nested frame reserve/commit order, header selectors,
+rewind consumption, live restart on allocation failure at either activation,
+and nonlexical resume routing while preserving carried values. A separate
+fresh-instance fixture checks externref aliasing, typed function reference
+parameters, universal vector positions and direct null restoration at two
+capture landings. Both fixtures use readable standalone JavaScript journals
+under `tests/fixtures/streaming_*_replay.cjs`.
+Tail fixtures execute the same journal checks against native and unchanged
+Walrus function transforms on both memory/table widths. They cover a
+100,000-step direct tail chain, indirect and reference tails, replay that skips
+eliminated callers, and scratch cleanup before normal, private-unwind and
+foreign-exception tail exits. The direct chain retains its self `return_call`
+and eliminated callers neither save nor consume journal frames.
+These remain component fixtures rather than the normal production
+instrumentation path. Source exception ownership normalization remains an
+explicit unsupported boundary of the activation wrapper. Complete module state,
+transport/state-hook composition, local GC and
+exception recipe providers, artifact certification and production backend
+integration remain work; these fixtures do not establish full fork support or
+memory gains.
+
+`wasm-fork-instrument input.wasm --streaming-scan` runs that diagnostic scan
+without constructing a Walrus module or producing an executable. It reports
+function/operator counts, maximum source body size and, when facts are
+present, hash-checked definition binding (`--no-facts` skips binding). It
+does not run an optimizer.
+
+Production `instrument`, `analyze`, `sink_report` and normal CLI output still
+use the existing, unmodified Walrus implementation. The native sink planner
+is not yet connected to production; complete runtime/helper planning,
+continuation rewriting and module-state snapshot generation remain. No complete
+bounded fork transform or measured Codex memory improvement is claimed.
+See the [dependency map and migration plan](plans/2026-10-22-streaming-fork-instrumentation.md).
+The [front-end memory measurements](measurements/2026-10-23-streaming-instrumenter-front-end.md)
+compare six controlled examples and explicitly exclude the full transform.
+The separate [facts/sink memory measurements](measurements/2026-10-23-streaming-instrumenter-sinks.md)
+cover seven controlled examples through native sink planning, including the
+large-body allocator regression found and corrected during measurement.
+
 ## State machine
 
 Every instrumented module carries a single mutable i32 global, `_wpk_fork_state`,

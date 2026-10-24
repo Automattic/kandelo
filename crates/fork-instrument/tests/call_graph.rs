@@ -12,12 +12,14 @@ use std::collections::HashSet;
 
 fn discover(wat_src: &str) -> HashSet<String> {
     let bytes = wat::parse_str(wat_src).expect("wat parse");
+    assert_streaming_closure(&bytes);
     let analysis = analyze(&bytes, &Options::default()).expect("analyze");
     analysis.fork_path.iter().map(|e| e.name.clone()).collect()
 }
 
 fn discover_semantic_activations(wat_src: &str) -> HashSet<String> {
     let bytes = wat::parse_str(wat_src).expect("wat parse");
+    assert_streaming_closure(&bytes);
     let module = walrus::Module::from_buffer(&bytes).expect("walrus parse");
     let seed =
         call_graph::find_import_func(&module, "kernel.kernel_fork").expect("fork seed import");
@@ -30,6 +32,7 @@ fn discover_semantic_activations(wat_src: &str) -> HashSet<String> {
 
 fn discover_tail_landings(wat_src: &str) -> HashSet<(String, TailCallKind)> {
     let bytes = wat::parse_str(wat_src).expect("wat parse");
+    assert_streaming_closure(&bytes);
     let module = walrus::Module::from_buffer(&bytes).expect("walrus parse");
     let seed =
         call_graph::find_import_func(&module, "kernel.kernel_fork").expect("fork seed import");
@@ -43,6 +46,53 @@ fn discover_tail_landings(wat_src: &str) -> HashSet<(String, TailCallKind)> {
             )
         })
         .collect()
+}
+
+fn assert_streaming_closure(bytes: &[u8]) {
+    use fork_instrument::streaming;
+    use std::collections::BTreeSet;
+
+    let scanned = streaming::scan(bytes).expect("scan original binary");
+    let mut config = walrus::ModuleConfig::new();
+    config.on_instr_loc(|offset| walrus::ir::InstrLocId::new(*offset as u32));
+    let module = config
+        .parse(bytes)
+        .expect("parse oracle with source positions");
+    let seeds = call_graph::find_import_funcs(&module, "kernel.kernel_fork");
+    for external in [false, true] {
+        let actual = scanned
+            .reaching_from_seeds(seeds.iter().map(|f| f.index() as u32), external)
+            .unwrap();
+        let expected = call_graph::analyze_reaching_closure_from_seeds(
+            &module,
+            seeds.iter().copied(),
+            external,
+        );
+        let indices = |set: &HashSet<walrus::FunctionId>| {
+            set.iter()
+                .map(|f| f.index() as u32)
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(actual.activations, indices(&expected.activations));
+        assert_eq!(
+            actual.control_reachable,
+            indices(&expected.control_reachable)
+        );
+        let tails = expected
+            .tail_call_landings
+            .iter()
+            .map(|site| {
+                let local = module.funcs.get(site.caller).kind.unwrap_local();
+                streaming::ProgramPoint {
+                    function: site.caller.index() as u32,
+                    offset: local.block(site.sequence).instrs[site.instruction_index]
+                        .1
+                        .data() as usize,
+                }
+            })
+            .collect();
+        assert_eq!(actual.tail_sites, tails);
+    }
 }
 
 #[test]
