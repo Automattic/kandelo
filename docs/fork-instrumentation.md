@@ -1579,6 +1579,13 @@ about side modules is chosen with `--side-modules`:
   from a program that has it, so when the analysis finds an address-taken
   fork-returning function the instrumenter prints one line and plans that
   module for `assume-all-entries-fork-returning` instead.
+  The contract is only that side-module code never returns *through a fork
+  child* into the program. An indirect call that may enter a side module
+  (for example a call through a pointer `dlsym` returned, which matches no
+  function in the program) still returns and may throw any exception; it
+  is just not a fork path. Treating such a call as never returning would
+  make the code after it unreachable, so a `fork()` after a `dlsym` call
+  would drop out of the plan and the child would trap.
 - `assume-all-entries-fork-returning`. Any indirect call may enter a side
   module whose fork child returns anything, so every function whose fork
   path can pass through a side module stays instrumented and is never a

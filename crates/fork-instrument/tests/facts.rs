@@ -173,3 +173,54 @@ fn a_module_outside_fork_keeps_its_bytes_minus_the_facts() {
     let (plain, with) = linked(wat, "#kandelo-calltypes\t5\nM\tx.c\nF\tf\t0\tE\t0\tf\nD\tf\t0\t0\n", None);
     assert_eq!(instrument(&with, &Options::default()).unwrap(), plain);
 }
+
+/// A program that can dlopen calls a function `dlsym` returned (no function
+/// in the program has the call's C type, so the call has no in-module target)
+/// and then forks. Under the default dlopen contract
+/// (`--side-modules traced-entries`) side-module code never returns through
+/// a fork child, but it does return, so the fork after the call is reachable
+/// and `main`, which the child returns through, stays instrumented. Summing
+/// the empty target set to "never returns" made everything after the call
+/// dead: `main` left the plan, the parent's unwind crossed an
+/// uninstrumented frame, and the child trapped.
+const DLSYM_CALL_THEN_FORK: &str = r#"
+(module
+  (type $t (func (result i32)))
+  (import "kernel" "kernel_fork" (func $kernel_fork (param i32) (result i32)))
+  (import "env" "__wasm_dlsym" (func $dlsym (param i32 i32 i32) (result i32)))
+  (memory 1)
+  (table 1 funcref)
+  (func $forker (result i32) (call $kernel_fork (i32.const 0)))
+  (func $main (result i32)
+    (drop (call_indirect (type $t) (i32.load (i32.const 0))))
+    (call $forker))
+  (func $_start (export "_start") (drop (call $main))))
+"#;
+
+const DLSYM_CALL_THEN_FORK_FACTS: &str = "#kandelo-calltypes\t5
+M\t/src/fixture.c
+F\tforker\t0\tE\t1\tforker
+T\tforker\t_ZTSFlvE
+C\tforker\t0\tkernel_fork
+D\tforker\t0\t1
+F\tmain\t0\tE\t1\tmain
+T\tmain\t_ZTSFlvE
+S\tmain\t0\t->i32\ticall\t_ZTSFivE
+C\tmain\t1\tforker
+D\tmain\t0\t2
+F\t_start\t0\tE\t0\t_start
+C\t_start\t0\tmain
+D\t_start\t0\t1
+";
+
+#[test]
+fn a_call_into_a_side_module_returns_under_the_dlopen_contract() {
+    let (_, with) = linked(DLSYM_CALL_THEN_FORK, DLSYM_CALL_THEN_FORK_FACTS, None);
+    let report = sink_report(&with, &Options::default()).unwrap();
+    assert_eq!(report.source, PlanSource::Facts, "{:?}", report.facts_error);
+    assert!(
+        report.instrumented.contains(&"main".to_string()),
+        "the fork after the side-module call vanished from the plan: {:?}",
+        report.instrumented,
+    );
+}
