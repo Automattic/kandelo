@@ -266,8 +266,8 @@ GPU driver checks independent parameters, canonical writes and sampling,
 texture/mipmap/RBO orphaning, reimport, allocation/retarget failure, retained
 peer identity and final native cleanup. It uses actual renderer paths with
 synthetic kernel scratch plumbing, not guest marshalling or public C sharing.
-Forwarded BO registration, CPU canonical views and full shared C storage
-holds remain open. The standalone Chromium copy/respecification reproduction
+Forwarded BO registration, CPU canonical views and concurrent C/native
+namespace ordering remain open. The standalone Chromium copy/respecification reproduction
 lives in `tests/runtime-workarounds/CHROMIUM-COPY-TEX-RESPEC/`.
 
 
@@ -277,7 +277,8 @@ accepted import/orphan revisions, metadata and native-retarget rollback,
 revision exhaustion and final collection. The GPU browser driver imports
 into the unnamed old binding, checks the source/revision reply and red
 pixels, and observes unchanged yellow pixels through the peer's reused
-name. Public C shared-image hold publication remains a separate requirement.
+name. C now consumes these implicit-bound replies for shared per-object image
+holds; public sharing still requires namespace ordering and failure recovery.
 
 
 The uncertain-import peer cases cover texture and renderbuffer candidates
@@ -294,7 +295,7 @@ texture/RBO/FBO deletion and ordinary texture allocation. They retain old
 backing after definite rejection, accept retry and forbid row uploads after
 failed allocation, with a positive retry control. The equivalent device-double
 rejection applies to the old queued path for baseline comparison. Uncertain
-attachment replies pin the candidate object/image through group retirement;
+attachment replies pin the candidate object through group retirement;
 transport, missing completion, wrong ACK and invalid status are covered.
 Host checks cover staged metadata, reverse native rollback, active-unit
 selection, separate draw/read defaults and queued/checked parity. Browser
@@ -314,3 +315,17 @@ separate read/draw default rollback and queued/query parity. The source GPU
 driver checks preserved pixels after failed native creation/binding and a
 successful retry; public C record replay carries accepted binds through both
 renderer routes. Indeterminate/context-loss reconciliation remains open.
+
+
+Confirmed-image ownership cases retain backing through source-encoder
+retirement while a private shared metadata peer keeps the named texture/RBO
+alive. Both regressions fail against unchanged `4d0961a02a`. Other cases
+reenter group name allocation during final GEM close to require image/device
+cleanup outside the metadata mutex, and deliver older import/owned-state
+completions after a newer import. They check exact retained image counts,
+stale-row suppression, accepted retry and final zero tracked allocations.
+These device-double interleavings do not prove parallel public EGL sharing.
+C trace event 12 carries implicit-bound source/revision replies for validation
+through both actual browser renderer routes. The affected browser selection
+is `--grep "actual C|logical image views"`; it does not replace the full
+source suite or the deferred normal guest, CTS and memory-cycle gates.

@@ -156,6 +156,17 @@ self.onmessage = ({data}) => {
           }
           if(clear)observed.push(pixels(fd));
         }
+      } else if(kind===12) {
+        const op=words.getUint32(0,true),expected=[words.getUint32(4,true),words.getUint32(8,true),words.getUint32(12,true),0x47514c33],input=bytes.slice(16);
+        let reply:Uint8Array,rc:number;
+        if(forwarded){const result=channel(fd).onQuery!(op,input,16);reply=result.bytes;rc=result.rc;}
+        else{
+          new Uint8Array(memory!.buffer,64,input.length).set(input);
+          rc=imports!.host_gl_query(7,op,64,input.length,128,16,fd);
+          reply=new Uint8Array(memory!.buffer,128,16).slice();
+        }
+        const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
+        if(rc!==16||expected.some((value,index)=>output.getUint32(index*4,true)!==value))throw new Error("C bound image source/revision mismatch");
       } else if(kind===11) {
         const op=words.getUint32(0,true),size=words.getUint32(4,true),expected=words.getUint32(8,true),input=bytes.slice(12);
         let reply:Uint8Array,rc:number;

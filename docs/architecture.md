@@ -3822,10 +3822,13 @@ parameters; FBO attachments target canonical storage and retain their logical
 query identity. Sampling views copy current source pixels before drawing.
 Respecification stages an owned view and retargets all referencing group
 FBOs before replacement. C image holds release old backing only after checked
-orphaning, and ambiguous image-import replies retain the candidate until
-encoder retirement. C holds are still encoder-local; CPU coherence, fully
-shared C storage ownership and indeterminate multi-failure recovery remain
-open. This is not yet public C sharing or complete image conformance.
+orphaning. Confirmed holds belong to retained shared object records;
+ambiguous imports retain candidate object/image references until final group
+retirement. Association revisions prevent older completions from replacing
+newer holds. Final reference and replacement cleanup release images outside
+the metadata mutex. CPU coherence, concurrent C/native namespace ordering
+and indeterminate multi-failure recovery remain open. Public C sharing is
+still rejected; this is not complete image conformance.
 
 Client staging retains a separate buffer-record reference, restores its
 pointer/name/serial directly and keeps any pending capture encoder-owned.
@@ -3843,7 +3846,7 @@ reservations cannot replace a peer's realized storage or revive a deleted
 name. The C owner still reserves complete batches before returning names.
 Local reference cleanup precedes releasing the common owner. The private
 shared-owner constructor is tested; public C sharing still rejects until
-image aliases and the remaining program/link contract are complete.
+concurrent name ordering and failure reconciliation are complete.
 User-visible context/surface handles are monotonic. Each backend
 session admits one context and surface. The public EGL facade allocates
 additional sessions for independent context/surface records within a
@@ -4163,23 +4166,29 @@ number again after peer deletion/reuse. A shared per-object image-association
 revision advances on accepted import/orphaning, remains unchanged after
 definite replacement failure and is removed at final native collection.
 Unsigned revision exhaustion fails before publication. The v10 explicit-name
-queries keep their original request/reply layouts. C confirmed image holds still need
-migration to shared retained records before public EGL sharing is enabled.
+queries keep their original request/reply layouts. C imports and orphan-state
+reads use the implicit-bound queries. Shared retained C records own confirmed
+image/source/revision state; bindings and containers retain those records
+instead of separate image/query mirrors. Publication accepts newer revisions
+and discards stale candidates. Older owned-state replies cannot clear a
+newer import or authorize dependent texture rows. Public EGL sharing still
+requires concurrent C/native name ordering and failure reconciliation.
 Indeterminate import candidates already belong to the group: submitting
 encoder retirement cannot release backing a peer might retain. Final group
 retirement releases these candidates outside the metadata mutex.
 
 Operation-table v12 adds checked image attachment/deletion and allocation.
 C container and namespace references publish only after accepted native
-mutation. Uncertain attachments pin both candidate object and image in the
-shared group's quarantine, preserving the old C attachment until reconciliation
-or retirement. Texture allocation is acknowledged before C emits pixel rows,
-so a failed allocation cannot overwrite existing storage through later rows.
+mutation. Uncertain attachments pin the candidate object in the shared
+group's quarantine, preserving the old C attachment until reconciliation or
+retirement. Confirmed backing follows the retained object itself. Texture
+allocation is acknowledged before C emits pixel rows, so a failed allocation
+cannot overwrite existing storage through later rows.
 Queued/checked paths share host ownership transactions and storage dispatch.
 Metadata allocation precedes native effects; definite deletion failure restores
 attempted active attachments and bindings. FBO deletion preserves separate
-read/draw defaults. This does not complete shared C image holds, concurrent
-namespace ordering or multi-failure/context-loss recovery.
+read/draw defaults. Concurrent namespace ordering and multi-failure/context-loss
+recovery remain incomplete.
 
 Operation-table v13 adds an exact checked framebuffer-bind query. C updates
 its attachment-container selection only after native acceptance. Host queued

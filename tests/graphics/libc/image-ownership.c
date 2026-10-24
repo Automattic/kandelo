@@ -152,7 +152,7 @@ struct device_slot {
     int array_saved;
     uint32_t texture_active, texture_2d[128], texture_cube[128], renderbuffer_binding;
     struct {
-        uint32_t kind, name, source;
+        uint32_t kind, name, source, revision;
     } image_sources[128];
     struct {
         GLuint name;
@@ -205,6 +205,9 @@ static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates;
 static unsigned bind_failure, bind_queries;
 static unsigned image_mutation_failure, image_mutation_queries;
+static EGLImageKHR nested_image_import, nested_image_state;
+static struct wpk_gles_context *close_group_peer;
+static unsigned close_group_reservations;
 static unsigned scalar_queries;
 static uint32_t core_total, core_offset, core_info[4];
 static unsigned core_calls, core_fail_at, validate_commands;
@@ -251,6 +254,20 @@ static uint32_t *object_image_source(struct device_slot *slot, uint32_t kind, ui
         }
     assert(!"image source fixture exhausted");
     return NULL;
+}
+static uint32_t *object_image_revision(struct device_slot *slot, uint32_t kind, uint32_t name) {
+    (void)object_image_source(slot, kind, name);
+    for (unsigned i = 0; i < 128; i++)
+        if (slot->image_sources[i].kind == kind && slot->image_sources[i].name == name)
+            return &slot->image_sources[i].revision;
+    assert(0);
+    return NULL;
+}
+static void orphan_image_source(struct device_slot *slot, uint32_t kind, uint32_t name) {
+    uint32_t *source = object_image_source(slot, kind, name);
+    if (*source)
+        ++*object_image_revision(slot, kind, name);
+    *source = 0;
 }
 /* Model definite native rejection on both legacy queued binds and checked
  * binding queries so the regression can execute against unchanged sources. */
@@ -439,6 +456,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             transfer_closes++;
         } else {
             assert(handle == 77 && imported_owners[fd - 10]);
+            if (close_group_peer) {
+                struct wpk_gles_context *peer = close_group_peer;
+                close_group_peer = NULL;
+                uint32_t name;
+                assert(_wpk_gl_reserve_names(peer, 0, 1, &name) == GL_NO_ERROR && name == 1);
+                close_group_reservations++;
+            }
             imported_owners[fd - 10] = 0;
             closes++;
             slot->closes++;
@@ -579,13 +603,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 if (fail_image_storage)
                     query_gl_error = GL_INVALID_VALUE;
                 else if (words[0] == GL_TEXTURE_2D)
-                    *object_image_source(slot, 1, slot->texture_2d[slot->texture_active]) = 0;
+                    orphan_image_source(slot, 1, slot->texture_2d[slot->texture_active]);
             }
             if (op == OP_RENDERBUFFER_STORAGE) {
                 if (fail_image_storage)
                     query_gl_error = GL_INVALID_VALUE;
                 else
-                    *object_image_source(slot, 2, slot->renderbuffer_binding) = 0;
+                    orphan_image_source(slot, 2, slot->renderbuffer_binding);
             }
             if (op == OP_CREATE_SHADER && shaders_created < 2)
                 shader_names[shaders_created++] = words[1];
@@ -720,16 +744,62 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                     assert(q->in_buf_len == 40 && input[9] == 0);
                     redefined_texture = bound_texture;
                     if (input[1] == GL_TEXTURE_2D)
-                        *object_image_source(slot, 1, slot->texture_2d[slot->texture_active]) = 0;
+                        orphan_image_source(slot, 1, slot->texture_2d[slot->texture_active]);
                 } else {
                     assert(input[0] == OP_RENDERBUFFER_STORAGE && q->in_buf_len == 20);
-                    *object_image_source(slot, 2, slot->renderbuffer_binding) = 0;
+                    orphan_image_source(slot, 2, slot->renderbuffer_binding);
                 }
             }
             uint32_t trace[13] = {q->op, 12, reply[0]};
             memcpy(trace + 3, input, q->in_buf_len);
             egl_trace(11, fd, trace, 12 + q->in_buf_len);
             protocol_trace(2, q->op, input, q->in_buf_len, 12);
+            return 0;
+        }
+        if (q->op == 0x25 || q->op == 0x26) {
+            assert(q->in_buf_len == (q->op == 0x25 ? 12u : 8u) && q->out_buf_len == 16);
+            const uint32_t *input = allocation_for(q->in_buf_ptr, q->in_buf_len);
+            uint32_t *reply = allocation_for(q->out_buf_ptr, 16);
+            assert((input[0] == 1 && input[1] == GL_TEXTURE_2D) ||
+                   (input[0] == 2 && input[1] == GL_RENDERBUFFER));
+            uint32_t name =
+                input[0] == 1 ? slot->texture_2d[slot->texture_active] : slot->renderbuffer_binding;
+            assert(name);
+            unsigned failure = image_failure;
+            image_failure = 0;
+            image_queries++;
+            if (q->op == 0x25 && failure != 2) {
+                *object_image_source(slot, input[0], name) = input[2];
+                ++*object_image_revision(slot, input[0], name);
+            }
+            if (failure == 1) {
+                errno = EIO;
+                return -1;
+            }
+            reply[0] = failure == 2 ? 1u : 0u;
+            reply[1] = *object_image_source(slot, input[0], name);
+            reply[2] = *object_image_revision(slot, input[0], name);
+            reply[3] = failure == 3 ? 0u : 0x47514c33u;
+            if (failure == 2)
+                query_gl_error = GL_OUT_OF_MEMORY;
+            uint32_t trace[7] = {q->op, reply[0], reply[1], reply[2]};
+            memcpy(trace + 4, input, q->in_buf_len);
+            egl_trace(12, fd, trace, 16 + q->in_buf_len);
+            protocol_trace(2, q->op, input, q->in_buf_len, 16);
+            // Complete a newer accepted import before delivering this older
+            // reply to C. This models completion interleaving, not public
+            // context/thread sharing or real GPU execution.
+            EGLImageKHR nested = q->op == 0x25 ? nested_image_import : nested_image_state;
+            if (nested) {
+                if (q->op == 0x25)
+                    nested_image_import = NULL;
+                else
+                    nested_image_state = NULL;
+                if (input[0] == 1)
+                    glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, nested);
+                else
+                    glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, nested);
+            }
             return 0;
         }
         if (q->op == 0x23 || q->op == 0x24) {
@@ -1572,9 +1642,15 @@ int main(int argc, char **argv) {
             EGLImageKHR img = image(dpy); GLuint renderbuffer, framebuffers[2];
             glGenRenderbuffers(1,&renderbuffer); glBindRenderbuffer(GL_RENDERBUFFER,renderbuffer);
             glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,img); assert(eglDestroyImageKHR(dpy,img));
-            rbo(GL_RENDERBUFFER,GL_RENDERBUFFER_WIDTH,&value); assert(value == 64);
-            rbo(GL_RENDERBUFFER,GL_RENDERBUFFER_INTERNAL_FORMAT,&value); assert(value == 0x8058);
-            rbo(GL_RENDERBUFFER,GL_RENDERBUFFER_ALPHA_SIZE,&value); assert(value == 8);
+            query_scalar = 64;
+            rbo(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &value);
+            assert(value == 64);
+            query_scalar = 0x8058;
+            rbo(GL_RENDERBUFFER, GL_RENDERBUFFER_INTERNAL_FORMAT, &value);
+            assert(value == 0x8058);
+            query_scalar = 8;
+            rbo(GL_RENDERBUFFER, GL_RENDERBUFFER_ALPHA_SIZE, &value);
+            assert(value == 8);
             glGenFramebuffers(2,framebuffers); glBindFramebuffer(GL_FRAMEBUFFER,framebuffers[0]);
             glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,renderbuffer);
             core_info[0] = GL_RENDERBUFFER;
@@ -2235,6 +2311,110 @@ int main(int argc, char **argv) {
         printf("PASS %s\n", argv[1]);
         return 0;
     }
+    if (!strcmp(argv[1], "image-object-close-texture") ||
+        !strcmp(argv[1], "image-object-close-rbo")) {
+        int texture = !strcmp(argv[1], "image-object-close-texture");
+        struct wpk_gles_context *peer = _wpk_gl_create_shared_encoder(_wpk_gl_current_encoder());
+        assert(peer);
+        GLuint name = 17;
+        EGLImageKHR img = image(dpy);
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, name);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+        }
+        assert(eglDestroyImageKHR(dpy, img) && closes == 0);
+        close_group_peer = peer;
+        if (texture)
+            glDeleteTextures(1, &name);
+        else
+            glDeleteRenderbuffers(1, &name);
+        assert(closes == 1 && close_group_reservations == 1 && !close_group_peer);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread());
+        _wpk_gl_destroy_encoder(peer);
+        assert(eglTerminate(dpy) && allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-object-revisions-texture") ||
+        !strcmp(argv[1], "image-object-revisions-rbo")) {
+        int texture = !strcmp(argv[1], "image-object-revisions-texture");
+        GLuint name = 17;
+        EGLImageKHR images[3] = {image(dpy), image(dpy), image(dpy)};
+        nested_image_import = images[1];
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, name);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, images[0]);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, images[0]);
+        }
+        assert(!nested_image_import && glGetError() == GL_NO_ERROR);
+        for (unsigned i = 0; i < 3; i++) {
+            struct wpk_egl_image *record = _wpk_egl_image_lookup(images[i]);
+            assert(record && record->references == (i == 1 ? 3u : 2u));
+            _wpk_egl_image_release(record);
+        }
+        const GLubyte blue[4] = {0, 0, 255, 255};
+        unsigned before = image_pixel_updates;
+        nested_image_state = images[2];
+        if (texture)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+        else
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA4, 1, 1);
+        assert(!nested_image_state && glGetError() == GL_NO_ERROR && image_pixel_updates == before);
+        for (unsigned i = 0; i < 3; i++) {
+            struct wpk_egl_image *record = _wpk_egl_image_lookup(images[i]);
+            assert(record && record->references == (i == 2 ? 3u : 2u));
+            _wpk_egl_image_release(record);
+        }
+        if (texture)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+        else
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA4, 1, 1);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR && (!texture || image_pixel_updates > before));
+        for (unsigned i = 0; i < 3; i++) {
+            struct wpk_egl_image *record = _wpk_egl_image_lookup(images[i]);
+            assert(record && record->references == 2);
+            _wpk_egl_image_release(record);
+            assert(eglDestroyImageKHR(dpy, images[i]));
+        }
+        assert(closes == 1);
+        if (texture)
+            glDeleteTextures(1, &name);
+        else
+            glDeleteRenderbuffers(1, &name);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-group-namespace-texture") ||
+        !strcmp(argv[1], "image-group-namespace-rbo")) {
+        int texture = !strcmp(argv[1], "image-group-namespace-texture");
+        struct wpk_gles_context *peer = _wpk_gl_create_shared_encoder(_wpk_gl_current_encoder());
+        assert(peer);
+        EGLImageKHR img = image(dpy);
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, 17);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, 17);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+        }
+        assert(glGetError() == GL_NO_ERROR && eglDestroyImageKHR(dpy, img) && closes == 0);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && closes == 0);
+        // A still-named shared object belongs to the group even when only a
+        // private metadata peer survives. No public sharing/rendering claim.
+        _wpk_gl_destroy_encoder(peer);
+        assert(closes == 1);
+        assert(eglTerminate(dpy) && allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
     if (!strcmp(argv[1], "image-framebuffer-bind-reject")) {
         GLuint name = 17, framebuffers[2];
         EGLImageKHR img = image(dpy);
@@ -2387,6 +2567,7 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(argv[1], "image-bind-ack")) {
         binding_model = 1;
+        binding_query_kind = GL_TEXTURE_BINDING_2D;
         glBindTexture(GL_TEXTURE_2D, 17);
         glFlush();
         bind_failure = 2;
@@ -2422,6 +2603,7 @@ int main(int argc, char **argv) {
     }
     if (!strcmp(argv[1], "image-bind-errors")) {
         binding_model = 1;
+        binding_query_kind = GL_TEXTURE_BINDING_2D;
         glBindTexture(GL_TEXTURE_2D, 17);
         glBindRenderbuffer(GL_RENDERBUFFER, 21);
         EGLImageKHR img = image(dpy);
