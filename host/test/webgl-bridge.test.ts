@@ -282,9 +282,39 @@ describe("shared image object deletion", () => {
     return { gl,reg,a:bindings[0],b:bindings[1],send };
   }
 
+  it.each([
+    [O.OP_GEN_BUFFERS,O.OP_BIND_BUFFER,0x8892,"buffers","createBuffer"],
+    [O.OP_GEN_TEXTURES,O.OP_BIND_TEXTURE,0x0de1,"textures","createTexture"],
+    [O.OP_GEN_RENDERBUFFERS,O.OP_BIND_RENDERBUFFER,0x8d41,"rbos","createRenderbuffer"],
+  ] as const)("keeps a peer's realized object when delayed reservation %i arrives",(gen,bind,target,map,create)=>{
+    const {gl,a,b,send}=setup();
+    send(b,bind,[target,71]);const object=b[map].get(71);expect(object).toBeTruthy();
+    const creations=gl.log.filter(([name])=>name===create).length;
+    send(a,gen,[1,71]);
+    expect(a[map].get(71)).toBe(object);expect(a.errors).toEqual([]);
+    expect(gl.log.filter(([name])=>name===create)).toHaveLength(creations);
+  });
+  it.each([
+    [O.OP_GEN_BUFFERS,"buffers","createBuffer"],
+    [O.OP_GEN_TEXTURES,"textures","createTexture"],
+    [O.OP_GEN_RENDERBUFFERS,"rbos","createRenderbuffer"],
+  ] as const)("keeps reservation %i distinct from a realized object",(gen,map,create)=>{
+    const {gl,a,send}=setup();send(a,gen,[1,71]);expect(a[map].has(71)).toBe(false);
+    expect(gl.log.filter(([name])=>name===create)).toEqual([]);expect(a.errors).toEqual([]);
+  });
+
+  it.each([O.OP_FRAMEBUFFER_TEXTURE_2D,O.OP_FRAMEBUFFER_RENDERBUFFER])("does not attach an unrealized reserved image for operation %i",op=>{
+    const {gl,a,send}=setup();
+    send(a,op===O.OP_FRAMEBUFFER_TEXTURE_2D?O.OP_GEN_TEXTURES:O.OP_GEN_RENDERBUFFERS,[1,71]);
+    send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);const framebuffer=a.shadow.fbo!;gl.log.length=0;
+    send(a,op,op===O.OP_FRAMEBUFFER_TEXTURE_2D?[0x8d40,0x8ce0,0x0de1,71,0]:[0x8d40,0x8ce0,0x8d41,71]);
+    expect(a.errors).toEqual([0x502]);expect(a.framebufferAttachments.has(framebuffer)).toBe(false);
+    expect(gl.log.some(([name])=>name==="framebufferTexture2D" || name==="framebufferRenderbuffer")).toBe(false);
+  });
+
   it("keeps another context's deleted texture binding and name through name reuse", () => {
     const { gl,a,b,send } = setup();
-    send(a,O.OP_GEN_TEXTURES,[1,71]); const old = a.textures.get(71)!;
+    send(a,O.OP_GEN_TEXTURES,[1,71]); send(a,O.OP_BIND_TEXTURE,[0x0de1,71]); const old = a.textures.get(71)!;
     send(a,O.OP_BIND_TEXTURE,[0x0de1,71]); send(b,O.OP_BIND_TEXTURE,[0x0de1,71]);
     send(a,O.OP_DELETE_TEXTURES,[1,71]);
     expect(gl.log.filter(([name]) => name === "deleteTexture")).toEqual([]);
@@ -304,7 +334,7 @@ describe("shared image object deletion", () => {
 
   it("retains an unbound FBO's deleted texture until the container is destroyed", () => {
     const { gl,a,send } = setup();
-    send(a,O.OP_GEN_TEXTURES,[1,71]); const texture = a.textures.get(71)!;
+    send(a,O.OP_GEN_TEXTURES,[1,71]); send(a,O.OP_BIND_TEXTURE,[0x0de1,71]); const texture = a.textures.get(71)!;
     send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);
     send(a,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,71,0]);
     send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,0]); send(a,O.OP_DELETE_TEXTURES,[1,71]);
@@ -315,7 +345,7 @@ describe("shared image object deletion", () => {
 
   it("detaches a deleted renderbuffer only from the caller's bound FBO", () => {
     const { gl,a,b,send } = setup();
-    send(a,O.OP_GEN_RENDERBUFFERS,[1,71]); const renderbuffer = a.rbos.get(71)!;
+    send(a,O.OP_GEN_RENDERBUFFERS,[1,71]); send(a,O.OP_BIND_RENDERBUFFER,[0x8d41,71]); const renderbuffer = a.rbos.get(71)!;
     send(a,O.OP_BIND_RENDERBUFFER,[0x8d41,71]);
     for(const [owner,framebuffer] of [[a,31],[b,32]] as const) {
       send(owner,O.OP_BIND_FRAMEBUFFER,[0x8d40,framebuffer]);
@@ -334,7 +364,7 @@ describe("shared image object deletion", () => {
 
   it("retains packed depth/stencil storage until both attachment points are released", () => {
     const { gl,a,send } = setup();
-    send(a,O.OP_GEN_RENDERBUFFERS,[1,71]); const renderbuffer = a.rbos.get(71)!;
+    send(a,O.OP_GEN_RENDERBUFFERS,[1,71]); send(a,O.OP_BIND_RENDERBUFFER,[0x8d41,71]); const renderbuffer = a.rbos.get(71)!;
     send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);
     send(a,O.OP_FRAMEBUFFER_RENDERBUFFER,[0x8d40,0x821a,0x8d41,71]);
     send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,0]); send(a,O.OP_DELETE_RENDERBUFFERS,[1,71]);
@@ -347,7 +377,7 @@ describe("shared image object deletion", () => {
 
   it("keeps attachment ownership after a rejected native replacement", () => {
     const { gl,a,send } = setup();
-    send(a,O.OP_GEN_TEXTURES,[1,71]); const texture = a.textures.get(71)!;
+    send(a,O.OP_GEN_TEXTURES,[1,71]); send(a,O.OP_BIND_TEXTURE,[0x0de1,71]); const texture = a.textures.get(71)!;
     send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);
     send(a,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,71,0]);
     send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,0]); send(a,O.OP_DELETE_TEXTURES,[1,71]);
@@ -366,7 +396,7 @@ describe("shared image object deletion", () => {
 
   it("reclaims a deleted attachment when its last retaining context ends", () => {
     const { gl,reg,a,b,send } = setup();
-    send(a,O.OP_GEN_TEXTURES,[1,71]); const texture = a.textures.get(71)!;
+    send(a,O.OP_GEN_TEXTURES,[1,71]); send(a,O.OP_BIND_TEXTURE,[0x0de1,71]); const texture = a.textures.get(71)!;
     send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,31]);
     send(a,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,71,0]);
     send(a,O.OP_BIND_FRAMEBUFFER,[0x8d40,0]); send(a,O.OP_DELETE_TEXTURES,[1,71]);
@@ -379,7 +409,7 @@ describe("shared image object deletion", () => {
 
   it("leaves BO-owned native texture retirement to its canonical owner", () => {
     const { gl,a,send } = setup();
-    send(a,O.OP_GEN_TEXTURES,[1,71]); const texture = a.textures.get(71)!;
+    send(a,O.OP_GEN_TEXTURES,[1,71]); send(a,O.OP_BIND_TEXTURE,[0x0de1,71]); const texture = a.textures.get(71)!;
     a.externallyOwnedTextures.add(texture);
     send(a,O.OP_DELETE_TEXTURES,[1,71]);
     expect(a.textures.has(71)).toBe(false); expect(a.retiredTextures.size).toBe(0);
@@ -763,12 +793,12 @@ describe("shared buffer deletion", () => {
     expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === vertex)).toHaveLength(1);
   });
 
-  it("rejects duplicate generated names and failed native buffer binds without replacing references", () => {
+  it("keeps delayed buffer reservations and rejected native binds from replacing references", () => {
     const {gl,a,send} = setup();
-    send(a,O.OP_GEN_BUFFERS,[2,71,72]); const old = a.buffers.get(71)!;
-    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,O.OP_GEN_BUFFERS,[2,71,72]);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); const old = a.buffers.get(71)!;
     send(a,O.OP_GEN_BUFFERS,[1,71]); expect(a.buffers.get(71)).toBe(old);
-    expect(a.errors).toContain(0x502);
+    expect(a.errors).toEqual([]);
     const errors: number[] = [];
     gl.getError = () => errors.shift() ?? 0;
     gl.bindBuffer = () => { errors.push(0x502); };
@@ -779,8 +809,8 @@ describe("shared buffer deletion", () => {
 
   it("preserves a peer buffer binding and its old name until rebinding", () => {
     const {gl,a,b,send} = setup();
-    send(a,O.OP_GEN_BUFFERS,[1,71]); const old = a.buffers.get(71)!;
-    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(b,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,O.OP_GEN_BUFFERS,[1,71]);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); const old = a.buffers.get(71)!; send(b,O.OP_BIND_BUFFER,[0x8892,71]);
     send(a,O.OP_DELETE_BUFFERS,[1,71]);
     expect(gl.log.filter(([name]) => name === "deleteBuffer")).toEqual([]);
     expect(a.shadow.arrayBuffer).toBeNull(); expect(b.shadow.arrayBuffer).toBe(old);
@@ -795,9 +825,9 @@ describe("shared buffer deletion", () => {
 
   it("retains buffer storage through an unbound VAO until that container ends", () => {
     const {gl,a,send} = setup();
-    send(a,O.OP_GEN_BUFFERS,[1,71]); const buffer = a.buffers.get(71)!;
+    send(a,O.OP_GEN_BUFFERS,[1,71]);
     send(a,O.OP_GEN_VERTEX_ARRAYS,[1,31]); send(a,O.OP_BIND_VERTEX_ARRAY,[31]);
-    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); const buffer = a.buffers.get(71)!;
     send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]);
     send(a,O.OP_BIND_VERTEX_ARRAY,[0]); send(a,O.OP_DELETE_BUFFERS,[1,71]);
     expect(gl.log.filter(([name]) => name === "deleteBuffer")).toEqual([]);
@@ -807,8 +837,8 @@ describe("shared buffer deletion", () => {
 
   it("clears only active attribute and element references on deletion", () => {
     const {gl,a,b,send} = setup();
-    send(a,O.OP_GEN_BUFFERS,[1,71]); const old = a.buffers.get(71)!;
-    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,O.OP_GEN_BUFFERS,[1,71]);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); const old = a.buffers.get(71)!;
     send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,8,4]);
     send(a,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
     send(a,O.OP_BIND_BUFFER,[0x8893,71]);
@@ -827,8 +857,8 @@ describe("shared buffer deletion", () => {
 
   it("preserves accepted pointer state when a later native pointer update fails", () => {
     const {gl,a,send} = setup();
-    send(a,O.OP_GEN_BUFFERS,[2,71,72]); const old = a.buffers.get(71)!;
-    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]);
+    send(a,O.OP_GEN_BUFFERS,[2,71,72]);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); const old = a.buffers.get(71)!; send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]);
     send(a,O.OP_BIND_BUFFER,[0x8892,72]);
     const errors: number[] = [];
     gl.getError = () => errors.shift() ?? 0;
@@ -841,8 +871,8 @@ describe("shared buffer deletion", () => {
 
   it("keeps names and references intact when buffer-zero clearing cannot allocate", () => {
     const {gl,a,send} = setup();
-    send(a,O.OP_GEN_BUFFERS,[1,71]); const old = a.buffers.get(71)!;
-    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]);
+    send(a,O.OP_GEN_BUFFERS,[1,71]);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); const old = a.buffers.get(71)!; send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]);
     gl.createBuffer = () => null as any;
     send(a,O.OP_DELETE_BUFFERS,[1,71]);
     expect(a.buffers.get(71)).toBe(old); expect(a.shadow.arrayBuffer).toBe(old);
@@ -852,8 +882,8 @@ describe("shared buffer deletion", () => {
 
   it("returns to the private default VAO and retains its element binding", () => {
     const {gl,a,send} = setup();
-    send(a,O.OP_GEN_BUFFERS,[1,71]); const old = a.buffers.get(71)!;
-    send(a,O.OP_BIND_BUFFER,[0x8893,71]);
+    send(a,O.OP_GEN_BUFFERS,[1,71]);
+    send(a,O.OP_BIND_BUFFER,[0x8893,71]); const old = a.buffers.get(71)!;
     send(a,O.OP_GEN_VERTEX_ARRAYS,[1,31]); send(a,O.OP_BIND_VERTEX_ARRAY,[31]);
     expect(a.vertexArrays.get(31)!.element).toBeNull();
     send(a,O.OP_DELETE_VERTEX_ARRAYS,[1,31]);
@@ -866,9 +896,9 @@ describe("shared buffer deletion", () => {
 
   it("retires deleted storage on the last owning context's destruction", () => {
     const {gl,reg,a,b,send} = setup();
-    send(a,O.OP_GEN_BUFFERS,[1,71]); const old = a.buffers.get(71)!;
+    send(a,O.OP_GEN_BUFFERS,[1,71]);
     send(b,O.OP_GEN_VERTEX_ARRAYS,[1,31]); send(b,O.OP_BIND_VERTEX_ARRAY,[31]);
-    send(b,O.OP_BIND_BUFFER,[0x8893,71]); send(b,O.OP_BIND_VERTEX_ARRAY,[0]);
+    send(b,O.OP_BIND_BUFFER,[0x8893,71]); const old = a.buffers.get(71)!; send(b,O.OP_BIND_VERTEX_ARRAY,[0]);
     send(a,O.OP_DELETE_BUFFERS,[1,71]); reg.destroyContext(7,11);
     expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toEqual([]);
     reg.destroyContext(7,12);
@@ -1080,15 +1110,19 @@ describe("cmdbuf decoder — TLV walker", () => {
     t.view.setUint32(gen.p, 2, true);
     t.view.setUint32(gen.p + 4, 5, true);
     t.view.setUint32(gen.p + 8, 6, true);
+    for (const name of [5,6]) {
+      const bind=t.op(O.OP_BIND_RENDERBUFFER,8);
+      t.view.setUint32(bind.p,0x8d41,true);t.view.setUint32(bind.p+4,name,true);
+    }
     const del = t.op(O.OP_DELETE_RENDERBUFFERS, 8);
     t.view.setUint32(del.p, 1, true);
     t.view.setUint32(del.p + 4, 5, true);
 
     const rbo5 = (() => {
-      decodeAndDispatch(b, 0, gen.p + 12);
+      decodeAndDispatch(b, 0, del.p - 4);
       return b.rbos.get(5);
     })();
-    expect(decodeAndDispatch(b, gen.p + 12, t.p - (gen.p + 12))).toBe(0);
+    expect(decodeAndDispatch(b, del.p - 4, t.p - (del.p - 4))).toBe(0);
     expect(gl.log).toContainEqual(["deleteRenderbuffer", [rbo5]]);
     expect(b.rbos.has(5)).toBe(false);
     expect(b.rbos.has(6)).toBe(true);

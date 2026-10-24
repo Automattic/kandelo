@@ -10,14 +10,14 @@ self.onmessage=({data})=>{
     const channels=[11,12,13,14].map(session=>createMainForwardChannel({postMessage:message=>postMessage(message)},7,session));
     let gl:WebGL2RenderingContext|null=null,memory:WebAssembly.Memory|null=null;
     let imports:Record<string,(...args:any[])=>any>|null=null;
-    const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
+    const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[],creationCounts:Record<string,number>={};
     if(!forwarded) {
       const canvas=data.canvas as OffscreenCanvas;
       gl=canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true});
       if(!gl)throw new Error("native WebGL2 unavailable");
-      for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],...(data.uniforms?[["createProgram","deleteProgram","isProgram"],["createShader","deleteShader","isShader"]]:[])]) {
+      for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],...(data.uniforms?[["createProgram","deleteProgram","isProgram"],["createShader","deleteShader","isShader"]]:[]),...(data.reservations?[["createBuffer","deleteBuffer","isBuffer"]]:[])]) {
         const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));}return value;};
+        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));creationCounts[createName]=(creationCounts[createName]??0)+1;}return value;};
         api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
       }
       memory=new WebAssembly.Memory({initial:2,maximum:2});
@@ -64,6 +64,42 @@ self.onmessage=({data})=>{
       send(i,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,17,0]);
     };
     const destroy=(i:number)=>{if(forwarded)channels[i].onDestroyContext!();else imports!.host_gl_destroy_context(7,21+i);};
+    if(data.reservations) {
+      const isObject=(i:number,kind:number,name:number)=>{
+        const view=new DataView(new Uint8Array(query(i,O.QOP_IS_OBJECT,[kind,name],12)).buffer);
+        if(view.getUint32(0,true)!==0 || view.getUint32(8,true)!==0x47514c33)throw new Error("object query failed");
+        return view.getUint32(4,true)!==0;
+      };
+      create(0);current(0);
+      const gens=[O.OP_GEN_BUFFERS,O.OP_GEN_TEXTURES,O.OP_GEN_RENDERBUFFERS],deletes=[O.OP_DELETE_BUFFERS,O.OP_DELETE_TEXTURES,O.OP_DELETE_RENDERBUFFERS];
+      for(const op of gens)send(0,op,[1,90]);
+      const reserved=gens.map((_,kind)=>isObject(0,kind,90));
+      for(const op of deletes)send(0,op,[1,90]);
+      create(1,0);current(1);storage(1,[255,0,0,255]);attachment(1);
+      send(1,O.OP_BIND_BUFFER,[0x8892,21]);send(1,O.OP_BUFFER_DATA,[0x8892,4,0x88e4]);send(1,O.OP_BUFFER_SUB_DATA,[0x8892,0,4],new Uint8Array([0,1,2,3]));
+      send(1,O.OP_BIND_RENDERBUFFER,[0x8d41,31]);send(1,O.OP_RENDERBUFFER_STORAGE,[0x8d41,0x8056,1,1]);
+      send(1,O.OP_GEN_FRAMEBUFFERS,[1,8]);send(1,O.OP_BIND_FRAMEBUFFER,[0x8d40,8]);send(1,O.OP_FRAMEBUFFER_RENDERBUFFER,[0x8d40,0x8ce0,0x8d41,31]);
+      send(1,O.OP_CLEAR_COLOR,Array.from(new Uint32Array(new Float32Array([0,1,0,1]).buffer)));send(1,O.OP_CLEAR,[0x4000]);
+      // A client's reserved names can reach a peer before its queued Gen
+      // declarations reach the renderer. Those records must not reset objects.
+      current(0);const names=[21,17,31];gens.forEach((op,index)=>send(0,op,[1,names[index]]));
+      const realized=names.map((name,kind)=>isObject(0,kind,name));
+      attachment(0);const texturePixels=pixels(0);
+      send(0,O.OP_GEN_FRAMEBUFFERS,[1,8]);send(0,O.OP_BIND_FRAMEBUFFER,[0x8d40,8]);send(0,O.OP_FRAMEBUFFER_RENDERBUFFER,[0x8d40,0x8ce0,0x8d41,31]);const renderbufferPixels=pixels(0);
+      send(0,O.OP_BIND_BUFFER,[0x8893,21]);const usage=new Uint8Array(query(0,O.QOP_GET_INDEX_USAGE,[0x1401,0,4],8204)),v=new DataView(usage.buffer);
+      if(v.getUint32(0,true)!==0 || v.getUint32(8200,true)!==0x47514c33)throw new Error("buffer usage failed");
+      const bufferMaximum=v.getUint32(4,true),bufferBits=usage[8];
+      deletes.forEach((op,index)=>send(0,op,[1,names[index]]));gens.forEach((op,index)=>send(0,op,[1,names[index]]));
+      const retired=names.map((name,kind)=>isObject(0,kind,name));
+      const errors=[query(0,O.QOP_GET_ERROR,[],4),query(1,O.QOP_GET_ERROR,[],4)];destroy(0);destroy(1);
+      for(const i of [0,1]){
+        if(forwarded){channels[i].onUnbind!(11+i);if(channels[i].onPresent!()!==-5)throw new Error("retired session revived");}
+        else imports!.host_gl_unbind(7,11+i);
+      }
+      const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
+      postMessage({type:"reservation_result",reserved,realized,retired,texturePixels,renderbufferPixels,bufferMaximum,bufferBits,errors,
+        allocations:forwarded?null:[creationCounts.createBuffer??0,creationCounts.createTexture??0,creationCounts.createRenderbuffer??0],clean,error:forwarded?0:gl!.getError()});return;
+    }
     if(data.uniforms) {
       create(0);current(0);storage(0,[0,0,0,255]);attachment(0);
       const shader=(name:number,type:number,text:string)=>{

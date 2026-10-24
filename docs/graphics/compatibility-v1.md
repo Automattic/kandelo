@@ -60,10 +60,10 @@ reproduction and correct observable failure; none is inferred from a stub.
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reference-counted C name owner reserves buffer/texture/renderbuffer names, including implicit binds; shared shader/program allocation is serialized. Public C groups and full query/error coverage remain open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Multiple public contexts have focused native/source-browser coverage; full rollback, hints and CTS remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
-| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Client staging now retains/restores actual ARRAY identity across peer deletion/reuse (operation table 6). Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
+| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Native buffer realization now occurs on first bind; delayed reservations cannot reject or replace a peer object. Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Client staging now retains/restores actual ARRAY identity across peer deletion/reuse (operation table 6). Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection, acknowledged large-source uploads and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Checked renderer replies now supply complete element widths/values without C reflection caches and preserve failed-query outputs. Shared-peer/source-retirement/relink cases have focused evidence. Locations now remain stable across repeated/array-alias lookups, and checked chunked C lookup/reflection removes fixed buffers. Shader-name translation beyond WebGL limits and complete setter/type/array validation remain open | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
-| G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
+| G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | Texture reservations now remain separate from native realization, including delayed shared declarations. WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
 | G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; attachment records retain deleted texture/RBO storage, including unbound containers and separate packed depth/stencil points. Core attachment/renderbuffer queries implemented; full storage/negative/CTS coverage remains open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
@@ -2509,3 +2509,78 @@ required. Normal SDK/program/package/image rebuilds, CTS, cage/sway, full
 browser-memory and POSIX checks stay deferred until implementation is
 ready. Kernel compilation here only inspected ABI exports; the ABI 58
 standalone resolver is unchanged from `5985c3c727`. The full goal is active.
+
+
+## Shared reservations do not replace realized objects (2026-10-24)
+
+The shared-image trace exposed an earlier namespace hazard. C reserves a
+name before its command buffer necessarily reaches the renderer. A peer
+can bind that name first. The old texture/renderbuffer generation records
+then replaced the namespace's native object with a fresh allocation;
+buffers instead reported INVALID_OPERATION. Either result breaks the
+reservation/identity model needed for image sharing. Six new host cases
+fail against unchanged `602727a276`:
+`.context/graphics-reservation-baseline-host.log`.
+
+Buffer, texture and renderbuffer name declarations now perform no native
+allocation or namespace mutation. The C owner already reserves names
+atomically. Their first accepted Bind operation creates and publishes the
+native object. A delayed declaration therefore cannot reset a peer's
+storage, reject an already-realized name, or recreate a deleted object.
+An unbound reserved image cannot be attached to an FBO. These distinctions
+follow [GLES 2.0 sections 2.9, 3.7.13 and 4.4.3](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf).
+
+Existing name declarations remain structurally validated, including whole
+batch rejection before any earlier command executes. No command/query tag,
+wire, import, syscall, ABI snapshot or C API changes. ABI 58 / table 8 are
+unchanged: this corrects GLES name semantics, with compatible existing
+command records. Framebuffer/VAO naming is a separate remaining audit;
+this change covers the three shared-name families above.
+
+Focused evidence:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Host graphics source and Node/browser declarations | 413 cases in 19 files and declarations passed | `.context/graphics-reservation-stable-host.log` |
+| Real Chromium/Firefox/WebKit source rendering | 153 passed, no skips | `.context/graphics-reservation-stable-browser.log` |
+| Browser protocol/memory-boundary negatives | 12 passed | `.context/graphics-reservation-memory-boundary.log` |
+
+Eight added host cases cover delayed declarations across sharing peers,
+no native realization before bind and invalid attachment of an unrealized
+texture/renderbuffer. Sixteen older lifetime fixtures assumed Gen created
+a native object; they now perform the required first bind before retaining
+an identity or attaching it. Their prior deletion, failed replacement,
+retained binding/container and teardown assertions remain. The old duplicate
+buffer-declaration test now expects no GL error; a rejected native bind
+still preserves the old binding.
+
+Six new browser executions exercise native worker imports and main
+forwarding. A peer creates a red texture, green renderbuffer and buffer
+bytes 0/1/2/3 before delayed declarations arrive. Another context then
+attaches those public names and reads the original red/green pixels. An
+index view of the buffer reports maximum 3 and all four index bits. Unused
+reservations stay unrealized; declarations after deletion do not recreate
+names. Native creation counts are exactly two buffer views, one texture
+and one renderbuffer, with complete final deletion/isLive checks. Both
+contexts retain zero error status. These are driver-level source paths
+with a synthetic kernel adapter, not public C sharing or Rust guest ioctl
+marshalling. Existing actual-C trace replay cases also pass in the full
+153-case source browser gate.
+
+C/kernel/wire sources are unchanged from `602727a276`. Its 89 native C
+cases, private wasm32 link/150 guards/142 core symbols, 47 GLIO plus 4
+layout/18 ioctl cases and ABI consistency are historical evidence, not
+newly repeated standalone runs in this host batch. No normal artifact was
+rebuilt or restamped. Standalone ABI 58 resolver and native Wayland results
+remain historical as recorded earlier. Origin/main was fetched again at
+`f3cb7041f64b657c1ead57d579ccb61867ecf1cf` (ABI 52), already an ancestor.
+
+The image trace still shows C aliases translating multiple logical names
+to one BO texture, conflating sampler state and backing identity. Simply
+moving those alias tables into the name owner will not fix it. Retained C
+texture/renderbuffer/binding/FBO records and host logical image/storage
+views remain required before public sharing. The current C rejection stays.
+Shader-name translation, remaining API/error/lifecycle work and the full
+normal-artifact/CTS/compositor/browser-memory/POSIX phase remain open and
+required; expensive rebuilds and broad guest checks remain deferred until
+implementation is ready. The complete goal stays active.

@@ -680,17 +680,11 @@ function dispatch(
 
     // ----- buffers --------------------------------------------------------
     // Payload: u32 n, u32 names[n]
-    case O.OP_GEN_BUFFERS: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        if (!name || b.buffers.has(name)) { recordGlError(b,0x502); continue; }
-        let buffer: WebGLBuffer | null = null;
-        if (checkedGlCall(b, () => { buffer = gl.createBuffer(); }) && buffer) b.buffers.set(name,buffer);
-        else recordGlError(b,0x505);
-      }
-      return;
-    }
+    // Name reservations belong to the C namespace owner. GPU objects acquire
+    // state on first bind; a delayed reservation must never recreate or
+    // replace an object already realized (or deleted) by a sharing peer.
+    case O.OP_GEN_BUFFERS: return;
+
     case O.OP_DELETE_BUFFERS: {
       const n = v.getUint32(p, true);
       deleteBufferNames(b,Array.from({length:n},(_,i) => v.getUint32(p+4+i*4,true)));
@@ -728,16 +722,8 @@ function dispatch(
     }
 
     // ----- textures -------------------------------------------------------
-    case O.OP_GEN_TEXTURES: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        if (name === 0) continue;
-        const tex = gl.createTexture();
-        if (tex) b.textures.set(name, tex);
-      }
-      return;
-    }
+    case O.OP_GEN_TEXTURES: return;
+
     case O.OP_DELETE_TEXTURES: {
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
@@ -1307,15 +1293,8 @@ function dispatch(
         tex ? {kind:"texture",object:tex,target:textarget,level} : null);
       return;
     }
-    case O.OP_GEN_RENDERBUFFERS: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const rbo = gl.createRenderbuffer();
-        if (rbo) b.rbos.set(name, rbo);
-      }
-      return;
-    }
+    case O.OP_GEN_RENDERBUFFERS: return;
+
     case O.OP_DELETE_RENDERBUFFERS: {
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {

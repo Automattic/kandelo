@@ -215,3 +215,13 @@ browser cases additionally check an actual 249-character uniform, checked
 reflection chunks and a long inactive-name transfer through both routes
 in all engines. Source/name translation for active names beyond WebGL's
 limits remains required work.
+
+
+Shared reservation source tests distinguish C-owned names from native
+objects realized on first bind. Delayed declarations must preserve a
+peer's texture/renderbuffer pixels and buffer bytes; unused reservations
+and declarations after deletion must not create objects. The browser
+case checks native/forwarded dispatch in all engines, exact native buffer/
+texture/renderbuffer creation counts and final deletion. Existing unit
+lifetime fixtures explicitly bind before retaining their native identity.
+These source checks do not establish public C sharing or guest marshalling.

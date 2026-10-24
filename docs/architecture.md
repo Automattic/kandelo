@@ -3805,6 +3805,11 @@ restore identity independently of public names. Failed native restoration
 keeps the pin and rejects dependent draws until a successful END retry;
 context destruction releases it. Full indeterminate-submit recovery and
 interrupted temporary-name cleanup remain open.
+Name reservation is separate from GPU realization for buffers, textures
+and renderbuffers. Their Gen records do not allocate or mutate host object
+maps; the first accepted Bind publishes the native object. Delayed shared
+reservations cannot replace a peer's realized storage or revive a deleted
+name. The C owner still reserves complete batches before returning names.
 Local reference cleanup precedes releasing the common owner. The private
 shared-owner constructor is tested; public C sharing still rejects until
 image aliases and the remaining program/link contract are complete.
