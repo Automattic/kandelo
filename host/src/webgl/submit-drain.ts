@@ -10,12 +10,9 @@
  * provided `dispatch` callback so the queue empties cleanly; the
  * dispatcher itself bails when `b.gl` is null.
  *
- * Drain is synchronous on purpose: the centralized-kernel model has the
- * C process blocked on its `host_gl_submit` syscall for the duration of
- * this call, so the SAB-backed cmdbuf bytes referenced by
- * `(off, len)` cannot be overwritten between enqueue and drain. A
- * microtask defer would race the C side as soon as the kernel
- * acknowledges the syscall.
+ * Frames own copied bytes before validation and admission. Drain remains
+ * synchronous; deferred server ordering still needs execution/surface lifetime
+ * pins and query/presentation barriers. Owning bytes alone does not provide it.
  */
 import type { GlBinding } from "./registry.js";
 import type { GlMuxer } from "./muxer.js";
@@ -35,9 +32,11 @@ export function drainSubmitQueue(
     const frame = entry.frames.shift()!;
     let rc: number | void;
     try {
-      const mux = muxerFor(entry.binding);
-      if (mux) mux.switchTo(entry.binding);
-      rc = dispatch(entry.binding, frame.off, frame.len);
+      rc = frame.run(entry.binding, () => {
+        const mux = muxerFor(entry.binding);
+        if (mux) mux.switchTo(entry.binding);
+        return dispatch(entry.binding,0,frame.byteLength);
+      });
     } catch {
       // Renderer failure is an I/O result, not an exception into kernel Wasm.
       return -5;

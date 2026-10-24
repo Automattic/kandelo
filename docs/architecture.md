@@ -4352,6 +4352,22 @@ place fences. EGL_KHR_wait_sync and eglWaitSyncKHR remain unavailable.
 The definitions still require the normal combined graphics build and
 conformance phase.
 
+GL submission now captures only the requested command span into an owned
+SubmitFrame before validation. Native worker dispatch and main forwarding
+validate and decode that same snapshot, so guest rewrites or renderer
+callbacks cannot change later accepted records. Captured typed-array
+accessors avoid overridable source properties. A frame is admitted once,
+consumed before dispatch, and cleared on session/process purge. A failed
+or partially executed packet is not replayed.
+
+During synchronous dispatch the binding temporarily exposes the owned bytes
+to the existing decoder. Finally restores its cached guest view only if a
+memory rebind or teardown has not replaced it. Main forwarding does not
+retain the last delivered command message as a cached binding view. Drain
+remains synchronous: deferred server waits still need retained execution
+and drawable lifetimes, query/presentation barriers and asynchronous
+retirement. Owning command bytes supplies a prerequisite, not server ordering.
+
 The main-thread fallback supports synchronous queries through one reusable
 65,556-byte device mailbox per channel, matching the kernel's 64 KiB query
 limit. Input and command bytes are copied out of guest memory. A timed-out

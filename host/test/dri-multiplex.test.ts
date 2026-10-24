@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { GlContextRegistry, type GlBinding } from "../src/webgl/registry.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
-import { SubmitQueue } from "../src/webgl/submit-queue.js";
+import { SubmitFrame, SubmitQueue } from "../src/webgl/submit-queue.js";
 import { drainSubmitQueue } from "../src/webgl/submit-drain.js";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { OP_CLEAR } from "../src/webgl/ops.js";
 
 const FRAME_LEN = 8;
-const FRAME = { memorySab: new SharedArrayBuffer(0), off: 0, len: FRAME_LEN };
 
 class RecordingGl {
+  getError() { return 0; }
   log: Array<[string, unknown[]]> = [];
   createVertexArray() { const vao = {}; this.log.push(["createVertexArray", [vao]]); return vao; }
   bindVertexArray(v: unknown) { this.log.push(["bindVertexArray", [v]]); }
@@ -78,13 +78,13 @@ describe("dri multiplex — two-pid interleaved submits (plan 3 §B8)", () => {
     const b11 = setupBinding(reg, 11, gl, [0, 0, 1, 1]);
 
     const queue = new SubmitQueue();
-    queue.enqueue(b10, FRAME);
-    queue.enqueue(b11, FRAME);
+    queue.enqueue(b10, new SubmitFrame(b10.cmdbufView!,0,FRAME_LEN));
+    queue.enqueue(b11, new SubmitFrame(b11.cmdbufView!,0,FRAME_LEN));
 
     const mux = new GlMuxer(gl as unknown as WebGL2RenderingContext);
     const switchSpy = vi.spyOn(mux, "switchTo");
 
-    drainSubmitQueue(queue, () => mux, decodeAndDispatch);
+    expect(drainSubmitQueue(queue, () => mux, decodeAndDispatch)).toBe(0);
 
     expect(switchSpy.mock.calls.map((c) => (c[0] as GlBinding).pid)).toEqual([10, 11]);
     expect(fbWriteSequence(gl)).toEqual([[1, 0, 0, 1], [0, 0, 1, 1]]);
@@ -98,14 +98,14 @@ describe("dri multiplex — two-pid interleaved submits (plan 3 §B8)", () => {
     const b2 = setupBinding(reg, 2, gl, [0, 0.1, 0, 1]);
 
     const queue = new SubmitQueue();
-    queue.enqueue(b10, FRAME);
-    queue.enqueue(b11, FRAME);
-    queue.enqueue(b2, FRAME);
+    queue.enqueue(b10, new SubmitFrame(b10.cmdbufView!,0,FRAME_LEN));
+    queue.enqueue(b11, new SubmitFrame(b11.cmdbufView!,0,FRAME_LEN));
+    queue.enqueue(b2, new SubmitFrame(b2.cmdbufView!,0,FRAME_LEN));
 
     const mux = new GlMuxer(gl as unknown as WebGL2RenderingContext);
     const switchSpy = vi.spyOn(mux, "switchTo");
 
-    drainSubmitQueue(queue, () => mux, decodeAndDispatch);
+    expect(drainSubmitQueue(queue, () => mux, decodeAndDispatch)).toBe(0);
 
     expect(switchSpy.mock.calls.map((c) => (c[0] as GlBinding).pid)).toEqual([2, 10, 11]);
     expect(fbWriteSequence(gl)).toEqual([

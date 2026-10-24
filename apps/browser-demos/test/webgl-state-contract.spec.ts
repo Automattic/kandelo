@@ -2301,3 +2301,55 @@ for (const mode of ["native", "forwarded"] as const) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
+
+for (const mode of ["native","forwarded"] as const) {
+  test(`owned submission snapshots preserve queued pixels through ${mode} dispatch`,async({page})=>{
+    await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
+    const root=fileURLToPath(new URL("../../../",import.meta.url));
+    const result=await page.evaluate(async({root,mode})=>{
+      const base=new URL(`/@fs/${root}host/src/webgl/`,location.href).href;
+      const {GlContextRegistry}=await import(base+"registry.ts"),{GlMuxer}=await import(base+"muxer.ts");
+      const {SubmitFrame,SubmitQueue}=await import(base+"submit-queue.ts"),{drainSubmitQueue}=await import(base+"submit-drain.ts");
+      const {decodeAndDispatch}=await import(base+"bridge.ts"),O=await import(base+"ops.ts");
+      const canvas=document.createElement("canvas");canvas.width=canvas.height=2;document.body.replaceChildren(canvas);
+      const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true})!;if(!gl)throw new Error("no WebGL2");
+      // Independent device-sized storage, not a guest address space. A
+      // renderer callback rewrites the next record after batch validation.
+      const bytes=new Uint8Array(new SharedArrayBuffer(64),7,48),view=new DataView(bytes.buffer,bytes.byteOffset,48);
+      for(const [offset,color] of [[0,[1,0,0,1]],[20,[0,0,1,1]]] as const) {
+        view.setUint16(offset,O.OP_CLEAR_COLOR,true);view.setUint16(offset+2,16,true);
+        color.forEach((value,index)=>view.setFloat32(offset+4+index*4,value,true));
+      }
+      view.setUint16(40,O.OP_CLEAR,true);view.setUint16(42,4,true);view.setUint32(44,gl.COLOR_BUFFER_BIT,true);
+      let rewritten=0;
+      const clearColor=gl.clearColor.bind(gl);
+      gl.clearColor=(r,g,b,a)=>{if(r===1 && a===1){rewritten++;[0,1,0,1].forEach((value,index)=>view.setFloat32(24+index*4,value,true));}clearColor(r,g,b,a);};
+      let cleanup=()=>{};
+      try {
+        if(mode==="native") {
+          const reg=new GlContextRegistry();reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:48});
+          const binding=reg.get(7,11)!;binding.gl=gl;binding.canvas=canvas;binding.contextId=1;binding.cmdbufView=bytes;
+          cleanup=()=>reg.unbind(7,11);
+          const queue=new SubmitQueue(),mux=new GlMuxer(gl),frame=new SubmitFrame(bytes,0,48);
+          if(frame.validate((await import(base+"bridge.ts")).validateCommandBuffer)!==0)throw new Error("preflight");
+          queue.enqueue(binding,frame);
+          if(drainSubmitQueue(queue,()=>mux,decodeAndDispatch)!==0 || binding.cmdbufView!==bytes)throw new Error("drain/view restoration");
+        } else {
+          const {setupMainForward}=await import(base+"main-forward.ts");
+          const M=await import(base+"main-forward-query.ts");
+          let listener:((event:MessageEvent)=>void)|null=null;
+          const worker={addEventListener(_type:"message",next:(event:MessageEvent)=>void){listener=next;},removeEventListener(){listener=null;}};
+          cleanup=setupMainForward(worker,canvas,7);
+          const mailbox=M.createGlForwardQueryMailbox();M.prepareGlForwardQuery(mailbox,0);
+          listener!({data:{type:"gl_forward_create_context",pid:7,sessionId:11,mailbox}} as MessageEvent);
+          if(M.waitForGlForwardQuery(mailbox).rc!==0)throw new Error("context");
+          listener!({data:{type:"gl_forward_submit",pid:7,sessionId:11,bytes}} as MessageEvent);
+        }
+        const pixel=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
+        return {pixel:[...pixel],rewritten,error:gl.getError()};
+      } finally {cleanup();}
+    },{root,mode});
+    expect(result).toEqual({pixel:[0,0,255,255],rewritten:1,error:0});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}

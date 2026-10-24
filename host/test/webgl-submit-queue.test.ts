@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SubmitQueue,
-  type SubmitFrame,
+  SubmitFrame,
   type QueueEntry,
 } from "../src/webgl/submit-queue.js";
 import type { GlBinding } from "../src/webgl/registry.js";
@@ -11,7 +11,7 @@ function mkBinding(pid: number, contextId: number | null = null): GlBinding {
 }
 
 function mkFrame(tag = 0): SubmitFrame {
-  return { memorySab: new SharedArrayBuffer(0), off: tag, len: 0 };
+  return new SubmitFrame(new Uint8Array([tag]),0,1);
 }
 
 /** Mirror the drain side: take the head frame and release if exhausted. */
@@ -75,7 +75,7 @@ describe("SubmitQueue", () => {
 
     const e = q.pickNext();
     expect(e?.frames.length).toBe(3);
-    expect(e?.frames.map((f) => f.off)).toEqual([1, 2, 3]);
+    expect(e?.frames.map((f) => f.validate(bytes=>bytes[0]))).toEqual([1, 2, 3]);
   });
 
   it("same pid with different contextId produces two distinct entries", () => {
@@ -173,4 +173,41 @@ describe("SubmitQueue", () => {
     drainOne(q);
     expect(q.isEmpty()).toBe(true);
   });
+});
+
+it.each([false,true])("snapshots only the selected subview bytes from shared=%s backing", shared => {
+  const backing=shared?new SharedArrayBuffer(64):new ArrayBuffer(64);
+  const source=new Uint8Array(backing,7,12);source.set([0,1,2,3,4,5,6,7,8,9,10,11]);
+  const frame=new SubmitFrame(source,3,4);
+  source.fill(99);
+  expect(frame.byteLength).toBe(4);
+  expect(frame.validate((bytes,off,len)=>{
+    expect(off).toBe(0);expect(len).toBe(4);expect([...bytes]).toEqual([3,4,5,6]);
+    expect(bytes.buffer).not.toBe(backing);expect(bytes.buffer).toBeInstanceOf(ArrayBuffer);return 0;
+  })).toBe(0);
+});
+it("captures native typed-array slots without invoking overridable source accessors", () => {
+  const source=new Uint8Array([1,2,3]);
+  for(const name of ["buffer","byteOffset","byteLength","slice","subarray"])
+    Object.defineProperty(source,name,{get(){throw new Error("borrowed source accessor");}});
+  const frame=new SubmitFrame(source,1,2);
+  expect(frame.validate(bytes=>{expect([...bytes]).toEqual([2,3]);return 0;})).toBe(0);
+});
+it("rejects invalid spans before admitting a frame", () => {
+  for(const [offset,length] of [[-1,1],[0,-1],[.5,1],[0,.5],[NaN,1],[0,Infinity],[3,0],[1,2],[Number.MAX_SAFE_INTEGER,1]])
+    expect(()=>new SubmitFrame(new Uint8Array(2),offset,length)).toThrow(RangeError);
+  expect(new SubmitFrame(new Uint8Array(2),2,0).byteLength).toBe(0);
+});
+it("rejects duplicate admission without duplicating an accepted packet", () => {
+  const q=new SubmitQueue(),binding=mkBinding(10),frame=mkFrame(7);
+  q.enqueue(binding,frame);
+  expect(()=>q.enqueue(binding,frame)).toThrow("already admitted");
+  expect(q.pickNext()?.frames).toEqual([frame]);
+});
+it("discarding a session clears the bytes of caller-held frame tokens", () => {
+  const q=new SubmitQueue(),binding=mkBinding(10),frame=mkFrame(7);
+  q.enqueue(binding,frame);q.removeSession(10);
+  expect(frame.validate(()=>0)).toBe(-5);
+  expect(()=>frame.run(binding,()=>0)).toThrow("already consumed");
+  expect(q.isEmpty()).toBe(true);
 });

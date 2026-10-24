@@ -2,6 +2,7 @@ import { blitPresentTarget } from "./present-target.js";
 import { prepareSurfaceCreation, validSurfaceCreation, type GlSurfaceCreation } from "./surface-create.js";
 import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
 import { decodeAndDispatch, validateCommandBuffer } from "./bridge.js";
+import { SubmitFrame } from "./submit-queue.js";
 import { recordGlError } from "./errors.js";
 import { runGlQuery } from "./query.js";
 import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./fence-query.js";
@@ -291,10 +292,12 @@ export function setupMainForward(
       case "gl_forward_submit": {
         if (!b.gl) return;
         try {
-          if (validateCommandBuffer(msg.bytes,0,msg.bytes.byteLength) < 0) { recordGlError(b,0x502); return; }
-          muxer(b.gl).switchTo(b);
-          b.cmdbufView = msg.bytes;
-          if (decodeAndDispatch(b, 0, msg.bytes.byteLength) < 0) recordGlError(b,0x502);
+          const frame = new SubmitFrame(msg.bytes,0,msg.bytes.byteLength);
+          if (frame.validate(validateCommandBuffer) < 0) { frame.discard(); recordGlError(b,0x502); return; }
+          frame.run(b, () => {
+            muxer(b.gl!).switchTo(b);
+            if (decodeAndDispatch(b,0,frame.byteLength) < 0) recordGlError(b,0x502);
+          });
         } catch { recordGlError(b,0x502); }
         return;
       }

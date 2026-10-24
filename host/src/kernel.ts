@@ -42,7 +42,7 @@ import { applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } f
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./webgl/fence-query";
-import { SubmitQueue } from "./webgl/submit-queue";
+import { SubmitFrame, SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
 import { drainSubmitQueue } from "./webgl/submit-drain";
 import { resolveIoctlContract } from "./ioctl-contract";
@@ -988,8 +988,8 @@ export class WasmPosixKernel {
   /**
    * Worker-side submit lanes. The compositor (current DRM_MASTER on
    * card0) jumps ahead of clients; clients round-robin. Drain runs
-   * synchronously inside `host_gl_submit` because the C process is
-   * blocked on that syscall — deferring would race the SAB cmdbuf.
+   * synchronously inside `host_gl_submit`. Frames own their validated bytes;
+   * deferred execution still requires context/surface lifetime and ordering.
    *
    * Muxers keyed by `WebGL2RenderingContext` so pids sharing a canvas
    * share a muxer; `WeakMap` drops the muxer when the context is GC'd.
@@ -2805,25 +2805,20 @@ export class WasmPosixKernel {
               return -5; // EIO
             }
           }
-          const validation = validateCommandBuffer(b.cmdbufView, submission.offset, submission.length);
-          if (validation < 0) return validation;
-          if (!this.prepareForeignRetirements(b)) return -5;
+          let frame: SubmitFrame;
+          try { frame = new SubmitFrame(b.cmdbufView,submission.offset,submission.length); }
+          catch { return -12; } // ENOMEM: no submission has been admitted.
+          const validation = frame.validate(validateCommandBuffer);
+          if (validation < 0) { frame.discard(); return validation; }
+          if (!this.prepareForeignRetirements(b)) { frame.discard(); return -5; }
           if (b.forward) {
-            b.forward.onSubmit(
-              sliceUint8Array(
-                b.cmdbufView,
-                submission.offset,
-                submission.end,
-              ),
-              b.sessionId,
-            );
-            return 0;
+            try {
+              frame.run(b, () => b.forward!.onSubmit(b.cmdbufView!,b.sessionId));
+              return 0;
+            } catch { frame.discard(); return -5; }
           }
-          this.gl_submit_queue.enqueue(b, {
-            memorySab: typedArrayBuffer(b.cmdbufView),
-            off: submission.offset,
-            len: submission.length,
-          });
+          try { this.gl_submit_queue.enqueue(b,frame); }
+          catch { frame.discard(); return -12; }
           return drainSubmitQueue(
             this.gl_submit_queue,
             (bb) => {

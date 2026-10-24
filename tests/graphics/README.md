@@ -594,3 +594,15 @@ Chromium, Firefox and WebKit. The control trace records whether the driver
 required completion; a prior unsignaled observation may complete sooner
 in the real browser. EGL_KHR_fence_sync and GL_OES_EGL_sync are declared;
 EGL_KHR_wait_sync and server-side eglWaitSyncKHR remain unavailable.
+
+
+Owned submit source checks now cover native import widths 4/8 and main
+forwarding when a renderer callback rewrites a later valid input record.
+All three fail unchanged `86b06464fe`. Snapshot unit cases cover selected
+subviews, shared/nonshared inputs, captured native accessors, invalid
+spans, single admission/consumption, discard and no cached-view revival
+after rebind or teardown. Six browser cases render the original blue
+record despite rewriting input to green, using independent device-sized
+storage. Native/forwarded EGL core/KHR fence controls remain enabled.
+The submit drain is still synchronous; execution/drawable lifetime and
+server-wait barriers remain ordinary implementation work.

@@ -14,16 +14,51 @@
  */
 import type { GlBinding } from "./registry.js";
 
-export interface SubmitFrame {
-  /** The backing buffer of the binding's `cmdbufView` at enqueue time.
-   *  Kept on the frame so async-drain variants (deferred to a later
-   *  iteration) have a stable reference even if the binding's view is
-   *  rebound by `Memory.grow()`. The sync drain in §B4 doesn't read this
-   *  — it goes through `binding.cmdbufView` directly. Typed as
-   *  `ArrayBufferLike` so Node (non-shared) and browser (SAB) both fit. */
-  memorySab: ArrayBufferLike;
-  off: number;
-  len: number;
+const Bytes = Uint8Array;
+const apply = Reflect.apply;
+const typedArray = Object.getPrototypeOf(Uint8Array.prototype);
+const bufferOf = Object.getOwnPropertyDescriptor(typedArray,"buffer")!.get!;
+const offsetOf = Object.getOwnPropertyDescriptor(typedArray,"byteOffset")!.get!;
+const lengthOf = Object.getOwnPropertyDescriptor(typedArray,"byteLength")!.get!;
+const setBytes = Uint8Array.prototype.set;
+
+/** An owned command snapshot. Validation and dispatch inspect the same bytes,
+ * never a guest view that can change after preflight or acknowledgement. */
+export class SubmitFrame {
+  #bytes: Uint8Array | null;
+  #claimed = false;
+  readonly byteLength: number;
+  constructor(source: Uint8Array, offset: number, length: number) {
+    const size = apply(lengthOf,source,[]) as number;
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0
+        || offset > size || length > size-offset) throw new RangeError("invalid GL submission span");
+    const bytes = new Bytes(length);
+    const input = new Bytes(apply(bufferOf,source,[]) as ArrayBufferLike,
+      (apply(offsetOf,source,[]) as number)+offset,length);
+    apply(setBytes,bytes,[input]);
+    this.#bytes = bytes;
+    this.byteLength = length;
+  }
+  validate(check: (bytes: Uint8Array, offset: number, length: number) => number): number {
+    return this.#bytes ? check(this.#bytes,0,this.byteLength) : -5;
+  }
+  claim(): void {
+    if (this.#claimed || !this.#bytes) throw new Error("GL submission already admitted");
+    this.#claimed = true;
+  }
+  /** The temporary device view never becomes the binding's cached guest view.
+   * A rebind/teardown during dispatch owns its replacement; do not revive the
+   * old guest backing in finally. A consumed or failed frame cannot replay. */
+  run<T>(binding: GlBinding, work: () => T): T {
+    const bytes = this.#bytes;
+    if (!bytes) throw new Error("GL submission already consumed");
+    this.#bytes = null;
+    const previous = binding.cmdbufView;
+    binding.cmdbufView = bytes;
+    try { return work(); }
+    finally { if (binding.cmdbufView === bytes) binding.cmdbufView = previous; }
+  }
+  discard(): void { this.#bytes = null; }
 }
 
 export interface QueueEntry {
@@ -45,14 +80,27 @@ export class SubmitQueue {
   ) {}
 
   enqueue(binding: GlBinding, frame: SubmitFrame): void {
+    frame.claim();
     const key = `${binding.pid}:${binding.sessionId}:${binding.contextId ?? "_"}`;
-    let entry = this.byKey.get(key);
-    if (!entry) {
-      entry = { key, binding, frames: [] };
-      this.byKey.set(key, entry);
-      (this.isCompositor(binding.pid) ? this.compositor : this.clients).push(entry);
+    const existing = this.byKey.get(key);
+    let entry: QueueEntry | undefined;
+    const lane = this.isCompositor(binding.pid) ? this.compositor : this.clients;
+    try {
+      if (existing) existing.frames.push(frame);
+      else {
+        entry = {key,binding,frames:[frame]};
+        lane.push(entry);
+        this.byKey.set(key,entry);
+      }
+    } catch (error) {
+      frame.discard();
+      if (entry) {
+        const index = lane.indexOf(entry);
+        if (index >= 0) lane.splice(index,1);
+        this.byKey.delete(key);
+      }
+      throw error;
     }
-    entry.frames.push(frame);
   }
 
   /** Returns the next entry to drain (or null if empty). Caller shifts
@@ -93,8 +141,8 @@ export class SubmitQueue {
    * Purge every queued frame for an exiting process.
    *
    * The current drain is synchronous, but this backstop keeps a thrown decoder
-   * or future deferred drain from retaining a `SubmitFrame.memorySab` after
-   * the process generation is gone.
+   * or future deferred drain from retaining copied commands after the process
+   * generation is gone. Frames never retain the original guest buffer.
    */
   removePid(pid: number): void { this.removeSession(pid); }
 
@@ -102,6 +150,7 @@ export class SubmitQueue {
     if (sessionId !== undefined) sessionId >>>= 0;
     for (const [key, entry] of Array.from(this.byKey)) {
       if (entry.binding.pid !== pid || (sessionId !== undefined && entry.binding.sessionId !== sessionId)) continue;
+      for (const frame of entry.frames) frame.discard();
       entry.frames.length = 0;
       this.byKey.delete(key);
       const compositorIndex = this.compositor.indexOf(entry);

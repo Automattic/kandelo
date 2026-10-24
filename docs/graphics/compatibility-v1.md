@@ -94,7 +94,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared KMS FBs and inherited graphics cleanup/BO holds are implemented; general forked GEM handle-map sharing and full guest validation remain open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
 | K04 | Legacy modeset/flip/vblank/master handoff | Main display owner and cleanup; cage changes automatic master and CLOSEFB | KMS, host scanout | Pending flip drop/exit/crash/master replacement, no stale event/scanout | partial |
 | K05 | GPU scanout, CPU fallback and context loss | Main has GPU producer target; cage adds scanout blit | host GPU registry/present target/KMS pump | Render imports to scanout; orientation/pixels three engines | open |
-| H01 | Command framing, complete validation and bounded results | Full structural prevalidation protects batches. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
+| H01 | Command framing, complete validation and bounded results | Owned bounded submission snapshots make structural validation and dispatch observe the same bytes in native and forwarded paths; one-shot frames restore cached views and discard on purge. Drain remains synchronous pending retained execution/drawable models for server waits. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
 | A01 | ABI and generated declarations match combined implementation | Current main `5cd771bff8` ABI 53 and graphics development contracts are consolidated under ABI 54. Regenerated snapshot, C/TS declarations and standalone resolver pass focused inspection; operation table stays 17. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
@@ -4829,9 +4829,63 @@ kernel identity/scratch plumbing, not normal guest EGL/GLIO execution.
 ABI 54 and GL operation table 17 remain fixed. Normal graphics artifact
 builds, CTS, cage/sway, full browser-memory and POSIX gates remain deferred.
 
-The server-wait audit also confirms that the existing SubmitQueue still
+At `86b06464fe`, the server-wait audit confirms that SubmitQueue still
 borrows guest memory and dispatches through mutable current bindings.
 Nonblocking server ordering must reserve owned work and execution lifetime
 before acknowledging a wait, preserve query/presentation order and release
 retained dependencies on teardown. A blocking client wait inside glFlush,
 a finish substitution or a no-op does not implement that contract.
+
+
+### Owned submit snapshots before deferred server execution
+
+The server-wait audit found a concrete preflight/execution race. Native
+submit and main-forward decode used the caller's writable command storage.
+A renderer callback could rewrite a later, valid record after validation;
+the earlier implementation executed the changed record. All three new
+host-import regressions fail unchanged `86b06464fe`, including native
+imports at widths 4/8 and the main-forward adapter. This is a command-byte
+ownership defect, not a browser engine defect or platform boundary.
+
+SubmitFrame now captures only the requested source span into independent
+bytes before validation. Validation and decode see that same snapshot in
+both adapters. Snapshot construction reads captured typed-array slots
+rather than overridable source properties. Frame admission is one-shot;
+execution consumes its storage before dispatch, and purge clears even
+caller-retained frame tokens. Accepted prefixes cannot replay after a
+later renderer failure. The existing compositor priority and client FIFO
+rotation remain covered by executable ordering checks.
+
+The decoder receives a temporary owned view on its binding. Finally
+restores the previous guest cache only when no rebind or teardown has
+replaced it. Forwarded bindings do not retain a last-message view after
+execution. Capture/admission failure reports failure before accepting the
+submission. The bound wire shape, ABI 54 and operation table 17 do not
+change. No performance result is claimed for the added bounded copy.
+
+| Check | Exact evidence |
+|---|---|
+| Semantic baseline | Three native/forwarded source-import regressions fail unchanged `86b06464fe` by executing green instead of the validated blue record; `graphics-submit-snapshot-baseline.log` |
+| Full graphics host source gate | 638 cases in 27 files pass without skips, including 14 new snapshot/span/discard/view-restoration cases and the existing two-pid multiplex checks; `graphics-submit-snapshot-host.log` |
+| Node/browser host build | Canonical build and declaration commands pass; `graphics-submit-snapshot-build.log`, `graphics-submit-snapshot-declarations.log` |
+| Extra raw tsc audit | Still fails with the same 44 diagnostics as the prior wire audit; complete diagnostic text agrees after removing line/column offsets; `graphics-submit-snapshot-tsc.log`, `graphics-submit-snapshot-tsc-comparison.txt` |
+| Real native/forwarded snapshot rendering | Six cases pass across Chromium/Firefox/WebKit: a renderer callback rewrites later input to green, but captured work renders the accepted blue pixels with no GL error; `graphics-submit-snapshot-browser.log` |
+| Affected fence rendering controls | All 12 core/KHR cases also pass in that 18-case browser selection; same log |
+| Evidence inventory | All 598 files agree; `graphics-submit-snapshot-registry.log` |
+
+Adding the existing multiplex fixture to the source gate exposed its stale
+renderer double without getError. The double now supplies that required
+native method, and both ordering cases additionally require successful
+drain completion. Their original dispatch/color assertions remain intact.
+The initial expanded run failed those two cases; the final run passes all
+638. No production assertion was weakened.
+
+Drain remains synchronous and registry context destruction still clears
+execution-local state. Correct eglWaitSync server ordering therefore still
+needs retained execution/drawable owners, dependency references, query and
+presentation barriers, and retirement across destroy/recreate. This
+increment does not enqueue waits or substitute client polling/finish for
+server semantics. All other baseline gaps and deferred normal builds,
+upstream CTS, cage/sway, complete browser-memory and POSIX gates remain
+required for the active full goal. Browser fixtures use independent device
+buffers and source adapters, not normal rebuilt guest ioctl marshalling.

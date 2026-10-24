@@ -465,6 +465,7 @@ host/test/webgl-shader-upload.test.ts	source-only
 host/test/webgl-shadow.test.ts	source-only
 host/test/webgl-submit-drain.test.ts	source-only
 host/test/webgl-submit-queue.test.ts	source-only
+host/test/webgl-submit-snapshot.test.ts	source-only
 host/test/webgl-surface-resources.test.ts	source-only
 host/test/webgl-texture-zero.test.ts	source-only
 host/test/webmcp-guest-listing.test.ts	source-only
