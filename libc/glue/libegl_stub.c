@@ -1558,9 +1558,12 @@ static unsigned bind_bo_texture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_
     struct egl_context_record *context = g_thread_binding.object;
     if (dpy != EGL_DPY_HANDLE || !generation || !context || context->session->fd < 0)
         return 0;
+    struct wpk_gl_name_scope name_scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
+        publish ? _wpk_gl_begin_name_scope(context->encoder) : (struct wpk_gl_name_scope){0};
     /* Flush queued GL ops first so host-side texture uploads and cmdbuf
      * draws execute in program order. */
-    _wpk_gl_flush();
+    if (_wpk_gl_flush_checked() != 0)
+        return 0;
     uint32_t local_handle = transfer_bo_handle(generation->fd, context->session->fd, bo_handle);
     if (!local_handle)
         return 0;
@@ -1570,17 +1573,34 @@ static unsigned bind_bo_texture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_
         .ctx_id = context->backend_id,
         .gl_texture_id = 0,
     };
-    int accepted = ioctl(context->session->fd, WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE, &req) == 0;
-    release_transferred_bo(generation, generation->fd, context->session->fd, local_handle);
-    if (accepted && req.gl_texture_id && publish) {
+    unsigned result = 0;
+    for (;;) {
+        req.gl_texture_id = 0;
+        if (ioctl(context->session->fd, WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE, &req) != 0 ||
+            !req.gl_texture_id)
+            break;
+        if (!publish) {
+            result = req.gl_texture_id;
+            break;
+        }
         uint32_t error = _wpk_gl_register_external_texture(context->encoder, req.gl_texture_id);
-        if (error) {
+        if (!error) {
+            result = req.gl_texture_id;
+            break;
+        }
+        // Only the unpublished native candidate is removed. A reserved C
+        // name remains available for its caller's later ordinary first bind.
+        if (!_wpk_gl_discard_external_candidate(req.gl_texture_id))
+            break;
+        if (error != WPK_GL_EXTERNAL_NAME_COLLISION) {
             g_last_error = error == 0x505 ? EGL_BAD_ALLOC : EGL_BAD_MATCH;
-            return 0;
+            break;
         }
     }
-    return accepted ? req.gl_texture_id : 0;
+    release_transferred_bo(generation, generation->fd, context->session->fd, local_handle);
+    return result;
 }
+
 unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_target) {
     if (gl_target != GL_TEXTURE_2D) {
         g_last_error = EGL_BAD_PARAMETER;

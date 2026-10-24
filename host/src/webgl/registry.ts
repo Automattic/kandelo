@@ -1,3 +1,5 @@
+import { revokeForeignBo } from "./foreign-retirement.js";
+import { checkedGlCall } from "./program-objects.js";
 import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
 import type { GlUniformLookup } from "./uniform-queries.js";
 import type { GlSurfaceCreation } from "./surface-create.js";
@@ -312,6 +314,7 @@ export class GlContextRegistry {
     b.vertexArrays.set(0,defaultVertexArray());
     b.contextId = null;
     b.gl = null;
+    this.retryForeignRetirements();
   }
 
   destroySurface(pid: number, sessionId?: number): void {
@@ -424,15 +427,40 @@ export class GlContextRegistry {
    *  This DELIBERATELY leaves `gpuBos` untouched: a GPU-tier bo's texture
    *  is owned by the bo itself (this registry), not by any binding, and
    *  is released only via `destroyGpuBo` on bo destroy. */
-  dropForeignTexturesForBo(bo_id: number): void {
-    for (const b of this.bindings.values()) {
-      for(const [token,source]of b.imageSources)if(source.bo===bo_id)b.imageSources.delete(token);
-      const entry = b.foreignTextures.get(bo_id);
-      if (!entry) continue;
-      b.foreignTextures.delete(bo_id);
-      b.textures.delete(entry.texId);
-      b.gl?.deleteTexture(entry.tex);
+  private foreignRetirements = new Map<number, Map<GlObjectGroup, GlBinding>>();
+
+  /** A cleanup-only view retains the original group/native context across
+   * member retirement. It never enters command dispatch or guest authority. */
+  private foreignRetirementOwners(bo: number): Map<GlObjectGroup, GlBinding> {
+    let owners = this.foreignRetirements.get(bo);
+    if (!owners) { owners = new Map(); this.foreignRetirements.set(bo,owners); }
+    for (const b of this.bindings.values()) if (b.gl && !owners.has(b.objects)) {
+      const cleanup = exposeGlSharedObjects({objects:b.objects,gl:b.gl,errors:b.errors});
+      owners.set(b.objects,cleanup as GlBinding);
     }
+    return owners;
+  }
+  dropForeignTexturesForBo(bo: number): boolean {
+    const pending = this.foreignRetirements.has(bo);
+    let accepted = true;
+    for (const b of this.foreignRetirementOwners(bo).values()) accepted = revokeForeignBo(b,bo) && accepted;
+    if (accepted && !pending) this.foreignRetirements.delete(bo);
+    return accepted;
+  }
+  retireForeignBo(bo: number): void {
+    this.foreignRetirementOwners(bo);
+    if (this.dropForeignTexturesForBo(bo) && this.destroyGpuBo(bo)) this.foreignRetirements.delete(bo);
+  }
+  retryForeignRetirements(): void {
+    for (const bo of this.foreignRetirements.keys()) this.retireForeignBo(bo);
+  }
+  hasForeignRetirements(): boolean { return this.foreignRetirements.size !== 0; }
+  *foreignRetirementContexts(): Iterable<WebGL2RenderingContext> {
+    for (const owners of this.foreignRetirements.values()) for (const b of owners.values()) if (b.gl) yield b.gl;
+  }
+  groupHasForeignRetirement(b: GlBinding): boolean {
+    for (const bo of b.foreignTextureBos.values()) if (this.foreignRetirements.has(bo)) return true;
+    return false;
   }
 
   /** Allocate a GPU-tier bo (`DRM_IOCTL_WPK_CREATE_GPU_BO`): an empty
@@ -452,6 +480,7 @@ export class GlContextRegistry {
     w: number,
     h: number,
   ): number | null {
+    if (this.foreignRetirements.has(bo_id)) return null;
     const existing = this.gpuBos.get(bo_id);
     if (existing) return existing.texId;
     const tex = gl.createTexture();
@@ -506,10 +535,10 @@ export class GlContextRegistry {
   }
 
   /** The GPU-tier bo for `bo_id`, or undefined if it is CPU-tier /
-   *  unknown. Used by the foreign-texture bind path to short-circuit to a
-   *  zero-copy texture-id return. */
+   *  unknown or retiring. Foreign-texture binding uses its private canonical
+   *  storage to construct a distinct logical view without a CPU upload. */
   gpuBo(bo_id: number): GpuBo | undefined {
-    return this.gpuBos.get(bo_id);
+    return this.foreignRetirements.has(bo_id) ? undefined : this.gpuBos.get(bo_id);
   }
 
   /** Apply the GPU-tier producer render-target redirect for `b` if both
@@ -538,13 +567,14 @@ export class GlContextRegistry {
 
   /** Release a GPU-tier bo's FBO + texture from its shared context.
    *  Called from `gbm_bo_destroy` alongside `dropForeignTexturesForBo`. */
-  destroyGpuBo(bo_id: number): void {
+  destroyGpuBo(bo_id: number): boolean {
     const entry = this.gpuBos.get(bo_id);
-    if (!entry) return;
-    this.gpuBos.delete(bo_id);
-    entry.gl.deleteFramebuffer(entry.fbo);
-    entry.gl.deleteRenderbuffer(entry.depthStencil);
-    entry.gl.deleteTexture(entry.tex);
+    if (!entry) return true;
+    const cleanup = {gl:entry.gl,errors:[]} as unknown as GlBinding;
+    if (!checkedGlCall(cleanup, () => entry.gl.deleteFramebuffer(entry.fbo)) ||
+        !checkedGlCall(cleanup, () => entry.gl.deleteRenderbuffer(entry.depthStencil)) ||
+        !checkedGlCall(cleanup, () => entry.gl.deleteTexture(entry.tex))) return false;
+    this.gpuBos.delete(bo_id); return true;
   }
 
   onChange(fn: GlChangeListener): () => void {

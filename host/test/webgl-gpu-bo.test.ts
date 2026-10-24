@@ -9,13 +9,14 @@
  *     renderbuffer and separate read/draw framebuffer bindings (it runs
  *     outside the muxer, mid-frame for another session),
  *   - a second create for a live bo is idempotent (no realloc, no extra
- *     texImage2D upload) — the zero-copy bind degenerates to the same id,
+ *     texImage2D upload),
  *   - `destroyGpuBo` frees the FBO, texture and renderbuffer,
  *   - `dropForeignTexturesForBo` leaves GPU bos alone (owned by the bo,
  *     not by any binding).
  */
 import { describe, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
+import { registerImageSource } from "../src/webgl/image-storage.js";
 
 const GL = {
   TEXTURE_2D: 0x0de1,
@@ -66,6 +67,7 @@ function makeFakeGl() {
   let fboN = 0;
   const gl = {
     ...GL,
+    getError: () => 0,
     createTexture: () => ({ kind: "tex", id: ++texN }),
     createFramebuffer: () => ({ kind: "fbo", id: ++fboN }),
     createRenderbuffer: () => ({ kind: "rbo" }),
@@ -135,18 +137,17 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     const reg = new GlContextRegistry();
     const id = reg.createGpuBo(7, gl, 64, 64);
     expect(reg.createGpuBo(7, gl, 64, 64)).toBe(id);
-    // The zero-copy bind reuses the same texture: still one allocation.
+    // Repeated allocation leaves canonical storage intact.
     expect(calls.texImage2D.length).toBe(1);
   });
 
-  it("bind semantics: gpuBo returns the same tex with no upload (zero-copy)", () => {
+  it("canonical GPU storage lookup does not upload pixels", () => {
     const { gl, calls } = makeFakeGl();
     const reg = new GlContextRegistry();
     const id = reg.createGpuBo(9, gl, 16, 16);
     const uploadsAfterCreate = calls.texImage2D.length;
 
-    // What host_gl_bind_foreign_texture does on the GPU path: look the bo
-    // up and return its stable texId — no texImage2D, no copy.
+    // A lookup returns private canonical storage, not a public raw view.
     const gpu = reg.gpuBo(9)!;
     expect(gpu.texId).toBe(id);
     expect(calls.texImage2D.length).toBe(uploadsAfterCreate);
@@ -179,7 +180,7 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     expect(calls.deletedTextures).toEqual([]);
   });
 
-  it("context destruction leaves an imported GPU texture owned by its BO", () => {
+  it("context destruction leaves registered canonical GPU storage owned by its BO", () => {
     const { gl, calls } = makeFakeGl();
     const reg = new GlContextRegistry();
     reg.createGpuBo(3, gl, 8, 8);
@@ -187,9 +188,9 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     reg.bind({ pid: 7, cmdbufAddr: 0, cmdbufLen: 4 });
     const b = reg.get(7)!;
     b.gl = gl;
-    b.textures.set(bo.texId, bo.tex);
-    b.foreignTextures.set(3, { tex: bo.tex, texId: bo.texId, w: 8, h: 8, scratch: null });
+    expect(registerImageSource(b, 3, bo.tex, 8, 8)).toBeGreaterThan(0);
     reg.destroyContext(7);
+    expect(b.imageSources.size).toBe(0);
     expect(reg.gpuBo(3)).toBe(bo);
     expect(calls.deletedTextures).toEqual([]);
     reg.destroyGpuBo(3);

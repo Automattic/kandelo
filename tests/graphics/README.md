@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The 130 current cases cover image siblings and retained framebuffer storage,
+The 133 current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -98,7 +98,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation still runs all 67 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 133 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -108,6 +108,19 @@ submitted command bytes and context retirement. The browser generation
 case replays those actual C streams into two host session targets, checks
 red/blue pixels and proves old-target retirement preserves the new one.
 These records do not execute guest initialization or ioctl marshalling.
+
+Raw BO cases also check reserved-name collision/retry, failed-flush suppression
+and C group ordering across native raw-name allocation and publication. The
+ordering fixture observes the peer's actual mutex attempt while device IO is
+paused; it uses no scheduling delay. The source host gate checks name
+exhaustion, metadata/native failures, retained raw object generations and retry
+after failed view/canonical retirement, including the last context's teardown.
+The GPU browser fixture samples independent raw views, respecifies and refreshes
+them, deletes/reimports while a peer retains the old identity, and verifies that
+BO retirement preserves an unrelated numeric replacement. It checks output
+preflight, unchanged output while cleanup blocks the group, and accepted retry.
+These checks do not establish CPU canonical coherence, forwarded BO imports or
+general context-loss recovery.
 
 The source host/browser surface cases also check retained presentation
 storage across context replacement, failed resize preserving pixels,

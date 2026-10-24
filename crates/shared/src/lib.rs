@@ -5731,10 +5731,11 @@ pub mod dri {
     /// (re)uploads the bo's current pixels into the texture from host-side
     /// storage, so callers refresh a texture by re-issuing the ioctl after
     /// the producer commits new content. The returned `gl_texture_id` is
-    /// stable across rebinds of the same bo. On a GPU-tier bo
-    /// (`WPK_CREATE_GPU_BO`) the bind is zero-copy: the pixels already live
-    /// as a `WebGLTexture` on the shared context, so it returns that
-    /// texture id directly with no upload.
+    /// stable across refreshes of a live name for the same bo. On a GPU-tier
+    /// bo (`WPK_CREATE_GPU_BO`), the public name owns an independent logical
+    /// view of private canonical GPU storage. Sampling synchronizes that
+    /// view without a CPU upload. Deleting and reimporting creates a fresh
+    /// name/object; peers can retain the deleted object until bo retirement.
     pub const DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: u32 = 0xc010_64e1;
 
     /// GPU-bo allocator argument. 16 bytes on wasm32 (4 × u32). `format` and
@@ -5763,8 +5764,10 @@ pub mod dri {
     /// the call, the caller's GL context has a `WebGLTexture` accessible by
     /// `gl_texture_id` until the bo's refcount drops to zero — the bo is
     /// the canonical owner; bo destruction (last `GEM_CLOSE` / OFD
-    /// final-close) deletes the underlying `WebGLTexture` and invalidates
-    /// every binding to it. There is no separate `UNBIND_FOREIGN_TEXTURE`
+    /// final-close) revokes every raw view generation and its bindings,
+    /// including objects retained after name deletion. Native cleanup is
+    /// retried after definite failure before dependent commands can proceed.
+    /// There is no separate `UNBIND_FOREIGN_TEXTURE`
     /// ioctl: bind lifetime is tied to the bo lifetime, scoped by the bo
     /// refcount.
     #[repr(C)]

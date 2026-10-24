@@ -7,7 +7,11 @@
  * with GL state save/restore, and bo-lifetime cleanup.
  */
 import { describe, expect, it } from "vitest";
-import { bindForeignTexture } from "../src/webgl/foreign-texture.js";
+import { foreignTextureGl } from "./support/foreign-texture-gl.js";
+import { runGlQuery } from "../src/webgl/query.js";
+import { textureNative } from "../src/webgl/image-storage.js";
+import * as O from "../src/webgl/ops.js";
+import { bindGpuForeignTexture, bindForeignTexture } from "../src/webgl/foreign-texture.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import type { GlBinding } from "../src/webgl/registry.js";
 
@@ -203,4 +207,119 @@ it("foreign upload failure restores state and rolls back a new texture", () => {
   expect(calls.deletedTextures).toHaveLength(1);
   expect(b.foreignTextures.size).toBe(0);
   expect(b.textures.size).toBe(0);
+});
+
+it("skips realized public names and checks signed-result allocator exhaustion", () => {
+  const {gl} = makeFakeGl(), {b} = makeBinding(gl), ordinary = {} as WebGLTexture;
+  b.textures.set(0x40000000,ordinary); b.textures.set(0x40000001,ordinary);
+  expect(bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4})).toBe(0x40000002);
+  expect(b.textures.get(0x40000000)).toBe(ordinary); expect(b.textures.get(0x40000001)).toBe(ordinary);
+  b.nextForeignTexId = 0x80000000;
+  expect(bindForeignTexture(b,2,new Uint8Array(4),{w:1,h:1,stride:4})).toBe(-12);
+  expect(b.foreignTextures.has(2)).toBe(false);
+});
+it("revokes by object identity without deleting a replacement under the old number", () => {
+  const {gl,calls} = makeFakeGl(), {reg,b} = makeBinding(gl);
+  const id = bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4}), old = b.textures.get(id)!;
+  const replacement = {} as WebGLTexture; b.textures.set(id,replacement);
+  expect(reg.dropForeignTexturesForBo(1)).toBe(true);
+  expect(b.textures.get(id)).toBe(replacement); expect(calls.deletedTextures).toEqual([old]);
+  expect(b.foreignTextureBos.size).toBe(0);
+});
+it("does not adopt the replacement when refreshing a stale raw cache", () => {
+  const {gl} = makeFakeGl(), {reg,b} = makeBinding(gl);
+  const id = bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4}), old = b.textures.get(id)!;
+  const replacement = {} as WebGLTexture; b.textures.set(id,replacement);
+  const next = bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4});
+  expect(next).toBeGreaterThan(id); expect(b.textures.get(id)).toBe(replacement);
+  expect(b.textures.get(next)).not.toBe(old); expect(b.foreignTextureBos.size).toBe(2);
+  expect(reg.dropForeignTexturesForBo(1)).toBe(true); expect(b.textures.get(id)).toBe(replacement);
+  expect(b.foreignTextureBos.size).toBe(0);
+});
+it("rejects new CPU uploads before binding when namespace metadata cannot be staged", () => {
+  for (const field of ["textures","foreignTextures","foreignTextureBos"] as const) {
+    const {gl,calls,state} = makeFakeGl(), {b} = makeBinding(gl), map = b[field], set = map.set;
+    map.set = () => { throw new RangeError("allocation failed"); };
+    try { expect(bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4})).toBe(-5); } finally { map.set = set; }
+    expect(b.textures.size).toBe(0); expect(b.foreignTextures.size).toBe(0); expect(b.foreignTextureBos.size).toBe(0);
+    expect(calls.deletedTextures).toHaveLength(1); expect(calls.texImage2D).toBe(0);
+    expect(calls.bindTexture).toEqual([]); expect(state.activeTexture).toBe(0x84c2);
+  }
+});
+it("rejects a native CPU upload error and preserves binding and unpack state", () => {
+  const {gl,calls,state} = makeFakeGl(), {b} = makeBinding(gl); let error = 0;
+  gl.getError = () => { const value = error; error = 0; return value; };
+  gl.texImage2D = () => { error = 0x501; };
+  expect(bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4})).toBe(-5);
+  expect(b.textures.size).toBe(0); expect(b.errors).toEqual([0x501]); expect(calls.deletedTextures).toHaveLength(1);
+  expect(calls.bindTexture.at(-1)).toBe(state.binding2d); expect(calls.activeTexture.at(-1)).toBe(state.activeTexture);
+});
+
+function gpuRawSetup() {
+  const native=foreignTextureGl(), {gl}=native, reg=new GlContextRegistry();
+  reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:64});const b=reg.get(7,11)!;b.gl=gl;b.contextId=21;
+  expect(reg.createGpuBo(41,gl,2,2)).toBeGreaterThan(0);const gpu=reg.gpuBo(41)!;
+  const query=(owner:GlBinding,op:number,words:number[])=>{
+    const out=new Uint8Array(12);
+    expect(runGlQuery(owner,op,new Uint8Array(new Uint32Array(words).buffer),out)).toBe(12);
+    return [...new Uint32Array(out.buffer)];
+  };
+  return {...native,reg,b,gpu,query};
+}
+it("publishes a distinct GPU logical view without overwriting a realized public name",()=>{
+  const {b,gpu,alive,gl}=gpuRawSetup(),ordinary=gl.createTexture()!;
+  b.textures.set(gpu.texId,ordinary);
+  const name=bindGpuForeignTexture(b,41,gpu),object=b.textures.get(name)!;
+  expect(name).toBe(gpu.texId+1);expect(b.textures.get(gpu.texId)).toBe(ordinary);
+  expect(object).not.toBe(gpu.tex);expect(textureNative(b,object)).not.toBe(gpu.tex);
+  expect(b.textureViews.get(object)!.source!.texture).toBe(gpu.tex);expect(alive.has(gpu.tex)).toBe(true);
+  expect(bindGpuForeignTexture(b,41,gpu)).toBe(name);expect(b.foreignTextureBos.get(object)).toBe(41);
+});
+it("keeps deleted GPU views distinct across reimport and revokes peers by identity",()=>{
+  const {reg,b,gpu,gl,query,frames,alive}=gpuRawSetup();
+  const first=bindGpuForeignTexture(b,41,gpu),old=b.textures.get(first)!;
+  reg.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:64});const peer=reg.get(7,12)!;peer.gl=gl;peer.contextId=22;
+  expect(reg.shareObjects(7,12,11)).toBe(true);
+  query(peer,O.QOP_BIND_IMAGE_OBJECT,[1,0x0de1,first]);
+  const fbo=gl.createFramebuffer()!;peer.fbos.set(42,fbo);peer.shadow.fbo=peer.shadow.readFbo=fbo;
+  gl.bindFramebuffer(0x8d40,fbo);query(peer,O.QOP_IMAGE_ATTACHMENT,[1,0x8d40,0x8ce0,0x0de1,first,0]);
+  query(b,O.QOP_IMAGE_OBJECT_DELETE,[1,first]);
+  const next=bindGpuForeignTexture(b,41,gpu),fresh=b.textures.get(next)!;
+  expect(next).toBeGreaterThan(first);expect(fresh).not.toBe(old);expect(alive.has(textureNative(b,old))).toBe(true);
+  query(b,O.QOP_BIND_IMAGE_OBJECT,[1,0x0de1,first]);const replacement=b.textures.get(first)!;
+  peer.shadow.textureUnits[1]=fresh;gl.activeTexture(0x84c1);gl.bindTexture(0x0de1,textureNative(b,fresh));
+  expect(reg.dropForeignTexturesForBo(41)).toBe(true);
+  expect(b.textures.get(first)).toBe(replacement);expect(b.textures.has(next)).toBe(false);
+  expect(b.shadow.textureUnits[0]).toBe(replacement);expect(peer.shadow.textureUnits.slice(0,2)).toEqual([null,null]);
+  expect(frames.get(fbo)!.get(0x8ce0)).toBeNull();expect(peer.framebufferAttachments.size).toBe(0);
+  expect(gl.getParameter(0x84e0)).toBe(0x84c1);gl.activeTexture(0x84c0);
+  expect(gl.getParameter(0x8069)).toBe(replacement);expect(alive.has(gpu.tex)).toBe(true);
+  expect(b.foreignTextureBos.size).toBe(0);expect(b.retiredTextures.size).toBe(0);
+});
+it("retains canonical GPU backing after rejected revocation and completes a later retry",()=>{
+  const {reg,b,gpu,gl,query,control,alive,frames}=gpuRawSetup();
+  const name=bindGpuForeignTexture(b,41,gpu),object=b.textures.get(name)!;
+  query(b,O.QOP_BIND_IMAGE_OBJECT,[1,0x0de1,name]);
+  const fbo=gl.createFramebuffer()!;b.fbos.set(42,fbo);b.shadow.fbo=b.shadow.readFbo=fbo;
+  gl.bindFramebuffer(0x8d40,fbo);query(b,O.QOP_IMAGE_ATTACHMENT,[1,0x8d40,0x8ce0,0x0de1,name,0]);
+  control.fault="framebufferTexture2D";reg.retireForeignBo(41);
+  expect(reg.hasForeignRetirements()).toBe(true);expect(reg.groupHasForeignRetirement(b)).toBe(true);
+  expect(b.textures.get(name)).toBe(object);expect(b.shadow.textureUnits[0]).toBe(object);
+  expect(frames.get(fbo)!.get(0x8ce0)).toBe(gpu.tex);expect(alive.has(gpu.tex)).toBe(true);
+  expect(reg.createGpuBo(41,gl,2,2)).toBeNull();
+  reg.retryForeignRetirements();expect(reg.hasForeignRetirements()).toBe(false);
+  expect(b.textures.has(name)).toBe(false);expect(b.foreignTextureBos.size).toBe(0);expect(alive.has(gpu.tex)).toBe(false);
+});
+it("retains failed native cleanup across final context retirement without losing the old group",()=>{
+  const {reg,b,gpu,control,alive}=gpuRawSetup();bindGpuForeignTexture(b,41,gpu);const group=b.objects;
+  control.failDelete=true;reg.retireForeignBo(41);expect(reg.hasForeignRetirements()).toBe(true);
+  reg.destroyContext(7,11);expect(b.objects).not.toBe(group);expect(group.foreignTextureBos.size).toBe(1);
+  expect(alive.has(gpu.tex)).toBe(true);
+  control.failDelete=false;reg.retryForeignRetirements();
+  expect(group.foreignTextureBos.size).toBe(0);expect(reg.hasForeignRetirements()).toBe(false);expect(alive.has(gpu.tex)).toBe(false);
+});
+it("retains a rejected canonical deletion for retry after all raw views have retired",()=>{
+  const {reg,gpu,control,alive}=gpuRawSetup();control.fault="deleteFramebuffer";
+  reg.retireForeignBo(41);expect(reg.hasForeignRetirements()).toBe(true);expect(alive.has(gpu.tex)).toBe(true);
+  reg.retryForeignRetirements();expect(reg.hasForeignRetirements()).toBe(false);expect(alive.has(gpu.tex)).toBe(false);
 });

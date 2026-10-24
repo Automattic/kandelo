@@ -489,6 +489,7 @@ export function destroyTextureView(b: GlBinding, object: WebGLTexture): boolean 
   b.textureViewOwners.delete(native);
   b.textureViews.delete(object);
   b.imageRevisions.delete(object);
+  b.foreignTextureBos.delete(object);
   return true;
 }
 export function destroyRenderbufferView(b: GlBinding, object: WebGLRenderbuffer): boolean {

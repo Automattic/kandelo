@@ -69,25 +69,6 @@ struct wpk_object_group {
 };
 /* Name lookup, native mutation and C publication form one group operation.
  * The metadata mutex remains free across device IO and image cleanup. */
-struct wpk_name_scope {
-    struct wpk_object_group *group;
-    int cancel_state;
-};
-static struct wpk_name_scope begin_name_scope(struct wpk_object_group *group) {
-    struct wpk_name_scope scope = {.group = group};
-    // A deferred cancellation must not abandon a cross-device transaction.
-    // Restore the caller's state only after the dispatch owner is released.
-    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &scope.cancel_state);
-    pthread_mutex_lock(&group->dispatch_mutex);
-    return scope;
-}
-static void end_name_scope(struct wpk_name_scope *scope) {
-    pthread_mutex_unlock(&scope->group->dispatch_mutex);
-    pthread_setcancelstate(scope->cancel_state, NULL);
-}
-#define WPK_NAME_SCOPE(state)                                                                      \
-    struct wpk_name_scope name_scope __attribute__((cleanup(end_name_scope))) =                    \
-        begin_name_scope((state)->objects)
 
 static void object_release(struct wpk_object_group *, struct wpk_object_name *);
 /* Final image release can issue device IO. Never do it under the group
@@ -336,6 +317,20 @@ struct wpk_gles_context {
 #define g_bound_framebuffer (_wpk_gl_current_encoder()->bound_framebuffer)
 #define g_next_vertex_array (_wpk_gl_current_encoder()->next_vertex_array)
 
+struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state) {
+    struct wpk_gl_name_scope scope = {.group = state->objects};
+    // Do not abandon native publication on cancellation; restore after unlock.
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &scope.cancel_state);
+    pthread_mutex_lock(&scope.group->dispatch_mutex);
+    return scope;
+}
+void _wpk_gl_end_name_scope(struct wpk_gl_name_scope *scope) {
+    if (!scope->group)
+        return;
+    pthread_mutex_unlock(&scope->group->dispatch_mutex);
+    pthread_setcancelstate(scope->cancel_state, NULL);
+}
+
 struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *source) {
     struct wpk_gles_context *state = calloc(1, sizeof *state);
     if (!state) return NULL;
@@ -387,9 +382,8 @@ static int flush_commands(void) {
     if (rc != 0) raise_client_error(GL_INVALID_OPERATION);
     return rc;
 }
-void _wpk_gl_flush(void) {
-    (void)flush_commands();
-}
+int _wpk_gl_flush_checked(void) { return flush_commands(); }
+void _wpk_gl_flush(void) { (void)_wpk_gl_flush_checked(); }
 
 /* Reserve `bytes` of cmdbuf space and return a write cursor for the
  * caller to fill. Flushes if the next op would overflow CMDBUF_LEN.
@@ -574,7 +568,7 @@ void glBindBuffer(GLenum target, GLuint buf) {
         return;
     }
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
-    WPK_NAME_SCOPE(state);
+    WPK_GL_NAME_SCOPE(state);
     struct wpk_object_name *object =
         buf ? object_acquire(state->objects, WPK_NAMES_BUFFER, buf) : NULL;
     if (buf && !object) {
@@ -1405,19 +1399,37 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
 }
 
 static int checked_query_reply(uint32_t, const void *, uint32_t, uint8_t *, uint32_t);
+int _wpk_gl_discard_external_candidate(uint32_t name) {
+    const uint32_t words[2] = {1, name};
+    return checked_mutation_query(QOP_IMAGE_OBJECT_DELETE, words, 2) == 1;
+}
 uint32_t _wpk_gl_register_external_texture(struct wpk_gles_context *state, uint32_t name) {
     if (!state || !name)
         return GL_INVALID_OPERATION;
-    struct wpk_object_name *object = object_acquire(state->objects, WPK_NAMES_TEXTURE, name);
-    GLenum error =
-        object ? realize_image_object(state->objects, object, GL_TEXTURE_2D) : GL_OUT_OF_MEMORY;
-    if (!error) {
-        pthread_mutex_lock(&state->objects->mutex);
-        object->external = 1;
-        pthread_mutex_unlock(&state->objects->mutex);
+    struct wpk_object_group *group = state->objects;
+    pthread_mutex_lock(&group->mutex);
+    struct wpk_object_name *object = find_object_name(group, WPK_NAMES_TEXTURE, name);
+    GLenum error = GL_NO_ERROR;
+    if (object) {
+        // Gen reservations and failed ordinary realizations still own their
+        // numbers. The native allocator must move to a different candidate.
+        if (!object->external || object->target != GL_TEXTURE_2D)
+            error = WPK_GL_EXTERNAL_NAME_COLLISION;
+    } else if (!group->next_serial || !(object = calloc(1, sizeof *object)))
+        error = GL_OUT_OF_MEMORY;
+    else {
+        *object = (struct wpk_object_name){.name = name,
+                                           .name_space = WPK_NAMES_TEXTURE,
+                                           .references = 1,
+                                           .target = GL_TEXTURE_2D,
+                                           .serial = group->next_serial++,
+                                           .named = 1,
+                                           .external = 1,
+                                           .next = group->names};
+        group->names = object;
     }
-    object_release(state->objects, object);
-    if (error && state->client_error == GL_NO_ERROR)
+    pthread_mutex_unlock(&group->mutex);
+    if (error == GL_OUT_OF_MEMORY && state->client_error == GL_NO_ERROR)
         state->client_error = error;
     return error;
 }
@@ -1567,7 +1579,7 @@ void glDeleteTextures(GLsizei n, const GLuint *names) {
     if (!n || !names)
         return;
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
-    WPK_NAME_SCOPE(state);
+    WPK_GL_NAME_SCOPE(state);
     struct wpk_object_group *group = state->objects;
     for (GLsizei i = 0; i < n; i++) {
         pthread_mutex_lock(&group->mutex);
@@ -1625,7 +1637,7 @@ void glBindTexture(GLenum target, GLuint tex) {
         return;
     }
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
-    WPK_NAME_SCOPE(state);
+    WPK_GL_NAME_SCOPE(state);
     struct wpk_object_name *object = object_acquire(state->objects, WPK_NAMES_TEXTURE, tex);
     if (tex && !object) {
         raise_client_error(GL_OUT_OF_MEMORY);
@@ -1915,7 +1927,7 @@ void glDeleteBuffers(GLsizei n, const GLuint *names) {
     if (!n || !names)
         return;
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
-    WPK_NAME_SCOPE(state);
+    WPK_GL_NAME_SCOPE(state);
     struct wpk_object_group *group = state->objects;
     for (GLsizei i = 0; i < n; i++) {
         pthread_mutex_lock(&group->mutex);
@@ -2084,7 +2096,7 @@ void glFramebufferTexture2D(GLenum target, GLenum attachment,
         raise_client_error(GL_INVALID_OPERATION);
         return;
     }
-    WPK_NAME_SCOPE(_wpk_gl_current_encoder());
+    WPK_GL_NAME_SCOPE(_wpk_gl_current_encoder());
     GLenum error;
     struct wpk_object_name *object =
         attachment_object(_wpk_gl_current_encoder()->objects, WPK_NAMES_TEXTURE, texture,
@@ -2942,7 +2954,7 @@ void glDeleteRenderbuffers(GLsizei n, const GLuint *names) {
     if (!n || !names)
         return;
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
-    WPK_NAME_SCOPE(state);
+    WPK_GL_NAME_SCOPE(state);
     struct wpk_object_group *group = state->objects;
     for (GLsizei i = 0; i < n; i++) {
         pthread_mutex_lock(&group->mutex);
@@ -2984,7 +2996,7 @@ void glBindRenderbuffer(GLenum target, GLuint rb) {
         return;
     }
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
-    WPK_NAME_SCOPE(state);
+    WPK_GL_NAME_SCOPE(state);
     struct wpk_object_name *object = object_acquire(state->objects, WPK_NAMES_RENDERBUFFER, rb);
     if (rb && !object) {
         raise_client_error(GL_OUT_OF_MEMORY);
@@ -3024,7 +3036,7 @@ void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
         raise_client_error(GL_INVALID_OPERATION);
         return;
     }
-    WPK_NAME_SCOPE(_wpk_gl_current_encoder());
+    WPK_GL_NAME_SCOPE(_wpk_gl_current_encoder());
     GLenum error;
     struct wpk_object_name *object =
         attachment_object(_wpk_gl_current_encoder()->objects, WPK_NAMES_RENDERBUFFER, renderbuffer,

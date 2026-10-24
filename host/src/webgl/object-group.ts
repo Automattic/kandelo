@@ -51,6 +51,8 @@ export type GlSharedObjects = {
    *  reach, so host- and guest-assigned ids share `textures` without
    *  collision. */
   nextForeignTexId: number;
+  /** Raw BO view ownership follows identity, including deleted retained names. */
+  foreignTextureBos: Map<WebGLTexture, number>;
   retiredTextures: Map<WebGLTexture, number>;
   retiredBuffers: Map<WebGLBuffer, number>;
   retiredRenderbuffers: Map<WebGLRenderbuffer, number>;
@@ -67,7 +69,7 @@ export function createGlObjectGroup(): GlObjectGroup {
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),
     uniformLocations: new Map(), uniformLocationPrograms: new Map(), uniformLocationNames: new Map(), nextUniformLoc: 0,
-    foreignTextures: new Map(), nextForeignTexId: 0x4000_0000,
+    foreignTextures: new Map(), nextForeignTexId: 0x4000_0000, foreignTextureBos: new Map(),
     retiredTextures: new Map(), retiredBuffers: new Map(), retiredRenderbuffers: new Map(), externallyOwnedTextures: new WeakSet(),
   };
 }

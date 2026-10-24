@@ -163,6 +163,7 @@ static struct {
     struct {
         uint32_t kind, name, source, revision;
     } image_sources[128];
+    uint32_t raw_name;
 } image_groups[64];
 static unsigned next_image_group;
 
@@ -185,6 +186,7 @@ static int fail_surface_update;
 static pthread_mutex_t overlap_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t overlap_cond = PTHREAD_COND_INITIALIZER;
 static int overlap_phase, pause_foreign_bind;
+static unsigned foreign_bind_calls;
 static void overlap_reach(int phase) {
     pthread_mutex_lock(&overlap_mutex); overlap_phase = phase;
     pthread_cond_broadcast(&overlap_cond); pthread_mutex_unlock(&overlap_mutex);
@@ -519,6 +521,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             slot->closes++;
         }
     } else if (request == 0xc01064e1u) {
+        foreign_bind_calls++;
         uint32_t *words = arg;
         assert(words[0] == 77 || words[0] == transferred_handles[fd - 10]);
         assert(words[2] == slot->context);
@@ -529,7 +532,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             errno = ENOMEM;
             return -1;
         }
-        words[3] = words[1] == 0x57504b49u ? 1u : 0x60000000u;
+        if (words[1] == 0x57504b49u)
+            words[3] = 1u;
+        else {
+            if (!image_groups[slot->image_group].raw_name)
+                image_groups[slot->image_group].raw_name = 0x60000000u;
+            words[3] = image_groups[slot->image_group].raw_name;
+        }
     } else if (request == GLIO_CREATE_CONTEXT && fail_create_context) {
         errno = ENOMEM;
         return -1;
@@ -796,6 +805,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             reply[1] = failure == 2 ? 0u : failure == 4 ? 9u : 1u;
             reply[2] = failure == 3 ? 0u : 0x47514c33u;
             if (q->op == 0x27 && !failure && input[1]) {
+                if (input[0] == 1 && image_groups[slot->image_group].raw_name == input[1])
+                    image_groups[slot->image_group].raw_name++;
                 if (input[0] == 1) {
                     for (unsigned u = 0; u < 128; u++) {
                         if (slot->texture_2d[u] == input[1])
@@ -1305,11 +1316,20 @@ static void *reserve_group_names(void *data) {
 }
 #endif
 
+extern unsigned wpkEglBindBoTexture(EGLDisplay, unsigned, unsigned);
 struct sharing_thread {
     EGLDisplay display;
     EGLContext context;
     int cancel;
 };
+static void *raw_name_publisher(void *data) {
+    struct sharing_thread *input = data;
+    assert(eglMakeCurrent(input->display, EGL_NO_SURFACE, EGL_NO_SURFACE, input->context));
+    record_dispatch_lock = 1;
+    assert(wpkEglBindBoTexture(input->display, 77, GL_TEXTURE_2D) != 0);
+    assert(glGetError() == GL_NO_ERROR && eglReleaseThread());
+    return NULL;
+}
 static void *shared_name_binder(void *data) {
     struct sharing_thread *input = data;
     assert(eglMakeCurrent(input->display, EGL_NO_SURFACE, EGL_NO_SURFACE, input->context));
@@ -1387,6 +1407,61 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "raw-reserved-name")) {
+        EGLImageKHR img = image(dpy);
+        const GLuint reserved = 0x60000000u;
+        bind_failure = 2;
+        glBindTexture(GL_TEXTURE_2D, reserved);
+        assert(glGetError() == GL_OUT_OF_MEMORY);
+        GLuint raw = wpkEglBindBoTexture(dpy, 77, GL_TEXTURE_2D);
+        assert(raw == reserved + 1 && foreign_bind_calls == 2);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, reserved);
+        assert(glGetError() == GL_NO_ERROR && eglGetError() == EGL_SUCCESS);
+        glDeleteTextures(1, &reserved);
+        glDeleteTextures(1, &raw);
+        assert(eglDestroyImageKHR(dpy, img) && closes == 1);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS raw-reserved-name");
+        return 0;
+    }
+    if (!strcmp(argv[1], "raw-flush-reject")) {
+        EGLImageKHR img = image(dpy);
+        glClear(GL_COLOR_BUFFER_BIT);
+        fail_submit = 1;
+        unsigned before = foreign_bind_calls;
+        assert(!wpkEglBindBoTexture(dpy, 77, GL_TEXTURE_2D) && foreign_bind_calls == before);
+        fail_submit = 0;
+        assert(glGetError() == GL_INVALID_OPERATION);
+        GLuint raw = wpkEglBindBoTexture(dpy, 77, GL_TEXTURE_2D);
+        assert(raw && foreign_bind_calls == before + 1);
+        glDeleteTextures(1, &raw);
+        assert(eglDestroyImageKHR(dpy, img));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS raw-flush-reject");
+        return 0;
+    }
+    if (!strcmp(argv[1], "raw-publication-order")) {
+        EGLImageKHR img = image(dpy);
+        EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+        assert(peer);
+        glBindBuffer(GL_ARRAY_BUFFER, 17);
+        assert(eglReleaseThread());
+        struct sharing_thread first_input = {dpy, ctx, 0}, second_input = {dpy, peer, 0};
+        pthread_t first, second;
+        pause_foreign_bind = 1;
+        assert(!pthread_create(&first, NULL, raw_name_publisher, &first_input));
+        overlap_wait(1);
+        assert(!pthread_create(&second, NULL, shared_name_peer, &second_input));
+        assert(!pthread_join(first, NULL) && !pthread_join(second, NULL));
+        pause_foreign_bind = 0;
+        assert(eglDestroyContext(dpy, ctx) && eglDestroyContext(dpy, peer) &&
+               eglDestroyImageKHR(dpy, img));
+        assert(eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS raw-publication-order");
+        return 0;
+    }
     if (!strcmp(argv[1], "shared-create-rollback")) {
         GLuint name = 17;
         EGLImageKHR img = image(dpy);

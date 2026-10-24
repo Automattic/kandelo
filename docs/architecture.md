@@ -4176,8 +4176,9 @@ image/source/revision state; bindings and containers retain those records
 instead of separate image/query mirrors. Publication accepts newer revisions
 and discards stale candidates. Older owned-state replies cannot clear a
 newer import or authorize dependent texture rows. Standard C name-based
-transactions now serialize lookup through publication across peers; raw WPK
-namespace effects and general failure reconciliation remain open.
+transactions now serialize lookup through publication across peers. Raw WPK
+publication uses the same group scope; general failure reconciliation remains
+open.
 Indeterminate import candidates already belong to the group: submitting
 encoder retirement cannot release backing a peer might retain. Final group
 retirement releases these candidates outside the metadata mutex.
@@ -4234,9 +4235,35 @@ cancellation is disabled during the transaction and the caller's state restored
 after unlocking. Metadata reservation remains independent, allowing final image
 cleanup to reenter the allocator without holding its mutex. This establishes
 ordinary shared creation and tested name ordering, not complete sharing
-conformance: raw WPK publication/revocation, indeterminate transport, multiple
-native restoration failures and worker/process crash recovery still need their
-full audit and normal guest lifecycle validation.
+conformance: indeterminate transport, multiple native restoration failures and
+worker/process crash recovery still need their full audit and normal guest
+lifecycle validation.
+
+Raw WPK BO texture publication holds the C group dispatch scope across the
+checked command flush, native candidate allocation and C namespace adoption.
+Native allocation skips realized names; C rejects candidates that collide with
+reserved or ordinary names, deletes only the unpublished candidate through the
+existing checked image-delete query and retries. A rejected flush cannot publish
+a raw name. The private cross-archive guard changes no device/wire layout.
+
+GPU raw imports own distinct logical texture views of private canonical BO
+pixels. Parameters and respecification belong to the logical object. Explicit
+refresh can reimport canonical pixels into the same live object; delete and
+reimport creates a new identity, preserving peers' retained deleted views.
+CPU raw imports still upload snapshots; full CPU canonical coherence is open.
+
+BO ownership tracks every raw view by object identity, including deleted names
+retained by peer bindings or containers. BO retirement clears those references
+without deleting an unrelated replacement using the same public number. Native
+detachment and utility state restoration precede logical publication. Definite
+failure keeps a cleanup journal and canonical GPU storage for retry, including
+after the last member retires. Journal owners hold only shared object metadata,
+native context and error state, never guest memory authority. Dependent submit,
+query, present and raw-bind operations retry pending retirement and reject an
+affected group while its raw views remain. Invalid query destinations and
+malformed command spans are rejected before cleanup is attempted. Native view
+and canonical deletion failures remain reachable for retry. This does not
+establish general recovery after repeated rollback failure or context loss.
 
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package

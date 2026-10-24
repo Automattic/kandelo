@@ -236,6 +236,21 @@ void     _wpk_gl_flush(void);
 /* Opaque client encoder state belongs to an EGL context, not its current
  * thread. Only libGLESv2 knows its layout; EGL owns creation and retirement. */
 struct wpk_gles_context;
+struct wpk_object_group;
+/* Private cross-archive guard; no device/wire layout is changed. */
+struct wpk_gl_name_scope {
+    struct wpk_object_group *group;
+    int cancel_state;
+};
+struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state);
+void _wpk_gl_end_name_scope(struct wpk_gl_name_scope *scope);
+#define WPK_GL_NAME_SCOPE(state)                                                                   \
+    struct wpk_gl_name_scope name_scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =         \
+        _wpk_gl_begin_name_scope(state)
+int _wpk_gl_flush_checked(void);
+#define WPK_GL_EXTERNAL_NAME_COLLISION 0x0502u
+int _wpk_gl_discard_external_candidate(uint32_t name);
+
 struct wpk_gles_context *_wpk_gl_current_encoder(void);
 struct wpk_gles_context *_wpk_gl_create_encoder(void);
 #define WPK_GL_OBJECT_GROUPS 1

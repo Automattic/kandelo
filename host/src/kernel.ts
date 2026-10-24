@@ -62,7 +62,7 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
 import { registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
-import { bindForeignTexture } from "./webgl/foreign-texture";
+import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
 import {
   blitGpuScanout,
   blitPresentTarget,
@@ -969,8 +969,8 @@ export class WasmPosixKernel {
     // A bo owns the foreign textures bound from it, and a GPU-tier bo owns
     // a texture+FBO on the shared context; drop both before its storage
     // goes away, on the guest destroy path and the teardown path alike.
-    this.gl.dropForeignTexturesForBo(bo_id);
-    this.gl.destroyGpuBo(bo_id);
+    for (const b of this.gl.list()) if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+    this.gl.retireForeignBo(bo_id);
   });
   /**
    * Worker-side submit lanes. The compositor (current DRM_MASTER on
@@ -983,6 +983,13 @@ export class WasmPosixKernel {
    */
   private gl_submit_queue = new SubmitQueue((pid) => this.kms.isMasterPid(pid));
   private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
+
+  private prepareForeignRetirements(b: GlBinding): boolean {
+    if (!this.gl.hasForeignRetirements()) return true;
+    for (const gl of this.gl.foreignRetirementContexts()) this.gl_muxers.get(gl)?.invalidateCurrent();
+    this.gl.retryForeignRetirements();
+    return !this.gl.groupHasForeignRetirement(b);
+  }
 
   private glMuxerFor(gl: WebGL2RenderingContext): GlMuxer {
     let muxer = this.gl_muxers.get(gl);
@@ -1466,9 +1473,10 @@ export class WasmPosixKernel {
    *  DRM-master compositor's scanout WebGL2 context. WebGL textures are
    *  not shareable across contexts, so every GPU-bo texture (and the FBO
    *  its producer renders into) must live here for the compositor to
-   *  sample it zero-copy. Null when no pid holds master, or the master
-   *  has no live context yet (headless Node, or before the compositor's
-   *  `eglCreateContext`) — the GPU-bo path then degrades to CPU tier. */
+   *  sample its logical views without a CPU upload. Null when no pid holds
+   *  master or the master has no live context yet (headless Node, or before
+   *  the compositor's `eglCreateContext`) — the GPU-bo path then degrades
+   *  to CPU tier. */
   #sharedGlContext(): WebGL2RenderingContext | null {
     const masterPid = this.kms.getMasterPid();
     if (masterPid == null) return null;
@@ -2407,7 +2415,7 @@ export class WasmPosixKernel {
         },
         // WPK_CREATE_GPU_BO: allocate a GPU-tier bo backed by a
         // WebGLTexture (+FBO) on the shared multiplexer context — no SAB,
-        // unmappable, sampled zero-copy by the compositor and rendered
+        // unmappable, sampled through GPU views by the compositor and rendered
         // into by its producer (PR10).
         //
         // The shared context is the DRM-master compositor's scanout
@@ -2726,13 +2734,10 @@ export class WasmPosixKernel {
               return -5; // EIO
             }
           }
+          const validation = validateCommandBuffer(b.cmdbufView, submission.offset, submission.length);
+          if (validation < 0) return validation;
+          if (!this.prepareForeignRetirements(b)) return -5;
           if (b.forward) {
-            const rc = validateCommandBuffer(
-              b.cmdbufView,
-              submission.offset,
-              submission.length,
-            );
-            if (rc < 0) return rc;
             b.forward.onSubmit(
               sliceUint8Array(
                 b.cmdbufView,
@@ -2767,6 +2772,7 @@ export class WasmPosixKernel {
           const b = this.gl.get(pid, sessionId);
           if (!b) return sessionId !== undefined || this.gl.list().some(b => b.pid === pid) ? -5 : 0;
           if (!b.gl && !b.forward) return -5;
+          if (!this.prepareForeignRetirements(b)) return -5;
           if (b?.gl?.isContextLost()) return -5; // EIO
           if (b.forward) {
             if (!b.forward.onPresent) return -38;
@@ -2857,6 +2863,7 @@ export class WasmPosixKernel {
           let outBuf: Uint8Array;
           let written: number;
           try {
+            if (!this.prepareForeignRetirements(b)) return -5;
             if (b.forward) {
               if (!b.forward.onQuery) return -38; // ENOSYS: legacy channel
               const result = b.forward.onQuery(op, inBuf, outputLength, b.sessionId);
@@ -2897,18 +2904,19 @@ export class WasmPosixKernel {
           ctxId >>>= 0;
           const b = this.gl.getContext(pid, ctxId);
           if (!b || !b.gl || b.contextId !== ctxId) return -5;  // EIO
+          if (!this.prepareForeignRetirements(b)) return -5;
           if (glTarget !== 0x0de1 && glTarget !== WPK_IMAGE_SOURCE_TARGET) return -22;                  // EINVAL: TEXTURE_2D only
-          // GPU-tier bo: the texture already lives on the shared context,
-          // so binding it degenerates to "return the texture id" — zero
-          // copies, no upload. The caller must be on that same context
-          // (WebGL textures aren't shareable); otherwise EIO.
+          // Canonical GPU pixels stay private. Public names own logical
+          // views, preserving independent parameters and respecification.
+          // The caller must share the native context; otherwise EIO.
           const gpu = this.gl.gpuBo(boId);
           if (gpu) {
             if (b.gl !== gpu.gl) return -5;                     // EIO
             if(glTarget===WPK_IMAGE_SOURCE_TARGET)return registerImageSource(b,boId,gpu.tex,gpu.w,gpu.h);
-            b.textures.set(gpu.texId, gpu.tex);
-            b.externallyOwnedTextures.add(gpu.tex);
-            return gpu.texId;
+            this.glMuxerFor(b.gl).switchTo(b);
+            const name = bindGpuForeignTexture(b, boId, gpu);
+            if (name <= 0) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+            return name;
           }
           if(glTarget===WPK_IMAGE_SOURCE_TARGET)return -22;
           const dims = this.bos.dims(boId);
@@ -2917,7 +2925,10 @@ export class WasmPosixKernel {
           // Publish all writers at this submission boundary. Allocation
           // identity does not tell us which process wrote the pixels.
           this.bos.syncToSab(boId);
-          return bindForeignTexture(b, boId, bytes, dims);
+          this.glMuxerFor(b.gl).switchTo(b);
+          const name = bindForeignTexture(b, boId, bytes, dims);
+          if (name <= 0) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+          return name;
         },
         host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },
         host_kms_drop_master: (_pid: number): void => { this.kms.dropMaster(); },
