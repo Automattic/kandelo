@@ -18,6 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { drawGlesElements } from "./index-data.js";
 import { setConvertedVertexAttribute } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
@@ -1121,6 +1122,8 @@ function dispatch(
       return;
     }
     case O.OP_DRAW_ARRAYS:
+      if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }
+      if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
       if (!prepareBufferDraw(b,false)) return;
       gl.drawArrays(
         v.getUint32(p, true),
@@ -1129,13 +1132,7 @@ function dispatch(
       );
       return;
     case O.OP_DRAW_ELEMENTS:
-      if (!prepareBufferDraw(b,true)) return;
-      gl.drawElements(
-        v.getUint32(p, true),
-        v.getInt32(p + 4, true),
-        v.getUint32(p + 8, true),
-        v.getUint32(p + 12, true),
-      );
+      drawGlesElements(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true));
       return;
     // Payload: u32 index, f32 x, f32 y, f32 z, f32 w
     case O.OP_VERTEX_ATTRIB_4FV:

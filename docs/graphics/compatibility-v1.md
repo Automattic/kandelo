@@ -60,7 +60,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reserved guest buffer names and host shared-object maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Full rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
-| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Bound index buffer plus client attributes, fixed-index restart translation and full size/limit/query coverage remain open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
+| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffer plus client attributes and full size/limit/query coverage remain open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core reflection and complete executable/attribute/uniform validation still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
@@ -1112,9 +1112,67 @@ G03 remains partial. Combined bound indices/client attributes, full vertex
 and buffer queries, all negative/limit conditions and guest integration are
 still open. WebGL2 also
 [always enables fixed-index primitive restart](https://registry.khronos.org/webgl/specs/2.0/#PRIMITIVE_RESTART_FIXED_INDEX);
-GLES2 index values 255/65535 therefore need translation before native draws.
-This is ordinary implementation work, not a hard boundary. No wire layout
+The following stage supplies wider native index streams for GLES2 values
+255/65535. The remaining G03 gaps are ordinary implementation work. No wire layout
 changed; ABI remains 55. Normal SDK/kernel/package/image provisioning and
 full CTS/compositor, browser-memory and POSIX runs remain deferred until the
 combined implementation reaches its build/test phase. Performance was not
 measured.
+
+
+### Maximum index values and draw validation
+
+GLES2 byte and short indices now widen to native 16- and 32-bit values before
+WebGL execution. This preserves 255 and 65535 as ordinary vertices despite
+[WebGL2 fixed-index restart](https://registry.khronos.org/webgl/specs/2.0/#PRIMITIVE_RESTART_FIXED_INDEX).
+The helper reads only the requested source range, writes bounded chunks to
+a private index buffer and issues one native draw. The original index order,
+count and primitive mode remain intact across chunk boundaries; strip and
+fan topology are preserved. Original storage and logical VAO ownership do
+not change. Native element/copy bindings are restored and the temporary
+handle is deleted on success or failure.
+
+Both the C frontend and host reject invalid core draw modes and index types
+before client-memory or storage reads. Negative counts, unaligned short
+index offsets and out-of-range native reads fail before transfer allocation.
+Only GLES2 core byte/short index types are accepted; a uint-index extension
+is not advertised. Native 32-bit indices here are an internal translation.
+
+On `36fc54b959`, the native suite has 45 passes and one failure: the invalid
+mode case reaches an invalid client pointer before reporting the enum error.
+Evidence: `.context/graphics-index-baseline-native.log`. The actual-C maximum
+byte/short index streams fail in all three browsers against that revision's
+exact archived host source (six failures):
+`.context/graphics-index-baseline-browser.log`. The shared-buffer strip
+cases also fail in all engines (six failures):
+`.context/graphics-index-vbo-baseline-browser.log`. The source archive is
+`.context/graphics-index-before/`.
+
+Current focused evidence, ABI 55:
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Native actual EGL/GLES sources with device double and UBSan | 46 cases passed | `.context/graphics-index-native.log` |
+| Host graphics source gate and Node/browser declarations | 329 cases in 16 files; declarations passed | `.context/graphics-index-final-host.log` |
+| Real Chromium/Firefox/WebKit source WebGL | 63 cases passed, no skips | `.context/graphics-index-final-browser.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed, no skips | `.context/graphics-index-memory-boundary.log` |
+| Private wasm32 EGL/GLES objects and relocatable paired link | Passed | `.context/graphics-index-wasm.log` |
+
+The actual-C cases submit 33000 maximum byte or short indices, spanning
+multiple promotion chunks, and render the indexed client's cyan vertex.
+The VBO cases put the maximum index in the middle of a triangle strip,
+check cyan pixels, update to a degenerate strip and observe black, then
+restore the shared data. Deleted names and reused names retain independent
+old/new pixels and the original binding query value; final cleanup deletes
+all source and temporary native handles. Unit tests verify a single draw
+across chunk boundaries, exact widened values, source bytes left unchanged,
+binding restoration, range/enum validation and failed-transfer retry.
+
+This is native-C-to-browser and direct host rendering evidence. Wasm guest
+marshalling, public shared EGL contexts and installed SDK archives remain
+unvalidated. Promotion uses synchronous readback and temporary GPU storage;
+performance was not measured. G03 still needs combined bound index buffers
+and client attributes, complete buffer/vertex queries and broader negative/
+limit coverage. No wire layout changed; ABI remains 55. Normal full
+SDK/kernel/package/image provisioning and CTS/compositor, browser-memory and
+POSIX validation remain deferred until the combined build/test phase.

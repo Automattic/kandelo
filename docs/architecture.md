@@ -3925,8 +3925,12 @@ GLES formats, strides and offsets while native pointers use packed data.
 Disabled/unbound attributes retain views; replacement and container teardown
 release unused views. Client staging likewise packs only referenced elements,
 avoiding unreadable prefixes, stride gaps and sparse-index holes, with bounded
-scratch/masks and signed size checks. Combined bound indices/client arrays,
-fixed-index restart translation, complete query/negative/limit coverage,
+scratch/masks and signed size checks. Indexed draws widen byte/short values into private native index buffers,
+using bounded chunks and one draw to preserve complete primitive topology.
+This keeps GLES2 maximum indices from becoming WebGL restart markers.
+Native element/copy bindings are restored and private handles deleted on
+all exits. Core draw enums are checked before client reads. Combined bound
+indices/client arrays, complete query/negative/limit coverage,
 image sibling sampler identity and kernel display-generation authority plus
 C group routing remain open.
 Shader/program attachment records retain deleted shaders and current

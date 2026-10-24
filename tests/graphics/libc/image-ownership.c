@@ -336,6 +336,35 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "encoder-draw-enums")) {
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,(const void *)1); glEnableVertexAttribArray(0);
+        glDrawArrays(0xdead,0,1); assert(glGetError() == GL_INVALID_ENUM);
+        glDrawElements(0xdead,1,GL_UNSIGNED_BYTE,(const void *)1); assert(glGetError() == GL_INVALID_ENUM);
+        glDrawElements(GL_POINTS,1,GL_UNSIGNED_INT,(const void *)1); assert(glGetError() == GL_INVALID_ENUM);
+        glFlush(); assert(draw_commands == 0 && buffer_uploads == 0);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-draw-enums"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-max-byte") || !strcmp(argv[1], "encoder-max-short")) {
+        const int wide = !strcmp(argv[1], "encoder-max-short");
+        const unsigned maximum = wide ? 65535 : 255, count = 33000, width = wide ? 2 : 1;
+        GLfloat *vertices = calloc((size_t)maximum+1,2*sizeof(GLfloat)); assert(vertices);
+        vertices[maximum*2] = -0.5f; vertices[maximum*2+1] = 1.5f;
+        unsigned char *indices = malloc(count*width); assert(indices);
+        for (unsigned i=0; i<count; i++) {
+            const GLushort value = (GLushort)maximum;
+            if (wide) memcpy(indices+i*2,&value,2); else indices[i] = (unsigned char)maximum;
+        }
+        capture_array_upload = 1;
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertices); glEnableVertexAttribArray(0);
+        glDrawElements(GL_POINTS,count,wide ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE,indices); glFlush();
+        assert(draw_commands == 1 && glGetError() == GL_NO_ERROR);
+        assert(captured_size == (maximum+1)*2*sizeof(GLfloat));
+        assert(!memcmp(captured_bytes+maximum*2*sizeof(GLfloat),vertices+maximum*2,2*sizeof(GLfloat)));
+        free(indices); free(vertices);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strcmp(argv[1], "encoder-client-scratch")) {
         const GLfloat vertices[6] = {1.5f,0,0,-2.5f,0,0};
         capture_array_upload = 1;

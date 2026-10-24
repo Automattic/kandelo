@@ -7,8 +7,8 @@ import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./sup
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
-for (const kind of ["client", "fixed"] as const) {
-  test(`actual C encoder renders a large ${kind === "fixed" ? "fixed-point" : "float"} client array through WebGL`, async ({ page }) => {
+for (const kind of ["client", "fixed", "max-byte", "max-short"] as const) {
+  test(`actual C encoder renders ${kind.startsWith("max-") ? `maximum ${kind.slice(4)} indices` : `a large ${kind === "fixed" ? "fixed-point" : "float"} client array`} through WebGL`, async ({ page }) => {
     const root = fileURLToPath(new URL("../../../",import.meta.url));
     mkdirSync(join(root,".context"),{recursive:true});
     const temporary = mkdtempSync(join(root,".context/graphics-client-trace-"));
@@ -16,7 +16,7 @@ for (const kind of ["client", "fixed"] as const) {
     try {
       const path = join(temporary,"commands.bin");
       execFileSync("bash",[join(root,"tests/graphics/run-libc-unit.sh")],{
-        cwd:root, env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:`encoder-large-${kind}`,KANDELO_GRAPHICS_COMMAND_TRACE:path},
+        cwd:root, env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:kind.startsWith("max-") ? `encoder-${kind}` : `encoder-large-${kind}`,KANDELO_GRAPHICS_COMMAND_TRACE:path},
         timeout:60000,stdio:"pipe",
       });
       trace = [...readFileSync(path)];
@@ -63,6 +63,98 @@ for (const kind of ["client", "fixed"] as const) {
       return {pixels:[...pixels],error:new DataView(error.buffer).getUint32(0,true),buffersRetired};
     },{sourceRoot:process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root,trace});
     expect(result).toEqual({pixels:[0,255,255,255],error:0,buffersRetired:true});
+  });
+}
+
+for (const width of [1,2]) {
+  test(`maximum ${width*8}-bit VBO indices preserve strip topology and shared storage`, async ({ page }) => {
+    await page.goto("/trap-signal-test.html");
+    const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
+    const result = await page.evaluate(async ({sourceRoot,width}) => {
+      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const { GlContextRegistry } = await import(base+"registry.ts");
+      const { GlMuxer } = await import(base+"muxer.ts");
+      const { decodeAndDispatch } = await import(base+"bridge.ts");
+      const { runGlQuery } = await import(base+"query.ts");
+      const O = await import(base+"ops.ts");
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+      document.body.replaceChildren(canvas);
+      const gl = canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true});
+      if (!gl) throw new Error("WebGL2 required");
+      const buffers: WebGLBuffer[] = [], create = gl.createBuffer.bind(gl);
+      gl.createBuffer = () => { const buffer = create(); if (buffer) buffers.push(buffer); return buffer; };
+      const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+      const [a,b] = [101,102].map(sessionId => {
+        reg.bind({pid:96,sessionId,cmdbufAddr:0,cmdbufLen:1024});
+        const owner = reg.get(96,sessionId)!; owner.gl = gl; owner.contextId = sessionId;
+        owner.cmdbufView = new Uint8Array(1024); return owner;
+      });
+      if (!reg.shareObjects(96,102,101)) throw new Error("group construction failed");
+      const send = (owner: typeof a, op: number, words: number[], tail = new Uint8Array()) => {
+        mux.switchTo(owner); const view = new DataView(owner.cmdbufView!.buffer);
+        view.setUint16(0,op,true); view.setUint16(2,words.length*4+tail.length,true);
+        words.forEach((word,i) => view.setUint32(4+i*4,word,true)); owner.cmdbufView!.set(tail,4+words.length*4);
+        if (decodeAndDispatch(owner,0,4+words.length*4+tail.length)) throw new Error("command failed");
+      };
+      const query = (owner: typeof a, op: number, words: number[] = []) => {
+        mux.switchTo(owner); const input = new Uint8Array(words.length*4), out = new Uint8Array(4);
+        words.forEach((word,i) => new DataView(input.buffer).setUint32(i*4,word,true));
+        if (runGlQuery(owner,op,input,out) !== 4) throw new Error("query failed"); return out;
+      };
+      const number = (owner: typeof a, op: number, words: number[] = []) => new DataView(query(owner,op,words).buffer).getUint32(0,true);
+      for (const [name,type,text] of [
+        [11,gl.VERTEX_SHADER,"attribute vec2 position; void main(){gl_Position=vec4(position,0.,1.);}"],
+        [12,gl.FRAGMENT_SHADER,"precision mediump float; void main(){gl_FragColor=vec4(0.,1.,1.,1.);}"]
+      ] as [number,number,string][]) {
+        send(a,O.OP_CREATE_SHADER,[type,name]); const textBytes = new TextEncoder().encode(text);
+        send(a,O.OP_SHADER_SOURCE,[name,textBytes.length],textBytes); send(a,O.OP_COMPILE_SHADER,[name]);
+      }
+      send(a,O.OP_CREATE_PROGRAM,[13]); send(a,O.OP_ATTACH_SHADER,[13,11]); send(a,O.OP_ATTACH_SHADER,[13,12]);
+      send(a,O.OP_BIND_ATTRIB_LOCATION,[13,0,8],new TextEncoder().encode("position")); send(a,O.OP_LINK_PROGRAM,[13]);
+      const maximum = width === 1 ? 255 : 65535, type = width === 1 ? gl.UNSIGNED_BYTE : gl.UNSIGNED_SHORT;
+      send(a,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,71]); send(a,O.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,(maximum+1)*8,gl.STATIC_DRAW]);
+      for (const [index,x,y] of [[0,-1,-1],[maximum,3,-1],[1,-1,3]]) {
+        const data = new Uint8Array(new Float32Array([x,y]).buffer);
+        send(a,O.OP_BUFFER_SUB_DATA,[gl.ARRAY_BUFFER,index*8,data.length],data);
+      }
+      const indices = (maximumIndex: boolean) => {
+        const bytes = new Uint8Array(width*4), view = new DataView(bytes.buffer);
+        [123,0,maximumIndex ? maximum : 1,1].forEach((n,i) => width === 1 ? view.setUint8(i,n) : view.setUint16(i*2,n,true)); return bytes;
+      };
+      const allocate = (data: Uint8Array) => {
+        send(a,O.OP_BUFFER_DATA,[gl.ELEMENT_ARRAY_BUFFER,data.length,gl.DYNAMIC_DRAW]);
+        send(a,O.OP_BUFFER_SUB_DATA,[gl.ELEMENT_ARRAY_BUFFER,0,data.length],data);
+      };
+      send(a,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,72]); allocate(indices(true));
+      send(a,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,0]);
+      for (const owner of [a,b]) {
+        send(owner,O.OP_USE_PROGRAM,[13]); send(owner,O.OP_VIEWPORT,[0,0,1,1]);
+        send(owner,O.OP_GEN_VERTEX_ARRAYS,[1,31]); send(owner,O.OP_BIND_VERTEX_ARRAY,[31]);
+        send(owner,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,71]); send(owner,O.OP_VERTEX_ATTRIB_POINTER,[0,2,gl.FLOAT,0,0,0]);
+        send(owner,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]); send(owner,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,72]);
+      }
+      const pixels: number[][] = [];
+      const draw = (owner: typeof a) => {
+        send(owner,O.OP_CLEAR_COLOR,[0,0,0,0x3f800000]); send(owner,O.OP_CLEAR,[gl.COLOR_BUFFER_BIT]);
+        send(owner,O.OP_DRAW_ELEMENTS,[gl.TRIANGLE_STRIP,3,type,width]);
+        pixels.push([...query(owner,O.QOP_READ_PIXELS,[0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE])]);
+      };
+      draw(b);
+      for (const maximumIndex of [false,true]) {
+        const data = indices(maximumIndex); send(a,O.OP_BUFFER_SUB_DATA,[gl.ELEMENT_ARRAY_BUFFER,0,data.length],data); draw(b);
+      }
+      const old = a.buffers.get(72)!;
+      send(a,O.OP_DELETE_BUFFERS,[1,72]); const retained = gl.isBuffer(old);
+      send(a,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,72]); allocate(indices(false)); const replacement = a.buffers.get(72)!;
+      draw(a); draw(b);
+      const oldName = number(b,O.QOP_GET_INTEGERV,[gl.ELEMENT_ARRAY_BUFFER_BINDING]);
+      send(b,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,0]); const oldRetired = !gl.isBuffer(old);
+      const errors = [number(a,O.QOP_GET_ERROR),number(b,O.QOP_GET_ERROR)];
+      mux.invalidateCurrent(); reg.destroyContext(96,101); reg.destroyContext(96,102);
+      return {pixels,retained,oldName,oldRetired,errors,replacementRetired:!gl.isBuffer(replacement),allBuffersRetired:buffers.every(buffer => !gl.isBuffer(buffer))};
+    },{sourceRoot:root,width});
+    expect(result).toEqual({pixels:[[0,255,255,255],[0,0,0,255],[0,255,255,255],[0,0,0,255],[0,255,255,255]],
+      retained:true,oldName:72,oldRetired:true,errors:[0,0],replacementRetired:true,allBuffersRetired:true});
   });
 }
 

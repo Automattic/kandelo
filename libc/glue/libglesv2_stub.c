@@ -670,6 +670,10 @@ failed:
 
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     if (!_wpk_gl_current_encoder()) return;
+    if (mode > GL_TRIANGLE_FAN) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        return;
+    }
     if (first < 0 || count < 0) {
         if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
         return;
@@ -2495,6 +2499,10 @@ void glFlush(void) {
 
 void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
     if (!_wpk_gl_current_encoder()) return;
+    if (mode > GL_TRIANGLE_FAN || (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT)) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        return;
+    }
     if (count < 0) {
         if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
         return;
