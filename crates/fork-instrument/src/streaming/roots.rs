@@ -11,7 +11,7 @@ use wasm_posix_shared::abi;
 
 mod catalog;
 mod emit;
-mod imports;
+pub(super) mod imports;
 #[cfg(test)]
 mod tests;
 use catalog::Global;
@@ -36,6 +36,7 @@ struct SegmentTracker {
     count: u32,
 }
 pub struct NativeRootState {
+    source: [u8; 32],
     globals: Vec<Global>,
     imported_globals: Vec<u8>,
     elements: SegmentTracker,
@@ -73,7 +74,9 @@ impl NativeRootState {
         bootstrap.validate_source(scan)?;
         let frozen = runtime.imports_plan();
         frozen.validate_source(scan)?;
+        let source = frozen.source_identity();
         let host = imports.freeze(frozen)?;
+        imports.validate_memory(runtime)?;
         let memory = runtime
             .process_memory()
             .context("root state needs process memory")?;
@@ -83,6 +86,7 @@ impl NativeRootState {
         let elements = tracker(bootstrap.initially_dropped_elements(), module, limits)?;
         let data = tracker(bootstrap.initially_dropped_data(), module, limits)?;
         Ok(Self {
+            source,
             globals,
             imported_globals,
             elements,
@@ -103,6 +107,17 @@ impl NativeRootState {
             finish_segments: first_function + 2,
             limits,
         })
+    }
+    pub(super) fn source_identity(&self) -> [u8; 32] {
+        self.source
+    }
+    pub(super) fn memory_binding(&self) -> (u32, ValType) {
+        (self.memory, self.pointer)
+    }
+    pub(super) fn baseline_matches(&self, bootstrap: &FrozenModuleBootstrap) -> bool {
+        self.source == bootstrap.source_identity()
+            && self.baseline == bootstrap.restore_baseline
+            && self.bootstrap_done == bootstrap.done_global
     }
     pub fn declarations(&self) -> &FrozenDeclarations {
         &self.declarations

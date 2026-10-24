@@ -66,7 +66,7 @@ pub fn imported_functions(module: &Module) -> Vec<FunctionId> {
         .collect()
 }
 
-fn is_dynamic_linker_function_import(module: &str, name: &str) -> bool {
+pub(crate) fn is_dynamic_linker_function_import(module: &str, name: &str) -> bool {
     module == "env"
         && matches!(
             name,

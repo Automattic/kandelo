@@ -7,6 +7,8 @@ use wasm_encoder::{
 };
 #[path = "streaming_roots.rs"]
 mod roots;
+#[path = "streaming_tables.rs"]
+mod tables;
 
 struct Provider {
     runtime: NativeRuntime,
@@ -17,6 +19,7 @@ struct Provider {
     first_gc: u32,
     first_exception: u32,
     roots: Option<roots::Components>,
+    tables: Option<tables::Components>,
     declarations: FrozenDeclarations,
     module: FrozenModuleDeclarations,
 }
@@ -65,9 +68,18 @@ impl FunctionTransform for Provider {
                 } else {
                     self.runtime.instruction(instruction.operation.clone())?
                 };
-                roots
-                    .roots
-                    .emit_source(&instruction.operation, operation, &mut output, limit)?;
+                if let Some(tables) = &self.tables {
+                    tables
+                        .rewrites
+                        .emit_source(instruction, operation, &mut output, limit)?;
+                } else {
+                    roots.roots.emit_source(
+                        &instruction.operation,
+                        operation,
+                        &mut output,
+                        limit,
+                    )?;
+                }
             }
             return Ok(output);
         }
@@ -84,26 +96,50 @@ impl FunctionTransform for Provider {
             n if n < self.first_exception + self.exception.declarations().function_count() => {
                 self.exception.emit_helper(n - self.first_exception, limit)
             }
-            n => self.roots.as_ref().expect("root catalog").emit_helper(
-                n - self.first_exception - self.exception.declarations().function_count(),
-                limit,
-            ),
+            n => {
+                let roots = self.roots.as_ref().expect("root catalog");
+                let ordinal =
+                    n - self.first_exception - self.exception.declarations().function_count();
+                if ordinal < roots.declarations.function_count() {
+                    roots.emit_helper(ordinal, limit)
+                } else {
+                    self.tables
+                        .as_ref()
+                        .expect("table catalog")
+                        .emit_helper(ordinal - roots.declarations.function_count(), limit)
+                }
+            }
         }
     }
 }
 #[allow(dead_code)] // Root-state targets use emit_roots instead.
 pub fn emit(input: &[u8]) -> Vec<u8> {
-    emit_mode(input, false, false)
+    emit_mode(input, State::None, false)
 }
 #[allow(dead_code)] // The plain provider target does not use root-state mode.
 pub fn emit_roots(input: &[u8]) -> Vec<u8> {
-    emit_mode(input, true, false)
+    emit_mode(input, State::Roots, false)
 }
 #[allow(dead_code)]
 pub fn emit_staged_roots(input: &[u8], wide: bool) -> Vec<u8> {
-    emit_mode(input, true, wide)
+    emit_mode(input, State::Roots, wide)
 }
-fn emit_mode(input: &[u8], with_roots: bool, staging_wide: bool) -> Vec<u8> {
+#[allow(dead_code)]
+pub fn emit_tables(input: &[u8]) -> Vec<u8> {
+    emit_mode(input, State::Tables, false)
+}
+#[allow(dead_code)]
+pub fn emit_staged_tables(input: &[u8], wide: bool) -> Vec<u8> {
+    emit_mode(input, State::Tables, wide)
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum State {
+    None,
+    Roots,
+    Tables,
+}
+fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
+    let with_roots = state != State::None;
     let scan = scan(input).unwrap();
     let source_types = SourceTypes::new(&scan);
     let plan = NativeGcPlan::discover(
@@ -131,6 +167,8 @@ fn emit_mode(input: &[u8], with_roots: bool, staging_wide: bool) -> Vec<u8> {
     }
     let root_imports =
         with_roots.then(|| RootStateImports::append(&scan, &mut inputs, 1 << 20).unwrap());
+    let table_imports = (state == State::Tables)
+        .then(|| TableStateImports::append(&scan, &mut inputs, 1 << 20).unwrap());
     let constructors =
         GcConstructorPlan::reserve(&scan, &plan, &mut inputs, 7, Default::default()).unwrap();
     let exception_imports = NativeExceptionImports::append(&scan, &mut inputs, 1 << 20).unwrap();
@@ -199,6 +237,23 @@ fn emit_mode(input: &[u8], with_roots: bool, staging_wide: bool) -> Vec<u8> {
                 + exception.declarations().function_count(),
         )
     });
+    let tables = table_imports.as_ref().map(|host| {
+        let roots = roots.as_ref().unwrap();
+        tables::Components::plan(
+            &scan,
+            &mut runtime,
+            root_imports.as_ref().unwrap(),
+            host,
+            &roots.roots,
+            &roots.bootstrap,
+            &mut module,
+            first_type + exception.declarations().type_count() + roots.declarations.type_count(),
+            imports.helper_function_base()
+                + first_exception
+                + exception.declarations().function_count()
+                + roots.declarations.function_count(),
+        )
+    });
     let mut parts = vec![
         runtime.function_declarations(),
         constructors.declarations(),
@@ -207,6 +262,9 @@ fn emit_mode(input: &[u8], with_roots: bool, staging_wide: bool) -> Vec<u8> {
     ];
     if let Some(roots) = &roots {
         parts.push(&roots.declarations);
+    }
+    if let Some(tables) = &tables {
+        parts.push(&tables.declarations);
     }
     let declarations = FrozenDeclarations::concatenate(&parts, 1 << 20).unwrap();
     let mut descriptors = vec![
@@ -222,6 +280,12 @@ fn emit_mode(input: &[u8], with_roots: bool, staging_wide: bool) -> Vec<u8> {
             roots.roots.imported_globals_descriptor().to_vec(),
         ));
     }
+    if let Some(tables) = &tables {
+        descriptors.push((
+            wasm_posix_shared::abi::WPK_FORK_IMPORTED_TABLES_SECTION,
+            tables.tables.imported_tables_descriptor().to_vec(),
+        ));
+    }
     let mut transform = Provider {
         runtime,
         plan,
@@ -231,6 +295,7 @@ fn emit_mode(input: &[u8], with_roots: bool, staging_wide: bool) -> Vec<u8> {
         first_gc,
         first_exception,
         roots,
+        tables,
         declarations,
         module: module.freeze(),
     };

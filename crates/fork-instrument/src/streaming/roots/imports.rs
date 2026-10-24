@@ -6,10 +6,11 @@ use wasm_encoder::{EntityType, FuncType, MemoryType};
 
 pub struct RootStateImports {
     functions: [u32; 3],
+    memory: crate::streaming::memory::ProcessMemory,
     source: [u8; 32],
 }
 #[derive(Clone, Copy)]
-pub(super) struct RecordHost {
+pub(in crate::streaming) struct RecordHost {
     pub reserve: u32,
     pub commit: u32,
     pub find: u32,
@@ -50,10 +51,10 @@ impl RootStateImports {
             };
             inputs.staging_memory = Some(ordinal);
         }
-        let pointer = inputs
+        let memory = inputs
             .process_memory_binding(scan)?
-            .context("root state needs process memory")?
-            .pointer;
+            .context("root state needs process memory")?;
+        let pointer = memory.pointer;
         let i = ValType::I32;
         let base = scan.types.as_ref().core_type_count_in_module();
         let mut functions = [0; 3];
@@ -105,10 +106,19 @@ impl RootStateImports {
         FrozenDeclarations::validate_parts(&inputs.types, &[], budget)?;
         Ok(Self {
             functions,
+            memory,
             source: Sha256::digest(scan.input()).into(),
         })
     }
-    pub(super) fn freeze(&self, imports: &FrozenImports) -> Result<RecordHost> {
+    pub(in crate::streaming) fn validate_memory(&self, runtime: &NativeRuntime) -> Result<()> {
+        ensure!(
+            runtime.process_memory() == Some(self.memory.resolve(runtime.imports_plan())?)
+                && runtime.pointer_type() == self.memory.pointer,
+            "root process-memory binding changed after reservation"
+        );
+        Ok(())
+    }
+    pub(in crate::streaming) fn freeze(&self, imports: &FrozenImports) -> Result<RecordHost> {
         ensure!(
             self.source == imports.source_identity(),
             "root imports belong to another source module"

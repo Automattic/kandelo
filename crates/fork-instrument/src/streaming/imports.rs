@@ -43,6 +43,22 @@ pub(super) fn immutable_i32_import(
     module: &str,
     name: &str,
 ) -> Result<ImmutableGlobalImport> {
+    immutable_global_import(scan, imports, module, name, ValType::I32)
+}
+
+pub(super) fn immutable_global_import(
+    scan: &Scan<'_>,
+    imports: &mut Vec<PlannedImport>,
+    module: &str,
+    name: &str,
+    ty: ValType,
+) -> Result<ImmutableGlobalImport> {
+    let source_type = match ty {
+        ValType::I32 => wasmparser::ValType::I32,
+        ValType::I64 => wasmparser::ValType::I64,
+        _ => anyhow::bail!("reserved global must be i32 or i64"),
+    };
+    let type_name = if ty == ValType::I32 { "i32" } else { "i64" };
     let mut global_index = 0u32;
     for payload in Parser::new(0).parse_all(scan.input()) {
         if let Payload::ImportSection(section) = payload? {
@@ -51,8 +67,8 @@ pub(super) fn immutable_i32_import(
                 if import.module == module && import.name == name {
                     ensure!(
                         matches!(import.ty, TypeRef::Global(global)
-                        if global.content_type == wasmparser::ValType::I32 && !global.mutable && !global.shared),
-                        "reserved import {module}.{name} must be an immutable i32 global"
+                        if global.content_type == source_type && !global.mutable && !global.shared),
+                        "reserved import {module}.{name} must be an immutable {type_name} global"
                     );
                     return Ok(ImmutableGlobalImport::Source(global_index));
                 }
@@ -68,8 +84,8 @@ pub(super) fn immutable_i32_import(
         .find(|(_, import)| import.module == module && import.name == name)
     {
         ensure!(
-            matches!(import.ty, EntityType::Global(global) if global.val_type == ValType::I32 && !global.mutable && !global.shared),
-            "planned import {module}.{name} must be an immutable i32 global"
+            matches!(import.ty, EntityType::Global(global) if global.val_type == ty && !global.mutable && !global.shared),
+            "planned import {module}.{name} must be an immutable {type_name} global"
         );
         return Ok(ImmutableGlobalImport::Planned(u32::try_from(ordinal)?));
     }
@@ -78,7 +94,7 @@ pub(super) fn immutable_i32_import(
         module: module.into(),
         name: name.into(),
         ty: EntityType::Global(GlobalType {
-            val_type: ValType::I32,
+            val_type: ty,
             mutable: false,
             shared: false,
         }),

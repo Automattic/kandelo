@@ -254,6 +254,9 @@ impl<'a> ModuleBootstrapPlan<'a> {
     }
 }
 impl FrozenModuleBootstrap {
+    pub(super) fn source_identity(&self) -> [u8; 32] {
+        self.source
+    }
     pub(super) fn validate_source(&self, scan: &Scan<'_>) -> Result<()> {
         ensure!(
             self.source == <[u8; 32]>::from(Sha256::digest(scan.input())),

@@ -84,7 +84,8 @@ indices and visit all functions, without filtering by fork activation.
 The source hook also composes with already-lowered indirect transports: it
 preserves the selected direct/tail route and reconciles its physical table
 before invocation. A separate guard lookup supports generated call sites.
-Sparse table snapshot ownership and runtime hook generation remain unfinished.
+Native sparse-table ownership and runtime hooks now supply those frozen indices,
+as described below; production composition remains unfinished.
 Validator-canonical concrete heap identities are resolved to source type
 indices before output remapping; they are never encoded as binary indices.
 
@@ -214,10 +215,10 @@ native/Walrus layout and import-signature comparisons and wasm32/wasm64 Node
 execution tests for capture, rewind and abort. A composed native fixture also
 executes table/drop tracking outside the fork closure.
 
-This runtime component does not yet implement continuation rewriting,
-reference reconstruction, complete module-state capture/bootstrap or artifact
-certification. Emitting its controls alone produces no fork capability marker
-and is not a complete fork-instrumented program. No browser, ABI integration
+These runtime controls alone do not install the continuation, reference or
+module-state components and do not certify an artifact. Emitting these controls
+alone produces no fork capability marker and is not a complete
+fork-instrumented program. No browser, ABI integration
 or end-to-end memory claim follows from these component tests.
 
 `NativeExceptionCodec` now plans and serially emits the owning module's eight
@@ -239,8 +240,8 @@ transaction scratch. Budget tests reject metadata, work and output exhaustion;
 256 repeated tag signatures keep the same physical local count. These
 providers now compose with activation frame vectors in the linked catch
 fixtures below. The GC providers described next also compose with these exact
-exception recipes. Full module-state capture/restore and production bootstrap
-integration remain unfinished. Provider metadata alone certifies no artifact.
+exception recipes. Composition with the complete module-state and production bootstrap
+pipeline remains unfinished. Provider metadata alone certifies no artifact.
 
 `NativeGcPlan` discovers aggregate layouts and constructor provenance before
 runtime helpers are declared. It records aligned scalar fields, reference
@@ -342,9 +343,50 @@ bits, function/externref identities, typed and abstract aliases, self-cycles,
 mutual GC/exception cycles and arrays reconstructed from parent-dropped data
 and element segments. Separate memoryless fixtures execute runtime controls
 and scalar/reference replay using planned 32-bit and 64-bit process memories.
-These are composable root helpers, not the complete module-state save/restore
-exports: sparse table snapshots, complete provider/activation composition and
-the production pipeline remain unfinished.
+
+`NativeTableState` now supplies the sparse table counterpart. Catalog owners
+come only from original tables; generated provider/cache/resume tables are not
+captured. Repeated imported table declarations keep distinct descriptor owners,
+while the host selects one canonical owner per physical table. Imported tables,
+source-mutated tables and the exact dynamic-linker process table synchronize;
+read-only local tables use their static baseline without a generation guard.
+Imported-table descriptors preserve the existing format and match Walrus bytes.
+
+Save emits the existing 56-byte descriptor and one full single-run record for
+each dirty page. The baseline fingerprint remains an opaque 32-byte binding;
+native generation hashes the exact original module and original table owner,
+independently of Walrus arena identities. Restore checks that binding and page
+headers, grows with a saved typed entry spanning the old end, decodes entries
+inside Wasm and marks restored pages dirty. One nine-local scalar tuple serves
+all original tables, including mixed table32/table64 declarations. Planning and
+each emitted helper enforce metadata, work and output limits.
+
+Dirty markers cache repeated single-page marks but publish every successful
+nonempty mutation. Empty ranges and failed grows abort the writer transaction.
+Source traps escaping a mutation still require the host's normal execution
+boundary to release active transactions. Consumer guards use an atomic fence
+load for shared process memory and a normal aligned load for unshared memory.
+They cache the exact generation returned by reconciliation, so a concurrent
+newer publication remains visible to the next guard.
+
+`NativeModuleState` composes the full module-state save/restore/finish exports
+and the table-only checkpoint exports. Save captures roots and canonical tables;
+restore applies globals and each activation's static table baseline; finish
+rejects before initialization, applies canonical physical overlays, then restores
+segment drops. The process must restore all activation baselines before running
+these finish helpers. Provider source identities, bootstrap ownership and
+process-memory bindings must agree before composition.
+
+Shared Node assertions run native and unchanged Walrus module-state providers
+across all memory32/64, table32/64 and shared/unshared memory combinations. They
+cover aliased imports, non-null typed table growth, GC/exception roots,
+externrefs, empty and failed mutations, delayed segment drops, malformed baseline
+and page records, and a generation publication during reconciliation. Additional
+native memoryless fixtures cover both process/table widths; a mixed-width
+module checks table32 and table64 in the same helper. This is component
+execution evidence; complete provider/activation composition, process-level
+cross-worker replay, production integration and artifact certification remain
+unfinished.
 
 `FrameBuilder` now plans one function's activation storage. It keeps parameters
 and first-used original locals in lexical order, assigns synthetic value keys,
@@ -564,9 +606,8 @@ does not run an optimizer.
 
 Production `instrument`, `analyze`, `sink_report` and normal CLI output still
 use the existing, unmodified Walrus implementation. The native sink planner
-is not yet connected to production; complete component composition, sparse
-table snapshots and production artifact generation remain. No complete
-bounded fork transform or measured Codex memory improvement is claimed.
+is not yet connected to production; complete component composition and
+production artifact generation remain. No complete bounded fork transform or measured Codex memory improvement is claimed.
 See the [dependency map and migration plan](plans/2026-10-22-streaming-fork-instrumentation.md).
 The [front-end memory measurements](measurements/2026-10-23-streaming-instrumenter-front-end.md)
 compare six controlled examples and explicitly exclude the full transform.
