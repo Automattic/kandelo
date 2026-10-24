@@ -5283,7 +5283,13 @@ export class CentralizedKernelWorker {
       },
     );
     if (failErrno !== 0) {
-      throw new KernelScratchError("rootfs read failed", failErrno);
+      // The path and errno are in the message because this error crosses the
+      // worker boundary as text: without them every failed read looks alike.
+      // The message still begins "rootfs read failed" for callers matching it.
+      throw new KernelScratchError(
+        `rootfs read failed: ${path} (errno ${failErrno})`,
+        failErrno,
+      );
     }
     return output;
   }
