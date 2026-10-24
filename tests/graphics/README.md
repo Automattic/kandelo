@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The 103 current cases cover image siblings and retained framebuffer storage,
+The 122 current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -329,3 +329,15 @@ C trace event 12 carries implicit-bound source/revision replies for validation
 through both actual browser renderer routes. The affected browser selection
 is `--grep "actual C|logical image views"`; it does not replace the full
 source suite or the deferred normal guest, CTS and memory-cycle gates.
+
+
+Buffer-bind rejection cases inject the same failure into old queued and new
+checked paths. They reject both zero and positive bindings, require the old
+C attribute/index interpretation to agree with native state, accept retry
+and finish with zero tracked allocations. Both fail unchanged `332c7977ed`.
+Host cases cover native/store/view metadata failure and cross-class transfer
+rollback before a later successful bind. Client-array browser traces include
+actual synchronous queries and submits in order; peer-deletion injection
+recognizes both binding encodings. The GPU driver checks preserved native
+buffer bytes after rejected creation/binding and accepted retry on both
+targets. Buffer deletion and concurrent namespace ordering remain open.

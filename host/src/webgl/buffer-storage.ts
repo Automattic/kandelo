@@ -82,51 +82,64 @@ function synchronizeView(b: GlBinding, store: GlBufferStore, view: BufferView): 
   return accepted;
 }
 
-export function bindBufferObject(b: GlBinding, target: number, name: number): void {
+/** Reserve bookkeeping before native binding. Queued and checked callers use
+ * the same acceptance result; rejected candidates never become logical state. */
+export function bindBufferObject(b: GlBinding, target: number, name: number): boolean {
   const gl = b.gl!;
-  if (target !== ARRAY && target !== ELEMENT) { recordGlError(b,0x500); return; }
-  let object = b.buffers.get(name) ?? null;
+  if (target !== ARRAY && target !== ELEMENT) { recordGlError(b,0x500); return false; }
+  let object = name ? b.buffers.get(name) ?? null : null;
   const implicit = name !== 0 && object === null;
-  if (implicit && !(object = allocateNativeBuffer(b))) return;
-  const store = object && b.bufferStores.get(object);
+  if (implicit && !(object = allocateNativeBuffer(b))) return false;
+  let store = object ? b.bufferStores.get(object) : undefined;
   let view = store?.views.get(target);
-  let newView = false;
+  let created: WebGLBuffer | null = implicit ? object : null;
+  let newStore = false, newView = false;
+  let vao: ReturnType<typeof activeVertexArray> | undefined;
   const previous = target === ARRAY ? b.shadow.arrayBuffer : nativeView(b,boundBuffer(b,target),target);
-  if (store && !view) {
-    const native = allocateNativeBuffer(b);
-    if (!native) return;
-    view = {native,valid:false}; newView = true;
-    // Classify before using COPY_WRITE; binding an unclassified buffer to a
-    // copy target would classify it as vertex data and forbid index use.
-    if (!checkedGlCall(b, () => gl.bindBuffer(target,view!.native))) {
-      gl.deleteBuffer(native); return;
+  const discard = () => {
+    if (implicit) b.buffers.delete(name);
+    if (newStore && object) b.bufferStores.delete(object);
+    else if (newView) store!.views.delete(target);
+    if (newStore || newView) b.bufferViewOwners.delete(view!.native);
+    if (created) {
+      checkedGlCall(b, () => gl.deleteBuffer(created));
     }
+  };
+  try {
+    if (target === ELEMENT) vao = activeVertexArray(b);
+    if (object && !store) {
+      view = {native:object,valid:true};
+      store = {converted:new Map(),views:new Map([[target,view]]),source:object,size:0,usage:0x88e4};
+      newStore = true;
+    } else if (store && !view) {
+      created = allocateNativeBuffer(b);
+      if (!created) return false;
+      view = {native:created,valid:false}; newView = true;
+    }
+    // These maps are synchronous implementation bookkeeping, unpublished to
+    // the guest until native acceptance; reserve all capacity before effects.
+    if (implicit && object) b.buffers.set(name,object);
+    if (newStore && object) b.bufferStores.set(object,store!);
+    else if (newView) store!.views.set(target,view!);
+    if (newStore || newView) b.bufferViewOwners.set(view!.native,object!);
+  } catch {
+    discard(); recordGlError(b,0x505); return false;
   }
+  if (newView && !checkedGlCall(b, () => gl.bindBuffer(target,view!.native))) {
+    checkedGlCall(b, () => gl.bindBuffer(target,previous)); discard(); return false;
+  }
+  // Classify a fresh view before COPY_WRITE; otherwise WebGL classifies it
+  // as vertex data and later rejects index binding.
   if (store && view && !synchronizeView(b,store,view)) {
-    if (newView) {
-      checkedGlCall(b, () => gl.bindBuffer(target,previous)); gl.deleteBuffer(view.native);
-    }
-    return;
+    checkedGlCall(b, () => gl.bindBuffer(target,previous)); discard(); return false;
   }
   const native = view?.native ?? object;
   if (!checkedGlCall(b, () => gl.bindBuffer(target,native))) {
-    if (newView && view) {
-      checkedGlCall(b, () => gl.bindBuffer(target,previous)); gl.deleteBuffer(view.native);
-    }
-    if (implicit && object) gl.deleteBuffer(object);
-    return;
-  }
-  if (object) {
-    if (implicit) b.buffers.set(name,object);
-    if (!store) {
-      b.bufferStores.set(object,{converted:new Map(),views:new Map([[target,{native:object,valid:true}]]),source:object,size:0,usage:0x88e4});
-      b.bufferViewOwners.set(object,object);
-    } else if (newView && view) {
-      store.views.set(target,view); b.bufferViewOwners.set(view.native,object);
-    }
+    checkedGlCall(b, () => gl.bindBuffer(target,previous)); discard(); return false;
   }
   if (target === ARRAY) b.shadow.arrayBuffer = native;
-  else activeVertexArray(b).element = object;
+  else vao!.element = object;
+  return true;
 }
 
 function updateSource(store: GlBufferStore, target: number): void {

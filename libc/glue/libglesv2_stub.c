@@ -534,6 +534,8 @@ void glGenBuffers(GLsizei n, GLuint *out) {
         emit_name_array(OP_GEN_BUFFERS, n, out);
 }
 
+static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t count);
+
 /* The GL_ARRAY_BUFFER binding, mirrored so glVertexAttribPointer can tell a
  * buffer offset from a client-memory pointer (see the client arrays below). */
 
@@ -551,6 +553,11 @@ void glBindBuffer(GLenum target, GLuint buf) {
             _wpk_gl_client_error = GL_OUT_OF_MEMORY;
         return;
     }
+    uint32_t words[2] = {target, buf};
+    if (checked_mutation_query(QOP_BIND_BUFFER, words, 2) != 1) {
+        object_release(state->objects, object);
+        return;
+    }
     struct wpk_object_name **slot = target == GL_ARRAY_BUFFER
                                         ? &state->array_object
                                         : &state->current_vertex_array->element_object;
@@ -563,10 +570,6 @@ void glBindBuffer(GLenum target, GLuint buf) {
         g_element_buffer = buf;
         state->current_vertex_array->element_serial = object ? object->serial : 0;
     }
-    EMIT_BEGIN(OP_BIND_BUFFER, 8)
-    w_u32(&_c, (uint32_t)target);
-    w_u32(&_c, (uint32_t)buf);
-    EMIT_END()
 }
 
 void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
@@ -1214,7 +1217,7 @@ static void raise_client_error(GLenum error) {
 
 /* Return 1 for checked acceptance, 0 for definite rejection and -1 for
  * indeterminate completion. Inputs must be heap-owned for guest marshalling. */
-static int image_mutation_query(uint32_t op, const uint32_t *words, uint32_t count) {
+static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t count) {
     uint32_t *input = malloc(count * sizeof *input);
     if (!input) {
         raise_client_error(GL_OUT_OF_MEMORY);
@@ -1235,7 +1238,7 @@ static int image_mutation_query(uint32_t op, const uint32_t *words, uint32_t cou
 }
 static int delete_image_object(uint32_t kind, GLuint name) {
     uint32_t words[2] = {kind, name};
-    return image_mutation_query(QOP_IMAGE_OBJECT_DELETE, words, 2) == 1;
+    return checked_mutation_query(QOP_IMAGE_OBJECT_DELETE, words, 2) == 1;
 }
 static void quarantine_image_reference(struct wpk_object_group *group,
                                        struct wpk_pending_image *pending) {
@@ -1273,7 +1276,7 @@ static int track_image_attachment(GLenum target, GLuint point, GLuint kind, GLen
     }
     uint32_t words[6] = {
         kind == GL_RENDERBUFFER ? 2u : 1u, target, point, object_target, name, (uint32_t)level};
-    int accepted = image_mutation_query(QOP_IMAGE_ATTACHMENT, words, 6);
+    int accepted = checked_mutation_query(QOP_IMAGE_ATTACHMENT, words, 6);
     if (accepted != 1) {
         if (allocated)
             free(entry);
@@ -1812,7 +1815,7 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                           host_pixel_format(format),
                           type,
                           0};
-    if (image_mutation_query(QOP_IMAGE_STORAGE, words, 10) != 1)
+    if (checked_mutation_query(QOP_IMAGE_STORAGE, words, 10) != 1)
         return;
     // A rejected imported allocation must not turn row uploads into writes
     // to the old shared image. Establish orphaning before publishing pixels.
@@ -2016,7 +2019,7 @@ void glDeleteFramebuffers(GLsizei n, const GLuint *names) {
 void glBindFramebuffer(GLenum target, GLuint fb) {
     if (!_wpk_gl_current_encoder()) return;
     uint32_t words[2] = {target, fb};
-    if (image_mutation_query(QOP_BIND_FRAMEBUFFER, words, 2) != 1)
+    if (checked_mutation_query(QOP_BIND_FRAMEBUFFER, words, 2) != 1)
         return;
     if (target == GL_FRAMEBUFFER)
         g_bound_framebuffer = fb;
@@ -2952,7 +2955,7 @@ void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, 
         return;
     uint32_t words[5] = {OP_RENDERBUFFER_STORAGE, target, internalformat, (uint32_t)width,
                          (uint32_t)height};
-    if (image_mutation_query(QOP_IMAGE_STORAGE, words, 5) != 1)
+    if (checked_mutation_query(QOP_IMAGE_STORAGE, words, 5) != 1)
         return;
     if (target == GL_RENDERBUFFER)
         sync_object_image(2, _wpk_gl_current_encoder()->renderbuffer_object);
@@ -3020,7 +3023,7 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
     int bgra = img->fourcc == 0x34325241u || img->fourcc == 0x34325258u;
     uint32_t words[10] = {OP_TEX_IMAGE_2D, GL_TEXTURE_2D,    0, GL_RGBA, img->width, img->height, 0,
                           GL_RGBA,         GL_UNSIGNED_BYTE, 0};
-    if (image_mutation_query(QOP_IMAGE_STORAGE, words, 10) != 1) {
+    if (checked_mutation_query(QOP_IMAGE_STORAGE, words, 10) != 1) {
         _wpk_egl_image_release(img);
         return;
     }

@@ -4196,6 +4196,16 @@ and checked binds share candidate realization, namespace staging and rollback,
 including independent EGL read/draw defaults. Indeterminate completion still
 needs general native/client reconciliation before full sharing is supported.
 
+Operation-table v14 adds a checked buffer-bind query (target/name, eight-byte
+input, 12-byte acceptance reply). C changes its ARRAY/ELEMENT object record,
+name and serial only after acceptance, preserving pointer interpretation on
+definite rejection. Queued and checked host binds share native realization,
+view synchronization and rollback. Namespace/store/view metadata is reserved
+before binding; failed candidates and their metadata are removed and prior
+native selection restored. Buffer deletion and concurrent C/native name
+ordering remain separate unfinished transactions. Indeterminate completion
+still requires general reconciliation; public C sharing remains rejected.
+
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package
 into `sysroot/lib/libdrm.a`, and builds `libgbm.a`, `libEGL.a`, and

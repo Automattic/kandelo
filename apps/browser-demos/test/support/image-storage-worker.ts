@@ -12,7 +12,7 @@ self.onmessage = ({ data }) => {
       throw new Error("WebGL2 unavailable");
     const made: object[] = [], deleted: object[] = [], live: Array<() => boolean> = [];
     for (const [createName, deleteName, isName] of [["createTexture", "deleteTexture", "isTexture"], ["createFramebuffer", "deleteFramebuffer", "isFramebuffer"],
-      ["createRenderbuffer", "deleteRenderbuffer", "isRenderbuffer"], ["createProgram", "deleteProgram", "isProgram"], ["createShader", "deleteShader", "isShader"]]) {
+      ["createRenderbuffer", "deleteRenderbuffer", "isRenderbuffer"], ["createBuffer", "deleteBuffer", "isBuffer"], ["createProgram", "deleteProgram", "isProgram"], ["createShader", "deleteShader", "isShader"]]) {
       const api = gl as any, create = api[createName].bind(gl), destroy = api[deleteName].bind(gl), isLive = api[isName].bind(gl);
       api[createName] = (...args: unknown[]) => {
         const value = create(...args);
@@ -293,6 +293,27 @@ self.onmessage = ({ data }) => {
     mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 87]);
     mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 17, 0]);
     const framebufferBindRetry = pixels(87, 12);
+    const bufferBindReject: number[][] = [], bufferBindRetry: number[] = [];
+    for (const [target, pname, name] of [[0x8892, 0x8894, 100], [0x8893, 0x8895, 102]]) {
+      mutate(O.QOP_BIND_BUFFER, [target, name]);
+      send(O.OP_BUFFER_DATA, [target, 4, 0x88e4], new Uint8Array(), 12);
+      send(O.OP_BUFFER_SUB_DATA, [target, 0, 4], new Uint8Array([11, 22, 33, 44]), 12);
+      const inspect = () => {
+        const binding = new DataView(query(O.QOP_GET_INTEGERV, [pname], 4, 12).buffer).getUint32(0, true);
+        const bytes = new Uint8Array(4); gl.getBufferSubData(target, 0, bytes);
+        return [binding, ...bytes];
+      };
+      const createBuffer = gl.createBuffer;
+      gl.createBuffer = () => null;
+      try { mutate(O.QOP_BIND_BUFFER, [target, name + 1], 1); }
+      finally { gl.createBuffer = createBuffer; }
+      require(error(12) === 0x505, "buffer allocation rejection");
+      bufferBindReject.push(inspect());
+      inject("bindBuffer", (original, args) => original(0xdead, args[1]), () => mutate(O.QOP_BIND_BUFFER, [target, name + 1], 1));
+      bufferBindReject.push(inspect());
+      mutate(O.QOP_BIND_BUFFER, [target, name + 1]);
+      bufferBindRetry.push(new DataView(query(O.QOP_GET_INTEGERV, [pname], 4, 12).buffer).getUint32(0, true));
+    }
     const errors = [error(12)];
     api.host_gl_destroy_context(7, 21);
     const afterSourceRetirement = pixels(81, 12);
@@ -302,7 +323,7 @@ self.onmessage = ({ data }) => {
     api.host_gl_unbind(7, 12);
     kernel.gl.destroyGpuBo(41);
     const clean = made.length === deleted.length && made.every(value => deleted.includes(value)) && live.every(check => !check());
-    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, errors, clean, error: gl.getError() });
+    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, bufferBindReject, bufferBindRetry, errors, clean, error: gl.getError() });
   }
   catch (error) {
     postMessage({ type: "image_storage_failed", error: String(error) });

@@ -16,7 +16,7 @@ for (const kind of ["client", "fixed", "max-byte", "max-short", "bound-byte", "b
     try {
       const path = join(temporary,"commands.bin");
       execFileSync("bash",[join(root,"tests/graphics/run-libc-unit.sh")],{
-        cwd:root, env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:kind.includes("-") ? `encoder-${kind}` : `encoder-large-${kind}`,KANDELO_GRAPHICS_COMMAND_TRACE:path},
+        cwd:root, env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:kind.includes("-") ? `encoder-${kind}` : `encoder-large-${kind}`,KANDELO_GRAPHICS_PROTOCOL_TRACE:path},
         timeout:60000,stdio:"pipe",
       });
       trace = [...readFileSync(path)];
@@ -52,8 +52,25 @@ for (const kind of ["client", "fixed", "max-byte", "max-short", "bound-byte", "b
       send(O.OP_CREATE_PROGRAM,[13]); send(O.OP_ATTACH_SHADER,[13,11]); send(O.OP_ATTACH_SHADER,[13,12]);
       send(O.OP_BIND_ATTRIB_LOCATION,[13,0,5],new TextEncoder().encode("color")); send(O.OP_LINK_PROGRAM,[13]);
       send(O.OP_USE_PROGRAM,[13]); send(O.OP_VIEWPORT,[0,0,1,1]);
-      b.cmdbufView!.set(trace);
-      if (decodeAndDispatch(b,0,trace.length)) throw new Error("C trace command failed");
+      const records = new Uint8Array(trace), recordsView = new DataView(records.buffer);
+      for (let offset = 0; offset < records.length;) {
+        const kind = recordsView.getUint32(offset, true), op = recordsView.getUint32(offset + 4, true);
+        const length = recordsView.getUint32(offset + 8, true), outputLength = recordsView.getUint32(offset + 12, true);
+        const input = records.slice(offset + 16, offset + 16 + length);
+        if (kind === 1) {
+          b.cmdbufView!.set(input);
+          if (decodeAndDispatch(b, 0, length)) throw new Error("C trace command failed");
+        } else if (kind === 2) {
+          const output = new Uint8Array(outputLength);
+          if (runGlQuery(b, op, input, output) !== outputLength) throw new Error("C trace query failed");
+          if (op === O.QOP_BIND_BUFFER) {
+            const ack = new DataView(output.buffer);
+            if (ack.getUint32(0, true) !== 0 || ack.getUint32(4, true) !== 1 || ack.getUint32(8, true) !== 0x47514c33)
+              throw new Error("C trace buffer bind rejected");
+          }
+        } else throw new Error("Unknown C protocol record");
+        offset += 16 + length;
+      }
       const input = new Uint8Array(24), pixels = new Uint8Array(4);
       [0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE].forEach((n,i) => new DataView(input.buffer).setUint32(i*4,n,true));
       if (runGlQuery(b,O.QOP_READ_PIXELS,input,pixels) !== 4) throw new Error("pixel query failed");
@@ -2048,6 +2065,6 @@ test("logical image views preserve sibling parameters, pixels and retained ident
   expect(result).toEqual({type:"image_storage_result",namespace:[0,0,255,255],firstParam:0x2600,secondParam:0x2601,
     red:[[255,0,0,255],[255,0,0,255]],rboName:2,green:[[0,255,0,255],[0,255,0,255]],sampledGreen:[0,255,0,255],
     orphan:[[0,0,255,255],[0,255,0,255]],aSource:0,bSource:0,mipOrphan:[0,255,0,255],reimport:[255,0,0,255],rboSource:0,rboOrphan:[[0,0,255,255],[255,0,0,255]],
-    rejected:[0,0,255,255],retargetRejected:[0,0,255,255],reused:[255,255,0,255],retained:[0,0,255,255],retainedState:[0,2],retainedImport:[1,3],retainedImported:[255,0,0,255],reusedAfterPeerImport:[255,255,0,255],afterSourceRetirement:[255,0,0,255],mutationRollback:[[255,255,0,255],[255,0,0,255],[0,0,255,255],[0,0,255,255],[255,255,0,255],[255,0,0,255]],storageReject:[[255,255,0,255],[0,0,255,255]],ownedStorageRetry:[0,0,255,255],framebufferBindReject:[[0,0,255,255],[0,0,255,255]],framebufferBindRetry:[0,0,255,255],errors:[0,0],clean:true,error:0});
+    rejected:[0,0,255,255],retargetRejected:[0,0,255,255],reused:[255,255,0,255],retained:[0,0,255,255],retainedState:[0,2],retainedImport:[1,3],retainedImported:[255,0,0,255],reusedAfterPeerImport:[255,255,0,255],afterSourceRetirement:[255,0,0,255],mutationRollback:[[255,255,0,255],[255,0,0,255],[0,0,255,255],[0,0,255,255],[255,255,0,255],[255,0,0,255]],storageReject:[[255,255,0,255],[0,0,255,255]],ownedStorageRetry:[0,0,255,255],framebufferBindReject:[[0,0,255,255],[0,0,255,255]],framebufferBindRetry:[0,0,255,255],bufferBindReject:[[100,11,22,33,44],[100,11,22,33,44],[102,11,22,33,44],[102,11,22,33,44]],bufferBindRetry:[101,103],errors:[0,0],clean:true,error:0});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });

@@ -367,6 +367,7 @@ host/test/wasm64.test.ts	prepared-product
 host/test/waybar-smoke.test.ts	prepared-product
 host/test/wayland-protocols-scanner.test.ts	prepared-product
 host/test/webgl-bridge.test.ts	source-only
+host/test/webgl-buffer-bindings.test.ts	source-only
 host/test/webgl-program-link.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
 host/test/webgl-gpu-bo.test.ts	source-only

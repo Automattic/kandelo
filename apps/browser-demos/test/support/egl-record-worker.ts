@@ -78,6 +78,15 @@ self.onmessage = ({data}) => {
       send(fd,O.OP_BIND_ATTRIB_LOCATION,[903,1,8],new TextEncoder().encode("position"));
       send(fd,O.OP_LINK_PROGRAM,[903]);send(fd,O.OP_USE_PROGRAM,[903]);
     };
+    const injectPeer=(fd:number)=> {
+              make(peer,900,0,0);send(peer,O.OP_DELETE_BUFFERS,[1,17]);
+              send(peer,O.OP_BIND_BUFFER,[0x8892,17]);
+              const blue=new Uint8Array(new Float32Array([0,0,1,1]).buffer);
+              send(peer,O.OP_BUFFER_DATA,[0x8892,16,0x88e4]);send(peer,O.OP_BUFFER_SUB_DATA,[0x8892,0,16],blue);
+              make(fd,sourceContext,sourceDraw,sourceRead);
+              if(!forwarded)requireZero(imports!.host_gl_make_current(7,0,0,0,peer),"release peer");
+              injected=true;
+    };
     const frames=new Uint8Array(data.trace),view=new DataView(frames.buffer),observed:number[][]=[];
     const retiredContexts:number[]=[],retiredSurfaces:number[]=[];
     for(let offset=0;offset<frames.length;) {
@@ -136,13 +145,7 @@ self.onmessage = ({data}) => {
             if(op===O.OP_BEGIN_CLIENT_ARRAY)captured=true;
             if(op===O.OP_END_CLIENT_ARRAY)captured=false;
             if(captured && !injected && op===O.OP_BIND_BUFFER && words.getUint32(at+4,true)===0x8892) {
-              make(peer,900,0,0);send(peer,O.OP_DELETE_BUFFERS,[1,17]);
-              send(peer,O.OP_BIND_BUFFER,[0x8892,17]);
-              const blue=new Uint8Array(new Float32Array([0,0,1,1]).buffer);
-              send(peer,O.OP_BUFFER_DATA,[0x8892,16,0x88e4]);send(peer,O.OP_BUFFER_SUB_DATA,[0x8892,0,16],blue);
-              make(fd,sourceContext,sourceDraw,sourceRead);
-              if(!forwarded)requireZero(imports!.host_gl_make_current(7,0,0,0,peer),"release peer");
-              injected=true;
+              injectPeer(fd);
             }
             if(op===O.OP_DRAW_ARRAYS)observed.push(pixels(fd));
             at=end;
@@ -179,6 +182,8 @@ self.onmessage = ({data}) => {
         const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
         if(rc!==size||output.getUint32(0,true)!==expected||output.getUint32(4,true)!==(expected?0:1)
             ||output.getUint32(8,true)!==0x47514c33)throw new Error("C image mutation acceptance mismatch");
+        if(data.peerDelete && captured && !injected && op===O.QOP_BIND_BUFFER && new DataView(input.buffer).getUint32(0,true)===0x8892)
+          injectPeer(fd);
       } else if(kind===10) {
         const expected=words.getUint32(12,true), input=bytes.slice(0,12);
         let restore:(()=>void)|null=null;
