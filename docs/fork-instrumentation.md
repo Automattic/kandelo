@@ -236,6 +236,28 @@ providers now compose with activation frame vectors in the linked catch
 fixtures below. Local garbage-collection providers and full module bootstrap
 remain unfinished. Provider metadata alone certifies no artifact.
 
+`NativeGcPlan` discovers aggregate layouts and constructor provenance before
+runtime helpers are declared. It records aligned scalar fields, reference
+ordinals, immutable allocation dependencies, mutable non-null GC seed inputs,
+subtype dispatch order and all required array constructor variants. Discovery
+visits retained original instructions one function at a time, including code
+outside the fork closure. Repeated sites share a catalog entry. Separate
+metadata, work and function-IR limits fail explicitly before unbounded growth.
+Inheritance depths are memoized with an iterative walk.
+
+The GC catalog uses validated Wasm type identity, with frozen output indices
+for payload types. Ordinary descriptors match Walrus byte-for-byte. Recursive
+groups expose two oracle differences: Walrus can retain two layouts for one
+equivalent runtime type, and its shallow type interning can merge distinct
+runtime types. A Node fixture observes `ref.test` return false in the original
+and native round trip, but true after the unchanged Walrus round trip. Native
+planning preserves the original distinction. Metadata tests cover every array
+constructor, constructor sites outside fork, source retention, field/seed
+ownership and resource failures; 10,000 repeated sites retain two layouts
+within an 8 KiB catalog budget. This is planning evidence, not measured process
+memory or a working GC provider. Typed GC helper emission, reconstruction and
+constructor rewriting remain unfinished.
+
 `FrameBuilder` now plans one function's activation storage. It keeps parameters
 and first-used original locals in lexical order, assigns synthetic value keys,
 packs scalar fields after the unchanged 16-byte header, and overlays mutually
