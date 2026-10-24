@@ -3784,9 +3784,21 @@ bind reports BAD_PARAMETER while preserving the calling thread's prior API.
 Current bindings use heap-backed pthread-key records with exclusive context
 ownership. Release and thread exit flush before dropping current references;
 destroy-current and terminate-current defer backend retirement until release.
-User-visible context/surface handles are monotonic. The backend still admits
-one context and surface per process; multiple contexts, share groups and
-overlapping display generations remain implementation gaps in the inventory.
+Each created EGL context also owns an opaque heap encoder record. The
+current thread binding selects that record; it contains the cursor, client
+arrays, upload layout, errors, object-name allocation, image siblings,
+uniform metadata and returned strings. An unbound thread cannot mutate
+another context's client state. Release preserves the record for transfer
+to another thread; final destruction retires its image references and
+frees it without selecting it or emitting into another command stream.
+Allocation failure precedes backend creation and leaves no published
+context. The backend still exposes one public EGL context; share groups,
+independent context command mappings and the complete surface/display
+generation model remain open.
+User-visible context/surface handles are monotonic. Each backend session
+still admits one context and surface; the public EGL facade remains
+single-context. Sharing and overlapping display generations remain
+implementation gaps in the inventory.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`

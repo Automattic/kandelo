@@ -15,6 +15,7 @@ void *graphics_mmap(void *, size_t, int, int, int, off_t);
 int graphics_munmap(void *, size_t);
 int graphics_ioctl(int, unsigned long, ...);
 void *graphics_malloc(size_t);
+void *graphics_calloc(size_t, size_t);
 void graphics_free(void *);
 #define open graphics_open
 #define close graphics_close
@@ -23,5 +24,6 @@ void graphics_free(void *);
 #define munmap graphics_munmap
 #define ioctl graphics_ioctl
 #define malloc graphics_malloc
+#define calloc graphics_calloc
 #define free graphics_free
 #endif

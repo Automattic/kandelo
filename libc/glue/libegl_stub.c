@@ -53,6 +53,7 @@ struct egl_thread_binding {
     int current, surfaceless;
     EGLContext context;
     EGLSurface surface;
+    struct wpk_gles_context *encoder;
 };
 static _Thread_local struct egl_thread_binding g_empty_binding;
 static _Thread_local struct egl_thread_binding *g_destructor_binding;
@@ -66,6 +67,7 @@ static int g_surface_current, g_context_delete_pending, g_surface_delete_pending
 static int g_terminate_pending;
 static EGLContext g_context_handle;
 static uint32_t g_backend_context_id;
+static struct wpk_gles_context *g_encoder_state;
 static EGLSurface g_surface_handle;
 static uintptr_t g_next_context_handle = 1, g_next_surface_handle = 1;
 static pthread_key_t g_binding_key;
@@ -128,6 +130,9 @@ __attribute__((weak)) int _wpk_gbm_surface_dimensions(const void *window,
 
 int      _wpk_gl_fd(void)           { return g_fd; }
 uint8_t *_wpk_gl_cmdbuf_base(void)  { return g_current ? g_cmdbuf_base : NULL; }
+struct wpk_gles_context *_wpk_gl_current_encoder(void) {
+    return g_thread_binding.encoder;
+}
 
 EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id) {
     (void)display_id;
@@ -416,10 +421,14 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config,
         }
     }
 
+    struct wpk_gles_context *encoder = _wpk_gl_create_encoder();
+    if (!encoder) { g_last_error = EGL_BAD_ALLOC; return EGL_NO_CONTEXT; }
     if (ioctl(g_fd, GLIO_CREATE_CONTEXT, &attrs) != 0) {
+        _wpk_gl_destroy_encoder(encoder);
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_CONTEXT;
     }
+    g_encoder_state = encoder;
     g_backend_context_id = attrs.context_id;
     g_context_made = 1;
     g_context_handle = (EGLContext)g_next_context_handle++;
@@ -573,7 +582,7 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
         goto done;
     }
     g_context_owner = &g_thread_binding;
-    g_thread_binding = (struct egl_thread_binding){ 1, surfaceless, ctx, draw };
+    g_thread_binding = (struct egl_thread_binding){ 1, surfaceless, ctx, draw, g_encoder_state };
     g_surface_current = !surfaceless;
     retire_pending_resources_locked();
     result = EGL_TRUE;
@@ -684,7 +693,8 @@ static void retire_pending_resources_locked(void) {
         g_current_egl_window = NULL;
     }
     if (g_context_delete_pending && !g_context_owner) {
-        _wpk_gl_drop_image_siblings();
+        _wpk_gl_destroy_encoder(g_encoder_state);
+        g_encoder_state = NULL;
         ioctl(g_fd, GLIO_DESTROY_CONTEXT, NULL);
         g_context_made = g_context_delete_pending = 0;
         g_context_handle = EGL_NO_CONTEXT;

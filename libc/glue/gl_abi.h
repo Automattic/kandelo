@@ -172,12 +172,19 @@ struct gl_query_info {
     uint32_t reserved;
 };
 
-/* Cross-archive accessors. libEGL.a defines them; libGLESv2.a calls
- * them. Returns -1 / NULL until eglMakeCurrent has run, so the GL
- * stubs no-op cleanly if called before context setup. */
+/* Cross-archive accessors. The fd belongs to the initialized display and
+ * is also used by native-window setup. The command base and encoder are
+ * available only through the calling thread's current context binding. */
 int      _wpk_gl_fd(void);
 uint8_t *_wpk_gl_cmdbuf_base(void);
 void     _wpk_gl_flush(void);
+
+/* Opaque client encoder state belongs to an EGL context, not its current
+ * thread. Only libGLESv2 knows its layout; EGL owns creation and retirement. */
+struct wpk_gles_context;
+struct wpk_gles_context *_wpk_gl_current_encoder(void);
+struct wpk_gles_context *_wpk_gl_create_encoder(void);
+void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
 
 /* An EGLImage made by eglCreateImageKHR from one dma-buf plane. A
  * GPU-tier bo (its PRIME fd has no CPU mapping) is sampled and rendered
@@ -202,7 +209,6 @@ struct wpk_egl_image {
 struct wpk_egl_image *_wpk_egl_image_lookup(const void *image);
 void _wpk_egl_image_retain(struct wpk_egl_image *image);
 void _wpk_egl_image_release(struct wpk_egl_image *image);
-void _wpk_gl_drop_image_siblings(void);
 uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image);
 
 #endif

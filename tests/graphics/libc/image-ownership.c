@@ -22,8 +22,14 @@
  * recorded allocation explicitly instead of dereferencing a truncated host
  * pointer. The library still allocates, queries and copies the actual reply. */
 #undef malloc
+#undef calloc
 #undef free
 static void *latest_allocation;
+static int fail_calloc;
+void *graphics_calloc(size_t count, size_t size) {
+    if (fail_calloc) { errno = ENOMEM; return NULL; }
+    return calloc(count, size);
+}
 void *graphics_malloc(size_t size) { return latest_allocation = malloc(size); }
 void graphics_free(void *ptr) {
     if (latest_allocation == ptr) latest_allocation = NULL;
@@ -56,6 +62,8 @@ static int fail_surface_update;
 static uint32_t shader_names[2], program_names[2];
 static unsigned shaders_created, programs_created;
 static int numeric_queries;
+static int string_generation;
+static unsigned context_create_calls;
 int graphics_open(const char *path, int flags, ...) {
     (void)flags;
     assert(!strcmp(path, WPK_GL_DEVICE));
@@ -104,6 +112,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         errno = ENOMEM;
         return -1;
     } else if (request == GLIO_CREATE_CONTEXT) {
+        context_create_calls++;
         struct gl_context_attrs *attrs = arg;
         assert(attrs->context_id == 0);
         attrs->context_id = next_backend_context++;
@@ -155,6 +164,14 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         destroyed_surfaces++;
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
+        if (q->op == QOP_GET_STRING && string_generation) {
+            const char *value = string_generation == 1 ? "renderer A" : "renderer B";
+            uint32_t length = (uint32_t)strlen(value);
+            assert(latest_allocation && q->out_buf_len >= 4 + length);
+            memcpy(latest_allocation,&length,4);
+            memcpy((uint8_t *)latest_allocation+4,value,length);
+            return 0;
+        }
         if (numeric_queries == 3) { errno = EINVAL; return -1; }
         if (numeric_queries) {
             assert(latest_allocation);
@@ -202,6 +219,28 @@ static void *check_thread_error(void *unused) {
 }
 
 struct thread_context { EGLDisplay display; EGLContext context; };
+static void *change_without_current_context(void *arg) {
+    (void)arg;
+    assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 19);
+    assert(glCreateShader(0) == 0);
+    GLuint untouched = 97;
+    glGenBuffers(1, &untouched);
+    (void)glGetString(GL_EXTENSIONS);
+    return NULL;
+}
+static void *transfer_encoder_context(void *arg) {
+    struct thread_context *input = arg;
+    assert(eglMakeCurrent(input->display,EGL_NO_SURFACE,EGL_NO_SURFACE,input->context));
+    GLint row_length = 0;
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH_EXT,&row_length);
+    assert(row_length == 7);
+    assert(glGetError() == GL_INVALID_ENUM);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT,11);
+    glClear(GL_COLOR_BUFFER_BIT);
+    assert(eglReleaseThread());
+    return NULL;
+}
 static void *check_busy_context(void *arg) {
     struct thread_context *input = arg;
     assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
@@ -233,6 +272,12 @@ int main(int argc, char **argv) {
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    if (!strcmp(argv[1], "encoder-allocation")) {
+        fail_calloc = 1;
+        assert(eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs) == EGL_NO_CONTEXT);
+        assert(eglGetError() == EGL_BAD_ALLOC && context_create_calls == 0);
+        fail_calloc = 0;
+    }
     if (!strcmp(argv[1], "create-rollback")) {
         fail_create_context = 1;
         assert(eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs) == EGL_NO_CONTEXT);
@@ -253,6 +298,47 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "encoder-strings")) {
+        string_generation = 1;
+        assert(!strcmp((const char *)glGetString(GL_VENDOR),"renderer A"));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread());
+        string_generation = 2;
+        ctx = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);
+        assert(ctx != EGL_NO_CONTEXT && eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+        assert(!strcmp((const char *)glGetString(GL_VENDOR),"renderer B"));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-strings"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-allocation")) {
+        assert(context_create_calls == 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-allocation"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-unbound")) {
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT,7);
+        pthread_t thread;
+        assert(pthread_create(&thread,NULL,change_without_current_context,NULL) == 0);
+        assert(pthread_join(thread,NULL) == 0);
+        GLint row_length = 0;
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH_EXT,&row_length);
+        assert(row_length == 7 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-unbound"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-transfer")) {
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT,7);
+        assert(glCreateShader(0) == 0);
+        assert(eglReleaseThread());
+        struct thread_context input = {dpy,ctx}; pthread_t thread;
+        assert(pthread_create(&thread,NULL,transfer_encoder_context,&input) == 0);
+        assert(pthread_join(thread,NULL) == 0);
+        assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+        GLint row_length = 0;
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH_EXT,&row_length);
+        assert(row_length == 11 && glGetError() == GL_NO_ERROR && clear_commands == 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-transfer"); return 0;
+    }
     if (!strcmp(argv[1], "surface-retarget")) {
         native_window_bo = 77;
         EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, &native_window, NULL);

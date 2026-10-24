@@ -59,7 +59,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Monotonic guest names and per-process WebGL maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
-| G02 | Context-local full state; ES2 state tables | Cube/2D targets, dither and pixel-store state replay separately; state argument validation and native texture/viewport limits implemented; broader rollback, hints and multi-context/thread ownership still need work | shadow, muxer, decoder | Alternating contexts/processes; real rendered cube/2D and mask tests | open |
+| G02 | Context-local full state; ES2 state tables | Client encoder state and returned strings now belong to an EGL-owned heap record selected by the current binding; host cube/2D, dither and pixel storage replay separately. Broader rollback, hints, shared object groups and multiple public contexts still need work | EGL, encoder, shadow, muxer, decoder | Alternating contexts/processes; real rendered cube/2D and mask tests; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Chunked encoder and transient client staging; bound index buffer plus client attributes rejected | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core reflection and complete executable/attribute/uniform validation still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
@@ -69,7 +69,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles and deferred destruction implemented for one context/surface per backend session. Creation/bind failure preserves prior state. Multiple public EGL contexts, sharing, display generations and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. Creation/bind failure preserves prior state. Multiple public EGL contexts, sharing, display generations and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Pbuffer always fails; several core symbols absent; GBM sizing exists | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/alias/FBO references now retain GEM storage; CPU coherence and complete object semantics remain open | EGL, GLES alias model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | open |
@@ -783,3 +783,50 @@ package or image was rebuilt. These checks do not execute guest CTS or
 prove the complete GLES/EGL baseline. Normal current-artifact provisioning,
 full browser-memory, guest compositor/CTS and POSIX suites remain required
 in the deferred rebuild/test phase. Performance was not measured.
+
+### EGL-owned client encoder state
+
+The command cursor, client vertex arrays, pixel storage, client-side error,
+name allocation, image aliases/attachments, uniform metadata and returned
+strings previously lived in process statics. They now belong to an opaque
+heap record allocated for each successful context creation. The calling
+thread's current binding selects that record; all 131 defined public GL
+entry points check that authority before touching client state. The record
+survives release and transfer to another thread. Destruction releases its
+retained image references without selecting it or using another current
+context's stream. Returned strings expire with their owning context rather
+than retaining a previous renderer's values after context recreation.
+
+Client allocation precedes backend creation. Allocation failure therefore
+publishes no backend context; backend rejection retires the unpublished
+record. This is a dependency for multiple contexts, not their public API
+implementation: the current EGL facade and backend session still admit one
+context. Shared object groups, independent context command mappings and
+surface/display generations remain ordinary implementation work.
+
+On `53d5933bdc`, three new native cases fail: allocation rollback,
+unbound-thread interference with the owner's upload layout/error and stale
+renderer strings after context recreation. The transfer case already passes
+and remains a regression against accidentally storing context state in TLS.
+The complete baseline has 26 passes and 3 failures:
+`.context/graphics-encoder-state-complete-baseline.log`. The earlier
+baseline asserted an unbound caller's return values; the complete baseline
+instead checks interference with the live owner's state.
+
+All 29 actual EGL/GLES native cases pass with UBSan:
+`.context/graphics-encoder-state-verified-native.log`. Both libraries compile
+to private wasm32 objects with the normal archive flags:
+`.context/graphics-encoder-state-wasm.log`. Clang AST inspection verifies
+the current-record guard on all 131 public definitions, and a private
+relocatable link resolves the new cross-archive accessors:
+`.context/graphics-encoder-state-verified-audit.log`. The initial AST command
+incorrectly used partial overlay headers as a native sysroot; the verified
+audit uses the actual wasm32 sysroot. No runtime defect is inferred.
+
+The kernel wire contract remains ABI 55. Internal EGL/GLES accessors require
+the paired SDK archives to be rebuilt through the normal path. These checks
+produce no installed archive, guest program, package or image. No new host
+or browser execution is claimed for this C-only change. Guest thread/CTS,
+full browser-memory, compositor and POSIX checks remain required after
+current-artifact provisioning in the deferred phase. Performance was not
+measured.
