@@ -144,6 +144,7 @@ class RecordingGl {
 
   // queries
   finish() { this.log.push(["finish", []]); }
+  isContextLost() { return false; }
   getError() { return 0; }
   getParameter(p: number) {
     if (p === 0x8f36 || p === 0x8f37) return this.boundBuffers.get(p) ?? null;
@@ -1389,6 +1390,39 @@ describe("query handler", () => {
     const { b, gl } = setup();
     expect(runGlQuery(b, O.QOP_FINISH, input([]), out(0))).toBe(0);
     expect(gl.log.filter(([m]) => m === "finish")).toHaveLength(1);
+  });
+
+  it("completion preserves earlier errors and rejects a native finish error", () => {
+    const { b, gl } = setup();
+    let error = 0x500;
+    gl.getError = () => { const prior = error; error = 0; return prior; };
+    gl.finish = () => { error = 0x505; };
+    expect(runGlQuery(b,O.QOP_FINISH,input([]),out(0))).toBe(-5);
+    expect(b.errors).toEqual([0x500,0x505]);
+    gl.finish = () => {};
+    expect(runGlQuery(b,O.QOP_FINISH,input([]),out(0))).toBe(0);
+    expect(b.errors).toEqual([0x500,0x505]);
+  });
+
+  it.each(["before", "during", "throw"])("refuses completion when the renderer fails %s finish", (failure) => {
+    const { b, gl } = setup();
+    let lost = failure === "before", calls = 0;
+    gl.isContextLost = () => lost;
+    gl.finish = () => { calls++; if (failure === "throw") throw new Error("driver failed"); lost = true; };
+    expect(runGlQuery(b,O.QOP_FINISH,input([]),out(0))).toBe(-5);
+    expect(calls).toBe(failure === "before" ? 0 : 1);
+    expect(b.errors).toContain(0x502);
+  });
+
+  it("rejects malformed completion spans before native access or output writes", () => {
+    const { b, gl } = setup();
+    gl.getError = () => { throw new Error("unexpected native access"); };
+    for (const [request,reply] of [[new Uint8Array(4),new Uint8Array()], [new Uint8Array(),new Uint8Array(4).fill(0xa5)]]) {
+      const before = [...reply];
+      expect(runGlQuery(b,O.QOP_FINISH,request,reply)).toBe(-22);
+      expect([...reply]).toEqual(before);
+    }
+    expect(gl.log).toEqual([]);
   });
 
   it("QOP_GET_ERROR writes 4 bytes", () => {

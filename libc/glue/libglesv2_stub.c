@@ -21,6 +21,7 @@
 
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <limits.h>
@@ -1165,9 +1166,21 @@ GLenum glGetError(void) {
 /* glFinish blocks until every earlier command has completed. Commands reach
  * the host in submission order, so a query answered after they have run, and
  * after the host context's own finish(), is that point. */
+int _wpk_gl_finish_checked(void) {
+    int fd = _wpk_gl_fd();
+    if (!_wpk_gl_current_encoder() || fd < 0 || !_wpk_gl_cmdbuf_base()) {
+        errno = ENODEV;
+        return -1;
+    }
+    if (flush_commands() != 0) return -1;
+    /* QOP_FINISH has no output bytes. Its completed ioctl is the host
+     * acknowledgement, so no reply allocation or guest pointer is needed. */
+    struct gl_query_info info = {.op = QOP_FINISH};
+    return ioctl(fd,GLIO_QUERY,&info);
+}
 void glFinish(void) {
     if (!_wpk_gl_current_encoder()) return;
-    (void)_wpk_gl_query_into(QOP_FINISH, NULL, 0, NULL, 0);
+    if (_wpk_gl_finish_checked() != 0) raise_client_error(GL_INVALID_OPERATION);
 }
 
 /* OpenGL ES 2.0 lets an implementation support no shader binary formats;

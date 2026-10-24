@@ -5,7 +5,7 @@ import { decodeAndDispatch, validateCommandBuffer } from "./bridge.js";
 import { recordGlError } from "./errors.js";
 import { runGlQuery } from "./query.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./surface-capabilities.js";
-import { QOP_SURFACE_CAPABILITIES } from "./ops.js";
+import { QOP_SURFACE_CAPABILITIES, QOP_FINISH } from "./ops.js";
 import { GlMuxer } from "./muxer.js";
 import { prepareCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
 import {
@@ -301,6 +301,9 @@ export function setupMainForward(
         try {
           if (msg.input.byteLength > GL_FORWARD_QUERY_MAX_BYTES) throw new RangeError("query input too long");
           const output = new Uint8Array(glForwardQueryCapacity(msg.mailbox));
+          if (msg.op === QOP_FINISH && (msg.input.byteLength !== 0 || output.byteLength !== 0)) {
+            completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
+          }
           let rc: number;
           if (capabilities) {
             if (msg.input.byteLength !== 0 || output.byteLength !== 16) { completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return; }

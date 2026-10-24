@@ -16,10 +16,15 @@ self.onmessage = ({data}) => {
     let memory:WebAssembly.Memory|null=null;
     let imports:Record<string,(...args:any[])=>any>|null=null;
     const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
+    let nativeFinishes=0;
     if(!forwarded) {
       const canvas=data.canvas as OffscreenCanvas;
       gl=canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true});
       if(!gl)throw new Error("native worker WebGL2 unavailable");
+      if(data.completion) {
+        const finish=gl.finish.bind(gl);
+        gl.finish=()=>{nativeFinishes++;finish();};
+      }
       for(const [createName,deleteName,isName] of [
         ["createFramebuffer","deleteFramebuffer","isFramebuffer"],
         ["createTexture","deleteTexture","isTexture"],
@@ -93,6 +98,7 @@ self.onmessage = ({data}) => {
     const retiredContexts:number[]=[],retiredSurfaces:number[]=[];
     const rawBos=new Set<number>();
     const limits:number[][]=[];
+    let completionRead=false;
     for(let offset=0;offset<frames.length;) {
       if(offset+12>frames.length)throw new Error("truncated trace header");
       const kind=view.getUint32(offset,true),fd=view.getUint32(offset+4,true),length=view.getUint32(offset+8,true);
@@ -172,8 +178,15 @@ self.onmessage = ({data}) => {
           // Exercise the raw presentation route too: a pbuffer must not post
           // even when a consumer calls GLIO_PRESENT rather than C's swap.
           if(data.pbuffer) requireZero(forwarded ? channel(fd).onPresent!(fd) : imports!.host_gl_present(7,fd),"pbuffer present");
-          if(clear && !data.zeroSurface)observed.push(pixels(fd));
+          if(clear && !data.zeroSurface) {
+            if(data.completion)completionRead=true;
+            else observed.push(pixels(fd));
+          }
         }
+      } else if(kind===15) {
+        requireZero(forwarded ? channel(fd).onQuery!(O.QOP_FINISH,new Uint8Array(),0).rc
+          : imports!.host_gl_query(7,O.QOP_FINISH,0,0,0,0,fd),"completion");
+        if(completionRead) {observed.push(pixels(fd));completionRead=false;}
       } else if(kind===14) {
         const state=()=>gl ? [gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING),gl.getParameter(gl.READ_FRAMEBUFFER_BINDING),
           gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),gl.getParameter(gl.RENDERBUFFER_BINDING)] : [];
@@ -289,6 +302,6 @@ self.onmessage = ({data}) => {
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel); gl.bindFramebuffer(gl.READ_FRAMEBUFFER,prior);
       pbufferState = {canvasPixel:[...pixel],viewport:[...gl.getParameter(gl.VIEWPORT)]};
     }
-    postMessage({type:"egl_record_result",...pbufferState,observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),...(data.capabilities?{limits}:{}),error:forwarded?0:gl!.getError()});
+    postMessage({type:"egl_record_result",...pbufferState,observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),...(data.capabilities?{limits}:{}),...(data.completion?{finishes:forwarded?null:nativeFinishes}:{}),error:forwarded?0:gl!.getError()});
   } catch(error) {postMessage({type:"egl_record_failed",error:String(error)});}
 };

@@ -117,6 +117,7 @@ export function runGlQuery(
   input: Uint8Array,
   out: Uint8Array,
 ): number {
+  if (op === O.QOP_FINISH && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
   if (op === O.QOP_SURFACE_CAPABILITIES) {
     if (input.byteLength !== 0 || out.byteLength !== 16) return -22;
     if (!b.gl) return -1;
@@ -415,8 +416,11 @@ export function runGlQuery(
     // glFinish. The query is answered after the host has decoded every
     // earlier command, so finishing the context here completes them all.
     case O.QOP_FINISH:
-      gl.finish();
-      return 0;
+      return checkedGlCall(b, () => {
+        if (gl.isContextLost()) throw new Error("Cannot finish a lost renderer");
+        gl.finish();
+        if (gl.isContextLost()) throw new Error("Renderer lost during completion");
+      }) ? 0 : -5;
 
     // in: u32 target; out: u32 status
     case O.QOP_CHECK_FB_STATUS: {

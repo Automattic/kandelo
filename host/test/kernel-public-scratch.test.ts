@@ -11,7 +11,7 @@ import {
   createWasmPosixKernelTestHarness,
   WasmPosixKernel,
 } from "../src/kernel";
-import { QOP_GET_ERROR } from "../src/webgl/ops";
+import { QOP_GET_ERROR, QOP_FINISH } from "../src/webgl/ops";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 function hostileBytes(length: number, reportedLength = 1): Uint8Array {
@@ -1404,6 +1404,26 @@ it("GL queries select the caller's state even without a command submission", () 
     expect([...new Float32Array(memory.buffer,8192,4)])
       .toEqual(pid === 7 ? [0.125,0.25,0.375,1] : [0.5,0.625,0.75,1]);
   }
+});
+
+it.each([4,8] as const)("completion queries preflight before native or forwarded work at wasm%d widths", (width) => {
+  const {kernel,memory} = fullKernelHarness({}, {}, width);
+  const native = vi.fn(), forwarded = vi.fn(() => ({rc:0,bytes:new Uint8Array()}));
+  for(const pid of [7,8]) kernel.gl.bind({pid,cmdbufAddr:4096,cmdbufLen:4096});
+  kernel.gl.get(7)!.gl = new Proxy({}, {get() { return native; }}) as WebGL2RenderingContext;
+  kernel.gl.attachMainForward(8,{onCreateContext() {return 0;},onDestroyContext() {},onSubmit() {},onQuery:forwarded});
+  const imports = kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+  const ptr = (value:number) => width === 8 ? BigInt(value) : value;
+  const output = new Uint8Array(memory.buffer,8192,4); output.fill(0xa5);
+  for(const pid of [7,8]) {
+    expect(imports.env.host_gl_query(pid,QOP_FINISH,ptr(4096),ptr(4),ptr(0),ptr(0))).toBe(-22);
+    expect(imports.env.host_gl_query(pid,QOP_FINISH,ptr(0),ptr(0),ptr(8192),ptr(4))).toBe(-22);
+  }
+  expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
+  expect(native).not.toHaveBeenCalled(); expect(forwarded).not.toHaveBeenCalled();
+  expect(imports.env.host_gl_query(8,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0))).toBe(0);
+  forwarded.mockReturnValue({rc:-5,bytes:new Uint8Array()});
+  expect(imports.env.host_gl_query(8,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0))).toBe(-5);
 });
 
 it.each([4, 8] as const)("forwarded GL queries preflight and copy replies at wasm%d boundaries", (width) => {

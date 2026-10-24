@@ -3838,6 +3838,16 @@ same receipts, preserving the distinction between owned native targets and
 borrowed BO framebuffers. Broader resource factories, context loss and unknown
 transport completion remain in the compatibility inventory.
 
+EGL client/GL waits flush pending commands and require successful native
+finish through the existing empty QOP_FINISH query. The host preserves earlier
+GL errors and rejects failed completion or renderer loss; native and forwarded
+paths acknowledge only after acceptance. The C wait keeps current ownership
+and reports failure without holding the EGL metadata mutex during completion.
+GLES glFinish also exposes failed completion instead of discarding it. Swap
+interval validates display/context/draw ownership; every request clamps to the
+single config's zero bounds. EGL fence objects and native wait semantics remain
+separate compatibility work.
+
 EGL error status and bound client API are thread-local; an unsupported API
 bind reports BAD_PARAMETER while preserving the calling thread's prior API.
 Current bindings use heap-backed pthread-key records with exclusive context

@@ -194,6 +194,8 @@ static uint32_t next_backend_surface = 131;
 static int fail_surface_create;
 static uint64_t max_surface_pixels = UINT64_MAX;
 static unsigned surface_create_attempts, surface_presents;
+static unsigned finish_queries;
+static int finish_failure;
 static int surface_present_failure;
 static uint32_t surface_target;
 static int fail_surface_update;
@@ -821,6 +823,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         egl_trace(8, fd, NULL, 0);
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
+        if (q->op == 0x0e) {
+            assert(q->in_buf_len == 0 && q->out_buf_len == 0 && q->reserved == 0);
+            finish_queries++;
+            if (finish_failure) { errno = finish_failure; return -1; }
+            egl_trace(15,fd,NULL,0);
+            return 0;
+        }
         if (q->op == GRAPHICS_SURFACE_CAPABILITIES) {
             assert(q->in_buf_len == 0 && q->out_buf_len == 16 && q->reserved == 0);
             surface_limit_queries++;
@@ -1436,6 +1445,61 @@ int main(int argc, char **argv) {
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    if (!strncmp(argv[1],"completion-",11)) {
+        assert(eglWaitClient() && eglWaitGL() && !finish_queries && !submit_batches);
+        if (!strcmp(argv[1],"completion-interval"))
+            assert(!eglSwapInterval(dpy,1) && eglGetError() == EGL_BAD_CONTEXT);
+        EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(context);
+        assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,context));
+        if (!strcmp(argv[1],"completion-interval"))
+            assert(!eglSwapInterval(dpy,0) && eglGetError() == EGL_BAD_SURFACE);
+        EGLSurface surface = eglCreateWindowSurface(dpy,(EGLConfig)1,(EGLNativeWindowType)&record_windows[0],NULL); assert(surface);
+        assert(eglMakeCurrent(dpy,surface,surface,context));
+        if (!strcmp(argv[1],"completion-interval")) {
+            for (unsigned i=0;i<3;i++) assert(eglSwapInterval(dpy,i == 0 ? INT32_MIN : i == 1 ? 0 : INT32_MAX));
+            assert(!eglSwapInterval(EGL_NO_DISPLAY,0) && eglGetError() == EGL_BAD_DISPLAY);
+            assert(eglGetCurrentContext() == context && !finish_queries && !submit_batches);
+            assert(eglDestroySurface(dpy,surface) && eglDestroyContext(dpy,context) && eglReleaseThread());
+        } else {
+            glClearColor(1,0,0,1); glClear(GL_COLOR_BUFFER_BIT);
+            if (!strcmp(argv[1],"completion-submit-failure")) {
+                fail_submit = 1;
+                assert(!eglWaitClient() && eglGetError() == EGL_CONTEXT_LOST && !finish_queries);
+                assert(glGetError() == GL_INVALID_OPERATION); fail_submit = 0;
+            } else if (!strcmp(argv[1],"completion-query-failure")) {
+                finish_failure = EIO;
+                assert(!eglWaitClient() && eglGetError() == EGL_CONTEXT_LOST);
+                assert(submit_batches == 1 && finish_queries == 1 && glGetError() == GL_NO_ERROR);
+                finish_failure = EACCES;
+                assert(!eglWaitGL() && eglGetError() == EGL_BAD_ACCESS && finish_queries == 2);
+                assert(eglGetCurrentContext() == context); finish_failure = 0;
+            } else if (!strcmp(argv[1],"completion-gl-failure")) {
+                finish_failure = EIO; glFinish();
+                assert(submit_batches == 1 && finish_queries == 1 && glGetError() == GL_INVALID_OPERATION);
+                finish_failure = 0;
+            } else if (!strcmp(argv[1],"completion-retained")) {
+                assert(eglDestroyContext(dpy,context) && eglDestroySurface(dpy,surface));
+                assert(eglWaitClient() && finish_queries == 1 && !destroyed_contexts && !destroyed_surfaces);
+                assert(eglReleaseThread() && destroyed_contexts == 1 && destroyed_surfaces == 1);
+                assert(eglTerminate(dpy) && !allocation_count());
+                puts("PASS completion-retained"); return 0;
+            } else {
+                assert(!strcmp(argv[1],"completion-render") || !strcmp(argv[1],"completion-ordered"));
+                assert(eglWaitClient() && finish_queries == 1 && submit_batches == 1 && clear_commands == 1);
+                glClearColor(0,1,0,1); glClear(GL_COLOR_BUFFER_BIT);
+                assert(eglWaitGL() && finish_queries == 2 && submit_batches == 2 && clear_commands == 2);
+                assert(eglQueryAPI() == EGL_OPENGL_ES_API);
+            }
+            if (strcmp(argv[1],"completion-render")) {
+                unsigned prior = finish_queries;
+                assert(eglWaitClient() && finish_queries == prior+1);
+            }
+            assert(eglDestroySurface(dpy,surface) && eglDestroyContext(dpy,context) && eglReleaseThread());
+        }
+        assert(eglTerminate(dpy) && !allocation_count());
+        assert(!eglSwapInterval(dpy,0) && eglGetError() == EGL_NOT_INITIALIZED);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strncmp(argv[1],"egl-surface-",12) || !strncmp(argv[1],"platform-window-",16)) {
         PFNEGLCREATEPLATFORMWINDOWSURFACEPROC create = (PFNEGLCREATEPLATFORMWINDOWSURFACEPROC)eglGetProcAddress("eglCreatePlatformWindowSurface");
         PFNEGLCREATEPLATFORMWINDOWSURFACEEXTPROC create_ext = (PFNEGLCREATEPLATFORMWINDOWSURFACEEXTPROC)eglGetProcAddress("eglCreatePlatformWindowSurfaceEXT");

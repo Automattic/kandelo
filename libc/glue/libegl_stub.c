@@ -1605,7 +1605,14 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
 #undef WPK_MAP_GL
 
 EGLBoolean eglWaitClient(void) {
-    _wpk_gl_flush();
+    if (!g_thread_binding.object) return EGL_TRUE;
+    /* A current reference pins its encoder/session through another thread's
+     * destruction request. Do not hold the EGL metadata lock while waiting
+     * for rendering; other contexts must remain able to make progress. */
+    if (_wpk_gl_finish_checked() != 0) {
+        g_last_error = current_binding_error();
+        return EGL_FALSE;
+    }
     return EGL_TRUE;
 }
 
@@ -1626,31 +1633,24 @@ EGLBoolean eglReleaseThread(void) {
     return EGL_TRUE;
 }
 
-/* ----- additional thin stubs required by SDL2 ------------------- */
-
-/* SDL_egl.c's LOAD_FUNC under SDL_VIDEO_STATIC_ANGLE assigns these
- * symbols directly into `_this->egl_data->NAME`.  All of them must
- * therefore exist at link time even when their behaviour is a no-op
- * (SDL2 documents NULL returns + EGL_FALSE returns as "the
- * extension/feature isn't available", which is exactly the truth
- * for our single-window single-buffer surface). */
-
 EGLBoolean eglSwapInterval(EGLDisplay dpy, EGLint interval) {
-    (void) interval;
-    if (dpy != EGL_DPY_HANDLE) {
-        g_last_error = EGL_BAD_DISPLAY;
-        return EGL_FALSE;
-    }
-    /* No vsync knob — the host bridge runs at the canvas's natural
-     * cadence (rAF in the browser, hrtime tick on Node).  Accept
-     * any interval and return EGL_TRUE so SDL2 doesn't surface an
-     * error to the app. */
-    return EGL_TRUE;
+    (void)interval;
+    pthread_mutex_lock(&g_context_mutex);
+    EGLBoolean accepted = EGL_FALSE;
+    if (dpy != EGL_DPY_HANDLE) g_last_error = EGL_BAD_DISPLAY;
+    else if (!g_active_generation || !g_active_generation->initialized) g_last_error = EGL_NOT_INITIALIZED;
+    else if (!g_thread_binding.object) g_last_error = EGL_BAD_CONTEXT;
+    else if (!g_thread_binding.draw) g_last_error = EGL_BAD_SURFACE;
+    /* Both configuration limits are zero. Every requested interval clamps
+     * to zero, so this configuration adds no presentation delay. */
+    else accepted = EGL_TRUE;
+    pthread_mutex_unlock(&g_context_mutex);
+    return accepted;
 }
 
 EGLBoolean eglWaitGL(void) {
-    _wpk_gl_flush();
-    return EGL_TRUE;
+    /* ES2 is the only bindable client API, so no API switch is needed. */
+    return eglWaitClient();
 }
 
 EGLBoolean eglWaitNative(EGLint engine) {

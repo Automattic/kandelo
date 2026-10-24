@@ -1,6 +1,6 @@
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./webgl/surface-capabilities.js";
-import { QOP_SURFACE_CAPABILITIES } from "./webgl/ops.js";
+import { QOP_SURFACE_CAPABILITIES, QOP_FINISH } from "./webgl/ops.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
  * import functions that bridge Wasm syscalls to the PlatformIO backend.
@@ -2875,6 +2875,7 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
           if (op === QOP_SURFACE_CAPABILITIES && (inputLength !== 0 || outputLength !== 16)) return -22;
+          if (op === QOP_FINISH && (inputLength !== 0 || outputLength !== 0)) return -22;
           let inBuf: Uint8Array;
           try {
             inBuf = inputLength > 0

@@ -75,7 +75,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU coherence, forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU coherence, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Cage supports one linear plane; must audit metadata and rollback | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
-| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core sync/image symbols remain absent despite advertised version; client/native waits and swap-interval semantics still need completion and audit | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
+| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core sync/image symbols remain absent despite advertised version; client/GL waits now acknowledge ordered completion and validate swap-interval ownership in source; native waits, full lifecycle/error audit and normal guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel authoritative BO references; changed-run publication on main | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Main two-BO ring; audit lock/destroy/outstanding buffer lifetime | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
@@ -4228,3 +4228,57 @@ Current-main integration, coherent normal SDK/kernel/program/package/image
 artifacts, upstream CTS, cage/sway/other consumers, full browser-memory and
 required POSIX conformance remain deferred to the combined rebuild/test
 phase. No ordinary gap has been reclassified as a platform boundary.
+
+
+## Ordered client completion and swap ownership (2026-10-24)
+
+WaitClient and WaitGL previously returned after command submission without
+waiting for native completion. They now use a shared checked completion
+primitive: flush pending C commands, then await the existing zero-input,
+zero-output QOP_FINISH ioctl. No reply allocation or guest output pointer
+is needed. A current reference retains the encoder/session during another
+thread's deferred destruction request. Completion does not hold the EGL
+metadata mutex across the renderer wait. An unbound client wait succeeds
+without device access. Failed submit/completion returns an EGL error and
+preserves current ownership. The GLES glFinish wrapper now records a
+client error when the completion transport fails instead of ignoring it.
+
+The host validates the exact empty query shape before native access,
+forwarding or owner selection. Native finish uses checked GL acceptance,
+preserves pre-existing errors and rejects context loss or native failure.
+The forwarded mailbox returns success only after that same renderer path
+accepts. SwapInterval now requires an initialized display, current context
+and draw surface; requests clamp to the config's zero minimum/maximum.
+This replaces the prior unconditional success intended for SDL consumers.
+It does not establish broader presentation timing or native wait support.
+The [EGL 1.5 specification](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf),
+sections 3.8 and 3.10.4, defines the wait and current-ownership contracts.
+
+Evidence uses `f377d77983` plus this increment, through
+`scripts/dev-shell.sh`, with exact logs under `.context/`:
+
+| Check | Exact evidence |
+|---|---|
+| C, fatal UBSan / private wasm32 / core audit | All 174 C cases pass in `graphics-completion-final-native.log`; paired link, 150 authority guards and 142 definitions/resolvers pass in `graphics-completion-native.log` |
+| Source host and Node/browser declarations | All 582 tests in 23 files pass, no skips; build/declarations pass; `graphics-completion-full-host.log` |
+| Actual-C rendered replays | All 30 affected cases pass in Chromium/Firefox/WebKit, native/forwarded, no skips; `graphics-completion-browser.log` |
+| Before-fix C | All seven completion/swap cases fail unchanged `f377d77983`; `graphics-completion-baseline-native.log` |
+
+C cases cover ordered and empty-queue waits, deferred destruction,
+submit/query failure, failed glFinish and swap-interval authority. Host
+cases cover native error ownership, loss before/during finish, exceptions,
+malformed spans without output mutation, forwarded acceptance and both
+kernel pointer widths. Six new browser replays read red/green pixels only
+after successful completion and require exactly two actual native finish
+calls; 24 preceding surface/platform cases remain passing. These source
+replays supply synthetic kernel identity plumbing, not rebuilt guest
+execution. Source host test doubles do not prove Node pixel rendering.
+
+ABI 58 and operation table 16 remain unchanged: the existing finish query
+still has no input or output, with no layout/tag/import changes. This is a
+completion prerequisite, not an EGL fence implementation. Sync/core image
+APIs remain absent; fence lifetime, multiple waiters, asynchronous status,
+server dependencies and retirement remain ordinary implementation work.
+No hard boundary is inferred from WebGL's event-loop signaling rules.
+Normal artifacts, current-main integration, upstream CTS, compositor
+consumers, full browser-memory and required POSIX suites remain deferred.

@@ -98,7 +98,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 167 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 174 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -540,3 +540,15 @@ GL errors in Chromium, Firefox and WebKit. The current affected selection
 also reruns pbuffer and independent-surface cases, 24 total with no skips.
 These remain source replays, separate from normal guest CTS, compositor and
 full browser-memory validation.
+
+
+Seven completion/swap C cases distinguish submission from accepted finish,
+exercise empty queues and retained current destruction, and check failed
+submission, failed query, GL error propagation and current swap ownership.
+They all fail unchanged `f377d77983` through the revision runner. Host checks
+cover native failure/loss, prior errors, malformed spans, main forwarding and
+both kernel pointer widths. Actual-C browser completion replays defer pixel
+reads until accepted finish and require two real native finish calls in each
+engine/dispatch mode. The affected selection is 30 cases including the prior
+24 surface replays. These checks do not implement EGL sync objects or replace
+normal guest, compositor, memory and POSIX validation.

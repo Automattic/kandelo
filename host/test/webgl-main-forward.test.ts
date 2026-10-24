@@ -208,6 +208,36 @@ describe("GlContextRegistry forward channel", () => {
 });
 
 describe("main-thread synchronous query transport", () => {
+  it("acknowledges completion only after a native finish accepts", () => {
+    const worker = new FakeWorker(), gl = new RecordingGl();
+    let finishes = 0, reject = false;
+    Object.assign(gl,{finish() { finishes++; if (reject) gl.error = 0x505; }});
+    const dispose = setupMainForward(worker,fakeCanvas(gl).canvas,7);
+    const channel = createMainForwardChannel({postMessage(message) { worker.fire(message); }},7);
+    expect(channel.onCreateContext()).toBe(0);
+    expect(channel.onQuery!(O.QOP_FINISH,new Uint8Array(),0).rc).toBe(0);
+    expect(finishes).toBe(1);
+    reject = true;
+    expect(channel.onQuery!(O.QOP_FINISH,new Uint8Array(),0).rc).toBe(-5);
+    expect(finishes).toBe(2);
+    const error = channel.onQuery!(O.QOP_GET_ERROR,new Uint8Array(),4);
+    expect(error.rc).toBe(4);
+    expect(new DataView(error.bytes.buffer,error.bytes.byteOffset,4).getUint32(0,true)).toBe(0x505);
+    dispose();
+  });
+
+  it("preflights completion shape before selecting a forwarded owner", () => {
+    const worker = new FakeWorker(), gl = new RecordingGl();
+    const dispose = setupMainForward(worker,fakeCanvas(gl).canvas,7);
+    const channel = createMainForwardChannel({postMessage(message) { worker.fire(message); }},7);
+    expect(channel.onCreateContext()).toBe(0);
+    const prior = [...gl.log];
+    expect(channel.onQuery!(O.QOP_FINISH,new Uint8Array(4),0).rc).toBe(-22);
+    expect(channel.onQuery!(O.QOP_FINISH,new Uint8Array(),4).rc).toBe(-22);
+    expect(gl.log).toEqual(prior);
+    dispose();
+  });
+
   it("copies only drawable scalars, excluding extra guest-memory properties", () => {
     const worker = new FakeWorker();
     const dispose = setupMainForward(worker, fakeCanvas(new RecordingGl()).canvas, 7);
