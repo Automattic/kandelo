@@ -1849,15 +1849,16 @@ for (const mode of ["native","forwarded","retarget"] as const) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
+for(const scenario of ["records-basic","names-render"] as const) {
 for (const mode of ["native", "forwarded"] as const) {
-  test(`actual C independent EGL records preserve draw/read pixels through ${mode} dispatch`, async ({page}) => {
+  test(`actual C ${scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : "implicit and generated texture names retain independent storage"} through ${mode} dispatch`, async ({page}) => {
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const temporary=mkdtempSync(join(root,".context/graphics-egl-record-trace-"));
     let trace:number[];
     try {
       const path=join(temporary,"egl.bin");
       execFileSync("bash",[join(root,"tests/graphics/run-libc-unit.sh")],{
-        cwd:root,env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:"records-basic",KANDELO_GRAPHICS_EGL_TRACE:path},
+        cwd:root,env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:scenario,KANDELO_GRAPHICS_EGL_TRACE:path},
         timeout:60000,stdio:"pipe",
       });
       trace=[...readFileSync(path)];
@@ -1896,11 +1897,13 @@ for (const mode of ["native", "forwarded"] as const) {
         return result;
       } finally {worker.terminate();dispose();}
     },{root,mode,trace});
-    expect(result).toEqual({type:"egl_record_result",observed:[
+    expect(result).toEqual(scenario === "records-basic" ? {type:"egl_record_result",observed:[
       [255,0,0,255],[0,255,0,255],[0,255,0,255],[0,0,255,255],[0,255,0,255],[0,255,0,255],
-    ],retiredContexts:[32,31],retiredSurfaces:[132,131,133],clean:true,error:0});
+    ],retiredContexts:[32,31],retiredSurfaces:[132,131,133],clean:true,error:0}
+    :{type:"egl_record_result",observed:[[255,0,0,255],[0,255,0,255],[255,0,0,255]],retiredContexts:[31],retiredSurfaces:[],clean:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
+}
 }
 
 for(const mode of ["native","forwarded"] as const) {

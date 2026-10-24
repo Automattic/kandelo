@@ -3786,13 +3786,21 @@ ownership. Release and thread exit flush before dropping current references;
 destroy-current and terminate-current defer backend retirement until release.
 Each created EGL context also owns an opaque heap encoder record. The
 current thread binding selects that record; it contains the cursor, client
-arrays, upload layout, errors, object-name allocation, image siblings,
+arrays, upload layout, errors, image siblings,
 uniform metadata and returned strings. An unbound thread cannot mutate
 another context's client state. Release preserves the record for transfer
 to another thread; final destruction retires its image references and
 frees it without selecting it or emitting into another command stream.
 Allocation failure precedes backend creation and leaves no published
-context. User-visible context/surface handles are monotonic. Each backend
+context. C encoders retain a separate reference-counted name owner. Metadata-only
+locks serialize whole-batch buffer/texture/renderbuffer reservations and
+shader/program name allocation, including implicit binds. Array bindings
+and every VAO's element/attribute capture retain actual buffer records;
+namespace deletion does not erase an inactive container's old identity.
+Local reference cleanup precedes releasing the common owner. The private
+shared-owner constructor is tested; public C sharing still rejects until
+image aliases, program/link metadata and retained rebinding are complete.
+User-visible context/surface handles are monotonic. Each backend
 session admits one context and surface. The public EGL facade allocates
 additional sessions for independent context/surface records within a
 generation. Each context has its own encoder and command mapping; current

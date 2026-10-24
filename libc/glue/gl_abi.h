@@ -215,6 +215,12 @@ void     _wpk_gl_flush(void);
 struct wpk_gles_context;
 struct wpk_gles_context *_wpk_gl_current_encoder(void);
 struct wpk_gles_context *_wpk_gl_create_encoder(void);
+#define WPK_GL_OBJECT_GROUPS 1
+struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *source);
+/* Internal name spaces: buffer 0, texture 1, renderbuffer 2, shader/program 3.
+ * Returns a GL error enum; failure leaves output and reservations unchanged. */
+uint32_t _wpk_gl_reserve_names(struct wpk_gles_context *state, uint32_t name_space, int32_t count,
+                               uint32_t *out);
 void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
 
 /* An EGLImage made by eglCreateImageKHR from one dma-buf plane. A

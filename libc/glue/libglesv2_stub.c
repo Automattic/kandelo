@@ -23,6 +23,8 @@
 #include <GLES2/gl2ext.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +37,144 @@
 #define WPK_GL_MAX_UNIFORM_META 512
 #define WPK_GL_UNIFORM_NAME_MAX 128
 
+enum wpk_name_space {
+    WPK_NAMES_BUFFER,
+    WPK_NAMES_TEXTURE,
+    WPK_NAMES_RENDERBUFFER,
+    WPK_NAMES_SHADER_PROGRAM,
+    WPK_NAMES_COUNT
+};
+struct wpk_object_name {
+    GLuint name;
+    uint32_t name_space, references;
+    uint64_t serial;
+    int named;
+    struct wpk_object_name *next;
+};
+struct wpk_object_group {
+    pthread_mutex_t mutex;
+    unsigned references;
+    GLuint next_name[WPK_NAMES_COUNT];
+    uint64_t next_serial;
+    struct wpk_object_name *names;
+};
+static struct wpk_object_group *object_group_create(void) {
+    struct wpk_object_group *group = calloc(1, sizeof *group);
+    if (!group)
+        return NULL;
+    if (pthread_mutex_init(&group->mutex, NULL) != 0) {
+        free(group);
+        return NULL;
+    }
+    group->references = 1;
+    group->next_serial = 1;
+    for (unsigned i = 0; i < WPK_NAMES_COUNT; i++)
+        group->next_name[i] = 1;
+    return group;
+}
+static int object_group_retain(struct wpk_object_group *group) {
+    pthread_mutex_lock(&group->mutex);
+    int retained = group->references < UINT_MAX;
+    if (retained)
+        group->references++;
+    pthread_mutex_unlock(&group->mutex);
+    return retained;
+}
+static void object_group_release(struct wpk_object_group *group) {
+    pthread_mutex_lock(&group->mutex);
+    int final = --group->references == 0;
+    pthread_mutex_unlock(&group->mutex);
+    if (!final)
+        return;
+    while (group->names) {
+        struct wpk_object_name *entry = group->names;
+        group->names = entry->next;
+        free(entry);
+    }
+    pthread_mutex_destroy(&group->mutex);
+    free(group);
+}
+/* The namespace owns one reference. Bindings and containers own additional
+ * references, so deleting a name cannot recycle a retained object identity. */
+static struct wpk_object_name *find_object_name(struct wpk_object_group *group, uint32_t name_space,
+                                                GLuint name) {
+    for (struct wpk_object_name *p = group->names; p; p = p->next)
+        if (p->named && p->name_space == name_space && p->name == name)
+            return p;
+    return NULL;
+}
+static void release_object_locked(struct wpk_object_group *group, struct wpk_object_name *object) {
+    if (!object || --object->references)
+        return;
+    struct wpk_object_name **p = &group->names;
+    while (*p && *p != object)
+        p = &(*p)->next;
+    if (*p)
+        *p = object->next;
+    free(object);
+}
+static void object_release(struct wpk_object_group *group, struct wpk_object_name *object) {
+    if (!object)
+        return;
+    pthread_mutex_lock(&group->mutex);
+    release_object_locked(group, object);
+    pthread_mutex_unlock(&group->mutex);
+}
+static struct wpk_object_name *object_acquire(struct wpk_object_group *group, uint32_t name_space,
+                                              GLuint name) {
+    if (!name)
+        return NULL;
+    pthread_mutex_lock(&group->mutex);
+    struct wpk_object_name *object = find_object_name(group, name_space, name);
+    if (!object) {
+        if (!group->next_serial || !(object = calloc(1, sizeof *object)))
+            goto done;
+        *object = (struct wpk_object_name){.name = name,
+                                           .name_space = name_space,
+                                           .references = 1,
+                                           .serial = group->next_serial++,
+                                           .named = 1,
+                                           .next = group->names};
+        group->names = object;
+    }
+    if (object->references == UINT_MAX)
+        object = NULL;
+    else
+        object->references++;
+done:
+    pthread_mutex_unlock(&group->mutex);
+    return object;
+}
+
+static int object_reference(struct wpk_object_group *group, struct wpk_object_name *object) {
+    if (!object)
+        return 1;
+    pthread_mutex_lock(&group->mutex);
+    int retained = object->references < UINT_MAX;
+    if (retained)
+        object->references++;
+    pthread_mutex_unlock(&group->mutex);
+    return retained;
+}
+static void unname_object(struct wpk_object_group *group, uint32_t name_space, GLuint name) {
+    pthread_mutex_lock(&group->mutex);
+    struct wpk_object_name *object = find_object_name(group, name_space, name);
+    if (object) {
+        object->named = 0;
+        release_object_locked(group, object);
+    }
+    pthread_mutex_unlock(&group->mutex);
+}
+static int reserve_implicit_name(struct wpk_object_group *group, uint32_t name_space, GLuint name) {
+    if (!name)
+        return 1;
+    struct wpk_object_name *object = object_acquire(group, name_space, name);
+    if (!object)
+        return 0;
+    object_release(group, object);
+    return 1;
+}
+
 struct wpk_client_attrib {
     int client;          /* 1: pointer is client memory, not a buffer offset */
     int enabled;
@@ -44,18 +184,15 @@ struct wpk_client_attrib {
     GLsizei stride;
     const void *pointer;
     uint64_t buffer_serial;
+    struct wpk_object_name *buffer_object;
     GLuint buffer_name;
 };
 struct wpk_vertex_array {
     GLuint name, element_buffer;
     uint64_t element_serial;
+    struct wpk_object_name *element_object;
     struct wpk_client_attrib attribs[WPK_GL_MAX_ATTRIBS];
     struct wpk_vertex_array *next;
-};
-struct wpk_buffer_name {
-    GLuint name;
-    uint64_t serial;
-    struct wpk_buffer_name *next;
 };
 struct wpk_gl_alias { GLuint name; GLuint host; struct wpk_egl_image *image; };
 struct wpk_gl_alias_table { struct wpk_gl_alias *v; size_t len, cap; };
@@ -74,6 +211,7 @@ struct uniform_meta {
 /* Client execution state belongs to the EGL context and follows it across
  * thread transfers. Shared object groups are a separate ownership layer. */
 struct wpk_gles_context {
+    struct wpk_object_group *objects;
     uint8_t *cursor;
     /* Client upload layout is gathered into command records exactly once. */
     GLint unpack_alignment;
@@ -82,14 +220,11 @@ struct wpk_gles_context {
     GLint unpack_skip_rows;
     /* First client-side error, consumed before a host query. */
     GLenum client_error;
-    uint32_t next_buffer;
-    uint32_t next_shader_program;
     uint32_t next_shader_upload;
     GLuint array_buffer;
-    uint64_t array_serial, next_buffer_serial;
-    struct wpk_buffer_name *buffer_names;
+    uint64_t array_serial;
+    struct wpk_object_name *array_object;
     struct wpk_vertex_array default_vertex_array, *current_vertex_array, *vertex_arrays;
-    uint32_t next_texture;
     uint32_t next_framebuffer;
     struct wpk_gl_alias_table texture_aliases;
     struct wpk_gl_alias_table renderbuffer_aliases;
@@ -98,7 +233,6 @@ struct wpk_gles_context {
     GLuint bound_renderbuffer;
     struct wpk_image_attachment *image_attachments;
     GLuint bound_framebuffer;
-    uint32_t next_renderbuffer;
     uint32_t next_vertex_array;
     struct uniform_meta uniform_meta[WPK_GL_MAX_UNIFORM_META];
     uint32_t uniform_meta_count;
@@ -115,12 +249,9 @@ struct wpk_gles_context {
 #define g_unpack_skip_pixels (_wpk_gl_current_encoder()->unpack_skip_pixels)
 #define g_unpack_skip_rows (_wpk_gl_current_encoder()->unpack_skip_rows)
 #define _wpk_gl_client_error (_wpk_gl_current_encoder()->client_error)
-#define g_next_buffer (_wpk_gl_current_encoder()->next_buffer)
-#define g_next_shader_program (_wpk_gl_current_encoder()->next_shader_program)
 #define g_array_buffer (_wpk_gl_current_encoder()->array_buffer)
 #define g_element_buffer (_wpk_gl_current_encoder()->current_vertex_array->element_buffer)
 #define g_attribs (_wpk_gl_current_encoder()->current_vertex_array->attribs)
-#define g_next_texture (_wpk_gl_current_encoder()->next_texture)
 #define g_next_framebuffer (_wpk_gl_current_encoder()->next_framebuffer)
 #define g_texture_aliases (_wpk_gl_current_encoder()->texture_aliases)
 #define g_renderbuffer_aliases (_wpk_gl_current_encoder()->renderbuffer_aliases)
@@ -129,18 +260,25 @@ struct wpk_gles_context {
 #define g_bound_renderbuffer (_wpk_gl_current_encoder()->bound_renderbuffer)
 #define g_image_attachments (_wpk_gl_current_encoder()->image_attachments)
 #define g_bound_framebuffer (_wpk_gl_current_encoder()->bound_framebuffer)
-#define g_next_renderbuffer (_wpk_gl_current_encoder()->next_renderbuffer)
 #define g_next_vertex_array (_wpk_gl_current_encoder()->next_vertex_array)
 #define g_uniform_meta (_wpk_gl_current_encoder()->uniform_meta)
 #define g_uniform_meta_count (_wpk_gl_current_encoder()->uniform_meta_count)
 
-struct wpk_gles_context *_wpk_gl_create_encoder(void) {
+struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *source) {
     struct wpk_gles_context *state = calloc(1, sizeof *state);
     if (!state) return NULL;
+    if (source) {
+        if (!object_group_retain(source->objects)) {
+            free(state);
+            return NULL;
+        }
+        state->objects = source->objects;
+    } else if (!(state->objects = object_group_create())) {
+        free(state);
+        return NULL;
+    }
     state->unpack_alignment = 4;
-    state->next_buffer = state->next_shader_program = state->next_texture = 1;
-    state->next_framebuffer = state->next_renderbuffer = state->next_vertex_array = 1;
-    state->next_buffer_serial = 1;
+    state->next_framebuffer = state->next_vertex_array = 1;
     state->current_vertex_array = &state->default_vertex_array;
     for (unsigned i=0; i<WPK_GL_MAX_ATTRIBS; i++) {
         state->default_vertex_array.attribs[i].size = 4;
@@ -148,6 +286,10 @@ struct wpk_gles_context *_wpk_gl_create_encoder(void) {
         state->default_vertex_array.attribs[i].client = 1;
     }
     return state;
+}
+
+struct wpk_gles_context *_wpk_gl_create_encoder(void) {
+    return _wpk_gl_create_shared_encoder(NULL);
 }
 
 enum { WPK_GL_MAX_TLV_PAYLOAD = 0xffffu };
@@ -266,50 +408,84 @@ void glDisable(GLenum cap) {
  * A name of the wrong object type must be distinguishable from a name
  * which has never denoted either type. Never wrap through reserved zero. */
 
-static GLuint next_shader_program_name(void) {
-    if (g_next_shader_program == 0) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
-        return 0;
+/* Reserve an entire batch before publishing names or advancing counters.
+ * This private constructor/allocator also serves EGL's future group join;
+ * public sharing stays rejected until image/storage references are shared. */
+uint32_t _wpk_gl_reserve_names(struct wpk_gles_context *state, uint32_t name_space, int32_t count,
+                               uint32_t *out) {
+    if (!state || name_space >= WPK_NAMES_COUNT)
+        return GL_INVALID_ENUM;
+    if (count < 0)
+        return GL_INVALID_VALUE;
+    if (!count || !out)
+        return GL_NO_ERROR;
+    struct wpk_object_group *group = state->objects;
+    pthread_mutex_lock(&group->mutex);
+    GLuint candidate = group->next_name[name_space];
+    uint64_t serial = group->next_serial;
+    struct wpk_object_name *pending = NULL;
+    for (GLsizei i = 0; i < count; i++) {
+        while (candidate && find_object_name(group, name_space, candidate))
+            candidate++;
+        if (!candidate || (name_space != WPK_NAMES_SHADER_PROGRAM && !serial))
+            goto fail;
+        if (name_space != WPK_NAMES_SHADER_PROGRAM) {
+            struct wpk_object_name *entry = calloc(1, sizeof *entry);
+            if (!entry)
+                goto fail;
+            *entry = (struct wpk_object_name){.name = candidate,
+                                              .name_space = name_space,
+                                              .references = 1,
+                                              .serial = serial++,
+                                              .named = 1,
+                                              .next = pending};
+            pending = entry;
+        }
+        candidate++;
     }
-    return g_next_shader_program++;
+    if (name_space == WPK_NAMES_SHADER_PROGRAM) {
+        for (GLsizei i = 0; i < count; i++)
+            out[i] = group->next_name[name_space] + (GLuint)i;
+    } else
+        for (GLsizei i = count; i > 0; i--) {
+            struct wpk_object_name *entry = pending;
+            pending = entry->next;
+            out[i - 1] = entry->name;
+            entry->next = group->names;
+            group->names = entry;
+        }
+    group->next_name[name_space] = candidate;
+    group->next_serial = serial;
+    pthread_mutex_unlock(&group->mutex);
+    return GL_NO_ERROR;
+fail:
+    while (pending) {
+        struct wpk_object_name *entry = pending;
+        pending = entry->next;
+        free(entry);
+    }
+    pthread_mutex_unlock(&group->mutex);
+    return GL_OUT_OF_MEMORY;
 }
-
+static GLuint next_shader_program_name(void) {
+    GLuint name = 0;
+    uint32_t error =
+        _wpk_gl_reserve_names(_wpk_gl_current_encoder(), WPK_NAMES_SHADER_PROGRAM, 1, &name);
+    if (error && _wpk_gl_client_error == GL_NO_ERROR)
+        _wpk_gl_client_error = error;
+    return name;
+}
 void glGenBuffers(GLsizei n, GLuint *out) {
-    if (!_wpk_gl_current_encoder()) return;
-    if (n < 0) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+    if (!_wpk_gl_current_encoder())
+        return;
+    uint32_t error = _wpk_gl_reserve_names(_wpk_gl_current_encoder(), WPK_NAMES_BUFFER, n, out);
+    if (error) {
+        if (_wpk_gl_client_error == GL_NO_ERROR)
+            _wpk_gl_client_error = error;
         return;
     }
-    if (n == 0 || !out) return;
-    struct wpk_gles_context *state = _wpk_gl_current_encoder();
-    struct wpk_buffer_name *pending = NULL;
-    GLuint candidate = g_next_buffer;
-    uint64_t serial = state->next_buffer_serial;
-    for (GLsizei i=0; i<n; i++) {
-        /* Arbitrary nonzero names created by BindBuffer are also reserved.
-         * Generated but not yet bound names remain reserved until deletion. */
-        while (candidate) {
-            struct wpk_buffer_name *used = state->buffer_names;
-            while (used && used->name != candidate) used = used->next;
-            if (!used) break;
-            candidate++;
-        }
-        struct wpk_buffer_name *entry;
-        if (!candidate || !serial || !(entry = calloc(1,sizeof *entry))) {
-            while (pending) { entry = pending; pending = entry->next; free(entry); }
-            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
-            return;
-        }
-        *entry = (struct wpk_buffer_name){candidate++,serial++,pending};
-        pending = entry;
-    }
-    for (GLsizei i=n; i>0; i--) {
-        struct wpk_buffer_name *entry = pending; pending = entry->next;
-        out[i-1] = entry->name;
-        entry->next = state->buffer_names; state->buffer_names = entry;
-    }
-    g_next_buffer = candidate; state->next_buffer_serial = serial;
-    emit_name_array(OP_GEN_BUFFERS, n, out);
+    if (n > 0 && out)
+        emit_name_array(OP_GEN_BUFFERS, n, out);
 }
 
 /* The GL_ARRAY_BUFFER binding, mirrored so glVertexAttribPointer can tell a
@@ -322,24 +498,25 @@ void glBindBuffer(GLenum target, GLuint buf) {
         return;
     }
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
-    uint64_t serial = 0;
-    if (buf) {
-        struct wpk_buffer_name *entry = state->buffer_names;
-        while (entry && entry->name != buf) entry = entry->next;
-        if (!entry) {
-            if (state->next_buffer_serial == 0 || !(entry = calloc(1,sizeof *entry))) {
-                if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
-                return;
-            }
-            *entry = (struct wpk_buffer_name){buf,state->next_buffer_serial++,state->buffer_names};
-            state->buffer_names = entry;
-        }
-        serial = entry->serial;
+    struct wpk_object_name *object =
+        buf ? object_acquire(state->objects, WPK_NAMES_BUFFER, buf) : NULL;
+    if (buf && !object) {
+        if (_wpk_gl_client_error == GL_NO_ERROR)
+            _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+        return;
     }
-    if (target == GL_ARRAY_BUFFER) g_array_buffer = buf;
-    if (target == GL_ELEMENT_ARRAY_BUFFER) g_element_buffer = buf;
-    if (target == GL_ARRAY_BUFFER) state->array_serial = serial;
-    else state->current_vertex_array->element_serial = serial;
+    struct wpk_object_name **slot = target == GL_ARRAY_BUFFER
+                                        ? &state->array_object
+                                        : &state->current_vertex_array->element_object;
+    object_release(state->objects, *slot);
+    *slot = object;
+    if (target == GL_ARRAY_BUFFER) {
+        g_array_buffer = buf;
+        state->array_serial = object ? object->serial : 0;
+    } else {
+        g_element_buffer = buf;
+        state->current_vertex_array->element_serial = object ? object->serial : 0;
+    }
     EMIT_BEGIN(OP_BIND_BUFFER, 8)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)buf);
@@ -603,6 +780,13 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
     }
     if (index < WPK_GL_MAX_ATTRIBS) {
         struct wpk_client_attrib *a = &g_attribs[index];
+        if (!object_reference(state->objects, state->array_object)) {
+            if (_wpk_gl_client_error == GL_NO_ERROR)
+                _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            return;
+        }
+        object_release(state->objects, a->buffer_object);
+        a->buffer_object = state->array_object;
         a->size = size; a->type = type; a->normalized = normalized;
         a->stride = stride; a->pointer = pointer; a->buffer_serial = state->array_serial; a->buffer_name = g_array_buffer;
     }
@@ -888,9 +1072,14 @@ GLint glGetAttribLocation(GLuint program, const GLchar *name) {
 
 void glGenTextures(GLsizei n, GLuint *out) {
     if (!_wpk_gl_current_encoder()) return;
-    if (n <= 0 || !out) return;
-    for (GLsizei i = 0; i < n; i++) out[i] = g_next_texture++;
-    emit_name_array(OP_GEN_TEXTURES, n, out);
+    uint32_t error = _wpk_gl_reserve_names(_wpk_gl_current_encoder(), WPK_NAMES_TEXTURE, n, out);
+    if (error) {
+        if (_wpk_gl_client_error == GL_NO_ERROR)
+            _wpk_gl_client_error = error;
+        return;
+    }
+    if (n > 0 && out)
+        emit_name_array(OP_GEN_TEXTURES, n, out);
 }
 
 /* ----- EGLImage aliases ---------------------------------------------
@@ -1044,6 +1233,16 @@ static void delete_attached_image_name(GLuint kind, GLuint name) {
     }
 }
 
+static void release_vertex_array_objects(struct wpk_gles_context *state,
+                                         struct wpk_vertex_array *vao) {
+    object_release(state->objects, vao->element_object);
+    vao->element_object = NULL;
+    for (unsigned i = 0; i < WPK_GL_MAX_ATTRIBS; i++) {
+        object_release(state->objects, vao->attribs[i].buffer_object);
+        vao->attribs[i].buffer_object = NULL;
+    }
+}
+
 /* Release explicit ownership without selecting this context or emitting into
  * another context's stream. Release/exit flushed this context before its last
  * current reference ended; host destruction retires native object maps. */
@@ -1060,14 +1259,15 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
         for (size_t j = 0; j < tables[i]->len; j++) _wpk_egl_image_release(tables[i]->v[j].image);
         free(tables[i]->v);
     }
-    while (state->buffer_names) {
-        struct wpk_buffer_name *entry = state->buffer_names;
-        state->buffer_names = entry->next; free(entry);
-    }
     while (state->vertex_arrays) {
         struct wpk_vertex_array *entry = state->vertex_arrays;
-        state->vertex_arrays = entry->next; free(entry);
+        state->vertex_arrays = entry->next;
+        release_vertex_array_objects(state, entry);
+        free(entry);
     }
+    release_vertex_array_objects(state, &state->default_vertex_array);
+    object_release(state->objects, state->array_object);
+    object_group_release(state->objects);
     free(state);
 }
 
@@ -1085,7 +1285,12 @@ static void rebind_image_texture_name(GLuint name, GLuint host) {
 
 void glDeleteTextures(GLsizei n, const GLuint *names) {
     if (!_wpk_gl_current_encoder()) return;
-    if (n <= 0 || !names) return;
+    if (n < 0) {
+        raise_client_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (n == 0 || !names)
+        return;
     for (GLsizei i = 0; i < n; i++) {
         if (!names[i]) continue;
         delete_attached_image_name(GL_TEXTURE_2D, names[i]);
@@ -1094,6 +1299,7 @@ void glDeleteTextures(GLsizei n, const GLuint *names) {
             if (g_bound_texture_2d[u] == names[i]) g_bound_texture_2d[u] = 0;
         }
         alias_drop(&g_texture_aliases, names[i]);
+        unname_object(_wpk_gl_current_encoder()->objects, WPK_NAMES_TEXTURE, names[i]);
     }
     emit_name_array(OP_DELETE_TEXTURES, n, names);
 }
@@ -1107,6 +1313,14 @@ static void emit_bind_texture(GLenum target, GLuint host) {
 
 void glBindTexture(GLenum target, GLuint tex) {
     if (!_wpk_gl_current_encoder()) return;
+    if (target != GL_TEXTURE_2D && target != GL_TEXTURE_CUBE_MAP) {
+        raise_client_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (!reserve_implicit_name(_wpk_gl_current_encoder()->objects, WPK_NAMES_TEXTURE, tex)) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return;
+    }
     if (target == GL_TEXTURE_2D) g_bound_texture_2d[g_active_unit] = tex;
     emit_bind_texture(target, host_texture_name(tex));
 }
@@ -1318,24 +1532,47 @@ void glPixelStorei(GLenum pname, GLint param) {
 
 void glDeleteBuffers(GLsizei n, const GLuint *names) {
     if (!_wpk_gl_current_encoder()) return;
-    if (n < 0) { if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE; return; }
-    if (n <= 0 || !names) return;
-    struct wpk_gles_context *state = _wpk_gl_current_encoder();
-    for (GLsizei i=0; i<n; i++) {
-        struct wpk_buffer_name **slot = &state->buffer_names;
-        while (*slot && (*slot)->name != names[i]) slot = &(*slot)->next;
-        if (!*slot) continue;
-        struct wpk_buffer_name *entry = *slot;
-        if (state->array_serial == entry->serial) { g_array_buffer = 0; state->array_serial = 0; }
-        if (state->current_vertex_array->element_serial == entry->serial) {
-            g_element_buffer = 0; state->current_vertex_array->element_serial = 0;
-        }
-        for (unsigned a=0; a<WPK_GL_MAX_ATTRIBS; a++) if (g_attribs[a].buffer_serial == entry->serial) {
-            g_attribs[a].buffer_serial = 0; g_attribs[a].buffer_name = 0;
-            g_attribs[a].client = state->current_vertex_array->name == 0;
-        }
-        *slot = entry->next; free(entry);
+    if (n < 0) {
+        if (_wpk_gl_client_error == GL_NO_ERROR)
+            _wpk_gl_client_error = GL_INVALID_VALUE;
+        return;
     }
+    if (!n || !names)
+        return;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    struct wpk_object_group *group = state->objects;
+    pthread_mutex_lock(&group->mutex);
+    for (GLsizei i = 0; i < n; i++) {
+        struct wpk_object_name *object = find_object_name(group, WPK_NAMES_BUFFER, names[i]);
+        if (!object)
+            continue;
+        // Only the caller's active bindings are detached. Other VAOs and
+        // group members retain the actual now-unnamed object identity.
+        if (state->array_object == object) {
+            state->array_object = NULL;
+            g_array_buffer = 0;
+            state->array_serial = 0;
+            release_object_locked(group, object);
+        }
+        struct wpk_vertex_array *vao = state->current_vertex_array;
+        if (vao->element_object == object) {
+            vao->element_object = NULL;
+            vao->element_buffer = 0;
+            vao->element_serial = 0;
+            release_object_locked(group, object);
+        }
+        for (unsigned a = 0; a < WPK_GL_MAX_ATTRIBS; a++)
+            if (vao->attribs[a].buffer_object == object) {
+                vao->attribs[a].buffer_object = NULL;
+                vao->attribs[a].buffer_serial = 0;
+                vao->attribs[a].buffer_name = 0;
+                vao->attribs[a].client = vao->name == 0;
+                release_object_locked(group, object);
+            }
+        object->named = 0;
+        release_object_locked(group, object);
+    }
+    pthread_mutex_unlock(&group->mutex);
     emit_name_array(OP_DELETE_BUFFERS, n, names);
 }
 
@@ -2315,17 +2552,29 @@ void glUniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose, cons
 
 void glGenRenderbuffers(GLsizei n, GLuint *out) {
     if (!_wpk_gl_current_encoder()) return;
-    if (n <= 0 || !out) return;
-    for (GLsizei i = 0; i < n; i++) out[i] = g_next_renderbuffer++;
-    emit_name_array(OP_GEN_RENDERBUFFERS, n, out);
+    uint32_t error =
+        _wpk_gl_reserve_names(_wpk_gl_current_encoder(), WPK_NAMES_RENDERBUFFER, n, out);
+    if (error) {
+        if (_wpk_gl_client_error == GL_NO_ERROR)
+            _wpk_gl_client_error = error;
+        return;
+    }
+    if (n > 0 && out)
+        emit_name_array(OP_GEN_RENDERBUFFERS, n, out);
 }
 
 void glDeleteRenderbuffers(GLsizei n, const GLuint *names) {
     if (!_wpk_gl_current_encoder()) return;
-    if (n <= 0 || !names) return;
+    if (n < 0) {
+        raise_client_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (n == 0 || !names)
+        return;
     for (GLsizei i = 0; i < n; i++) {
         delete_attached_image_name(GL_RENDERBUFFER, names[i]);
         alias_drop(&g_renderbuffer_aliases, names[i]);
+        unname_object(_wpk_gl_current_encoder()->objects, WPK_NAMES_RENDERBUFFER, names[i]);
         if (g_bound_renderbuffer == names[i]) g_bound_renderbuffer = 0;
     }
     emit_name_array(OP_DELETE_RENDERBUFFERS, n, names);
@@ -2333,6 +2582,14 @@ void glDeleteRenderbuffers(GLsizei n, const GLuint *names) {
 
 void glBindRenderbuffer(GLenum target, GLuint rb) {
     if (!_wpk_gl_current_encoder()) return;
+    if (target != GL_RENDERBUFFER) {
+        raise_client_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (!reserve_implicit_name(_wpk_gl_current_encoder()->objects, WPK_NAMES_RENDERBUFFER, rb)) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return;
+    }
     if (target == GL_RENDERBUFFER) g_bound_renderbuffer = rb;
     EMIT_BEGIN(OP_BIND_RENDERBUFFER, 8)
     w_u32(&_c, (uint32_t)target);
@@ -2546,7 +2803,9 @@ void glDeleteVertexArrays(GLsizei n, const GLuint *names) {
         if (!*slot) continue;
         struct wpk_vertex_array *entry = *slot;
         if (state->current_vertex_array == entry) state->current_vertex_array = &state->default_vertex_array;
-        *slot = entry->next; free(entry);
+        *slot = entry->next;
+        release_vertex_array_objects(state, entry);
+        free(entry);
     }
     emit_name_array(OP_DELETE_VERTEX_ARRAYS, n, names);
 }

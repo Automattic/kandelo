@@ -564,6 +564,9 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         return EGL_NO_CONTEXT;
     }
     if (share != EGL_NO_CONTEXT) {
+        /* Shared names alone do not preserve image aliases or an unnamed
+         * buffer across temporary rebinding. Complete those object identities
+         * before granting public group membership. */
         g_last_error = find_context(generation, share) ? EGL_BAD_MATCH : EGL_BAD_CONTEXT;
         return EGL_NO_CONTEXT;
     }

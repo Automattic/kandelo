@@ -167,3 +167,12 @@ source-session identities. It checks common texture storage, independent
 context containers, source/peer destruction, deleted-name retention and
 reuse with actual pixels in all three engines. It uses a synthetic kernel
 scratch adapter and does not execute Rust marshalling or public C sharing.
+
+The C name-owner cases exercise the private shared-encoder constructor and
+atomic namespace allocator directly. Their two-thread start barrier checks
+common reservations without sharing encoder execution state; constructor
+and batch allocation failures preserve the owner/output, and inactive-VAO
+buffer cycles verify bounded tracked allocation lifetime. These are private
+metadata tests, not public EGL sharing. The implicit/generated texture
+regression also replays actual C calls and bytes into both renderer paths,
+reads red/green/red storage in all three engines and checks native cleanup.

@@ -58,7 +58,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
-| G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reserved guest buffer names and host shared-object maps; core object predicates implemented, full query/error coverage still open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
+| G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reference-counted C name owner reserves buffer/texture/renderbuffer names, including implicit binds; shared shader/program allocation is serialized. Public C groups and full query/error coverage remain open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Multiple public contexts have focused native/source-browser coverage; full rollback, hints and CTS remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection, acknowledged large-source uploads and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
@@ -2171,3 +2171,80 @@ inventory remain ordinary required work. Normal SDK/program/package/image
 rebuilds, guest CTS, cage/sway, full browser-memory and POSIX/conformance
 remain deferred until implementation is ready. The full goal remains
 active and draft PR #1574 tracks this construction prerequisite.
+
+
+## Reference-counted C name ownership (2026-10-24)
+
+C encoders now retain an independent name-owner record. That owner contains
+buffer/texture/renderbuffer reservations and the common shader/program
+allocator, protected by a metadata mutex. A private encoder constructor can
+retain an existing owner; it does not copy counters or share the encoder's
+command cursor, error, bindings, arrays or container state. Public EGL
+sharing remains rejected because image/storage references are not yet
+shared safely. This is the C ownership prerequisite, not completion of the
+public shared-context API.
+
+Buffer records now carry explicit references from the namespace, array
+binding, every vertex-array element binding and every captured attribute.
+Deletion removes the public name and the caller's active references;
+unbound VAOs retain the actual old record after numeric name reuse.
+Replacing bindings, deleting VAOs and final encoder destruction release
+those references. Only the last encoder releases the common namespace.
+Group/record reference overflow and constructor failure are checked before
+publication. Metadata locks are released before command emission or device
+calls, so a paused operation cannot hold them across another thread's EGL
+termination or generation replacement.
+
+Name generation reserves an entire batch before publishing output or
+advancing counters. Failed allocation frees its candidate reservations and
+leaves caller output and allocator state unchanged. Implicit texture and
+renderbuffer binding also reserves the chosen name; a later `GenTextures`
+or `GenRenderbuffers` skips it. This fixes the former collision between
+binding texture 1 and generating a texture. Negative generation/deletion
+counts for those families now report INVALID_VALUE. The naming rules are
+specified by [GLES 2.0 sections 2.9, 3.7.13 and 4.4.2](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf).
+
+Focused evidence:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Actual native EGL/GLES C with device double and UBSan | 81 passed, including six new name-owner/storage cases | `.context/graphics-c-groups-final-c-wasm.log` |
+| Private wasm32 EGL/GLES compile/link and entrypoint audit | Passed; all 150 guards and 142/142 GLES2 core symbols/resolvers | `.context/graphics-c-groups-final-c-wasm.log` |
+| Actual source WebGL in Chromium/Firefox/WebKit | 129 passed, no skips | `.context/graphics-c-groups-browser.log` |
+
+The implicit-name regression fails against unchanged `5985c3c727` C:
+`.context/graphics-c-groups-baseline-native.log`. The first 75 prior cases
+passed with the new ownership model before the new cases were added:
+`.context/graphics-c-groups-first-native.log`. The private-owner tests
+create shared and independent encoder owners, keep reservations after
+source destruction, start two allocation threads together and verify 256
+distinct reservations, inject constructor/mid-batch failure and verify full
+rollback. They test internal C ownership, not EGL-created shared contexts.
+A 100-cycle inactive-VAO/delete/reuse case returns to its original tracked
+allocation count after each cycle and to zero after complete teardown.
+The allocation registry itself is now mutex protected for these concurrent
+native checks.
+
+Six additional browser executions replay actual C control calls and command
+bytes through native worker imports and main forwarding. The C case binds
+implicit texture 1, generates another name, allocates both, clears them red
+and green through one local FBO, and re-reads the first texture as red.
+Final native texture/FBO/renderbuffer retirement passes. The existing
+synthetic scratch adapter still supplies kernel dispatch; no normal guest
+marshalling or CTS is executed by this replay.
+
+Host/kernel production and wire layouts did not change. The 381 host cases,
+Node/browser declarations, 46 GLIO plus shared-layout/ioctl checks, twelve
+memory-boundary negatives and ABI/resolver checks at `5985c3c727` remain
+historical evidence for those unchanged sources, not newly repeated gates.
+ABI 58 / operation version 5 stay unchanged. Normal artifacts and the broad
+integration/conformance phase remain deferred as requested.
+
+Required C work remains: image alias/object records and peer binding/FBO
+references; shared program/reflection/link metadata; and restoration by
+retained buffer identity when client-array staging temporarily rebinds an
+array buffer after a peer deleted or reused its numeric name. Saving only
+that numeric name would select a different object. The public sharing
+rejection remains until these models are complete. All other open EGL,
+GLES, GBM/KMS, fork authority and full-validation requirements remain part
+of the active goal; ordinary gaps are not platform boundaries.

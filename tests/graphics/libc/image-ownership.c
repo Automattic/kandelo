@@ -34,6 +34,7 @@ static void *latest_allocation;
 static int fail_calloc, fail_malloc;
 static int calloc_before_failure = -1;
 static struct { void *pointer; size_t size; } allocations[1024];
+static pthread_mutex_t allocation_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void *record_allocation(void *pointer, size_t size) {
     if (!pointer) return pointer;
     for (unsigned i=0; i<1024; i++) if (!allocations[i].pointer) {
@@ -43,21 +44,52 @@ static void *record_allocation(void *pointer, size_t size) {
 }
 static void *allocation_for(uint32_t pointer, size_t size) {
     void *found = NULL;
+    pthread_mutex_lock(&allocation_mutex);
     for (unsigned i=0; i<1024; i++) if (allocations[i].pointer && (uint32_t)(uintptr_t)allocations[i].pointer == pointer) {
         assert(!found && size <= allocations[i].size); found = allocations[i].pointer;
     }
-    assert(found); return found;
+    assert(found);
+    pthread_mutex_unlock(&allocation_mutex);
+    return found;
 }
 void *graphics_calloc(size_t count, size_t size) {
-    if (fail_calloc || calloc_before_failure == 0) { errno = ENOMEM; return NULL; }
-    if (calloc_before_failure > 0) calloc_before_failure--;
-    return record_allocation(calloc(count, size),count*size);
+    pthread_mutex_lock(&allocation_mutex);
+    if (fail_calloc || calloc_before_failure == 0) {
+        pthread_mutex_unlock(&allocation_mutex);
+        errno = ENOMEM;
+        return NULL;
+    }
+    if (calloc_before_failure > 0)
+        calloc_before_failure--;
+    void *pointer = record_allocation(calloc(count, size), count * size);
+    pthread_mutex_unlock(&allocation_mutex);
+    return pointer;
 }
-void *graphics_malloc(size_t size) { if (fail_malloc) return NULL; return latest_allocation = record_allocation(malloc(size),size); }
+void *graphics_malloc(size_t size) {
+    pthread_mutex_lock(&allocation_mutex);
+    void *pointer = fail_malloc ? NULL : record_allocation(malloc(size), size);
+    if (pointer)
+        latest_allocation = pointer;
+    pthread_mutex_unlock(&allocation_mutex);
+    return pointer;
+}
 void graphics_free(void *ptr) {
-    if (latest_allocation == ptr) latest_allocation = NULL;
-    for (unsigned i=0; i<1024; i++) if (allocations[i].pointer == ptr) allocations[i].pointer = NULL;
+    pthread_mutex_lock(&allocation_mutex);
+    if (latest_allocation == ptr)
+        latest_allocation = NULL;
+    for (unsigned i = 0; i < 1024; i++)
+        if (allocations[i].pointer == ptr)
+            allocations[i].pointer = NULL;
     free(ptr);
+    pthread_mutex_unlock(&allocation_mutex);
+}
+static unsigned allocation_count(void) {
+    pthread_mutex_lock(&allocation_mutex);
+    unsigned count = 0;
+    for (unsigned i = 0; i < 1024; i++)
+        count += allocations[i].pointer != NULL;
+    pthread_mutex_unlock(&allocation_mutex);
+    return count;
 }
 
 /* A small native-window identity exercises the real EGL resize hook. */
@@ -729,6 +761,32 @@ static void *hold_independent_records(void *data) {
     return NULL;
 }
 
+#ifdef WPK_GL_OBJECT_GROUPS
+struct group_reservation_start {
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    unsigned ready;
+    int run;
+};
+struct group_reservation_thread {
+    struct wpk_gles_context *state;
+    struct group_reservation_start *start;
+    uint32_t names[128];
+};
+static void *reserve_group_names(void *data) {
+    struct group_reservation_thread *input = data;
+    pthread_mutex_lock(&input->start->mutex);
+    input->start->ready++;
+    pthread_cond_broadcast(&input->start->condition);
+    while (!input->start->run)
+        pthread_cond_wait(&input->start->condition, &input->start->mutex);
+    pthread_mutex_unlock(&input->start->mutex);
+    for (unsigned i = 0; i < 32; i++)
+        assert(_wpk_gl_reserve_names(input->state, 0, 4, &input->names[i * 4]) == GL_NO_ERROR);
+    return NULL;
+}
+#endif
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -1307,6 +1365,199 @@ int main(int argc, char **argv) {
         assert(row_length == 11 && glGetError() == GL_NO_ERROR && clear_commands == 1);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-transfer"); return 0;
+    }
+    if (!strcmp(argv[1], "names-render")) {
+        GLuint implicit = 1, generated = 0, framebuffer;
+        glBindTexture(GL_TEXTURE_2D, implicit);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glGenTextures(1, &generated);
+        assert(generated == 2);
+        glBindTexture(GL_TEXTURE_2D, generated);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, implicit, 0);
+        glClearColor(1, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, generated, 0);
+        glClearColor(0, 1, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, implicit, 0);
+        glClear(0);
+        glFlush();
+        glDeleteTextures(1, &implicit);
+        glDeleteTextures(1, &generated);
+        glDeleteFramebuffers(1, &framebuffer);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS names-render");
+        return 0;
+    }
+    if (!strcmp(argv[1], "names-implicit")) {
+        GLuint textures[2], renderbuffers[2];
+        glBindTexture(GL_TEXTURE_2D, 1);
+        glGenTextures(2, textures);
+        assert(textures[0] == 2 && textures[1] == 3);
+        glBindRenderbuffer(GL_RENDERBUFFER, 1);
+        glGenRenderbuffers(2, renderbuffers);
+        assert(renderbuffers[0] == 2 && renderbuffers[1] == 3);
+        glDeleteTextures(2, textures);
+        glDeleteRenderbuffers(2, renderbuffers);
+        GLuint first = 1;
+        glDeleteTextures(1, &first);
+        glDeleteRenderbuffers(1, &first);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS names-implicit");
+        return 0;
+    }
+#ifdef WPK_GL_OBJECT_GROUPS
+    if (!strcmp(argv[1], "group-metadata")) {
+        struct wpk_gles_context *source = _wpk_gl_current_encoder(),
+                                *peer = _wpk_gl_create_shared_encoder(source);
+        struct wpk_gles_context *independent = _wpk_gl_create_encoder();
+        assert(peer && independent);
+        GLuint a, b, c;
+        glGenBuffers(1, &a);
+        assert(a == 1);
+        assert(_wpk_gl_reserve_names(peer, 0, 1, &b) == GL_NO_ERROR && b == 2);
+        assert(_wpk_gl_reserve_names(independent, 0, 1, &c) == GL_NO_ERROR && c == 1);
+        glBindBuffer(GL_ARRAY_BUFFER, 9);
+        uint32_t batch[7];
+        assert(_wpk_gl_reserve_names(peer, 0, 7, batch) == GL_NO_ERROR);
+        const uint32_t expected[7] = {3, 4, 5, 6, 7, 8, 10};
+        assert(!memcmp(batch, expected, sizeof batch));
+        glBindTexture(GL_TEXTURE_2D, 1);
+        glBindRenderbuffer(GL_RENDERBUFFER, 1);
+        for (unsigned kind = 1; kind <= 2; kind++)
+            assert(_wpk_gl_reserve_names(peer, kind, 1, &b) == GL_NO_ERROR && b == 2);
+        uint32_t combined[2];
+        assert(_wpk_gl_reserve_names(source, 3, 2, combined) == GL_NO_ERROR && combined[0] == 1 &&
+               combined[1] == 2);
+        assert(_wpk_gl_reserve_names(peer, 3, 1, &b) == GL_NO_ERROR && b == 3);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread());
+        assert(_wpk_gl_reserve_names(peer, 0, 1, &b) == GL_NO_ERROR && b == 11);
+        _wpk_gl_destroy_encoder(independent);
+        _wpk_gl_destroy_encoder(peer);
+        assert(eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS group-metadata");
+        return 0;
+    }
+    if (!strcmp(argv[1], "group-parallel")) {
+        struct wpk_gles_context *source = _wpk_gl_current_encoder(),
+                                *peer = _wpk_gl_create_shared_encoder(source);
+        assert(peer);
+        struct group_reservation_start start = {.mutex = PTHREAD_MUTEX_INITIALIZER,
+                                                .condition = PTHREAD_COND_INITIALIZER};
+        struct group_reservation_thread input[2] = {{.state = source, .start = &start},
+                                                    {.state = peer, .start = &start}};
+        pthread_t threads[2];
+        for (unsigned i = 0; i < 2; i++)
+            assert(!pthread_create(&threads[i], NULL, reserve_group_names, &input[i]));
+        pthread_mutex_lock(&start.mutex);
+        while (start.ready != 2)
+            pthread_cond_wait(&start.condition, &start.mutex);
+        start.run = 1;
+        pthread_cond_broadcast(&start.condition);
+        pthread_mutex_unlock(&start.mutex);
+        for (unsigned i = 0; i < 2; i++)
+            assert(!pthread_join(threads[i], NULL));
+        assert(!pthread_cond_destroy(&start.condition) && !pthread_mutex_destroy(&start.mutex));
+        uint8_t seen[257] = {0};
+        for (unsigned i = 0; i < 2; i++)
+            for (unsigned j = 0; j < 128; j++) {
+                uint32_t name = input[i].names[j];
+                assert(name && name <= 256 && !seen[name]);
+                seen[name] = 1;
+            }
+        GLuint next;
+        glGenBuffers(1, &next);
+        assert(next == 257);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread());
+        _wpk_gl_destroy_encoder(peer);
+        assert(eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS group-parallel");
+        return 0;
+    }
+    if (!strcmp(argv[1], "names-rollback")) {
+        struct wpk_gles_context *source = _wpk_gl_current_encoder();
+        const unsigned before = allocation_count();
+        fail_calloc = 1;
+        assert(!_wpk_gl_create_shared_encoder(source));
+        fail_calloc = 0;
+        calloc_before_failure = 1;
+        assert(!_wpk_gl_create_encoder());
+        calloc_before_failure = -1;
+        assert(allocation_count() == before);
+        glBindTexture(0xdead, 1);
+        assert(glGetError() == GL_INVALID_ENUM && allocation_count() == before);
+        glBindRenderbuffer(GL_TEXTURE_2D, 1);
+        assert(glGetError() == GL_INVALID_ENUM && allocation_count() == before);
+        fail_calloc = 1;
+        glBindTexture(GL_TEXTURE_2D, 1);
+        fail_calloc = 0;
+        assert(glGetError() == GL_OUT_OF_MEMORY && allocation_count() == before);
+        fail_calloc = 1;
+        glBindRenderbuffer(GL_RENDERBUFFER, 1);
+        fail_calloc = 0;
+        assert(glGetError() == GL_OUT_OF_MEMORY && allocation_count() == before);
+        for (unsigned kind = 0; kind < 3; kind++) {
+            GLuint output[2] = {97, 98};
+            calloc_before_failure = 1;
+            assert(_wpk_gl_reserve_names(source, kind, 2, output) == GL_OUT_OF_MEMORY);
+            calloc_before_failure = -1;
+            assert(output[0] == 97 && output[1] == 98 && allocation_count() == before);
+            assert(_wpk_gl_reserve_names(source, kind, 2, output) == GL_NO_ERROR &&
+                   output[0] == 1 && output[1] == 2);
+            if (kind == 0)
+                glDeleteBuffers(2, output);
+            else if (kind == 1)
+                glDeleteTextures(2, output);
+            else
+                glDeleteRenderbuffers(2, output);
+            assert(allocation_count() == before);
+        }
+        uint32_t unchanged = 99;
+        assert(_wpk_gl_reserve_names(source, 4, 1, &unchanged) == GL_INVALID_ENUM &&
+               unchanged == 99);
+        assert(_wpk_gl_reserve_names(source, 0, -1, &unchanged) == GL_INVALID_VALUE &&
+               unchanged == 99);
+        glGenTextures(-1, &unchanged);
+        assert(glGetError() == GL_INVALID_VALUE && unchanged == 99);
+        glGenRenderbuffers(-1, &unchanged);
+        assert(glGetError() == GL_INVALID_VALUE && unchanged == 99);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS names-rollback");
+        return 0;
+    }
+#endif
+    if (!strcmp(argv[1], "names-lifetime")) {
+        const unsigned baseline = allocation_count();
+        for (unsigned i = 0; i < 100; i++) {
+            GLuint buffer = 17, vao;
+            glGenVertexArrays(1, &vao);
+            glBindVertexArray(vao);
+            glBindBuffer(GL_ARRAY_BUFFER, buffer);
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffer);
+            glBindVertexArray(0);
+            glDeleteBuffers(1, &buffer);
+            glBindBuffer(GL_ARRAY_BUFFER, buffer);
+            glDeleteBuffers(1, &buffer);
+            glBindVertexArray(vao);
+            GLint retained = 0;
+            glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &retained);
+            assert(retained == 17);
+            glDeleteVertexArrays(1, &vao);
+            glFlush();
+            assert(allocation_count() == baseline);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS names-lifetime");
+        return 0;
     }
     if (!strcmp(argv[1], "records-transfer-existing")) {
         EGLContext second = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
