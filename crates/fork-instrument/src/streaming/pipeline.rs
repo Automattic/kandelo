@@ -6,15 +6,22 @@ use anyhow::{Result, ensure};
 use std::{collections::BTreeSet, io::Write};
 use wasm_encoder::ExportKind;
 
+mod abi_marker;
 mod catalogs;
 mod emit;
+mod entries;
+mod input;
 mod limits;
 mod planning;
 mod schedule;
+mod sinks;
 mod state;
+use abi_marker::AbiMarker;
 use catalogs::Catalogs;
+use entries::EntryBoundaries;
 pub use limits::PipelineLimits;
 use schedule::Cursor;
+use sinks::SinkEntry;
 use state::ModuleState;
 
 /// All function and table keys refer to the exact original scan.
@@ -22,6 +29,8 @@ use state::ModuleState;
 pub struct PipelineOptions {
     pub shared_codecs: bool,
     pub boundaries: BTreeSet<u32>,
+    /// Check an existing constant ABI export or add the current one.
+    pub side_module: bool,
     /// An explicit process-memory import for a memoryless source. Source
     /// memory zero remains authoritative when the source already has memory.
     pub staging_memory: Option<wasm_encoder::MemoryType>,
@@ -39,6 +48,9 @@ struct Components<'a> {
     runtime: NativeRuntime,
     loader: NativeLegacyLoader,
     loader_activation: Option<NativeLoaderActivation>,
+    entries: EntryBoundaries,
+    abi_marker: AbiMarker,
+    sinks: SinkEntry,
     gc_plan: NativeGcPlan,
     constructors: FrozenGcConstructors,
     gc: NativeGcCodec,
@@ -138,7 +150,7 @@ impl<'a> NativePipeline<'a> {
 
 impl Components<'_> {
     fn descriptors(&self) -> Result<Vec<(&'static str, Vec<u8>)>> {
-        Ok(vec![
+        let mut descriptors = vec![
             (
                 crate::module_gc_codec::FORMAT_SECTION,
                 self.gc_plan.descriptor()?,
@@ -163,6 +175,10 @@ impl Components<'_> {
                 crate::instrument::RESUME_CATALOG_SECTION,
                 self.catalogs.resume.descriptor().to_vec(),
             ),
-        ])
+        ];
+        if let Some(data) = self.sinks.descriptor() {
+            descriptors.push((crate::instrument::BOUNDARIES_SECTION, data.to_vec()));
+        }
+        Ok(descriptors)
     }
 }

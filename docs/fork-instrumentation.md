@@ -698,12 +698,32 @@ once and writes through the code/data spools. Catalog and function limits
 remain explicit; output-writer failures propagate, and the same frozen plan
 can be emitted again. Descriptor budgets are checked before writing a header.
 
-The shared full-provider replay fixtures now use this library assembly. Their
-test helper adds diagnostic exports only; it no longer owns the activation
-schedule or source rewriting. `NativePipeline` deliberately emits no fork
-capability certificate. Production entry/sink policy orchestration, artifact
-admission, feature declarations and atomic file publication remain separate
-integration work. The command-line instrumenter still uses unchanged Walrus.
+The experimental `native::analyze` now applies `Options` to the original scan.
+It seeds every matching fork import, every side-module function import, raw
+loader imports and conservative dynamic dispatch. It rejects previous private
+runtime imports, exports and metadata. Valid compiler facts use private SQLite
+relations with the requested effective-type policy; unreadable facts fall back
+to the bounded native baseline. Dlopen facts preserve the explicit side-module
+contract, including automatic full-entry planning for returning function
+pointers. No facts database survives into helper or source emission.
+
+The frozen assembly now includes host `_start` and thread resume boundaries,
+side-module constant ABI markers and sink replay selectors. Thread boundaries
+guard process tables before normal dispatch or private replay; the public i32
+table index is zero-extended for table64. Sink descriptors group equal result
+signatures and preserve dense frame ordinals. Unexpected sink returns go back
+to the host's invariant check, while genuine guest traps remain traps.
+
+The shared full-provider replay fixtures now use this policy and assembly.
+Their helper adds diagnostic exports without owning the activation schedule
+or source rewriting. `NativePipeline` deliberately emits no fork capability
+certificate. Feature declarations, bounded immutable input, atomic output,
+CLI/backend selection and complete host admission remain integration work.
+The command-line instrumenter still uses unchanged Walrus. Native entry tests
+execute normal, fresh and failed-capture replay across both pointer and table
+widths. The unchanged Walrus thread wrapper fails validation on table64 and
+does not provide the native wrapper's table-generation guard; its other replay
+assertions run unchanged on table32.
 
 A shared Node fixture now composes the real native GC and exact-tag exception
 providers, activation frame vectors, modern reference catches, globals,

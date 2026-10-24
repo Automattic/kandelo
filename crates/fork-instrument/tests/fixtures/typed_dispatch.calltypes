@@ -1,0 +1,15 @@
+#kandelo-calltypes	5
+M	/src/fixture.c
+F	forker	1	E	1	forker
+T	forker	_ZTSFlP3fooE
+C	forker	0	kernel_fork
+D	forker	0	1
+F	other	1	E	1	other
+T	other	_ZTSFiiE
+D	other	0	0
+F	main	1	E	0	main
+S	main	0	i32->i32	icall	_ZTSFiiE
+D	main	1	1
+F	_start	0	E	0	_start
+C	_start	0	main
+D	_start	0	1

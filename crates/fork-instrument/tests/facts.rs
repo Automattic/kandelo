@@ -11,36 +11,9 @@ use fork_instrument::{Options, PlanSource, instrument, sink_report};
 /// `forker` (a fork wrapper whose child returns) does not. Matching by Wasm
 /// signature alone (the index comes from memory, so no refinement applies),
 /// `main` may reach fork; with the facts it cannot.
-const TYPED_DISPATCH: &str = r#"
-(module
-  (type $t (func (param i32) (result i32)))
-  (import "kernel" "kernel_fork" (func $kernel_fork (param i32) (result i32)))
-  (memory 1)
-  (table 2 funcref)
-  (elem (i32.const 0) $forker $other)
-  (func $forker (type $t) (call $kernel_fork (i32.const 0)))
-  (func $other (type $t) (local.get 0))
-  (func $main (param i32) (result i32)
-    (call_indirect (type $t) (local.get 0) (local.get 0)))
-  (func $_start (export "_start") (drop (call $main (i32.load (i32.const 0))))))
-"#;
+const TYPED_DISPATCH: &str = include_str!("fixtures/typed_dispatch.wat");
 
-const FACTS: &str = "#kandelo-calltypes\t5
-M\t/src/fixture.c
-F\tforker\t1\tE\t1\tforker
-T\tforker\t_ZTSFlP3fooE
-C\tforker\t0\tkernel_fork
-D\tforker\t0\t1
-F\tother\t1\tE\t1\tother
-T\tother\t_ZTSFiiE
-D\tother\t0\t0
-F\tmain\t1\tE\t0\tmain
-S\tmain\t0\ti32->i32\ticall\t_ZTSFiiE
-D\tmain\t1\t1
-F\t_start\t0\tE\t0\t_start
-C\t_start\t0\tmain
-D\t_start\t0\t1
-";
+const FACTS: &str = include_str!("fixtures/typed_dispatch.calltypes");
 
 fn custom_section(out: &mut Vec<u8>, name: &str, data: &[u8]) {
     fn leb(out: &mut Vec<u8>, mut v: usize) {

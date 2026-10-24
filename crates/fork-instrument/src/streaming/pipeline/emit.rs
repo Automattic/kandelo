@@ -119,6 +119,18 @@ impl FunctionTransform for Emitter<'_, '_> {
                 activation.emit_helper(ordinal, limit)
             );
         }
+        stage!(
+            components.abi_marker.declarations(),
+            components.abi_marker.emit_helper(ordinal, limit)
+        );
+        stage!(
+            components.entries.declarations(),
+            components.entries.emit_helper(ordinal, limit)
+        );
+        stage!(
+            components.sinks.declarations(),
+            components.sinks.emit_helper(ordinal, limit)
+        );
         components.catalogs.roots.emit_helper(ordinal, limit)
     }
 }

@@ -3,27 +3,22 @@ use fork_instrument::streaming::*;
 use wasm_encoder::ExportKind;
 
 pub fn emit(input: &[u8], shared_codecs: bool) -> Vec<u8> {
-    let scan = scan(input).unwrap();
-    let mut loader = false;
-    let seeds = scan
-        .functions
-        .iter()
-        .enumerate()
-        .filter_map(|(index, source)| {
-            let (module, name) = source.import.as_ref()?;
-            if module == "env" && name == "__wasm_dlopen" {
-                loader = true;
-            }
-            ((module == "h" && name == "fork") || (module == "env" && name == "__wasm_dlopen"))
-                .then_some(u32::try_from(index).unwrap())
-        })
-        .collect::<Vec<_>>();
-    let reaching = scan.reaching_from_seeds(seeds, loader).unwrap();
+    let analysis = fork_instrument::native::analyze(
+        input,
+        &fork_instrument::Options {
+            entry_import: "h.fork".into(),
+            ..Default::default()
+        },
+        Default::default(),
+    )
+    .unwrap();
     let mut plan = NativePipeline::plan(
-        scan,
-        reaching,
+        analysis.scan,
+        analysis.reaching,
         PipelineOptions {
             shared_codecs,
+            boundaries: analysis.boundaries,
+            side_module: analysis.decision.side_module,
             ..Default::default()
         },
         Default::default(),
