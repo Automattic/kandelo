@@ -130,10 +130,11 @@ enum InodeKind {
 /// behalf and become something the kernel addresses in the artifact it already
 /// parsed.
 ///
-/// `Host` is what remains: bytes the image genuinely does not carry. That is a
-/// URL-backed lazy file — the image records only its real size and address,
-/// and the host owns the transport that fetches it — plus a base tree placed by
-/// [`load_manifest`] (used by tests), whose files the kernel never saw.
+/// `Host` is what remains: bytes the image genuinely does not carry. Today that
+/// is a URL-backed lazy file — the image records only its real size, and the
+/// host owns the transport that fetches it — plus a base file placed by
+/// [`insert_base_file`] with host-held bytes. (The RTFS manifest loader that
+/// once placed whole host-walked trees this way was removed on 2026-10-02.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaseSource {
     /// The bytes are in the `/` image, at KIFS inode `blob_id`. Served by the
@@ -981,7 +982,7 @@ pub fn is_enabled() -> bool {
 /// exec exactly as it does on the host `/` mount. The host publishes the mount's
 /// real flag at overlay-configure time via `set_nosuid`; `statfs` then reports
 /// `ST_NOSUID` so the exec-target set-ID proposal drops the bits on a `nosuid`
-/// mount and honors them otherwise. Cleared by `reset()`/`load_manifest`.
+/// mount and honors them otherwise. Cleared by `reset()`.
 static ROOTFS_NOSUID: AtomicBool = AtomicBool::new(false);
 
 /// Publish whether the overlay's `/` mount is `nosuid`. Returns the previous
@@ -1504,86 +1505,6 @@ pub fn archive_size(archive_id: u32) -> Option<u64> {
     ROOTFS.with(|state| state.archives.get(&archive_id).map(|entry| entry.size))
 }
 
-// ---------------------------------------------------------------------------
-// Manifest ingestion (RTFS).
-//
-// An alternative to `load_image`: a caller hands the kernel a whole `/` tree as
-// one compact binary buffer, which this module parses into the base layer. The
-// production boot path does not use it (the kernel parses the image itself);
-// its callers are tests, which use it to place small trees cheaply. The wire
-// format is a purpose-built fixed-field record stream we own — deliberately NOT
-// a general-purpose archive parser. Little-endian.
-//
-//   header:  magic u32 = "RTFS" | version u32 = 2 or 3 | entry_count u32
-//   entry:   kind u8 (1=dir, 2=file, 3=symlink, 4=lazy file [v3 only])
-//            mode u32 | uid u32 | gid u32 | ino u64 | blob_id u64 | size u64
-//            mtime_sec u64 | mtime_nsec u32   (real per-file times from the image)
-//            path_len u32 | path[path_len]
-//            target_len u32 | target[target_len]   (target_len=0 unless symlink)
-//            -- kind=4 (lazy file) only, appended after target --
-//            archive_id u32 | source_path_len u32 | source_path[source_path_len]
-//
-// Every entry carries all fields (zero when not applicable) so the parser stays
-// uniform and bounds-checkable. Entries are parent-first (the producer walks
-// the tree pre-order), so each insert's parent already exists.
-//
-// v3 adds one trailing section after the entry stream, present iff version>=3
-// (lazy archives):
-//
-//   archive_table: archive_count u32
-//   archive:       archive_id u32 | archive_size u64
-//
-// The archive table records the total byte size of each lazy archive referenced
-// by a kind=4 entry's `archive_id`. The table carries no address or digest, so
-// a member placed this way cannot be fetched (a read is a truthful `EIO`).
-// ---------------------------------------------------------------------------
-
-/// Manifest header magic ("RTFS", little-endian).
-const MANIFEST_MAGIC: u32 = 0x5346_5452;
-const MANIFEST_VERSION: u32 = 2;
-/// RTFS v3: adds `KIND_LAZY_FILE` (4) entries and a trailing archive table.
-const MANIFEST_VERSION_V3: u32 = 3;
-/// Defensive cap on a single path/target length (bytes).
-const MANIFEST_NAME_MAX: usize = 65_536;
-
-fn rd_u8(buf: &[u8], pos: &mut usize) -> Result<u8, Errno> {
-    let v = *buf.get(*pos).ok_or(Errno::EINVAL)?;
-    *pos += 1;
-    Ok(v)
-}
-
-fn rd_u32(buf: &[u8], pos: &mut usize) -> Result<u32, Errno> {
-    let end = pos.checked_add(4).ok_or(Errno::EINVAL)?;
-    let slice = buf.get(*pos..end).ok_or(Errno::EINVAL)?;
-    let mut b = [0u8; 4];
-    b.copy_from_slice(slice);
-    *pos = end;
-    Ok(u32::from_le_bytes(b))
-}
-
-fn rd_u64(buf: &[u8], pos: &mut usize) -> Result<u64, Errno> {
-    let end = pos.checked_add(8).ok_or(Errno::EINVAL)?;
-    let slice = buf.get(*pos..end).ok_or(Errno::EINVAL)?;
-    let mut b = [0u8; 8];
-    b.copy_from_slice(slice);
-    *pos = end;
-    Ok(u64::from_le_bytes(b))
-}
-
-fn rd_bytes<'a>(buf: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8], Errno> {
-    if len > MANIFEST_NAME_MAX {
-        return Err(Errno::EINVAL);
-    }
-    let end = pos.checked_add(len).ok_or(Errno::EINVAL)?;
-    let slice = buf.get(*pos..end).ok_or(Errno::EINVAL)?;
-    *pos = end;
-    Ok(slice)
-}
-
-/// Replace the base layer from an RTFS manifest buffer. Clears any prior state,
-/// then inserts every entry parent-first. Returns the number of entries loaded.
-/// A malformed buffer or a rejected insert yields `EINVAL` with the store reset
-/// to empty (a partial tree is never left behind).
 /// Mount points of the kernel's own mounts. Images are not required to ship
 /// them: after loading an image the kernel creates them in the overlay (root
 /// owned, 0755), the way an init system creates its runtime mount points at
@@ -1612,101 +1533,6 @@ fn ensure_directory(path: &[u8]) -> Result<(), Errno> {
         Err(Errno::EEXIST) => Err(Errno::ENOTDIR),
         Err(error) => Err(error),
     }
-}
-
-pub fn load_manifest(buf: &[u8]) -> Result<usize, Errno> {
-    reset();
-    let result = load_manifest_inner(buf).and_then(|count| {
-        ensure_kernel_mount_points()?;
-        Ok(count)
-    });
-    if result.is_err() {
-        reset();
-    }
-    result
-}
-
-fn load_manifest_inner(buf: &[u8]) -> Result<usize, Errno> {
-    let mut pos = 0usize;
-    if rd_u32(buf, &mut pos)? != MANIFEST_MAGIC {
-        return Err(Errno::EINVAL);
-    }
-    let version = rd_u32(buf, &mut pos)?;
-    if version != MANIFEST_VERSION && version != MANIFEST_VERSION_V3 {
-        return Err(Errno::EINVAL);
-    }
-    let count = rd_u32(buf, &mut pos)? as usize;
-    for _ in 0..count {
-        let kind = rd_u8(buf, &mut pos)?;
-        let mode = rd_u32(buf, &mut pos)?;
-        let uid = rd_u32(buf, &mut pos)?;
-        let gid = rd_u32(buf, &mut pos)?;
-        let ino = rd_u64(buf, &mut pos)?;
-        let blob_id = rd_u64(buf, &mut pos)?;
-        let size = rd_u64(buf, &mut pos)?;
-        let mtime_sec = rd_u64(buf, &mut pos)?;
-        let mtime_nsec = rd_u32(buf, &mut pos)?;
-        let path_len = rd_u32(buf, &mut pos)? as usize;
-        let path = rd_bytes(buf, &mut pos, path_len)?.to_vec();
-        let target_len = rd_u32(buf, &mut pos)? as usize;
-        let target = rd_bytes(buf, &mut pos, target_len)?.to_vec();
-        match kind {
-            1 => insert_base_dir(&path, mode, uid, gid, ino)?,
-            2 => insert_base_file(&path, blob_id, size, mode, uid, gid, ino)?,
-            3 => insert_base_symlink(&path, &target, mode, uid, gid, ino)?,
-            4 => {
-                let archive_id = rd_u32(buf, &mut pos)?;
-                let source_path_len = rd_u32(buf, &mut pos)? as usize;
-                let source_path = rd_bytes(buf, &mut pos, source_path_len)?.to_vec();
-                insert_lazy_file(
-                    &path,
-                    archive_id,
-                    &source_path,
-                    size,
-                    mode,
-                    uid,
-                    gid,
-                    ino,
-                    b"",
-                    b"",
-                    b"",
-                )?
-            }
-            _ => return Err(Errno::EINVAL),
-        }
-        // Overwrite the create-time stamp with the image's real times so `ls -l`,
-        // `make`, and `find -mtime` see accurate file metadata.
-        set_base_times(&path, mtime_sec, mtime_nsec);
-    }
-    if version >= MANIFEST_VERSION_V3 {
-        let archive_count = rd_u32(buf, &mut pos)? as usize;
-        for _ in 0..archive_count {
-            let archive_id = rd_u32(buf, &mut pos)?;
-            let archive_size = rd_u64(buf, &mut pos)?;
-            ROOTFS.with(|state| {
-                state.archives.insert(
-                    archive_id,
-                    ArchiveEntry {
-                        // The v3 manifest has no field for any of the three.
-                        payload: Vec::new(),
-                        uri: Vec::new(),
-                        digest: crate::sdef::DIGEST_NONE,
-                        size: archive_size,
-                        raw: None,
-                        directory: None,
-                        members: BTreeMap::new(),
-                    },
-                );
-            });
-        }
-    }
-    // The v3 manifest has NO digest field, so every deferred file it places is
-    // unverifiable by construction. Without this the same setuid-root lazy
-    // binary keeps its bits loaded through `load_manifest` and loses them
-    // through `load_image` — one security question with two answers, decided
-    // by which loader the caller happened to use.
-    demote_unverifiable_setid();
-    Ok(count)
 }
 
 /// Set a just-inserted base entry's atime/mtime/ctime to the image's real mtime.
@@ -1884,25 +1710,22 @@ const MAX_IMAGE_DIRS: usize = 1_000_000;
 /// Replace the base layer by parsing the `/` VFS image itself, pulling its bytes
 /// from the host through [`ByteReq::Image`].
 ///
-/// This is the production boot path (`kernel_rootfs_load_image`), and the
-/// image-authoritative counterpart to [`load_manifest`]: instead of consuming a
-/// tree someone else walked and re-encoded (RTFS), the kernel mounts the
-/// image's KIFS filesystem, walks it, and applies the image's own description
-/// of its deferred files (the body's `SDEF` section, or the container's `KLZY`
-/// section, [`crate::klzy`]) to learn which inodes are deferred. The host
-/// resolves no names; it is a positioned byte window over one container it
-/// already holds (`host_image_read`).
+/// The kernel mounts the image's KIFS filesystem, walks it, and applies the
+/// image's own deferred-file section (`SDEF`, [`crate::sdef`]) to learn which
+/// inodes are deferred. The host does not resolve names; it is a positioned
+/// byte window over one container it already holds. (This replaced the RTFS
+/// manifest the host used to walk and re-encode, whose loader was removed on
+/// 2026-10-02, as was the reader for the older `KLZY` section; an image that
+/// carries `KLZY` is refused.)
 ///
 /// `image_len` is the length of the whole VFSI container, which the host knows
 /// and the container header does not carry. Returns the number of entries
 /// inserted. A malformed image or a rejected insert yields `EINVAL`/`EIO` with
-/// the store reset to empty — a partial tree is never left behind, matching
-/// [`load_manifest`].
+/// the store reset to empty — a partial tree is never left behind.
 ///
-/// Equivalence with [`load_manifest`] is deliberate: the walk visits the root
-/// first and then each directory's children in sorted name order, skipping
-/// `.`/`..` and anything that is not a directory, regular file, or symlink,
-/// exactly as the TypeScript RTFS manifest emitter (since deleted) did.
+/// The walk visits the root first and then each directory's children in
+/// sorted name order, skipping `.`/`..` and anything that is not a directory,
+/// regular file, or symlink.
 pub fn load_image<F>(image_len: u64, byte_source: F) -> Result<usize, Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
@@ -1918,14 +1741,8 @@ where
     result
 }
 
-/// One deferred file as the loader needs it, normalised across the two carriers
-/// that can describe one.
-///
-/// `KLZY` and `SDEF` disagree about almost nothing that matters here: both say
-/// which inode is deferred, how big it really is, and — for an archive member —
-/// which archive and which member. Normalising at the read means the walk below
-/// has one shape to handle rather than a branch per carrier repeated at every
-/// use, which is where a difference between the two would hide.
+/// One deferred file as the loader needs it: which inode is deferred, how big
+/// it really is, and — for an archive member — which archive and which member.
 struct DeferredEntry {
     size: u64,
     /// `0` for a file fetched standalone, whose transport the host owns.
@@ -1946,11 +1763,22 @@ where
         len: image_len,
     };
 
-    // The lazy-linkage section is read from the container BEFORE the inner
-    // filesystem is mounted, because both spans come from the same container
-    // header and a missing section must stay distinguishable from a corrupt one
-    // (`kernel_lazy_span` returns `None` vs `EINVAL`).
-    let klzy_span = crate::kandelo_image_fs::kernel_lazy_span(&source)?;
+    // An image carrying a `KLZY` (kernel lazy-linkage) section is refused.
+    //
+    // `KLZY` was the TypeScript image writer's description of deferred files.
+    // That writer was deleted on 2026-09-17 and nothing writes the section any
+    // more: every image builder now describes deferred files with an `SDEF`
+    // section in the image body. The only images that carry one predate that
+    // change and were built under ABI 44, which is unreleased, so they are
+    // stale artifacts. `docs/agent-guidance/abi.md` is explicit that a stale
+    // artifact fails loudly and is rebuilt rather than shimmed, so the reader
+    // that decoded `KLZY` was removed (2026-10-02) instead of kept as a second
+    // carrier. The span is still located (the container header says where it
+    // is) so that such an image is named and refused, not silently read as
+    // if the section were absent.
+    if crate::kandelo_image_fs::kernel_lazy_span(&source)?.is_some() {
+        return Err(Errno::EINVAL);
+    }
 
     // `fs_len`, not `image_len`: the span is the FILESYSTEM's, and `image_len`
     // above is the whole container's. They differ by the header and every
@@ -2042,29 +1870,18 @@ where
     // which is why it is read once and used twice.
     let deferred = filesystem.deferred_section()?;
 
-    // Which carrier describes this image's deferred files.
+    // The image's `SDEF` section describes its deferred files.
     //
-    // `KLZY` when the image declares one, because that is what every image
-    // shipped today carries and its meaning is unchanged. `SDEF` when the image
-    // declares no `KLZY` but its BODY describes its deferred files — which is
-    // what the Rust export writes, and the description intended to replace
-    // `KLZY` once no shipped image depends on it.
-    //
-    // NEITHER is still refused, and for the reason it always was: an image that
-    // declares no `KLZY` section and whose body says nothing either predates
-    // the kernel's ability to parse an image, and the kernel cannot tell "this
-    // image has no lazy files" from "this image records its lazy files only in
-    // the host-side JSON the kernel cannot read". Accepting it would silently
-    // build a tree where every deferred file reports size 0 — a wrong tree that
-    // looks like a right one. An image with genuinely no lazy files still
-    // carries a section, empty, in 20 bytes. So a missing description is a
-    // stale artifact, and `docs/agent-guidance/abi.md` is explicit that a stale
-    // artifact fails loudly and is rebuilt rather than shimmed.
-    //
-    // What CHANGED is only which sections count as a description. An image
-    // carrying both is read from `KLZY`; nothing emits both today, and choosing
-    // the older one keeps this change from altering how any existing image
-    // loads.
+    // An image whose body carries no `SDEF` section is refused, for the reason
+    // it always was: such an image predates the kernel's ability to parse an
+    // image, and the kernel cannot tell "this image has no lazy files" from
+    // "this image records its lazy files only in the host-side JSON the kernel
+    // cannot read". Accepting it would silently build a tree where every
+    // deferred file reports size 0 — a wrong tree that looks like a right one.
+    // An image with genuinely no lazy files still carries a section, empty.
+    // So a missing description is a stale artifact, and
+    // `docs/agent-guidance/abi.md` is explicit that a stale artifact fails
+    // loudly and is rebuilt rather than shimmed.
     let mut lazy_files: BTreeMap<u32, DeferredEntry> = BTreeMap::new();
     type LazyArchiveDecl = (
         u32,
@@ -2074,70 +1891,27 @@ where
         Vec<u8>,
     );
     let mut lazy_archives: Vec<LazyArchiveDecl> = Vec::new();
-    match klzy_span {
-        Some((offset, len)) => {
-            let len = usize::try_from(len).map_err(|_| Errno::EINVAL)?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve(len).map_err(|_| Errno::ENOMEM)?;
-            bytes.resize(len, 0u8);
-            source.read_exact_at(offset, &mut bytes)?;
-            let linkage = crate::klzy::decode_kernel_lazy_linkage(&bytes)?;
-            // A `KLZY` file record with `archive_id == 0` is a URL-backed single
-            // lazy file whose transport the host owns; the kernel still needs
-            // its real size, because the image's inode holds a zero-length
-            // stub. `decode_kernel_lazy_linkage` already rejects duplicate
-            // inodes.
-            for file in &linkage.files {
-                lazy_files.insert(
-                    file.ino,
-                    DeferredEntry {
-                        size: file.size,
-                        archive_id: file.archive_id,
-                        source_path: file.source_path.as_bytes().to_vec(),
-                    },
-                );
-            }
-            for archive in &linkage.archives {
-                // KLZY has no field for an archive's address, digest or fetch
-                // description, so an image described that way carries none.
-                // Exporting it therefore emits an archive with none -- honest,
-                // and visible, rather than invented. An archive with no digest
-                // is one the kernel cannot verify, and that is a property of
-                // the image, not something this loader should paper over.
-                lazy_archives.push((
-                    archive.archive_id,
-                    archive.archive_bytes,
-                    Vec::new(),
-                    crate::sdef::DIGEST_NONE,
-                    Vec::new(),
-                ));
-            }
-        }
-        None => {
-            let section = deferred.as_ref().ok_or(Errno::EINVAL)?;
-            // `decode` already rejects duplicate inodes, a record naming an
-            // undeclared archive, and a half-specified linkage, so this loop
-            // inherits every rule the `KLZY` branch gets from its own decoder.
-            for record in &section.records {
-                lazy_files.insert(
-                    record.ino,
-                    DeferredEntry {
-                        size: record.size,
-                        archive_id: record.archive_id,
-                        source_path: record.source_path.clone(),
-                    },
-                );
-            }
-            for archive in &section.archives {
-                lazy_archives.push((
-                    archive.archive_id,
-                    archive.bytes,
-                    archive.uri.clone(),
-                    archive.digest,
-                    archive.payload.clone(),
-                ));
-            }
-        }
+    let section = deferred.as_ref().ok_or(Errno::EINVAL)?;
+    // `decode` already rejects duplicate inodes, a record naming an
+    // undeclared archive, and a half-specified linkage.
+    for record in &section.records {
+        lazy_files.insert(
+            record.ino,
+            DeferredEntry {
+                size: record.size,
+                archive_id: record.archive_id,
+                source_path: record.source_path.clone(),
+            },
+        );
+    }
+    for archive in &section.archives {
+        lazy_archives.push((
+            archive.archive_id,
+            archive.bytes,
+            archive.uri.clone(),
+            archive.digest,
+            archive.payload.clone(),
+        ));
     }
 
     // An image that SAYS it has lazy archives, through a carrier that
@@ -4180,14 +3954,16 @@ pub fn export_tree_read(offset: i64, out: &mut [u8]) -> Result<usize, Errno> {
 //
 // WHAT THE KERNEL WRITES, AND WHAT IT ONLY CARRIES
 //
-// `export_tree` above serializes tree METADATA (RXPT) only. This emits the part
-// the kernel is the authority for: the filesystem body, and (through
-// `export_container_read`) the container around it. Fetch URLs, transports,
-// integrity digests, activation modes and atomic-group seals are NOT the
-// kernel's to invent: they arrive with the image (or from a builder) and are
-// carried through as recorded. The kernel is downstream of the decision about
-// which bytes may be fetched, and inventing a URL to write into an image would
-// invert that.
+// `export_tree` above serializes tree METADATA (RXPT), and the host rebuilds an
+// image from it by cloning the frozen base image and reconciling
+// (`host/src/vfs/rootfs-overlay-export.ts`). That host step is what W-4
+// deletes. What moves here is the part the kernel is the authority for: the
+// filesystem body. The container's three JSON sections stay host-side ON
+// PURPOSE — they carry fetch URLs, transports, integrity digests, activation
+// modes and atomic-group seals, which the kernel's image description has
+// deliberately never carried. The kernel is downstream of the host's decision
+// about which bytes it may hand over, and inventing a URL to write into an
+// image would invert that.
 //
 // WHY IT STREAMS
 //
@@ -4310,9 +4086,8 @@ enum ExportNode {
     },
     /// A host-backed base file with no retained description. The kernel has
     /// nothing that says where its bytes are: the blob id is the SOURCE image's
-    /// inode number and this export assigns new ones. That is a base tree
-    /// placed by [`load_manifest`] (used by tests), whose bytes are ordinary
-    /// host files
+    /// inode number and this export assigns new ones. That is a base file placed
+    /// by [`insert_base_file`], whose bytes are ordinary host files
     /// rather than a deferred fetch -- so it is not a missing payload, it is a
     /// file this export cannot serialize at all. It still writes an empty file.
     LazyStub,
@@ -5431,9 +5206,9 @@ mod tests {
     /// member `etc/small.txt` (`b"hello\n"`).
     const TINY_ZIP: &[u8] = include_bytes!("testdata/tiny.zip");
 
-    /// Register archive `archive_id`'s authoritative `size` directly in the
-    /// registry, as `load_manifest_inner`'s v3 archive-table parsing would.
-    /// Test-only: production registers archives through `load_image`.
+    /// Register archive `archive_id`'s manifest-authoritative `size` directly
+    /// in the registry. Test-only: production registers archives from an
+    /// image's `SDEF` section in `load_image`.
     fn insert_archive_entry(archive_id: u32, size: u64) {
         ROOTFS.with(|state| {
             state.archives.insert(
@@ -5791,55 +5566,39 @@ mod tests {
         image
     }
 
-    #[test]
-    fn a_v3_manifests_setuid_lazy_member_is_demoted_too() {
-        let _g = TestGuard::acquire();
-        // Both loaders have to answer the same security question the same way,
-        // or which one the caller happened to use decides whether a binary runs
-        // as root. The v3 manifest has no digest field at all, so every lazy
-        // member it places is unverifiable by construction.
-        //
-        // A base file from this manifest is NOT covered, and deliberately: a
-        // host-walked tree is host storage rather than a lazy reference, which
-        // is the distinction `deferred_base` draws and the one the
-        // unverified-setuid rule is about.
-        let mut m = alloc::vec::Vec::new();
-        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
-        m.extend_from_slice(&MANIFEST_VERSION_V3.to_le_bytes());
-        m.extend_from_slice(&3u32.to_le_bytes());
-        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
-        enc_entry(&mut m, 1, 0o755, 0, 0, 2, 0, 0, 0, 0, b"/bin", b"");
-        // Kind 4 with set-user-ID and set-group-ID: a deferred setuid binary.
-        enc_entry(&mut m, 4, 0o6755, 0, 0, 3, 0, 4_242, 0, 0, b"/bin/sudo", b"");
-        m.extend_from_slice(&7u32.to_le_bytes()); // archive_id
-        m.extend_from_slice(&8u32.to_le_bytes()); // source_path_len
-        m.extend_from_slice(b"bin/sudo");
-        m.extend_from_slice(&1u32.to_le_bytes()); // archive table: one entry
-        m.extend_from_slice(&7u32.to_le_bytes());
-        m.extend_from_slice(&4096u64.to_le_bytes());
-
-        assert_eq!(load_manifest(&m).unwrap(), 3);
-        assert_eq!(
-            lstat(b"/bin/sudo").unwrap().st_mode & 0o7777,
-            0o0755,
-            "a manifest that cannot describe a digest cannot vouch for root",
-        );
-        // Still there, still deferred, still its real size: demoted, not
-        // refused.
-        assert_eq!(lstat(b"/bin/sudo").unwrap().st_size, 4_242);
-    }
-
-    fn minimal_manifest(extra: &[(&[u8], u8)]) -> alloc::vec::Vec<u8> {
-        let mut m = alloc::vec::Vec::new();
-        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
-        m.extend_from_slice(&MANIFEST_VERSION_V3.to_le_bytes());
-        m.extend_from_slice(&(1 + extra.len() as u32).to_le_bytes());
-        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
-        for (index, (path, kind)) in extra.iter().enumerate() {
-            enc_entry(&mut m, *kind, 0o755, 0, 0, 2 + index as u64, 0, 0, 0, 0, path, b"");
+    /// An image whose root holds the given entries: `true` for a directory,
+    /// `false` for an empty regular file. Declares its (empty) deferred-file
+    /// section, as `load_image` requires.
+    fn image_with_root_entries(entries: &[(&[u8], bool)]) -> alloc::vec::Vec<u8> {
+        let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(
+            crate::kandelo_image_write::KandeloImageConfig::fixed(128 * 1024),
+        )
+        .expect("mkfs");
+        let root = w.root();
+        for (name, is_dir) in entries {
+            if *is_dir {
+                w.mkdir(root, name, 0o755).expect("mkdir");
+            } else {
+                w.create_file(root, name, 0o644, crate::kandelo_image_write::Content::Bytes(b""))
+                    .expect("create file");
+            }
         }
-        m.extend_from_slice(&0u32.to_le_bytes()); // empty archive table
-        m
+        w.declare_deferred_section();
+        let body = w
+            .finish()
+            .expect("finish")
+            .to_vec(&crate::kandelo_image_write::NoContent)
+            .expect("materialize");
+        crate::vfsi_container::wrap(
+            &body,
+            &crate::vfsi_container::ContainerSections {
+                lazy_json: b"",
+                archive_json: None,
+                metadata_json: None,
+                kernel_lazy: None,
+            },
+        )
+        .expect("wrap")
     }
 
     #[test]
@@ -5847,23 +5606,29 @@ mod tests {
         let _guard = TestGuard::acquire();
         // An image with no /run at all still gets the exchange mount point,
         // as an init system creates its runtime mount points at boot.
-        load_manifest(&minimal_manifest(&[])).unwrap();
+        let image = image_with_root_entries(&[]);
+        load_image(image.len() as u64, image_host(&image)).expect("load image");
         for path in [&b"/run"[..], b"/run/kandelo", b"/run/kandelo/exchange"] {
             let st = lstat(path).unwrap();
             assert_eq!(st.st_mode, S_IFDIR | 0o755, "{}", core::str::from_utf8(path).unwrap());
             assert_eq!((st.st_uid, st.st_gid), (0, 0));
         }
         // An image that already has /run keeps it.
-        load_manifest(&minimal_manifest(&[(b"/run", 1)])).unwrap();
+        let image = image_with_root_entries(&[(b"run", true)]);
+        load_image(image.len() as u64, image_host(&image)).expect("load image");
         assert_eq!(lstat(b"/run/kandelo/exchange").unwrap().st_mode & S_IFMT, S_IFDIR);
     }
 
     #[test]
     fn an_image_with_a_file_where_a_mount_point_belongs_fails_to_load() {
         let _guard = TestGuard::acquire();
-        // Kind 2 is a regular file: nothing can be mounted beneath it, and
+        // A regular file at /run: nothing can be mounted beneath it, and
         // booting anyway would leave the exchange mount unreachable.
-        assert_eq!(load_manifest(&minimal_manifest(&[(b"/run", 2)])), Err(Errno::ENOTDIR));
+        let image = image_with_root_entries(&[(b"run", false)]);
+        assert_eq!(
+            load_image(image.len() as u64, image_host(&image)),
+            Err(Errno::ENOTDIR)
+        );
     }
 
     #[test]
@@ -6557,171 +6322,13 @@ mod tests {
         assert_eq!(symlink(b"y", b"/usr/bin/newlink", 0, 0).unwrap_err(), Errno::EEXIST);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn enc_entry(
-        out: &mut alloc::vec::Vec<u8>,
-        kind: u8,
-        mode: u32,
-        uid: u32,
-        gid: u32,
-        ino: u64,
-        blob_id: u64,
-        size: u64,
-        mtime_sec: u64,
-        mtime_nsec: u32,
-        path: &[u8],
-        target: &[u8],
-    ) {
-        out.push(kind);
-        out.extend_from_slice(&mode.to_le_bytes());
-        out.extend_from_slice(&uid.to_le_bytes());
-        out.extend_from_slice(&gid.to_le_bytes());
-        out.extend_from_slice(&ino.to_le_bytes());
-        out.extend_from_slice(&blob_id.to_le_bytes());
-        out.extend_from_slice(&size.to_le_bytes());
-        out.extend_from_slice(&mtime_sec.to_le_bytes());
-        out.extend_from_slice(&mtime_nsec.to_le_bytes());
-        out.extend_from_slice(&(path.len() as u32).to_le_bytes());
-        out.extend_from_slice(path);
-        out.extend_from_slice(&(target.len() as u32).to_le_bytes());
-        out.extend_from_slice(target);
-    }
-
-    #[test]
-    fn load_manifest_round_trips_a_tree() {
-        let _g = TestGuard::acquire();
-        let mut m = alloc::vec::Vec::new();
-        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
-        m.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
-        m.extend_from_slice(&4u32.to_le_bytes()); // entry count
-        // mtime 315532800 = 1980-01-01 (the image's real deterministic-build time).
-        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 315532800, 0, b"/", b"");
-        enc_entry(&mut m, 1, 0o755, 0, 0, 2, 0, 0, 315532800, 0, b"/usr", b"");
-        enc_entry(&mut m, 2, 0o644, 0, 0, 3, 99, 12, 315532800, 500, b"/usr/greeting", b"");
-        enc_entry(&mut m, 3, 0o777, 0, 0, 4, 0, 0, 315532800, 0, b"/usr/link", b"greeting");
-
-        assert_eq!(load_manifest(&m).unwrap(), 4);
-
-        let d = lstat(b"/usr").unwrap();
-        assert_eq!(d.st_mode & S_IFMT, S_IFDIR);
-        let f = lstat(b"/usr/greeting").unwrap();
-        assert_eq!(f.st_mode & S_IFMT, S_IFREG);
-        assert_eq!(f.st_size, 12);
-        assert_eq!(f.st_ino, 3);
-        // The image's real mtime is preserved (not the boot clock).
-        assert_eq!((f.st_mtime_sec, f.st_mtime_nsec), (315532800, 500));
-
-        // The v3 manifest records a blob id and no ADDRESS, so this tree's
-        // bytes cannot be fetched: the kernel names a resource by the URI its
-        // image recorded, and this format has no field for one. The manifest
-        // still describes the tree correctly, which is what it is asserted for
-        // above; what it can no longer do is say where a file's bytes live.
-        //
-        // Not a regression hidden in a test edit: no TypeScript host calls
-        // `kernel_rootfs_load_manifest` at all — browser and Node both go
-        // through `kernel_rootfs_load_image` — so this is a test-only format
-        // meeting a contract it predates.
-        let (mut blob, _) = make_byte_source(alloc::vec![(99u64, b"hello, world".to_vec())], alloc::vec::Vec::new());
-        let h = open(b"/usr/greeting", O_RDONLY, 0, 0, 0).unwrap();
-        let mut buf = [0u8; 16];
-        assert_eq!(read(h, 0, &mut buf, &mut blob), Err(Errno::EIO));
-        release_handle(h);
-
-        let mut lbuf = [0u8; 32];
-        let ln = readlink(b"/usr/link", &mut lbuf).unwrap();
-        assert_eq!(&lbuf[..ln], b"greeting");
-    }
-
-    #[test]
-    fn load_manifest_rejects_bad_magic_and_leaves_empty() {
-        let _g = TestGuard::acquire();
-        build_sample_tree(); // pre-existing state that reset() must clear
-        let mut m = alloc::vec::Vec::new();
-        m.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
-        m.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
-        m.extend_from_slice(&0u32.to_le_bytes());
-        assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
-        // Reset-on-failure: the store is empty, not the pre-existing tree.
-        assert_eq!(lstat(b"/usr/bin/hello").unwrap_err(), Errno::ENOENT);
-    }
-
-    #[test]
-    fn load_manifest_rejects_truncated_buffer() {
-        let _g = TestGuard::acquire();
-        let mut m = alloc::vec::Vec::new();
-        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
-        m.extend_from_slice(&MANIFEST_VERSION.to_le_bytes());
-        m.extend_from_slice(&2u32.to_le_bytes()); // claims 2 entries
-        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
-        // second entry missing entirely -> short read
-        assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
-    }
-
-    #[test]
-    fn load_manifest_v3_parses_lazy_file_and_archive_table() {
-        let _g = TestGuard::acquire();
-        let mut m = alloc::vec::Vec::new();
-        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
-        m.extend_from_slice(&MANIFEST_VERSION_V3.to_le_bytes());
-        m.extend_from_slice(&4u32.to_le_bytes()); // entry count
-        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
-        enc_entry(&mut m, 1, 0o755, 0, 0, 2, 0, 0, 0, 0, b"/a", b"");
-        enc_entry(&mut m, 2, 0o644, 0, 0, 3, 55, 6, 0, 0, b"/a/f", b"");
-        // Lazy file /a/g: kind=4, size=999 from the manifest, target empty; the
-        // archive_id + source_path fields are appended right after `target`.
-        enc_entry(&mut m, 4, 0o644, 0, 0, 4, 0, 999, 0, 0, b"/a/g", b"");
-        m.extend_from_slice(&7u32.to_le_bytes()); // archive_id
-        m.extend_from_slice(&5u32.to_le_bytes()); // source_path_len
-        m.extend_from_slice(b"bin/g"); // source_path
-        // Trailing archive table (v3 only): count=1, archive_id=7 size=1234.
-        m.extend_from_slice(&1u32.to_le_bytes());
-        m.extend_from_slice(&7u32.to_le_bytes());
-        m.extend_from_slice(&1234u64.to_le_bytes());
-
-        assert_eq!(load_manifest(&m).unwrap(), 4);
-
-        // The lazy file is placed under its parent with the manifest's metadata.
-        let g = lstat(b"/a/g").unwrap();
-        assert_eq!(g.st_mode & S_IFMT, S_IFREG);
-        assert_eq!(g.st_mode & 0o7777, 0o644);
-        assert_eq!(g.st_size, 999);
-        assert_eq!(g.st_ino, 4);
-
-        // (archive_id, source_path) round-trips via the test accessor.
-        let (archive_id, source_path) = lazy_member_source(b"/a/g").unwrap();
-        assert_eq!(archive_id, 7);
-        assert_eq!(source_path, b"bin/g".to_vec());
-        assert_eq!(archive_size(7), Some(1234));
-        assert_eq!(archive_size(99), None);
-
-        // The v3 manifest declares an archive LENGTH and no address, so the
-        // member cannot be fetched: read is a truthful EIO, not a hidden
-        // success or a silent zero-fill. It used to be ENOSYS, from a host with
-        // no transport configured; the refusal moved earlier, to the kernel
-        // noticing it has nothing that says where the archive is.
-        let h = open(b"/a/g", O_RDONLY, 0, 0, 0).unwrap();
-        let mut buf = [0u8; 8];
-        let (mut blob, _) = make_byte_source(alloc::vec::Vec::new(), alloc::vec::Vec::new());
-        assert_eq!(read(h, 0, &mut buf, &mut blob).unwrap_err(), Errno::EIO);
-        release_handle(h);
-    }
-
     #[test]
     fn open_o_trunc_on_a_lazy_member_truncates_it_like_any_other_file() {
         let _g = TestGuard::acquire();
-        let mut m = alloc::vec::Vec::new();
-        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
-        m.extend_from_slice(&MANIFEST_VERSION_V3.to_le_bytes());
-        m.extend_from_slice(&2u32.to_le_bytes());
-        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
-        enc_entry(&mut m, 4, 0o644, 0, 0, 2, 0, 999, 0, 0, b"/g", b"");
-        m.extend_from_slice(&7u32.to_le_bytes()); // archive_id
-        m.extend_from_slice(&5u32.to_le_bytes()); // source_path_len
-        m.extend_from_slice(b"bin/g"); // source_path
-        m.extend_from_slice(&1u32.to_le_bytes()); // archive table: 1 entry
-        m.extend_from_slice(&7u32.to_le_bytes());
-        m.extend_from_slice(&1234u64.to_le_bytes());
-        assert_eq!(load_manifest(&m).unwrap(), 2);
+        // A lazy member `/g` of archive 7, 999 bytes, placed directly.
+        insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        declare_archive(7, 1234).unwrap();
+        insert_lazy_file(b"/g", 7, b"bin/g", 999, 0o644, 0, 0, 2, b"", b"", b"").unwrap();
 
         // This once asserted `ENOSYS`, on the grounds that
         // truncating would "silently convert it into an empty writable file
@@ -6752,92 +6359,6 @@ mod tests {
             lazy_member_source(b"/g").is_err(),
             "a truncated file no longer names an archive member",
         );
-    }
-
-    #[test]
-    fn load_manifest_v2_manifest_still_loads() {
-        let _g = TestGuard::acquire();
-        let mut m = alloc::vec::Vec::new();
-        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
-        m.extend_from_slice(&MANIFEST_VERSION.to_le_bytes()); // version 2, no archive table
-        m.extend_from_slice(&1u32.to_le_bytes());
-        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
-        assert_eq!(load_manifest(&m).unwrap(), 1);
-        assert!(is_dir(b"/"));
-    }
-
-    #[test]
-    fn load_manifest_v3_rejects_truncated_archive_table() {
-        let _g = TestGuard::acquire();
-        build_sample_tree(); // pre-existing state that reset() must clear
-        let mut m = alloc::vec::Vec::new();
-        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
-        m.extend_from_slice(&MANIFEST_VERSION_V3.to_le_bytes());
-        m.extend_from_slice(&1u32.to_le_bytes());
-        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
-        m.extend_from_slice(&2u32.to_le_bytes()); // claims 2 archive entries
-        m.extend_from_slice(&7u32.to_le_bytes());
-        m.extend_from_slice(&1234u64.to_le_bytes());
-        // second archive entry missing -> short read
-        assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
-        // Reset-on-failure covers the archive registry too.
-        assert_eq!(lstat(b"/usr/bin/hello").unwrap_err(), Errno::ENOENT);
-        assert_eq!(archive_size(7), None);
-    }
-
-    #[test]
-    fn load_manifest_rejects_unknown_version() {
-        let _g = TestGuard::acquire();
-        let mut m = alloc::vec::Vec::new();
-        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
-        m.extend_from_slice(&4u32.to_le_bytes()); // no such version yet
-        m.extend_from_slice(&0u32.to_le_bytes());
-        assert_eq!(load_manifest(&m).unwrap_err(), Errno::EINVAL);
-    }
-
-    /// A v3 RTFS manifest emitted by the TypeScript emitter that used to
-    /// exist, committed at `testdata/rtfs-v3-lazy.bin`.
-    ///
-    /// FROZEN: its generator went with the TypeScript filesystem it drove, so
-    /// the fixture can no longer be regenerated. It therefore no longer catches
-    /// DRIFT between two implementations -- there is one -- and
-    /// what it still does is pin this loader against a byte stream nobody can
-    /// silently regenerate to match a change. That is a weaker claim than it
-    /// was and a real one: a loader edit that changes how v3 is read fails
-    /// here.
-    const RTFS_V3_FIXTURE: &[u8] = include_bytes!("testdata/rtfs-v3-lazy.bin");
-
-    #[test]
-    fn load_manifest_ts_emitted_v3_fixture_round_trips() {
-        let _g = TestGuard::acquire();
-
-        assert_eq!(&RTFS_V3_FIXTURE[0..4], &MANIFEST_MAGIC.to_le_bytes());
-        assert_eq!(&RTFS_V3_FIXTURE[4..8], &MANIFEST_VERSION_V3.to_le_bytes());
-
-        // Tree: /, /a (dir), /a/f (base file), /a/g (lazy file).
-        assert_eq!(load_manifest(RTFS_V3_FIXTURE).unwrap(), 4);
-
-        let root = lstat(b"/").unwrap();
-        assert_eq!(root.st_mode & S_IFMT, S_IFDIR);
-
-        let a = lstat(b"/a").unwrap();
-        assert_eq!(a.st_mode & S_IFMT, S_IFDIR);
-        assert_eq!(a.st_mode & 0o7777, 0o755);
-
-        let f = lstat(b"/a/f").unwrap();
-        assert_eq!(f.st_mode & S_IFMT, S_IFREG);
-        assert_eq!(f.st_mode & 0o7777, 0o644);
-        assert_eq!(f.st_size, 6); // b"hello\n"
-
-        let g = lstat(b"/a/g").unwrap();
-        assert_eq!(g.st_mode & S_IFMT, S_IFREG);
-        assert_eq!(g.st_mode & 0o7777, 0o644);
-        assert_eq!(g.st_size, 12); // b"lazy content"
-
-        let (archive_id, source_path) = lazy_member_source(b"/a/g").unwrap();
-        assert_eq!(archive_id, 7);
-        assert_eq!(source_path, b"bin/g".to_vec());
-        assert_eq!(archive_size(7), Some(1234));
     }
 
     #[test]
@@ -7789,6 +7310,12 @@ mod tests {
         crate::test_fixtures::tiny_vfs()
     }
 
+    /// The same image with an empty `SDEF` section declared, so it loads; see
+    /// `crate::test_fixtures::tiny_vfs_described`.
+    fn tiny_vfs_described() -> &'static [u8] {
+        crate::test_fixtures::tiny_vfs_described()
+    }
+
     /// A host that owns `image` and serves only [`ByteReq::Image`]. Blob and
     /// archive requests are `ENOSYS`, so a test that accidentally reaches for
     /// them fails loudly instead of reading image bytes by another name.
@@ -7807,49 +7334,14 @@ mod tests {
         }
     }
 
-    /// Encode a `KLZY` section the way the TypeScript writer does. Kept local to
-    /// this module rather than shared with `klzy`'s own tests: this one exists to
-    /// drive `load_image`, and a shared builder would let a change to the encoder
-    /// silently move both sides of the assertion at once.
-    fn klzy_section(groups: &[(u32, u64, &str)], files: &[(u32, u64, u32, &str)]) -> Vec<u8> {
-        use wasm_posix_shared::abi;
-        let mut out = Vec::new();
-        out.extend_from_slice(&abi::VFS_IMAGE_KERNEL_LAZY_MAGIC);
-        out.extend_from_slice(&abi::VFS_IMAGE_KERNEL_LAZY_VERSION.to_le_bytes());
-        out.extend_from_slice(&abi::VFS_IMAGE_KERNEL_LAZY_HEADER_SIZE.to_le_bytes());
-        out.extend_from_slice(&(groups.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(files.len() as u32).to_le_bytes());
-        out.extend_from_slice(&0u32.to_le_bytes()); // reserved
-        for (archive_id, archive_bytes, mount_prefix) in groups {
-            let name = mount_prefix.as_bytes();
-            let size = u32::from(abi::VFS_IMAGE_KERNEL_LAZY_GROUP_HEADER_SIZE) + name.len() as u32;
-            out.extend_from_slice(&size.to_le_bytes());
-            out.extend_from_slice(&archive_id.to_le_bytes());
-            out.extend_from_slice(&archive_bytes.to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes()); // flags
-            out.extend_from_slice(&0u16.to_le_bytes()); // reserved
-            out.extend_from_slice(&(name.len() as u32).to_le_bytes());
-            out.extend_from_slice(name);
-        }
-        for (ino, size, archive_id, source_path) in files {
-            let name = source_path.as_bytes();
-            let record = u32::from(abi::VFS_IMAGE_KERNEL_LAZY_FILE_HEADER_SIZE) + name.len() as u32;
-            out.extend_from_slice(&record.to_le_bytes());
-            out.extend_from_slice(&ino.to_le_bytes());
-            out.extend_from_slice(&size.to_le_bytes());
-            out.extend_from_slice(&archive_id.to_le_bytes());
-            out.extend_from_slice(&(name.len() as u32).to_le_bytes());
-            out.extend_from_slice(name);
-        }
-        out
-    }
-
-    /// `tiny_vfs()` with a `KLZY` section appended and its container flag set.
-    /// The section goes after the existing (empty) lazy-JSON section, which is
+    /// `tiny_vfs_described()` with a `KLZY` section appended and its container
+    /// flag set: a well-formed image whose body describes its deferred files
+    /// with `SDEF` but which ALSO carries the retired `KLZY` section. The
+    /// section goes after the existing (empty) lazy-JSON section, which is
     /// where `kernel_lazy_span` walks to find it, so this exercises the real
     /// section-walk rather than a shortcut.
     fn tiny_vfs_with_kernel_lazy(section: &[u8]) -> Vec<u8> {
-        let mut image = tiny_vfs().to_vec();
+        let mut image = tiny_vfs_described().to_vec();
         let flags = u32::from_le_bytes([image[8], image[9], image[10], image[11]]);
         let flagged = flags | wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY;
         image[8..12].copy_from_slice(&flagged.to_le_bytes());
@@ -7874,7 +7366,7 @@ mod tests {
     fn load_image_refuses_an_image_that_declares_lazy_archives_and_carries_none() {
         let _guard = TestGuard::acquire();
         // A well-formed image with an EMPTY archive table ...
-        let mut image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let mut image = tiny_vfs_described().to_vec();
         // ... whose header says it has lazy archives.
         let flags = u32::from_le_bytes([image[8], image[9], image[10], image[11]]);
         let declared = flags | crate::kandelo_image_fs::VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES;
@@ -7888,7 +7380,7 @@ mod tests {
 
         // The same image without the declaration loads, so the refusal is
         // about the MISMATCH rather than about anything else in the fixture.
-        let honest = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let honest = tiny_vfs_described().to_vec();
         assert!(
             load_image(honest.len() as u64, image_host(&honest)).is_ok(),
             "an image that declares nothing it lacks still loads",
@@ -7898,7 +7390,7 @@ mod tests {
     #[test]
     fn load_image_builds_the_base_tree_from_a_real_vfs_image() {
         let _guard = TestGuard::acquire();
-        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let image = tiny_vfs_described().to_vec();
         let count = load_image(image.len() as u64, image_host(&image)).expect("load image");
         assert_eq!(count, 6, "root + 4 root entries + 1 file under /dir");
 
@@ -7937,7 +7429,7 @@ mod tests {
     #[test]
     fn image_backed_file_bytes_are_served_from_the_image() {
         let _guard = TestGuard::acquire();
-        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let image = tiny_vfs_described().to_vec();
         let mut host = image_host(&image);
         load_image(image.len() as u64, &mut host).expect("load image");
 
@@ -7960,7 +7452,7 @@ mod tests {
     #[test]
     fn image_backed_read_spans_indirect_blocks() {
         let _guard = TestGuard::acquire();
-        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let image = tiny_vfs_described().to_vec();
         let mut host = image_host(&image);
         load_image(image.len() as u64, &mut host).expect("load image");
 
@@ -8003,7 +7495,7 @@ mod tests {
     #[test]
     fn image_backed_copy_on_write_materializes_from_the_image() {
         let _guard = TestGuard::acquire();
-        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let image = tiny_vfs_described().to_vec();
         let mut host = image_host(&image);
         load_image(image.len() as u64, &mut host).expect("load image");
 
@@ -8013,68 +7505,6 @@ mod tests {
         let mut buf = [0u8; 32];
         let n = read(handle, 0, &mut buf, &mut host).expect("read");
         assert_eq!(&buf[..n], b"HELLO sffs\n", "the un-overwritten tail is the image's");
-        release_handle(handle);
-    }
-
-    /// A `KLZY`-described deferred file has no address, so its bytes cannot be
-    /// fetched — loudly, at the read, rather than by asking the host to resolve
-    /// an empty string.
-    ///
-    /// This test used to assert the opposite, and was right to: the kernel
-    /// addressed the file by its INODE NUMBER and a host holding a table turned
-    /// that back into a URL. The table is gone, and `KLZY` has no field that
-    /// could replace it — its record is `{ino, size, archive_id, source_path}`.
-    /// So an image described that way is one this kernel cannot fetch from,
-    /// which is the ABI contract's answer for a stale artifact: fail loudly and
-    /// be rebuilt, rather than be shimmed.
-    ///
-    /// `EIO`, not `EAGAIN`: the kernel parks and retries on `EAGAIN`, so a file
-    /// with no address would hang its reader forever instead of failing.
-    #[test]
-    fn a_klzy_described_deferred_file_has_no_address_to_fetch_from() {
-        let _guard = TestGuard::acquire();
-        // ino 2 is `/hello.txt`; declare it URL-backed with a size the image
-        // inode does not carry.
-        let section = klzy_section(&[], &[(2, 5, 0, "")]);
-        let image = tiny_vfs_with_kernel_lazy(&section);
-        let asked = core::cell::Cell::new(0u32);
-        let mut host = |req: ByteReq, buf: &mut [u8]| -> Result<usize, Errno> {
-            match req {
-                ByteReq::Image { offset } => {
-                    let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
-                    if start >= image.len() {
-                        return Ok(0);
-                    }
-                    let n = core::cmp::min(buf.len(), image.len() - start);
-                    buf[..n].copy_from_slice(&image[start..start + n]);
-                    Ok(n)
-                }
-                // A request the kernel never makes for this image, because it
-                // has no address to make it with. Counted so the assertion
-                // below is about the kernel not ASKING, rather than about a
-                // host that happened to refuse.
-                ByteReq::Deferred { .. } => {
-                    asked.set(asked.get() + 1);
-                    Err(Errno::ENOSYS)
-                }
-                ByteReq::DiscardDeferred { .. } => Ok(0),
-            }
-        };
-        load_image(image.len() as u64, &mut host).expect("load image");
-        assert_eq!(asked.get(), 0, "the tree walk reads no file content");
-
-        // The size still comes through: `KLZY` carries that, and the file is
-        // still described as deferred. What it cannot say is WHERE.
-        assert_eq!(lstat(b"/hello.txt").expect("stat").st_size, 5);
-
-        let handle = open(b"/hello.txt", O_RDONLY, 0, 0, 0).expect("open");
-        let mut buf = [0u8; 16];
-        assert_eq!(read(handle, 0, &mut buf, &mut host), Err(Errno::EIO));
-        assert_eq!(
-            asked.get(),
-            0,
-            "refused by the kernel for having no address, not by the host",
-        );
         release_handle(handle);
     }
 
@@ -8128,7 +7558,7 @@ mod tests {
     #[test]
     fn reset_drops_the_image_geometry_with_the_tree() {
         let _guard = TestGuard::acquire();
-        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let image = tiny_vfs_described().to_vec();
         load_image(image.len() as u64, image_host(&image)).expect("load image");
         ROOTFS.with(|state| assert!(state.image.is_some()));
         reset();
@@ -8136,42 +7566,10 @@ mod tests {
     }
 
     #[test]
-    fn load_image_applies_the_images_own_kernel_lazy_section() {
+    fn load_image_rejects_an_image_that_declares_no_deferred_section() {
         let _guard = TestGuard::acquire();
-        // ino 6 is `/big.txt`; back it with an archive member instead, and give
-        // ino 2 (`/hello.txt`) a URL-backed lazy size the image inode does not
-        // carry. Both kinds must be honored, not just the one every shipped
-        // image happens to use today.
-        let section = klzy_section(
-            &[(1, 4_096, "/")],
-            &[(6, 99_999, 1, "members/big.txt"), (2, 4_242, 0, "")],
-        );
-        let image = tiny_vfs_with_kernel_lazy(&section);
-        let count = load_image(image.len() as u64, image_host(&image)).expect("load image");
-        assert_eq!(count, 6);
-
-        // The archive-backed file is a lazy member with the section's size, not
-        // the image inode's 45,000.
-        assert_eq!(lstat(b"/big.txt").expect("big").st_size, 99_999);
-        let (archive_id, source_path) = lazy_member_source(b"/big.txt").expect("lazy member");
-        assert_eq!(archive_id, 1);
-        assert_eq!(source_path, b"members/big.txt");
-
-        // The URL-backed file stays a plain base file (the host owns its
-        // transport) but takes its real size from the section.
-        assert_eq!(lstat(b"/hello.txt").expect("hello").st_size, 4_242);
-        assert!(lazy_member_source(b"/hello.txt").is_err());
-
-        // The archive table the whole-archive fetch needs was registered.
-        ROOTFS.with(|state| {
-            assert_eq!(state.archives.get(&1).expect("archive 1").size, 4_096);
-        });
-    }
-
-    #[test]
-    fn load_image_rejects_an_image_that_declares_no_kernel_lazy_section() {
-        let _guard = TestGuard::acquire();
-        // `tiny_vfs()` has the container flag clear, so it predates the section.
+        // `tiny_vfs()` carries no `SDEF` section, so it predates the kernel's
+        // ability to read deferred files out of an image.
         // Loading it would build a tree where every deferred file reports size
         // 0 — wrong, and indistinguishable from right. It must fail loudly and
         // be rebuilt, not be read on a best-effort basis.
@@ -8183,27 +7581,13 @@ mod tests {
     }
 
     #[test]
-    fn load_image_accepts_an_image_whose_kernel_lazy_section_is_empty() {
+    fn load_image_accepts_an_image_whose_deferred_section_is_empty() {
         let _guard = TestGuard::acquire();
         // An image with genuinely no lazy files still declares the section, and
-        // that is what distinguishes it from a stale one. Twenty bytes.
-        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        // that is what distinguishes it from a stale one.
+        let image = tiny_vfs_described().to_vec();
         assert_eq!(load_image(image.len() as u64, image_host(&image)).unwrap(), 6);
         assert_eq!(lstat(b"/big.txt").expect("big").st_size, 45_000);
-    }
-
-    #[test]
-    fn load_image_rejects_a_flagged_but_corrupt_kernel_lazy_section() {
-        let _guard = TestGuard::acquire();
-        let mut section = klzy_section(&[(1, 4_096, "/")], &[(6, 1, 1, "m")]);
-        section[0] ^= 0xff; // break the section magic
-        let image = tiny_vfs_with_kernel_lazy(&section);
-        assert_eq!(
-            load_image(image.len() as u64, image_host(&image)).unwrap_err(),
-            Errno::EINVAL
-        );
-        // A rejected load leaves no partial tree behind.
-        assert_eq!(lstat(b"/big.txt").unwrap_err(), Errno::ENOENT);
     }
 
     #[test]
@@ -8212,7 +7596,7 @@ mod tests {
         build_sample_tree();
         assert!(lstat(b"/").is_ok());
 
-        let mut bad = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let mut bad = tiny_vfs_described().to_vec();
         bad[0] ^= 0xff; // break the VFSI magic
         assert_eq!(
             load_image(bad.len() as u64, image_host(&bad)).unwrap_err(),
@@ -8226,11 +7610,17 @@ mod tests {
     #[test]
     fn load_image_rejects_an_image_shorter_than_the_host_declared() {
         let _guard = TestGuard::acquire();
-        // The host claims a longer image than it can serve. Whichever read bites
-        // first — the trailing `KLZY` section or an inode-table block — the
-        // verdict must be the same one: this container is not the size it says.
-        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
-        for cut in [13_000usize, image.len() - 4] {
+        // The host claims a longer image than it can serve, and the cut lands in
+        // a block the loader must read (the inode table): this container is not
+        // the size it says, and that is refused.
+        //
+        // A cut inside the trailing host-side JSON sections is NOT detected,
+        // and that is correct rather than a gap: the kernel never reads those
+        // sections. It used to walk past them to reach a `KLZY` section; since
+        // `KLZY` is refused by its header flag alone (2026-10-02), nothing in
+        // the load touches the trailer, so this test no longer cuts there.
+        let image = tiny_vfs_described().to_vec();
+        for cut in [13_000usize] {
             assert_eq!(
                 load_image(image.len() as u64, image_host(&image[..cut])).unwrap_err(),
                 Errno::EINVAL,
@@ -8256,7 +7646,7 @@ mod tests {
     #[test]
     fn load_image_never_asks_the_host_beyond_the_declared_image_length() {
         let _guard = TestGuard::acquire();
-        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let image = tiny_vfs_described().to_vec();
         let limit = image.len() as u64;
         let mut highest = 0u64;
         let mut source = |req: ByteReq, buf: &mut [u8]| -> Result<usize, Errno> {
@@ -8397,12 +7787,12 @@ mod tests {
             .to_vec(&crate::kandelo_image_write::NoContent)
             .expect("materialize the body");
 
-        let klzy = klzy_section(&[], &[(ino, real_size, 0, "")]);
+        let _ = ino;
         let sections = crate::vfsi_container::ContainerSections {
             lazy_json: b"",
             archive_json: None,
             metadata_json: None,
-            kernel_lazy: Some(&klzy),
+            kernel_lazy: None,
         };
         let mut image = crate::vfsi_container::header(body.len(), sections.flags())
             .expect("header")
@@ -8515,24 +7905,18 @@ mod tests {
         // so nothing here says this file is 4,242 bytes of binary.
         w.create_file(root, b"php", 0o755, crate::kandelo_image_write::Content::Bytes(b""))
             .expect("member stub");
+        // An `SDEF` that describes nothing: the description is present and
+        // says there are no deferred files, while the header still claims
+        // lazy archives. (This used to be an empty `KLZY`, the legacy encoder's
+        // output once it had skipped the only group it had; `KLZY` is no longer
+        // read, and the guard under test is about the claim, not the carrier.)
+        w.declare_deferred_section();
         let body = w
             .finish()
             .expect("finish")
             .to_vec(&crate::kandelo_image_write::NoContent)
             .expect("materialize");
 
-        // A `KLZY` that describes nothing, which is what the legacy encoder
-        // emits once it has skipped the only group it had.
-        //
-        // An earlier version of this fixture put the MEMBER in `KLZY` while
-        // leaving its archive out, and then wrote the member as a DEFERRED
-        // file in the body. Both passed without the guard: the first because
-        // `decode_kernel_lazy_linkage` refuses a record naming an undeclared
-        // archive, the second because the deferred body section produced its
-        // own `EINVAL`. Twice a different check was doing the refusing, and
-        // twice the test read as though it proved this one, and the only
-        // reason it is not still there is that the mutation kept surviving.
-        let klzy = klzy_section(&[], &[]);
         // The HOST-side archive JSON, which a legacy image really carries and
         // which the kernel cannot read. Its presence is what sets the header's
         // lazy-archive flag, so the flag word and the sections AGREE -- and the
@@ -8548,7 +7932,7 @@ mod tests {
             lazy_json: b"",
             archive_json: if claims_archives { Some(archive_json) } else { None },
             metadata_json: None,
-            kernel_lazy: Some(&klzy),
+            kernel_lazy: None,
         };
         crate::vfsi_container::wrap(&body, &sections).expect("wrap")
     }
@@ -8881,12 +8265,12 @@ mod tests {
             let root = w.root();
             w.create_file(root, b"plain", 0o644, crate::kandelo_image_write::Content::Bytes(b"hi"))
                 .expect("a plain file");
+            w.declare_deferred_section();
             w.finish()
                 .expect("finish")
                 .to_vec(&crate::kandelo_image_write::NoContent)
                 .expect("materialize")
         };
-        let empty_klzy = klzy_section(&[], &[]);
         let wrap_with = |metadata: Option<&[u8]>| {
             crate::vfsi_container::wrap(
                 &body(()),
@@ -8894,7 +8278,7 @@ mod tests {
                     lazy_json: b"",
                     archive_json: None,
                     metadata_json: metadata,
-                    kernel_lazy: Some(&empty_klzy),
+                    kernel_lazy: None,
                 },
             )
             .expect("wrap")
@@ -8961,68 +8345,51 @@ mod tests {
             Errno::EINVAL,
         );
 
-        // And the same body WITH an empty KLZY section loads, so the refusal
+        // And the same tree WITH an empty `SDEF` section loads, so the refusal
         // above is the missing description rather than anything else about
         // this image.
-        let empty_klzy = klzy_section(&[], &[]);
-        let with_klzy = crate::vfsi_container::wrap(
-            &body,
-            &crate::vfsi_container::ContainerSections {
-                lazy_json: b"",
-                archive_json: None,
-                metadata_json: None,
-                kernel_lazy: Some(&empty_klzy),
-            },
-        )
-        .expect("wrap");
-        assert_eq!(
-            load_image(with_klzy.len() as u64, image_host(&with_klzy)).expect("loads"),
-            2,
-        );
-    }
-
-    #[test]
-    fn an_image_carrying_both_descriptions_is_read_from_the_older_one() {
-        let _guard = TestGuard::acquire();
-        // Nothing emits both today. The rule is written down and tested anyway,
-        // because "whichever we happen to read first" is how two descriptions
-        // of one thing start disagreeing -- and reading the OLDER one is what
-        // keeps this change from altering how any existing image loads.
         let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(crate::kandelo_image_write::KandeloImageConfig::fixed(
-            256 * 1024,
+            128 * 1024,
         ))
         .expect("mkfs");
         let root = w.root();
-        let ino = w
-            .create_deferred_file(root, b"big.bin", 0o644, 45_000, 0, b"", b"", b"", b"url")
-            .expect("deferred");
-        let body = w
+        w.create_file(root, b"plain", 0o644, crate::kandelo_image_write::Content::Bytes(b"hi"))
+            .expect("a file with no deferred anything");
+        w.declare_deferred_section();
+        let described = w
             .finish()
             .expect("finish")
             .to_vec(&crate::kandelo_image_write::NoContent)
             .expect("materialize");
-
-        // The KLZY section disagrees with the body on purpose: a different size
-        // for the same inode. Whichever number the tree reports names the
-        // carrier that was read.
-        let klzy = klzy_section(&[], &[(ino, 999, 0, "")]);
-        let image = crate::vfsi_container::wrap(
-            &body,
-            &crate::vfsi_container::ContainerSections {
-                lazy_json: b"",
-                archive_json: None,
-                metadata_json: None,
-                kernel_lazy: Some(&klzy),
-            },
-        )
-        .expect("wrap");
-
-        load_image(image.len() as u64, image_host(&image)).expect("load");
+        let with_sdef = crate::vfsi_container::wrap(&described, &sections).expect("wrap");
         assert_eq!(
-            lstat(b"/big.bin").expect("stat").st_size,
-            999,
-            "KLZY wins while it is present",
+            load_image(with_sdef.len() as u64, image_host(&with_sdef)).expect("loads"),
+            2,
         );
+    }
+
+    /// The `KLZY` reader was removed on 2026-10-02: the TypeScript writer that
+    /// emitted the section was deleted on 2026-09-17, every builder now writes
+    /// `SDEF`, and an image that still carries `KLZY` can only be a pre-change
+    /// build under ABI 44, which is unreleased. Such an image is a stale
+    /// artifact and is refused loudly, even when its body ALSO describes its
+    /// deferred files with `SDEF` -- reading the body and ignoring the section
+    /// would silently drop whatever the section said.
+    #[test]
+    fn an_image_carrying_a_klzy_section_is_refused() {
+        let _guard = TestGuard::acquire();
+        // The section's contents do not matter: its presence is the refusal.
+        let image = tiny_vfs_with_kernel_lazy(b"KLZY and anything after it");
+        assert_eq!(
+            load_image(image.len() as u64, image_host(&image)).unwrap_err(),
+            Errno::EINVAL,
+        );
+        assert_eq!(lstat(b"/big.txt").unwrap_err(), Errno::ENOENT, "no partial tree");
+
+        // The same image without the section loads, so the refusal is the
+        // section and nothing else about it.
+        let without = tiny_vfs_described();
+        assert_eq!(load_image(without.len() as u64, image_host(without)).expect("loads"), 6);
     }
 
     #[test]
@@ -9255,67 +8622,6 @@ mod tests {
     }
 
     #[test]
-    fn a_klzy_described_lazy_file_survives_a_load_and_re_export() {
-        let _guard = TestGuard::acquire();
-        // The deferred-file flag set through the DOOR a real image comes in by,
-        // rather than by setting the flag directly.
-        //
-        // The first version of this test called `mark_deferred_base` directly
-        // and left the LOADER untested: a mutation deleting the loader's call
-        // survived the whole `runtime-core` suite. A test one layer past the
-        // wiring proves the behaviour and not the wiring.
-        //
-        // The image is built HERE rather than with `url_backed_image`, and the
-        // difference is the whole test: that helper writes the URL into the
-        // body's deferred record as well, so the loaded file has a description
-        // and is deferred by its PAYLOAD. Using it, the mutation deleting the
-        // loader's mark survived.
-        //
-        // A real `KLZY`-described image has no such payload to fall back on:
-        // `KLZY` has no field for a URL, and the host-side JSON that carries it
-        // is not something the kernel reads. So the body's record here carries
-        // an EMPTY description, which is the exact condition that once turned
-        // a deferred file into a zero-length ordinary one.
-        let image = {
-            let mut w = crate::kandelo_image_write::KandeloImageWriter::mkfs(
-                crate::kandelo_image_write::KandeloImageConfig::fixed(256 * 1024),
-            )
-            .expect("mkfs");
-            let root = w.root();
-            let ino = w
-                .create_deferred_file(root, b"big.bin", 0o644, 45_000, 0, b"", b"", b"", b"")
-                .expect("deferred, description unknown");
-            let body = w
-                .finish()
-                .expect("finish")
-                .to_vec(&crate::kandelo_image_write::NoContent)
-                .expect("materialize");
-            let klzy = klzy_section(&[], &[(ino, 45_000, 0, "")]);
-            let sections = crate::vfsi_container::ContainerSections {
-                lazy_json: b"",
-                archive_json: None,
-                metadata_json: None,
-                kernel_lazy: Some(&klzy),
-            };
-            crate::vfsi_container::wrap(&body, &sections).expect("wrap")
-        };
-        assert!(load_image(image.len() as u64, image_host(&image)).is_ok(), "load it");
-
-        let exported = drain_export(8192, &mut no_bytes());
-        let fs = crate::kandelo_image_fs::KandeloImageFs::mount(exported.as_slice()).expect("mount");
-        let section = fs
-            .deferred_section()
-            .expect("decodes")
-            .expect("the re-export describes its deferred files");
-        let record = section
-            .records
-            .iter()
-            .find(|r| r.size == 45_000)
-            .expect("the file is still deferred, at the size it really is");
-        assert_eq!(record.archive_id, 0, "still fetched standalone");
-    }
-
-    #[test]
     fn a_deferred_file_with_no_description_re_exports_as_deferred() {
         let _guard = TestGuard::acquire();
         // A `KLZY`-described image says a file is deferred and how big
@@ -9356,7 +8662,7 @@ mod tests {
     #[test]
     fn a_base_file_with_no_description_still_exports_as_a_stub() {
         let _guard = TestGuard::acquire();
-        // The honest other half. A base tree placed by [`load_manifest`]
+        // The honest other half. A base file with host-held bytes
         // carries no deferred description at all -- its bytes are ordinary host
         // files, not a deferred fetch -- so there is nothing to retain and
         // nothing to re-emit. This is not "the payload went missing"; it is a
@@ -9550,7 +8856,7 @@ mod tests {
         // file's bytes out of the `/` image it mounted, and writes them into a
         // new image, without either image being resident in kernel memory.
         let _guard = TestGuard::acquire();
-        let image = tiny_vfs_with_kernel_lazy(&klzy_section(&[], &[]));
+        let image = tiny_vfs_described().to_vec();
         load_image(image.len() as u64, image_host(&image)).expect("load image");
 
         let exported = drain_export(8192, &mut image_host(&image));

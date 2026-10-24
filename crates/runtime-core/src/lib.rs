@@ -37,7 +37,6 @@ pub mod ipc_wire;
 pub mod kandelo_image_fs;
 pub mod kernel_file_mapping;
 pub mod kandelo_image_write;
-pub mod klzy;
 pub mod lock;
 pub mod memory;
 pub mod mouse;

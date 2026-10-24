@@ -89,7 +89,8 @@
 //! once, as `archive_id -> bytes`, and refuses a record naming one it did not
 //! declare.
 //!
-//! [`crate::klzy`] also carries a `mount_prefix` per archive. **This does not**,
+//! `KLZY` (the retired section this one replaced; its reader was removed on
+//! 2026-10-02) also carried a `mount_prefix` per archive. **This does not**,
 //! because the kernel never reads it — measured, not assumed: the only thing in
 //! the tree that touches `mount_prefix` is a test fixture BUILDING a KLZY
 //! section. Carrying a field no consumer reads is how a format acquires
@@ -99,7 +100,7 @@
 //!
 //! This section exists to become an image's ONE description of its deferred
 //! files, which means it has to carry everything the section it replaces
-//! carried — and [`crate::klzy`] carries the archive linkage as typed, checked
+//! carried — and `KLZY` carried the archive linkage as typed, checked
 //! fields. Burying that linkage in the payload would not preserve the courier
 //! property, it would destroy it: the kernel would have to parse the payload to
 //! fetch an archive member, and "the payload is opaque" would become a comment
@@ -118,8 +119,8 @@
 //! the section's own length, and inode numbers must strictly ascend — which
 //! rejects duplicates and lets a lookup binary-search rather than scan.
 //!
-//! This is the same discipline [`crate::klzy`] already applies to the section
-//! this one replaces.
+//! This is the same discipline the `KLZY` reader applied to the section
+//! this one replaced.
 
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
@@ -203,8 +204,7 @@ pub struct DeferredRecord {
     /// The file's real length. The inode in the body is a zero-length stub.
     pub size: u64,
     /// The lazy archive backing this file, or `0` when the bytes are fetched
-    /// standalone and `uri` is the only way to locate them. Mirrors
-    /// [`crate::klzy::KernelLazyFile::archive_id`].
+    /// standalone and `uri` is the only way to locate them.
     pub archive_id: u32,
     /// The member path within `archive_id`. Non-empty exactly when
     /// `archive_id != 0`; the encoder and decoder both enforce that, so a
