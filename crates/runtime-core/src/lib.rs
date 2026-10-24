@@ -72,6 +72,7 @@ pub mod vfsi_container;
 pub mod wait_child;
 pub mod wait_park;
 pub mod wait_queue;
+pub mod wait_signal;
 pub mod wait_shadow;
 pub mod wakeup;
 pub mod xattr;

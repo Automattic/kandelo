@@ -167,15 +167,11 @@ pub const HOST_RAW_SYSCALLS: &[u32] = &[
     Syscall::Connect as u32,
     Syscall::Poll as u32,
     ext::SYS_PPOLL,
+    // --- CAP: kernel-parked signal waits. rt_sigtimedwait writes `info` when
+    // the wait is decided, so the kernel needs the caller's own addresses;
+    // sigsuspend/pause park in the kernel and the record fast-path has no
+    // park. ---
     ext::SYS_RT_SIGTIMEDWAIT,
-    // --- BLK: signal-wait blockers (NOT in GENERIC_BLOCKING_SNAPSHOT_SYSCALLS;
-    // they block by registering a signal-mask wait on the process and returning
-    // EAGAIN for blocked-retry, not through the generic snapshot machinery). The
-    // record fast-path performs no EAGAIN park, so routing sigsuspend/pause
-    // through it would leak the kernel's blocking EAGAIN straight to the guest.
-    // sigsuspend carries a mask pointer (so it would otherwise take the record
-    // path); pause is scalar-only but is host-blocking-managed and kept RAW to
-    // honor the "union of every host-involved syscall" completeness contract. ---
     Syscall::Sigsuspend as u32,
     Syscall::Pause as u32,
     // --- BLK: host-asynchronous resolution. `getaddrinfo` carries pointers, so
@@ -263,7 +259,6 @@ mod tests {
             Syscall::Connect as u32,
             Syscall::Poll as u32,
             Syscall::Openat as u32,
-            ext::SYS_RT_SIGTIMEDWAIT,
             ext::SYS_PPOLL,
             ext::SYS_MQ_TIMEDSEND,
             ext::SYS_MQ_TIMEDRECEIVE,

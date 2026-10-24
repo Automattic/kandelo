@@ -879,6 +879,7 @@ function isValidMemoryRange(
 const SPAWN_EAGAIN_MAX_WAIT_MS = 30_000;
 
 const SYS_FUTEX = ABI_SYSCALLS.Futex;
+const SYS_RT_SIGTIMEDWAIT = ABI_SYSCALLS.RtSigtimedwait;
 const SYS_POLL = ABI_SYSCALLS.Poll;
 const SYS_PPOLL = ABI_SYSCALLS.Ppoll;
 const SYS_PSELECT6 = ABI_SYSCALLS.Pselect6;
@@ -892,7 +893,6 @@ const EPOLL_WAKE_KIND_PIPE = 0;
 const EPOLL_WAKE_KIND_ACCEPT = 1;
 const SYS_EPOLL_PWAIT = ABI_SYSCALLS.EpollPwait;
 const SYS_EPOLL_WAIT = ABI_SYSCALLS.EpollWait;
-const SYS_RT_SIGTIMEDWAIT = ABI_SYSCALLS.RtSigtimedwait;
 const SYS_SCHED_GETAFFINITY = ABI_SYSCALLS.SchedGetaffinity;
 const SYS_PRCTL = ABI_SYSCALLS.Prctl;
 
@@ -1163,7 +1163,6 @@ function enableKernelTmpfs(instance: WebAssembly.Instance): void {
 const WAIT_KIND_POLL = 1;
 const WAIT_KIND_SELECT = 2;
 const WAIT_KIND_EPOLL = 3;
-const WAIT_KIND_SIGTIMEDWAIT = 5;
 
 /**
  * `kernel_wait_deadline_remaining_ns` sentinel for "this wait is live and has
@@ -1243,7 +1242,6 @@ export const GENERIC_BLOCKING_SNAPSHOT_SYSCALLS = new Set<number>([
   ABI_SYSCALLS.Connect,
   ABI_SYSCALLS.Poll,
   ABI_SYSCALLS.Openat,
-  ABI_SYSCALLS.RtSigtimedwait,
   ABI_SYSCALLS.Ppoll,
   ABI_SYSCALLS.MqTimedsend,
   ABI_SYSCALLS.MqTimedreceive,
@@ -2334,11 +2332,6 @@ interface ScratchBoundaryTestHooks {
     errVal: number,
   ) => void;
   readonly relistenChannel?: (channel: ChannelInfo) => void;
-  readonly wakePendingSignalWaits?: (
-    pid: number,
-    signum: number,
-    targetTid?: number,
-  ) => void;
   readonly sendSignalToProcess?: (
     targetPid: number,
     signum: number,
@@ -3077,18 +3070,6 @@ export class CentralizedKernelWorker {
       signo: number;
     }
   >();
-  /** Threads blocked in rt_sigtimedwait, keyed by `pid:channelOffset`. */
-  private pendingSignalWaits = new Map<
-    string,
-    {
-      cancellationPoint: boolean;
-      cancellationWakeAllowed: boolean;
-      timer: ReturnType<typeof setTimeout>;
-      channel: ChannelInfo;
-      origArgs: number[];
-      signalMask: bigint;
-    }
-  >();
   /** TCP listeners: "pid:fd" → { server, pid, port, connections } */
   private tcpListeners = new Map<string, TcpListenerBridge>();
   /** TCP listener targets: port → listener aliases for round-robin dispatch.
@@ -3819,9 +3800,6 @@ export class CentralizedKernelWorker {
             options.completeChannelRaw ?? previous?.completeChannelRaw,
           relistenChannel:
             options.relistenChannel ?? previous?.relistenChannel,
-          wakePendingSignalWaits:
-            options.wakePendingSignalWaits
-              ?? previous?.wakePendingSignalWaits,
           sendSignalToProcess:
             options.sendSignalToProcess ?? previous?.sendSignalToProcess,
           scheduleWakeBlockedRetries:
@@ -8276,7 +8254,7 @@ export class CentralizedKernelWorker {
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
     this.cleanupPendingSelectRetries(pid);
-    this.cleanupPendingSignalWaits(pid, entry);
+    this.#retireKernelWaitsForProcess(pid, entry);
     // Clean up pending pipe readers/writers
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
@@ -8570,7 +8548,7 @@ export class CentralizedKernelWorker {
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
     this.cleanupPendingSelectRetries(pid);
-    this.cleanupPendingSignalWaits(pid, entry);
+    this.#retireKernelWaitsForProcess(pid, entry);
     // Clean up network listeners/endpoints for this process.
     this.#cleanupProcessNetworkWithinKernelEntry(pid, entry);
     // Drop the killed-but-not-yet-reaped marker with the retired host
@@ -9757,20 +9735,19 @@ export class CentralizedKernelWorker {
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(pid);
     this.cleanupPendingPollRetries(pid);
     this.cleanupPendingSelectRetries(pid);
-    // Retiring the old image's wait deadlines is a kernel export call, and
-    // exec preparation runs from the worker entry point with no entry of its
-    // own, so it opens one. Another entry can own the kernel or have work
-    // queued when exec preparation runs, so this may be queued. The ingress
-    // queue is FIFO and the replacement image's registration, and every
-    // syscall that could arm a new deadline for this pid, enter after it, so
-    // a queued retire-by-pid cannot retire the new image's waits.
-    this.#runOrDeferKernelEntry(
-      `exec signal-wait retirement pid=${pid}`,
-      (entry) => {
-        this.cleanupPendingSignalWaits(pid, entry);
-        return undefined;
-      },
-    );
+    // Exec preparation runs from the worker entry point, outside any kernel
+    // entry, so the kernel half of the signal-wait cleanup needs one of its
+    // own. It used to call the exports unbound, which the entry gate refuses
+    // whenever other ingress is queued -- routinely, when several processes of
+    // a pipeline exec at once -- and the refusal failed the exec with SIGSEGV
+    // ("[exec] post-commit transition failed: kernel export
+    // kernel_wait_retire_process cannot run while queued kernel ingress is
+    // active"). Queued ingress drains in order, so the retirement still runs
+    // before anything the new image does.
+    this.#runOrDeferKernelEntry(`exec signal-wait retirement pid=${pid}`, (entry) => {
+      this.#retireKernelWaitsForProcess(pid, entry);
+      return undefined;
+    });
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
     for (const [channel, entry] of this.pendingAdvisoryLockRetries ?? []) {
@@ -10098,10 +10075,6 @@ export class CentralizedKernelWorker {
     this.activeChannelRequests?.delete(channel);
     this.pendingCancels?.delete(channel);
 
-    const signalWaitKey = `${channel.pid}:${channel.channelOffset}`;
-    const signalWait = this.pendingSignalWaits?.get(signalWaitKey);
-    if (signalWait) this.#cancelRegisteredTimeout(signalWait.timer);
-    this.pendingSignalWaits?.delete(signalWaitKey);
     this.closeWaitDeadline(channel, entry);
 
 
@@ -13379,9 +13352,6 @@ export class CentralizedKernelWorker {
           `[handleSyscall] kernel threw for pid=${channel.pid} syscall=${syscallNr} args=[${diagnosticArgs}]:`,
           err,
         );
-        if (syscallNr === SYS_RT_SIGTIMEDWAIT) {
-          this.closeWaitDeadline(channel, entry);
-        }
         if (
           !this.#cancelHostOwnedKernelWait(channel, syscallNr, entry)
         ) {
@@ -13455,12 +13425,6 @@ export class CentralizedKernelWorker {
         }
         this.#settleKernelWaitsWithinKernelEntry(entry);
         return;
-      }
-      if (
-        syscallNr === SYS_RT_SIGTIMEDWAIT &&
-        !(retVal === -1 && errVal === EAGAIN)
-      ) {
-        this.closeWaitDeadline(channel, entry);
       }
       if (
         syscallNr === SYS_MMAP &&
@@ -13773,10 +13737,13 @@ export class CentralizedKernelWorker {
         plannedDispatch,
       );
       // futex's EAGAIN is a final answer ("the word changed"), not a request
-      // to block: the kernel owns the futex wait and parks it itself.
+      // to block: the kernel owns the futex wait and parks it itself. The
+      // same holds for rt_sigtimedwait, whose EAGAIN is POSIX's "timed out"
+      // (or a zero-timeout poll that found nothing).
       const isRetryResult =
         retVal === -1
         && syscallNr !== SYS_FUTEX
+        && syscallNr !== SYS_RT_SIGTIMEDWAIT
         && (
           errVal === EAGAIN
           || errVal === EINPROGRESS
@@ -13934,15 +13901,9 @@ export class CentralizedKernelWorker {
         this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
         this.scheduleWakeBlockedRetries(entry);
         this.reapKilledProcessesAfterSyscall(entry);
-        // A parked wait4/waitid is interrupted by the kernel's own signal
-        // sweep (wait_park), which the drain above already ran.
-        if (syscallNr === SYS_TKILL) {
-          this.wakePendingSignalWaits(
-            channel.pid,
-            origArgs[1] >>> 0,
-            origArgs[0] >>> 0,
-          );
-        }
+        // Kernel-parked waits (wait4/waitid, sigtimedwait, sigsuspend,
+        // futex, sleeps) are decided by the kernel's own signal settle, which
+        // the drain above already ran.
       }
 
       // --- Normal completion ---
@@ -15086,13 +15047,11 @@ export class CentralizedKernelWorker {
       this.#cancelRegisteredTimeout(e.timer);
     }
     for (const e of this.pendingSelectRetries.values()) if (e.timer) this.#cancelRegisteredTimeout(e.timer);
-    for (const e of this.pendingSignalWaits.values()) this.#cancelRegisteredTimeout(e.timer);
     this.pendingPipeReaders.clear();
     this.pendingPipeWriters.clear();
     this.pendingPollRetries.clear();
     this.pendingAdvisoryLockRetries?.clear();
     this.pendingSelectRetries.clear();
-    this.pendingSignalWaits.clear();
     // Teardown has not yet transitioned these live tasks in Rust. Consume
     // every exact target pin before discarding the immutable host plans.
     for (const channel of Array.from(this.blockingRetrySnapshots.keys())) {
@@ -15217,11 +15176,6 @@ export class CentralizedKernelWorker {
       dropChannelKeyed(this.pendingAdvisoryLockRetries);
     }
     dropChannelKeyed(this.pendingSelectRetries);
-    for (const [key, value] of [...this.pendingSignalWaits]) {
-      if (value.channel.pid !== pid) continue;
-      this.#cancelRegisteredTimeout(value.timer);
-      this.pendingSignalWaits.delete(key);
-    }
     for (const [pipeIdx, waiters] of [...this.pendingPipeReaders]) {
       const kept = waiters.filter((w) => w.pid !== pid);
       if (kept.length) this.pendingPipeReaders.set(pipeIdx, kept);
@@ -16984,28 +16938,6 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // 2) rt_sigtimedwait — retire both the current timer and its persistent
-    //    deadline. The key is numeric, so prove that it still names this exact
-    //    channel generation before deleting either record.
-    const signalWaitKey = `${target.pid}:${target.channelOffset}`;
-    const signalWaitEntry = this.pendingSignalWaits.get(signalWaitKey);
-    if (
-      signalWaitEntry?.channel === target
-      && isWakeableCancellationPoint(signalWaitEntry)
-    ) {
-      this.pendingCancels.delete(target);
-      this.#cancelRegisteredTimeout(signalWaitEntry.timer);
-      this.pendingSignalWaits.delete(signalWaitKey);
-      this.closeWaitDeadline(target, entry);
-      this.completeChannelRawAndRelisten(
-        target,
-        -EINTR_ERRNO,
-        EINTR_ERRNO,
-        entry,
-      );
-      return;
-    }
-
     // 4) Poll/ppoll retry timer — retire the tracked retry and complete the
     //    exact cancellation point with EINTR.
     const pollEntry = this.pendingPollRetries.get(target);
@@ -18215,200 +18147,6 @@ export class CentralizedKernelWorker {
 
     // (epoll_pwait parks in handleEpollPwait, which owns its own retry loop;
     //  it never reaches this generic blocking-retry path.)
-
-    // sigtimedwait: kernel returned EAGAIN because no signal is pending.
-    // Instead of busy-retrying, delay for the requested timeout then complete
-    // with -1/EAGAIN.
-    if (syscallNr === SYS_RT_SIGTIMEDWAIT) {
-      if (!retainedGenericSnapshot) {
-        this.#failBlockingRetryProtocol(
-          "rt_sigtimedwait retry has no immutable channel snapshot",
-        );
-      }
-      const maskInput = retainedGenericSnapshot.dispatch.plannedScratchWrites
-        .find((write) => write.argIndex === 0)?.inputBytes;
-      if (!maskInput || maskInput.byteLength !== SIGNAL_MASK_BYTES) {
-        this.completeChannelRawAndRelisten(channel, -1, EIO, entry);
-        return;
-      }
-      const signalMask = new DataView(
-        maskInput.buffer,
-        maskInput.byteOffset,
-        maskInput.byteLength,
-      ).getBigUint64(0, true);
-      if (deliveredSignal > 0) {
-        this.completeChannel(
-          channel,
-          syscallNr,
-          origArgs,
-          SYSCALL_ARGS[syscallNr],
-          -1,
-          EINTR_ERRNO,
-          [],
-          undefined,
-          entry,
-        );
-        return;
-      }
-      const timeoutInput = retainedGenericSnapshot.dispatch
-        .plannedScratchWrites.find((write) => write.argIndex === 2)
-        ?.inputBytes;
-      if (retainedGenericSnapshot.origArgs[2] === 0) {
-        // NULL timeout = wait indefinitely. Use long retry interval since
-        // signals arrive via kernel_kill, not organically. In the browser,
-        // short retries starve the event loop when multiple threads are active
-        // (e.g. MariaDB's signal handler thread). Targeted signal paths wake
-        // this registration immediately; 500ms remains a safety net.
-        if (
-          this.interruptPendingCancellationBeforeRegistration(
-            channel,
-            syscallNr,
-            cancellationIdentity,
-            entry,
-          )
-        ) return;
-        const key = `${channel.pid}:${channel.channelOffset}`;
-        const previous = this.pendingSignalWaits.get(key);
-        if (previous) this.#cancelRegisteredTimeout(previous.timer);
-        const timer = this.#registerTimeout(() => {
-          const current = this.pendingSignalWaits.get(key);
-          if (
-            current?.timer !== timer
-            || current.channel !== channel
-          ) {
-            return;
-          }
-          this.pendingSignalWaits.delete(key);
-          if (this.isRegisteredChannel(channel)) {
-            this.retrySyscall(channel);
-          }
-        }, 500);
-        this.pendingSignalWaits.set(key, {
-          ...cancellationIdentity,
-          timer,
-          channel,
-          origArgs: retainedGenericSnapshot.origArgs,
-          signalMask,
-        });
-        return;
-      }
-      let timeoutMs: number;
-      try {
-        if (!timeoutInput || timeoutInput.byteLength !== 16) {
-          throw new KernelScratchError(
-            "sigtimedwait retry plan has no complete timeout",
-            EIO,
-          );
-        }
-        const timeoutView = new DataView(
-          timeoutInput.buffer,
-          timeoutInput.byteOffset,
-          timeoutInput.byteLength,
-        );
-        const sec = Number(timeoutView.getBigInt64(0, true));
-        const nsec = Number(timeoutView.getBigInt64(8, true));
-        timeoutMs = sec * 1000 + Math.floor(nsec / 1_000_000);
-      } catch (error) {
-        this.closeWaitDeadline(channel, entry);
-        this.#rejectScratchTransfer(channel, error, entry);
-        return;
-      }
-      const EAGAIN_ERRNO = 11;
-      const key = `${channel.pid}:${channel.channelOffset}`;
-      if (timeoutMs <= 0) {
-        this.closeWaitDeadline(channel, entry);
-        this.completeChannel(
-          channel,
-          syscallNr,
-          origArgs,
-          SYSCALL_ARGS[syscallNr],
-          -1,
-          EAGAIN_ERRNO,
-          [],
-          undefined,
-          entry,
-        );
-      } else {
-        // The deadline is kernel state, held on CLOCK_MONOTONIC and keyed on
-        // this channel's execution generation. It used to be a host map keyed
-        // on `pid:channelOffset` -- both of which `exec` reuses -- holding a
-        // wall-clock number, so a clock step could make `sigtimedwait` return
-        // early or not at all.
-        const remainingMs = this.waitRemainingMs(
-          channel,
-          timeoutMs,
-          WAIT_KIND_SIGTIMEDWAIT,
-          entry,
-        );
-        if (remainingMs === 0) {
-          this.closeWaitDeadline(channel, entry);
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            SYSCALL_ARGS[syscallNr],
-            -1,
-            EAGAIN_ERRNO,
-            [],
-            undefined,
-            entry,
-          );
-          return;
-        }
-        if (
-          this.interruptPendingCancellationBeforeRegistration(
-            channel,
-            syscallNr,
-            cancellationIdentity,
-            entry,
-          )
-        ) return;
-        const previous = this.pendingSignalWaits.get(key);
-        if (previous) this.#cancelRegisteredTimeout(previous.timer);
-        const timer = this.#registerTimeout(() => {
-          const current = this.pendingSignalWaits.get(key);
-          if (
-            current?.timer !== timer
-            || current.channel !== channel
-          ) {
-            return;
-          }
-          this.pendingSignalWaits.delete(key);
-          // The kernel deadline is retired inside the completion entry below
-          // (completeChannel reaches clearReadinessWait). A channel that is no
-          // longer registered was torn down, and teardown retired its waits
-          // by pid; a timer callback has no kernel entry of its own.
-          if (this.isRegisteredChannel(channel)) {
-            this.#runOrDeferChannelKernelEntry(
-              channel,
-              "sigtimedwait timeout",
-              (timeoutEntry) => {
-                this.completeChannel(
-                  channel,
-                  syscallNr,
-                  origArgs,
-                  SYSCALL_ARGS[syscallNr],
-                  -1,
-                  EAGAIN_ERRNO,
-                  [],
-                  undefined,
-                  timeoutEntry,
-                );
-                return undefined;
-              },
-            );
-          }
-        }, remainingMs);
-        this.pendingSignalWaits.set(key, {
-          ...cancellationIdentity,
-          timer,
-          channel,
-          origArgs: retainedGenericSnapshot.origArgs,
-          signalMask,
-        });
-      }
-      return;
-    }
 
     const needsFrozenDescriptorPolicy =
       this.#blockingRetryNonblockingDescriptors(
@@ -23743,72 +23481,16 @@ export class CentralizedKernelWorker {
         if (targetTid < 0) return undefined;
 
         if (targetTid > 0) {
-          this.wakePendingSignalWaits(pid, signum, targetTid);
+          // A thread-directed expiry: the kernel's signal settle decides any
+          // park of that thread (sigtimedwait, sigsuspend, futex, ...).
+          this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
           return undefined;
         }
 
-        this.wakePendingSignalWaits(pid, signum);
         this.sendSignalToProcess(pid, signum, false, entry);
         return undefined;
       },
     );
-  }
-
-  /** Wake rt_sigtimedwait callers whose mask accepts this signal. */
-  private wakePendingSignalWaits(
-    pid: number,
-    signum: number,
-    targetTid?: number,
-  ): void {
-    const testHook = this.#scratchBoundaryTestHooks?.wakePendingSignalWaits;
-    if (testHook) {
-      testHook(pid, signum, targetTid);
-      return;
-    }
-    const matches = Array.from(this.pendingSignalWaits.entries()).filter(
-      ([, entry]) => {
-        if (entry.channel.pid !== pid) return false;
-        if (
-          targetTid !== undefined &&
-          this.guestTidForChannel(entry.channel) !== targetTid
-        ) {
-          return false;
-        }
-        if (signum <= 0 || signum > 64) return false;
-        // WHY: the signal set is part of the logical wait. Caller memory can
-        // change while the channel is parked, so wake matching consumes only
-        // the detached mask recorded with the retry.
-        return (
-          entry.signalMask
-          & (1n << BigInt(signum - 1))
-        ) !== 0n;
-      },
-    );
-
-    for (const [key, entry] of matches) {
-      if (this.pendingSignalWaits.get(key) !== entry) continue;
-      this.#cancelRegisteredTimeout(entry.timer);
-      this.pendingSignalWaits.delete(key);
-      if (this.isRegisteredChannel(entry.channel)) {
-        this.retrySyscall(entry.channel);
-      }
-    }
-  }
-
-  private cleanupPendingSignalWaits(
-    pid: number,
-    kernelEntry?: KernelWorkerEntryContext,
-  ): void {
-    for (const [key, waiter] of this.pendingSignalWaits ?? []) {
-      if (waiter.channel.pid !== pid) continue;
-      this.#cancelRegisteredTimeout(waiter.timer);
-      this.pendingSignalWaits.delete(key);
-      this.closeWaitDeadline(waiter.channel, kernelEntry);
-    }
-    // A wait the kernel still holds for a process that is going away would
-    // keep a deadline nothing can ever complete. Retiring by pid also catches
-    // any generation whose channel object is already unreachable from here.
-    this.#retireKernelWaitsForProcess(pid, kernelEntry);
   }
 
   /** Drop every kernel-owned wait deadline belonging to `pid`. */
@@ -23912,8 +23594,6 @@ export class CentralizedKernelWorker {
         entry,
       )
     ) return;
-
-    if (queueSignal) this.wakePendingSignalWaits(targetPid, signum);
 
     // Signal generation can synchronously stop or continue one or many
     // processes. Consume those transition events before any deliverability
@@ -31452,7 +31132,6 @@ export class CentralizedKernelWorker {
     // sendSignalToProcess reuses main scratch, so release the output lease
     // before waking and processing the detached notification.
     if (notification && notification.signo > 0) {
-      this.wakePendingSignalWaits(notification.pid, notification.signo);
       this.sendSignalToProcess(
         notification.pid,
         notification.signo,

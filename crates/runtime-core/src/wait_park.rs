@@ -90,12 +90,23 @@ pub enum Resume {
     /// kernel re-polls the request whenever a child's waitable state changes
     /// ([`note_children_changed`]); see `crate::wait_child`.
     Child(crate::wait_child::ChildWait),
+    /// `sigsuspend` / `pause`: only a signal the (temporary) mask lets
+    /// through ends it, always with `EINTR`.
+    Suspend,
+    /// `rt_sigtimedwait`: a signal in the set (taken by the kernel; see
+    /// `crate::wait_signal`), a caught signal outside it (`EINTR`), or the
+    /// deadline (`EAGAIN`).
+    SigTimed(crate::wait_signal::SigWait),
 }
 
 impl Resume {
     fn woken_value(self) -> i32 {
         match self {
-            Resume::Futex { .. } | Resume::Sleep { .. } | Resume::Child(_) => 0,
+            Resume::Futex { .. }
+            | Resume::Sleep { .. }
+            | Resume::Child(_)
+            | Resume::Suspend
+            | Resume::SigTimed(_) => 0,
         }
     }
 
@@ -104,8 +115,10 @@ impl Resume {
             Resume::Futex { .. } => -(Errno::ETIMEDOUT as i32),
             // A sleep that ran its course succeeded.
             Resume::Sleep { .. } => 0,
-            // Child waits carry no deadline.
-            Resume::Child(_) => -(Errno::ETIMEDOUT as i32),
+            // Child waits and suspends carry no deadline.
+            Resume::Child(_) | Resume::Suspend => -(Errno::ETIMEDOUT as i32),
+            // POSIX: a sigtimedwait whose timeout passes fails with EAGAIN.
+            Resume::SigTimed(_) => -(Errno::EAGAIN as i32),
         }
     }
 
@@ -119,6 +132,8 @@ impl Resume {
             // wait4/waitid restart under SA_RESTART (signal(7)); the libc
             // glue reissues them.
             Resume::Child(_) => 0,
+            // Neither is ever restarted (signal(7)).
+            Resume::Suspend | Resume::SigTimed(_) => wire::FLAG_SUPPRESS_RESTART,
         }
     }
 
@@ -302,7 +317,7 @@ impl Parks {
         let woken = self.queue.wake_limited(WakeSource::Futex { pid, addr }, max, |s| {
             match resume.get(&s.id) {
                 Some(Resume::Futex { bitset: mine, .. }) => mine & bitset != 0,
-                Some(Resume::Sleep { .. } | Resume::Child(_)) | None => false,
+                Some(_) | None => false,
             }
         });
         let count = woken.len();
@@ -342,8 +357,13 @@ impl Parks {
         let mut credits = Vec::new();
         for wakeup in self.queue.expire(now_ns) {
             let resume = self.resume.get(&wakeup.id).copied();
-            if let Some(Resume::Futex { timeout_ns: Some(ns), .. }) = resume {
-                credits.push((wakeup.pid, wakeup.tid, ns));
+            match resume {
+                Some(Resume::Futex { timeout_ns: Some(ns), .. })
+                | Some(Resume::SigTimed(crate::wait_signal::SigWait {
+                    timeout_ns: Some(ns),
+                    ..
+                })) => credits.push((wakeup.pid, wakeup.tid, ns)),
+                _ => {}
             }
             let value = resume
                 .map(|r| r.deadline_value())
@@ -389,6 +409,37 @@ impl Parks {
         match self
             .queue
             .remove_with_reason(id, WakeReason::Source(WakeSource::ChildEvent { parent }))
+        {
+            Some(wakeup) => {
+                self.finish(wakeup, value, 0);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The parked `rt_sigtimedwait` callers, oldest first, if a signal was
+    /// generated since the last sweep. The kernel offers each one the signals
+    /// in its set before the sweep runs ([`Self::finish_signal_waiter`]);
+    /// the flag stays set for that sweep.
+    pub fn dirty_signal_waiters(&self) -> Vec<(WaiterId, u32, u32, crate::wait_signal::SigWait)> {
+        if !self.signals_dirty {
+            return Vec::new();
+        }
+        self.queue
+            .iter()
+            .filter_map(|s| match self.resume.get(&s.id) {
+                Some(Resume::SigTimed(wait)) => Some((s.id, s.pid, s.tid, *wait)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Decide the `rt_sigtimedwait` `id` of `(pid, tid)` the kernel answered.
+    pub fn finish_signal_waiter(&mut self, id: WaiterId, pid: u32, tid: u32, value: i32) -> bool {
+        match self
+            .queue
+            .remove_with_reason(id, WakeReason::Source(WakeSource::Signal { pid, tid }))
         {
             Some(wakeup) => {
                 self.finish(wakeup, value, 0);
@@ -517,11 +568,18 @@ impl Parks {
 ///
 /// A stopped process is never interrupted: its threads resume on `SIGCONT`,
 /// and `SIGCONT` is itself a generation that re-runs the sweep.
+///
+/// An ignored signal never interrupts (`ignored_signals`). Linux discards one
+/// at generation unless it is blocked; one that was blocked and is now let
+/// through -- `sigsuspend` with a mask that unblocks a default-ignored
+/// SIGCHLD -- is discarded without the wait returning (the syscall restarts,
+/// since no handler ran). Here it simply stays pending until the next
+/// syscall boundary consumes it.
 pub fn signal_targets_task(proc: &Process, tid: u32) -> bool {
     if proc.state == ProcessState::Stopped {
         return false;
     }
-    let blocked = proc.blocked_for(tid);
+    let blocked = proc.blocked_for(tid) | ignored_signals(proc);
     let directed = if proc.pid == tid {
         proc.main_thread_signals.pending
     } else {
@@ -542,6 +600,29 @@ pub fn signal_targets_task(proc: &Process, tid: u32) -> bool {
         shared &= shared - 1;
     }
     false
+}
+
+/// The signals whose delivery would do nothing to a running process: those
+/// set to `SIG_IGN`, and those left at a default action of "ignore" (SIGCHLD,
+/// SIGWINCH, ...) or "continue" (SIGCONT, whose resume happens at
+/// generation). As a bit mask in the `pending` layout.
+fn ignored_signals(proc: &Process) -> u64 {
+    use crate::signal::{default_action, DefaultAction, SignalHandler};
+    let mut mask = 0u64;
+    for signum in 1..wasm_posix_shared::signal::NSIG {
+        let ignored = match proc.signals.get_action(signum).handler {
+            SignalHandler::Ignore => true,
+            SignalHandler::Default => matches!(
+                default_action(signum),
+                DefaultAction::Ignore | DefaultAction::Continue
+            ),
+            SignalHandler::Handler(_) => false,
+        };
+        if ignored {
+            mask |= crate::signal::sig_bit(signum);
+        }
+    }
+    mask
 }
 
 // ---------------------------------------------------------------------------
@@ -879,6 +960,35 @@ mod tests {
     }
 
     #[test]
+    fn an_ignored_signal_leaves_the_park_alone() {
+        use crate::signal::{SignalAction, SignalHandler};
+        use wasm_posix_shared::signal::{SIGCHLD, SIGCONT};
+        let (mut table, pid) = table_with_process();
+        let mut parks = Parks::new();
+        futex(&mut parks, pid, pid, 0x10, None);
+        let proc = table.get_mut(pid).unwrap();
+        // A process-directed default-ignored signal is discarded when it is
+        // generated, but a default-continue SIGCONT stays pending, and so
+        // does a thread-directed SIGCHLD. Neither would run anything.
+        proc.raise_signal(SIGCONT);
+        proc.main_thread_signals.raise(SIGCHLD);
+        parks.note_signal_generated();
+        parks.sweep_signals(&table);
+        assert!(parks.take_completions().is_empty(), "nothing would run");
+
+        // A handler makes the same pending SIGCONT a reason to return.
+        table
+            .get_mut(pid)
+            .unwrap()
+            .signals
+            .set_action(SIGCONT, SignalAction { handler: SignalHandler::Handler(1), ..SignalAction::default() })
+            .unwrap();
+        parks.note_signal_generated();
+        parks.sweep_signals(&table);
+        assert_eq!(parks.take_completions().len(), 1);
+    }
+
+    #[test]
     fn a_stopped_process_is_not_interrupted() {
         let (mut table, pid) = table_with_process();
         let mut parks = Parks::new();
@@ -1024,6 +1134,80 @@ mod tests {
         let done = parks.take_completions();
         assert_eq!(done[0].value, -(Errno::EINTR as i32));
         assert_eq!(done[0].flags, 0, "SA_RESTART restarts wait4/waitid");
+    }
+
+    fn sigtimed(parks: &mut Parks, pid: u32, tid: u32, deadline: Option<MonotonicNs>) -> u64 {
+        parks
+            .park(
+                pid,
+                tid,
+                WaitKind::SigTimedWait { mask: 1 },
+                vec![WakeSource::Signal { pid, tid }],
+                deadline,
+                Resume::SigTimed(crate::wait_signal::SigWait {
+                    mask: 1,
+                    info: 0,
+                    timeout_ns: deadline.map(|d| d as u64),
+                }),
+            )
+            .expect("park")
+    }
+
+    #[test]
+    fn a_sigtimedwait_that_runs_out_answers_eagain_and_credits_its_timeout() {
+        let mut parks = Parks::new();
+        let generation = sigtimed(&mut parks, 3, 3, Some(40 * MS));
+        assert_eq!(parks.expire(40 * MS), vec![(3, 3, (40 * MS) as u64)]);
+        assert_eq!(
+            parks.take_completions(),
+            vec![Completion {
+                generation,
+                pid: 3,
+                tid: 3,
+                value: -(Errno::EAGAIN as i32),
+                flags: 0,
+                remainder: None
+            }]
+        );
+    }
+
+    #[test]
+    fn sigtimedwaiters_are_offered_signals_only_after_a_generation() {
+        let mut parks = Parks::new();
+        let generation = sigtimed(&mut parks, 3, 4, None);
+        child_wait(&mut parks, 3, 5);
+        parks.signals_dirty = false;
+        assert!(parks.dirty_signal_waiters().is_empty(), "no generation yet");
+        parks.note_signal_generated();
+        let waiters = parks.dirty_signal_waiters();
+        assert_eq!(waiters.len(), 1, "only the sigtimedwait is offered");
+        let (id, pid, tid, wait) = waiters[0];
+        assert_eq!((pid, tid, wait.mask), (3, 4, 1));
+        assert!(parks.signals_dirty, "the sweep still runs after the offer");
+        assert!(parks.finish_signal_waiter(id, pid, tid, 10));
+        assert_eq!(parks.take_completions()[0], Completion {
+            generation,
+            pid: 3,
+            tid: 4,
+            value: 10,
+            flags: 0,
+            remainder: None
+        });
+    }
+
+    #[test]
+    fn interrupted_signal_waits_are_never_restarted() {
+        let (mut table, pid) = table_with_process();
+        let mut parks = Parks::new();
+        parks
+            .park(pid, pid, WaitKind::SigTimedWait { mask: 0 }, Vec::new(), None, Resume::Suspend)
+            .unwrap();
+        table.get_mut(pid).unwrap().raise_signal(wasm_posix_shared::signal::SIGUSR1);
+        parks.note_signal_generated();
+        parks.sweep_signals(&table);
+        let done = parks.take_completions();
+        assert_eq!(done[0].value, -(Errno::EINTR as i32));
+        assert_eq!(done[0].flags, wire::FLAG_SUPPRESS_RESTART);
     }
 
     #[test]

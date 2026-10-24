@@ -2208,6 +2208,21 @@ impl Process {
         }
     }
 
+    /// Queue one process-directed timer notification (`SIGEV_SIGNAL`).
+    ///
+    /// Like every generation it passes through `prepare_signal_generation`,
+    /// which is how a kernel-owned park -- a `sigtimedwait` waiting for this
+    /// very signal, a sleep a caught one should interrupt -- learns that it
+    /// has something to decide. Raising into `self.signals` directly would
+    /// leave the signal pending and every park asleep.
+    pub fn raise_process_timer(&mut self, signum: u32, si_value_bits: u64, timer_id: u32) -> bool {
+        if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        self.prepare_signal_generation(signum);
+        self.signals.raise_timer(signum, si_value_bits, timer_id)
+    }
+
     /// Queue one timer notification for an exact live thread, including the
     /// main thread's dedicated directed queue.
     pub fn raise_timer_for_thread(

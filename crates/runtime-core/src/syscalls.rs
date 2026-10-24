@@ -10865,28 +10865,11 @@ pub fn sys_sigtimedwait(
     mask: u64,
     _timeout_ms: i32,
 ) -> Result<(u32, u64, i32, i32, i32), Errno> {
-    use wasm_posix_shared::signal::NSIG;
-
     let tid = current_tid_for_process(proc);
-
-    // Scan the calling thread's pending set (shared + directed) for a match.
-    let pending_in_mask = proc.pending_for(tid) & mask;
-    if pending_in_mask != 0 {
-        let signum = pending_in_mask.trailing_zeros() + 1;
-        if signum < NSIG {
-            let info = proc.consume_signal_for(tid, signum).ok_or(Errno::EAGAIN)?;
-            let (word_1, word_2) = match info.timer_id {
-                Some(timer_id) => (
-                    timer_id as i32,
-                    proc.accept_posix_timer_notification(timer_id).unwrap_or(0),
-                ),
-                None => (info.sender_pid as i32, info.sender_uid as i32),
-            };
-            return Ok((signum, info.si_value_bits, info.si_code, word_1, word_2));
-        }
+    match crate::wait_signal::take_signal_for(proc, tid, mask) {
+        Some(t) => Ok((t.signum, t.value_bits, t.code, t.word_1, t.word_2)),
+        None => Err(Errno::EAGAIN),
     }
-
-    Err(Errno::EAGAIN)
 }
 
 /// sigsuspend -- temporarily replace the signal mask and suspend until a signal is delivered.
@@ -17908,7 +17891,7 @@ pub fn sys_ioctl(
             };
             // POSIX: TIOCSWINSZ sends SIGWINCH to the foreground process group
             if fg_pgid > 0 {
-                proc.signals.raise(wasm_posix_shared::signal::SIGWINCH);
+                proc.raise_signal(wasm_posix_shared::signal::SIGWINCH);
             }
             Ok(())
         }
@@ -18111,7 +18094,7 @@ impl GuestTask {
 /// nanoseconds. `EFAULT` if unreadable, `EINVAL` if not a valid duration;
 /// a value too large for `i64` nanoseconds saturates (it is a deadline no
 /// machine will reach).
-fn read_guest_timespec_ns(host: &mut dyn HostIO, task: GuestTask, addr: u64) -> Result<i64, Errno> {
+pub fn read_guest_timespec_ns(host: &mut dyn HostIO, task: GuestTask, addr: u64) -> Result<i64, Errno> {
     let mut raw = [0u8; 16];
     if addr == 0 || host.proc_read_bytes(task.pid as i32, addr, &mut raw) < 0 {
         return Err(Errno::EFAULT);

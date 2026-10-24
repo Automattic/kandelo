@@ -50,7 +50,18 @@
   `crates/host-native/src/guest.rs`); before this, step 2a's `rem` write
   from a drain would have failed there the same way. The Node and browser
   hosts already resolve any live pid.
-- Steps 2b, 4-6: not started.
+- **Step 4 (signal waits): landed.** `sigsuspend`/`pause` park with the
+  temporary mask installed and end by the ordinary signal sweep;
+  `rt_sigtimedwait` parks with its set and deadline, and before the sweep the
+  kernel offers each one the signals in its set (`settle_signal_waits`): it
+  takes one, writes `siginfo_t`, and answers the signal number. A caught
+  signal outside the set now interrupts it with `EINTR` (a posix-status gap
+  closed). An ignored signal (`SIG_IGN`, or a default action of ignore or
+  continue) never ends a park, as on Linux, where such a signal is discarded
+  without the wait returning. Deleted `pendingSignalWaits`,
+  `wakePendingSignalWaits`, the 500 ms NULL-timeout poll and the 10 ms
+  `sigsuspend` poll.
+- Steps 2b, 5-6: not started.
 
 Two operational facts learned in step 1 that the next step should plan for:
 

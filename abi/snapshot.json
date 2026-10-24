@@ -592,6 +592,25 @@
       {
         "arguments": [
           {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
+            "index": 2,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "rt_sigtimedwait",
+        "number": 207,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
             "index": 1,
             "kind": "u32"
           }
@@ -8500,36 +8519,6 @@
         "required": true,
         "size": {
           "size": 8,
-          "type": "fixed"
-        }
-      }
-    ],
-    "207": [
-      {
-        "argIndex": 0,
-        "direction": "in",
-        "required": true,
-        "size": {
-          "size": 8,
-          "type": "fixed"
-        }
-      },
-      {
-        "argIndex": 1,
-        "direction": "out",
-        "nullable": true,
-        "size": {
-          "type": "process-layout",
-          "wasm32Size": 128,
-          "wasm64Size": 128
-        }
-      },
-      {
-        "argIndex": 2,
-        "direction": "in",
-        "nullable": true,
-        "size": {
-          "size": 16,
           "type": "fixed"
         }
       }

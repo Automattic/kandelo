@@ -124,7 +124,6 @@ fn is_explicit_host_only_snapshot_syscall(syscall: u32) -> bool {
         || syscall == Syscall::Openat as u32
         || syscall == Syscall::Poll as u32
         || syscall == Syscall::Select as u32
-        || syscall == extended_syscalls::SYS_RT_SIGTIMEDWAIT
         || syscall == extended_syscalls::SYS_PPOLL
         || syscall == extended_syscalls::SYS_PSELECT6
 }
@@ -683,7 +682,6 @@ mod tests {
             Syscall::Openat as u32,
             Syscall::Poll as u32,
             Syscall::Select as u32,
-            extended_syscalls::SYS_RT_SIGTIMEDWAIT,
             extended_syscalls::SYS_PPOLL,
             extended_syscalls::SYS_PSELECT6,
         ] {
