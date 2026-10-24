@@ -107,3 +107,25 @@ fn shared_fallback_projection_matches_the_unchanged_oracle() {
         assert_eq!(report, old_report);
     }
 }
+
+#[test]
+fn fallback_lookup_does_not_scan_functions_absent_from_the_table() {
+    let input = fixture(1, 10_000, Sites::MissingFacts);
+    let scan = scan(&input).unwrap();
+    let complete = FactsStore::from_scan(&scan, Default::default()).unwrap();
+    complete.resolve_calls(&scan, Default::default()).unwrap();
+    let solved_work = complete.report().unwrap().estimated_work_steps;
+
+    // Leave enough work for a small indexed group lookup, independent of the
+    // many non-table functions sharing its signature. The result has one member.
+    let limited = FactsStore::from_scan(
+        &scan,
+        StorageLimits {
+            work_steps: solved_work + 20_000,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    limited.resolve_calls(&scan, Default::default()).unwrap();
+    assert_eq!(limited.targets_for(1, "i32->i32").unwrap(), Some(vec![0]));
+}

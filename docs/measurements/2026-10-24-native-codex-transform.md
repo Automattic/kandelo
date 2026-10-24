@@ -230,3 +230,36 @@ A fresh [complete controlled comparison](2026-10-24-native-fork-instrumenter-sha
 passed 42 transforms and 42 separate validators with historical output hashes.
 The original Codex input still requires a successful full transform before
 any complete capacity claim.
+
+## Fifth attempt: stopped for an indexed-lookup correction
+
+The full transform using the shared facts solver reached normal summaries.
+The agent stopped it deliberately after **352.70 seconds** to correct a
+lookup plan; neither external guard fired. Its highest observed OS lifetime
+physical footprint was **399.00 MiB**, and no artifact was published. Raw
+evidence and an explicit manual-stop summary are preserved in
+`.context/native-codex-shared-facts-20261024/`. This is not a completed capacity
+result or a memory-budget failure.
+
+The full-signature fallback view used a truthy `in_table` condition. SQLite
+used only the signature prefix of `(sig, in_table, id)`, scanning functions
+absent from the table and sorting the results on each lookup. The equivalent
+`in_table=1` predicate binds both prefix fields and returns target order from
+the index. The column is populated with zero or one.
+
+A regression with one table target and 10,000 non-table functions sharing
+its signature exhausts its explicit extra work allowance under the old
+predicate and passes with the indexed equality. Mixed known/unknown target
+and unchanged-Walrus comparisons also pass. The next complete run retains
+the same physical guard and deadline.
+
+The follow-up passed all 659 instrumenter tests and fourteen complete
+controlled transforms with fourteen separate Node validators. All controlled
+output hashes match the historical comparison within each backend. The
+preserved source and executable are in `.context/native-fallback-index-build/`,
+with checks in `.context/native-fallback-index-controlled-smoke/`. Executable
+SHA-256:
+
+```
+094beb5c342908873b674703b9d241c13c8dd057fc0af48afc72f49b762fd5e8
+```

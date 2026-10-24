@@ -41,11 +41,13 @@ CREATE TABLE IF NOT EXISTS call_refined_target (caller INTEGER,sig INTEGER,targe
   PRIMARY KEY(caller,sig,target)) WITHOUT ROWID;
 -- Unrefined groups share the existing signature/table index instead of copying
 -- the same memberships for every caller. The branches are disjoint.
+-- Equality binds both prefix columns of wasm_by_signature; a truthy test alone
+-- also scans non-table functions with this signature and requires a sort.
 CREATE VIEW IF NOT EXISTS call_target AS
   SELECT caller,sig,target FROM call_refined_target
   UNION ALL
   SELECT g.caller,g.sig,t.id FROM call_fallback g JOIN wasm_function t
-    ON t.sig=g.sig AND t.in_table
+    ON t.sig=g.sig AND t.in_table=1
   UNION ALL
   SELECT g.caller,g.sig,t.target FROM call_unknown_group g JOIN call_target_class t
     ON t.sig=g.sig AND t.known=0;
