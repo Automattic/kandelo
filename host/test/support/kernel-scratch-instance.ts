@@ -196,10 +196,6 @@ function signatures(
       parameters: [i32],
       result: i32,
     },
-    kernel_has_sa_nocldwait: {
-      parameters: [i32],
-      result: i32,
-    },
     kernel_getrusage: {
       parameters: [i32, pointer, i32],
       result: i32,
@@ -613,10 +609,6 @@ function signatures(
       // The production export is void. Returning an ignored i32 keeps this
       // compact fixture's one-result encoder simple while exercising a
       // genuine gated Wasm call.
-      result: i32,
-    },
-    kernel_wait_child_poll: {
-      parameters: [i32, i32, i32, i32, i32, pointer, i32],
       result: i32,
     },
     kernel_set_wait_queue_enabled: {

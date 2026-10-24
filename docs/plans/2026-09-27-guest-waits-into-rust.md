@@ -19,7 +19,38 @@
   contract), because `rem` is written when the decision is drained, after
   any per-call staging is gone. `alarm`, `setitimer` and POSIX timers (the
   rest of step 2) are step 2b.
-- Steps 2b-6: not started.
+- **Order ruling (maintainer, 2026-10-01):** steps 3, 4 and 5 land before
+  step 2b. A timer that expires inside the kernel generates a signal outside
+  any syscall; until every wait is kernel-owned, a host-owned wait (blocking
+  read, `waitpid` before step 3, ...) would never hear of it, and the only
+  fix short of reordering was a temporary kernel-to-host "timer signal" wire.
+  Reordering needs no transitional wire. The scheduler needs step 5 anyway.
+- **Step 3 (`wait4`/`waitid`): landed.** The kernel answers both
+  (`runtime_core::wait_child`), parks the caller when no child is ready, and
+  re-decides parked waiters whenever a child's waitable state changes: every
+  mutation of that state calls `wait_park::note_children_changed`, and the
+  next drain re-polls (`settle_child_waits`). Outputs are raw caller
+  addresses, probed for `EFAULT` before any status is consumed. Deleted the
+  host's `waitingForChild` family and the native host's `host_waitpid` /
+  `WaitTable`; the native host gains process-group waits. A `pid == 0` wait
+  now fixes the caller's group at call entry (a posix-status gap closed).
+  **SIGCHLD ruling (option K, 2026-10-02):** the kernel announces a child's
+  exit itself -- SIGCHLD to the parent, or the SA_NOCLDWAIT / SIG_IGN
+  auto-reap -- in a pass (`announce_exits`) that runs before any wait is
+  decided, so `waitpid` never returns an exit whose SIGCHLD was not yet
+  generated (Linux exit_notify order). Every exit reaches it through
+  `record_normal_exit` / `record_signal_exit`. The host stops generating exit
+  SIGCHLD; until step 5 it still routes the pending signal to the parent's
+  host-owned waits (`sendSignalToProcess(..., queueSignal=false)`), and it
+  treats a zombie the kernel already reaped as normal.
+  A wait decided during a completion drain writes its result into a process
+  that is not the one being dispatched, so the native host now lends the
+  kernel every live process's memory for the length of each
+  `kernel_drain_wait_completions` call (`DrainMemories` in
+  `crates/host-native/src/guest.rs`); before this, step 2a's `rem` write
+  from a drain would have failed there the same way. The Node and browser
+  hosts already resolve any live pid.
+- Steps 2b, 4-6: not started.
 
 Two operational facts learned in step 1 that the next step should plan for:
 

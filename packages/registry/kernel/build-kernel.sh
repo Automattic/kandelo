@@ -137,7 +137,6 @@ wasm_require_exports "$OUT" \
     kernel_transfer_scratch_capacity \
     kernel_transfer_scratch_pointer \
     kernel_validate_task \
-    kernel_wait_child_poll \
     kernel_wait_next_timeout_ns
 
 wasm_require_target_aware_exec_authority "$OUT"

@@ -218,7 +218,6 @@ describe("kernel authority boundary", () => {
       "inspectThreadTransportStateForLifecycleTest",
       "installParkedCloneCompletionForTest",
       "probeMqueueNotificationCapacityForTest",
-      "probeWaitableChildCapacityForTest",
       "readKernelOwnedPathForTest",
       "replaceKernelForScratchBoundaryTest",
       "replaceProcessRegistrationForLifecycleTest",

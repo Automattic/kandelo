@@ -218,7 +218,6 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_transfer_io_execute",
   "kernel_truncate",
   "kernel_uname",
-  "kernel_wait_child_poll",
 ] as const);
 
 export type KernelScratchExportName =
@@ -266,7 +265,6 @@ const REQUIRED_POINTER_0_2 = intrinsicObjectFreeze([0, 2] as const);
 const REQUIRED_POINTER_0_3 = intrinsicObjectFreeze([0, 3] as const);
 const REQUIRED_POINTER_0_4 = intrinsicObjectFreeze([0, 4] as const);
 const REQUIRED_POINTER_4 = intrinsicObjectFreeze([4] as const);
-const REQUIRED_POINTER_5 = intrinsicObjectFreeze([5] as const);
 const REQUIRED_POINTER_11 = intrinsicObjectFreeze([11] as const);
 const NULLABLE_POINTER_1_3_5 = intrinsicObjectFreeze([1, 3, 5] as const);
 
@@ -362,8 +360,6 @@ export function kernelScratchRequiredPointerArguments(
       return REQUIRED_POINTER_0_4;
     case "kernel_getsockopt":
       return REQUIRED_POINTER_3_5;
-    case "kernel_wait_child_poll":
-      return REQUIRED_POINTER_5;
     case "kernel_inject_datagram":
       return REQUIRED_POINTER_11;
     case "kernel_transfer_channel_execute":
@@ -474,7 +470,6 @@ function isKernelScratchExportName(
     case "kernel_transfer_io_execute":
     case "kernel_truncate":
     case "kernel_uname":
-    case "kernel_wait_child_poll":
       return true;
     default:
       return false;

@@ -173,7 +173,6 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
       ptrWidth: 4,
     }]]);
     state.activeChannels = [channel];
-    state.waitingForChild = [];
     state.pendingAdvisoryLockRetries = new Map();
     const timer = setTimeout(() => undefined, 1_000);
     state.pendingAdvisoryLockRetries.set(channel, {
@@ -326,7 +325,6 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
       timer: peerTimer,
       channel: peerChannel,
     });
-    state.waitingForChild = [];
     state.pendingCancels = new Set();
     state.threadForkContexts = new Map();
     state.posixTimers = new Map();
@@ -642,7 +640,6 @@ interface MutableWorkerState {
   activeChannels: TestChannel[];
   channelTids: Map<string, number>;
   hostReaped: Set<number>;
-  waitingForChild: unknown[];
   pendingPollRetries: Map<TestChannel, unknown>;
   pendingAdvisoryLockRetries: Map<TestChannel, {
     cancellationPoint: boolean;
@@ -752,7 +749,6 @@ function createParkedAdvisoryCancellationHarness(
   state.pendingSelectRetries = new Map();
   state.pendingPipeReaders = new Map();
   state.pendingPipeWriters = new Map();
-  state.waitingForChild = [];
   const relistenChannel = vi.fn();
   worker.testAuthority.configureScratchBoundaryHooksForTest({
     relistenChannel,

@@ -306,7 +306,6 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_transfer_scratch_capacity
     kernel_transfer_scratch_pointer
     kernel_validate_task
-    kernel_wait_child_poll
     kernel_wait_next_timeout_ns
 )
 

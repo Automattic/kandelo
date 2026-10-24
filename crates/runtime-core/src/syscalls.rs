@@ -10643,6 +10643,8 @@ pub fn sys_setpgid(proc: &mut Process, pid: u32, pgid: u32) -> Result<(), Errno>
     }
     let new_pgid = if pgid == 0 { proc.pid } else { pgid };
     proc.pgid = new_pgid;
+    // A parent's `waitpid(-pgid)` may have gained or lost this child.
+    crate::wait_park::note_children_changed();
     Ok(())
 }
 
@@ -10669,6 +10671,7 @@ pub fn sys_setsid(proc: &mut Process) -> Result<u32, Errno> {
     proc.sid = proc.pid;
     proc.pgid = proc.pid;
     proc.is_session_leader = true;
+    crate::wait_park::note_children_changed();
     Ok(proc.sid)
 }
 
@@ -21611,16 +21614,6 @@ pub fn sys_recvmsg(
     }
 }
 
-/// wait4 — wait for a child process. Delegates to host.
-pub fn sys_waitpid(
-    _proc: &mut Process,
-    host: &mut dyn HostIO,
-    pid: i32,
-    options: u32,
-) -> Result<(i32, i32), Errno> {
-    host.host_waitpid(pid, options)
-}
-
 /// Width-independent system information serialized at the Wasm boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KernelSysinfo {
@@ -24064,9 +24057,6 @@ mod tests {
                 *b = (i & 0xFF) as u8;
             }
             Ok(buf.len())
-        }
-        fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
-            Err(Errno::ECHILD)
         }
         fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno> {
             self.net_connect_calls.push((handle, addr.to_vec(), port));
@@ -39906,9 +39896,6 @@ impl HostIO for TrackingHostIO {
             }
             Ok(buf.len())
         }
-        fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
-            Err(Errno::ECHILD)
-        }
         fn host_net_connect(
             &mut self,
             _handle: i32,
@@ -41070,9 +41057,6 @@ impl HostIO for NetMock {
                     *x = 0x42;
                 }
                 Ok(b.len())
-            }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
             }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
@@ -46051,9 +46035,6 @@ impl HostIO for SymlinkMock {
                 }
                 Ok(b.len())
             }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
-            }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
             }
@@ -46260,9 +46241,6 @@ impl HostIO for LoopMock {
                 }
                 Ok(b.len())
             }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
-            }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
             }
@@ -46465,9 +46443,6 @@ impl HostIO for RelSymlinkMock {
                     *x = 0x42;
                 }
                 Ok(b.len())
-            }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
             }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())

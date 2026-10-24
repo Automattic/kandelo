@@ -10,12 +10,6 @@ import {
   CH_RETURN,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
-  KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
-  KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
-  KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
-  STRUCT_SIZE_KERNEL_WAIT_RESULT,
-  WAIT_CLD_KILLED,
-  WAIT_EVENT_EXITED,
 } from "../src/generated/abi";
 
 const ESRCH = 3;
@@ -111,7 +105,10 @@ describe("kernel_handle_channel", () => {
     expect(view.getUint32(CH_ERRNO, true)).toBe(ESRCH);
   });
 
-  it("keeps a signaled spawn child hidden from wasm wait/reap until publication", async () => {
+  // The waitable status itself (wait4/waitid) is covered where the kernel
+  // decides it: runtime_core::process_table's
+  // pending_spawn_exit_is_hidden_until_one_parent_bound_publication.
+  it("keeps a signaled spawn child hidden from reap until publication", async () => {
     // The caller's memory the kernel reads the spawn request from: the
     // target path at 0x100 and an empty 40-byte request blob at 0x200.
     const callerMemory = new Uint8Array(0x1000);
@@ -158,15 +155,6 @@ describe("kernel_handle_channel", () => {
       pid: number,
       signum: number,
     ) => number;
-    const waitChildPoll = instance.exports.kernel_wait_child_poll as (
-      parentPid: number,
-      callerTid: number,
-      targetPid: number,
-      eventMask: number,
-      flags: number,
-      outPtr: number,
-      outCapacity: number,
-    ) => number;
     const reapExitedChild = instance.exports.kernel_reap_exited_child as (
       parentPid: number,
       childPid: number,
@@ -181,45 +169,14 @@ describe("kernel_handle_channel", () => {
 
     const parentPid = createProcess();
     const childPid = spawnProcess(parentPid, parentPid, 0x100n, path.byteLength, 0x200n, 40);
-    const waitResultPtr = allocScratch(STRUCT_SIZE_KERNEL_WAIT_RESULT);
 
     expect(childPid).toBeGreaterThan(0);
     expect(markProcessSignaled(childPid, 15)).toBe(0);
-    expect(
-      waitChildPoll(
-        parentPid,
-        parentPid,
-        -1,
-        WAIT_EVENT_EXITED,
-        0,
-        waitResultPtr,
-        STRUCT_SIZE_KERNEL_WAIT_RESULT,
-      ),
-    ).toBe(0);
     expect(reapExitedChild(parentPid, childPid)).toBe(-10);
 
     expect(publishSpawnChild(parentPid, childPid)).toBe(15);
-    expect(
-      waitChildPoll(
-        parentPid,
-        parentPid,
-        -1,
-        WAIT_EVENT_EXITED,
-        0,
-        waitResultPtr,
-        STRUCT_SIZE_KERNEL_WAIT_RESULT,
-      ),
-    ).toBe(childPid);
-    const waitResult = new DataView(
-      memory.buffer,
-      waitResultPtr,
-      STRUCT_SIZE_KERNEL_WAIT_RESULT,
-    );
-    expect(waitResult.getInt32(KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET, true)).toBe(15);
-    expect(waitResult.getInt32(KERNEL_WAIT_RESULT_SI_CODE_OFFSET, true)).toBe(
-      WAIT_CLD_KILLED,
-    );
-    expect(waitResult.getInt32(KERNEL_WAIT_RESULT_SI_STATUS_OFFSET, true)).toBe(15);
+    expect(getExitSignal(childPid)).toBe(15);
+    expect(reapExitedChild(parentPid, childPid)).toBe(0);
     expect(getExitSignal(childPid)).toBe(-ESRCH);
   });
 });

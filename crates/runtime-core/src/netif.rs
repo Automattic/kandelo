@@ -329,9 +329,6 @@ mod tests {
             buf.fill(self.random_fill);
             Ok(buf.len())
         }
-        fn host_waitpid(&mut self, _: i32, _: u32) -> Result<(i32, i32), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
         fn host_net_connect(&mut self, _: i32, _: &[u8], _: u16) -> Result<(), wasm_posix_shared::Errno> {
             unimplemented!()
         }

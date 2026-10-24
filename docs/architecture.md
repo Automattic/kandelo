@@ -92,10 +92,11 @@ kernel_exec_target_cancel(owner_pid, opaque_target) → 0 | -errno
 kernel_exec_commit(pid, caller_tid, opaque_target) → 0 | -errno
 kernel_spawn_exec_commit(parent_pid, child_pid, opaque_target) → 0 | -errno
 kernel_publish_spawn_child(parent_pid, child_pid) → disposition | -errno
-kernel_thread_exit(pid, tid) → 0 | -errno
+kernel_thread_exit(pid, tid, ran) → 0 | -errno
 kernel_commit_process_exit(status) → committed_low_8_bits
 kernel_dequeue_signal(pid, tid, out_ptr, out_capacity) → 0 | signum | -errno
-kernel_wait_child_poll(parent_pid, caller_tid, target_pid, event_mask, flags, out_ptr, out_capacity) → child_pid | 0 | -errno
+kernel_drain_wait_completions(out_ptr, out_len, max_records) → record_count | -errno
+kernel_wait_next_timeout_ns() → relative_ns | -1
 kernel_pick_tcp_listener_target(port, exclude_pid, out_ptr, out_capacity) → 1 | 0 | -errno
 kernel_take_process_timer_cleanup(pid, out_ptr, out_capacity) → posix_count | -errno
 kernel_ipc_shmat_for_task(pid, tid, shmid, addr, flags) → segment_size | -errno

@@ -87,6 +87,8 @@ pub const HOST_RAW_SYSCALLS: &[u32] = &[
     ext::SYS_CLONE,
     Syscall::Exit as u32,
     ext::SYS_EXIT_GROUP,
+    // wait4/waitid park in the kernel and write their outputs when decided,
+    // so the kernel needs the caller's own addresses, not staged copies.
     Syscall::Wait4 as u32,
     ext::SYS_WAITID,
     // --- CAP: threading / cancellation operating on process memory ---

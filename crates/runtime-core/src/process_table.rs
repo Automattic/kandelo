@@ -733,6 +733,8 @@ impl ProcessTable {
         }
         let mut proc = self.processes.remove(&pid)?;
         crate::wait_park::retire_process(pid);
+        // A waiter on this child may now have no matching child (ECHILD).
+        crate::wait_park::note_children_changed();
         // Whole-process teardown consumes the OFD table itself, but retry
         // bindings can also own machine-global MQ/IPC pins and SCM_RIGHTS
         // references. Drop those before the ordinary backing walk and its
@@ -1856,6 +1858,8 @@ impl ProcessTable {
             return Err(Errno::ECHILD);
         }
         child.spawn_publication_pending = false;
+        // Its status (it may already have exited) is now waitable.
+        crate::wait_park::note_children_changed();
         Ok(if child.state == ProcessState::Exited {
             child.exit_signal as i32
         } else {

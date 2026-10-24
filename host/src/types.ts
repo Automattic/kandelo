@@ -250,9 +250,6 @@ export interface PlatformIO {
   // Time
   clockGettime(clockId: number): { sec: number; nsec: number };
 
-  // Process (optional — only needed when process management is available)
-  waitpid?(pid: number, options: number): { pid: number; status: number };
-
   // Networking (optional — only needed for AF_INET support)
   network?: NetworkIO;
 }

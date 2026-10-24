@@ -202,6 +202,31 @@ const PROCESS_ADDRESS_ARGUMENTS_2_3: &[ChannelScalarArgument] = &[
         kind: ChannelScalarKind::ProcessAddress,
     },
 ];
+/// `wait4(pid, status, options, rusage)`: both outputs are caller addresses
+/// the kernel writes when the wait is decided -- for a parked caller, long
+/// after any per-call staging is gone (see `runtime_core::wait_child`).
+const PROCESS_ADDRESS_ARGUMENTS_1_3: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 1,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 3,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+];
+/// `waitid(idtype, id, info, options, rusage)`; see
+/// [`PROCESS_ADDRESS_ARGUMENTS_1_3`].
+const PROCESS_ADDRESS_ARGUMENTS_2_4: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 2,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 4,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+];
 const U32_ARGUMENT_2: &[ChannelScalarArgument] = &[ChannelScalarArgument {
     index: 2,
     kind: ChannelScalarKind::U32,
@@ -628,6 +653,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
+        syscall_number: Syscall::Wait4 as u32,
+        musl_name: "wait4",
+        arguments: PROCESS_ADDRESS_ARGUMENTS_1_3,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
         syscall_number: extended_syscalls::SYS_FUTEX,
         musl_name: "futex",
         arguments: PROCESS_ADDRESS_ARGUMENT_0,
@@ -703,6 +734,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         syscall_number: extended_syscalls::SYS_MUNLOCK,
         musl_name: "munlock",
         arguments: PROCESS_ADDRESS_AND_SIZE_ARGUMENTS_0_1,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
+        syscall_number: extended_syscalls::SYS_WAITID,
+        musl_name: "waitid",
+        arguments: PROCESS_ADDRESS_ARGUMENTS_2_4,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {

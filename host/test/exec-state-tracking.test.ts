@@ -843,10 +843,6 @@ describe("exec host-state transition", () => {
           [8, { channels: [otherChannel], memory: otherMemory }],
         ]),
         activeChannels: [mainChannel, threadChannel, otherChannel],
-        waitingForChild: [
-          { parentPid: 7, channel: mainChannel },
-          { parentPid: 8, channel: otherChannel },
-        ],
         pendingCancels: new Set([threadChannel, otherChannel]),
         stoppedPids: new Set([7, 8]),
         parkedChannelCompletions: new Map([
@@ -890,9 +886,6 @@ describe("exec host-state transition", () => {
       );
       expect(worker.processes.has(8)).toBe(true);
       expect(worker.activeChannels).toEqual([otherChannel]);
-      expect(worker.waitingForChild).toEqual([
-        { parentPid: 8, channel: otherChannel },
-      ]);
       expect(worker.pendingCancels.has(threadChannel)).toBe(false);
       expect(worker.pendingCancels.has(otherChannel)).toBe(true);
       expect(worker.stoppedPids.has(7)).toBe(true);

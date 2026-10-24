@@ -2044,18 +2044,6 @@ pub type KernelRusage = WasmRusageWire;
 
 pub const WASM_RUSAGE_WIRE_SIZE: u32 = core::mem::size_of::<WasmRusageWire>() as u32;
 
-/// Fixed result record written by `kernel_wait_child_poll`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct KernelWaitResult {
-    pub wait_status: i32,
-    pub si_code: i32,
-    pub si_status: i32,
-    pub child_uid: u32,
-    pub rusage: WasmRusageWire,
-}
-
-pub const KERNEL_WAIT_RESULT_SIZE: u32 = core::mem::size_of::<KernelWaitResult>() as u32;
 
 /// Fixed host/kernel records borrowed through kernel-owned scratch.
 ///
@@ -2113,7 +2101,7 @@ pub mod kernel_scratch_wire {
 
 #[cfg(test)]
 mod wait_abi_tests {
-    use super::{KernelWaitResult, WasmRusageWire, KERNEL_WAIT_RESULT_SIZE, WASM_RUSAGE_WIRE_SIZE};
+    use super::{WasmRusageWire, WASM_RUSAGE_WIRE_SIZE};
     use core::mem::{offset_of, size_of};
 
     #[test]
@@ -2126,16 +2114,6 @@ mod wait_abi_tests {
         assert_eq!(offset_of!(WasmRusageWire, ru_nivcsw), 136);
     }
 
-    #[test]
-    fn kernel_wait_result_layout_is_stable() {
-        assert_eq!(KERNEL_WAIT_RESULT_SIZE, 160);
-        assert_eq!(size_of::<KernelWaitResult>(), 160);
-        assert_eq!(offset_of!(KernelWaitResult, wait_status), 0);
-        assert_eq!(offset_of!(KernelWaitResult, si_code), 4);
-        assert_eq!(offset_of!(KernelWaitResult, si_status), 8);
-        assert_eq!(offset_of!(KernelWaitResult, child_uid), 12);
-        assert_eq!(offset_of!(KernelWaitResult, rusage), 16);
-    }
 }
 
 /// select() constants.
@@ -3756,7 +3734,6 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_transfer_scratch_capacity"),
         HostAdapterKernelExport::required("kernel_transfer_scratch_pointer"),
         HostAdapterKernelExport::required("kernel_validate_task"),
-        HostAdapterKernelExport::required("kernel_wait_child_poll"),
         HostAdapterKernelExport::required("kernel_wait_next_timeout_ns"),
     ];
 

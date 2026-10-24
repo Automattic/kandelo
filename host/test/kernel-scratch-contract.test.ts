@@ -857,9 +857,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     2,
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.consumeExitedChild::kernel-export-direct-use::reapChild(parentPid, childPid)",
-  ),
-  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.claimPcmTransport::kernel-export-direct-use::claimFn(PcmTransportMode.SharedClock)",
   ),
   reviewedScalarKernelExportCall(
@@ -960,9 +957,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.notifyParentOfChildStateTransition::kernel-export-direct-use::hasNoCldStop(parentPid)",
-  ),
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.notifyParentOfExitedProcess::kernel-export-direct-use::hasNoCldWait(parentPid)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.pcmClockUpdate::kernel-export-direct-use::clockUpdate(requestedFrames)",
@@ -1423,11 +1417,7 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "kernel-control",
     why: "An allocator-owned KernelScratchExportPointer cannot represent null. This secret-capability fixed mqueue companion is the only intentional direct null call to this export and verifies Rust rejects the missing destination before consuming notification state; guarded destinations still require opaque lease tokens.",
   },
-  {
-    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#createTestAuthority::kernel-pointer-export-bypass::waitPoll( channel.pid, callerTid, childPid, WAIT_EVENT_EXITED, 0, this.#kernelPointerWidth === 8 ? 0n : 0, capacity, )",
-    disposition: "kernel-control",
-    why: "An allocator-owned KernelScratchExportPointer cannot represent null. This secret-capability fixed wait companion is the only intentional direct null call to this export and proves Rust rejects the destination before selecting or consuming child status; guarded destinations still require opaque lease tokens.",
-  },
+
   {
     key: "host/src/kernel.ts::bufferByteLength::kernel-buffer-escape::intrinsicApply( intrinsicSharedArrayBufferByteLength, buffer, [], )",
     disposition: "kernel-read",
@@ -1579,11 +1569,6 @@ const auditAllowances: AuditAllowance[] = [
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_getrandom destination", )',
     disposition: "rust-lent",
     why: "The random import authenticates the untouched Rust pointer and capacity before the entropy producer runs.",
-  },
-  {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( statusPtr, 4, "host_waitpid status destination", )',
-    disposition: "rust-lent",
-    why: "The wait import binds its nonnull status pointer formal to the fixed four-byte result before either backend can consume child state.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_net_recv destination", )',
