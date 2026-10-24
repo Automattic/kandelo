@@ -3978,7 +3978,17 @@ Texture bind/release, pixmap creation/copy and OpenVG client-buffer creation
 now expose entry points and the specific errors required by the current
 configuration and GBM platform. They preserve queued GL work and thread
 ownership. Implemented EGL functions resolve through GetProcAddress; core
-sync/image and broader wait/lifecycle semantics remain inventory gaps.
+sync objects, GL-source images and broader wait/lifecycle semantics remain
+inventory gaps.
+
+Core EGL image creation reads pointer-width EGLAttrib lists, while the KHR
+entry point reads EGLint lists. Both use one retained-image registry and
+support the existing dma-buf import target; either destruction spelling
+invalidates the same public handle without releasing surviving siblings.
+Attribute keys and values are checked before narrowing or importing.
+Required plane offset presence is distinct from zero. Validated YUV hints
+have no effect on supported RGB images. GL-source image creation and full
+CPU/storage metadata conformance remain open compatibility work.
 
 Surface allocation reserves native deletion receipts and every selector update
 before creating texture/renderbuffer/framebuffer objects. Checked storage and

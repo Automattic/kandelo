@@ -98,7 +98,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 174 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 185 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -552,3 +552,19 @@ reads until accepted finish and require two real native finish calls in each
 engine/dispatch mode. The affected selection is 30 cases including the prior
 24 surface replays. These checks do not implement EGL sync objects or replace
 normal guest, compositor, memory and POSIX validation.
+
+
+Core `eglCreateImage` and KHR `eglCreateImageKHR` share the same retained
+image registry for dma-buf imports. Native cases cover both attribute
+widths, complete required fields, guarded list endings, wide keys and
+values, preservation/hint validation, allocation/import rejection, mixed
+core/KHR destruction and retained texture/renderbuffer/FBO siblings.
+The core-image browser source replay preserves red sibling pixels after
+public image destruction while one texture becomes blue, then renders
+green through the surviving sibling. It runs on all three engines.
+The device double records source registration and checked source queries;
+the replay supplies canonical GPU BO storage and kernel identity plumbing.
+It does not execute rebuilt guest ioctl marshalling. Forwarded BO-source
+registration remains an ordinary gap, so this new GPU import scenario has
+native dispatch coverage only; the remaining applicable C replays still
+exercise both routes.

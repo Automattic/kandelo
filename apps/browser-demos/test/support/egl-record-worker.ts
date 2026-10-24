@@ -205,6 +205,26 @@ self.onmessage = ({data}) => {
         if(gl && (values[0]!==Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)) ||
           before.some((value,index)=>value!==state()[index])))throw new Error("surface limits changed native owner state");
         limits.push(values);
+      } else if(kind===16) {
+        if(forwarded)throw new Error("image BO-source forwarding remains unimplemented");
+        const bo=words.getUint32(0,true),target=words.getUint32(4,true),context=words.getUint32(8,true),expected=words.getUint32(12,true);
+        if(!rawBos.has(bo)) {
+          if(native!.gl.createGpuBo(bo,gl!,64,64)===null)throw new Error("image canonical storage");
+          rawBos.add(bo);
+        }
+        if(imports!.host_gl_bind_foreign_texture(7,context,bo,target)!==expected)throw new Error("C image source mismatch");
+      } else if(kind===17) {
+        const op=words.getUint32(0,true),input=bytes.slice(16);
+        let reply:Uint8Array,rc:number;
+        if(forwarded){const result=channel(fd).onQuery!(op,input,12);reply=result.bytes;rc=result.rc;}
+        else {
+          new Uint8Array(memory!.buffer,64,input.length).set(input);
+          rc=imports!.host_gl_query(7,op,64,input.length,128,12,fd);
+          reply=new Uint8Array(memory!.buffer,128,12).slice();
+        }
+        const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
+        if(rc!==12||[0,1,2].some(i=>output.getUint32(i*4,true)!==words.getUint32(4+i*4,true)))
+          throw new Error("C image source query mismatch");
       } else if(kind===13) {
         if(forwarded || !data.rawCandidate)throw new Error("raw BO replay requires native source registration");
         const bo=words.getUint32(0,true),target=words.getUint32(4,true),context=words.getUint32(8,true),expected=words.getUint32(12,true);

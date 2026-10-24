@@ -7,6 +7,15 @@ pointer-marshalling tests retain both guest address widths. It is not a conforma
 claim. An ordinary defect remains open until implementation and executable
 validation cover it; a passing demo does not close an API family.
 
+## Unpublished ABI policy
+
+The user requested one ABI number for the remainder of this effort on
+2026-10-24. Keep the combined source on **ABI 59** across implementation
+increments and regenerate ABI outputs when their inputs change. Rebuild
+normal artifacts from the final coherent source before relying on them.
+Earlier version numbers below describe development history; they do not
+require further per-increment bumps or imply released artifact sets.
+
 ## Reproducible starting points
 
 - Main: `d51ac6d2ce658e9a775d1118db6fbcf49ba510cb`, fetched 2026-10-23.
@@ -74,8 +83,8 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU coherence, forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU coherence, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
-| E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Cage supports one linear plane; must audit metadata and rollback | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
-| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core sync/image symbols remain absent despite advertised version; client/GL waits now acknowledge ordered completion and validate swap-interval ownership in source; native waits, full lifecycle/error audit and normal guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
+| E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. Full backing metadata, CPU coherence, format and rollback validation remain open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
+| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve and support the existing dma-buf target through the shared retained-image registry. GL texture/cube/renderbuffer image sources and sync objects remain unimplemented. Client/GL waits acknowledge ordered completion and validate swap-interval ownership in source; native waits, full lifecycle/error audit and normal guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel authoritative BO references; changed-run publication on main | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Main two-BO ring; audit lock/destroy/outstanding buffer lifetime | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
@@ -4377,3 +4386,65 @@ and consumer validation while retaining the shared ownership models and
 complete baseline goal. Missing core EGL sync APIs do not gate the
 pinned wlroots path identified above; ordinary baseline gaps remain
 open. Full-baseline completion still has no validated duration estimate.
+
+
+### Core image entry points and dma-buf attribute validation
+
+This increment retains ABI 59 and operation table 16. There is no new
+kernel or host wire contract. The core `eglCreateImage` and
+`eglDestroyImage` definitions now resolve through GetProcAddress, use the
+existing retained image registry and support its dma-buf target. Core and
+KHR destruction are interchangeable for these handles. The core parser
+reads EGLAttrib elements; the KHR parser retains EGLint elements.
+GL texture/cube/renderbuffer image sources remain ordinary gaps.
+
+The shared parser checks attribute keys before reading values and checks
+representability before narrowing. Mandatory plane offset presence is
+separate from its zero value. Valid YUV hints are ignored for supported
+RGB formats; invalid hint/preservation values fail before import. Modifier
+words accept signed EGLint bit patterns and wide positive u32 values;
+malformed pairs and unsupported combinations remain rejected. The relevant
+requirements are [EGL 1.5 section 3.9](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf),
+[EXT dma-buf import](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import.txt)
+and its [modifiers extension](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import_modifiers.txt).
+
+All commands below use `scripts/dev-shell.sh`:
+
+| Check | Exact evidence |
+|---|---|
+| Native C | All 185 fatal-UBSan cases pass; `graphics-core-image-final-native.log` |
+| Private wasm32 | Paired EGL/GLES and actual-GBM links pass; both new symbols are defined; same log |
+| Existing GLES authority/core inventory | 150 authority guards and 142/142 core definitions/resolvers pass; same log |
+| EGL core definition inventory | 39/44 definitions and all corresponding resolvers; only five sync definitions absent; `graphics-core-image-api-inventory.log`; symbols are not semantic conformance |
+| Prior-library comparison | All eleven new cases fail unchanged `2dcf3db679`; `graphics-core-image-final-baseline.log` |
+| New actual-C GPU import replay | Chromium/Firefox/WebKit native dispatch pass; `graphics-core-image-first-browser.log` |
+| Complete enabled actual-C source replay selection | All 105 pass across Chromium/Firefox/WebKit, no runtime skips, 10.2m; `graphics-core-image-final-browser.log`; native-only BO import exclusions are described below |
+
+Eight new baseline failures are missing-core-API resolution, not eight
+independent behavioral reproductions. Three directly reproduce omitted
+mandatory offset acceptance, valid hint rejection and invalid preservation
+acceptance. Current cases additionally cover wide values/keys, guarded
+terminators and invalid keys, allocation/import rejection, mixed API
+spelling, sibling retirement and display-generation replacement.
+
+The new real-WebGL replay imports canonical GPU storage through recorded
+C source registration and source-query bytes, destroys the public image,
+respecifies one texture to blue, checks that its sibling remains red, then
+renders green through that sibling. Unbound framebuffer storage retains
+the final C reference after texture deletion. The replay supplies kernel
+identity plumbing and canonical GPU BO creation; it does not execute guest
+ioctl marshalling. Forwarded BO-source registration remains unimplemented,
+so this import scenario has native coverage only. Existing applicable
+replays continue to exercise both dispatch routes.
+
+The sync audit confirms a separate model is needed: display-owned sync
+handles must survive creator-context destruction and support no-current
+client waits, plus multiple waiters and deferred deletion. Current GLIO
+query authority is context-oriented. Native WebGL fence observation also
+requires allowing the host event loop to advance. The existing finish
+query does not implement these fence lifetime/timeout requirements; no
+sync implementation or hard platform boundary is claimed here.
+
+Normal SDK/kernel/program/package/image rebuilds, guest CTS, compositor
+consumers, full browser-memory and POSIX gates remain deferred/unrun for
+this increment. The complete compatibility goal remains active.

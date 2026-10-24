@@ -143,7 +143,7 @@ static struct {
 static uint32_t transferred_handles[8];
 static int imported_owners[8];
 static unsigned transfers, transfer_closes, export_closes;
-static int fail_prime_export, fail_prime_import, fail_foreign_texture;
+static int fail_prime_export, fail_prime_import, fail_foreign_texture, fail_dmabuf_import;
 static unsigned display_opens, display_closes, object_closes;
 static uint32_t display_generation = 91;
 static int display_live, fail_display_join;
@@ -510,6 +510,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
     } else if (request == 0xc00c642eu) {
         uint32_t *words = arg;
         if (words[2] == 100) {
+            if (fail_dmabuf_import) { errno = ENOMEM; return -1; }
             words[0] = 77; // Repeated PRIME imports share one GEM handle.
             imported_owners[fd - 10] = 1;
             imports++;
@@ -559,9 +560,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             errno = ENOMEM;
             return -1;
         }
-        if (words[1] == 0x57504b49u)
+        if (words[1] == 0x57504b49u) {
             words[3] = 1u;
-        else {
+            egl_trace(16,fd,words,16);
+        } else {
             if (!image_groups[slot->image_group].raw_name)
                 image_groups[slot->image_group].raw_name = 0x60000000u;
             words[3] = image_groups[slot->image_group].raw_name;
@@ -994,6 +996,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             reply[2] = failure == 3 ? 0 : 0x47514c33u;
             if (failure == 2)
                 query_gl_error = GL_OUT_OF_MEMORY;
+            uint32_t trace[7] = {q->op,reply[0],reply[1],reply[2]};
+            memcpy(trace+4,input,q->in_buf_len);
+            egl_trace(17,fd,trace,16+q->in_buf_len);
             return 0;
         }
         if (q->op == 0x22) {
@@ -1445,6 +1450,188 @@ int main(int argc, char **argv) {
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    if (!strncmp(argv[1],"core-image-",11) || !strncmp(argv[1],"dmabuf-",7)) {
+        PFNEGLCREATEIMAGEPROC create = (PFNEGLCREATEIMAGEPROC)eglGetProcAddress("eglCreateImage");
+        PFNEGLDESTROYIMAGEPROC destroy = (PFNEGLDESTROYIMAGEPROC)eglGetProcAddress("eglDestroyImage");
+        int core = !strncmp(argv[1],"core-image-",11);
+        if (core) assert(create && destroy);
+        EGLAttrib wide[] = {EGL_WIDTH,64,EGL_HEIGHT,64,EGL_LINUX_DRM_FOURCC_EXT,0x34324241,
+            EGL_DMA_BUF_PLANE0_FD_EXT,100,EGL_DMA_BUF_PLANE0_OFFSET_EXT,0,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT,256,EGL_NONE};
+        EGLint narrow[13];
+        for (unsigned i = 0; i < 13; i++) narrow[i] = (EGLint)wide[i];
+        unsigned initial = allocation_count();
+        if (!strcmp(argv[1],"core-image-basic")) {
+            EGLImage first = create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,wide);
+            assert(first && eglGetCurrentContext() == EGL_NO_CONTEXT && imports == 1);
+            assert(eglDestroyImageKHR(dpy,first) && closes == 1);
+            EGLImageKHR second = image(dpy);
+            assert(second && second != first && destroy(dpy,second) && closes == 2);
+            assert(!destroy(dpy,first) && eglGetError() == EGL_BAD_PARAMETER);
+        } else if (!strcmp(argv[1],"core-image-invalid")) {
+            assert(!create(EGL_NO_DISPLAY,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,wide));
+            assert(eglGetError() == EGL_BAD_DISPLAY);
+            assert(!create(dpy,EGL_NO_CONTEXT,0,NULL,wide) && eglGetError() == EGL_BAD_PARAMETER);
+            assert(!create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,(void *)1,wide));
+            assert(eglGetError() == EGL_BAD_PARAMETER);
+            assert(!create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,NULL));
+            assert(eglGetError() == EGL_BAD_PARAMETER);
+            assert(!destroy(dpy,EGL_NO_IMAGE) && eglGetError() == EGL_BAD_PARAMETER);
+            assert(!destroy(EGL_NO_DISPLAY,EGL_NO_IMAGE) && eglGetError() == EGL_BAD_DISPLAY);
+            assert(!imports);
+        } else if (!strcmp(argv[1],"core-image-wide")) {
+            if (sizeof(EGLAttrib) > 4) {
+                const int64_t extra = (int64_t)UINT32_MAX + 1;
+                for (unsigned i = 0; i < 12; i += 2) {
+                    EGLAttrib saved = wide[i]; wide[i] = (EGLAttrib)(extra + saved);
+                    assert(!create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,wide));
+                    assert(eglGetError() == EGL_BAD_PARAMETER); wide[i] = saved;
+                }
+                for (unsigned i = 1; i < 12; i += 2) {
+                    EGLAttrib saved = wide[i]; wide[i] = (EGLAttrib)(extra + saved);
+                    assert(!create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,wide));
+                    assert(eglGetError() == (i == 7 || i == 9 || i == 11 ? EGL_BAD_ACCESS : EGL_BAD_PARAMETER));
+                    wide[i] = saved;
+                }
+            }
+            EGLAttrib modifiers[17]; memcpy(modifiers,wide,12*sizeof *wide);
+            modifiers[12] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT; modifiers[13] = -1;
+            modifiers[14] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT; modifiers[15] = 0x00ffffff;
+            modifiers[16] = EGL_NONE;
+            EGLImage value = create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,modifiers);
+            assert(value && destroy(dpy,value));
+            if (sizeof(EGLAttrib) > 4) {
+                modifiers[13] = (EGLAttrib)(uint64_t)UINT32_MAX;
+                value = create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,modifiers);
+                assert(value && destroy(dpy,value));
+                modifiers[13] = (EGLAttrib)((uint64_t)UINT32_MAX + 1);
+                assert(!create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,modifiers));
+                assert(eglGetError() == EGL_BAD_PARAMETER);
+            }
+        } else if (!strcmp(argv[1],"core-image-guard")) {
+            size_t page = (size_t)sysconf(_SC_PAGESIZE);
+            uint8_t *guard = mmap(NULL,page*2,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+            assert(guard != MAP_FAILED && !mprotect(guard+page,page,PROT_NONE));
+            EGLAttrib *last = (EGLAttrib *)(guard+page)-1;
+            for (unsigned i = 0; i < 4; i++) {
+                *last = i == 0 ? EGL_NONE : i == 1 ? 0x1234 : i == 2 ? EGL_GL_TEXTURE_LEVEL : EGL_DMA_BUF_PLANE1_FD_EXT;
+                assert(!create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,last));
+                assert(eglGetError() == (i < 2 ? EGL_BAD_PARAMETER : i == 2 ? EGL_BAD_MATCH : EGL_BAD_ATTRIBUTE));
+            }
+            EGLAttrib *list = (EGLAttrib *)(guard+page)-13;
+            memcpy(list,wide,sizeof wide);
+            EGLImage value = create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,list);
+            assert(value && destroy(dpy,value));
+            EGLint *small = (EGLint *)(guard+page)-13; memcpy(small,narrow,sizeof narrow);
+            value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,small);
+            assert(value && destroy(dpy,value));
+            assert(!munmap(guard,page*2));
+        } else if (!strcmp(argv[1],"dmabuf-required")) {
+            for (unsigned omit = 0; omit < 6; omit++) {
+                EGLint incomplete[11]; unsigned cursor = 0;
+                for (unsigned i = 0; i < 6; i++) if (i != omit) {
+                    incomplete[cursor++] = narrow[i*2]; incomplete[cursor++] = narrow[i*2+1];
+                }
+                incomplete[cursor] = EGL_NONE;
+                assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,incomplete));
+                assert(eglGetError() == EGL_BAD_PARAMETER && !imports);
+            }
+        } else if (!strcmp(argv[1],"dmabuf-preserved")) {
+            EGLint preserved[15]; memcpy(preserved,narrow,12*sizeof *narrow);
+            preserved[12] = EGL_IMAGE_PRESERVED_KHR; preserved[13] = 7; preserved[14] = EGL_NONE;
+            assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,preserved));
+            assert(eglGetError() == EGL_BAD_PARAMETER && !imports);
+        } else if (!strcmp(argv[1],"dmabuf-hints")) {
+            EGLint hints[23]; memcpy(hints,narrow,12*sizeof *narrow);
+            const EGLint keys[] = {EGL_YUV_COLOR_SPACE_HINT_EXT,EGL_SAMPLE_RANGE_HINT_EXT,
+                EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT,EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT,
+                EGL_IMAGE_PRESERVED_KHR};
+            const EGLint values[] = {EGL_ITU_REC709_EXT,EGL_YUV_NARROW_RANGE_EXT,
+                EGL_YUV_CHROMA_SITING_0_EXT,EGL_YUV_CHROMA_SITING_0_5_EXT,EGL_TRUE};
+            for (unsigned i = 0; i < 5; i++) { hints[12+i*2] = keys[i]; hints[13+i*2] = values[i]; }
+            hints[22] = EGL_NONE;
+            EGLImageKHR value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,hints);
+            assert(value && eglDestroyImageKHR(dpy,value));
+            for (unsigned i = 0; i < 5; i++) {
+                hints[13+i*2] = -1;
+                assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,hints));
+                assert(eglGetError() == (i == 4 ? EGL_BAD_PARAMETER : EGL_BAD_ATTRIBUTE));
+                hints[13+i*2] = values[i];
+            }
+            assert(imports == 1 && closes == 1);
+        } else if (!strcmp(argv[1],"core-image-render")) {
+            binding_model = 1;
+            EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(context);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,context));
+            EGLImage value = create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,wide); assert(value);
+            GLuint textures[2], fbo;
+            glGenTextures(2,textures);
+            for (unsigned i = 0; i < 2; i++) {
+                glBindTexture(GL_TEXTURE_2D,textures[i]);
+                glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,value);
+            }
+            glGenFramebuffers(1,&fbo); glBindFramebuffer(GL_FRAMEBUFFER,fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,textures[0],0);
+            glClearColor(1,0,0,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
+            assert(destroy(dpy,value) && !closes);
+            glBindTexture(GL_TEXTURE_2D,textures[0]);
+            const uint8_t blue[4] = {0,0,255,255};
+            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,blue); glFlush();
+            glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,textures[1],0);
+            glColorMask(GL_FALSE,GL_FALSE,GL_FALSE,GL_FALSE);
+            glClear(GL_COLOR_BUFFER_BIT); glFlush();
+            glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+            glClearColor(0,1,0,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
+            glBindFramebuffer(GL_FRAMEBUFFER,0);
+            glDeleteTextures(2,textures); assert(!closes);
+            glDeleteFramebuffers(1,&fbo); assert(closes == 1 && glGetError() == GL_NO_ERROR);
+            assert(eglDestroyContext(dpy,context) && eglReleaseThread());
+        } else if (!strcmp(argv[1],"core-image-allocation")) {
+            fail_calloc = 1;
+            assert(!create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,wide));
+            fail_calloc = 0;
+            assert(eglGetError() == EGL_BAD_ALLOC && !imports && allocation_count() == initial);
+            fail_dmabuf_import = 1;
+            assert(!create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,wide));
+            fail_dmabuf_import = 0;
+            assert(eglGetError() == EGL_BAD_ACCESS && allocation_count() == initial);
+            EGLImage value = create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,wide);
+            assert(value && destroy(dpy,value));
+        } else {
+            assert(!strcmp(argv[1],"core-image-lifetime") || !strcmp(argv[1],"core-image-generation"));
+            EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(context);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,context));
+            EGLImage value = create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,wide); assert(value);
+            GLuint texture, rb; glGenTextures(1,&texture); glBindTexture(GL_TEXTURE_2D,texture);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,value);
+            glGenRenderbuffers(1,&rb); glBindRenderbuffer(GL_RENDERBUFFER,rb);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,value);
+            assert(glGetError() == GL_NO_ERROR && !closes);
+            if (!strcmp(argv[1],"core-image-generation")) {
+                assert(eglTerminate(dpy) && !closes);
+                assert(!destroy(dpy,value) && eglGetError() == EGL_NOT_INITIALIZED);
+                assert(eglInitialize(dpy,NULL,NULL));
+                assert(!destroy(dpy,value) && eglGetError() == EGL_BAD_PARAMETER);
+                EGLImage replacement = create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,wide);
+                assert(replacement && replacement != value && destroy(dpy,replacement) && closes == 1);
+            } else {
+                assert(destroy(dpy,value));
+                assert(!eglDestroyImageKHR(dpy,value) && eglGetError() == EGL_BAD_PARAMETER);
+                assert(!_wpk_egl_image_lookup(value) && !closes);
+                const uint8_t pixel[4] = {255,0,0,255};
+                glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,pixel);
+                assert(glGetError() == GL_NO_ERROR && !closes);
+                glDeleteTextures(1,&texture); assert(!closes);
+                glDeleteRenderbuffers(1,&rb); assert(closes == 1);
+            }
+            if (!strcmp(argv[1],"core-image-generation")) {
+                assert(!eglDestroyContext(dpy,context) && eglGetError() == EGL_BAD_CONTEXT);
+            } else assert(eglDestroyContext(dpy,context));
+            assert(eglReleaseThread());
+        }
+        assert(eglTerminate(dpy) && !allocation_count());
+        printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strncmp(argv[1],"completion-",11)) {
         assert(eglWaitClient() && eglWaitGL() && !finish_queries && !submit_batches);
         if (!strcmp(argv[1],"completion-interval"))

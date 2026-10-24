@@ -2043,6 +2043,13 @@ beyond WebGL's limits or full uniform conformance.
 
 ### ABI 59 combined main and graphics interfaces
 
+For this unpublished graphics effort, the user requested on 2026-10-24
+that subsequent implementation increments keep ABI 59. Regenerate the
+outputs as their source contracts change, then build and validate one
+coherent artifact set. Prior graphics version numbers are historical
+development checkpoints, not a request to keep bumping each increment.
+This sequencing applies to this effort, not unrelated released ABIs.
+
 ABI 59 combines main's ABI 53 xattr marshalling, scalar contracts and
 exchange imports/exports with the graphics session, thread-current,
 display-generation, independent-surface and shared-context contracts
