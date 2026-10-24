@@ -73,7 +73,12 @@ impl<'i> Visitor<'i> for Calls<'_> {
 }
 
 pub(crate) fn load_wasm(module: &Module, sigs: &mut Interner) -> Wasm {
-    let n = module.funcs.iter().map(|f| f.id().index() + 1).max().unwrap_or(0);
+    let n = module
+        .funcs
+        .iter()
+        .map(|f| f.id().index() + 1)
+        .max()
+        .unwrap_or(0);
     let mut w = Wasm {
         names: vec![String::new(); n],
         import: vec![false; n],
@@ -99,14 +104,26 @@ pub(crate) fn load_wasm(module: &Module, sigs: &mut Interner) -> Wasm {
             FunctionKind::Import(_) => w.import[i] = true,
             FunctionKind::Local(l) => {
                 let mut ind = vec![];
-                dfs_in_order(&mut Calls { consts: &mut w.consts[i], direct: &mut w.direct[i], indirect: &mut ind }, l, l.entry_block());
+                dfs_in_order(
+                    &mut Calls {
+                        consts: &mut w.consts[i],
+                        direct: &mut w.direct[i],
+                        indirect: &mut ind,
+                    },
+                    l,
+                    l.entry_block(),
+                );
                 w.indirect[i] = ind.into_iter().map(|t| sig_of(module, t, sigs)).collect();
             }
             _ => {}
         }
     }
     for e in module.elements.iter() {
-        if let ElementKind::Active { offset: ConstExpr::Value(Value::I32(base)), .. } = &e.kind {
+        if let ElementKind::Active {
+            offset: ConstExpr::Value(Value::I32(base)),
+            ..
+        } = &e.kind
+        {
             if let ElementItems::Functions(v) = &e.items {
                 for (k, f) in v.iter().enumerate() {
                     w.slots.insert(*base as i64 + k as i64, f.index() as u32);
@@ -133,13 +150,43 @@ pub(crate) fn load_wasm(module: &Module, sigs: &mut Interner) -> Wasm {
     w
 }
 
+/// Visit one original operator at a time with the oracle parser's lexical
+/// retention policy. This is distinct from semantic control reachability.
+pub(crate) fn visit_retained_operators(
+    scan: &crate::streaming::Scan<'_>,
+    control_frames: usize,
+    mut visit: impl FnMut(usize, &wasmparser::Operator<'_>) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    use wasmparser::{Parser, Payload};
+    let mut function = scan.imported_functions as usize;
+    for payload in Parser::new(0).parse_all(scan.input()) {
+        let Payload::CodeSectionEntry(body) = payload? else {
+            continue;
+        };
+        let mut retention = crate::streaming::LexicalRetention::new(control_frames)?;
+        let mut reader = body.get_operators_reader()?;
+        while !reader.eof() {
+            let op = reader.read()?;
+            if retention.visit(&op)? {
+                visit(function, &op)?;
+            }
+        }
+        function += 1;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------- edges
 #[derive(Clone, Debug)]
 enum Target {
     /// Indirect call of a Wasm signature. `typed` is the IR site with its
     /// type facts, or None when the site has no usable IR (signature
     /// fallback).
-    Indirect { sig: u32, typed: Option<usize>, hub: Option<usize> },
+    Indirect {
+        sig: u32,
+        typed: Option<usize>,
+        hub: Option<usize>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -217,7 +264,12 @@ fn pass_through_edges(side: &Side) -> Vec<(String, String, String, String)> {
         site_of.insert(site.as_str(), (callee.as_str(), caller.as_str()));
     }
     // A function has a known body when the plugin declared its return slot.
-    let known: HashSet<&str> = side.slot_links.iter().filter(|(_, k, _)| k == "ret").map(|(_, _, f)| f.as_str()).collect();
+    let known: HashSet<&str> = side
+        .slot_links
+        .iter()
+        .filter(|(_, k, _)| k == "ret")
+        .map(|(_, _, f)| f.as_str())
+        .collect();
     // Summary per function: the parameters that reach its return value, and
     // the other sources (globals, fields, origins it creates, results of
     // unknown callees) that do. A call site's result takes its own
@@ -227,7 +279,12 @@ fn pass_through_edges(side: &Side) -> Vec<(String, String, String, String)> {
     let args = |site: &str, k: Option<u32>| -> Vec<&str> {
         side.call_args
             .get(site)
-            .map(|v| v.iter().filter(|(i, _)| k.is_none_or(|k| *i == k)).map(|(_, s)| s.as_str()).collect())
+            .map(|v| {
+                v.iter()
+                    .filter(|(i, _)| k.is_none_or(|k| *i == k))
+                    .map(|(_, s)| s.as_str())
+                    .collect()
+            })
             .unwrap_or_default()
     };
     // Iterate in a fixed order so the fixpoint is deterministic.
@@ -240,7 +297,10 @@ fn pass_through_edges(side: &Side) -> Vec<(String, String, String, String)> {
             let mut others: HashSet<String> = HashSet::new();
             let start = format!("r:{f}");
             let mut seen: HashSet<String> = HashSet::new();
-            let mut work: Vec<String> = preds.get(start.as_str()).map(|v| v.iter().map(|x| x.to_string()).collect()).unwrap_or_default();
+            let mut work: Vec<String> = preds
+                .get(start.as_str())
+                .map(|v| v.iter().map(|x| x.to_string()).collect())
+                .unwrap_or_default();
             while let Some(x) = work.pop() {
                 if !seen.insert(x.clone()) {
                     continue;
@@ -270,7 +330,13 @@ fn pass_through_edges(side: &Side) -> Vec<(String, String, String, String)> {
                         }
                     }
                     (None, Some(owner)) if owner == f && x.starts_with("l:") => {
-                        work.extend(preds.get(x.as_str()).into_iter().flatten().map(|s| s.to_string()));
+                        work.extend(
+                            preds
+                                .get(x.as_str())
+                                .into_iter()
+                                .flatten()
+                                .map(|s| s.to_string()),
+                        );
                     }
                     _ => {
                         others.insert(x.clone());
@@ -290,7 +356,14 @@ fn pass_through_edges(side: &Side) -> Vec<(String, String, String, String)> {
     }
     let mut out = vec![];
     for (site, callee, caller) in &side.call_sites {
-        let mut push = |from: &str| out.push((site.clone(), callee.clone(), caller.clone(), from.to_string()));
+        let mut push = |from: &str| {
+            out.push((
+                site.clone(),
+                callee.clone(),
+                caller.clone(),
+                from.to_string(),
+            ))
+        };
         if known.contains(callee.as_str()) {
             if let Some((ps, os)) = summ.get(callee.as_str()) {
                 for &k in ps {
@@ -328,7 +401,11 @@ struct SlotGraph {
 }
 
 fn slot_graph(side: &Side, pass: &[(String, String, String, String)]) -> SlotGraph {
-    let mut g = SlotGraph { ids: HashMap::new(), names: vec![], succ: vec![] };
+    let mut g = SlotGraph {
+        ids: HashMap::new(),
+        names: vec![],
+        succ: vec![],
+    };
     let mut id = |s: &str, g: &mut SlotGraph| -> u32 {
         if let Some(&i) = g.ids.get(s) {
             return i;
@@ -367,9 +444,15 @@ fn link_slots(side: &Side, reach: &Reach, tys: &Interner, edge: &mut impl FnMut(
     let mut joins: HashMap<(&[u32], &str), String> = HashMap::new();
     for (t, k, fname) in &side.slot_links {
         let ret = k == "ret";
-        let (tail, head) = if ret { (format!("r:{fname}"), format!("rt:{t}")) } else { (format!("pt:{t}:{k}"), format!("p:{fname}:{k}")) };
+        let (tail, head) = if ret {
+            (format!("r:{fname}"), format!("rt:{t}"))
+        } else {
+            (format!("pt:{t}:{k}"), format!("p:{fname}:{k}"))
+        };
         edge(&tail, &head);
-        let Some(r) = reach.get(fname).filter(|r| !r.is_empty()) else { continue };
+        let Some(r) = reach.get(fname).filter(|r| !r.is_empty()) else {
+            continue;
+        };
         let join = joins.entry((r.as_slice(), k.as_str())).or_default();
         if join.is_empty() {
             // '#' starts no slot name the plugin writes.
@@ -391,7 +474,15 @@ fn link_slots(side: &Side, reach: &Reach, tys: &Interner, edge: &mut impl FnMut(
     }
 }
 
-fn slot_flow(side: &Side, base: &SlotGraph, reach: &Reach, tys: &Interner) -> (HashMap<String, HashSet<String>>, HashMap<String, HashSet<String>>) {
+fn slot_flow(
+    side: &Side,
+    base: &SlotGraph,
+    reach: &Reach,
+    tys: &Interner,
+) -> (
+    HashMap<String, HashSet<String>>,
+    HashMap<String, HashSet<String>>,
+) {
     // Round edges on top of the base graph; new slot names get ids after it.
     let mut ids: HashMap<String, u32> = HashMap::new();
     let mut names: Vec<String> = vec![];
@@ -410,7 +501,13 @@ fn slot_flow(side: &Side, base: &SlotGraph, reach: &Reach, tys: &Interner) -> (H
         let (x, y) = (id(a, &mut ids, &mut names), id(b, &mut ids, &mut names));
         extra.entry(x).or_default().push(y);
     });
-    let name_of = |i: u32| -> &str { if i < nb { base.names[i as usize].as_str() } else { names[(i - nb) as usize].as_str() } };
+    let name_of = |i: u32| -> &str {
+        if i < nb {
+            base.names[i as usize].as_str()
+        } else {
+            names[(i - nb) as usize].as_str()
+        }
+    };
     // Propagate origin sets (least fixpoint of set union), moving only the
     // origins a slot has newly gained.
     let n = nb as usize + names.len();
@@ -445,7 +542,11 @@ fn slot_flow(side: &Side, base: &SlotGraph, reach: &Reach, tys: &Interner) -> (H
         }
     }
     let lookup = |slot: &str| base.ids.get(slot).or_else(|| ids.get(slot)).copied();
-    let at = |slot: &str| -> Vec<&str> { lookup(slot).map(|i| orig[i as usize].iter().map(|&o| name_of(o)).collect()).unwrap_or_default() };
+    let at = |slot: &str| -> Vec<&str> {
+        lookup(slot)
+            .map(|i| orig[i as usize].iter().map(|&o| name_of(o)).collect())
+            .unwrap_or_default()
+    };
     // Functions stored in a record (and in records it embeds); function
     // types of a record's fields (and of records it embeds).
     let closure = |r: &str| -> Vec<String> {
@@ -460,13 +561,20 @@ fn slot_flow(side: &Side, base: &SlotGraph, reach: &Reach, tys: &Interner) -> (H
         }
         seen.into_iter().collect()
     };
-    let fns_memo: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<String>>>> = Default::default();
-    let types_memo: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<String>>>> = Default::default();
+    let fns_memo: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<String>>>> =
+        Default::default();
+    let types_memo: std::cell::RefCell<HashMap<String, std::rc::Rc<Vec<String>>>> =
+        Default::default();
     let fns_in = |r: &str| -> std::rc::Rc<Vec<String>> {
         if let Some(v) = fns_memo.borrow().get(r) {
             return v.clone();
         }
-        let v = std::rc::Rc::new(closure(r).iter().flat_map(|x| side.ast_g.get(x).into_iter().flatten().cloned()).collect::<Vec<_>>());
+        let v = std::rc::Rc::new(
+            closure(r)
+                .iter()
+                .flat_map(|x| side.ast_g.get(x).into_iter().flatten().cloned())
+                .collect::<Vec<_>>(),
+        );
         fns_memo.borrow_mut().insert(r.to_string(), v.clone());
         v
     };
@@ -474,7 +582,12 @@ fn slot_flow(side: &Side, base: &SlotGraph, reach: &Reach, tys: &Interner) -> (H
         if let Some(v) = types_memo.borrow().get(r) {
             return v.clone();
         }
-        let v = std::rc::Rc::new(closure(r).iter().flat_map(|x| side.rec_fn_types.get(x).into_iter().flatten().cloned()).collect::<Vec<_>>());
+        let v = std::rc::Rc::new(
+            closure(r)
+                .iter()
+                .flat_map(|x| side.rec_fn_types.get(x).into_iter().flatten().cloned())
+                .collect::<Vec<_>>(),
+        );
         types_memo.borrow_mut().insert(r.to_string(), v.clone());
         v
     };
@@ -486,13 +599,20 @@ fn slot_flow(side: &Side, base: &SlotGraph, reach: &Reach, tys: &Interner) -> (H
     // program and are not modelled; in units compiled with
     // -fno-strict-aliasing they are.
     let eff = side.effective_types;
-    for (slot, s_rec, _) in side.slot_reads_rec.iter().filter(|(_, _, rel)| !eff || *rel) {
+    for (slot, s_rec, _) in side
+        .slot_reads_rec
+        .iter()
+        .filter(|(_, _, rel)| !eff || *rel)
+    {
         for o in at(slot) {
             if let Some(r) = o.strip_prefix("@rec:") {
                 if r != s_rec {
                     let ts = types_in(s_rec);
                     for f in fns_in(r).iter() {
-                        starts.entry(f.clone()).or_default().extend(ts.iter().cloned());
+                        starts
+                            .entry(f.clone())
+                            .or_default()
+                            .extend(ts.iter().cloned());
                     }
                 }
             }
@@ -509,7 +629,11 @@ fn slot_flow(side: &Side, base: &SlotGraph, reach: &Reach, tys: &Interner) -> (H
             }
         }
     }
-    for (slot, u, _) in side.slot_reads_mem.iter().filter(|(_, _, rel)| !eff || *rel) {
+    for (slot, u, _) in side
+        .slot_reads_mem
+        .iter()
+        .filter(|(_, _, rel)| !eff || *rel)
+    {
         for o in at(slot) {
             if let Some(r) = o.strip_prefix("@rec:") {
                 for f in fns_in(r).iter() {
@@ -550,7 +674,12 @@ fn tainted_fns(side: &Side, slots: bool) -> (Interner, Reach) {
     (tys, reach)
 }
 
-fn tainted_fns1(side: &Side, tys: &mut Interner, extra_starts: &HashMap<String, HashSet<String>>, extra_z: &HashMap<String, HashSet<String>>) -> Reach {
+fn tainted_fns1(
+    side: &Side,
+    tys: &mut Interner,
+    extra_starts: &HashMap<String, HashSet<String>>,
+    extra_z: &HashMap<String, HashSet<String>>,
+) -> Reach {
     // Value conversions between types: T -> U.
     let mut z: HashMap<u32, Vec<u32>> = HashMap::new();
     for (t, us) in side.ast_z.iter().chain(extra_z) {
@@ -568,7 +697,10 @@ fn tainted_fns1(side: &Side, tys: &mut Interner, extra_starts: &HashMap<String, 
     for (r, tos) in &side.ast_h {
         let e: Vec<u32> = tos.iter().map(|t| tys.id(t)).collect();
         for f in side.ast_g.get(r).map(|v| v.iter()).into_iter().flatten() {
-            starts.entry(f.as_str()).or_default().extend(e.iter().copied());
+            starts
+                .entry(f.as_str())
+                .or_default()
+                .extend(e.iter().copied());
         }
     }
     // A function's own types: its source-level type and its CFI type ids.
@@ -578,7 +710,10 @@ fn tainted_fns1(side: &Side, tys: &mut Interner, extra_starts: &HashMap<String, 
         own.entry(f.as_str()).or_default().extend(e);
     }
     for (f, ids) in &side.fn_types {
-        let e: Vec<u32> = ids.iter().map(|&i| tys.id(&side.ids.names[i as usize])).collect();
+        let e: Vec<u32> = ids
+            .iter()
+            .map(|&i| tys.id(&side.ids.names[i as usize]))
+            .collect();
         own.entry(f.as_str()).or_default().extend(e);
     }
     // A function of type T also reaches whatever a T-typed value is
@@ -615,7 +750,12 @@ fn tainted_fns1(side: &Side, tys: &mut Interner, extra_starts: &HashMap<String, 
     let mut out = HashMap::new();
     for f in fns {
         let mut r: Vec<u32> = vec![];
-        for &t in starts.get(f).into_iter().flatten().chain(own.get(f).into_iter().flatten()) {
+        for &t in starts
+            .get(f)
+            .into_iter()
+            .flatten()
+            .chain(own.get(f).into_iter().flatten())
+        {
             r.extend(closure_of(t).iter().copied());
         }
         r.sort_unstable();
@@ -626,7 +766,12 @@ fn tainted_fns1(side: &Side, tys: &mut Interner, extra_starts: &HashMap<String, 
 }
 
 /// `cands[f]`: the definitions bound to function `f` (empty: no facts).
-pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn>], rules: &Rules) -> Graph<'a> {
+pub(crate) fn build_graph<'a>(
+    w: &'a Wasm,
+    side: &'a Side,
+    cands: &[Vec<&'a IrFn>],
+    rules: &Rules,
+) -> Graph<'a> {
     let n = w.names.len();
     let mut g = Graph {
         w,
@@ -648,7 +793,12 @@ pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn
         let (tys, tainted) = tainted_fns(side, rules.slots);
         for (f, name) in w.names.iter().enumerate() {
             if let Some(reach) = tainted.get(name) {
-                g.tainted[f] = Some(reach.iter().filter_map(|&t| side.ids.get(&tys.names[t as usize])).collect());
+                g.tainted[f] = Some(
+                    reach
+                        .iter()
+                        .filter_map(|&t| side.ids.get(&tys.names[t as usize]))
+                        .collect(),
+                );
             }
         }
     }
@@ -668,12 +818,19 @@ pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn
             // LLVM's WebAssemblyLowerGlobalDtors synthesizes this function
             // after IR: it registers this object's `.Lcall_dtors*` with
             // __cxa_atexit. Check that every table slot it names holds one.
-            let ok = w.direct[f].iter().all(|&c| w.names[c as usize] == "__cxa_atexit")
-                && w.consts[f].iter().all(|v| w.slots.get(v).is_none_or(|&t| w.names[t as usize].starts_with(".Lcall_dtors")));
+            let ok = w.direct[f]
+                .iter()
+                .all(|&c| w.names[c as usize] == "__cxa_atexit")
+                && w.consts[f].iter().all(|v| {
+                    w.slots
+                        .get(v)
+                        .is_none_or(|&t| w.names[t as usize].starts_with(".Lcall_dtors"))
+                });
             if ok {
                 for v in &w.consts[f] {
                     if let Some(&t) = w.slots.get(v) {
-                        g.extra_registered.push(("exit".to_string(), w.names[t as usize].clone()));
+                        g.extra_registered
+                            .push(("exit".to_string(), w.names[t as usize].clone()));
                     }
                 }
                 continue;
@@ -682,7 +839,10 @@ pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn
         for &c in &w.direct[f] {
             for &(api, _, _, reg) in REG_APIS {
                 if w.names[c as usize] == api && !has_ir {
-                    g.reg_unknown.entry(reg.into()).or_default().push(format!("registered by {} (no IR)", w.names[f]));
+                    g.reg_unknown
+                        .entry(reg.into())
+                        .or_default()
+                        .push(format!("registered by {} (no IR)", w.names[f]));
                 }
             }
         }
@@ -693,7 +853,10 @@ pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn
         }
         for &(api, _, _, reg) in REG_APIS {
             if w.names[f] == api {
-                g.reg_unknown.entry(reg.into()).or_default().push(format!("{api} is address-taken"));
+                g.reg_unknown
+                    .entry(reg.into())
+                    .or_default()
+                    .push(format!("{api} is address-taken"));
             }
         }
     }
@@ -706,7 +869,12 @@ pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn
         let mut wsigs: Vec<u32> = w.indirect[f].clone();
         wsigs.sort();
         if !cands[f].is_empty() {
-            g.fty[f] = Some(cands[f].iter().flat_map(|v| v.types.iter().copied()).collect());
+            g.fty[f] = Some(
+                cands[f]
+                    .iter()
+                    .flat_map(|v| v.types.iter().copied())
+                    .collect(),
+            );
         } else if let (true, Some(t)) = (name.starts_with(".Lcall_dtors"), call_dtors_type) {
             // Synthesized by LLVM's WebAssemblyLowerGlobalDtors as
             // `void call_dtors(void*)`; only ever registered with __cxa_atexit.
@@ -718,7 +886,12 @@ pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn
             .iter()
             .copied()
             .filter(|v| {
-                let mut s: Vec<u32> = v.sites.iter().filter(|s| s.direct.is_none()).map(|s| s.sig.unwrap_or(u32::MAX)).collect();
+                let mut s: Vec<u32> = v
+                    .sites
+                    .iter()
+                    .filter(|s| s.direct.is_none())
+                    .map(|s| s.sig.unwrap_or(u32::MAX))
+                    .collect();
                 s.sort();
                 s == wsigs
             })
@@ -737,7 +910,9 @@ pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn
                 let hub_entries: Vec<usize> = (0..HUBS.len())
                     .filter(|&h| {
                         let (m, hf, _, _) = HUBS[h];
-                        single && (hf == "*" || *name == hf) && side.modules.names[v.module as usize].ends_with(m)
+                        single
+                            && (hf == "*" || *name == hf)
+                            && side.modules.names[v.module as usize].ends_with(m)
                     })
                     .collect();
                 for s in &v.sites {
@@ -751,14 +926,24 @@ pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn
                         .iter()
                         .filter_map(|&h| {
                             let tid = side.ids.get(HUBS[h].2)?;
-                            s.icall.contains(&tid).then(|| (tid, HUBS[h].3.iter().map(|x| x.to_string()).collect()))
+                            s.icall
+                                .contains(&tid)
+                                .then(|| (tid, HUBS[h].3.iter().map(|x| x.to_string()).collect()))
                         })
                         .collect();
                     // A call through an old-action global dispatches an
                     // already-registered signal handler.
                     let entries = match &s.origin {
-                        Some((k, gname)) if rules.sigaction_old && entries.is_empty() && k == "global" && side.oldact_globals.contains(gname) => {
-                            s.icall.iter().map(|&id| (id, vec!["signal".to_string()])).collect()
+                        Some((k, gname))
+                            if rules.sigaction_old
+                                && entries.is_empty()
+                                && k == "global"
+                                && side.oldact_globals.contains(gname) =>
+                        {
+                            s.icall
+                                .iter()
+                                .map(|&id| (id, vec!["signal".to_string()]))
+                                .collect()
                         }
                         _ => entries,
                     };
@@ -768,14 +953,26 @@ pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn
                         g.hubs.push(entries);
                         Some(g.hubs.len() - 1)
                     };
-                    edges.push(Edge { target: Target::Indirect { sig, typed: Some(gi), hub: hub_ix } });
+                    edges.push(Edge {
+                        target: Target::Indirect {
+                            sig,
+                            typed: Some(gi),
+                            hub: hub_ix,
+                        },
+                    });
                 }
             }
         } else {
             let mut s2: Vec<u32> = wsigs.clone();
             s2.dedup();
             for sig in s2 {
-                edges.push(Edge { target: Target::Indirect { sig, typed: None, hub: None } });
+                edges.push(Edge {
+                    target: Target::Indirect {
+                        sig,
+                        typed: None,
+                        hub: None,
+                    },
+                });
             }
         }
         if rules.cleanup_lexical && name == "_pthread_cleanup_pop" {
@@ -790,8 +987,15 @@ pub(crate) fn build_graph<'a>(w: &'a Wasm, side: &'a Side, cands: &[Vec<&'a IrFn
 impl Graph<'_> {
     fn registered(&self, r: &str, tn: &str) -> bool {
         self.reg_unknown.contains_key(r)
-            || self.side.registered.get(r).is_some_and(|set| set.contains(tn))
-            || self.extra_registered.iter().any(|(rr, n)| rr == r && n == tn)
+            || self
+                .side
+                .registered
+                .get(r)
+                .is_some_and(|set| set.contains(tn))
+            || self
+                .extra_registered
+                .iter()
+                .any(|(rr, n)| rr == r && n == tn)
     }
 
     fn admit(&self, e: &Edge, t: u32) -> bool {
@@ -861,14 +1065,23 @@ impl Graph<'_> {
             for e in &self.edges[f] {
                 let Target::Indirect { sig, .. } = &e.target;
                 let set = by_sig.entry(*sig).or_default();
-                for &t in self.by_sig_table.get(sig).map(|v| v.as_slice()).unwrap_or(&[]) {
+                for &t in self
+                    .by_sig_table
+                    .get(sig)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[])
+                {
                     if self.admit(e, t) {
                         set.insert(t);
                     }
                 }
             }
             for (s, t) in by_sig {
-                out.push((f as u32, sigs.names[s as usize].clone(), t.into_iter().collect()));
+                out.push((
+                    f as u32,
+                    sigs.names[s as usize].clone(),
+                    t.into_iter().collect(),
+                ));
             }
         }
         out
@@ -880,13 +1093,22 @@ impl Graph<'_> {
         let w = self.w;
         let mut out = vec![];
         for f in 0..w.names.len() {
-            if w.import[f] || !w.direct[f].iter().any(|&c| w.names[c as usize] == "_pthread_cleanup_pop") {
+            if w.import[f]
+                || !w.direct[f]
+                    .iter()
+                    .any(|&c| w.names[c as usize] == "_pthread_cleanup_pop")
+            {
                 continue;
             }
             if !matches!(self.view[f], View::One | View::Many) {
                 continue;
             }
-            let hs: Vec<String> = self.side.reg_by_fn.get(&("cleanup".to_string(), w.names[f].clone())).map(|v| v.iter().cloned().collect()).unwrap_or_default();
+            let hs: Vec<String> = self
+                .side
+                .reg_by_fn
+                .get(&("cleanup".to_string(), w.names[f].clone()))
+                .map(|v| v.iter().cloned().collect())
+                .unwrap_or_default();
             out.push((w.names[f].clone(), hs));
         }
         out
@@ -900,7 +1122,13 @@ pub(crate) fn defined_functions(module: &Module) -> Vec<(u32, String, &[ValType]
         .funcs
         .iter()
         .filter(|f| matches!(f.kind, FunctionKind::Local(_)))
-        .map(|f| (f.id().index() as u32, f.name.clone().unwrap_or_default(), module.types.params(f.ty())))
+        .map(|f| {
+            (
+                f.id().index() as u32,
+                f.name.clone().unwrap_or_default(),
+                module.types.params(f.ty()),
+            )
+        })
         .collect();
     v.sort_by_key(|x| x.0);
     v
@@ -910,13 +1138,94 @@ pub(crate) fn defined_functions(module: &Module) -> Vec<(u32, String, &[ValType]
 mod tests {
     use super::*;
 
+    #[test]
+    fn external_conversion_and_slot_solver_matches_the_expanded_oracle() {
+        use crate::facts::storage::{FactsStore, StorageLimits};
+        let cases = [
+            "Q\tf\tA\nZ\tA\tB\nZ\tB\tC\nZ\tC\tA\nT\tf\tD\n",
+            "W\tf\tB\nQ\tf\tA\nZ\tB\tC\n",
+            "SE\t@fn:f\tp:g:0\nSE\tp:g:0\tl:g:1\nSF\tl:g:1\tB\nQ\tf\tA\n",
+            "SE\t@ty:A\tl:f:1\nSF\tl:f:1\tB\nQ\tf\tA\nZ\tB\tC\n",
+            "G\tf\tR\nH\tR\tT\nQ\tf\tF\n",
+            "G\tf\tInner\nNR\tOuter\tInner\nFT\tOther\tT\nSE\t@rec:Outer\tl:x:0\nSO\tl:x:0\tOther\nQ\tf\tF\n",
+            "G\tf\tR\nNR\tR\tS\nNR\tS\tR\nSE\t@rec:S\tl:x:0\nSD\tl:x:0\tT\n",
+            "G\tf\tR\nSE\t@rec:R\tl:x:0\nSO\tl:x:0\tNoFields\nQ\tf\tA\nSL\tA\t0\tf\nSE\t@fn:g\tpt:A:0\nSF\tp:f:0\tB\nAL\trelaxed\n",
+            "G\tf\tR\nFT\tS\tT\nSE\t@rec:R\tl:x:0\nSO\tl:x:0\tS\nAL\trelaxed\n",
+            "SL\tIdentity\tret\tid\nSE\tp:id:0\tr:id\nSC\trc:1\tid\tcaller1\nSA\trc:1\t0\t@fn:f\nSF\trc:1\tB\nSC\trc:2\tid\tcaller2\nSA\trc:2\t0\t@fn:g\nSF\trc:2\tC\n",
+            "SC\trc:1\tunknown\tcaller\nSA\trc:1\t0\t@fn:f\nSE\t@fn:g\tr:unknown\nSF\trc:1\tB\n",
+            "SL\tA\tret\ta\nSL\tA\tret\tb\nSE\tp:a:0\tr:a\nSC\trc:b\ta\tb\nSA\trc:b\t0\tp:b:0\nSE\trc:b\tr:b\nSC\trc:c\tb\tc\nSA\trc:c\t0\t@fn:f\nSF\trc:c\tB\n",
+            "W\tf\tB\nQ\tf\tA\nSL\tA\t0\tf\nSE\t@fn:g\tpt:B:0\nSF\tp:f:0\tC\nSL\tA\tret\tf\nSE\t@ty:C\tr:f\nSF\trt:B\tD\n",
+            "SL\tA\tret\tf\nSE\tglobal\tr:f\nSE\t@fn:g\tglobal\nSC\trc:1\tf\tcaller\nSF\trc:1\tB\n",
+            "Z\t*\tB\nQ\tf\t*\nQ\tg\tA\nH\tR\nG\th\tR\n",
+        ];
+        for (index, body) in cases.iter().enumerate() {
+            let text = format!("#kandelo-calltypes\t5\n{body}");
+            for effective_types in [false, true] {
+                for slots in [false, true] {
+                    let mut side = Side {
+                        effective_types,
+                        ..Default::default()
+                    };
+                    side.parse_chunk(&text, &mut Interner::default()).unwrap();
+                    let (types, expected) = tainted_fns(&side, slots);
+                    let expected_pairs: BTreeSet<_> = expected
+                        .iter()
+                        .flat_map(|(f, ids)| {
+                            ids.iter()
+                                .map(|&id| (f.clone(), types.names[id as usize].clone()))
+                        })
+                        .collect();
+                    let store = FactsStore::read_sections(
+                        [text.as_bytes()],
+                        StorageLimits {
+                            page_cache_bytes: 64 * 1024,
+                            atom_cache_bytes: 128,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                    store
+                        .solve_conversions(effective_types, slots)
+                        .unwrap_or_else(|e| {
+                            panic!("case {index}, eff {effective_types}, slots {slots}: {e:#}")
+                        });
+                    let mut actual = BTreeSet::new();
+                    store
+                        .visit_conversion_reach(|f, t| {
+                            actual.insert((f.to_owned(), t.to_owned()));
+                            Ok(())
+                        })
+                        .unwrap();
+                    assert_eq!(
+                        actual, expected_pairs,
+                        "case {index}, eff {effective_types}, slots {slots}"
+                    );
+                    let names: BTreeSet<String> = store
+                        .db
+                        .prepare("SELECT a.name FROM conversion_name n JOIN atom a ON a.id=n.name")
+                        .unwrap()
+                        .query_map([], |r| r.get(0))
+                        .unwrap()
+                        .map(Result::unwrap)
+                        .collect();
+                    assert_eq!(
+                        names,
+                        expected.keys().cloned().collect(),
+                        "conversion names in case {index}"
+                    );
+                }
+            }
+        }
+    }
+
     /// Per function: (name, own type ids, linked parameters, reached types).
     fn fixture(fns: &[(&str, &[&str], &[&str], &[&str])]) -> (Side, Reach, Interner) {
         let (mut side, mut reach, mut tys) = (Side::default(), Reach::new(), Interner::default());
         for &(f, own, ks, reached) in fns {
             for t in own {
                 for k in ks {
-                    side.slot_links.push((t.to_string(), k.to_string(), f.to_string()));
+                    side.slot_links
+                        .push((t.to_string(), k.to_string(), f.to_string()));
                 }
             }
             let mut r: Vec<u32> = reached.iter().map(|u| tys.id(u)).collect();
@@ -928,7 +1237,9 @@ mod tests {
 
     fn link_edges(side: &Side, reach: &Reach, tys: &Interner) -> Vec<(String, String)> {
         let mut out = vec![];
-        link_slots(side, reach, tys, &mut |a, b| out.push((a.to_string(), b.to_string())));
+        link_slots(side, reach, tys, &mut |a, b| {
+            out.push((a.to_string(), b.to_string()))
+        });
         out
     }
 
@@ -962,9 +1273,17 @@ mod tests {
     fn direct_feeds(side: &Side, reach: &Reach, tys: &Interner) -> BTreeSet<(String, String)> {
         let mut out = BTreeSet::new();
         for (t, k, f) in &side.slot_links {
-            let reached = reach.get(f).into_iter().flatten().map(|&u| tys.names[u as usize].as_str());
+            let reached = reach
+                .get(f)
+                .into_iter()
+                .flatten()
+                .map(|&u| tys.names[u as usize].as_str());
             for u in std::iter::once(t.as_str()).chain(reached) {
-                out.insert(if k == "ret" { (format!("r:{f}"), format!("rt:{u}")) } else { (format!("pt:{u}:{k}"), format!("p:{f}:{k}")) });
+                out.insert(if k == "ret" {
+                    (format!("r:{f}"), format!("rt:{u}"))
+                } else {
+                    (format!("pt:{u}:{k}"), format!("p:{f}:{k}"))
+                });
             }
         }
         out
@@ -981,7 +1300,10 @@ mod tests {
             ("f4", &["F"], &["0", "1"], &[]),
             ("f5", &["A"], &["1"], abc),
         ]);
-        assert_eq!(feeds(&link_edges(&side, &reach, &tys)), direct_feeds(&side, &reach, &tys));
+        assert_eq!(
+            feeds(&link_edges(&side, &reach, &tys)),
+            direct_feeds(&side, &reach, &tys)
+        );
     }
 
     #[test]
@@ -990,10 +1312,15 @@ mod tests {
         // type GCallback is cast back to.
         let types: Vec<String> = (0..300).map(|i| format!("T{i}")).collect();
         let types: Vec<&str> = types.iter().map(String::as_str).collect();
-        let fns: Vec<(String, String)> = (0..300).map(|i| (format!("f{i}"), format!("F{i}"))).collect();
+        let fns: Vec<(String, String)> = (0..300)
+            .map(|i| (format!("f{i}"), format!("F{i}")))
+            .collect();
         let own: Vec<[&str; 1]> = fns.iter().map(|(_, t)| [t.as_str()]).collect();
-        let spec: Vec<(&str, &[&str], &[&str], &[&str])> =
-            fns.iter().zip(&own).map(|((f, _), own)| (f.as_str(), &own[..], &["0"][..], &types[..])).collect();
+        let spec: Vec<(&str, &[&str], &[&str], &[&str])> = fns
+            .iter()
+            .zip(&own)
+            .map(|((f, _), own)| (f.as_str(), &own[..], &["0"][..], &types[..]))
+            .collect();
         let (side, reach, tys) = fixture(&spec);
         let edges = link_edges(&side, &reach, &tys);
         // Per function its own link and one from the join slot, plus one per

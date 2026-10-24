@@ -37,11 +37,21 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # clap — argument parsing. `derive` feature for #[derive(Parser)].
 clap = { version = "4", features = ["derive"] }
 
-# wasmparser — independent validator used in tests to confirm walrus
-# output round-trips cleanly through a separate implementation. The
-# instrumenter also uses its section ranges to keep a leading dylink.0 section
-# first when Walrus re-emits a shared module.
+# wasmparser — independent output validation and the bounded original-binary
+# scanner. wasm-encoder re-encodes individual functions and index references;
+# tempfile spools code/data sections until their encoded lengths are known.
 wasmparser = "0.247"
+wasm-encoder = { version = "0.247", features = ["wasmparser"] }
+tempfile = "3"
+# Read-only maps are created only from private, unlinked snapshots whose last
+# writable handle is then closed. Never map a mutable user/optimizer file.
+memmap2 = "0.9.10"
+# Deep compiler-generated structured control grows only the current native
+# walk's stack, on the same thread as its borrowed analysis environment.
+stacker = "0.1.25"
+# Private, disposable compiler-facts relations. Bundled SQLite keeps native
+# builds independent of host libraries; page caches/work/disk are bounded.
+rusqlite = { version = "0.37", features = ["bundled", "hooks", "limits"] }
 
 [dev-dependencies]
 # wasmprinter — byte-level wasm-to-WAT for assertions that walrus's IR

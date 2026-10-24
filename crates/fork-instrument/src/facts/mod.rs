@@ -18,9 +18,17 @@ use walrus::Module;
 use crate::sink::CallFacts;
 
 pub mod bind;
+mod calls;
 mod codec;
+pub mod definitions;
+mod flow;
 mod side;
+pub mod storage;
+pub mod stream;
+mod target_cache;
 mod targets;
+
+pub(crate) use targets::visit_retained_operators;
 
 /// Name of the custom section that carries the facts.
 pub const SECTION: &str = "kandelo.calltypes";
@@ -61,7 +69,9 @@ pub fn code_sha256(bytes: &[u8]) -> Result<[u8; 32]> {
 /// were removed from). The error says why the facts must be ignored.
 pub fn verify_code_hash(taken: &TakenFacts, input: &[u8]) -> Result<()> {
     let Some(recorded) = &taken.code_hash else {
-        anyhow::bail!("facts ignored: the module has no {CODE_HASH_SECTION} section binding them to its code");
+        anyhow::bail!(
+            "facts ignored: the module has no {CODE_HASH_SECTION} section binding them to its code"
+        );
     };
     anyhow::ensure!(
         recorded.as_slice() == code_sha256(input)?.as_slice(),
@@ -80,7 +90,9 @@ pub struct FactsOptions {
 
 impl Default for FactsOptions {
     fn default() -> Self {
-        Self { effective_types: true }
+        Self {
+            effective_types: true,
+        }
     }
 }
 
@@ -108,7 +120,9 @@ pub struct FactsReport {
 pub fn take_section(module: &mut Module) -> Option<TakenFacts> {
     let mut section: Option<Vec<u8>> = None;
     while let Some(raw) = module.customs.remove_raw(SECTION) {
-        section.get_or_insert_with(Vec::new).extend_from_slice(&raw.data);
+        section
+            .get_or_insert_with(Vec::new)
+            .extend_from_slice(&raw.data);
     }
     let mut code_hash = None;
     while let Some(raw) = module.customs.remove_raw(CODE_HASH_SECTION) {
@@ -171,25 +185,40 @@ pub fn binding(module: &Module, section: &[u8]) -> Result<Vec<(u32, Vec<(usize, 
     let parsed = parse(section, &mut sigs, true)?;
     let defined = targets::defined_functions(module);
     let bound = bind_defined(&defined, &parsed);
-    Ok(defined.iter().zip(bound).map(|((f, _, _), b)| (*f, b)).collect())
+    Ok(defined
+        .iter()
+        .zip(bound)
+        .map(|((f, _, _), b)| (*f, b))
+        .collect())
 }
 
 fn parse(section: &[u8], sigs: &mut side::Interner, effective_types: bool) -> Result<side::Side> {
-    let mut parsed = side::Side { effective_types, ..Default::default() };
+    let mut parsed = side::Side {
+        effective_types,
+        ..Default::default()
+    };
     codec::visit_chunks(section, |i, chunk| {
-        parsed.parse_chunk(chunk, sigs).with_context(|| format!("facts chunk {i}"))?;
+        parsed
+            .parse_chunk(chunk, sigs)
+            .with_context(|| format!("facts chunk {i}"))?;
         Ok(())
     })?;
     Ok(parsed)
 }
 
-fn bind_defined(defined: &[(u32, String, &[walrus::ValType])], parsed: &side::Side) -> Vec<Vec<(usize, usize)>> {
+fn bind_defined(
+    defined: &[(u32, String, &[walrus::ValType])],
+    parsed: &side::Side,
+) -> Vec<Vec<(usize, usize)>> {
     let module_items: Vec<bind::Item> = defined
         .iter()
         .map(|(_, name, params)| bind::Item {
             name,
             nparams: params.len(),
-            i64_params: params.iter().filter(|t| **t == walrus::ValType::I64).count(),
+            i64_params: params
+                .iter()
+                .filter(|t| **t == walrus::ValType::I64)
+                .count(),
             first_is_i32: params.first() == Some(&walrus::ValType::I32),
             last_is_i32: params.last() == Some(&walrus::ValType::I32),
         })
@@ -197,7 +226,15 @@ fn bind_defined(defined: &[(u32, String, &[walrus::ValType])], parsed: &side::Si
     let chunks: Vec<Vec<bind::Item>> = parsed
         .chunks
         .iter()
-        .map(|defs| defs.iter().map(|(name, f)| bind::Item { name, nparams: f.nparams, ..Default::default() }).collect())
+        .map(|defs| {
+            defs.iter()
+                .map(|(name, f)| bind::Item {
+                    name,
+                    nparams: f.nparams,
+                    ..Default::default()
+                })
+                .collect()
+        })
         .collect();
     bind::bind(&module_items, &chunks)
 }
@@ -205,7 +242,11 @@ fn bind_defined(defined: &[(u32, String, &[walrus::ValType])], parsed: &side::Si
 /// Compute the facts-derived inputs of the sink analysis for `module` from
 /// the payload of its [`SECTION`]. Fails, so the caller can fall back to
 /// the analysis without facts, on anything this version cannot read.
-pub fn call_facts(module: &Module, section: &[u8], opts: FactsOptions) -> Result<(CallFacts, FactsReport)> {
+pub fn call_facts(
+    module: &Module,
+    section: &[u8],
+    opts: FactsOptions,
+) -> Result<(CallFacts, FactsReport)> {
     let mut sigs = side::Interner::default();
     let parsed = parse(section, &mut sigs, opts.effective_types)?;
     let w = targets::load_wasm(module, &mut sigs);
@@ -215,18 +256,51 @@ pub fn call_facts(module: &Module, section: &[u8], opts: FactsOptions) -> Result
     for ((f, _, _), b) in defined.iter().zip(&bound) {
         cands[*f as usize] = b.iter().map(|&(c, d)| &parsed.chunks[c][d].1).collect();
     }
-    let rules = targets::Rules { cleanup_lexical: true, casts: true, slots: true, sigaction_old: true };
+    let rules = targets::Rules {
+        cleanup_lexical: true,
+        casts: true,
+        slots: true,
+        sigaction_old: true,
+    };
     let graph = targets::build_graph(&w, &parsed, &cands, &rules);
     let mut seen = std::collections::HashSet::new();
-    let jmp: Vec<String> = parsed.jmp_facts.iter().filter(|l| seen.insert(l.as_str())).cloned().collect();
-    let facts = CallFacts { itargets: graph.export_targets(&sigs), cleanup: graph.cleanup_pairs(), jmp, assume_dlopen_contract: false };
+    let jmp: Vec<String> = parsed
+        .jmp_facts
+        .iter()
+        .filter(|l| seen.insert(l.as_str()))
+        .cloned()
+        .collect();
+    let facts = CallFacts {
+        itargets: graph.export_targets(&sigs),
+        cleanup: graph.cleanup_pairs(),
+        jmp,
+        assume_dlopen_contract: false,
+    };
     let report = FactsReport {
         chunks: parsed.chunks.len(),
         definitions: parsed.chunks.iter().map(|c| c.len()).sum(),
         defined: defined.len(),
         bound: bound.iter().filter(|b| !b.is_empty()).count(),
         bound_to_union: bound.iter().filter(|b| b.len() > 1).count(),
-        signature_mismatch: defined.iter().filter(|(f, _, _)| graph.view[*f as usize] == targets::View::Mismatch).count(),
+        signature_mismatch: defined
+            .iter()
+            .filter(|(f, _, _)| graph.view[*f as usize] == targets::View::Mismatch)
+            .count(),
     };
+    Ok((facts, report))
+}
+
+/// Resolve compiler call-target relations using native serial summaries and
+/// private file-backed relations. No Walrus module or expanded Side is built.
+/// This compatibility projection has a resident-size limit; the native sink
+/// planner can use [`storage::FactsStore::targets_for`] without collecting
+/// the module's complete target matrix.
+pub fn call_facts_from_scan(
+    scan: &crate::streaming::Scan<'_>,
+    opts: FactsOptions,
+) -> Result<(CallFacts, FactsReport)> {
+    let store = storage::FactsStore::from_scan(scan, storage::StorageLimits::default())?;
+    let report = store.resolve_calls(scan, opts)?;
+    let facts = store.collect_call_facts()?;
     Ok((facts, report))
 }

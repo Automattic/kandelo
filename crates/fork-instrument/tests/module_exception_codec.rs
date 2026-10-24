@@ -4,6 +4,9 @@ use fork_instrument::module_exception_codec::{
 };
 use walrus::Module;
 
+#[path = "support/streaming_exceptions.rs"]
+mod native;
+
 const RETIRED_STAGING_MEMORY_EXPORT: &str = "__wpk_fork_ref_exn_staging";
 
 fn codec_fixture() -> Vec<u8> {
@@ -62,6 +65,13 @@ fn descriptor_records_exact_scalar_and_reference_layouts() {
     let section = engine_module
         .custom_section(FORMAT_SECTION)
         .expect("codec descriptor");
+    let native_output = native::emit(&codec_fixture());
+    assert_eq!(
+        WebAssemblyModule::new(&native_output)
+            .custom_section(FORMAT_SECTION)
+            .unwrap(),
+        section
+    );
 
     assert_eq!(section[0], FORMAT_VERSION);
     assert_eq!(u32::from_le_bytes(section[4..8].try_into().unwrap()), 3,);

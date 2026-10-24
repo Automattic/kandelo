@@ -126,6 +126,8 @@ host/test/fork-instrument-coverage.test.ts	prepared-product
 host/test/fork-mechanism-trace.test.ts	source-only
 host/test/fork-memory-clone-guest.test.ts	prepared-product
 host/test/fork-module-state.test.ts	source-only
+host/test/fork-native-file-pipeline.test.ts	source-only
+host/test/fork-native-process.test.ts	prepared-product
 host/test/fork-process-continuation.test.ts	source-only
 host/test/fork-reference-broker.test.ts	source-only
 host/test/fork-reference-recipes.test.ts	source-only
