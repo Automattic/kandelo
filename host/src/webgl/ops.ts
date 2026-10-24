@@ -108,7 +108,7 @@ export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` accepts versions 1 through this value. */
-export const OP_VERSION = 11;
+export const OP_VERSION = 12;
 
 // Additive GLES entry points used by native renderers; existing tags stay stable.
 export const OP_BLEND_EQUATION = 0x000F;
@@ -185,3 +185,10 @@ export const QOP_IMAGE_SOURCE_STATE = 0x0024;
 // V11: implicit bound image identity plus backend-ordered storage revision.
 export const QOP_BOUND_IMAGE_TARGET = 0x0025;
 export const QOP_BOUND_IMAGE_STATE = 0x0026;
+
+// V12: acknowledged image object deletion and framebuffer attachment.
+export const QOP_IMAGE_OBJECT_DELETE = 0x0027;
+export const QOP_IMAGE_ATTACHMENT = 0x0028;
+
+// V12: allocation-only opcode plus unchanged texture/RBO storage payload.
+export const QOP_IMAGE_STORAGE = 0x0029;

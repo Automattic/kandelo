@@ -18,7 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
-import { attachImage, imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
+import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
 import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray } from "./buffer-references.js";
 import { capabilityEnabled } from "./state-query.js";
@@ -33,7 +33,7 @@ import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
 import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget, GL_FRAMEBUFFER } from "./framebuffer.js";
-import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, setImageAttachment } from "./image-references.js";
+import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, deleteFramebufferName, attachImageObject } from "./image-references.js";
 import { activeVertexArray, clearNativeAttributeBuffers, collectRetiredBuffers, defaultVertexArray, deleteBufferNames, vertexAttribute } from "./buffer-references.js";
 import {
   GL_BACK,
@@ -439,13 +439,31 @@ function validPayload(op: number, v: DataView): boolean {
   }
 }
 
+/** Allocation-only checked requests prefix an unchanged command payload with
+ * its opcode. Validate complete spans before replies or native side effects. */
+export function validImageStorageRequest(input: Uint8Array): boolean {
+  if (input.byteLength < 4) return false;
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength), op = view.getUint32(0, true);
+  if (op === O.OP_TEX_IMAGE_2D) {
+    if (input.byteLength !== 40 || view.getUint32(36, true) !== 0) return false;
+  } else if (op === O.OP_RENDERBUFFER_STORAGE) {
+    if (input.byteLength !== 20) return false;
+  } else return false;
+  return validPayload(op, new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4));
+}
+/** Execute an allocation request after validImageStorageRequest succeeds. */
+export function executeImageStorageRequest(b: GlBinding, input: Uint8Array): boolean {
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+  return dispatch(b.gl!, b, new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4), 0, view.getUint32(0, true)) === true;
+}
+
 function dispatch(
   gl: WebGL2RenderingContext,
   b: GlBinding,
   v: DataView,
   p: number,
   op: number,
-): void {
+): boolean | void {
   const error = stateArgumentError(op, v);
   if (error !== 0) {
     recordGlError(b, error);
@@ -754,11 +772,10 @@ function dispatch(
       const data = dataLen === 0
         ? null
         : copyPixels(v, p + 36, dataLen, type);
-      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.texImage2D(
+      return imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.texImage2D(
         target, level, normalizeTextureInternalFormat(internalFormat, format, type), width, height, border,
         format, type, data,
       ),v.getInt32(p+4,true)!==0);
-      return;
     }
     // Payload: u32 target, i32 level, i32 xoff, i32 yoff, i32 width,
     //          i32 height, u32 format, u32 type,
@@ -1209,22 +1226,7 @@ function dispatch(
     }
     case O.OP_DELETE_FRAMEBUFFERS: {
       const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.fbos.get(name);
-        if (obj && checkedGlCall(b, () => { gl.deleteFramebuffer(obj); })) {
-          if (b.shadow.fbo === obj) {
-            b.shadow.fbo = defaultFramebuffer(b);
-            gl.bindFramebuffer(0x8ca9, b.shadow.fbo);
-          }
-          if (b.shadow.readFbo === obj) {
-            b.shadow.readFbo = defaultFramebuffer(b, true);
-            gl.bindFramebuffer(GL_READ_FRAMEBUFFER, b.shadow.readFbo);
-          }
-        } else if (obj) continue;
-        b.fbos.delete(name);
-        if (obj) b.framebufferAttachments.delete(obj);
-      }
+      for (let i = 0; i < n; i++) deleteFramebufferName(b,v.getUint32(p+4+i*4,true));
       return;
     }
     case O.OP_BIND_FRAMEBUFFER: {
@@ -1264,20 +1266,9 @@ function dispatch(
     }
     // Payload: u32 target, u32 attachment, u32 textarget, u32 textureName,
     //          i32 level
-    case O.OP_FRAMEBUFFER_TEXTURE_2D: {
-      const target = v.getUint32(p, true);
-      if (!validFramebufferTarget(target)) { recordGlError(b, 0x500); return; }
-      if (isDefaultFramebuffer(b, boundFramebuffer(b, target))) { recordGlError(b, 0x502); return; }
-      const attachment = v.getUint32(p + 4, true);
-      const textarget = v.getUint32(p + 8, true);
-      const tex = b.textures.get(v.getUint32(p + 12, true)) ?? null;
-      if (!tex && v.getUint32(p+12,true) !== 0) { recordGlError(b,0x502); return; }
-      const level = v.getInt32(p + 16, true);
-      if (!checkedGlCall(b, () => tex ? attachImage(b,target,attachment,{kind:"texture",object:tex,target:textarget,level}) : gl.framebufferTexture2D(target,attachment,textarget,null,level))) return;
-      setImageAttachment(b,boundFramebuffer(b,target)!,attachment,
-        tex ? {kind:"texture",object:tex,target:textarget,level} : null);
+    case O.OP_FRAMEBUFFER_TEXTURE_2D:
+      attachImageObject(b,1,v.getUint32(p,true),v.getUint32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true),v.getInt32(p+16,true));
       return;
-    }
     case O.OP_GEN_RENDERBUFFERS: return;
 
     case O.OP_DELETE_RENDERBUFFERS: {
@@ -1294,28 +1285,16 @@ function dispatch(
     }
     // Payload: u32 target, u32 internalformat, i32 width, i32 height
     case O.OP_RENDERBUFFER_STORAGE:
-      imageRenderbufferStorage(b,()=>gl.renderbufferStorage(
+      return imageRenderbufferStorage(b,()=>gl.renderbufferStorage(
         v.getUint32(p, true),
         v.getUint32(p + 4, true),
         v.getInt32(p + 8, true),
         v.getInt32(p + 12, true),
       ));
-      return;
     // Payload: u32 target, u32 attachment, u32 rbtarget, u32 rboName
-    case O.OP_FRAMEBUFFER_RENDERBUFFER: {
-      const target = v.getUint32(p, true);
-      if (!validFramebufferTarget(target)) { recordGlError(b, 0x500); return; }
-      if (isDefaultFramebuffer(b, boundFramebuffer(b, target))) { recordGlError(b, 0x502); return; }
-      const attachment = v.getUint32(p + 4, true);
-      const rbtarget = v.getUint32(p + 8, true);
-      const rbo = b.rbos.get(v.getUint32(p + 12, true)) ?? null;
-      if (!rbo && v.getUint32(p+12,true) !== 0) { recordGlError(b,0x502); return; }
-      if(rbtarget!==0x8d41){recordGlError(b,0x500);return;}
-      if (!checkedGlCall(b, () => attachImage(b,target,attachment,rbo?{kind:"renderbuffer",object:rbo}:null))) return;
-      setImageAttachment(b,boundFramebuffer(b,target)!,attachment,
-        rbo ? {kind:"renderbuffer",object:rbo} : null);
+    case O.OP_FRAMEBUFFER_RENDERBUFFER:
+      attachImageObject(b,2,v.getUint32(p,true),v.getUint32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true),0);
       return;
-    }
     case O.OP_DRAW_BUFFER: {
       gl.drawBuffers([v.getUint32(p, true)]);
       return;

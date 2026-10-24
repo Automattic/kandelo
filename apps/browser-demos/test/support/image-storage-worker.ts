@@ -207,6 +207,76 @@ self.onmessage = ({ data }) => {
     current(11);
     const reusedAfterPeerImport = pixels(75);
     current(12);
+    // Checked mutations preserve native pixels and bindings on definite
+    // driver rejection. The fault calls a real invalid native enum once.
+    const mutationRollback: number[][] = [];
+    const mutate = (op: number, words: number[], expected = 0) => checked(op, words, expected, 12);
+    const inject = (method: string, fault: (original: (...args: any[]) => any, args: any[]) => void, run: () => void) => {
+      const renderer = gl as any, original = renderer[method].bind(gl);
+      let fired = false;
+      renderer[method] = (...args: any[]) => {
+        if (!fired) {
+          fired = true;
+          fault(original, args);
+        }
+        else
+          original(...args);
+      };
+      try {
+        run();
+      }
+      finally {
+        renderer[method] = original;
+      }
+      require(fired && error(12) === 0x500, `mutation fault ${method}`);
+    };
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 83], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 17, 0]);
+    inject("framebufferTexture2D", (original, args) => original(0xdead, ...args.slice(1)), () => mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 18, 0], 1));
+    mutationRollback.push(pixels(83, 12));
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 18, 0]);
+    send(O.OP_ACTIVE_TEXTURE, [0x84c1], new Uint8Array(), 12);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 18], 0, 12);
+    send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12);
+    inject("bindTexture", (original, args) => original(0xdead, args[1]), () => mutate(O.QOP_IMAGE_OBJECT_DELETE, [1, 18], 1));
+    mutationRollback.push(pixels(83, 12));
+    mutate(O.QOP_IMAGE_OBJECT_DELETE, [1, 18]);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [2, 0x8d41, 19], 0, 12);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 84], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [2, 0x8d40, 0x8ce0, 0x8d41, 19, 0]);
+    inject("framebufferRenderbuffer", (original, args) => original(0xdead, ...args.slice(1)), () => mutate(O.QOP_IMAGE_ATTACHMENT, [2, 0x8d40, 0x8ce0, 0x8d41, 0, 0], 1));
+    mutationRollback.push(pixels(84, 12));
+    inject("bindRenderbuffer", (original, args) => original(0xdead, args[1]), () => mutate(O.QOP_IMAGE_OBJECT_DELETE, [2, 19], 1));
+    mutationRollback.push(pixels(84, 12));
+    mutate(O.QOP_IMAGE_OBJECT_DELETE, [2, 19]);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 83], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 17, 0]);
+    inject("deleteFramebuffer", () => gl.bindFramebuffer(0xdead, null), () => mutate(O.QOP_IMAGE_OBJECT_DELETE, [3, 83], 1));
+    mutationRollback.push(pixels(83, 12));
+    mutate(O.QOP_IMAGE_OBJECT_DELETE, [3, 83]);
+    mutationRollback.push(pixels(81, 12));
+    // Failed owned allocation must leave old pixels; accepted allocation
+    // permits the later upload. C row suppression is checked separately.
+    send(O.OP_ACTIVE_TEXTURE, [0x84c1], new Uint8Array(), 12);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 17], 0, 12);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 85], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 17, 0]);
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_TEX_IMAGE_2D, 0x0de1, 0, 0x1908, -1, 1, 0, 0x1908, 0x1401, 0], 1);
+    require(error(12) === 0x501, "owned allocation rejection");
+    const storageReject = [pixels(85, 12)];
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_TEX_IMAGE_2D, 0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0]);
+    send(O.OP_TEX_SUB_IMAGE_2D, [0x0de1, 0, 0, 0, 1, 1, 0x1908, 0x1401, 4], rgba([0, 0, 255, 255]), 12);
+    const ownedStorageRetry = pixels(85, 12);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [2, 0x8d41, 20], 0, 12);
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_RENDERBUFFER_STORAGE, 0x8d41, 0x8056, 1, 1]);
+    send(O.OP_BIND_FRAMEBUFFER, [0x8d40, 86], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [2, 0x8d40, 0x8ce0, 0x8d41, 20, 0]);
+    send(O.OP_CLEAR_COLOR, [0, 0, 0x3f800000, 0x3f800000], new Uint8Array(), 12);
+    send(O.OP_CLEAR, [0x4000], new Uint8Array(), 12);
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_RENDERBUFFER_STORAGE, 0x8d41, 0x8056, -1, 1], 1);
+    require(error(12) === 0x501, "owned RBO allocation rejection");
+    storageReject.push(pixels(86, 12));
+    send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12);
     const errors = [error(12)];
     api.host_gl_destroy_context(7, 21);
     const afterSourceRetirement = pixels(81, 12);
@@ -216,7 +286,7 @@ self.onmessage = ({ data }) => {
     api.host_gl_unbind(7, 12);
     kernel.gl.destroyGpuBo(41);
     const clean = made.length === deleted.length && made.every(value => deleted.includes(value)) && live.every(check => !check());
-    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, errors, clean, error: gl.getError() });
+    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, errors, clean, error: gl.getError() });
   }
   catch (error) {
     postMessage({ type: "image_storage_failed", error: String(error) });

@@ -204,6 +204,7 @@ static int indexed_queries;
 static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates;
 static unsigned bind_failure, bind_queries;
+static unsigned image_mutation_failure, image_mutation_queries;
 static unsigned scalar_queries;
 static uint32_t core_total, core_offset, core_info[4];
 static unsigned core_calls, core_fail_at, validate_commands;
@@ -511,6 +512,15 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (op == OP_DRAW_ARRAYS || op == OP_DRAW_ELEMENTS)
                 assert(!slot->array_saved);
 #endif
+            if ((op == OP_DELETE_TEXTURES || op == OP_DELETE_RENDERBUFFERS ||
+                 op == OP_DELETE_FRAMEBUFFERS || op == OP_FRAMEBUFFER_TEXTURE_2D ||
+                 op == OP_FRAMEBUFFER_RENDERBUFFER) &&
+                image_mutation_failure == 2) {
+                image_mutation_failure = 0;
+                query_gl_error = GL_OUT_OF_MEMORY;
+                at += 4 + len;
+                continue;
+            }
             if (op == OP_BIND_BUFFER && words[0] == GL_ARRAY_BUFFER)
                 slot->array_binding = words[1];
             if (op == OP_ACTIVE_TEXTURE)
@@ -670,6 +680,58 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         egl_trace(8, fd, NULL, 0);
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
+        if (q->op == 0x27 || q->op == 0x28 || q->op == 0x29) {
+            assert(q->out_buf_len == 12);
+            assert(q->op == 0x29 ? q->in_buf_len == 20 || q->in_buf_len == 40
+                                 : q->in_buf_len == (q->op == 0x27 ? 8u : 24u));
+            const uint32_t *input = allocation_for(q->in_buf_ptr, q->in_buf_len);
+            uint32_t *reply = allocation_for(q->out_buf_ptr, 12);
+            unsigned failure = image_mutation_failure;
+            image_mutation_failure = 0;
+            image_mutation_queries++;
+            int storage_error = q->op == 0x29 && fail_image_storage;
+            if (storage_error && !failure)
+                failure = 2;
+            if (failure == 1) {
+                errno = EIO;
+                return -1;
+            }
+            if (failure == 2)
+                query_gl_error = storage_error ? GL_INVALID_VALUE : GL_OUT_OF_MEMORY;
+            reply[0] = failure == 2 ? 1u : failure == 5 ? 2u : 0u;
+            reply[1] = failure == 2 ? 0u : failure == 4 ? 9u : 1u;
+            reply[2] = failure == 3 ? 0u : 0x47514c33u;
+            if (q->op == 0x27 && !failure && input[1]) {
+                if (input[0] == 1) {
+                    for (unsigned u = 0; u < 128; u++) {
+                        if (slot->texture_2d[u] == input[1])
+                            slot->texture_2d[u] = 0;
+                        if (slot->texture_cube[u] == input[1])
+                            slot->texture_cube[u] = 0;
+                    }
+                    for (unsigned t = 0; t < 128; t++)
+                        if (slot->texture_targets[t].name == input[1])
+                            slot->texture_targets[t].name = 0;
+                } else if (input[0] == 2 && slot->renderbuffer_binding == input[1])
+                    slot->renderbuffer_binding = 0;
+            }
+            if (q->op == 0x29 && !failure) {
+                if (input[0] == OP_TEX_IMAGE_2D) {
+                    assert(q->in_buf_len == 40 && input[9] == 0);
+                    redefined_texture = bound_texture;
+                    if (input[1] == GL_TEXTURE_2D)
+                        *object_image_source(slot, 1, slot->texture_2d[slot->texture_active]) = 0;
+                } else {
+                    assert(input[0] == OP_RENDERBUFFER_STORAGE && q->in_buf_len == 20);
+                    *object_image_source(slot, 2, slot->renderbuffer_binding) = 0;
+                }
+            }
+            uint32_t trace[13] = {q->op, 12, reply[0]};
+            memcpy(trace + 3, input, q->in_buf_len);
+            egl_trace(11, fd, trace, 12 + q->in_buf_len);
+            protocol_trace(2, q->op, input, q->in_buf_len, 12);
+            return 0;
+        }
         if (q->op == 0x23 || q->op == 0x24) {
             assert(q->in_buf_len == (q->op == 0x23 ? 12u : 8u) && q->out_buf_len == 12);
             const uint32_t *input = allocation_for(q->in_buf_ptr, q->in_buf_len);
@@ -2045,6 +2107,156 @@ int main(int argc, char **argv) {
         return 0;
     }
 #endif
+    if (!strcmp(argv[1], "image-attach-reject-texture") ||
+        !strcmp(argv[1], "image-attach-reject-rbo") ||
+        !strcmp(argv[1], "image-delete-reject-fbo")) {
+        int texture = strcmp(argv[1], "image-attach-reject-rbo") != 0;
+        int delete_fbo = !strcmp(argv[1], "image-delete-reject-fbo");
+        GLuint name = 17, replacement = 18, framebuffers[2];
+        EGLImageKHR img = image(dpy);
+        glGenFramebuffers(2, framebuffers);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[0]);
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, name);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, name, 0);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, name);
+        }
+        assert(eglDestroyImageKHR(dpy, img) && closes == 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[1]);
+        if (texture)
+            glDeleteTextures(1, &name);
+        else
+            glDeleteRenderbuffers(1, &name);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[0]);
+        if (texture)
+            glBindTexture(GL_TEXTURE_2D, replacement);
+        else
+            glBindRenderbuffer(GL_RENDERBUFFER, replacement);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR && closes == 0);
+        image_mutation_failure = 2;
+        for (unsigned retry = 0; retry < 2; retry++) {
+            if (delete_fbo)
+                glDeleteFramebuffers(1, framebuffers);
+            else if (texture)
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                       replacement, 0);
+            else
+                glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER,
+                                          replacement);
+            glFlush();
+            assert(glGetError() == (retry ? GL_NO_ERROR : GL_OUT_OF_MEMORY));
+            assert(closes == retry);
+        }
+        glDeleteFramebuffers(2, framebuffers);
+        if (texture)
+            glDeleteTextures(1, &replacement);
+        else
+            glDeleteRenderbuffers(1, &replacement);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-delete-reject-texture") ||
+        !strcmp(argv[1], "image-delete-reject-rbo")) {
+        int texture = !strcmp(argv[1], "image-delete-reject-texture");
+        binding_model = 1;
+        GLuint name = 17;
+        EGLImageKHR img = image(dpy);
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, name);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+        }
+        assert(eglDestroyImageKHR(dpy, img) && closes == 0);
+        image_mutation_failure = 2;
+        for (unsigned retry = 0; retry < 2; retry++) {
+            if (texture)
+                glDeleteTextures(1, &name);
+            else
+                glDeleteRenderbuffers(1, &name);
+            glFlush();
+            assert(glGetError() == (retry ? GL_NO_ERROR : GL_OUT_OF_MEMORY));
+            assert(closes == retry);
+            GLint binding = -1;
+            binding_query_kind = texture ? GL_TEXTURE_BINDING_2D : GL_RENDERBUFFER_BINDING;
+            glGetIntegerv(binding_query_kind, &binding);
+            binding_query_kind = 0;
+            assert(binding == (retry ? 0 : (GLint)name));
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-attach-unknown-texture") ||
+        !strcmp(argv[1], "image-attach-unknown-rbo")) {
+        int texture = !strcmp(argv[1], "image-attach-unknown-texture");
+        struct wpk_gles_context *peer = _wpk_gl_create_shared_encoder(_wpk_gl_current_encoder());
+        assert(peer);
+        GLuint name = 17, framebuffer;
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        for (unsigned failure = 1; failure <= 5; failure += failure == 1 ? 2 : 1) {
+            EGLImageKHR img = image(dpy);
+            if (texture) {
+                glBindTexture(GL_TEXTURE_2D, name);
+                glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+            } else {
+                glBindRenderbuffer(GL_RENDERBUFFER, name);
+                glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+            }
+            image_mutation_failure = failure;
+            if (texture)
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, name,
+                                       0);
+            else
+                glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER,
+                                          name);
+            assert(glGetError() == GL_INVALID_OPERATION);
+            assert(eglDestroyImageKHR(dpy, img));
+            if (texture)
+                glDeleteTextures(1, &name);
+            else
+                glDeleteRenderbuffers(1, &name);
+            assert(closes == 0);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && closes == 0);
+        _wpk_gl_destroy_encoder(peer);
+        assert(closes == 1);
+        assert(eglTerminate(dpy) && allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-owned-storage-reject")) {
+        GLuint texture = 17;
+        glBindTexture(GL_TEXTURE_2D, texture);
+        const GLubyte blue[4] = {0, 0, 255, 255};
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+        glFlush();
+        unsigned before = image_pixel_updates;
+        assert(before > 0);
+        fail_image_storage = 1;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+        glFlush();
+        assert(glGetError() == GL_INVALID_VALUE && image_pixel_updates == before);
+        fail_image_storage = 0;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR && image_pixel_updates > before);
+        glDeleteTextures(1, &texture);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-owned-storage-reject");
+        return 0;
+    }
     if (!strcmp(argv[1], "image-texture-rollback") || !strcmp(argv[1], "image-rbo-rollback")) {
         int texture = !strcmp(argv[1], "image-texture-rollback");
         GLuint name = 17;

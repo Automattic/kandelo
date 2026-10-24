@@ -5182,7 +5182,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 11;
+    pub const OP_VERSION: u32 = 12;
     /// Private mode of the existing foreign-BO bind ioctl. Its result is a
     /// source token for QOP_IMAGE_TARGET, never a public GLES texture name.
     pub const IMAGE_SOURCE_TARGET: u32 = 0x5750_4b49;
@@ -5424,6 +5424,13 @@ pub mod gl {
     pub const QOP_BOUND_IMAGE_TARGET: u32 = 0x0025;
     /// V11: kind/target (8 bytes), same 16-byte source/revision reply.
     pub const QOP_BOUND_IMAGE_STATE: u32 = 0x0026;
+    /// V12: kind/name (8 bytes), checked accepted deletion (12-byte reply).
+    pub const QOP_IMAGE_OBJECT_DELETE: u32 = 0x0027;
+    /// V12: kind/target/point/object-target/name/level (24 bytes), checked ACK.
+    pub const QOP_IMAGE_ATTACHMENT: u32 = 0x0028;
+    /// V12: allocation opcode plus unchanged payload, checked 12-byte ACK.
+    /// TEX_IMAGE_2D requires dataLen=0 (40 bytes); RBO storage is 20 bytes.
+    pub const QOP_IMAGE_STORAGE: u32 = 0x0029;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -7134,6 +7141,9 @@ mod gl_tests {
             QOP_IMAGE_SOURCE_STATE,
             QOP_BOUND_IMAGE_TARGET,
             QOP_BOUND_IMAGE_STATE,
+            QOP_IMAGE_OBJECT_DELETE,
+            QOP_IMAGE_ATTACHMENT,
+            QOP_IMAGE_STORAGE,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

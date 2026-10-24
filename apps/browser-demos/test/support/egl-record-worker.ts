@@ -156,6 +156,18 @@ self.onmessage = ({data}) => {
           }
           if(clear)observed.push(pixels(fd));
         }
+      } else if(kind===11) {
+        const op=words.getUint32(0,true),size=words.getUint32(4,true),expected=words.getUint32(8,true),input=bytes.slice(12);
+        let reply:Uint8Array,rc:number;
+        if(forwarded){const result=channel(fd).onQuery!(op,input,size);reply=result.bytes;rc=result.rc;}
+        else{
+          new Uint8Array(memory!.buffer,64,input.length).set(input);
+          rc=imports!.host_gl_query(7,op,64,input.length,128,size,fd);
+          reply=new Uint8Array(memory!.buffer,128,size).slice();
+        }
+        const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
+        if(rc!==size||output.getUint32(0,true)!==expected||output.getUint32(4,true)!==(expected?0:1)
+            ||output.getUint32(8,true)!==0x47514c33)throw new Error("C image mutation acceptance mismatch");
       } else if(kind===10) {
         const expected=words.getUint32(12,true), input=bytes.slice(0,12);
         let restore:(()=>void)|null=null;

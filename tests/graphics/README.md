@@ -287,3 +287,19 @@ survives, then require BO release only after that peer retires. They fail
 against unchanged table-11 sources before the shared quarantine change.
 The private peer is not a public EGL context and retires before its display
 generation; these cases prove C ownership, not peer rendering or public sharing.
+
+
+Checked image-mutation cases reject texture/RBO attachment replacement,
+texture/RBO/FBO deletion and ordinary texture allocation. They retain old
+backing after definite rejection, accept retry and forbid row uploads after
+failed allocation, with a positive retry control. The equivalent device-double
+rejection applies to the old queued path for baseline comparison. Uncertain
+attachment replies pin the candidate object/image through group retirement;
+transport, missing completion, wrong ACK and invalid status are covered.
+Host checks cover staged metadata, reverse native rollback, active-unit
+selection, separate draw/read defaults and queued/checked parity. Browser
+GPU checks inject actual invalid native enums and compare preserved pixels;
+C replay carries checked allocation/attachment/deletion through both renderer
+routes. These are focused source checks, with synthetic kernel plumbing;
+public C sharing, guest marshalling and complete context-loss recovery remain
+separate requirements.

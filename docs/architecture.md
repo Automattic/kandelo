@@ -4169,6 +4169,18 @@ Indeterminate import candidates already belong to the group: submitting
 encoder retirement cannot release backing a peer might retain. Final group
 retirement releases these candidates outside the metadata mutex.
 
+Operation-table v12 adds checked image attachment/deletion and allocation.
+C container and namespace references publish only after accepted native
+mutation. Uncertain attachments pin both candidate object and image in the
+shared group's quarantine, preserving the old C attachment until reconciliation
+or retirement. Texture allocation is acknowledged before C emits pixel rows,
+so a failed allocation cannot overwrite existing storage through later rows.
+Queued/checked paths share host ownership transactions and storage dispatch.
+Metadata allocation precedes native effects; definite deletion failure restores
+attempted active attachments and bindings. FBO deletion preserves separate
+read/draw defaults. This does not complete shared C image holds, concurrent
+namespace ordering or multi-failure/context-loss recovery.
+
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package
 into `sysroot/lib/libdrm.a`, and builds `libgbm.a`, `libEGL.a`, and

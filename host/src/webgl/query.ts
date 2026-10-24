@@ -16,8 +16,9 @@
  * delete and would collide). Indices are number-keyed for clean u32
  * round-tripping.
  */
+import { validImageStorageRequest, executeImageStorageRequest } from "./bridge.js";
 import { canonicalTexture, canonicalRenderbuffer, imageSourceToken, importImageStorage, boundImageState } from "./image-storage.js";
-import { collectRetiredImages } from "./image-references.js";
+import { collectRetiredImages, deleteImageObject, attachImageObject } from "./image-references.js";
 import { bindImageObject } from "./image-bindings.js";
 import { runUniformLookup, uniformLocation } from "./uniform-queries.js";
 import { checkedQueryReply, runStateQuery } from "./state-query.js";
@@ -119,6 +120,26 @@ export function runGlQuery(
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
 
+  if (op === O.QOP_IMAGE_STORAGE) {
+    if (out.byteLength !== 12 || !validImageStorageRequest(input)) return -22;
+    return checkedQueryReply(b, out, 4, payload => {
+      if (!executeImageStorageRequest(b, input)) return -5;
+      new DataView(payload.buffer).setUint32(0, 1, true);
+      return 4;
+    });
+  }
+  if (op === O.QOP_IMAGE_OBJECT_DELETE || op === O.QOP_IMAGE_ATTACHMENT) {
+    if (input.byteLength !== (op === O.QOP_IMAGE_OBJECT_DELETE ? 8 : 24) || out.byteLength !== 12) return -22;
+    return checkedQueryReply(b, out, 4, payload => {
+      const kind = inDv.getUint32(0, true);
+      const accepted = op === O.QOP_IMAGE_OBJECT_DELETE ? deleteImageObject(b, kind, inDv.getUint32(4, true)) :
+        attachImageObject(b, kind, inDv.getUint32(4, true), inDv.getUint32(8, true), inDv.getUint32(12, true), inDv.getUint32(16, true), inDv.getInt32(20, true));
+      if (!accepted) return -5;
+      collectRetiredImages(b);
+      new DataView(payload.buffer).setUint32(0, 1, true);
+      return 4;
+    });
+  }
   if (op === O.QOP_BOUND_IMAGE_TARGET || op === O.QOP_BOUND_IMAGE_STATE) {
     if (input.byteLength !== (op === O.QOP_BOUND_IMAGE_TARGET ? 12 : 8) || out.byteLength !== 16) return -22;
     return checkedQueryReply(b, out, 8, payload => {
