@@ -98,7 +98,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 133 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 148 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -467,3 +467,23 @@ and fresh cube commands. Each engine must render red/green and finish native
 cleanup. Forwarded BO-source registration remains open; this new scenario
 enables only native dispatch while retaining all earlier native/forwarded cases.
 Normal guest marshalling and conformance remain separate gates.
+
+Five surface-limit C cases cover pre-context configuration queries, current
+context/error preservation, malformed replies and allocation failures, cache
+refresh after reinitialization, and rendering through a retained current old
+generation. All five fail unchanged `3c04b350dd` production source. The device
+double uses an independent wire-tag constant so the baseline still compiles;
+no old production source is modified. The source-browser replay queries each
+engine's real limits before creating a logical context, renders red, replaces
+the display generation while keeping the old current context, queries again
+and renders green. Native and forwarded paths must preserve physical
+texture/renderbuffer/framebuffer bindings and retire the old resources.
+
+The kernel gate verifies exact input/output shapes, destination probing,
+mapped object-session/live-root authority, no new general state-query
+authority and preservation of another thread's current context. Host tests
+cover actual texture/renderbuffer minima, invalid native limits, unavailable
+error capture, pending outgoing-owner flags, native/main forwarding and KMS
+non-ownership. These source tests do not execute normal guest ioctl
+marshalling or establish pbuffer creation, upstream CTS, full browser-memory
+or compositor compatibility.

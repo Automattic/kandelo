@@ -1,5 +1,6 @@
 import { repairNativeState } from "./native-recovery.js";
 import { reconcileClientArrayRestore } from "./client-array.js";
+import { querySurfaceCapabilities } from "./surface-capabilities.js";
 /**
  * Synchronous GL query handler invoked by `host_gl_query`.
  *
@@ -116,6 +117,12 @@ export function runGlQuery(
   input: Uint8Array,
   out: Uint8Array,
 ): number {
+  if (op === O.QOP_SURFACE_CAPABILITIES) {
+    if (input.byteLength !== 0 || out.byteLength !== 16) return -22;
+    if (!b.gl) return -1;
+    captureNativeGlErrors(b.gl,b);
+    return querySurfaceCapabilities(b.gl,input,out);
+  }
   if (!b.gl) return -1;
   const gl = b.gl;
   if (!repairNativeState(gl) || !reconcileClientArrayRestore(b,gl)) return -5;

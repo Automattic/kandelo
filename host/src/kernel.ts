@@ -1,4 +1,6 @@
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
+import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./webgl/surface-capabilities.js";
+import { QOP_SURFACE_CAPABILITIES } from "./webgl/ops.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
  * import functions that bridge Wasm syscalls to the PlatformIO backend.
@@ -2829,7 +2831,7 @@ export class WasmPosixKernel {
           outPtr: KernelPointer, outLen: KernelPointer, sessionId?: number,
         ): number => {
           const b = this.gl.get(pid, sessionId);
-          if (!b || (!b.gl && !b.forward)) return -1;
+          if (!b || (!b.gl && !b.forward && op !== QOP_SURFACE_CAPABILITIES)) return -1;
           let inputLength: number;
           let outputLength: number;
           let outputDestination: RustLentKernelDestination | null = null;
@@ -2854,6 +2856,7 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
+          if (op === QOP_SURFACE_CAPABILITIES && (inputLength !== 0 || outputLength !== 16)) return -22;
           let inBuf: Uint8Array;
           try {
             inBuf = inputLength > 0
@@ -2873,9 +2876,23 @@ export class WasmPosixKernel {
               outBuf = result.bytes;
             } else {
               outBuf = new IntrinsicUint8Array(outputLength);
-              // Empty command buffers still need to select their owner.
-              this.glMuxerFor(b.gl!).switchTo(b);
-              written = runGlQuery(b, op, inBuf, outBuf);
+              if (op === QOP_SURFACE_CAPABILITIES) {
+                let canvas = b.canvas;
+                if (!canvas && this.kms.isMasterPid(pid)) {
+                  const crtc = this.kms.masterCrtcForPid(pid) ?? this.callbacks.getKmsCrtcIds?.()[0];
+                  if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
+                }
+                const shared = !b.canvas && !this.kms.isMasterPid(pid) ? this.#sharedGlContext() : null;
+                const gl = b.gl ?? shared ?? surfaceCapabilityRenderer(b,canvas);
+                // Capture the outgoing owner's flags without replaying or
+                // publishing this not-yet-current configuration session.
+                if (gl) this.gl_muxers.get(gl)?.captureCurrentErrors();
+                written = querySurfaceCapabilities(gl,inBuf,outBuf);
+              } else {
+                // Empty command buffers still need to select their owner.
+                this.glMuxerFor(b.gl!).switchTo(b);
+                written = runGlQuery(b, op, inBuf, outBuf);
+              }
             }
           } catch {
             return -5; // EIO: renderer/transport failed without a reply

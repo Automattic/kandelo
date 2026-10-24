@@ -3776,9 +3776,25 @@ selection and queries. Selection honors size minima, masks, exact values,
 defaults and explicit config IDs. Config operations require an initialized
 display and publish outputs only after validation. The config's renderable
 mask remains ES2-only; EGL's default ES1 selection filter consequently matches
-none. Tools enumerating all configurations use eglGetConfigs. Pbuffers,
-multiple contexts and other EGL core gaps remain tracked in the graphics
-compatibility inventory.
+none. Tools enumerating all configurations use eglGetConfigs. Pbuffers
+and other EGL core gaps remain tracked in the graphics compatibility
+inventory.
+
+Operation-table version 16 adds an immutable surface-capability query to
+initialized, mapped object sessions in a live display generation. It requires
+no context or current binding and grants no authority to inspect ordinary
+context-local state. The exact zero-byte input and 16-byte output carry
+width, height, maximum pixel count and the completion marker. The renderer
+uses the smaller texture/renderbuffer dimension and caps the pixel count
+only at the representable EGLint maximum. C caches the accepted limits per
+display generation; a malformed reply leaves caller output unchanged.
+Native and main-forwarded paths preserve outgoing GLES errors before
+querying, without selecting a logical context, changing drawable bindings,
+resizing a canvas or claiming KMS presentation. A host without an available
+renderer reports failure. This supplies honest limits for the pending
+pbuffer implementation; creation remains unimplemented and PBUFFER_BIT is
+not yet advertised.
+
 EGL error status and bound client API are thread-local; an unsupported API
 bind reports BAD_PARAMETER while preserving the calling thread's prior API.
 Current bindings use heap-backed pthread-key records with exclusive context
@@ -3881,7 +3897,7 @@ guest marshalling and the public C cross-context facade remain unvalidated.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
-accepts versions 1 through 8, and rejects zero or newer versions with `ENOSYS`.
+accepts versions 1 through 16, and rejects zero or newer versions with `ENOSYS`.
 Its version and extension strings describe that API. Extension queries carry
 an optional operation-table version: legacy requests retain their empty list,
 while version 2 advertises bridged capabilities. Optional float rendering and

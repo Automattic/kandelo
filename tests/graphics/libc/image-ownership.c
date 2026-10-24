@@ -17,6 +17,8 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include "gl_abi.h"
+/* Wire tag is independent of the selected production revision in baseline runs. */
+#define GRAPHICS_SURFACE_CAPABILITIES 0x002du
 /* Existing bridge entry points; this fixture does not advertise GLES3. */
 void glGenVertexArrays(GLsizei, GLuint *);
 void glDeleteVertexArrays(GLsizei, const GLuint *);
@@ -189,6 +191,8 @@ static pthread_cond_t overlap_cond = PTHREAD_COND_INITIALIZER;
 static int overlap_phase, pause_foreign_bind;
 static unsigned foreign_bind_calls;
 static unsigned raw_discard_failure, raw_discard_queries;
+static uint32_t surface_limits[3] = {8192,8192,67108864};
+static unsigned surface_limit_queries, surface_limit_failure;
 static int raw_reply_fail_malloc, raw_reply_fail_calloc;
 static void overlap_reach(int phase) {
     pthread_mutex_lock(&overlap_mutex); overlap_phase = phase;
@@ -801,6 +805,17 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         egl_trace(8, fd, NULL, 0);
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
+        if (q->op == GRAPHICS_SURFACE_CAPABILITIES) {
+            assert(q->in_buf_len == 0 && q->out_buf_len == 16 && q->reserved == 0);
+            surface_limit_queries++;
+            if (surface_limit_failure == 1) { errno = EIO; return -1; }
+            uint32_t *reply = allocation_for(q->out_buf_ptr,16);
+            memcpy(reply,surface_limits,12); reply[3] = surface_limit_failure == 2 ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
+            if (surface_limit_failure == 3) reply[0] = 0;
+            if (surface_limit_failure == 4) reply[2] = UINT32_MAX;
+            egl_trace(14,fd,reply,16);
+            return 0;
+        }
         if (q->op == 0x27 || q->op == 0x28 || q->op == 0x29 || q->op == 0x2a) {
             assert(q->out_buf_len == 12);
             assert(q->op == 0x29 ? q->in_buf_len == 20 || q->in_buf_len == 40
@@ -1405,6 +1420,57 @@ int main(int argc, char **argv) {
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    if (!strncmp(argv[1],"surface-limits-",15)) {
+        EGLContext current = EGL_NO_CONTEXT;
+        if (!strcmp(argv[1],"surface-limits-current")) {
+            current = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(current);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,current));
+            glBindBuffer(0xdead,17);
+        }
+        if (!strcmp(argv[1],"surface-limits-reject")) {
+            EGLint untouched = 71; fail_calloc = 1;
+            assert(!eglGetConfigAttrib(dpy,(EGLConfig)1,EGL_MAX_PBUFFER_WIDTH,&untouched));
+            fail_calloc = 0;
+            assert(eglGetError() == EGL_BAD_ALLOC && untouched == 71 && surface_limit_queries == 0);
+            for (surface_limit_failure = 1; surface_limit_failure <= 4; surface_limit_failure++) {
+                assert(!eglGetConfigAttrib(dpy,(EGLConfig)1,EGL_MAX_PBUFFER_WIDTH,&untouched));
+                assert(eglGetError() == EGL_BAD_ACCESS && untouched == 71);
+            }
+            surface_limit_failure = 0;
+        }
+        unsigned before = surface_limit_queries;
+        for (unsigned i = 0; i < 3; i++) {
+            const EGLint names[] = {EGL_MAX_PBUFFER_WIDTH,EGL_MAX_PBUFFER_HEIGHT,EGL_MAX_PBUFFER_PIXELS};
+            EGLint value = -1;
+            assert(eglGetConfigAttrib(dpy,(EGLConfig)1,names[i],&value) && (uint32_t)value == surface_limits[i]);
+            assert(eglGetCurrentContext() == current);
+        }
+        assert(surface_limit_queries == before+1 && context_create_calls == !!current);
+        if (!strcmp(argv[1],"surface-limits-render")) {
+            EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(context);
+            EGLSurface surface = eglCreateWindowSurface(dpy,(EGLConfig)1,(EGLNativeWindowType)&record_windows[0],NULL); assert(surface);
+            assert(eglMakeCurrent(dpy,surface,surface,context));
+            glClearColor(1,0,0,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
+            assert(eglTerminate(dpy) && eglInitialize(dpy,NULL,NULL)); EGLint width;
+            assert(eglGetConfigAttrib(dpy,(EGLConfig)1,EGL_MAX_PBUFFER_WIDTH,&width) && (uint32_t)width == surface_limits[0]);
+            assert(eglGetCurrentContext() == context && surface_limit_queries == before+2);
+            glClearColor(0,1,0,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
+            assert(eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+            puts("PASS surface-limits-render"); return 0;
+        }
+        if (current) {
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            assert(eglDestroyContext(dpy,current) && eglReleaseThread());
+        }
+        assert(eglTerminate(dpy));
+        if (!strcmp(argv[1],"surface-limits-generation")) {
+            surface_limits[0] = surface_limits[1] = 4096; surface_limits[2] = 16777216;
+            assert(eglInitialize(dpy,NULL,NULL)); EGLint value;
+            assert(eglGetConfigAttrib(dpy,(EGLConfig)1,EGL_MAX_PBUFFER_WIDTH,&value) && value == 4096);
+            assert(surface_limit_queries == before+2 && eglTerminate(dpy));
+        }
+        assert(allocation_count() == 0); printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strcmp(argv[1], "encoder-allocation")) {
         fail_calloc = 1;
         assert(eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs) == EGL_NO_CONTEXT);

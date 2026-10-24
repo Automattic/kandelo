@@ -108,7 +108,7 @@ export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` accepts versions 1 through this value. */
-export const OP_VERSION = 15;
+export const OP_VERSION = 16;
 
 // Additive GLES entry points used by native renderers; existing tags stay stable.
 export const OP_BLEND_EQUATION = 0x000F;
@@ -201,3 +201,5 @@ export const QOP_BIND_BUFFER = 0x002B;
 
 // V15: buffer deletion acknowledgement before C references are released.
 export const QOP_DELETE_BUFFER = 0x002C;
+// V16: immutable surface limits before any logical context is current.
+export const QOP_SURFACE_CAPABILITIES = 0x002D;

@@ -129,6 +129,13 @@ export class GlMuxer {
     this.errorOwner = { errors: target.errors };
   }
 
+  /** Immutable device queries must preserve the selected owner and must stop
+   * if its pending flags cannot be captured. Cleanup invalidation, in
+   * contrast, must continue even when the renderer's error read fails. */
+  captureCurrentErrors(): void {
+    captureNativeGlErrors(this.gl, this.errorOwner);
+  }
+
   invalidateCurrent(): void {
     try {
       captureNativeGlErrors(this.gl, this.errorOwner);

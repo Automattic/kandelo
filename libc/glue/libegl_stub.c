@@ -75,6 +75,7 @@ struct egl_surface_record {
 struct egl_generation {
     int fd, display_fd, initialized, terminate_pending;
     uint32_t id, pending_surface_target_bo;
+    uint32_t pbuffer_limits[3];
     struct imported_bo_reference *imported_bos;
     struct egl_session *sessions;
     struct egl_context_record *contexts;
@@ -431,6 +432,21 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
     return return_configs(configs, config_size, num_config, matches);
 }
 
+/* Read immutable renderer limits through the initialized object session,
+ * without creating a public context or changing any thread's current state. */
+static int surface_limits_locked(struct egl_generation *generation) {
+    if (generation->pbuffer_limits[0]) return 1;
+    uint32_t *reply = calloc(4,sizeof *reply);
+    if (!reply) { g_last_error = EGL_BAD_ALLOC; return 0; }
+    const struct gl_query_info query = {.op = QOP_SURFACE_CAPABILITIES,
+        .out_buf_ptr = (uint32_t)(uintptr_t)reply, .out_buf_len = 16};
+    int accepted = ioctl(generation->fd,GLIO_QUERY,&query) == 0 && reply[3] == WPK_GL_QUERY_REPLY_MAGIC &&
+        reply[0] > 0 && reply[0] <= INT32_MAX && reply[1] > 0 && reply[1] <= INT32_MAX &&
+        reply[2] > 0 && reply[2] <= INT32_MAX && (uint64_t)reply[2] <= (uint64_t)reply[0]*reply[1];
+    if (accepted) memcpy(generation->pbuffer_limits,reply,3*sizeof *reply);
+    else g_last_error = EGL_BAD_ACCESS;
+    free(reply); return accepted;
+}
 EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
                               EGLint attribute, EGLint *value) {
     if (!config_display_ready(dpy)) return EGL_FALSE;
@@ -438,6 +454,16 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
     if (!value) { g_last_error = EGL_BAD_PARAMETER; return EGL_FALSE; }
     const int i = config_attribute_index(attribute);
     if (i < 0 || attribute == EGL_MATCH_NATIVE_PIXMAP) { g_last_error = EGL_BAD_ATTRIBUTE; return EGL_FALSE; }
+    if (attribute == EGL_MAX_PBUFFER_WIDTH || attribute == EGL_MAX_PBUFFER_HEIGHT || attribute == EGL_MAX_PBUFFER_PIXELS) {
+        pthread_mutex_lock(&g_context_mutex);
+        struct egl_generation *generation = g_active_generation;
+        int accepted = generation && generation->initialized;
+        if (!accepted) g_last_error = EGL_NOT_INITIALIZED;
+        else accepted = surface_limits_locked(generation);
+        if (accepted) *value = (EGLint)generation->pbuffer_limits[attribute == EGL_MAX_PBUFFER_WIDTH ? 0 : attribute == EGL_MAX_PBUFFER_HEIGHT ? 1 : 2];
+        pthread_mutex_unlock(&g_context_mutex);
+        return accepted ? EGL_TRUE : EGL_FALSE;
+    }
     *value = config_attributes[i].value;
     return EGL_TRUE;
 }

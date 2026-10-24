@@ -68,6 +68,31 @@ function clearCmdbuf(): Uint8Array {
 }
 
 describe("setupMainForward", () => {
+  it("queries renderer limits before creating a logical context and then accepts normal creation", () => {
+    const worker = new FakeWorker(), stub = new RecordingGl();
+    const get = vi.fn((pname:number) => pname === 0x0d33 ? 16384 : 4096);
+    Object.assign(stub,{getParameter:get});
+    const {canvas,getContextCalls} = fakeCanvas(stub), dispose = setupMainForward(worker,canvas,7);
+    const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,16);
+    worker.fire({type:"gl_forward_query",pid:7,sessionId:0,op:O.QOP_SURFACE_CAPABILITIES,input:new Uint8Array(),mailbox});
+    const reply = waitForGlForwardQuery(mailbox);
+    expect(reply.rc).toBe(16); expect([...new Uint32Array(reply.bytes.buffer,reply.bytes.byteOffset,4)]).toEqual([4096,4096,16777216,0x47514c33]);
+    expect(stub.log).toEqual([]); expect(getContextCalls).toHaveLength(1);
+    const create = createMessage(7); worker.fire(create);
+    expect(waitForGlForwardQuery(create.mailbox).rc).toBe(0);
+    expect(getContextCalls).toHaveLength(2); dispose();
+  });
+
+  it("rejects malformed pre-context capability queries before renderer acquisition", () => {
+    const worker = new FakeWorker(), {canvas,getContextCalls} = fakeCanvas(new RecordingGl()), dispose = setupMainForward(worker,canvas,7);
+    for (const [input,size] of [[new Uint8Array(4),16],[new Uint8Array(),12]] as const) {
+      const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,size);
+      worker.fire({type:"gl_forward_query",pid:7,sessionId:0,op:O.QOP_SURFACE_CAPABILITIES,input,mailbox});
+      expect(waitForGlForwardQuery(mailbox).rc).toBe(-22);
+    }
+    expect(getContextCalls).toHaveLength(0); dispose();
+  });
+
   it("builds gl on gl_forward_create_context and discards on destroy", () => {
     const worker = new FakeWorker();
     const stub = new RecordingGl();

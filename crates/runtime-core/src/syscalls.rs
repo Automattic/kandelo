@@ -2367,7 +2367,25 @@ fn handle_dri_ioctl(
                     return Err(Errno::EINVAL);
                 }
             }
-            require_gl_current(proc, ofd_idx)?;
+            if info.op == gl::QOP_SURFACE_CAPABILITIES {
+                // Immutable limits do not expose context-local state and must
+                // be available to EGL configuration queries before MakeCurrent.
+                require_gl_display_live(proc, ofd_idx)?;
+                if dri_state(proc, ofd_idx)?
+                    .gl_resources
+                    .borrow()
+                    .owner
+                    .is_none_or(|owner| owner.cmdbuf_range.is_none())
+                {
+                    return Err(Errno::EINVAL);
+                }
+                if info.in_buf_len != 0 || info.out_buf_len != 16 || info.reserved != 0 {
+                    return Err(Errno::EINVAL);
+                }
+                probe_dri_process_pointer(host, pid, u64::from(info.out_buf_ptr), 16)?;
+            } else {
+                require_gl_current(proc, ofd_idx)?;
+            }
             // Copy input from process memory through the host bridge,
             // forward to host.gl_query, then copy the result back. The
             // kernel never decodes the bytes — `op` is the only thing
@@ -55212,6 +55230,188 @@ impl HostIO for RelSymlinkMock {
             vec![(proc.pid as i32, bo_id, bo_addr, bo_len)]
         );
         assert_eq!(host.gl_unbind_calls, vec![proc.pid as i32]);
+    }
+
+    #[test]
+    fn glio_surface_limits_before_current_do_not_grant_state_query_authority() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        glio_map_test(&mut proc, &mut host, fd);
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let session = gl_session_id(&proc, ofd).unwrap();
+        let mut info = gl::GlQueryInfo {
+            op: gl::QOP_SURFACE_CAPABILITIES,
+            out_buf_ptr: 32,
+            out_buf_len: 16,
+            ..Default::default()
+        };
+        let mut bytes = [0u8; core::mem::size_of::<gl::GlQueryInfo>()];
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+        }
+        host.proc_memory.fill(0xa5);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes).unwrap();
+        assert_eq!(host.gl_query_sessions, vec![session]);
+        assert_eq!(&host.proc_memory[32..48], &[0; 16]);
+        assert!(host.proc_memory[..32]
+            .iter()
+            .chain(host.proc_memory[48..].iter())
+            .all(|value| *value == 0xa5));
+        let state = dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap();
+        assert!(state.context_id.is_none() && state.current.is_none());
+        info.op = gl::QOP_GET_ERROR;
+        info.out_buf_len = 4;
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+        }
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(host.gl_query_sessions, vec![session]);
+    }
+
+    #[test]
+    fn glio_surface_limits_preflight_exact_shape_destination_and_live_root() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (root, id) = glio_display_test(&mut proc, &mut host, gl::OP_VERSION).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut init = glio_init_bytes(gl::GlInitInfo {
+            op_version: gl::OP_VERSION,
+            role: gl::SESSION_OBJECTS,
+            display_fd: root,
+            display_id: id,
+        });
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut init).unwrap();
+        let valid = gl::GlQueryInfo {
+            op: gl::QOP_SURFACE_CAPABILITIES,
+            out_buf_ptr: 32,
+            out_buf_len: 16,
+            ..Default::default()
+        };
+        let mut bytes = [0u8; core::mem::size_of::<gl::GlQueryInfo>()];
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, valid);
+        }
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes),
+            Err(Errno::EINVAL)
+        );
+        glio_map_test(&mut proc, &mut host, fd);
+        host.proc_memory.fill(0xa5);
+        let before = host.proc_memory.clone();
+        for (info, error) in [
+            (
+                gl::GlQueryInfo {
+                    in_buf_len: 1,
+                    ..valid
+                },
+                Errno::EINVAL,
+            ),
+            (
+                gl::GlQueryInfo {
+                    out_buf_len: 12,
+                    ..valid
+                },
+                Errno::EINVAL,
+            ),
+            (
+                gl::GlQueryInfo {
+                    out_buf_len: 20,
+                    ..valid
+                },
+                Errno::EINVAL,
+            ),
+            (
+                gl::GlQueryInfo {
+                    reserved: 1,
+                    ..valid
+                },
+                Errno::EINVAL,
+            ),
+            (
+                gl::GlQueryInfo {
+                    out_buf_ptr: 0,
+                    ..valid
+                },
+                Errno::EFAULT,
+            ),
+            (
+                gl::GlQueryInfo {
+                    out_buf_ptr: host.proc_memory.len() as u32 - 8,
+                    ..valid
+                },
+                Errno::EFAULT,
+            ),
+        ] {
+            unsafe {
+                core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+            }
+            assert_eq!(
+                sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes),
+                Err(error)
+            );
+            assert!(host.gl_query_sessions.is_empty());
+            assert_eq!(host.proc_memory, before);
+        }
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, valid);
+        }
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, root, gl::GLIO_QUERY, &mut bytes),
+            Err(Errno::EINVAL)
+        );
+        sys_close(&mut proc, &mut host, root).unwrap();
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes),
+            Err(Errno::EINVAL)
+        );
+        assert!(host.gl_query_sessions.is_empty());
+        assert_eq!(host.proc_memory, before);
+    }
+
+    #[test]
+    fn glio_surface_limits_from_another_thread_preserve_current_ownership() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.add_thread(crate::process::ThreadInfo::new(2, 0, 0, 0));
+        proc.blocked_retries.bind_task(1);
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        glio_map_test(&mut proc, &mut host, fd);
+        let context = glio_test_bind(&mut proc, &mut host, fd);
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        proc.blocked_retries.bind_task(2);
+        let mut info = gl::GlQueryInfo {
+            op: gl::QOP_SURFACE_CAPABILITIES,
+            out_buf_ptr: 32,
+            out_buf_len: 16,
+            ..Default::default()
+        };
+        let mut bytes = [0u8; core::mem::size_of::<gl::GlQueryInfo>()];
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+        }
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes).unwrap();
+        let state = dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap();
+        assert_eq!(state.context_id, Some(context));
+        assert_eq!(state.current.unwrap().owner_tid, 1);
+        info.op = gl::QOP_GET_ERROR;
+        info.out_buf_len = 4;
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+        }
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(host.gl_query_sessions.len(), 1);
     }
 
     #[test]

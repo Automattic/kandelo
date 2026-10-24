@@ -70,7 +70,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G10 | Every core function resolves; ES2 API | All 142 GLES2 core symbols are defined and resolved; native/private-Wasm audit passes. Full semantic and guest conformance remain pending | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | partial |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
 | E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. ABI 57 returns fresh surface IDs and acknowledged dimensions. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Public independent context/surface records route separate draw/read selectors. ABI 58 kernel/renderer construction joins live same-generation object groups; public C construction joins the same retained owner and native group; the full error/lifecycle audit remains open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
-| E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public window queries expose accepted dimensions and fixed attributes; pbuffer creation still fails and several core symbols are absent | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
+| E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public window queries expose accepted dimensions and fixed attributes. Operation table 16 adds immutable renderer limits before context creation, cached per display generation without changing current ownership. Pbuffer creation still fails and several core symbols are absent | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU coherence, forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU coherence, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
@@ -87,7 +87,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session/thread-current/display-authority changes are combined under ABI 58 with shared-context construction and acknowledged surface creation; compatible graphics operation table 15 adds checked image transactions, framebuffer selection and buffer binding/deletion. Generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session/thread-current/display-authority changes are combined under ABI 58 with shared-context construction and acknowledged surface creation; compatible graphics operation table 16 adds checked image transactions, framebuffer selection, buffer binding/deletion and immutable surface limits. Generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -3938,3 +3938,86 @@ sources, image-zero and the remaining GLES/EGL1.5/GBM/KMS inventory. Current-mai
 integration, fresh coherent normal artifacts, upstream CTS, cage/sway, full
 browser-memory and required POSIX conformance remain in the deferred build/test
 phase. No ordinary gap has been declared a hard platform boundary.
+
+
+## Immutable EGL surface limits before context creation (2026-10-24)
+
+EGL configuration queries previously returned zero pbuffer limits. As a
+prerequisite for implementing pbuffer creation, operation table 16 adds
+`QOP_SURFACE_CAPABILITIES` (`0x002D`). Its input is empty and its exact
+16-byte reply contains width, height, pixels and the completion marker.
+The kernel requires an initialized, mapped object session in a live
+display generation, preprobes the complete output and does not require
+or grant a current context. Other queries retain their existing
+current-thread authority. Root, unmapped and revoked sessions fail
+before entering the host. A query from another thread preserves the
+original thread's current ownership.
+
+Native and main-forwarded paths obtain actual WebGL2 texture and
+renderbuffer limits without publishing a logical context, replaying
+context state, resizing a canvas or claiming KMS scanout. Both report
+the smaller native dimension; maximum pixels is the dimension squared,
+bounded by EGLint's representable maximum. Pending outgoing GLES flags
+are captured into their existing owner. A failed error capture stops
+the query; internal EGL probe errors do not enter a later GLES context.
+A malformed request is rejected before native renderer acquisition.
+Unavailable/lost renderers, invalid native limits or native errors leave
+output unpublished. No new mailbox, shared-memory ceiling or retained
+guest memory is introduced.
+
+C validates the completion marker and all three values, then caches
+only an accepted complete reply in the display generation. Failed
+allocation or transport/malformed replies preserve the caller's output
+and leave the cache retryable. Reinitialization gets a fresh cache while
+an older generation's current context remains usable. Window config
+selection and the ES2 renderable mask remain unchanged. The primary
+[EGL 1.5 specification, sections 3.4 and
+3.5.2](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf) describes
+these limits and permits the maximum pixel count to be less than the
+product of the maximum dimensions. Resource-pressure allocation may
+still fail. This change does not implement pbuffer creation or advertise
+PBUFFER_BIT; E03 remains open.
+
+Source evidence is based on `3c04b350dd` plus this increment. Every
+command below runs through `scripts/dev-shell.sh`:
+
+| Check | Exact evidence |
+|---|---|
+| Native C and private wasm32 paired link | 148 fatal-UBSan cases and paired link pass, `graphics-surface-limits-settled-native.log` |
+| Core entrypoint audit | 150 public authority guards; 142 core definitions/resolvers, `graphics-surface-limits-checked-rust-abi-memory.log` |
+| Host source and Node/browser build/declarations | 564 tests in 23 files, no failures/skips, `graphics-surface-limits-final-host.log` |
+| Real Chromium/Firefox/WebKit source rendering | 195 passed, no skips, `graphics-surface-limits-final-browser.log` |
+| Kernel GLIO | 50 passed, `graphics-surface-limits-checked-rust-abi-memory.log` |
+| Shared GL layouts and ioctl contracts | 4 GL layout tests and 13 ioctl contracts passed; `graphics-surface-limits-checked-rust-abi-memory.log` and `graphics-surface-limits-checked-ioctl-contract.log` |
+| Additional shared DRI layouts | 10 passed, `graphics-surface-limits-checked-dri-layouts.log` |
+| ABI/kernel export inspection | Kernel-only build, all native layout checks and ABI 58 snapshot check passed, `graphics-surface-limits-checked-rust-abi-memory.log` |
+| Source memory-boundary negatives | 12 passed, same Rust/ABI/memory log; not the full memory gate |
+| Before-fix C regression | All five new cases fail unchanged `3c04b350dd`, `graphics-surface-limits-baseline-native.log` |
+
+Logs are under `.context/`. Native validation runs the standard
+`tests/graphics/run-libc-unit.sh`, private paired-link script and core
+AST audit. The baseline selects only the five `surface-limits-*` cases
+and supplies the prior revision to the same runner. The test double's
+independent query-tag constant permits old production sources to
+compile; no production baseline is patched. Failures observe missing
+limits/output preservation rather than a load or link error. The Rust
+gate selects `glio_`, shared `gl_tests`, `ioctl_contract` and `dri_tests`.
+The host gate uses `vitest.graphics.config.ts` followed by `npm run
+build`. The browser gate runs `webgl-state-contract.spec.ts` in all
+three configured engines with three workers. Its new native/forwarded
+C replay queries actual renderer limits before creating a context,
+renders red, replaces the display generation, queries again without
+losing the old current binding, then renders green. It checks physical
+selectors, retirement, native errors and the source memory probe.
+
+ABI_VERSION remains 58: this is an additive operation-table query with
+no changes to existing wire layouts, tags, syscalls or imports. The
+snapshot update and subsequent check regenerated no committed output
+changes. The ABI check rebuilds only the target kernel for inspection;
+normal SDK, kernel distribution, program, package and image artifacts
+were not refreshed or restamped. Those artifacts and upstream CTS,
+cage/sway/other consumers, full browser-memory and required POSIX
+conformance remain deferred to the combined build/test phase.
+Pbuffers/platform constructors, sync/core images and the remaining
+GLES, storage/error/lifecycle, GBM and KMS inventory remain ordinary
+implementation gaps. No new hard platform boundary is claimed.

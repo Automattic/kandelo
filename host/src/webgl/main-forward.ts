@@ -4,6 +4,8 @@ import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
 import { decodeAndDispatch, validateCommandBuffer } from "./bridge.js";
 import { recordGlError } from "./errors.js";
 import { runGlQuery } from "./query.js";
+import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./surface-capabilities.js";
+import { QOP_SURFACE_CAPABILITIES } from "./ops.js";
 import { GlMuxer } from "./muxer.js";
 import { prepareCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
 import {
@@ -126,10 +128,15 @@ export function setupMainForward(
     if (!msg || typeof msg !== "object" || msg.pid !== pid) return;
     if (!Number.isInteger(msg.sessionId) || msg.sessionId < 0 || msg.sessionId > 0xffff_ffff) return;
     let b = reg.get(pid, msg.sessionId);
-    if (!b && (msg.type === "gl_forward_create_context" || msg.type === "gl_forward_create_surface")) {
+    const capabilities = msg.type === "gl_forward_query" && msg.op === QOP_SURFACE_CAPABILITIES;
+    if (!b && (msg.type === "gl_forward_create_context" || msg.type === "gl_forward_create_surface" || capabilities)) {
       try {
         if (!glForwardRequestPending(msg.mailbox)) return;
-        if (glForwardQueryCapacity(msg.mailbox) !== (msg.type === "gl_forward_create_surface" ? 8 : 0))
+        if (capabilities && (glForwardQueryCapacity(msg.mailbox) !== 16 ||
+            (msg as Extract<GlForwardMessage,{type:"gl_forward_query"}>).input.byteLength !== 0)) {
+          completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
+        }
+        if (!capabilities && glForwardQueryCapacity(msg.mailbox) !== (msg.type === "gl_forward_create_surface" ? 8 : 0))
           throw new RangeError("invalid creation reply");
         reg.bind({ pid, sessionId: msg.sessionId, cmdbufAddr: 0, cmdbufLen: 0 });
         b = reg.get(pid, msg.sessionId);
@@ -294,8 +301,16 @@ export function setupMainForward(
         try {
           if (msg.input.byteLength > GL_FORWARD_QUERY_MAX_BYTES) throw new RangeError("query input too long");
           const output = new Uint8Array(glForwardQueryCapacity(msg.mailbox));
-          if (b.gl) muxer(b.gl).switchTo(b);
-          const rc = runGlQuery(b, msg.op, msg.input, output);
+          let rc: number;
+          if (capabilities) {
+            if (msg.input.byteLength !== 0 || output.byteLength !== 16) { completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return; }
+            const gl = surfaceCapabilityRenderer(b,canvas);
+            if (gl) muxers.get(gl)?.captureCurrentErrors();
+            rc = querySurfaceCapabilities(gl,msg.input,output);
+          } else {
+            if (b.gl) muxer(b.gl).switchTo(b);
+            rc = runGlQuery(b, msg.op, msg.input, output);
+          }
           completeGlForwardQuery(msg.mailbox, rc, output);
         } catch {
           try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); }

@@ -5182,7 +5182,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 15;
+    pub const OP_VERSION: u32 = 16;
     /// Private mode of the existing foreign-BO bind ioctl. Its result is a
     /// source token for QOP_IMAGE_TARGET, never a public GLES texture name.
     pub const IMAGE_SOURCE_TARGET: u32 = 0x5750_4b49;
@@ -5437,6 +5437,9 @@ pub mod gl {
     pub const QOP_BIND_BUFFER: u32 = 0x002B;
     /// V15: name (4 bytes), checked accepted deletion (12-byte reply).
     pub const QOP_DELETE_BUFFER: u32 = 0x002C;
+    /// V16: read-only renderer limits before a context is current. No input;
+    /// width/height/pixels and QUERY_REPLY_MAGIC, exactly 16 output bytes.
+    pub const QOP_SURFACE_CAPABILITIES: u32 = 0x002D;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -7156,6 +7159,7 @@ mod gl_tests {
             QOP_BIND_FRAMEBUFFER,
             QOP_BIND_BUFFER,
             QOP_DELETE_BUFFER,
+            QOP_SURFACE_CAPABILITIES,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

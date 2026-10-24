@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 15u
+#define WPK_GL_OP_VERSION 16u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -197,6 +197,9 @@
 #define QOP_BIND_BUFFER 0x002Bu
 /* V15: name (4 bytes), checked accepted deletion (12-byte reply). */
 #define QOP_DELETE_BUFFER 0x002Cu
+/* V16: no input; width, height, pixels and completion marker (16 bytes).
+ * Requires a live display's mapped object session, not a current context. */
+#define QOP_SURFACE_CAPABILITIES 0x002Du
 /* Private mode of the existing BO bind ioctl, returning a source token. */
 #define WPK_GL_IMAGE_SOURCE_TARGET 0x57504b49u
 

@@ -91,6 +91,7 @@ self.onmessage = ({data}) => {
     const frames=new Uint8Array(data.trace),view=new DataView(frames.buffer),observed:number[][]=[];
     const retiredContexts:number[]=[],retiredSurfaces:number[]=[];
     const rawBos=new Set<number>();
+    const limits:number[][]=[];
     for(let offset=0;offset<frames.length;) {
       if(offset+12>frames.length)throw new Error("truncated trace header");
       const kind=view.getUint32(offset,true),fd=view.getUint32(offset+4,true),length=view.getUint32(offset+8,true);
@@ -169,6 +170,24 @@ self.onmessage = ({data}) => {
           }
           if(clear)observed.push(pixels(fd));
         }
+      } else if(kind===14) {
+        const state=()=>gl ? [gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING),gl.getParameter(gl.READ_FRAMEBUFFER_BINDING),
+          gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),gl.getParameter(gl.RENDERBUFFER_BINDING)] : [];
+        const before=state(); let reply:Uint8Array,rc:number;
+        if(forwarded) {
+          postMessage({type:"egl_record_capabilities_before"});
+          const result=channel(fd).onQuery!(O.QOP_SURFACE_CAPABILITIES,new Uint8Array(),16);reply=result.bytes;rc=result.rc;
+          postMessage({type:"egl_record_capabilities_after"});
+        } else {
+          rc=imports!.host_gl_query(7,O.QOP_SURFACE_CAPABILITIES,64,0,128,16,fd);
+          reply=new Uint8Array(memory!.buffer,128,16).slice();
+        }
+        const values=[...new Uint32Array(reply.buffer,reply.byteOffset,4)];
+        if(rc!==16 || values[0]<=0 || values[0]!==values[1] || values[2]!==Math.min(values[0]*values[1],0x7fffffff) || values[3]!==0x47514c33)
+          throw new Error("invalid renderer surface limits");
+        if(gl && (values[0]!==Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),gl.getParameter(gl.MAX_RENDERBUFFER_SIZE)) ||
+          before.some((value,index)=>value!==state()[index])))throw new Error("surface limits changed native owner state");
+        limits.push(values);
       } else if(kind===13) {
         if(forwarded || !data.rawCandidate)throw new Error("raw BO replay requires native source registration");
         const bo=words.getUint32(0,true),target=words.getUint32(4,true),context=words.getUint32(8,true),expected=words.getUint32(12,true);
@@ -260,6 +279,6 @@ self.onmessage = ({data}) => {
     }
     for(const bo of rawBos) {native!.gl.retireForeignBo(bo);if(native!.gl.hasForeignRetirements())throw new Error("raw candidate BO cleanup pending");}
     const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
-    postMessage({type:"egl_record_result",observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),error:forwarded?0:gl!.getError()});
+    postMessage({type:"egl_record_result",observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),...(data.capabilities?{limits}:{}),error:forwarded?0:gl!.getError()});
   } catch(error) {postMessage({type:"egl_record_failed",error:String(error)});}
 };

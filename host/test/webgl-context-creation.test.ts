@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 import { ensurePresentTarget } from "../src/webgl/present-target.js";
+import { querySurfaceCapabilities } from "../src/webgl/surface-capabilities.js";
+import * as O from "../src/webgl/ops.js";
 
 function harness(callbacks = {}) {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
@@ -21,6 +23,96 @@ function harness(callbacks = {}) {
     create: (pid: number, id = 1, sessionId?: number) =>
       imports.env.host_gl_create_context(pid, id, 0, 0, sessionId),
   };
+}
+
+it("reports actual surface limits before context creation without publishing a renderer or drawing state", () => {
+  const {kernel,imports,memory,create} = harness();
+  const errors: number[] = [], calls: string[] = [];
+  const gl = new Proxy({
+    getError: () => errors.shift() ?? 0, isContextLost: () => false, getExtension: () => null,
+    getParameter: (pname: number) => { calls.push(`get:${pname}`); return pname === 0x0d33 ? 16384 : pname === 0x84e8 ? 8192 : null; },
+  },{get:(target,key) => Reflect.get(target,key) ?? (() => { calls.push(String(key)); return null; })}) as unknown as WebGL2RenderingContext;
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  kernel.gl.attachCanvas(7,{width:4,height:3,getContext:() => gl} as unknown as OffscreenCanvas);
+  const b = kernel.gl.get(7,11)!, shadow = b.shadow;
+  expect(imports.host_gl_query(7,O.QOP_SURFACE_CAPABILITIES,0,0,512,16,11)).toBe(16);
+  expect([...new Uint32Array(memory.buffer,512,4)]).toEqual([8192,8192,67108864,0x47514c33]);
+  expect(calls).toEqual([`get:${0x0d33}`,`get:${0x84e8}`]);
+  expect(b.gl).toBeNull(); expect(b.contextId).toBeNull(); expect(b.shadow).toBe(shadow); expect(b.surfaceId).toBeNull();
+  expect(create(7,21,11)).toBe(0); expect(b.gl).toBe(gl);
+});
+
+it("preflights surface-capability spans and retains sentinels on unavailable or invalid native limits", () => {
+  const {kernel,imports,memory} = harness(); let contexts = 0;
+  const errors: number[] = [], owner = {errors:[] as number[],gl:{isContextLost:()=>false,getError:()=>errors.shift()??0,getParameter:()=>0} as unknown as WebGL2RenderingContext};
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  kernel.gl.attachCanvas(7,{getContext:() => {contexts++; return owner.gl;}} as unknown as OffscreenCanvas);
+  const output = new Uint8Array(memory.buffer,512,16); output.fill(0xa5);
+  expect(imports.host_gl_query(7,O.QOP_SURFACE_CAPABILITIES,0,0,memory.buffer.byteLength+4,16,11)).toBe(-14);
+  expect(imports.host_gl_query(7,O.QOP_SURFACE_CAPABILITIES,0,1,512,16,11)).toBe(-22);
+  expect(imports.host_gl_query(7,O.QOP_SURFACE_CAPABILITIES,0,0,512,12,11)).toBe(-22); expect(contexts).toBe(0);
+  for (const bad of [0,-1,Infinity,3.5,0x80000000]) {
+    owner.gl.getParameter = () => bad;
+    expect(querySurfaceCapabilities(owner.gl,new Uint8Array(),output)).toBe(-5);
+    expect([...output]).toEqual(Array(16).fill(165));
+  }
+  owner.gl.getParameter = () => {errors.push(0x500);return 8192;};
+  expect(querySurfaceCapabilities(owner.gl,new Uint8Array(),output)).toBe(-5); expect(owner.errors).toEqual([]);
+  expect([...output]).toEqual(Array(16).fill(165));
+});
+
+it("reads shared renderer limits for an unbound client while preserving the outgoing owner's errors", () => {
+  const {kernel,imports,memory,setMaster} = harness(), errors:number[] = [];
+  const gl = new Proxy({
+    getError:()=>errors.shift()??0,isContextLost:()=>false,
+    getParameter:(pname:number)=>pname===0x0d33?16384:pname===0x84e8?4096:null,
+  },{get:(target,key)=>Reflect.get(target,key)??(String(key).startsWith("create")?()=>({}):()=>{})}) as unknown as WebGL2RenderingContext;
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0}); setMaster(7);
+  const owner = kernel.gl.get(7,11)!; owner.gl = gl; owner.contextId = 21;
+  expect(imports.host_gl_submit(7,0,0,11)).toBe(0);
+  kernel.gl.bind({pid:8,sessionId:12,cmdbufAddr:0,cmdbufLen:0}); const client = kernel.gl.get(8,12)!;
+  errors.push(0x501);
+  expect(imports.host_gl_query(8,O.QOP_SURFACE_CAPABILITIES,0,0,512,16,12)).toBe(16);
+  expect([...new Uint32Array(memory.buffer,512,4)]).toEqual([4096,4096,16777216,0x47514c33]);
+  expect(owner.errors).toEqual([0x501]); expect(client.errors).toEqual([]);
+  expect(client.gl).toBeNull(); expect(client.contextId).toBeNull(); expect(owner.contextId).toBe(21);
+});
+
+it("does not claim or resize KMS scanout merely to inspect renderer limits", () => {
+  const claims:string[] = [], canvas = {width:11,height:7,getContext:()=>({
+    isContextLost:()=>false,getError:()=>0,getParameter:()=>8192,
+  } as unknown as WebGL2RenderingContext)} as unknown as OffscreenCanvas;
+  const {kernel,imports,setMaster} = harness({getKmsCrtcIds:()=>[1],getKmsCanvas:()=>canvas,
+    markKmsCanvasGlOwned:()=>claims.push("owned"),markKmsCanvasGlReleased:()=>claims.push("released")});
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0}); setMaster(7);
+  expect(imports.host_gl_query(7,O.QOP_SURFACE_CAPABILITIES,0,0,512,16,11)).toBe(16);
+  const b = kernel.gl.get(7,11)!;
+  expect([canvas.width,canvas.height]).toEqual([11,7]); expect(claims).toEqual([]);
+  expect(b.claimedKmsCrtc).toBeNull(); expect(b.gl).toBeNull(); expect(b.canvas).toBeNull();
+});
+
+for (const failure of ["throw","never-clears"] as const) {
+  it(`does not steal pending owner flags when capability error capture ${failure}`, () => {
+    const {kernel,imports,memory,setMaster} = harness();
+    let fail = false, reads = 0;
+    const gl = new Proxy({
+      isContextLost:()=>false,
+      getError:()=> { if (fail && failure === "throw") throw new Error("unavailable error read"); return fail ? 0x502 : 0; },
+      getParameter:()=> { reads++; return 4096; },
+    },{get:(target,key)=>Reflect.get(target,key)??(String(key).startsWith("create")?()=>({}):()=>{})}) as unknown as WebGL2RenderingContext;
+    kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0}); setMaster(7);
+    const owner = kernel.gl.get(7,11)!; owner.gl = gl; owner.contextId = 21;
+    expect(imports.host_gl_submit(7,0,0,11)).toBe(0);
+    kernel.gl.bind({pid:8,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+    const output = new Uint8Array(memory.buffer,512,16); output.fill(0xa5); reads = 0; fail = true;
+    expect(imports.host_gl_query(8,O.QOP_SURFACE_CAPABILITIES,0,0,512,16,12)).toBe(-5);
+    expect(reads).toBe(0); expect([...output]).toEqual(Array(16).fill(165));
+    expect(owner.errors).toEqual(failure === "throw" ? [] : [0x502]);
+    expect(kernel.gl.get(8,12)!.errors).toEqual([]);
+    fail = false;
+    expect(imports.host_gl_query(8,O.QOP_SURFACE_CAPABILITIES,0,0,512,16,12)).toBe(16);
+    expect(owner.contextId).toBe(21); expect(kernel.gl.get(8,12)!.gl).toBeNull();
+  });
 }
 
 describe("context creation acknowledgement", () => {
